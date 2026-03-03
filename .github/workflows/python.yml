@@ -75,4 +75,4 @@ jobs:
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          maturin publish --skip-existing --no-sdist --features python --no-default-features --find-interpreter=python
+          maturin publish --skip-existing --no-sdist --features python --no-default-features
