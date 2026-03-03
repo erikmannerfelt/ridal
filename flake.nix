@@ -11,21 +11,21 @@
       (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          radal = import ./default.nix { inherit pkgs; };
+          ridal = import ./default.nix { inherit pkgs; };
 
         in
         {
           devShells.default = import ./shell.nix { inherit pkgs; };
-          defaultPackage = radal;
+          defaultPackage = ridal;
           packages = {
-            inherit radal;
-            default = radal;
+            inherit ridal;
+            default = ridal;
           };
         }
 
       ) // {
       overlays.default = final: prev: {
-        radal = import ./default.nix { pkgs = final; };
+        ridal = import ./default.nix { pkgs = final; };
       };
     };
 }
