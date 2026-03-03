@@ -3,6 +3,7 @@ use ndarray::{Array, Array2};
 use num::{Float, FromPrimitive};
 
 pub mod bandpass;
+pub mod coordinates;
 
 pub fn abslog<T: Float>(data: &mut Array2<T>) {
     data.mapv_inplace(|v| v.abs());

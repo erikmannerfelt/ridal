@@ -389,6 +389,13 @@ impl GPR {
         } else if step_name.contains("equidistant_traces") {
             let step = tools::parse_option::<f32>(step_name, 0)?;
             self.make_equidistant(step);
+        } else if step_name.contains("shift_coordinates") {
+            let along_track = tools::parse_option::<f64>(step_name, 0)?
+                .ok_or("Must provide an offset to shift_coordinates".to_string())?;
+            let altitude = tools::parse_option::<f64>(step_name, 1)?.unwrap_or(0.);
+            let cross_track = tools::parse_option::<f64>(step_name, 2)?.unwrap_or(0.);
+
+            self.shift_coordinates(along_track, altitude, cross_track)?;
         } else if step_name.contains("normalize_horizontal_magnitudes") {
             // Try to parse the argument as an integer. If that doesn't work, try to parse it as a
             // float and assume it's the fraction of the height
@@ -1211,6 +1218,30 @@ impl GPR {
         */
     }
 
+    fn shift_coordinates(
+        &mut self,
+        along_track: f64,
+        altitude: f64,
+        cross_track: f64,
+    ) -> Result<(), String> {
+        let start_time = SystemTime::now();
+
+        if self.location.cor_points.len() < 2 {
+            return Err("shift_coordinates needs at least two valid coordinates".to_string());
+        }
+
+        self.location.cor_points = crate::filters::coordinates::shift_coordinates(
+            &self.location.cor_points,
+            along_track,
+            altitude,
+            cross_track,
+        );
+
+        self.log_event("shift_coordinates", &format!("Shifted coordinates {along_track} m along the track (+ is forward), {altitude} in altitude (+ is up) and {cross_track} m across the track (+ is right)."), start_time);
+
+        Ok(())
+    }
+
     fn log_event(&mut self, step_name: &str, event: &str, start_time: SystemTime) {
         self.log.push(format!(
             "{} (duration: {:.2}s):\t{}",
@@ -1819,6 +1850,7 @@ pub fn all_available_steps() -> Vec<[&'static str; 2]> {
         ["bandpass", "Apply a bandpass Butterworth filter to each trace individually. The given frequencies are normalized (0: 0Hz, 1: Nyquist). An optional strength (q) can be provided as a third argument (default 0.707). Default: bandpass(0.1 0.9)"],
         ["bandpass_mhz", "Apply a bandpass Butterworth filter to each trace individually. An optional strength (q) can be provided as a third argument (default 0.707). The given frequencies are assumed to be in MHz."],
         ["equidistant_traces", "Make all traces equidistant by averaging them in a fixed horizontal grid. The step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. 'equidistant_traces(2.)' for 2 m. Default: auto"],
+        ["shift_coordinates", "Shift trace coordinates along the track. Useful if the location data were collected away from the GPR antenna. Edge coordinates are clamped to the min/max bounds of the original data. Example for moving the location data (along-track) forward 3 m (if the GPR is ahead of the GNSS), down 2 m (GNSS mounted on a pole) and (cross-track) right 1 m (GNSS mounted on the left): 'shift_coordinates(3 -2 1)'"],
         ["normalize_horizontal_magnitudes", "Normalize the magnitudes of the traces in the horizontal axis. This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. 'normalize_horizontal_magnitudes(300)') or by a fraction of the trace (float; e.g. 'normalize_horizontal_magnitudes(0.3)'). Default: 0.3"],
         ["dewow", "Subtract the horizontal moving average magnitude for each trace. This reduces artefacts that are consistent among every trace. The averaging window can be set, e.g. 'dewow(10)'. Default: 5"],
         ["auto_gain", "Automatically determine the best gain factor and apply it. The data are binned vertically and the mean absolute deviation of the values is used as a proxy for signal attenuation. The median attenuation in decibel volts is given to the gain filter. The amounts of bins can be given, e.g. 'auto_gain(100). Default: 100"],
