@@ -20,6 +20,6 @@ pkgs.mkShell {
 
   shellHook = ''
     ${pkgs.zsh}/bin/zsh
-    alias radal="$(pwd)/target/release/radal";
+    alias ridal="$(pwd)/target/release/ridal";
   '';
 }

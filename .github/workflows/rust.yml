@@ -37,13 +37,13 @@ jobs:
 
       - name: Linting
         if: runner.os == 'Linux'
-        run: cargo clippy --bin radal -- -D warnings --no-deps
+        run: cargo clippy --bin ridal -- -D warnings --no-deps
 
       - name: Build
-        run: cargo build --bin radal --verbose
+        run: cargo build --bin ridal --verbose
 
       - name: Test
-        run: cargo test --bin radal -- --nocapture
+        run: cargo test --bin ridal -- --nocapture
 
       # Dry‑run publish check (safe, no secrets)
       - name: Dry-run cargo publish

@@ -1127,7 +1127,7 @@ mod tests {
 
             let line0: Vec<&str> = content[1].split(",").collect();
 
-            // The cor file says 1 but radal is zero-indexed, hence 0
+            // The cor file says 1 but ridal is zero-indexed, hence 0
             assert_eq!(line0[0], "0");
             assert_eq!(line0[1], "16");
             assert_eq!(line0[2], "78");
