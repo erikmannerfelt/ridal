@@ -36,11 +36,11 @@ jobs:
 
       - name: Install built wheel
         run: |
-          pip install --force-reinstall --no-index --find-links target/wheels radal
+          pip install --force-reinstall --no-index --find-links target/wheels ridal
 
       - name: Smoke test
         run: |
-          python -c "import radal; print(radal.__version__)"
+          python -c "import ridal; print(ridal.__version__)"
 
       - name: Upload wheels (CI artifact)
         uses: actions/upload-artifact@v4
@@ -57,13 +57,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download all wheels
+        uses: actions/download-artifact@v4
+        with:
+          path: wheels
+          pattern: wheels-*
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Install maturin
         run: pip install maturin
@@ -72,4 +75,5 @@ jobs:
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          maturin publish --skip-existing --no-sdist --features python --no-default-features
+          maturin publish --skip-existing --no-sdist --features python --no-default-features --find-interpreter=python
+
