@@ -5,6 +5,7 @@ https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml
 )
 
 
+![Logo](/pictures/logo.svg)
 # Ridal — Speeding up Ground Penetrating Radar (GPR) processing
 The aim of `ridal` is to quickly and accurately process GPR data.
 In one command, most data can be processed in pre-set profiles or with custom filter settings, and batch modes allow for sequences of datasets to be processed with the same settings.
