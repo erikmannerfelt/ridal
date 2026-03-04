@@ -34,3 +34,11 @@ repos:
   rev: v1.3.0
   hooks:
   - id: nixpkgs-fmt
+
+- repo: local
+  hooks:
+    - id: check-steps-md
+      name: Check steps.md structure
+      entry: scripts/check_steps_md.py
+      language: system
+      files: ^steps\.md$
