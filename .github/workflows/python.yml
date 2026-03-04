@@ -3,7 +3,7 @@ name: Build & publish wheels
 on:
   push:
     tags:
-      - 'v*'
+    - v*
   workflow_dispatch:
 
 jobs:
@@ -17,39 +17,39 @@ jobs:
         python-version: ['3.10', '3.11', '3.12', '3.13']
 
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
 
-      - name: Install maturin
-        run: pip install maturin
+    - name: Install maturin
+      run: pip install maturin
 
-      - name: Build wheels
-        run: |
-          maturin build --release --features python --no-default-features
+    - name: Build wheels
+      run: |
+        maturin build --release --features python --no-default-features
 
-      - name: Install built wheel
-        run: |
-          pip install --force-reinstall --no-index --find-links target/wheels ridal
+    - name: Install built wheel
+      run: |
+        pip install --force-reinstall --no-index --find-links target/wheels ridal
 
-      - name: Smoke test
-        run: |
-          python -c "import ridal; print(ridal.__version__)"
+    - name: Smoke test
+      run: |
+        python -c "import ridal; print(ridal.__version__)"
 
-      - name: Publish to PyPi
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          maturin upload --skip-existing target/wheels/*.whl
+    - name: Publish to PyPi
+      env:
+        MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      run: |
+        maturin upload --skip-existing target/wheels/*.whl
 
-      - name: Upload wheels (CI artifact)
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: target/wheels/*.whl
+    - name: Upload wheels (CI artifact)
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
+        path: target/wheels/*.whl

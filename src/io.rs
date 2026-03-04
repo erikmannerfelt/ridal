@@ -146,10 +146,15 @@ pub fn load_cor(
             longitude *= -1.;
         };
 
+        // Ugly fix for 9:00:00 -> 09:00:00
+        let mut time_str = data[2].to_string();
+        if time_str.len() == 7 {
+            time_str = "0".to_string() + &time_str;
+        }
         // Parse the date and time columns into datetime, then convert to seconds after UNIX epoch.
         // In some odd cases, the time information is wrong. Those lines should b eskipped
         let Ok(datetime_obj) =
-            chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], data[2]))
+            chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], time_str))
         else {
             continue;
         };
@@ -579,7 +584,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute(
         "program-version",
         format!(
-            "{} version {}, © {}",
+            "{} version {} by {}",
             crate::PROGRAM_NAME,
             crate::PROGRAM_VERSION,
             crate::PROGRAM_AUTHORS
@@ -633,8 +638,44 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         )?;
 
         // The default coordinates are distance for x and return time for y
-        data2.put_attribute("coordinates", "distance elevation")?;
+        data2.put_attribute("coordinates", "distance topo_elevation")?;
         data2.put_attribute("unit", "mV")?;
+
+        // Add the distance variable to the x dimension
+        let mut elev = file.add_variable::<f64>("topo_elevation", &["y2"])?;
+        let (min_alt, max_alt) = gpr
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.altitude)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), v| {
+                (mn.min(v), mx.max(v))
+            });
+
+        // compute max depth (f32 -> f64)
+        let max_depth = gpr
+            .depths()
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max) as f64;
+
+        // start and end of the linspace
+        let start = max_alt;
+        let end = min_alt - max_depth;
+
+        // generate Vec<f64> of length `height`, from start to end (like np.linspace)
+        let altitudes: Vec<f64> = if height == 1 {
+            vec![start]
+        } else {
+            (0..height)
+                .map(|i| {
+                    let t = i as f64 / (height - 1) as f64; // t in [0, 1]
+                    start + t * (end - start)
+                })
+                .collect()
+        };
+        elev.put_values(&altitudes, ..)?;
+        elev.put_attribute("unit", "m")?;
     };
 
     // Add the distance variable to the x dimension
@@ -725,6 +766,13 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 /// - The file could not be written.
 /// - The extension is not understood.
 pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>> {
+    for (dim, value) in [("wide", gpr.width()), ("tall", gpr.height())] {
+        if value >= 65535 {
+            return Err(
+                format!("Radargram too {dim} ({value}, max 65535) to generate a JPG",).into(),
+            );
+        }
+    }
     let data_to_render = match &gpr.topo_data {
         Some(d) => d,
         None => &gpr.data,
@@ -841,7 +889,7 @@ mod tests {
     fn fake_cor_text() -> String {
         [
             "1\t2022-01-01\t00:00:01\t78.0\tN\t16.0\tE\t100.0\tM\t1",
-            "10\t2022-01-01\t00:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1",
+            "10\t2022-01-01\t9:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1",
             "0\t2022-01-01\t00:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1", // Trace starts at 0 (bad)
             "11\t2022-01", // This simulates an unfinished line that should be skipped
             "000000\tN\t17.433201666667\tE\t332.20\tM\t2.00", // Another bad line that should be skipped

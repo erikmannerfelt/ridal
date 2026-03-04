@@ -100,10 +100,8 @@ pub enum CliAction {
 }
 pub fn args_to_action(args: &Args) -> CliAction {
     if args.show_all_steps {
-        println!("Name\t\tDescription");
-
-        for line in gpr::all_available_steps() {
-            println!("{}\n{}\n{}\n", line[0], "-".repeat(line[0].len()), line[1]);
+        for (name, description) in gpr::all_available_steps() {
+            println!("{}\n{}\n{}\n", name, "-".repeat(name.len()), description);
         }
         return CliAction::Done;
     }
@@ -162,8 +160,8 @@ pub fn args_to_action(args: &Args) -> CliAction {
 
     let allowed_steps = gpr::all_available_steps()
         .iter()
-        .map(|s| s[0])
-        .collect::<Vec<&str>>();
+        .map(|s| s.0.clone())
+        .collect::<Vec<String>>();
     for step in &steps {
         if !allowed_steps.iter().any(|allowed| step.contains(allowed)) {
             return CliAction::Error(format!("Unrecognized step: {}", step));

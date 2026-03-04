@@ -4,8 +4,7 @@
 https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml
 )
 
-
-# Ridal — Speeding up Ground Penetrating Radar (GPR) processing
+# <img src="https://github.com/erikmannerfelt/ridal/blob/main/images/logo.svg" alt="Logo" height="100" />Ridal — Speeding up Ground Penetrating Radar (GPR) processing</h1>
 The aim of `ridal` is to quickly and accurately process GPR data.
 In one command, most data can be processed in pre-set profiles or with custom filter settings, and batch modes allow for sequences of datasets to be processed with the same settings.
 Built in [rust](https://rust-lang.org/) with a high focus on testing and performance, `ridal` may be for you if large data volumes and strange fileformats are common issues.
@@ -20,17 +19,20 @@ For many uses, these will more likely be the tools for you!
 
 Prior to Feb. 2026, this program was called `rsgpr`.
 
+![Image of a glacier radargram](https://github.com/erikmannerfelt/ridal/blob/main/images/kroppbreen_rgm.webp)
+*Radargram (100 MHz Malå) of Kroppbreen in Svalbard. Collected 28 Feb. 2023.*
+
 
 ### Installation
 
 #### Requirements
-- `cargo` for installing rust projects
+- `cargo`(only for the CLI; not the python package). Easiest installed using [rustup](https://rustup.rs).
 - `gdal` (optional, for sampling heights from DEMs). For Debian or derivatives, this means `gdal-bin`.
 - `proj` (optional, for CRS support other than WGS84 UTM Zones). For Debian or derivatives, this means `proj-bin`.
 
-Using cargo, `ridal` can be installed from the repo (after installing the requirements):
+Using cargo, the `ridal` CLI can be installed (after installing the requirements):
 ```bash
-cargo install --git https://github.com/erikmannerfelt/ridal.git
+cargo install ridal
 ```
 
 with nix, the flake can be used without worrying about the requirements above:
@@ -44,11 +46,19 @@ with nix, the flake can be used without worrying about the requirements above:
 or in an ephemeral shell:
 ```bash
 nix shell github:erikmannerfelt/ridal
-
 ```
 
+#### Python
+There's a very early implementation of a Python package, which will be expanded in the future:
 
-### Simple usage
+```bash
+pip install ridal
+```
+
+See [scripts/render_kroppbreen.py](scripts/render_kroppbreen.py) for an example of how it can be used.
+
+
+### Simple CLI usage
 See the help page of `ridal` for info on how to interact with the CLI:
 ```bash
 ridal -h
@@ -64,6 +74,8 @@ Processing a file using the default processing profile:
 ```bash
 ridal -f DAT_001_A1.rd3 --default
 ```
+
+**All processing steps** are shown in the [steps.md](/steps.md) file.
 
 The output will be a NetCDF file with the same name but an `.nc` suffix.
 By default, the output is saved in the same directory as the input.

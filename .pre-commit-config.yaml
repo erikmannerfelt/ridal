@@ -1,36 +1,45 @@
 repos:
 - repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.6.0
+  rev: v6.0.0
   hooks:
-  #- id: check-yaml  # This doesn't work for me (2023-06-06)
+  - id: check-yaml
   - id: end-of-file-fixer
     exclude: \.txt$
   - id: trailing-whitespace                # Remove trailing whitespaces
   - id: check-merge-conflict
   - id: check-added-large-files
+    args: [--maxkb=2000]
   - id: detect-private-key
   - id: sort-simple-yaml
-        # Fix common spelling mistakes
+
+# Fix common spelling mistakes
 - repo: https://github.com/codespell-project/codespell
-  rev: v2.2.6
+  rev: v2.4.1
   hooks:
   - id: codespell
     args: []
     types_or: [rust, markdown]
     #files: ^(src||tests)/
 
-# - repo: https://github.com/lovesegfault/beautysh
-#   rev: v6.2.1
-#   hooks:
-#   - id: beautysh
+- repo: https://github.com/lovesegfault/beautysh
+  rev: v6.4.2
+  hooks:
+  - id: beautysh
 
-# Does not work as of 2026-02-17
-# - repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
-#   rev: v2.13.0
-#   hooks:
-#   - id: pretty-format-yaml
-#     args: [--autofix, --indent, '2']
+- repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+  rev: v2.16.0
+  hooks:
+  - id: pretty-format-yaml
+    args: [--autofix, --indent, '2']
 - repo: https://github.com/nix-community/nixpkgs-fmt
   rev: v1.3.0
   hooks:
   - id: nixpkgs-fmt
+
+- repo: local
+  hooks:
+  - id: check-steps-md
+    name: Check steps.md structure
+    entry: scripts/check_steps_md.py
+    language: system
+    files: ^steps\.md$
