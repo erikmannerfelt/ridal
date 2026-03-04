@@ -46,7 +46,7 @@ jobs:
       env:
         MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       run: |
-        maturin upload --skip-existing target/wheels/*.whl
+        maturin publish --features python --no-default-features --skip-existing
 
     - name: Upload wheels (CI artifact)
       uses: actions/upload-artifact@v4
