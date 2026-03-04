@@ -8,7 +8,7 @@ from pathlib import Path
 def normalize(data: np.ndarray, mask, contrast: float = 1.):
     """Normalize the data and convert to an unsigned 8 bit integer array."""
     data_abs = np.abs(data)
-    minval_abs, maxval_abs = np.percentile(data_abs[mask], [5, 97.5])
+    minval_abs, maxval_abs = np.percentile(data_abs[mask], [5, 99])
     data_abs = np.clip(contrast * (data_abs - minval_abs) / (maxval_abs - minval_abs + 1e-12), 0, 1)
 
     return (data_abs * 255).astype("uint8")
