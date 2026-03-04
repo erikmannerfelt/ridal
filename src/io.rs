@@ -146,10 +146,15 @@ pub fn load_cor(
             longitude *= -1.;
         };
 
+        // Ugly fix for 9:00:00 -> 09:00:00
+        let mut time_str = data[2].to_string();
+        if time_str.len() == 7 {
+            time_str = "0".to_string() + &time_str;
+        }
         // Parse the date and time columns into datetime, then convert to seconds after UNIX epoch.
         // In some odd cases, the time information is wrong. Those lines should b eskipped
         let Ok(datetime_obj) =
-            chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], data[2]))
+            chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], time_str))
         else {
             continue;
         };
@@ -848,7 +853,7 @@ mod tests {
     fn fake_cor_text() -> String {
         [
             "1\t2022-01-01\t00:00:01\t78.0\tN\t16.0\tE\t100.0\tM\t1",
-            "10\t2022-01-01\t00:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1",
+            "10\t2022-01-01\t9:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1",
             "0\t2022-01-01\t00:01:00\t78.0\tS\t16.0\tW\t100.0\tM\t1", // Trace starts at 0 (bad)
             "11\t2022-01", // This simulates an unfinished line that should be skipped
             "000000\tN\t17.433201666667\tE\t332.20\tM\t2.00", // Another bad line that should be skipped
