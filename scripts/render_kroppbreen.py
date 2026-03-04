@@ -63,9 +63,7 @@ def main():
     processed_path = process_kroppbreen()
     with xr.open_dataset(processed_path) as data:
         # Make a mask to exclude all areas above and below the radargram
-        data["elev"] = ("y2",), np.linspace(data["elevation"].min().item() - data["depth"].max().item(), data["elevation"].max().item(), data["data_topographically_corrected"].shape[0])[::-1]
-        data["elev"] = data["elev"].broadcast_like(data["data_topographically_corrected"])
-        mask = (data["elev"] >= data["elevation"]) | ((data["elev"] + data["depth"].max().item()) <= data["elevation"])
+        mask = (data["topo_elevation"] >= data["elevation"]) | ((data["topo_elevation"] + data["depth"].max().item()) <= data["elevation"])
 
         arr = normalize(data.data_topographically_corrected.values, ~mask)
 

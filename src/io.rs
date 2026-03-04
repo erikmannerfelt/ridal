@@ -584,7 +584,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     file.add_attribute(
         "program-version",
         format!(
-            "{} version {}, © {}",
+            "{} version {} by {}",
             crate::PROGRAM_NAME,
             crate::PROGRAM_VERSION,
             crate::PROGRAM_AUTHORS
@@ -638,8 +638,44 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
         )?;
 
         // The default coordinates are distance for x and return time for y
-        data2.put_attribute("coordinates", "distance elevation")?;
+        data2.put_attribute("coordinates", "distance topo_elevation")?;
         data2.put_attribute("unit", "mV")?;
+
+        // Add the distance variable to the x dimension
+        let mut elev = file.add_variable::<f64>("topo_elevation", &["y2"])?;
+        let (min_alt, max_alt) = gpr
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.altitude)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), v| {
+                (mn.min(v), mx.max(v))
+            });
+
+        // compute max depth (f32 -> f64)
+        let max_depth = gpr
+            .depths()
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max) as f64;
+
+        // start and end of the linspace
+        let start = max_alt;
+        let end = min_alt - max_depth;
+
+        // generate Vec<f64> of length `height`, from start to end (like np.linspace)
+        let altitudes: Vec<f64> = if height == 1 {
+            vec![start]
+        } else {
+            (0..height)
+                .map(|i| {
+                    let t = i as f64 / (height - 1) as f64; // t in [0, 1]
+                    start + t * (end - start)
+                })
+                .collect()
+        };
+        elev.put_values(&altitudes, ..)?;
+        elev.put_attribute("unit", "m")?;
     };
 
     // Add the distance variable to the x dimension
