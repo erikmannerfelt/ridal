@@ -8,6 +8,7 @@ repos:
   - id: trailing-whitespace                # Remove trailing whitespaces
   - id: check-merge-conflict
   - id: check-added-large-files
+    args: [--maxkb=2000]
   - id: detect-private-key
   - id: sort-simple-yaml
 
