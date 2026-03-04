@@ -62,6 +62,10 @@ def main():
 
     processed_path = process_kroppbreen()
     with xr.open_dataset(processed_path) as data:
+        # Make a mask to exclude all areas above and below the radargram
+        data["elev"] = ("y2",), np.linspace(data["elevation"].min().item() - data["depth"].max().item(), data["elevation"].max().item(), data["data_topographically_corrected"].shape[0])[::-1]
+        data["elev"] = data["elev"].broadcast_like(data["data_topographically_corrected"])
+        mask = (data["elev"] >= data["elevation"]) | ((data["elev"] + data["depth"].max().item()) <= data["elevation"])
 
         arr = normalize(data.data_topographically_corrected)
 
@@ -70,14 +74,14 @@ def main():
     stroke = [matplotlib.patheffects.withStroke(foreground="white", linewidth=1.)]
     fig = plt.figure(figsize=(8, 4))
     fig.patch.set_alpha(0.)
-    plt.imshow(arr, extent=extent, aspect="auto", cmap="Greys", interpolation="lanczos", vmin=0, vmax=255)
+    plt.imshow(np.ma.masked_array(arr, mask=mask), extent=extent, aspect="auto", cmap="Greys", interpolation="lanczos", vmin=0, vmax=255)
     plt.gca().patch.set_alpha(0.)
     plt.ylim(25, 600)
     plt.xlabel("Distance (km)")
     plt.ylabel("Elevation (m a.s.l.)")
     apply_stroke_to_axis(plt.gca(), stroke)
     plt.tight_layout()
-    plt.savefig("assets/kroppbreen_rgm.webp", dpi=300)
+    plt.savefig("images/kroppbreen_rgm.webp", dpi=300)
     plt.close()
 
 
