@@ -5,6 +5,8 @@ build-backend = "maturin"
 [project]
 name = "ridal"
 requires-python = ">=3.8"
+dynamic = ["version", "description", "authors"]
+readme = "README.md"
 
 [tool.maturin]
 # Bindings type
