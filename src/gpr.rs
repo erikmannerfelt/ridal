@@ -1822,7 +1822,8 @@ pub fn run(params: RunParams) -> Result<Vec<GPR>, Box<dyn Error>> {
             if !params.quiet {
                 println!("Rendering image to {:?}", render_filepath);
             };
-            gpr.render(&render_filepath).unwrap();
+            gpr.render(&render_filepath)
+                .map_err(|e| format!("Error writing JPG: {e:?}"))?;
         };
 
         // If "--track" was given, export the track file.

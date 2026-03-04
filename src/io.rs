@@ -725,6 +725,13 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 /// - The file could not be written.
 /// - The extension is not understood.
 pub fn render_jpg(gpr: &gpr::GPR, filepath: &Path) -> Result<(), Box<dyn Error>> {
+    for (dim, value) in [("wide", gpr.width()), ("tall", gpr.height())] {
+        if value >= 65535 {
+            return Err(
+                format!("Radargram too {dim} ({value}, max 65535) to generate a JPG",).into(),
+            );
+        }
+    }
     let data_to_render = match &gpr.topo_data {
         Some(d) => d,
         None => &gpr.data,
