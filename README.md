@@ -4,7 +4,7 @@
 https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml
 )
 
-# ![Logo](/pictures/logo.svg) Ridal — Speeding up Ground Penetrating Radar (GPR) processing
+# <img src="https://github.com/erikmannerfelt/ridal/blob/main/images/logo.svg" alt="Logo" height="100" />Ridal — Speeding up Ground Penetrating Radar (GPR) processing</h1>
 The aim of `ridal` is to quickly and accurately process GPR data.
 In one command, most data can be processed in pre-set profiles or with custom filter settings, and batch modes allow for sequences of datasets to be processed with the same settings.
 Built in [rust](https://rust-lang.org/) with a high focus on testing and performance, `ridal` may be for you if large data volumes and strange fileformats are common issues.
@@ -19,7 +19,7 @@ For many uses, these will more likely be the tools for you!
 
 Prior to Feb. 2026, this program was called `rsgpr`.
 
-![Image of a glacier radargram](images/kroppbreen_rgm.webp)
+![Image of a glacier radargram](https://github.com/erikmannerfelt/ridal/blob/main/images/kroppbreen_rgm.webp)
 *Radargram (100 MHz Malå) of Kroppbreen in Svalbard. Collected 28 Feb. 2023.*
 
 
