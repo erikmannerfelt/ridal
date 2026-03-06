@@ -45,7 +45,7 @@ pub fn read_text(filepath: &PathBuf) -> Result<Vec<String>, std::io::Error> {
         // Remove comments and trailing whitespace
         let line = line.split("#").collect::<Vec<&str>>()[0].trim();
         // Skip empty lines
-        if line.len() == 0 {
+        if line.is_empty() {
             continue;
         }
         lines.push(line.to_owned());
