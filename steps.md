@@ -1,4 +1,4 @@
-Steps
+Below is the documentation for all steps in ridal
 
 ## subset
 Subset the data in x (traces) and/or y (samples). Examples: Clip to the first 500 samples: `subset(0 -1 0 500)`. Clip to the first 300 traces, `subset(0 300)`

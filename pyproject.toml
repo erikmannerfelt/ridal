@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "ridal"
 requires-python = ">=3.8"
-dynamic = ["version", "description", "authors"]
+dynamic = ["version", "description", "authors", "license", "urls"]
 readme = "README.md"
 
 [tool.maturin]
