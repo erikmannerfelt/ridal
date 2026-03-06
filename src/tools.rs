@@ -42,7 +42,13 @@ pub fn read_text(filepath: &PathBuf) -> Result<Vec<String>, std::io::Error> {
     let mut lines = Vec::<String>::new();
 
     for line in content.lines() {
-        lines.push(line.trim().to_owned());
+        // Remove comments and trailing whitespace
+        let line = line.split("#").collect::<Vec<&str>>()[0].trim();
+        // Skip empty lines
+        if line.is_empty() {
+            continue;
+        }
+        lines.push(line.to_owned());
     }
 
     Ok(lines)
@@ -509,11 +515,42 @@ impl std::convert::From<Resampler<f32>> for Resampler<f64> {
     }
 }
 
-//}
-
 #[cfg(test)]
 mod tests {
     use ndarray::Array1;
+
+    #[test]
+    fn test_read_step_list() {
+        let step_list = vec!["subset(0 200)", "equidistant_traces", "gain(0.1)"];
+
+        let mut all_parsed = Vec::<Vec<String>>::new();
+
+        // Parse as a comma separated list
+        all_parsed.push(super::parse_step_list(&step_list.join(",")).unwrap());
+
+        // Write a steps.txt file and try to parse it
+        let temp_dir = tempfile::tempdir().unwrap();
+        let step_path = temp_dir.path().join("steps.txt");
+        let mut step_list_forfile = step_list.clone();
+        // Add an empty line (should be removed)
+        step_list_forfile.insert(2, "\n  \t     \n");
+        std::fs::write(
+            &step_path,
+            step_list_forfile
+                .iter()
+                .map(|s| format!("{s} # Optional comment")) // Add comments (should be removed)
+                .collect::<Vec<String>>()
+                .join("\n"),
+        )
+        .unwrap();
+        all_parsed.push(super::parse_step_list(step_path.as_os_str().to_str().unwrap()).unwrap());
+
+        for i in 0..step_list.len() {
+            for (j, parsed) in all_parsed.iter().enumerate() {
+                assert_eq!(step_list[i], parsed[i], "Parsed {j} didn't work");
+            }
+        }
+    }
 
     #[test]
     fn test_interpolate_between_known() {

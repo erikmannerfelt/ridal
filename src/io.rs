@@ -552,15 +552,24 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     }
 
     file.add_attribute("processing-log", gpr.log.join("\n"))?;
-    file.add_attribute(
-        "original-filename",
-        gpr.metadata
-            .data_filepath
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap(),
-    )?;
+    file.add_attribute("processing-steps", gpr.steps.clone())?;
+
+    let mut filepaths = vec![gpr
+        .metadata
+        .data_filepath
+        .to_str()
+        .ok_or(format!(
+            "Error writing NetCDF: Cannot parse original filepath as string: {:?}",
+            gpr.metadata.data_filepath
+        ))?
+        .to_string()];
+
+    for log_str in &gpr.log {
+        if let Some((_, filename)) = log_str.split_once("Merged ") {
+            filepaths.push(filename.replace("\"", ""));
+        }
+    }
+    file.add_attribute("original-filepaths", filepaths)?;
 
     file.add_attribute("medium-velocity", gpr.metadata.medium_velocity)?;
     file.add_attribute("medium-velocity-unit", "m / ns")?;
@@ -883,6 +892,8 @@ pub fn export_locations(
 #[cfg(test)]
 mod tests {
 
+    use std::{path::PathBuf, str::FromStr};
+
     use super::{load_cor, load_rad};
 
     /// Fake some data. One point is in the northern hemisphere and one is in the southern
@@ -1185,6 +1196,61 @@ mod tests {
             assert_eq!(line1[2], "-78");
 
             std::fs::remove_file(expected_path).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_save_netcdf() {
+        let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
+
+        let mut gpr2 = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
+        gpr2.metadata.data_filepath = PathBuf::from_str("other_filepath.rd3").unwrap();
+
+        gpr.merge(&gpr2).unwrap();
+        gpr.process("subset(0 50)").unwrap();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let nc_path = temp_dir.path().join("data.nc");
+
+        gpr.export(&nc_path).unwrap();
+
+        assert!(nc_path.is_file());
+
+        let out = netcdf::open(&nc_path)
+            .map_err(|e| format!("Error reading NetCDF: {e:?}"))
+            .unwrap();
+
+        let expected_attrs = vec![
+            (
+                "processing-steps",
+                netcdf::AttributeValue::Strs(vec!["subset(0 50)".to_string()]),
+            ),
+            (
+                "processing-log",
+                netcdf::AttributeValue::Str(
+                    "merge (duration: 0.00s):\tMerged \"other_filepath.rd3\"\nsubset (duration: 0.00s):\tSubset data from [10, 200] to (0:10, 0:50)"
+                        .to_string(),
+                ),
+            ),
+            ("total-distance", netcdf::AttributeValue::Double(49.)),
+            (
+                "original-filepaths",
+                netcdf::AttributeValue::Strs(vec![
+                    "filepath.rd3".to_string(),
+                    "other_filepath.rd3".to_string(),
+                ]),
+            ),
+        ];
+
+        for (key, expected) in expected_attrs {
+            assert_eq!(
+                out.attribute(key)
+                    .ok_or(format!("Cannot find attribute {key}"))
+                    .unwrap()
+                    .value()
+                    .unwrap(),
+                expected
+            );
         }
     }
 }
