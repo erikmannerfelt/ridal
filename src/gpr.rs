@@ -1947,7 +1947,7 @@ pub mod tests {
             antenna_separation: 1.,
             time_window: 2000.,
             last_trace: n_traces as u32,
-            data_filepath: std::path::PathBuf::from_str("filepath.rad").unwrap(),
+            data_filepath: std::path::PathBuf::from_str("filepath.rd3").unwrap(),
             medium_velocity: 0.167,
         };
 

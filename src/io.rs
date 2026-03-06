@@ -553,15 +553,23 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
 
     file.add_attribute("processing-log", gpr.log.join("\n"))?;
     file.add_attribute("processing-steps", gpr.steps.clone())?;
-    file.add_attribute(
-        "original-filename",
-        gpr.metadata
-            .data_filepath
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap(),
-    )?;
+
+    let mut filepaths = vec![gpr
+        .metadata
+        .data_filepath
+        .to_str()
+        .ok_or(format!(
+            "Error writing NetCDF: Cannot parse original filepath as string: {:?}",
+            gpr.metadata.data_filepath
+        ))?
+        .to_string()];
+
+    for log_str in &gpr.log {
+        if let Some((_, filename)) = log_str.split_once("Merged ") {
+            filepaths.push(filename.replace("\"", ""));
+        }
+    }
+    file.add_attribute("original-filepaths", filepaths)?;
 
     file.add_attribute("medium-velocity", gpr.metadata.medium_velocity)?;
     file.add_attribute("medium-velocity-unit", "m / ns")?;
@@ -884,7 +892,7 @@ pub fn export_locations(
 #[cfg(test)]
 mod tests {
 
-    use std::fmt::Debug;
+    use std::{path::PathBuf, str::FromStr};
 
     use super::{load_cor, load_rad};
 
@@ -1195,6 +1203,10 @@ mod tests {
     fn test_save_netcdf() {
         let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
 
+        let mut gpr2 = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
+        gpr2.metadata.data_filepath = PathBuf::from_str("other_filepath.rd3").unwrap();
+
+        gpr.merge(&gpr2).unwrap();
         gpr.process("subset(0 50)").unwrap();
 
         let temp_dir = tempfile::tempdir().unwrap();
@@ -1212,15 +1224,29 @@ mod tests {
             (
                 "processing-log",
                 netcdf::AttributeValue::Str(
-                    "subset (duration: 0.00s):\tSubset data from [10, 100] to (0:10, 0:50)"
+                    "merge (duration: 0.00s):\tMerged \"other_filepath.rd3\"\nsubset (duration: 0.00s):\tSubset data from [10, 200] to (0:10, 0:50)"
                         .to_string(),
                 ),
             ),
             ("total-distance", netcdf::AttributeValue::Double(49.)),
+            (
+                "original-filepaths",
+                netcdf::AttributeValue::Strs(vec![
+                    "filepath.rd3".to_string(),
+                    "other_filepath.rd3".to_string(),
+                ]),
+            ),
         ];
 
         for (key, expected) in expected_attrs {
-            assert_eq!(out.attribute(key).unwrap().value().unwrap(), expected);
+            assert_eq!(
+                out.attribute(key)
+                    .ok_or(format!("Cannot find attribute {key}"))
+                    .unwrap()
+                    .value()
+                    .unwrap(),
+                expected
+            );
         }
     }
 }
