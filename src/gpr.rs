@@ -368,6 +368,8 @@ pub struct GPR {
     pub metadata: GPRMeta,
     /// Processing log. Each line is one processing step
     pub log: Vec<String>,
+    /// The steps that the user provided
+    pub steps: Vec<String>,
     /// The horizontal component of the signal distance (m). Defaults to the antenna separation if no correction has been made.
     horizontal_signal_distance: f32,
     /// The calculated zero-point (ns). It represents the delay between the transmitter and the receiver.
@@ -553,6 +555,8 @@ impl GPR {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
 
+        self.steps.push(step_name.to_string());
+
         Ok(())
     }
 
@@ -686,6 +690,7 @@ impl GPR {
             location: location_subset,
             metadata,
             log,
+            steps: self.steps.clone(),
             topo_data: self.topo_data.clone(),
             horizontal_signal_distance: self.horizontal_signal_distance,
             zero_point_ns: self.zero_point_ns,
@@ -738,6 +743,7 @@ impl GPR {
             location: location_data,
             metadata,
             log: Vec::new(),
+            steps: Vec::new(),
             topo_data: None,
             horizontal_signal_distance,
             zero_point_ns: 0.,
@@ -1877,8 +1883,8 @@ pub fn default_processing_profile() -> Vec<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
+pub mod tests {
+    use std::{path::PathBuf, str::FromStr};
 
     use ndarray::{Array1, Axis, Slice};
 
@@ -1929,7 +1935,7 @@ mod tests {
         }
     }
 
-    fn make_dummy_gpr(n_traces: usize, n_samples: usize, spacing: Option<f64>) -> super::GPR {
+    pub fn make_dummy_gpr(n_traces: usize, n_samples: usize, spacing: Option<f64>) -> super::GPR {
         let gpr_location = make_gpr_location(n_traces, spacing, None, None);
         let metadata = super::GPRMeta {
             samples: n_samples as u32,
@@ -1941,7 +1947,7 @@ mod tests {
             antenna_separation: 1.,
             time_window: 2000.,
             last_trace: n_traces as u32,
-            data_filepath: std::path::PathBuf::new(),
+            data_filepath: std::path::PathBuf::from_str("filepath.rad").unwrap(),
             medium_velocity: 0.167,
         };
 
@@ -1956,6 +1962,7 @@ mod tests {
             metadata,
             data,
             topo_data: None,
+            steps: Vec::new(),
             zero_point_ns: 0.,
             horizontal_signal_distance: 1.,
             log: Vec::new(),
@@ -2058,6 +2065,7 @@ mod tests {
             topo_data: None,
             location: gpr_location,
             metadata: meta,
+            steps: Vec::new(),
             log: Vec::new(),
             horizontal_signal_distance: antenna_separation,
             zero_point_ns: 0.,

@@ -552,6 +552,7 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), Box<dyn s
     }
 
     file.add_attribute("processing-log", gpr.log.join("\n"))?;
+    file.add_attribute("processing-steps", gpr.steps.clone())?;
     file.add_attribute(
         "original-filename",
         gpr.metadata
@@ -883,6 +884,8 @@ pub fn export_locations(
 #[cfg(test)]
 mod tests {
 
+    use std::fmt::Debug;
+
     use super::{load_cor, load_rad};
 
     /// Fake some data. One point is in the northern hemisphere and one is in the southern
@@ -1185,6 +1188,39 @@ mod tests {
             assert_eq!(line1[2], "-78");
 
             std::fs::remove_file(expected_path).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_save_netcdf() {
+        let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
+
+        gpr.process("subset(0 50)").unwrap();
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let nc_path = temp_dir.path().join("data.nc");
+
+        gpr.export(&nc_path).unwrap();
+
+        let out = netcdf::open(&nc_path).unwrap();
+
+        let expected_attrs = vec![
+            (
+                "processing-steps",
+                netcdf::AttributeValue::Strs(vec!["subset(0 50)".to_string()]),
+            ),
+            (
+                "processing-log",
+                netcdf::AttributeValue::Str(
+                    "subset (duration: 0.00s):\tSubset data from [10, 100] to (0:10, 0:50)"
+                        .to_string(),
+                ),
+            ),
+            ("total-distance", netcdf::AttributeValue::Double(49.)),
+        ];
+
+        for (key, expected) in expected_attrs {
+            assert_eq!(out.attribute(key).unwrap().value().unwrap(), expected);
         }
     }
 }
