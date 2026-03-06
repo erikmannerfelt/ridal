@@ -4,7 +4,7 @@
 https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml
 )
 
-# ![](/images/logo.svg)Ridal — Speeding up Ground Penetrating Radar (GPR) processing
+# ![](https://raw.githubusercontent.com/erikmannerfelt/ridal/various_changes/images/logo.svg) Ridal — Speeding up Ground Penetrating Radar (GPR) processing
 The aim of `ridal` is to quickly and accurately process GPR data.
 In one command, most data can be processed in pre-set profiles or with custom filter settings, and batch modes allow for sequences of datasets to be processed with the same settings.
 Built in [rust](https://rust-lang.org/) with a high focus on testing and performance, `ridal` may be for you if large data volumes and strange fileformats are common issues.
@@ -19,7 +19,7 @@ For many uses, these will more likely be the tools for you!
 
 Prior to Feb. 2026, this program was called `rsgpr`.
 
-![Image of a glacier radargram](https://github.com/erikmannerfelt/ridal/blob/main/images/kroppbreen_rgm.webp)
+![Image of a glacier radargram](https://raw.githubusercontent.com/erikmannerfelt/ridal/main/images/kroppbreen_rgm.webp)
 *Radargram (100 MHz Malå) of Kroppbreen in Svalbard. Collected 28 Feb. 2023.*
 
 
@@ -55,7 +55,7 @@ There's a very early implementation of a Python package, which will be expanded 
 pip install ridal
 ```
 
-See [scripts/render_kroppbreen.py](https://github.com/erikmannerfelt/ridal/blob/main/scripts/render_kroppbreen.py) for an example of how it can be used.
+See [scripts/render_kroppbreen.py](https://raw.githubusercontent.com/erikmannerfelt/ridal/scripts/render_kroppbreen.py) for an example of how it can be used.
 
 
 ### Simple CLI usage
@@ -75,7 +75,7 @@ Processing a file using the default processing profile:
 ridal -f DAT_001_A1.rd3 --default
 ```
 
-**All processing steps** are shown in the [steps.md](https://github.com/erikmannerfelt/ridal/blob/main/steps.md) file.
+**All processing steps** are shown in the [steps.md](https://raw.githubusercontent.com/erikmannerfelt/ridal/main/steps.md) file.
 
 The output will be a NetCDF file with the same name but an `.nc` suffix.
 By default, the output is saved in the same directory as the input.
