@@ -1214,7 +1214,11 @@ mod tests {
 
         gpr.export(&nc_path).unwrap();
 
-        let out = netcdf::open(&nc_path).unwrap();
+        assert!(nc_path.is_file());
+
+        let out = netcdf::open(&nc_path)
+            .map_err(|e| format!("Error reading NetCDF: {e:?}"))
+            .unwrap();
 
         let expected_attrs = vec![
             (
