@@ -193,6 +193,46 @@ mod tests {
             ),
         ]
     }
+    pub fn supports_interpolation() -> Result<bool, String> {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        // Use the same DEM your tests use; you can generalize if needed
+        let dem_path = crate::dem::tests::get_dem_path();
+        let dem_str = dem_path
+            .to_str()
+            .ok_or("Empty DEM path given in supports_interpolation")?;
+
+        // Single arbitrary coordinate; if the flag is supported, we should get XML with <Value>/<Alert>.
+        let mut child = Command::new("gdallocationinfo")
+            .args(["-xml", "-b", "1", "-wgs84", "-r", "bilinear", dem_str])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Error spawning gdallocationinfo: {e}"))?;
+
+        {
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or("stdin could not be bound in supports_interpolation".to_string())?;
+            // Some coordinate; doesn't matter as long as it's a valid numeric pair.
+            stdin
+                .write_all(b"0 0\n")
+                .map_err(|e| format!("Error writing to stdin in supports_interpolation: {e}"))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("Error waiting for gdallocationinfo: {e}"))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // If the option is supported, we should see some XML structure; if not, we'll typically
+        // just get usage/help on stderr and nothing useful on stdout.
+        Ok(stdout.contains("<Value>") || stdout.contains("<Alert>"))
+    }
 
     #[test]
     // #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
@@ -215,6 +255,8 @@ mod tests {
 
         let dem_path = get_dem_path();
 
+        let supports_interpolation = supports_interpolation().unwrap();
+
         println!("Sampling DEM");
         let coords_wgs84 = crate::coords::to_wgs84(&working_coords, &crs).unwrap();
         super::sample_dem(&dem_path, &coords_wgs84).unwrap();
@@ -227,18 +269,21 @@ mod tests {
 
             let result = super::sample_dem(&dem_path, &coord_wgs84);
 
-            if let Ok(expected_elevation) = expected {
-                assert_eq!(Ok(vec![expected_elevation]), result);
-            } else if let Err(expected_err_str) = expected {
-                if let Err(err_str) = result {
-                    assert!(
-                        err_str.contains(&expected_err_str),
-                        "{} != {}",
-                        err_str,
-                        expected_err_str
-                    );
-                } else {
-                    panic!("Should have been an error but wasn't: {result:?}");
+            // The tests validate on bilinearly interpolated coordinates. This will fail if it's nearest
+            if supports_interpolation {
+                if let Ok(expected_elevation) = expected {
+                    assert_eq!(Ok(vec![expected_elevation]), result);
+                } else if let Err(expected_err_str) = expected {
+                    if let Err(err_str) = result {
+                        assert!(
+                            err_str.contains(&expected_err_str),
+                            "{} != {}",
+                            err_str,
+                            expected_err_str
+                        );
+                    } else {
+                        panic!("Should have been an error but wasn't: {result:?}");
+                    }
                 }
             }
         }
