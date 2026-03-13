@@ -66,6 +66,13 @@ jobs:
       continue-on-error: true
       run: cargo clippy --bin ridal -- -D warnings --no-deps
 
+    - name: Build
+      run: cargo build --bin ridal --verbose
+
+    - name: Test (Linux)
+      if: runner.os == 'Linux'
+      run: cargo test --bin ridal -- --nocapture
+
     - name: Test (Windows)
       if: runner.os == 'Windows'
       shell: cmd
@@ -73,13 +80,6 @@ jobs:
         CMAKE: C:\Program Files\CMake\bin\cmake.exe
       run: |
         CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" "%USERPROFILE%\.cargo\bin\cargo.exe" test --bin ridal -- --nocapture
-
-    - name: Build
-      run: cargo build --bin ridal --verbose
-
-    - name: Test (Linux)
-      if: runner.os == 'Linux'
-      run: cargo test --bin ridal -- --nocapture
 
     - name: Dry-run cargo publish
       if: runner.os == 'Linux' && !startsWith(github.ref, 'refs/tags/')
