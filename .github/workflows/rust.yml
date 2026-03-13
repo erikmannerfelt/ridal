@@ -39,10 +39,11 @@ jobs:
 
     - name: Verify GDAL/PROJ (Windows)
       if: runner.os == 'Windows'
+      shell: cmd
       run: |
-        gdalinfo --version
-        ogr2ogr --help > NUL
-        proj
+        CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" gdalinfo --version
+        CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" ogr2ogr --help > NUL
+        CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" proj
 
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -68,7 +69,9 @@ jobs:
 
     - name: Test (Windows)
       if: runner.os == 'Windows'
-      run: cargo test --bin ridal -- --nocapture
+      shell: cmd
+      run: |
+        CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" cmd /D /S /C "set PATH=%USERPROFILE%\.cargo\bin;%PATH% && cargo test --bin ridal -- --nocapture"
 
     - name: Dry-run cargo publish
       if: runner.os == 'Linux' && !startsWith(github.ref, 'refs/tags/')
