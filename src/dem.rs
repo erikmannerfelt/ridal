@@ -41,72 +41,19 @@ fn get_gdal_version() -> Result<String, String> {
     }
 }
 
-fn supports_interpolation() -> Result<bool, String> {
-    let version = get_gdal_version()?;
+fn looks_like_unsupported_bilinear(stderr: &[u8]) -> bool {
+    let msg = String::from_utf8_lossy(stderr).to_lowercase();
 
-    let mut parts = version.split(".");
-    let error_msg = format!("Unrecognized version format: {version}");
-
-    if let Some(major) = parts.next() {
-        if major.parse::<usize>().map_err(|_| error_msg.clone())? < 3 {
-            return Ok(false);
-        }
-    }
-
-    if let Some(minor) = parts.next() {
-        let minor = minor.parse::<usize>().map_err(|_| error_msg.clone())?;
-
-        return Ok(minor >= 10);
-    }
-
-    Err(error_msg)
+    msg.contains("unknown argument") && msg.contains("-r")
 }
 
-pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>, String> {
-    use std::io::Write;
-
-    if coords_wgs84.is_empty() {
-        return Err("Coords vec is empty.".into());
-    }
-
-    let mut args = vec![
-        "-xml",
-        "-b",
-        "1",
-        "-wgs84",
-        dem_path.to_str().ok_or("Empty DEM path given")?,
-    ];
-    if supports_interpolation()? {
-        args.push("-r");
-        args.push("bilinear");
-    } else {
-        eprintln!("GDAL version lower than 3.10. Falling back on nearest neighbor sampling.");
-    }
-    let mut child = std::process::Command::new("gdallocationinfo")
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Call error when spawning process: {e}"))?;
-
-    let mut values = Vec::<String>::new();
-    for coord in coords_wgs84 {
-        values.push(format!("{} {}", coord.x, coord.y));
-    }
-    child
-        .stdin
-        .take()
-        .ok_or("Call error: stdin could not be bound".to_string())?
-        .write_all((values.join("\n") + "\n").as_bytes())
-        .map_err(|e| format!("Call error writing to stdin: {e}"))?;
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Call process error: {e}"))?;
+fn parse_elevations_from_output(
+    output: &std::process::Output,
+    coords_wgs84: &Vec<Coord>,
+) -> Result<Vec<f32>, String> {
     let parsed = String::from_utf8_lossy(&output.stdout);
-
     let mut elevations = Vec::<f32>::new();
+
     for line in parsed.lines().map(|s| s.trim()) {
         if line.contains("<Value>") {
             elevations.push(
@@ -118,7 +65,6 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
         } else if line.contains("<Alert>") {
             let error = line.replace("<Alert>", "").replace("</Alert>", "");
             let coord = coords_wgs84[elevations.len()];
-
             return Err(format!(
                 "Error parsing coord (lon: {:.3}, lat: {:.3}): {}",
                 coord.x, coord.y, error
@@ -134,10 +80,85 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>
             ));
         }
 
-        return Err(format!("Shape error. Length of sampled elevations ({}) does not align with length of coordinates ({})", elevations.len(), coords_wgs84.len()));
+        return Err(format!(
+            "Shape error. Length of sampled elevations ({}) does not align with length of coordinates ({})",
+            elevations.len(),
+            coords_wgs84.len()
+        ));
     }
 
     Ok(elevations)
+}
+
+fn run_gdallocationinfo(
+    dem_path: &Path,
+    coords_wgs84: &Vec<Coord>,
+    use_bilinear: bool,
+) -> Result<std::process::Output, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let dem_str = dem_path.to_str().ok_or("Empty DEM path given")?;
+
+    let mut args = vec!["-xml", "-b", "1", "-wgs84", dem_str];
+
+    if use_bilinear {
+        args.push("-r");
+        args.push("bilinear");
+    }
+
+    let mut child = Command::new("gdallocationinfo")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Call error when spawning process: {e}"))?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or("Call error: stdin could not be bound".to_string())?;
+
+        let mut buf = String::new();
+        for coord in coords_wgs84 {
+            buf.push_str(&format!("{} {}\n", coord.x, coord.y));
+        }
+
+        stdin
+            .write_all(buf.as_bytes())
+            .map_err(|e| format!("Call error writing to stdin: {e}"))?;
+    }
+
+    child
+        .wait_with_output()
+        .map_err(|e| format!("Call process error: {e}"))
+}
+
+pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>, String> {
+    get_gdal_version()?; // Unnecessarily complex way to check if GDAL is installed.
+    if coords_wgs84.is_empty() {
+        return Err("Coords vec is empty.".into());
+    }
+
+    // First: try with -r bilinear
+    let first_output = run_gdallocationinfo(dem_path, coords_wgs84, true)?;
+
+    if !first_output.status.success() && looks_like_unsupported_bilinear(&first_output.stderr) {
+        eprintln!(
+            "gdallocationinfo does not support '-r bilinear'. \
+             Falling back to nearest neighbor sampling."
+        );
+
+        // Retry without -r
+        let second_output = run_gdallocationinfo(dem_path, coords_wgs84, false)?;
+        return parse_elevations_from_output(&second_output, coords_wgs84);
+    }
+
+    // Either bilinear worked or there’s some real error (bad DEM, coords, etc.).
+    // parse_elevations_from_output will surface those.
+    parse_elevations_from_output(&first_output, coords_wgs84)
 }
 
 #[cfg(test)]
@@ -261,10 +282,14 @@ mod tests {
                 return;
             };
             let res = super::sample_dem(&dem_path, &coords_wgs84);
-            assert!(res
-                .err()
-                .unwrap()
-                .contains("GDAL (gdalinfo) cannot be found / is not installed"));
+            assert!(
+                res.as_ref()
+                    .err()
+                    .unwrap()
+                    .contains("GDAL (gdalinfo) cannot be found / is not installed"),
+                "Error {:?} should contain something about 'gdalinfo'",
+                res
+            );
         });
 
         // Restore the original PATH
