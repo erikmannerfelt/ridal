@@ -404,12 +404,9 @@ fn read_gga(gga_str: &str, date: &str) -> Result<(f64, crate::coords::Coord, f64
     let min = time_str[2..4].to_string();
     let sec = time_str[4..].to_string();
 
-    // println!("{}T{}:{}:{}+00:00", date, hr, min, sec);
     let datetime =
         chrono::DateTime::parse_from_rfc3339(&format!("{}T{}:{}:{}+00:00", date, hr, min, sec))?
             .timestamp() as f64;
-
-    // panic!("{lat} {lon} {elev} {datetime}");
 
     Ok((datetime, coord, elev))
 }
@@ -442,25 +439,9 @@ pub fn load_pe_gp2(
             continue;
         }
 
-        // if let Some(&last) = points.last() {
-        //     if last.trace_n
-
-        // }
-
-        // println!("{:?}", data);
-
         let (datetime, coord, altitude) = read_gga(data[4], date_str.unwrap())?;
 
         coords.push(coord);
-        // coords.push(crate::coords::Coord {
-        //     x: longitude,
-        //     y: latitude,
-        // });
-
-        // // Parse the date and time columns into datetime, then convert to seconds after UNIX epoch.
-        // let datetime =
-        //     chrono::DateTime::parse_from_rfc3339(&format!("{}T{}+00:00", data[1], data[2]))?
-        //         .timestamp() as f64;
 
         // Coordinates are 0 right now. That's fixed right below
         points.push(gpr::CorPoint {
@@ -501,6 +482,7 @@ pub fn load_pe_gp2(
     }
 }
 
+/// Common functionality for writing NetCDF variables
 fn write_nc_variable_common<T>(
     v: &mut netcdf::VariableMut,
     name: &str,
@@ -521,6 +503,7 @@ where
     Ok(())
 }
 
+/// Add a variable without compression/chunking
 fn add_nc_variable<T>(
     file: &mut netcdf::FileMut,
     name: &str,
@@ -538,6 +521,7 @@ where
     write_nc_variable_common(&mut v, name, data, unit)
 }
 
+/// Add a 2D variable with compression/chunking
 fn add_nc_variable_compressed_2d<T>(
     file: &mut netcdf::FileMut,
     name: &str,
@@ -581,6 +565,7 @@ where
     Ok(())
 }
 
+/// Add an attribute to a NetCDF file
 fn add_nc_attribute<T>(file: &mut netcdf::FileMut, name: &str, data: T) -> Result<(), String>
 where
     T: Into<netcdf::AttributeValue>,
@@ -590,6 +575,18 @@ where
     Ok(())
 }
 
+/// Export a GPR profile and its metadata to a NetCDF (".nc") file.
+///
+/// It will overwrite any file that already exists with the same filename.
+///
+/// # Arguments
+/// - `gpr`: The GPR object to export
+/// - `nc_filepath`: The filepath of the output NetCDF file
+///
+/// # Errors
+/// - If the file already exists and cannot be removed.
+/// - If a dimension, attribute or variable could not be created in the NetCDF file
+/// - If data could not be written to the file
 pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), String> {
     // Remove any previously existing file. If this is not added, netcdf will throw a useless
     // error!

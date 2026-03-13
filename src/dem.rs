@@ -3,7 +3,6 @@ use std::path::Path;
 
 use crate::coords::Coord;
 use std::io::Write;
-use std::process::{Command, Output, Stdio};
 
 fn get_gdal_version() -> Result<String, String> {
     let child = std::process::Command::new("gdalinfo")
@@ -47,7 +46,7 @@ fn run_gdallocationinfo(
     dem_path: &Path,
     coords_wgs84: &[Coord],
     use_bilinear: bool,
-) -> Result<Output, String> {
+) -> Result<std::process::Output, String> {
     let dem_str = dem_path.to_str().ok_or("Empty DEM path given")?;
 
     let mut args = vec!["-xml", "-b", "1", "-wgs84", dem_str];
@@ -57,11 +56,11 @@ fn run_gdallocationinfo(
         args.push("bilinear");
     }
 
-    let mut child = Command::new("gdallocationinfo")
+    let mut child = std::process::Command::new("gdallocationinfo")
         .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("Call error when spawning process: {e}"))?;
 
@@ -93,7 +92,7 @@ fn has_result_tags(stdout: &[u8]) -> bool {
 }
 
 fn parse_elevations_from_output(
-    output: &Output,
+    output: &std::process::Output,
     coords_wgs84: &[Coord],
 ) -> Result<Vec<f32>, String> {
     let parsed = String::from_utf8_lossy(&output.stdout);
@@ -155,8 +154,6 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &[Coord]) -> Result<Vec<f32>, S
         let second_output = run_gdallocationinfo(dem_path, coords_wgs84, false)?;
         return parse_elevations_from_output(&second_output, coords_wgs84);
     }
-
-    // We have some result XML; interpret it as usual (even if exit code is non-zero).
     parse_elevations_from_output(&first_output, coords_wgs84)
 }
 

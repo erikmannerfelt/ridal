@@ -1,6 +1,6 @@
 [package]
 name = "ridal"
-version = "0.4.6-2"
+version = "0.4.7"
 edition = "2021"
 readme = "README.md"
 description="Speeding up Ground Penetrating Radar (GPR) processing"
