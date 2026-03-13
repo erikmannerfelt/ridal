@@ -45,7 +45,7 @@ fn get_gdal_version() -> Result<String, String> {
 
 fn run_gdallocationinfo(
     dem_path: &Path,
-    coords_wgs84: &Vec<Coord>,
+    coords_wgs84: &[Coord],
     use_bilinear: bool,
 ) -> Result<Output, String> {
     let dem_str = dem_path.to_str().ok_or("Empty DEM path given")?;
