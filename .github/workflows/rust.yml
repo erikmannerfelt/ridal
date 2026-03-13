@@ -62,11 +62,9 @@ jobs:
 
     - name: Test (Windows)
       if: runner.os == 'Windows'
-      shell: cmd /D /E:ON /V:OFF /S /C "CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" "{0}""
+      shell: cmd
       run: |
-        set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
-        where cargo
-        cargo test --bin ridal -- --nocapture
+        CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" "%USERPROFILE%\.cargo\bin\cargo.exe" test --bin ridal -- --nocapture
 
     - name: Build
       run: cargo build --bin ridal --verbose
