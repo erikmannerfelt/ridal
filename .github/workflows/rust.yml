@@ -28,6 +28,32 @@ jobs:
         sudo apt update -y
         sudo apt install -y gdal-bin proj-bin
 
+    - name: Install dependencies (Windows GDAL + PROJ via OSGeo4W)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $installer = "$env:RUNNER_TEMP\osgeo4w-setup.exe"
+
+        Invoke-WebRequest `
+          -Uri "https://download.osgeo.org/osgeo4w/v2/osgeo4w-setup.exe" `
+          -OutFile $installer
+
+        & $installer `
+          -q -k -r -A `
+          -s "https://download.osgeo.org/osgeo4w/v2/" `
+          -P gdal,proj
+
+        "C:\OSGeo4W\bin" >> $env:GITHUB_PATH
+        "PROJ_LIB=C:\OSGeo4W\share\proj" >> $env:GITHUB_ENV
+
+    - name: Verify GDAL/PROJ (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        gdalinfo --version
+        ogr2ogr --help | Out-Null
+        proj
+
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
@@ -45,7 +71,6 @@ jobs:
     - name: Test
       run: cargo test --bin ridal -- --nocapture
 
-      # Dry‑run publish check (safe, no secrets)
     - name: Dry-run cargo publish
       if: runner.os == 'Linux' && !startsWith(github.ref, 'refs/tags/')
       run: cargo publish --dry-run
