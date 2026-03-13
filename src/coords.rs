@@ -400,6 +400,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    #[cfg(not(target_os = "windows"))] // Added 2026-03-13 because the path unsetting logic doesn't work on Windows
     fn test_crs_noproj() {
         // This test simulates machines without PROJ installed. UTM CRSes should work but not others.
         temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
