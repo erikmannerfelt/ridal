@@ -48,6 +48,12 @@ jobs:
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Verify CMake (Windows)
+      if: runner.os == 'Windows'
+      shell: cmd
+      run: |
+        "C:\Program Files\CMake\bin\cmake.exe" --version
+
     - name: Formatting
       if: runner.os == 'Linux'
       id: fmt
@@ -63,6 +69,8 @@ jobs:
     - name: Test (Windows)
       if: runner.os == 'Windows'
       shell: cmd
+      env:
+        CMAKE: C:\Program Files\CMake\bin\cmake.exe
       run: |
         CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" "%USERPROFILE%\.cargo\bin\cargo.exe" test --bin ridal -- --nocapture
 
