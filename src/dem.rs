@@ -2,6 +2,8 @@
 use std::path::Path;
 
 use crate::coords::Coord;
+use std::io::Write;
+use std::process::{Command, Output, Stdio};
 
 fn get_gdal_version() -> Result<String, String> {
     let child = std::process::Command::new("gdalinfo")
@@ -41,15 +43,58 @@ fn get_gdal_version() -> Result<String, String> {
     }
 }
 
-fn looks_like_unsupported_bilinear(stderr: &[u8]) -> bool {
-    let msg = String::from_utf8_lossy(stderr).to_lowercase();
+fn run_gdallocationinfo(
+    dem_path: &Path,
+    coords_wgs84: &Vec<Coord>,
+    use_bilinear: bool,
+) -> Result<Output, String> {
+    let dem_str = dem_path.to_str().ok_or("Empty DEM path given")?;
 
-    msg.contains("unknown argument") && msg.contains("-r")
+    let mut args = vec!["-xml", "-b", "1", "-wgs84", dem_str];
+
+    if use_bilinear {
+        args.push("-r");
+        args.push("bilinear");
+    }
+
+    let mut child = Command::new("gdallocationinfo")
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Call error when spawning process: {e}"))?;
+
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or("Call error: stdin could not be bound".to_string())?;
+
+        let mut buf = String::new();
+        for coord in coords_wgs84 {
+            buf.push_str(&format!("{} {}\n", coord.x, coord.y));
+        }
+
+        stdin
+            .write_all(buf.as_bytes())
+            .map_err(|e| format!("Call error writing to stdin: {e}"))?;
+    }
+
+    child
+        .wait_with_output()
+        .map_err(|e| format!("Call process error: {e}"))
+}
+
+/// Helper: does stdout contain any XML result tags?
+fn has_result_tags(stdout: &[u8]) -> bool {
+    let s = String::from_utf8_lossy(stdout);
+    s.contains("<Value>") || s.contains("<Alert>")
 }
 
 fn parse_elevations_from_output(
-    output: &std::process::Output,
-    coords_wgs84: &[Coord],
+    output: &Output,
+    coords_wgs84: &Vec<Coord>,
 ) -> Result<Vec<f32>, String> {
     let parsed = String::from_utf8_lossy(&output.stdout);
     let mut elevations = Vec::<f32>::new();
@@ -90,74 +135,28 @@ fn parse_elevations_from_output(
     Ok(elevations)
 }
 
-fn run_gdallocationinfo(
-    dem_path: &Path,
-    coords_wgs84: &Vec<Coord>,
-    use_bilinear: bool,
-) -> Result<std::process::Output, String> {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let dem_str = dem_path.to_str().ok_or("Empty DEM path given")?;
-
-    let mut args = vec!["-xml", "-b", "1", "-wgs84", dem_str];
-
-    if use_bilinear {
-        args.push("-r");
-        args.push("bilinear");
-    }
-
-    let mut child = Command::new("gdallocationinfo")
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Call error when spawning process: {e}"))?;
-
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or("Call error: stdin could not be bound".to_string())?;
-
-        let mut buf = String::new();
-        for coord in coords_wgs84 {
-            buf.push_str(&format!("{} {}\n", coord.x, coord.y));
-        }
-
-        stdin
-            .write_all(buf.as_bytes())
-            .map_err(|e| format!("Call error writing to stdin: {e}"))?;
-    }
-
-    child
-        .wait_with_output()
-        .map_err(|e| format!("Call process error: {e}"))
-}
-
 pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>, String> {
-    get_gdal_version()?; // Unnecessarily complex way to check if GDAL is installed.
+    get_gdal_version()?;
     if coords_wgs84.is_empty() {
         return Err("Coords vec is empty.".into());
     }
 
-    // First: try with -r bilinear
+    // First: try with bilinear
     let first_output = run_gdallocationinfo(dem_path, coords_wgs84, true)?;
 
-    if !first_output.status.success() && looks_like_unsupported_bilinear(&first_output.stderr) {
+    if !has_result_tags(&first_output.stdout) {
+        // No <Value> or <Alert> at all → likely unsupported -r bilinear /
+        // invalid combo → fall back and retry without -r.
         eprintln!(
-            "gdallocationinfo does not support '-r bilinear'. \
+            "gdallocationinfo output failed (no output) with '-r bilinear'. \
              Falling back to nearest neighbor sampling."
         );
 
-        // Retry without -r
         let second_output = run_gdallocationinfo(dem_path, coords_wgs84, false)?;
         return parse_elevations_from_output(&second_output, coords_wgs84);
     }
 
-    // Either bilinear worked or there’s some real error (bad DEM, coords, etc.).
-    // parse_elevations_from_output will surface those.
+    // We have some result XML; interpret it as usual (even if exit code is non-zero).
     parse_elevations_from_output(&first_output, coords_wgs84)
 }
 
