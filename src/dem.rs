@@ -196,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
+    // #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
     #[serial_test::serial]
     fn test_read_elevations() {
         let coords_elevs = make_test_coords();
@@ -229,12 +229,6 @@ mod tests {
             let result = super::sample_dem(&dem_path, &coord_wgs84);
 
             if let Ok(expected_elevation) = expected {
-                if !super::supports_interpolation().unwrap() {
-                    eprintln!(
-                        "Skipping elevation Ok assertion because interpolation is not supported."
-                    );
-                    continue;
-                }
                 assert_eq!(Ok(vec![expected_elevation]), result);
             } else if let Err(expected_err_str) = expected {
                 if let Err(err_str) = result {

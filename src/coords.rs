@@ -346,7 +346,7 @@ pub fn from_wgs84(coords: &[Coord], crs: &Crs) -> Result<Vec<Coord>, String> {
 }
 
 #[cfg(test)]
-#[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
+// #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
 mod tests {
     use std::any::Any;
 
