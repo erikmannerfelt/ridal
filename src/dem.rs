@@ -135,7 +135,7 @@ fn parse_elevations_from_output(
     Ok(elevations)
 }
 
-pub fn sample_dem(dem_path: &Path, coords_wgs84: &Vec<Coord>) -> Result<Vec<f32>, String> {
+pub fn sample_dem(dem_path: &Path, coords_wgs84: &[Coord]) -> Result<Vec<f32>, String> {
     get_gdal_version()?;
     if coords_wgs84.is_empty() {
         return Err("Coords vec is empty.".into());
