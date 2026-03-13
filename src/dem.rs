@@ -49,7 +49,7 @@ fn looks_like_unsupported_bilinear(stderr: &[u8]) -> bool {
 
 fn parse_elevations_from_output(
     output: &std::process::Output,
-    coords_wgs84: &Vec<Coord>,
+    coords_wgs84: &[Coord],
 ) -> Result<Vec<f32>, String> {
     let parsed = String::from_utf8_lossy(&output.stdout);
     let mut elevations = Vec::<f32>::new();
