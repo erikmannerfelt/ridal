@@ -1512,7 +1512,7 @@ impl GPR {
     pub fn width(&self) -> usize {
         self.data.shape()[1]
     }
-    pub fn export(&self, nc_filepath: &Path) -> Result<(), Box<dyn Error>> {
+    pub fn export(&self, nc_filepath: &Path) -> Result<(), String> {
         io::export_netcdf(self, nc_filepath)
     }
 

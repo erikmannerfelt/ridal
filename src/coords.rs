@@ -346,7 +346,6 @@ pub fn from_wgs84(coords: &[Coord], crs: &Crs) -> Result<Vec<Coord>, String> {
 }
 
 #[cfg(test)]
-#[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
 mod tests {
     use std::any::Any;
 
@@ -400,6 +399,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
+    #[cfg(not(target_os = "windows"))] // Added 2026-03-13 because the path unsetting logic doesn't work on Windows
     fn test_crs_noproj() {
         // This test simulates machines without PROJ installed. UTM CRSes should work but not others.
         temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
