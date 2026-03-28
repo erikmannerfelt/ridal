@@ -15,6 +15,7 @@ mod cli;
 mod coords;
 mod dem;
 mod filters;
+mod formats;
 mod gpr;
 mod io;
 mod tools;

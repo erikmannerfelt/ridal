@@ -27,8 +27,8 @@ jobs:
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Install maturin
-      run: pip install maturin
+    - name: Install maturin and pytest
+      run: pip install maturin pytest
 
     - name: Build wheels
       run: |
@@ -41,6 +41,7 @@ jobs:
     - name: Smoke test
       run: |
         python -c "import ridal; print(ridal.__version__)"
+        python -m pytest
 
     - name: Publish to PyPi
       env:

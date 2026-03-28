@@ -1,14 +1,6 @@
-//! # ridal  --- Speeding up Ground Penetrating Radar (GPR) processing
+//! # ridal --- Speeding up Ground Penetrating Radar (GPR) processing
 //! A Ground Penetrating Radar (GPR) processing tool written in rust.
-//!
-//! **This is a WIP.**
-//!
-//! The main aims of `ridal` are:
-//! - **Ease of use**: A command line interface to process data or batches of data in one command.
-//! - **Transparency**: All code is (or will be) thoroughly documented to show exactly how the data are modified.
-//! - **Low memory usage and high speed**: While data are processed in-memory, they are usually no larger than an image (say 4000x2000 px). The functions of `ridal` avoid copying as much as possible, to keep memory usage to a minimum. Wherever possible, it is also multithreaded for fast processing times.
-//! - **Reliability**: All functions will be tested in CI, meaning no crash or invalid behaviour should occur.
-//!
+
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
@@ -16,161 +8,291 @@ mod cli;
 mod coords;
 mod dem;
 mod filters;
+mod formats;
 mod gpr;
 mod io;
 mod tools;
 
-#[allow(dead_code)] // For maturin
+#[allow(dead_code)]
 const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
-#[allow(dead_code)] // For maturin
+#[allow(dead_code)]
 const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
-#[allow(dead_code)] // For maturin
+#[allow(dead_code)]
 const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 
 #[cfg(feature = "python")]
 #[pymodule]
 pub mod ridal {
-    use crate::{cli, gpr};
+    use crate::{formats, gpr};
+    use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyValueError};
     use pyo3::prelude::*;
+    use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
+
+    use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    fn json_to_py(py: Python<'_>, text: &str) -> PyResult<PyObject> {
+        let json = py.import_bound("json")?;
+        Ok(json.getattr("loads")?.call1((text,))?.unbind())
+    }
+
+    fn fspath(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
+        let os = py.import_bound("os")?;
+        let path = os.getattr("fspath")?.call1((value,))?;
+        let path_str: String = path.extract()?;
+
+        let os_path = os.getattr("path")?;
+        let expanded = os_path.getattr("expanduser")?.call1((path_str,))?;
+        let expanded_str: String = expanded.extract()?;
+
+        Ok(PathBuf::from(expanded_str))
+    }
+
+    fn inputs_to_paths(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<PathBuf>> {
+        if let Ok(list) = value.downcast::<PyList>() {
+            return list.iter().map(|item| fspath(py, &item)).collect();
+        }
+        if let Ok(tuple) = value.downcast::<PyTuple>() {
+            return tuple.iter().map(|item| fspath(py, &item)).collect();
+        }
+        Ok(vec![fspath(py, value)?])
+    }
+
+    fn optional_path(py: Python<'_>, value: Option<PyObject>) -> PyResult<Option<PathBuf>> {
+        match value {
+            Some(obj) => {
+                let bound = obj.bind(py);
+                Ok(Some(fspath(py, &bound)?))
+            }
+            None => Ok(None),
+        }
+    }
 
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
+        let py = m.py();
         m.add("version", crate::PROGRAM_VERSION)?;
-        m.add("__version__", crate::PROGRAM_VERSION)
+        m.add("__version__", crate::PROGRAM_VERSION)?;
+
+        let all_steps = gpr::all_available_steps();
+        let step_names = all_steps
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<String>>();
+        let step_descriptions = all_steps
+            .iter()
+            .map(|(name, description)| (name.clone(), description.clone()))
+            .collect::<BTreeMap<String, String>>();
+
+        m.add("all_steps", step_names)?;
+        m.add(
+            "all_step_descriptions",
+            json_to_py(py, &serde_json::to_string(&step_descriptions).unwrap())?,
+        )?;
+
+        let all_formats = formats::all_formats();
+        let format_names = all_formats
+            .iter()
+            .map(|fmt| fmt.name.to_string())
+            .collect::<Vec<String>>();
+
+        let format_descriptions = all_formats
+            .iter()
+            .map(|fmt| {
+                (
+                    fmt.name.to_string(),
+                    serde_json::json!({
+                        "description": fmt.description,
+                        "capabilities": {
+                            "read": fmt.capabilities.read,
+                            "write": fmt.capabilities.write,
+                        },
+                        "files": {
+                            "header": fmt.files.header,
+                            "data": fmt.files.data,
+                            "coordinates": fmt.files.coordinates,
+                        }
+                    }),
+                )
+            })
+            .collect::<BTreeMap<String, serde_json::Value>>();
+
+        m.add("all_formats", format_names)?;
+        m.add(
+            "all_format_descriptions",
+            json_to_py(py, &serde_json::to_string(&format_descriptions).unwrap())?,
+        )?;
+        Ok(())
     }
 
-    /// Call ridal with the given arguments (identical to the CLI).
+    /// Process one or more GPR files.
     ///
     /// Parameters
     /// ----------
-    /// filepath
-    ///     Filepath of the header file or a glob pattern of many files
-    /// velocity
-    ///     Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
-    /// info
-    ///     Only show metadata for the file
-    /// cor
-    ///     Load a separate ".cor" file. If not given, it will be searched for automatically
-    /// dem
-    ///     Correct elevation values with a DEM
-    /// crs
-    ///     Which coordinate reference system to project coordinates in.
-    /// track
-    ///     Export the location track to a comma separated values (CSV) file. Defaults to the output filename location and stem + "_track.csv"
-    /// default
-    ///     Process with the default profile. See "--show-default" to list the profile.
-    /// default_with_topo
-    ///     Process with the default profile plus topographic correction. See "--show-default" to list the profile.
-    /// show_default
-    ///     Show the default profile and exit
-    /// show_all_steps
-    ///     Show the available steps
-    /// steps
-    ///     Processing steps to run, separated by commas. Can be a filepath to a newline separated step file.
+    /// inputs
+    ///     A path-like object or a list/tuple of path-like objects.
     /// output
-    ///     Output filename or directory. Defaults to the input filename with a ".nc" extension
-    /// quiet
-    ///     Suppress progress messages
-    /// render
-    ///     Render an image of the profile and save it to the specified path. Defaults to a jpg in the directory of the output filepath
-    /// no_export
-    ///     Don't export a nc file
-    /// merge
-    ///     Merge profiles closer in time than the given threshold when in batch mode (e.g. "10 min")
-    /// override_antenna_mhz
-    ///     Override the antenna center frequency (in MHz) of the file metadata
-    ///
-    /// Returns
-    /// -------
-    /// The exit code of the CLI.
+    ///     Output filename or directory. If None, a default .nc path is derived from the first input.
+    /// steps
+    ///     Processing steps to run, either as a comma-separated string or a list of strings.
+    /// default
+    ///     Use the default processing profile.
+    /// default_with_topo
+    ///     Use the default processing profile plus topographic correction.
     #[pyfunction]
-    #[pyo3(
-        signature = (
-            filepath=None,
-            velocity=0.168,
-            info=false,
-            cor=None,
-            dem=None,
-            crs=None,
-            track=None,
-            default=false,
-            default_with_topo=false,
-            show_default=false,
-            show_all_steps=false,
-            steps=None,
-            output=None,
-            quiet=false,
-            render=None,
-            no_export=false,
-            merge=None,
-            override_antenna_mhz=None,
-        )
-    )]
-    fn run_cli(
-        filepath: Option<String>,
-        velocity: f32,
-        info: bool,
-        cor: Option<PathBuf>,
-        dem: Option<PathBuf>,
-        crs: Option<String>,
-        track: Option<PathBuf>,
+    #[pyo3(signature = (
+        inputs,
+        output=None,
+        steps=None,
+        default=false,
+        default_with_topo=false,
+        velocity=0.168,
+        cor=None,
+        dem=None,
+        crs=None,
+        track=None,
+        quiet=false,
+        render=None,
+        no_export=false,
+        override_antenna_mhz=None,
+    ))]
+    fn process(
+        py: Python<'_>,
+        inputs: PyObject,
+        output: Option<PyObject>,
+        steps: Option<PyObject>,
         default: bool,
         default_with_topo: bool,
-        show_default: bool,
-        show_all_steps: bool,
-        steps: Option<Vec<String>>,
-        output: Option<PathBuf>,
+        velocity: f32,
+        cor: Option<PyObject>,
+        dem: Option<PyObject>,
+        crs: Option<String>,
+        track: Option<PyObject>,
         quiet: bool,
-        render: Option<PathBuf>,
+        render: Option<PyObject>,
         no_export: bool,
-        merge: Option<String>,
         override_antenna_mhz: Option<f32>,
-        _py: Python<'_>,
-    ) -> PyResult<i32> {
-        let track_opt: Option<Option<PathBuf>> = match track {
-            Some(s) => Some(Some(PathBuf::from(s))),
+    ) -> PyResult<String> {
+        let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
+        let output_path = optional_path(py, output)?;
+        let cor_path = optional_path(py, cor)?;
+        let dem_path = optional_path(py, dem)?;
+        let track_path = match track {
+            Some(obj) => Some(Some(fspath(py, &obj.bind(py))?)),
+            None => None,
+        };
+        let render_path = match render {
+            Some(obj) => Some(Some(fspath(py, &obj.bind(py))?)),
             None => None,
         };
 
-        // render: CLI uses Option<Option<PathBuf>>
-        let render_opt: Option<Option<PathBuf>> = match render {
-            Some(s) => Some(Some(PathBuf::from(s))),
+        let steps_text = match steps {
+            Some(step_obj) => {
+                let bound = step_obj.bind(py);
+                if let Ok(step_text) = bound.extract::<String>() {
+                    Some(step_text)
+                } else if let Ok(step_list) = bound.downcast::<PyList>() {
+                    let parts = step_list
+                        .iter()
+                        .map(|item| item.extract::<String>())
+                        .collect::<PyResult<Vec<String>>>()?;
+                    Some(parts.join(","))
+                } else if let Ok(step_tuple) = bound.downcast::<PyTuple>() {
+                    let parts = step_tuple
+                        .iter()
+                        .map(|item| item.extract::<String>())
+                        .collect::<PyResult<Vec<String>>>()?;
+                    Some(parts.join(","))
+                } else {
+                    return Err(PyValueError::new_err(
+                        "steps must be a string or a list/tuple of strings",
+                    ));
+                }
+            }
             None => None,
         };
-        // Construct the same Args struct the CLI uses
-        let args = cli::Args {
-            filepath,
-            velocity,
-            info,
-            cor,
-            dem,
+
+        let resolved_steps = if default_with_topo {
+            let mut profile = gpr::default_processing_profile();
+            profile.push("correct_topography".to_string());
+            profile
+        } else if default {
+            gpr::default_processing_profile()
+        } else if let Some(step_text) = steps_text.as_deref() {
+            crate::tools::parse_step_list(step_text).map_err(PyValueError::new_err)?
+        } else {
+            vec![]
+        };
+
+        gpr::validate_steps(&resolved_steps).map_err(PyValueError::new_err)?;
+
+        let params = gpr::RunParams {
+            filepaths: input_paths,
+            output_path,
+            dem_path,
+            cor_path,
+            medium_velocity: velocity,
             crs,
-            track: track_opt,
-            default,
-            default_with_topo,
-            show_default,
-            show_all_steps,
-            steps: steps.and_then(|s| Some(s.join(","))),
-            output,
             quiet,
-            render: render_opt,
+            track_path,
+            steps: resolved_steps,
             no_export,
-            merge,
+            render_path,
             override_antenna_mhz,
         };
 
-        // Use the shared core logic
-        match cli::args_to_action(&args) {
-            cli::CliAction::Run(params) => {
-                // run the core processing
-                match gpr::run(params) {
-                    Ok(_) => Ok(0),
-                    Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}"))),
-                }
-            }
-            cli::CliAction::Done => Ok(0),
-            cli::CliAction::Error(msg) => Err(pyo3::exceptions::PyValueError::new_err(msg)),
+        let result = gpr::run(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
+        Ok(result.output_path.to_string_lossy().to_string())
+    }
+
+    /// Inspect one or more GPR files.
+    ///
+    /// Returns a dictionary for one input and a list of dictionaries for many inputs.
+    #[pyfunction]
+    #[pyo3(signature = (
+        inputs,
+        velocity=0.168,
+        cor=None,
+        dem=None,
+        crs=None,
+        override_antenna_mhz=None,
+    ))]
+    fn info(
+        py: Python<'_>,
+        inputs: PyObject,
+        velocity: f32,
+        cor: Option<PyObject>,
+        dem: Option<PyObject>,
+        crs: Option<String>,
+        override_antenna_mhz: Option<f32>,
+    ) -> PyResult<PyObject> {
+        let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
+        let cor_path = optional_path(py, cor)?;
+        let dem_path = optional_path(py, dem)?;
+
+        let params = gpr::InfoParams {
+            filepaths: input_paths,
+            dem_path,
+            cor_path,
+            medium_velocity: velocity,
+            crs,
+            override_antenna_mhz,
+        };
+        let records =
+            gpr::inspect(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
+
+        if records.len() == 1 {
+            json_to_py(py, &serde_json::to_string(&records[0]).unwrap())
+        } else {
+            json_to_py(py, &serde_json::to_string(&records).unwrap())
         }
+    }
+
+    /// Legacy compatibility shim for the removed CLI-in-Python interface.
+    #[pyfunction(signature = (*_args, **_kwargs))]
+    fn run_cli(_args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
+        Err(PyNotImplementedError::new_err(
+            "ridal.run_cli() has been removed. Use ridal.process(...) for processing and ridal.info(...) for metadata inspection.",
+        ))
     }
 }
