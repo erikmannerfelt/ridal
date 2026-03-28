@@ -18,6 +18,7 @@ mod filters;
 mod formats;
 mod gpr;
 mod io;
+mod metadata;
 mod tools;
 
 const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -11,6 +11,7 @@ mod filters;
 mod formats;
 mod gpr;
 mod io;
+mod metadata;
 mod tools;
 
 #[allow(dead_code)]
@@ -30,6 +31,24 @@ pub mod ridal {
 
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    fn optional_metadata(
+        py: Python<'_>,
+        value: Option<PyObject>,
+    ) -> PyResult<crate::metadata::UserMetadata> {
+        match value {
+            None => Ok(crate::metadata::UserMetadata::new()),
+            Some(obj) => {
+                let bound = obj.bind(py);
+                let json = py.import_bound("json")?;
+                let text: String = json.getattr("dumps")?.call1((bound,))?.extract()?;
+                let value: serde_json::Value =
+                    serde_json::from_str(&text).map_err(pyo3::exceptions::PyValueError::new_err)?;
+                crate::metadata::value_to_metadata(value)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)
+            }
+        }
+    }
 
     fn json_to_py(py: Python<'_>, text: &str) -> PyResult<PyObject> {
         let json = py.import_bound("json")?;
@@ -155,6 +174,7 @@ pub mod ridal {
         render=None,
         no_export=false,
         override_antenna_mhz=None,
+        metadata=None,
     ))]
     fn process(
         py: Python<'_>,
@@ -172,6 +192,7 @@ pub mod ridal {
         render: Option<PyObject>,
         no_export: bool,
         override_antenna_mhz: Option<f32>,
+        metadata: Option<PyObject>,
     ) -> PyResult<String> {
         let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
         let output_path = optional_path(py, output)?;
@@ -226,6 +247,8 @@ pub mod ridal {
 
         gpr::validate_steps(&resolved_steps).map_err(PyValueError::new_err)?;
 
+        let user_metadata = optional_metadata(py, metadata)?;
+
         let params = gpr::RunParams {
             filepaths: input_paths,
             output_path,
@@ -239,10 +262,175 @@ pub mod ridal {
             no_export,
             render_path,
             override_antenna_mhz,
+            user_metadata,
         };
 
         let result = gpr::run(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
         Ok(result.output_path.to_string_lossy().to_string())
+    }
+    /// Batch-process one or more GPR files into many outputs.
+    ///
+    /// Parameters
+    /// ----------
+    /// inputs
+    /// A path-like object or a list/tuple of path-like objects.
+    /// output
+    /// Output directory (must already exist).
+    /// steps
+    /// Processing steps to run, either as a comma-separated string or a list of strings.
+    /// default
+    /// Use the default processing profile.
+    /// default_with_topo
+    /// Use the default processing profile plus topographic correction.
+    /// merge
+    /// Optional merge threshold (e.g. "10 min"). Neighboring chronological profiles
+    /// closer than this threshold will be merged if compatible.
+    /// metadata
+    /// Optional user metadata mapping attached independently to every produced output.
+    #[pyfunction]
+    #[pyo3(signature = (
+    inputs,
+    output,
+    steps=None,
+    default=false,
+    default_with_topo=false,
+    velocity=0.168,
+    cor=None,
+    dem=None,
+    crs=None,
+    track=None,
+    quiet=false,
+    render=None,
+    no_export=false,
+    merge=None,
+    override_antenna_mhz=None,
+    metadata=None,
+))]
+    fn batch_process(
+        py: Python<'_>,
+        inputs: PyObject,
+        output: PyObject,
+        steps: Option<PyObject>,
+        default: bool,
+        default_with_topo: bool,
+        velocity: f32,
+        cor: Option<PyObject>,
+        dem: Option<PyObject>,
+        crs: Option<String>,
+        track: Option<PyObject>,
+        quiet: bool,
+        render: Option<PyObject>,
+        no_export: bool,
+        merge: Option<String>,
+        override_antenna_mhz: Option<f32>,
+        metadata: Option<PyObject>,
+    ) -> PyResult<Vec<String>> {
+        use pyo3::exceptions::{PyRuntimeError, PyValueError};
+
+        let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
+        let output_dir = fspath(py, &output.bind(py))?;
+        if !output_dir.is_dir() {
+            return Err(PyValueError::new_err(format!(
+                "output must be an existing directory in batch_process(): {}",
+                output_dir.display()
+            )));
+        }
+
+        let cor_path = optional_path(py, cor)?;
+        let dem_path = optional_path(py, dem)?;
+        let track_dir = match track {
+            Some(obj) => {
+                let p = fspath(py, &obj.bind(py))?;
+                if !p.is_dir() {
+                    return Err(PyValueError::new_err(format!(
+                        "track must be an existing directory in batch_process(): {}",
+                        p.display()
+                    )));
+                }
+                Some(p)
+            }
+            None => None,
+        };
+        let render_dir = match render {
+            Some(obj) => {
+                let p = fspath(py, &obj.bind(py))?;
+                if !p.is_dir() {
+                    return Err(PyValueError::new_err(format!(
+                        "render must be an existing directory in batch_process(): {}",
+                        p.display()
+                    )));
+                }
+                Some(p)
+            }
+            None => None,
+        };
+
+        let steps_text = match steps {
+            Some(step_obj) => {
+                let bound = step_obj.bind(py);
+                if let Ok(step_text) = bound.extract::<String>() {
+                    Some(step_text)
+                } else if let Ok(step_list) = bound.downcast::<PyList>() {
+                    let parts = step_list
+                        .iter()
+                        .map(|item| item.extract::<String>())
+                        .collect::<PyResult<Vec<String>>>()?;
+                    Some(parts.join(","))
+                } else if let Ok(step_tuple) = bound.downcast::<PyTuple>() {
+                    let parts = step_tuple
+                        .iter()
+                        .map(|item| item.extract::<String>())
+                        .collect::<PyResult<Vec<String>>>()?;
+                    Some(parts.join(","))
+                } else {
+                    return Err(PyValueError::new_err(
+                        "steps must be a string or a list/tuple of strings",
+                    ));
+                }
+            }
+            None => None,
+        };
+
+        let resolved_steps = if default_with_topo {
+            let mut profile = gpr::default_processing_profile();
+            profile.push("correct_topography".to_string());
+            profile
+        } else if default {
+            gpr::default_processing_profile()
+        } else if let Some(step_text) = steps_text.as_deref() {
+            crate::tools::parse_step_list(step_text).map_err(PyValueError::new_err)?
+        } else {
+            vec![]
+        };
+
+        gpr::validate_steps(&resolved_steps).map_err(PyValueError::new_err)?;
+        let user_metadata = optional_metadata(py, metadata)?;
+
+        let params = gpr::BatchRunParams {
+            filepaths: input_paths,
+            output_dir,
+            dem_path,
+            cor_path,
+            medium_velocity: velocity,
+            crs,
+            quiet,
+            track_dir,
+            steps: resolved_steps,
+            no_export,
+            render_dir,
+            merge,
+            override_antenna_mhz,
+            user_metadata,
+        };
+
+        let result =
+            gpr::run_batch(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
+
+        Ok(result
+            .output_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect())
     }
 
     /// Inspect one or more GPR files.

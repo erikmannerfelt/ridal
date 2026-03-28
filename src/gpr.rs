@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
 
-use crate::{dem, filters, io, tools};
+use crate::{dem, filters, io, metadata, tools};
 
 const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
 const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
@@ -376,6 +376,8 @@ pub struct GPR {
     horizontal_signal_distance: f32,
     /// The calculated zero-point (ns). It represents the delay between the transmitter and the receiver.
     zero_point_ns: f32,
+    /// User-supplied metadata that should be carried through processing/export.
+    pub user_metadata: metadata::UserMetadata,
 }
 
 impl GPR {
@@ -696,6 +698,7 @@ impl GPR {
             topo_data: self.topo_data.clone(),
             horizontal_signal_distance: self.horizontal_signal_distance,
             zero_point_ns: self.zero_point_ns,
+            user_metadata: self.user_metadata.clone(),
         };
         new_gpr.log_event(
             "subset",
@@ -749,6 +752,7 @@ impl GPR {
             topo_data: None,
             horizontal_signal_distance,
             zero_point_ns: 0.,
+            user_metadata: metadata::UserMetadata::new(),
         })
     }
 
@@ -1562,6 +1566,7 @@ impl GPR {
             self.metadata.time_window *= self.height() as f32 / self.metadata.samples as f32;
             self.metadata.samples = self.height() as u32;
             self.metadata.last_trace = self.width() as u32;
+            metadata::merge_prefer_first(&mut self.user_metadata, &other.user_metadata);
 
             self.log_event(
                 "merge",
@@ -1587,6 +1592,29 @@ pub struct RunParams {
     pub no_export: bool,
     pub render_path: Option<Option<PathBuf>>,
     pub override_antenna_mhz: Option<f32>,
+    pub user_metadata: metadata::UserMetadata,
+}
+#[derive(Debug, Clone)]
+pub struct BatchRunParams {
+    pub filepaths: Vec<PathBuf>,
+    pub output_dir: PathBuf,
+    pub dem_path: Option<PathBuf>,
+    pub cor_path: Option<PathBuf>,
+    pub medium_velocity: f32,
+    pub crs: Option<String>,
+    pub quiet: bool,
+    pub track_dir: Option<PathBuf>,
+    pub steps: Vec<String>,
+    pub no_export: bool,
+    pub render_dir: Option<PathBuf>,
+    pub merge: Option<String>,
+    pub override_antenna_mhz: Option<f32>,
+    pub user_metadata: metadata::UserMetadata,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchProcessResult {
+    pub output_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -1898,6 +1926,8 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn Error>> {
         )
     })?;
 
+    gpr.user_metadata = params.user_metadata.clone();
+
     for resolved in resolved_inputs {
         let (meta, location) = load_meta_and_location(
             &resolved,
@@ -1977,6 +2007,266 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn Error>> {
     }
 
     Ok(ProcessResult { output_path })
+}
+
+pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
+    if !params.output_dir.is_dir() {
+        return Err(format!(
+            "output_dir must be an existing directory: {}",
+            params.output_dir.display()
+        ));
+    }
+    if let Some(render_dir) = &params.render_dir {
+        if !render_dir.is_dir() {
+            return Err(format!(
+                "render_dir must be an existing directory: {}",
+                render_dir.display()
+            ));
+        }
+    }
+    if let Some(track_dir) = &params.track_dir {
+        if !track_dir.is_dir() {
+            return Err(format!(
+                "track_dir must be an existing directory: {}",
+                track_dir.display()
+            ));
+        }
+    }
+
+    // Expand globs exactly like process mode does now.
+    let expanded_filepaths = expand_cli_inputs(&params.filepaths)?;
+
+    // Group inputs for batch processing.
+    let groups = if let Some(merge_threshold) = params.merge.as_deref() {
+        group_batch_inputs_chronologically(
+            &expanded_filepaths,
+            merge_threshold,
+            params.medium_velocity,
+            params.cor_path.clone(),
+            params.dem_path.clone(),
+            params.crs.clone(),
+            params.override_antenna_mhz,
+        )?
+    } else {
+        expanded_filepaths
+            .into_iter()
+            .map(|p| vec![p])
+            .collect::<Vec<Vec<PathBuf>>>()
+    };
+
+    let mut output_paths = Vec::<PathBuf>::new();
+
+    for group in groups {
+        if group.is_empty() {
+            continue;
+        }
+
+        let first = &group[0];
+        let stem = first
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("Could not derive output stem from {}", first.display()))?;
+        let output_nc = params.output_dir.join(format!("{stem}.nc"));
+
+        let render_path = params
+            .render_dir
+            .as_ref()
+            .map(|dir| Some(dir.join(format!("{stem}.jpg"))));
+
+        let track_path = params
+            .track_dir
+            .as_ref()
+            .map(|dir| Some(dir.join(format!("{stem}_track.csv"))));
+
+        let run_params = RunParams {
+            filepaths: group.clone(),
+            output_path: Some(output_nc.clone()),
+            dem_path: params.dem_path.clone(),
+            cor_path: params.cor_path.clone(),
+            medium_velocity: params.medium_velocity,
+            crs: params.crs.clone(),
+            quiet: params.quiet,
+            track_path,
+            steps: params.steps.clone(),
+            no_export: params.no_export,
+            render_path,
+            override_antenna_mhz: params.override_antenna_mhz,
+            user_metadata: params.user_metadata.clone(),
+        };
+
+        // process-mode semantics: one group -> one output, in the order we pass here.
+        // For merge groups, group_batch_inputs_chronologically() already ordered them chronologically.
+        let result = run(run_params).map_err(|e| e.to_string())?;
+        output_paths.push(result.output_path);
+    }
+
+    Ok(BatchProcessResult { output_paths })
+}
+
+fn expand_cli_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::<PathBuf>::new();
+
+    for input in inputs {
+        let text = input.to_string_lossy();
+        let looks_like_glob = text.contains('*') || text.contains('?') || text.contains('[');
+
+        if looks_like_glob {
+            let mut matched_any = false;
+            let pattern =
+                glob::glob(&text).map_err(|e| format!("Invalid glob pattern '{}': {e}", text))?;
+            for entry in pattern {
+                let path = entry.map_err(|e| format!("Error expanding glob '{}': {e}", text))?;
+                matched_any = true;
+                out.push(path);
+            }
+            if !matched_any {
+                return Err(format!("Glob did not match any files: {text}"));
+            }
+        } else {
+            out.push(input.clone());
+        }
+    }
+
+    if out.is_empty() {
+        return Err("No input files were provided".to_string());
+    }
+
+    Ok(out)
+}
+
+fn load_single_gpr_for_grouping(
+    path: &Path,
+    medium_velocity: f32,
+    cor_path: Option<PathBuf>,
+    dem_path: Option<PathBuf>,
+    crs: Option<String>,
+    override_antenna_mhz: Option<f32>,
+) -> Result<GPR, String> {
+    // Resolve input using the same format machinery as normal processing.
+    let resolved = formats::resolve_input(path)
+        .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
+
+    let metadata = match resolved.kind {
+        FormatKind::Ramac => io::load_rad(&resolved.header, medium_velocity, override_antenna_mhz)
+            .map_err(|e| {
+                format!(
+                    "Failed to load RAMAC header '{}': {e}",
+                    resolved.header.display()
+                )
+            })?,
+        FormatKind::PulseEkko => {
+            io::load_pe_hd(&resolved.header, medium_velocity, override_antenna_mhz).map_err(
+                |e| {
+                    format!(
+                        "Failed to load pulseEKKO header '{}': {e}",
+                        resolved.header.display()
+                    )
+                },
+            )?
+        }
+    };
+
+    let mut location = if let Some(cor_override) = &cor_path {
+        io::load_cor(cor_override, crs.as_ref()).map_err(|e| {
+            format!(
+                "Failed to load overridden .cor '{}': {e}",
+                cor_override.display()
+            )
+        })?
+    } else {
+        match resolved.kind {
+            FormatKind::Ramac => metadata.find_cor(crs.as_ref()).map_err(|e| {
+                format!(
+                    "Failed to find/load .cor for '{}': {e}",
+                    metadata.data_filepath.display()
+                )
+            })?,
+            FormatKind::PulseEkko => {
+                let gp2 = &resolved.coordinates;
+                io::load_pe_gp2(gp2, crs.as_ref())
+                    .map_err(|e| format!("Failed to load .gp2 '{}': {e}", gp2.display()))?
+            }
+        }
+    };
+
+    if let Some(dem_path) = &dem_path {
+        location.get_dem_elevations(dem_path)?;
+    }
+
+    let mut gpr = GPR::from_meta_and_loc(location, metadata)
+        .map_err(|e| format!("Failed to build GPR for '{}': {e}", path.display()))?;
+    gpr.user_metadata = metadata::UserMetadata::new();
+    Ok(gpr)
+}
+
+fn group_batch_inputs_chronologically(
+    filepaths: &[PathBuf],
+    merge_threshold: &str,
+    medium_velocity: f32,
+    cor_path: Option<PathBuf>,
+    dem_path: Option<PathBuf>,
+    crs: Option<String>,
+    override_antenna_mhz: Option<f32>,
+) -> Result<Vec<Vec<PathBuf>>, String> {
+    let threshold = humantime::parse_duration(merge_threshold)
+        .map_err(|e| format!("Failed to parse merge duration '{merge_threshold}': {e}"))?
+        .as_secs_f64();
+
+    let mut loaded = filepaths
+        .iter()
+        .map(|path| {
+            let gpr = load_single_gpr_for_grouping(
+                path,
+                medium_velocity,
+                cor_path.clone(),
+                dem_path.clone(),
+                crs.clone(),
+                override_antenna_mhz,
+            )?;
+            let start_time = gpr
+                .location
+                .cor_points
+                .first()
+                .map(|p| p.time_seconds)
+                .ok_or_else(|| format!("No location points found in '{}'", path.display()))?;
+            Ok::<_, String>((path.clone(), start_time, gpr))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Chronological grouping for batch --merge
+    loaded.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut groups = Vec::<Vec<PathBuf>>::new();
+    let mut current = Vec::<PathBuf>::new();
+    let mut current_gpr: Option<GPR> = None;
+
+    for (path, _start, gpr) in loaded {
+        match current_gpr.as_mut() {
+            None => {
+                current.push(path);
+                current_gpr = Some(gpr);
+            }
+            Some(existing) => {
+                let gap = existing.location.duration_since(&gpr.location).abs();
+                let compatible = existing.merge(&gpr).is_ok();
+
+                if (gap <= threshold) && compatible {
+                    // We already merged into 'existing' above to test compatibility, so keep this path in group.
+                    current.push(path);
+                } else {
+                    groups.push(current);
+                    current = vec![path];
+                    current_gpr = Some(gpr);
+                }
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    Ok(groups)
 }
 // src/steps.rs
 const STEPS_MD: &str = include_str!("../steps.md");
@@ -2111,6 +2401,7 @@ pub mod tests {
             zero_point_ns: 0.,
             horizontal_signal_distance: 1.,
             log: Vec::new(),
+            user_metadata: crate::metadata::UserMetadata::new(),
         }
     }
 
@@ -2214,6 +2505,7 @@ pub mod tests {
             log: Vec::new(),
             horizontal_signal_distance: antenna_separation,
             zero_point_ns: 0.,
+            user_metadata: crate::metadata::UserMetadata::new(),
         }
     }
 

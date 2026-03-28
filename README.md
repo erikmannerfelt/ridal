@@ -19,8 +19,8 @@ For many uses, these will more likely be the tools for you!
 
 Prior to Feb. 2026, this program was called `rsgpr`.
 
-## Note on imminent interface change
-**The CLI/Python interface will soon change completely (0.5 or 0.6) and all code will need to be modified accordingly. See [Issue #82](https://github.com/erikmannerfelt/ridal/issues/82) for more info.**
+## Note on recent interface change
+**The CLI/Python interface changed completely in version 0.5. See [Issue #82](https://github.com/erikmannerfelt/ridal/issues/82) for more info.**
 
 ![Image of a glacier radargram](https://raw.githubusercontent.com/erikmannerfelt/ridal/main/images/kroppbreen_rgm.webp)
 *Radargram (100 MHz Malå) of Kroppbreen in Svalbard. Collected 28 Feb. 2023.*

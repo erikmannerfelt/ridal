@@ -1,4 +1,4 @@
-use crate::{formats, gpr, tools};
+use crate::{formats, gpr, metadata, tools};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -12,8 +12,10 @@ pub struct Args {
 
 #[derive(Debug, Subcommand)]
 pub enum Commands {
-    /// Process one or more GPR profiles
+    /// Process one or more GPR profiles into one final output
     Process(ProcessArgs),
+    /// Batch-process one or more GPR profiles into many outputs
+    BatchProcess(BatchProcessArgs),
     /// Show metadata/location information for one or more GPR profiles
     Info(InfoArgs),
     /// Inspect available processing steps
@@ -84,6 +86,83 @@ pub struct ProcessArgs {
     /// Override the antenna center frequency (in MHz) from file metadata
     #[arg(long)]
     pub override_antenna_mhz: Option<f32>,
+
+    /// Add user metadata as key=value. Repeatable.
+    #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub metadata: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(
+    ArgGroup::new("step_choice")
+        .required(false)
+        .args(["steps", "default", "default_with_topo"]),
+))]
+pub struct BatchProcessArgs {
+    /// Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded.
+    #[arg(required = true)]
+    pub inputs: Vec<PathBuf>,
+
+    /// Output directory. Must already exist.
+    #[arg(short, long, required = true)]
+    pub output: PathBuf,
+
+    /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
+    #[arg(short, long, default_value = "0.168")]
+    pub velocity: f32,
+
+    /// Load a separate ".cor" file (RAMAC only). If not given, it will be searched for automatically.
+    #[arg(short, long)]
+    pub cor: Option<PathBuf>,
+
+    /// Correct elevation values with a DEM
+    #[arg(short, long)]
+    pub dem: Option<PathBuf>,
+
+    /// Which coordinate reference system to project coordinates in.
+    #[arg(long)]
+    pub crs: Option<String>,
+
+    /// Export location tracks to CSV in the given directory.
+    #[arg(short, long)]
+    pub track: Option<Option<PathBuf>>,
+
+    /// Process with the default profile.
+    #[arg(long)]
+    pub default: bool,
+
+    /// Process with the default profile plus topographic correction.
+    #[arg(long = "default-with-topo")]
+    pub default_with_topo: bool,
+
+    /// Processing steps to run, separated by commas. Can also be a filepath to a newline-separated step file.
+    #[arg(long)]
+    pub steps: Option<String>,
+
+    /// Suppress progress messages
+    #[arg(short, long)]
+    pub quiet: bool,
+
+    /// Render images into the given directory.
+    #[arg(short, long)]
+    pub render: Option<Option<PathBuf>>,
+
+    /// Don't export nc files
+    #[arg(long)]
+    pub no_export: bool,
+
+    /// Merge neighboring chronological profiles that are closer than the given threshold
+    /// (e.g. "10 min"). Incompatible neighbors remain separate outputs.
+    #[arg(long)]
+    pub merge: Option<String>,
+
+    /// Override the antenna center frequency (in MHz) from file metadata
+    #[arg(long)]
+    pub override_antenna_mhz: Option<f32>,
+
+    /// Add user metadata as key=value. Repeatable.
+    #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub metadata: Vec<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -148,6 +227,47 @@ pub struct FormatsArgs {
     pub json: bool,
 }
 
+fn resolve_steps(
+    default: bool,
+    default_with_topo: bool,
+    steps: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let resolved_steps = if default_with_topo {
+        let mut profile = gpr::default_processing_profile();
+        profile.push("correct_topography".to_string());
+        profile
+    } else if default {
+        gpr::default_processing_profile()
+    } else if let Some(step_text) = steps {
+        tools::parse_step_list(step_text)?
+    } else {
+        vec![]
+    };
+
+    gpr::validate_steps(&resolved_steps)?;
+    Ok(resolved_steps)
+}
+
+fn optional_existing_dir(
+    value: &Option<Option<PathBuf>>,
+    label: &str,
+) -> Result<Option<PathBuf>, String> {
+    match value {
+        None => Ok(None),
+        Some(None) => Ok(None),
+        Some(Some(path)) => {
+            if !path.is_dir() {
+                Err(format!(
+                    "{label} must be an existing directory in batch mode: {}",
+                    path.display()
+                ))
+            } else {
+                Ok(Some(path.clone()))
+            }
+        }
+    }
+}
+
 #[cfg(feature = "cli")]
 #[allow(dead_code)]
 pub fn main(arguments: Args) -> i32 {
@@ -159,33 +279,81 @@ pub fn main(arguments: Args) -> i32 {
 
 pub fn run(arguments: Args) -> Result<(), String> {
     match arguments.command {
-        Commands::Process(args) => process_command(args),
+        Commands::Process(args) => process_command(&args),
+        Commands::BatchProcess(args) => batch_process_command(&args),
         Commands::Info(args) => info_command(args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
     }
 }
 
-fn process_command(args: ProcessArgs) -> Result<(), String> {
-    let steps = choose_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
-    gpr::validate_steps(&steps)?;
-    let params = gpr::RunParams {
-        filepaths: args.inputs,
-        output_path: args.output,
-        dem_path: args.dem,
-        cor_path: args.cor,
-        medium_velocity: args.velocity,
-        crs: args.crs,
-        quiet: args.quiet,
-        track_path: args.track,
-        steps,
-        no_export: args.no_export,
-        render_path: args.render,
-        override_antenna_mhz: args.override_antenna_mhz,
-    };
-    gpr::run(params).map(|_| ()).map_err(|e| format!("{e:?}"))
-}
+fn process_command(args: &ProcessArgs) -> Result<(), String> {
+    let resolved_steps =
+        resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
+    let user_metadata = metadata::parse_cli_metadata(&args.metadata)?;
 
+    let params = gpr::RunParams {
+        filepaths: args.inputs.clone(),
+        output_path: args.output.clone(),
+        dem_path: args.dem.clone(),
+        cor_path: args.cor.clone(),
+        medium_velocity: args.velocity,
+        crs: args.crs.clone(),
+        quiet: args.quiet,
+        track_path: args.track.clone(),
+        steps: resolved_steps,
+        no_export: args.no_export,
+        render_path: args.render.clone(),
+        override_antenna_mhz: args.override_antenna_mhz,
+        user_metadata,
+    };
+
+    let result = gpr::run(params).map_err(|e| e.to_string())?;
+    if !args.quiet {
+        println!("{}", result.output_path.display());
+    }
+    Ok(())
+}
+fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
+    if !args.output.is_dir() {
+        return Err(format!(
+            "output must be an existing directory in batch mode: {}",
+            args.output.display()
+        ));
+    }
+
+    let render_dir = optional_existing_dir(&args.render, "render")?;
+    let track_dir = optional_existing_dir(&args.track, "track")?;
+
+    let resolved_steps =
+        resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
+    let user_metadata = metadata::parse_cli_metadata(&args.metadata)?;
+
+    let params = gpr::BatchRunParams {
+        filepaths: args.inputs.clone(),
+        output_dir: args.output.clone(),
+        dem_path: args.dem.clone(),
+        cor_path: args.cor.clone(),
+        medium_velocity: args.velocity,
+        crs: args.crs.clone(),
+        quiet: args.quiet,
+        track_dir,
+        steps: resolved_steps,
+        no_export: args.no_export,
+        render_dir,
+        merge: args.merge.clone(),
+        override_antenna_mhz: args.override_antenna_mhz,
+        user_metadata,
+    };
+
+    let result = gpr::run_batch(params)?;
+    if !args.quiet {
+        for path in result.output_paths {
+            println!("{}", path.display());
+        }
+    }
+    Ok(())
+}
 fn info_command(args: InfoArgs) -> Result<(), String> {
     let params = gpr::InfoParams {
         filepaths: args.inputs,

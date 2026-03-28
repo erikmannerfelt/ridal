@@ -26,10 +26,10 @@ def process_kroppbreen():
     filepath = Path(os.environ.get("DATA_DIR", "")) / "DAT_0042_A1.rad"
     dem_filepath = Path(os.environ.get("DEM_DIR", "")) / "edvard_mette_ragna_kropp_dem_2024.tif"
 
-    ridal.run_cli(
-        filepath=str(filepath),
-        dem=str(dem_filepath),
-        output=str(processed_path),
+    ridal.process(
+        filepath=filepath,
+        dem=dem_filepath,
+        output=processed_path,
         steps=[
             "remove_empty_traces",
             "equidistant_traces",
