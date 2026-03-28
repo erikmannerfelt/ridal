@@ -95,7 +95,7 @@ For more control, the output directory and/or filename can be controlled with `-
 To process multiple files in "batch mode", provide a ["glob"](https://en.wikipedia.org/wiki/Glob_(programming)) pattern as the filename.
 Optionally, for many sequential files, the `--merge` argument allows merging multiple files into one.
 ```bash
-ridal batch-process "data/*.rd3" --merge "10 min" --default -o output/
+ridal batch-process data/*.rd3 --merge "10 min" --default -o output/
 ```
 
 A rudimentary profile renderer is available with the `-r` argument.

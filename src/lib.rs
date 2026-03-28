@@ -11,8 +11,8 @@ mod filters;
 mod formats;
 mod gpr;
 mod io;
-mod metadata;
 mod tools;
+mod user_metadata;
 
 #[allow(dead_code)]
 const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");

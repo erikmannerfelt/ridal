@@ -1,3 +1,4 @@
 /target
 img.jpg
 .env
+__pycache__/

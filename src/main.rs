@@ -18,8 +18,8 @@ mod filters;
 mod formats;
 mod gpr;
 mod io;
-mod metadata;
 mod tools;
+mod user_metadata;
 
 const PROGRAM_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");

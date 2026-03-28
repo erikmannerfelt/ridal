@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use crate::{gpr, metadata, tools};
+use crate::{gpr, tools, user_metadata};
 
 /// Load and parse a Malå metadata file (.rad)
 ///
@@ -487,21 +487,21 @@ fn add_user_metadata_attributes(file: &mut netcdf::FileMut, gpr: &gpr::GPR) -> R
         return Ok(());
     }
 
-    let canonical = metadata::canonical_json(&gpr.user_metadata)?;
+    let canonical = user_metadata::canonical_json(&gpr.user_metadata)?;
     add_nc_attribute(file, "ridal-user-metadata-json", canonical.as_str())?;
 
-    for attr in metadata::flatten_for_netcdf(&gpr.user_metadata)? {
+    for attr in user_metadata::flatten_for_netcdf(&gpr.user_metadata)? {
         match attr.value {
-            metadata::FlattenedMetadataValue::String(v) => {
+            user_metadata::FlattenedMetadataValue::String(v) => {
                 add_nc_attribute(file, &attr.name, v.as_str())?;
             }
-            metadata::FlattenedMetadataValue::I64(v) => {
+            user_metadata::FlattenedMetadataValue::I64(v) => {
                 add_nc_attribute(file, &attr.name, v)?;
             }
-            metadata::FlattenedMetadataValue::F64(v) => {
+            user_metadata::FlattenedMetadataValue::F64(v) => {
                 add_nc_attribute(file, &attr.name, v)?;
             }
-            metadata::FlattenedMetadataValue::U8(v) => {
+            user_metadata::FlattenedMetadataValue::U8(v) => {
                 add_nc_attribute(file, &attr.name, v)?;
             }
         }

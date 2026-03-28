@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
 
-use crate::{dem, filters, io, metadata, tools};
+use crate::{dem, filters, io, tools, user_metadata};
 
 const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
 const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
@@ -377,7 +377,7 @@ pub struct GPR {
     /// The calculated zero-point (ns). It represents the delay between the transmitter and the receiver.
     zero_point_ns: f32,
     /// User-supplied metadata that should be carried through processing/export.
-    pub user_metadata: metadata::UserMetadata,
+    pub user_metadata: user_metadata::UserMetadata,
 }
 
 impl GPR {
@@ -752,7 +752,7 @@ impl GPR {
             topo_data: None,
             horizontal_signal_distance,
             zero_point_ns: 0.,
-            user_metadata: metadata::UserMetadata::new(),
+            user_metadata: user_metadata::UserMetadata::new(),
         })
     }
 
@@ -1566,7 +1566,7 @@ impl GPR {
             self.metadata.time_window *= self.height() as f32 / self.metadata.samples as f32;
             self.metadata.samples = self.height() as u32;
             self.metadata.last_trace = self.width() as u32;
-            metadata::merge_prefer_first(&mut self.user_metadata, &other.user_metadata);
+            user_metadata::merge_prefer_first(&mut self.user_metadata, &other.user_metadata);
 
             self.log_event(
                 "merge",
@@ -1592,7 +1592,7 @@ pub struct RunParams {
     pub no_export: bool,
     pub render_path: Option<Option<PathBuf>>,
     pub override_antenna_mhz: Option<f32>,
-    pub user_metadata: metadata::UserMetadata,
+    pub user_metadata: user_metadata::UserMetadata,
 }
 #[derive(Debug, Clone)]
 pub struct BatchRunParams {
@@ -1609,7 +1609,7 @@ pub struct BatchRunParams {
     pub render_dir: Option<PathBuf>,
     pub merge: Option<String>,
     pub override_antenna_mhz: Option<f32>,
-    pub user_metadata: metadata::UserMetadata,
+    pub user_metadata: user_metadata::UserMetadata,
 }
 
 #[derive(Debug, Clone)]
@@ -2195,7 +2195,7 @@ fn load_single_gpr_for_grouping(
 
     let mut gpr = GPR::from_meta_and_loc(location, metadata)
         .map_err(|e| format!("Failed to build GPR for '{}': {e}", path.display()))?;
-    gpr.user_metadata = metadata::UserMetadata::new();
+    gpr.user_metadata = user_metadata::UserMetadata::new();
     Ok(gpr)
 }
 
@@ -2401,7 +2401,7 @@ pub mod tests {
             zero_point_ns: 0.,
             horizontal_signal_distance: 1.,
             log: Vec::new(),
-            user_metadata: crate::metadata::UserMetadata::new(),
+            user_metadata: crate::user_metadata::UserMetadata::new(),
         }
     }
 
@@ -2505,7 +2505,7 @@ pub mod tests {
             log: Vec::new(),
             horizontal_signal_distance: antenna_separation,
             zero_point_ns: 0.,
-            user_metadata: crate::metadata::UserMetadata::new(),
+            user_metadata: crate::user_metadata::UserMetadata::new(),
         }
     }
 

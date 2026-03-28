@@ -1,4 +1,4 @@
-use crate::{formats, gpr, metadata, tools};
+use crate::{formats, gpr, tools, user_metadata};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -290,7 +290,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
 fn process_command(args: &ProcessArgs) -> Result<(), String> {
     let resolved_steps =
         resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
-    let user_metadata = metadata::parse_cli_metadata(&args.metadata)?;
+    let user_metadata = user_metadata::parse_cli_metadata(&args.metadata)?;
 
     let params = gpr::RunParams {
         filepaths: args.inputs.clone(),
@@ -327,7 +327,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
 
     let resolved_steps =
         resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
-    let user_metadata = metadata::parse_cli_metadata(&args.metadata)?;
+    let user_metadata = user_metadata::parse_cli_metadata(&args.metadata)?;
 
     let params = gpr::BatchRunParams {
         filepaths: args.inputs.clone(),
