@@ -477,6 +477,8 @@ fn formats_command(args: FormatsArgs) -> Result<(), String> {
     Ok(())
 }
 
+// TODO: Might not be used anywhere (2026-03-28)
+#[allow(dead_code)]
 fn choose_steps(
     default: bool,
     default_with_topo: bool,

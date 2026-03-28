@@ -35,16 +35,16 @@ pub mod ridal {
     fn optional_metadata(
         py: Python<'_>,
         value: Option<PyObject>,
-    ) -> PyResult<crate::metadata::UserMetadata> {
+    ) -> PyResult<crate::user_metadata::UserMetadata> {
         match value {
-            None => Ok(crate::metadata::UserMetadata::new()),
+            None => Ok(crate::user_metadata::UserMetadata::new()),
             Some(obj) => {
                 let bound = obj.bind(py);
                 let json = py.import_bound("json")?;
                 let text: String = json.getattr("dumps")?.call1((bound,))?.extract()?;
-                let value: serde_json::Value =
-                    serde_json::from_str(&text).map_err(pyo3::exceptions::PyValueError::new_err)?;
-                crate::metadata::value_to_metadata(value)
+                let value: serde_json::Value = serde_json::from_str(&text)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e:?}")))?;
+                crate::user_metadata::value_to_metadata(value)
                     .map_err(pyo3::exceptions::PyValueError::new_err)
             }
         }
