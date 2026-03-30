@@ -60,10 +60,20 @@ pip install ridal
 
 ```python
 >>> import ridal
+# Print useful info as a dictionary
 >>> ridal.info("path/to/file.rad")
 '{...}'
+# Process and save to a file
 >>> ridal.process("path/to/file.rad", steps=["zero_corr", "auto_gain"], output="processed.nc")
-
+# Process and load into memory
+>>> ridal.process("path/to/file.rad", steps=["zero_corr"], return_dataset=True, return_dataset_format="xarray")
+<xarray.Dataset> Size: ...
+Dimensions:     (y: ..., x: ...)
+Coordinates:
+...
+# Only load into memory with no processing
+>>> ridal.read("path/to/file.rad", return_dataset_format="xarray")
+<same as above>
 ```
 
 See [scripts/render_kroppbreen.py](https://github.com/erikmannerfelt/ridal/blob/main/scripts/render_kroppbreen.py) for an example of how it can be used.

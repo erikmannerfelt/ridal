@@ -1,12 +1,10 @@
 //! # ridal --- Speeding up Ground Penetrating Radar (GPR) processing
 //! A Ground Penetrating Radar (GPR) processing tool written in rust.
 
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
 mod cli;
 mod coords;
 mod dem;
+mod export;
 mod filters;
 mod formats;
 mod gpr;
@@ -22,10 +20,10 @@ const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
 const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 
 #[cfg(feature = "python")]
-#[pymodule]
+#[pyo3::pymodule]
 pub mod ridal {
     use crate::{formats, gpr};
-    use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyValueError};
+    use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
     use pyo3::prelude::*;
     use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 
@@ -53,6 +51,16 @@ pub mod ridal {
     fn json_to_py(py: Python<'_>, text: &str) -> PyResult<PyObject> {
         let json = py.import_bound("json")?;
         Ok(json.getattr("loads")?.call1((text,))?.unbind())
+    }
+
+    fn xarray_dict_to_ds(py: Python<'_>, dict: Py<PyAny>) -> PyResult<PyObject> {
+        let xarray = py.import_bound("xarray")?;
+
+        Ok(xarray
+            .getattr("Dataset")?
+            .getattr("from_dict")?
+            .call1((&dict,))?
+            .unbind())
     }
 
     fn fspath(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
@@ -163,6 +171,7 @@ pub mod ridal {
         inputs,
         output=None,
         steps=None,
+        return_dataset=false,
         default=false,
         default_with_topo=false,
         velocity=0.168,
@@ -175,12 +184,14 @@ pub mod ridal {
         no_export=false,
         override_antenna_mhz=None,
         metadata=None,
+        return_dataset_format="xarray_dict".to_string()
     ))]
     fn process(
         py: Python<'_>,
         inputs: PyObject,
         output: Option<PyObject>,
         steps: Option<PyObject>,
+        return_dataset: bool,
         default: bool,
         default_with_topo: bool,
         velocity: f32,
@@ -193,7 +204,36 @@ pub mod ridal {
         no_export: bool,
         override_antenna_mhz: Option<f32>,
         metadata: Option<PyObject>,
-    ) -> PyResult<String> {
+        return_dataset_format: String,
+    ) -> PyResult<PyObject> {
+        use pyo3::exceptions::PyValueError;
+
+        if !["xarray", "xarray_dict"]
+            .iter()
+            .any(|s| s == &return_dataset_format)
+        {
+            return Err(PyNotImplementedError::new_err(
+                "Only 'xarray_dict' and 'xarray' return formats are supported for now",
+            ));
+        };
+
+        if return_dataset {
+            if output.is_some() {
+                return Err(PyValueError::new_err(
+                    "return_dataset=True requires output=None",
+                ));
+            }
+            if render.is_some() {
+                return Err(PyValueError::new_err(
+                    "return_dataset=True is incompatible with render=...",
+                ));
+            }
+            if track.is_some() {
+                return Err(PyValueError::new_err(
+                    "return_dataset=True is incompatible with track=...",
+                ));
+            }
+        }
         let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
         let output_path = optional_path(py, output)?;
         let cor_path = optional_path(py, cor)?;
@@ -249,6 +289,37 @@ pub mod ridal {
 
         let user_metadata = optional_metadata(py, metadata)?;
 
+        if return_dataset {
+            // Build but do not export
+            let params2 = gpr::RunParams {
+                filepaths: input_paths,
+                output_path: None,
+                dem_path,
+                cor_path,
+                medium_velocity: velocity,
+                crs,
+                quiet,
+                track_path: None,
+                steps: resolved_steps,
+                no_export: true,
+                render_path: None,
+                override_antenna_mhz,
+                user_metadata,
+            };
+            let (gpr_obj, _default_path) = gpr::build_processed_gpr(params2)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+            let ds = gpr_obj.export_dataset();
+            let ds_py = ds.to_python(py);
+            if return_dataset_format == "xarray_dict" {
+                return ds_py;
+            } else if return_dataset_format == "xarray" {
+                return xarray_dict_to_ds(py, ds_py?);
+            } else {
+                unreachable!()
+            }
+        }
+
+        // file/export mode (unchanged)
         let params = gpr::RunParams {
             filepaths: input_paths,
             output_path,
@@ -264,9 +335,70 @@ pub mod ridal {
             override_antenna_mhz,
             user_metadata,
         };
-
-        let result = gpr::run(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
-        Ok(result.output_path.to_string_lossy().to_string())
+        let result = gpr::run(params)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+        // Ok(result.output_path.to_string_lossy().to_string())
+        Ok(py
+            .eval_bound("str", None, None)?
+            .call1((result.output_path.to_string_lossy().to_string(),))?
+            .into())
+    }
+    /// Process one or more GPR files.
+    ///
+    /// Parameters
+    /// ----------
+    /// inputs
+    ///     A path-like object or a list/tuple of path-like objects.
+    /// output
+    ///     Output filename or directory. If None, a default .nc path is derived from the first input.
+    /// steps
+    ///     Processing steps to run, either as a comma-separated string or a list of strings.
+    /// default
+    ///     Use the default processing profile.
+    /// default_with_topo
+    ///     Use the default processing profile plus topographic correction.
+    #[pyfunction]
+    #[pyo3(signature = (
+        inputs,
+        velocity=0.168,
+        cor=None,
+        dem=None,
+        crs=None,
+        override_antenna_mhz=None,
+        metadata=None,
+        return_dataset_format="xarray_dict".to_string()
+    ))]
+    fn read(
+        py: Python<'_>,
+        inputs: PyObject,
+        velocity: f32,
+        cor: Option<PyObject>,
+        dem: Option<PyObject>,
+        crs: Option<String>,
+        override_antenna_mhz: Option<f32>,
+        metadata: Option<PyObject>,
+        return_dataset_format: String,
+    ) -> PyResult<PyObject> {
+        process(
+            py,
+            inputs,
+            None,
+            None,
+            true,
+            false,
+            false,
+            velocity,
+            cor,
+            dem,
+            crs,
+            None,
+            true,
+            None,
+            false,
+            override_antenna_mhz,
+            metadata,
+            return_dataset_format,
+        )
     }
     /// Batch-process one or more GPR files into many outputs.
     ///

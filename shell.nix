@@ -10,6 +10,14 @@ pkgs.mkShell {
 
   buildInputs = with pkgs; [
     cargo-tarpaulin # Get test coverage statistics
+    (pkgs.python312.withPackages (ps: with ps; [
+      pip
+      pytest
+      virtualenv
+      xarray
+      numpy
+      matplotlib
+    ]))
     rustfmt
     clippy
     proj

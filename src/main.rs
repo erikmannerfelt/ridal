@@ -14,6 +14,7 @@ use clap::Parser;
 mod cli;
 mod coords;
 mod dem;
+mod export;
 mod filters;
 mod formats;
 mod gpr;

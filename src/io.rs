@@ -1,11 +1,11 @@
 /// Functions to handle input and output (I/O) of GPR data files.
-use ndarray::{Array1, Array2};
+use ndarray::Array2;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
-use crate::{gpr, tools, user_metadata};
+use crate::{gpr, tools};
 
 /// Load and parse a Malå metadata file (.rad)
 ///
@@ -482,34 +482,6 @@ pub fn load_pe_gp2(
     }
 }
 
-fn add_user_metadata_attributes(file: &mut netcdf::FileMut, gpr: &gpr::GPR) -> Result<(), String> {
-    if gpr.user_metadata.is_empty() {
-        return Ok(());
-    }
-
-    let canonical = user_metadata::canonical_json(&gpr.user_metadata)?;
-    add_nc_attribute(file, "ridal-user-metadata-json", canonical.as_str())?;
-
-    for attr in user_metadata::flatten_for_netcdf(&gpr.user_metadata)? {
-        match attr.value {
-            user_metadata::FlattenedMetadataValue::String(v) => {
-                add_nc_attribute(file, &attr.name, v.as_str())?;
-            }
-            user_metadata::FlattenedMetadataValue::I64(v) => {
-                add_nc_attribute(file, &attr.name, v)?;
-            }
-            user_metadata::FlattenedMetadataValue::F64(v) => {
-                add_nc_attribute(file, &attr.name, v)?;
-            }
-            user_metadata::FlattenedMetadataValue::U8(v) => {
-                add_nc_attribute(file, &attr.name, v)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// Common functionality for writing NetCDF variables
 fn write_nc_variable_common<T>(
     v: &mut netcdf::VariableMut,
@@ -615,117 +587,47 @@ where
 /// - If the file already exists and cannot be removed.
 /// - If a dimension, attribute or variable could not be created in the NetCDF file
 /// - If data could not be written to the file
-pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), String> {
-    // Remove any previously existing file. If this is not added, netcdf will throw a useless
-    // error!
+pub fn export_netcdf(
+    ds: &crate::export::ExportDataset<'_>,
+    nc_filepath: &Path,
+) -> Result<(), String> {
+    // Remove existing file (same reason as before)
     if nc_filepath.is_file() {
         std::fs::remove_file(nc_filepath).map_err(|e| {
             format!("NetCDF export error when removing old file with same name: {e}")
         })?;
-    };
-    // Create a new NetCDF file
+    }
+
+    // Create new file
     let mut file = netcdf::create(nc_filepath)
         .map_err(|e| format!("NetCDF export error when creating NetCDF file: {e}"))?;
 
-    let width = gpr.width();
-    let height = gpr.height();
+    // ---- Dimensions ----
+    for (name, len) in &ds.dims {
+        file.add_dimension(name, *len)
+            .map_err(|e| format!("NetCDF export error when adding dimension {name}: {e}"))?;
+    }
 
-    // Add the x/y dimensions for the data
-    file.add_dimension("x", width)
-        .map_err(|e| format!("NetCDF export error when adding dimension x: {e}"))?;
-    file.add_dimension("y", height)
-        .map_err(|e| format!("NetCDF export error when adding dimension y: {e}"))?;
+    // ---- Global attributes from dataset ----
+    for (k, v) in &ds.attrs {
+        match v {
+            crate::export::ExportAttr::String(s) => add_nc_attribute(&mut file, k, s.as_str())?,
+            crate::export::ExportAttr::Strings(vs) => add_nc_attribute(&mut file, k, vs.clone())?,
+            crate::export::ExportAttr::F64(x) => add_nc_attribute(&mut file, k, *x)?,
+            crate::export::ExportAttr::F32(x) => add_nc_attribute(&mut file, k, *x)?,
+            crate::export::ExportAttr::I64(x) => add_nc_attribute(&mut file, k, *x)?,
+            crate::export::ExportAttr::U8(x) => add_nc_attribute(&mut file, k, *x)?,
+        }
+    }
 
-    // Add global attributes to the file
-    add_nc_attribute(
-        &mut file,
-        "start-datetime",
-        chrono::DateTime::from_timestamp(gpr.location.cor_points[0].time_seconds as i64, 0)
-            .unwrap()
-            .to_rfc3339(),
-    )?;
-
-    add_user_metadata_attributes(&mut file, gpr)?;
-
-    add_nc_attribute(
-        &mut file,
-        "stop-datetime",
-        chrono::DateTime::from_timestamp(
-            gpr.location.cor_points[gpr.location.cor_points.len() - 1].time_seconds as i64,
-            0,
-        )
-        .unwrap()
-        .to_rfc3339(),
-    )?;
-
+    // ---- Group 1 attrs “exactly like before” ----
+    // processing-datetime
     add_nc_attribute(
         &mut file,
         "processing-datetime",
         chrono::Local::now().to_rfc3339(),
     )?;
-
-    add_nc_attribute(&mut file, "antenna", gpr.metadata.antenna.clone())?;
-    add_nc_attribute(
-        &mut file,
-        "antenna-separation",
-        gpr.metadata.antenna_separation,
-    )?;
-    add_nc_attribute(&mut file, "frequency-steps", gpr.metadata.frequency_steps)?;
-    add_nc_attribute(
-        &mut file,
-        "vertical-sampling-frequency",
-        gpr.metadata.frequency,
-    )?;
-
-    if gpr.metadata.time_interval.is_finite() {
-        add_nc_attribute(&mut file, "time-interval", gpr.metadata.time_interval)?;
-    }
-
-    add_nc_attribute(&mut file, "processing-log", gpr.log.join("\n"))?;
-    add_nc_attribute(&mut file, "processing-steps", gpr.steps.clone())?;
-
-    let mut filepaths = vec![gpr
-        .metadata
-        .data_filepath
-        .to_str()
-        .ok_or(format!(
-            "Error writing NetCDF: Cannot parse original filepath as string: {:?}",
-            gpr.metadata.data_filepath
-        ))?
-        .to_string()];
-
-    for log_str in &gpr.log {
-        if let Some((_, filename)) = log_str.split_once("Merged ") {
-            filepaths.push(filename.replace("\"", ""));
-        }
-    }
-    add_nc_attribute(&mut file, "original-filepaths", filepaths)?;
-
-    add_nc_attribute(&mut file, "medium-velocity", gpr.metadata.medium_velocity)?;
-    add_nc_attribute(&mut file, "medium-velocity-unit", "m / ns")?;
-
-    add_nc_attribute(
-        &mut file,
-        "elevation-correction",
-        match gpr.location.correction.clone() {
-            gpr::LocationCorrection::None => "None".to_string(),
-            gpr::LocationCorrection::Dem(fp) => format!(
-                "DEM-corrected: {:?}",
-                fp.as_path().file_name().unwrap().to_str().unwrap()
-            ),
-        },
-    )?;
-
-    add_nc_attribute(&mut file, "crs", gpr.location.crs.clone())?;
-
-    let distance_vec = gpr.location.distances().into_raw_vec();
-    add_nc_attribute(
-        &mut file,
-        "total-distance",
-        distance_vec[distance_vec.len() - 1],
-    )?;
-    add_nc_attribute(&mut file, "total-distance-unit", "m")?;
-
+    // program-version
     add_nc_attribute(
         &mut file,
         "program-version",
@@ -737,165 +639,76 @@ pub fn export_netcdf(gpr: &gpr::GPR, nc_filepath: &Path) -> Result<(), String> {
         ),
     )?;
 
-    // Add the data to the file (main profile, compressed/chunked)
-    {
-        let data_vec: Vec<f32> = gpr.data.iter().copied().collect();
-
-        add_nc_variable_compressed_2d(
-            &mut file,
-            "data",
-            &["y", "x"],
-            &data_vec,
-            (gpr.height(), gpr.width()),
-            Some("mV"),
-            &[("coordinates", "distance return-time")],
-        )?;
+    // ---- Coordinates (1D) ----
+    for (name, var) in &ds.coords {
+        match &var.data {
+            crate::export::ExportArray::U32Owned1D(v) => {
+                add_nc_variable::<u32>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    v,
+                    None,
+                )?;
+            }
+            crate::export::ExportArray::F32Owned1D(v) => {
+                // collect unit attr if present
+                let unit = var.attrs.get("unit").map(|s| s.as_str());
+                add_nc_variable::<f32>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    v,
+                    unit,
+                )?;
+            }
+            crate::export::ExportArray::F64Owned1D(v) => {
+                let unit = var.attrs.get("unit").map(|s| s.as_str());
+                add_nc_variable::<f64>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    v,
+                    unit,
+                )?;
+            }
+            crate::export::ExportArray::F32Borrowed2D(_) => {
+                // coords are expected to be 1D; ignore
+                continue;
+            }
+        }
     }
 
-    if let Some(topo_data) = &gpr.topo_data {
-        // Add the topo-corrected data to the file (compressed/chunked)
-        let height2 = topo_data.shape()[0];
-        let width2 = topo_data.shape()[1];
+    // ---- Data variables ----
+    for (name, var) in &ds.data_vars {
+        match &var.data {
+            crate::export::ExportArray::F32Borrowed2D(arr2d) => {
+                // Flatten and write compressed/chunked 2D
+                let ny = ds.dims[var.dims[0].as_str()];
+                let nx = ds.dims[var.dims[1].as_str()];
+                let flat: Vec<f32> = arr2d.iter().copied().collect();
 
-        file.add_dimension("y2", height2)
-            .map_err(|e| format!("NetCDF export error when adding y2 dimension: {e}"))?;
+                // unit & extra attributes (coordinates)
+                let unit = var.attrs.get("unit").map(|s| s.as_str());
+                let mut extras: Vec<(&str, &str)> = Vec::new();
+                if let Some(coord_str) = var.attrs.get("coordinates") {
+                    extras.push(("coordinates", coord_str.as_str()));
+                }
 
-        let topo_vec: Vec<f32> = topo_data.iter().copied().collect();
-
-        add_nc_variable_compressed_2d(
-            &mut file,
-            "data_topographically_corrected",
-            &["y2", "x"],
-            &topo_vec,
-            (height2, width2),
-            Some("mV"),
-            &[("coordinates", "distance topo_elevation")],
-        )?;
-
-        // topo_elevation: compute data, then use helper
-        let (min_alt, max_alt) = gpr
-            .location
-            .cor_points
-            .iter()
-            .map(|p| p.altitude)
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), v| {
-                (mn.min(v), mx.max(v))
-            });
-
-        let max_depth = gpr
-            .depths()
-            .iter()
-            .cloned()
-            .fold(f32::NEG_INFINITY, f32::max) as f64;
-
-        let start = max_alt;
-        let end = min_alt - max_depth;
-
-        let altitudes: Vec<f64> = if height2 == 1 {
-            vec![start]
-        } else {
-            (0..height2)
-                .map(|i| {
-                    let t = i as f64 / (height2 - 1) as f64;
-                    start + t * (end - start)
-                })
-                .collect()
-        };
-
-        add_nc_variable(&mut file, "topo_elevation", &["y2"], &altitudes, Some("m"))?;
-
-        // Add y2 coordinates to the y2 dimension
-        let y2_vals: Vec<u32> = (0_u32..(height2 as u32)).collect();
-        add_nc_variable(&mut file, "y2", &["y2"], &y2_vals, None)?;
-    };
-
-    // Add x coordinates to the x dimension
-    add_nc_variable(
-        &mut file,
-        "x",
-        &["x"],
-        &(0_u32..(width as u32)).collect::<Vec<u32>>(),
-        None,
-    )?;
-
-    // Add y coordinates to the y dimension
-    add_nc_variable(
-        &mut file,
-        "y",
-        &["y"],
-        &(0_u32..(height as u32)).collect::<Vec<u32>>(),
-        None,
-    )?;
-
-    // Add the distance variable to the x dimension
-    add_nc_variable(&mut file, "distance", &["x"], &distance_vec, Some("m"))?;
-
-    // Add the time variable to the x dimension
-    let time_vals: Vec<f64> = gpr
-        .location
-        .cor_points
-        .iter()
-        .map(|point| point.time_seconds)
-        .collect();
-    add_nc_variable(&mut file, "time", &["x"], &time_vals, Some("s"))?;
-
-    // Add the easting variable to the x dimension
-    let easting_vals: Vec<f64> = gpr
-        .location
-        .cor_points
-        .iter()
-        .map(|point| point.easting)
-        .collect();
-    add_nc_variable(&mut file, "easting", &["x"], &easting_vals, Some("m"))?;
-
-    // Add the northing variable to the x dimension
-    let northing_vals: Vec<f64> = gpr
-        .location
-        .cor_points
-        .iter()
-        .map(|point| point.northing)
-        .collect();
-    add_nc_variable(&mut file, "northing", &["x"], &northing_vals, Some("m"))?;
-
-    // Add the elevation variable to the x dimension
-    let elevation_vals: Vec<f64> = gpr
-        .location
-        .cor_points
-        .iter()
-        .map(|point| point.altitude)
-        .collect();
-    add_nc_variable(
-        &mut file,
-        "elevation",
-        &["x"],
-        &elevation_vals,
-        Some("m a.s.l."),
-    )?;
-
-    // Add the two-way return time variable to the y dimension
-    let return_time_arr = (Array1::range(
-        0_f32,
-        gpr.metadata.time_window,
-        gpr.vertical_resolution_ns(),
-    )
-    .slice_axis(
-        ndarray::Axis(0),
-        ndarray::Slice::new(0, Some(gpr.height() as isize), 1),
-    ))
-    .to_owned()
-    .into_raw_vec();
-
-    add_nc_variable(
-        &mut file,
-        "return-time",
-        &["y"],
-        &return_time_arr,
-        Some("ns"),
-    )?;
-
-    // Add the depth variable to the y dimension
-    let depth_vals = gpr.depths().into_raw_vec();
-    add_nc_variable(&mut file, "depth", &["y"], &depth_vals, Some("m"))?;
+                add_nc_variable_compressed_2d::<f32>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &flat,
+                    (ny, nx),
+                    unit,
+                    &extras,
+                )?;
+            }
+            // data variables are expected to be 2D here; ignore other shapes
+            _ => continue,
+        }
+    }
 
     Ok(())
 }

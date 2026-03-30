@@ -1518,8 +1518,10 @@ impl GPR {
     pub fn width(&self) -> usize {
         self.data.shape()[1]
     }
+
     pub fn export(&self, nc_filepath: &Path) -> Result<(), String> {
-        io::export_netcdf(self, nc_filepath)
+        let ds = self.export_dataset();
+        io::export_netcdf(&ds, nc_filepath)
     }
 
     pub fn depths(&self) -> Array1<f32> {
@@ -1892,23 +1894,22 @@ pub fn inspect(params: InfoParams) -> Result<Vec<InfoRecord>, Box<dyn Error>> {
     Ok(records)
 }
 
-pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn Error>> {
+pub fn build_processed_gpr(
+    params: RunParams,
+) -> Result<(GPR, PathBuf), Box<dyn std::error::Error>> {
     let expanded = expand_input_paths(&params.filepaths)?;
     if expanded.is_empty() {
         return Err("No input files were provided.".into());
     }
-
     let mut resolved_inputs = expanded
         .iter()
-        .map(|input| formats::resolve_input(input))
-        .collect::<Result<Vec<ResolvedInput>, String>>()?;
-
+        .map(|input| crate::formats::resolve_input(input))
+        .collect::<Result<Vec<crate::formats::ResolvedInput>, String>>()?;
     if resolved_inputs.is_empty() {
         return Err("No input files were resolved.".into());
     }
 
     let output_path = derive_output_path(params.output_path.as_ref(), &resolved_inputs[0])?;
-
     let first_resolved = resolved_inputs.remove(0);
     let (first_meta, first_location) = load_meta_and_location(
         &first_resolved,
@@ -1918,14 +1919,12 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn Error>> {
         params.dem_path.as_ref(),
         params.override_antenna_mhz,
     )?;
-
     let mut gpr = GPR::from_meta_and_loc(first_location, first_meta).map_err(|e| {
         format!(
             "Error loading GPR data from {:?}: {:?}",
             first_resolved.data, e
         )
     })?;
-
     gpr.user_metadata = params.user_metadata.clone();
 
     for resolved in resolved_inputs {
@@ -1948,18 +1947,17 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn Error>> {
         gpr.merge(&other)?;
     }
 
-    let start_time = SystemTime::now();
+    let start_time = std::time::SystemTime::now();
     if !params.quiet {
         println!("Processing {:?}", gpr.metadata.data_filepath);
     }
-
     for (i, step) in params.steps.iter().enumerate() {
         if !params.quiet {
             println!(
                 "{}/{}, t+{:.2} s, Running step {}.",
                 i + 1,
                 params.steps.len(),
-                SystemTime::now()
+                std::time::SystemTime::now()
                     .duration_since(start_time)
                     .unwrap()
                     .as_secs_f32(),
@@ -1969,6 +1967,12 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn Error>> {
         gpr.process(step)
             .map_err(|e| format!("Error on step {}: {:?}", step, e))?;
     }
+
+    Ok((gpr, output_path))
+}
+
+pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn std::error::Error>> {
+    let (gpr, output_path) = build_processed_gpr(params.clone())?;
 
     if !params.no_export {
         if !params.quiet {
@@ -1994,11 +1998,11 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn Error>> {
             println!("Rendering image to {:?}", render_filepath);
         }
         gpr.render(&render_filepath)
-            .map_err(|e| format!("Error writing JPG: {e:?}"))?;
+            .map_err(|e| format!("Error writing JPG: {:?}", e))?;
     }
 
     if let Some(potential_track_path) = &params.track_path {
-        io::export_locations(
+        crate::io::export_locations(
             &gpr.location,
             potential_track_path.into(),
             &output_path,
