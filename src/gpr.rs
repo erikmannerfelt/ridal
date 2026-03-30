@@ -2208,7 +2208,7 @@ fn group_batch_inputs_chronologically(
     crs: Option<String>,
     override_antenna_mhz: Option<f32>,
 ) -> Result<Vec<Vec<PathBuf>>, String> {
-    let threshold = humantime::parse_duration(merge_threshold)
+    let threshold = parse_duration::parse(merge_threshold)
         .map_err(|e| format!("Failed to parse merge duration '{merge_threshold}': {e}"))?
         .as_secs_f64();
 
