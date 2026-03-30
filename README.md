@@ -17,14 +17,12 @@ Much of the functionality has been inspired from the projects [RGPR](https://git
 For example, Ridal currently only works on Malå (.rd3) and pulseEKKO (.dt1) radar formats.
 For many uses, these will more likely be the tools for you!
 
-Prior to Feb. 2026, this program was called `rsgpr`.
-
-## Note on recent interface change
-**The CLI/Python interface changed completely in version 0.5. See [Issue #82](https://github.com/erikmannerfelt/ridal/issues/82) for more info.**
-
 ![Image of a glacier radargram](https://raw.githubusercontent.com/erikmannerfelt/ridal/main/images/kroppbreen_rgm.webp)
 *Radargram (100 MHz Malå) of Kroppbreen in Svalbard. Collected 28 Feb. 2023.*
 
+### Notes
+- Prior to Feb. 2026, this program was called `rsgpr`.
+- The CLI/Python interface changed completely in version 0.5. See [Issue #82](https://github.com/erikmannerfelt/ridal/issues/82) for more info.
 
 ### Installation
 
@@ -40,11 +38,9 @@ cargo install ridal
 
 with nix, the flake can be used without worrying about the requirements above:
 ```nix
-{
-  inputs = {
-    ridal.url = "github:erikmannerfelt/ridal";
-  };
-}
+inputs = {
+  ridal.url = "github:erikmannerfelt/ridal";
+};
 ```
 or in an ephemeral shell:
 ```bash
@@ -52,7 +48,7 @@ nix shell github:erikmannerfelt/ridal
 ```
 
 #### Python
-There's an early implementation of a Python package, which will be expanded in the future:
+There's an early implementation of a Python package:
 
 ```bash
 pip install ridal
@@ -96,7 +92,16 @@ Processing a file using the default processing profile:
 ridal process DAT_001_A1.rd3 --default
 ```
 
-**All processing steps** are shown in the [steps.md](https://github.com/erikmannerfelt/ridal/blob/main/steps.md) file. It can also be printed with `ridal steps`.
+**All processing steps** are shown in the [steps.md](https://github.com/erikmannerfelt/ridal/blob/main/steps.md) file. It can also be printed with `ridal steps`. 
+
+A processing step pipeline is defined using `ridal process file.rad --steps "zero_corr,dewow,..."` or using a file: `--steps steps.txt`:
+```bash
+subset(1 100) # Comments are supported!
+zero_corr
+dewow
+
+correct_topography
+```
 
 The output will be a NetCDF file with the same name but an `.nc` suffix.
 By default, the output is saved in the same directory as the input.
