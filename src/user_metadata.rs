@@ -19,6 +19,7 @@ pub struct FlattenedMetadataAttribute {
     pub value: FlattenedMetadataValue,
 }
 
+#[allow(dead_code)]
 pub fn value_to_metadata(value: Value) -> Result<UserMetadata, String> {
     match value {
         Value::Object(map) => {
@@ -231,12 +232,8 @@ pub fn merge_prefer_first(dst: &mut UserMetadata, src: &UserMetadata) {
 }
 
 fn merge_value_prefer_first(dst: &mut Value, src: &Value) {
-    match (dst, src) {
-        (Value::Object(dst_map), Value::Object(src_map)) => {
-            merge_object_prefer_first(dst_map, src_map);
-        }
-        // Keep existing scalar / array / mismatched type value unchanged
-        _ => {}
+    if let (Value::Object(dst_map), Value::Object(src_map)) = (dst, src) {
+        merge_object_prefer_first(dst_map, src_map);
     }
 }
 
