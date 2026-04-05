@@ -620,25 +620,6 @@ pub fn export_netcdf(
         }
     }
 
-    // ---- Group 1 attrs “exactly like before” ----
-    // processing-datetime
-    add_nc_attribute(
-        &mut file,
-        "processing-datetime",
-        chrono::Local::now().to_rfc3339(),
-    )?;
-    // program-version
-    add_nc_attribute(
-        &mut file,
-        "program-version",
-        format!(
-            "{} version {} by {}",
-            crate::PROGRAM_NAME,
-            crate::PROGRAM_VERSION,
-            crate::PROGRAM_AUTHORS
-        ),
-    )?;
-
     // ---- Coordinates (1D) ----
     for (name, var) in &ds.coords {
         match &var.data {

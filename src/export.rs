@@ -12,7 +12,7 @@ use pyo3::{prelude::*, types::PyDict};
 use crate::gpr::{LocationCorrection, GPR};
 use crate::user_metadata;
 
-/// Attribute values we want to support in the exported Dataset.
+/// Attribute values to support in the exported Dataset.
 #[derive(Clone, Debug)]
 pub enum ExportAttr {
     String(String),
@@ -54,6 +54,7 @@ pub struct ExportDataset<'a> {
 #[cfg(feature = "python")]
 impl<'a> ExportDataset<'a> {
     /// Convert to a Python dict that matches `xarray.Dataset.from_dict(...)`.
+    #[allow(dead_code)]
     pub fn to_python<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
         let out = PyDict::new_bound(py);
 
@@ -111,6 +112,7 @@ impl<'a> ExportDataset<'a> {
 }
 
 #[cfg(feature = "python")]
+#[allow(dead_code)]
 fn export_var_to_py<'py>(py: Python<'py>, var: &ExportVariable<'_>) -> PyResult<PyObject> {
     let dict = PyDict::new_bound(py);
 
@@ -152,8 +154,6 @@ fn seconds_to_rfc3339(sec: f64) -> String {
 }
 
 impl GPR {
-    /// Build the full export dataset (ALL variables/coords/attrs except the
-    /// two "Group 1" NetCDF-only attrs: processing-datetime and program-version).
     pub fn export_dataset(&self) -> ExportDataset<'_> {
         let width = self.width();
         let height = self.height();
@@ -180,6 +180,20 @@ impl GPR {
         );
         attrs.insert("start-datetime".into(), ExportAttr::String(start_dt));
         attrs.insert("stop-datetime".into(), ExportAttr::String(stop_dt));
+
+        attrs.insert(
+            "processing-datetime".into(),
+            ExportAttr::String(chrono::Local::now().to_rfc3339()),
+        );
+        attrs.insert(
+            "program-version".into(),
+            ExportAttr::String(format!(
+                "{} version {} by {}",
+                crate::PROGRAM_NAME,
+                crate::PROGRAM_VERSION,
+                crate::PROGRAM_AUTHORS
+            )),
+        );
 
         // user metadata (canonical JSON + flattened attributes)
         if !self.user_metadata.is_empty() {
@@ -285,10 +299,6 @@ impl GPR {
             );
             attrs.insert("total-distance-unit".into(), ExportAttr::String("m".into()));
         }
-
-        // NOTE: "program-version" and "processing-datetime" are NOT added here,
-        // per your instruction to keep Group 1 exactly like before.
-        // The NetCDF writer in io.rs will add them.
 
         // ---------- Coordinates ----------
         let mut coords: BTreeMap<String, ExportVariable<'_>> = BTreeMap::new();
