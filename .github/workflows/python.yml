@@ -36,7 +36,7 @@ jobs:
 
     - name: Install built wheel
       run: |
-        pip install --force-reinstall --no-index --find-links target/wheels ridal
+        pip install --force-reinstall --find-links target/wheels ridal
 
     - name: Smoke test
       run: |
