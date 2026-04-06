@@ -1,219 +1,633 @@
-use crate::{gpr, tools};
-/// Functions to handle the command line interface (CLI)
-use clap::Parser;
-use std::{path::PathBuf, time::Duration};
+use crate::{formats, gpr, tools, user_metadata};
+use clap::{ArgGroup, Parser, Subcommand};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Parser)]
-#[clap(author, version, about, long_about = None)]
-#[clap(group(
-        clap::ArgGroup::new("step_choice")
-        .required(false)
-        .args(&["steps", "default", "default_with_topo"]),
-    ))
-]
-#[clap(group(
-        clap::ArgGroup::new("exit_choice")
-        .required(false)
-        .args(&["show_default", "info", "show_all_steps", "output"]),
-    ))
-]
+#[command(author, version, about, long_about = None)]
 pub struct Args {
-    /// Filepath of the header file or a glob pattern of many files
-    #[clap(short, long)]
-    pub filepath: Option<String>,
+    #[command(subcommand)]
+    pub command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Commands {
+    /// Process one or more GPR profiles into one final output
+    Process(ProcessArgs),
+    /// Batch-process one or more GPR profiles into many outputs
+    BatchProcess(BatchProcessArgs),
+    /// Show metadata/location information for one or more GPR profiles
+    Info(InfoArgs),
+    /// Inspect available processing steps
+    Steps(StepsArgs),
+    /// Inspect supported formats
+    Formats(FormatsArgs),
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(
+    ArgGroup::new("step_choice")
+        .required(false)
+        .args(["steps", "default", "default_with_topo"]),
+))]
+pub struct ProcessArgs {
+    /// Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded.
+    #[arg(required = true)]
+    pub inputs: Vec<PathBuf>,
 
     /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
-    #[clap(short, long, default_value = "0.168")]
+    #[arg(short, long, default_value = "0.168")]
     pub velocity: f32,
 
-    /// Only show metadata for the file
-    #[clap(short, long)]
-    pub info: bool,
-
-    /// Load a separate ".cor" file. If not given, it will be searched for automatically
-    #[clap(short, long)]
+    /// Load a separate ".cor" file (RAMAC only). If not given, it will be searched for automatically.
+    #[arg(short, long)]
     pub cor: Option<PathBuf>,
 
     /// Correct elevation values with a DEM
-    #[clap(short, long)]
+    #[arg(short, long)]
     pub dem: Option<PathBuf>,
 
     /// Which coordinate reference system to project coordinates in.
-    #[clap(long)]
+    #[arg(long)]
     pub crs: Option<String>,
 
-    /// Export the location track to a comma separated values (CSV) file. Defaults to the output filename location and stem +
-    /// "_track.csv"
-    #[clap(short, long)]
+    /// Export the location track to CSV. If no value is given, a sidecar path is derived from the output path.
+    #[arg(short, long)]
     pub track: Option<Option<PathBuf>>,
 
-    /// Process with the default profile. See "--show-default" to list the profile.
-    #[clap(long)]
+    /// Process with the default profile.
+    #[arg(long)]
     pub default: bool,
 
-    /// Process with the default profile plus topographic correction. See "--show-default" to list the profile.
-    #[clap(long)]
+    /// Process with the default profile plus topographic correction.
+    #[arg(long = "default-with-topo")]
     pub default_with_topo: bool,
 
-    /// Show the default profile and exit
-    #[clap(long)]
-    pub show_default: bool,
-
-    /// Show the available steps
-    #[clap(long)]
-    pub show_all_steps: bool,
-
-    /// Processing steps to run, separated by commas. Can be a filepath to a newline separated step file.
-    #[clap(long)]
+    /// Processing steps to run, separated by commas. Can also be a filepath to a newline-separated step file.
+    #[arg(long)]
     pub steps: Option<String>,
 
-    /// Output filename or directory. Defaults to the input filename with a ".nc" extension
-    #[clap(short, long)]
+    /// Output filename or directory. Defaults to the first input with a ".nc" extension.
+    #[arg(short, long)]
     pub output: Option<PathBuf>,
 
     /// Suppress progress messages
-    #[clap(short, long)]
+    #[arg(short, long)]
     pub quiet: bool,
 
-    /// Render an image of the profile and save it to the specified path. Defaults to a jpg in the
-    /// directory of the output filepath
-    #[clap(short, long)]
+    /// Render an image of the profile and save it to the specified path. If no path is given, a JPG sidecar is used.
+    #[arg(short, long)]
     pub render: Option<Option<PathBuf>>,
 
-    /// Don't export a nc file
-    #[clap(long)]
+    /// Don't export an nc file
+    #[arg(long)]
     pub no_export: bool,
 
-    /// Merge profiles closer in time than the given threshold when in batch mode (e.g. "10 min")
-    #[clap(long)]
+    /// Override the antenna center frequency (in MHz) from file metadata
+    #[arg(long)]
+    pub override_antenna_mhz: Option<f32>,
+
+    /// Add user metadata as key=value. Repeatable.
+    #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub metadata: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+#[command(group(
+    ArgGroup::new("step_choice")
+        .required(false)
+        .args(["steps", "default", "default_with_topo"]),
+))]
+pub struct BatchProcessArgs {
+    /// Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded.
+    #[arg(required = true)]
+    pub inputs: Vec<PathBuf>,
+
+    /// Output directory. Must already exist.
+    #[arg(short, long, required = true)]
+    pub output: PathBuf,
+
+    /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
+    #[arg(short, long, default_value = "0.168")]
+    pub velocity: f32,
+
+    /// Load a separate ".cor" file (RAMAC only). If not given, it will be searched for automatically.
+    #[arg(short, long)]
+    pub cor: Option<PathBuf>,
+
+    /// Correct elevation values with a DEM
+    #[arg(short, long)]
+    pub dem: Option<PathBuf>,
+
+    /// Which coordinate reference system to project coordinates in.
+    #[arg(long)]
+    pub crs: Option<String>,
+
+    /// Export location tracks to CSV in the given directory.
+    #[arg(short, long)]
+    pub track: Option<Option<PathBuf>>,
+
+    /// Process with the default profile.
+    #[arg(long)]
+    pub default: bool,
+
+    /// Process with the default profile plus topographic correction.
+    #[arg(long = "default-with-topo")]
+    pub default_with_topo: bool,
+
+    /// Processing steps to run, separated by commas. Can also be a filepath to a newline-separated step file.
+    #[arg(long)]
+    pub steps: Option<String>,
+
+    /// Suppress progress messages
+    #[arg(short, long)]
+    pub quiet: bool,
+
+    /// Render images into the given directory.
+    #[arg(short, long)]
+    pub render: Option<Option<PathBuf>>,
+
+    /// Don't export nc files
+    #[arg(long)]
+    pub no_export: bool,
+
+    /// Merge neighboring chronological profiles that are closer than the given threshold
+    /// (e.g. "10 min"). Incompatible neighbors remain separate outputs.
+    #[arg(long)]
     pub merge: Option<String>,
 
-    /// Override the antenna center frequency (in MHz) of the file metadata
-    #[clap(long)]
+    /// Override the antenna center frequency (in MHz) from file metadata
+    #[arg(long)]
+    pub override_antenna_mhz: Option<f32>,
+
+    /// Add user metadata as key=value. Repeatable.
+    #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub metadata: Vec<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct InfoArgs {
+    /// Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded.
+    #[arg(required = true)]
+    pub inputs: Vec<PathBuf>,
+
+    /// Emit JSON instead of human-readable text
+    #[arg(long)]
+    pub json: bool,
+
+    /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
+    #[arg(short, long, default_value = "0.168")]
+    pub velocity: f32,
+
+    /// Load a separate ".cor" file (RAMAC only). If not given, it will be searched for automatically.
+    #[arg(short, long)]
+    pub cor: Option<PathBuf>,
+
+    /// Correct elevation values with a DEM
+    #[arg(short, long)]
+    pub dem: Option<PathBuf>,
+
+    /// Which coordinate reference system to project coordinates in.
+    #[arg(long)]
+    pub crs: Option<String>,
+
+    /// Override the antenna center frequency (in MHz) from file metadata
+    #[arg(long)]
     pub override_antenna_mhz: Option<f32>,
 }
 
-pub enum CliAction {
-    Run(gpr::RunParams),
-    Error(String),
-    Done,
+#[derive(Debug, clap::Args)]
+#[command(group(
+    ArgGroup::new("steps_mode")
+        .required(false)
+        .args(["describe_all", "describe", "default"]),
+))]
+pub struct StepsArgs {
+    /// Show descriptions for all steps
+    #[arg(long = "describe-all")]
+    pub describe_all: bool,
+
+    /// Show the description for one step
+    #[arg(long)]
+    pub describe: Option<String>,
+
+    /// Show the default processing pipeline
+    #[arg(long)]
+    pub default: bool,
+
+    /// Emit JSON instead of human-readable text
+    #[arg(long)]
+    pub json: bool,
 }
-pub fn args_to_action(args: &Args) -> CliAction {
-    if args.show_all_steps {
-        for (name, description) in gpr::all_available_steps() {
-            println!("{}\n{}\n{}\n", name, "-".repeat(name.len()), description);
-        }
-        return CliAction::Done;
-    }
 
-    if args.show_default {
-        for line in gpr::default_processing_profile() {
-            println!("{}", line);
-        }
-        return CliAction::Done;
-    }
+#[derive(Debug, clap::Args)]
+pub struct FormatsArgs {
+    /// Emit JSON instead of human-readable text
+    #[arg(long)]
+    pub json: bool,
+}
 
-    let merge: Option<Duration> = match &args.merge {
-        Some(merge_string) => match parse_duration::parse(merge_string) {
-            Ok(d) => Some(d),
-            Err(e) => return CliAction::Error(format!("Error parsing --merge string: {:?}", e)),
-        },
-        None => None,
+fn resolve_steps(
+    default: bool,
+    default_with_topo: bool,
+    steps: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let resolved_steps = if default_with_topo {
+        let mut profile = gpr::default_processing_profile();
+        profile.push("correct_topography".to_string());
+        profile
+    } else if default {
+        gpr::default_processing_profile()
+    } else if let Some(step_text) = steps {
+        tools::parse_step_list(step_text)?
+    } else {
+        vec![]
     };
 
-    let filepaths = match &args.filepath {
-        Some(fp) => glob::glob(fp)
-            .unwrap()
-            .map(|v| v.unwrap())
-            .collect::<Vec<PathBuf>>(),
-        None => {
-            return CliAction::Error(
-                "No filepath given.\nUse the help text (\"-h\" or \"--help\") for assistance."
-                    .to_string(),
-            )
-        }
-    };
+    gpr::validate_steps(&resolved_steps)?;
+    Ok(resolved_steps)
+}
 
-    let steps: Vec<String> = match args.info {
-        true => Vec::new(),
-        false => match args.default_with_topo {
-            true => {
-                let mut profile = gpr::default_processing_profile();
-                profile.push("correct_topography".to_string());
-                profile
+fn optional_existing_dir(
+    value: &Option<Option<PathBuf>>,
+    label: &str,
+) -> Result<Option<PathBuf>, String> {
+    match value {
+        None => Ok(None),
+        Some(None) => Ok(None),
+        Some(Some(path)) => {
+            if !path.is_dir() {
+                Err(format!(
+                    "{label} must be an existing directory in batch mode: {}",
+                    path.display()
+                ))
+            } else {
+                Ok(Some(path.clone()))
             }
-            false => match args.default {
-                true => gpr::default_processing_profile(),
-                false => match &args.steps {
-                    Some(steps) => match tools::parse_step_list(steps) {
-                        Ok(s) => s,
-                        Err(e) => return CliAction::Error(e),
-                    },
-                    None => {
-                        println!("No processing steps specified. Saving raw data.");
-                        vec![]
-                    }
-                },
-            },
-        },
-    };
-
-    let allowed_steps = gpr::all_available_steps()
-        .iter()
-        .map(|s| s.0.clone())
-        .collect::<Vec<String>>();
-    for step in &steps {
-        if !allowed_steps.iter().any(|allowed| step.contains(allowed)) {
-            return CliAction::Error(format!("Unrecognized step: {}", step));
         }
     }
+}
+
+#[cfg(feature = "cli")]
+#[allow(dead_code)]
+pub fn main(arguments: Args) -> i32 {
+    match run(arguments) {
+        Ok(()) => 0,
+        Err(message) => error(&message, 1),
+    }
+}
+
+pub fn run(arguments: Args) -> Result<(), String> {
+    match arguments.command {
+        Commands::Process(args) => process_command(&args),
+        Commands::BatchProcess(args) => batch_process_command(&args),
+        Commands::Info(args) => info_command(args),
+        Commands::Steps(args) => steps_command(args),
+        Commands::Formats(args) => formats_command(args),
+    }
+}
+
+fn process_command(args: &ProcessArgs) -> Result<(), String> {
+    let resolved_steps =
+        resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
+    let user_metadata = user_metadata::parse_cli_metadata(&args.metadata)?;
 
     let params = gpr::RunParams {
-        filepaths,
+        filepaths: args.inputs.clone(),
         output_path: args.output.clone(),
-        only_info: args.info,
         dem_path: args.dem.clone(),
         cor_path: args.cor.clone(),
         medium_velocity: args.velocity,
         crs: args.crs.clone(),
         quiet: args.quiet,
         track_path: args.track.clone(),
-        steps,
+        steps: resolved_steps,
         no_export: args.no_export,
         render_path: args.render.clone(),
-        merge,
         override_antenna_mhz: args.override_antenna_mhz,
+        user_metadata,
     };
 
-    CliAction::Run(params)
+    let result = gpr::run(params).map_err(|e| e.to_string())?;
+    if !args.quiet {
+        println!("{}", result.output_path.display());
+    }
+    Ok(())
+}
+fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
+    if !args.output.is_dir() {
+        return Err(format!(
+            "output must be an existing directory in batch mode: {}",
+            args.output.display()
+        ));
+    }
+
+    let render_dir = optional_existing_dir(&args.render, "render")?;
+    let track_dir = optional_existing_dir(&args.track, "track")?;
+
+    let resolved_steps =
+        resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
+    let user_metadata = user_metadata::parse_cli_metadata(&args.metadata)?;
+
+    let params = gpr::BatchRunParams {
+        filepaths: args.inputs.clone(),
+        output_dir: args.output.clone(),
+        dem_path: args.dem.clone(),
+        cor_path: args.cor.clone(),
+        medium_velocity: args.velocity,
+        crs: args.crs.clone(),
+        quiet: args.quiet,
+        track_dir,
+        steps: resolved_steps,
+        no_export: args.no_export,
+        render_dir,
+        merge: args.merge.clone(),
+        override_antenna_mhz: args.override_antenna_mhz,
+        user_metadata,
+    };
+
+    let result = gpr::run_batch(params)?;
+    if !args.quiet {
+        for path in result.output_paths {
+            println!("{}", path.display());
+        }
+    }
+    Ok(())
+}
+fn info_command(args: InfoArgs) -> Result<(), String> {
+    let params = gpr::InfoParams {
+        filepaths: args.inputs,
+        dem_path: args.dem,
+        cor_path: args.cor,
+        medium_velocity: args.velocity,
+        crs: args.crs,
+        override_antenna_mhz: args.override_antenna_mhz,
+    };
+    let records = gpr::inspect(params).map_err(|e| format!("{e:?}"))?;
+    if args.json {
+        if records.len() == 1 {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&records[0]).map_err(|e| e.to_string())?
+            );
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&records).map_err(|e| e.to_string())?
+            );
+        }
+    } else {
+        for (i, record) in records.iter().enumerate() {
+            if i > 0 {
+                println!();
+            }
+            print_info_record(record);
+        }
+    }
+    Ok(())
 }
 
-#[cfg(feature = "cli")]
-#[allow(dead_code)] // For maturin
-pub fn main(arguments: Args) -> i32 {
-    match args_to_action(&arguments) {
-        CliAction::Run(params) => match gpr::run(params) {
-            Ok(_) => 0,
-            Err(e) => error(&format!("{e:?}"), 1),
-        },
-        CliAction::Error(message) => error(&message, 1),
-        CliAction::Done => 0,
+fn steps_command(args: StepsArgs) -> Result<(), String> {
+    let all_steps = gpr::all_available_steps();
+    if args.json {
+        if args.default {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&gpr::default_processing_profile())
+                    .map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+        if let Some(step_name) = args.describe {
+            let mapping = step_mapping(Some(step_name), &all_steps)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&mapping).map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+        if args.describe_all {
+            let mapping = step_mapping(None, &all_steps)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&mapping).map_err(|e| e.to_string())?
+            );
+            return Ok(());
+        }
+        let names = all_steps
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<String>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&names).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    if args.default {
+        for step in gpr::default_processing_profile() {
+            println!("{step}");
+        }
+        return Ok(());
+    }
+    if let Some(step_name) = args.describe {
+        let mapping = step_mapping(Some(step_name), &all_steps)?;
+        for (name, description) in mapping {
+            println!("{name}\n{}\n{description}\n", "-".repeat(name.len()));
+        }
+        return Ok(());
+    }
+    if args.describe_all {
+        for (name, description) in all_steps {
+            println!("{name}\n{}\n{description}\n", "-".repeat(name.len()));
+        }
+        return Ok(());
+    }
+
+    for (name, _) in all_steps {
+        println!("{name}");
+    }
+    Ok(())
+}
+
+fn formats_command(args: FormatsArgs) -> Result<(), String> {
+    let all_formats = formats::all_formats();
+    if args.json {
+        let payload = serde_json::json!({ "formats": all_formats });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    for fmt in all_formats {
+        println!("{}", fmt.name);
+        println!("{}", "-".repeat(fmt.name.len()));
+        println!("{}", fmt.description);
+        println!("Read:  {}", fmt.capabilities.read);
+        println!("Write: {}", fmt.capabilities.write);
+        println!(
+            "Files:  header={} data={} coordinates={}",
+            fmt.files.header, fmt.files.data, fmt.files.coordinates
+        );
+        println!();
+    }
+    Ok(())
+}
+
+// TODO: Might not be used anywhere (2026-03-28)
+#[allow(dead_code)]
+fn choose_steps(
+    default: bool,
+    default_with_topo: bool,
+    steps: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if default_with_topo {
+        let mut profile = gpr::default_processing_profile();
+        profile.push("correct_topography".to_string());
+        return Ok(profile);
+    }
+    if default {
+        return Ok(gpr::default_processing_profile());
+    }
+    match steps {
+        Some(step_text) => tools::parse_step_list(step_text),
+        None => Ok(vec![]),
     }
 }
 
-/// Print an error to /dev/stderr and return an exit code
-///
-/// At the moment, it's quite barebones, but this allows for better handling later.
-///
-/// # Arguments
-/// - `message`: The message to print to /dev/stderr
-/// - `code`: The exit code
-///
-/// # Returns
-/// The same exit code that was provided
+fn step_mapping(
+    only_name: Option<String>,
+    all_steps: &[(String, String)],
+) -> Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::<String, String>::new();
+    for (name, description) in all_steps {
+        if let Some(target) = &only_name {
+            if name != target {
+                continue;
+            }
+        }
+        out.insert(name.clone(), description.clone());
+    }
+    if let Some(target) = only_name {
+        if out.is_empty() {
+            return Err(format!("Unknown step: {target}"));
+        }
+    }
+    Ok(out)
+}
+
+fn print_info_record(record: &gpr::InfoRecord) {
+    println!("Input:\t\t{}", record.input);
+    println!(
+        "Format:\t\t{} ({})",
+        record.format.name, record.format.description
+    );
+    println!("Header:\t\t{}", record.related_files.header);
+    println!("Data:\t\t{}", record.related_files.data);
+    println!("Coordinates:\t{}", record.related_files.coordinates);
+    println!();
+    println!("Metadata");
+    println!("--------");
+    println!("Samples:\t{}", record.metadata.samples);
+    println!("Traces:\t\t{}", record.metadata.last_trace);
+    println!("Time window:\t{} ns", record.metadata.time_window_ns);
+    println!(
+        "Velocity:\t{} m/ns",
+        record.metadata.medium_velocity_m_per_ns
+    );
+    println!(
+        "Sampling freq:\t{} MHz",
+        record.metadata.sampling_frequency_mhz
+    );
+    println!("Antenna:\t{}", record.metadata.antenna_name);
+    println!("Antenna MHz:\t{}", record.metadata.antenna_mhz);
+    println!("Antenna sep:\t{} m", record.metadata.antenna_separation_m);
+    println!();
+    println!("Location");
+    println!("--------");
+    println!("Points:\t\t{}", record.location.n_points);
+    println!("CRS:\t\t{}", record.location.crs);
+    println!("Start:\t\t{}", record.location.start_time);
+    println!("Stop:\t\t{}", record.location.stop_time);
+    println!("Duration:\t{:.3} s", record.location.duration_s);
+    println!("Track length:\t{:.3} m", record.location.track_length_m);
+    println!(
+        "Altitude:\t{:.3} - {:.3} m",
+        record.location.altitude_min_m, record.location.altitude_max_m
+    );
+    println!(
+        "Centroid:\tE {:.3}, N {:.3}, Z {:.3}",
+        record.location.centroid.easting,
+        record.location.centroid.northing,
+        record.location.centroid.altitude
+    );
+    println!(
+        "Correction:\t{}{}",
+        record.location.correction.kind,
+        record
+            .location
+            .correction
+            .source
+            .as_ref()
+            .map(|s| format!(" ({s})"))
+            .unwrap_or_default()
+    );
+}
+
 #[cfg(feature = "cli")]
-#[allow(dead_code)] // For maturin
+#[allow(dead_code)]
 fn error(message: &str, code: i32) -> i32 {
-    eprintln!("{}", message);
+    eprintln!("{message}");
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_parse_process_command() {
+        let args = Args::parse_from([
+            "ridal",
+            "process",
+            "a.rad",
+            "b.rad",
+            "--default",
+            "-o",
+            "out.nc",
+        ]);
+        match args.command {
+            Commands::Process(process) => {
+                assert_eq!(
+                    process.inputs,
+                    vec![PathBuf::from("a.rad"), PathBuf::from("b.rad")]
+                );
+                assert!(process.default);
+                assert_eq!(process.output, Some(PathBuf::from("out.nc")));
+            }
+            _ => panic!("Expected process command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_info_command() {
+        let args = Args::parse_from(["ridal", "info", "line01.rad", "--json"]);
+        match args.command {
+            Commands::Info(info) => {
+                assert_eq!(info.inputs, vec![PathBuf::from("line01.rad")]);
+                assert!(info.json);
+            }
+            _ => panic!("Expected info command"),
+        }
+    }
+
+    #[test]
+    fn test_choose_steps_default_with_topo() {
+        let steps = choose_steps(false, true, None).unwrap();
+        assert!(steps.iter().any(|step| step == "correct_topography"));
+    }
 }

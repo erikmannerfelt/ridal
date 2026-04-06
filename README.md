@@ -10,21 +10,19 @@ In one command, most data can be processed in pre-set profiles or with custom fi
 Built in [rust](https://rust-lang.org/) with a high focus on testing and performance, `ridal` may be for you if large data volumes and strange fileformats are common issues.
 
 The name is a take on the loosely defined "Data Abstraction Library" (DAL) projects like [GDAL](https://gdal.org) and [PDAL](https://pdal.org), but for radar.
-A near-term goal of Ridal is to enable easy translation between formats, such as `ridal translate input.rad output.dzt` (this is not yet implemented).
+A near-term goal of Ridal is to enable easy conversion between formats, such as `ridal convert input.rad output.dzt` (this is not yet implemented).
 
 
 Much of the functionality has been inspired from the projects [RGPR](https://github.com/emanuelhuber/RGPR) and [ImpDAR](https://github.com/dlilien/ImpDAR); both of which are more mature projects.
 For example, Ridal currently only works on Malå (.rd3) and pulseEKKO (.dt1) radar formats.
 For many uses, these will more likely be the tools for you!
 
-Prior to Feb. 2026, this program was called `rsgpr`.
-
-## Note on imminent interface change
-**The CLI/Python interface will soon change completely (0.5 or 0.6) and all code will need to be modified accordingly. See [Issue #82](https://github.com/erikmannerfelt/ridal/issues/82) for more info.**
-
 ![Image of a glacier radargram](https://raw.githubusercontent.com/erikmannerfelt/ridal/main/images/kroppbreen_rgm.webp)
 *Radargram (100 MHz Malå) of Kroppbreen in Svalbard. Collected 28 Feb. 2023.*
 
+### Notes
+- Prior to Feb. 2026, this program was called `rsgpr`.
+- The CLI/Python interface changed completely in version 0.5. See [Issue #82](https://github.com/erikmannerfelt/ridal/issues/82) for more info.
 
 ### Installation
 
@@ -40,11 +38,9 @@ cargo install ridal
 
 with nix, the flake can be used without worrying about the requirements above:
 ```nix
-{
-  inputs = {
-    ridal.url = "github:erikmannerfelt/ridal";
-  };
-}
+inputs = {
+  ridal.url = "github:erikmannerfelt/ridal";
+};
 ```
 or in an ephemeral shell:
 ```bash
@@ -52,10 +48,28 @@ nix shell github:erikmannerfelt/ridal
 ```
 
 #### Python
-There's a very early implementation of a Python package, which will be expanded in the future:
+There's an early implementation of a Python package:
 
 ```bash
 pip install ridal
+```
+
+```python
+>>> import ridal
+# Print useful info as a dictionary
+>>> ridal.info("path/to/file.rad")
+'{...}'
+# Process and save to a file
+>>> ridal.process("path/to/file.rad", steps=["zero_corr", "auto_gain"], output="processed.nc")
+# Process and load into memory
+>>> ridal.process("path/to/file.rad", steps=["zero_corr"], return_dataset=True, return_dataset_format="xarray")
+<xarray.Dataset> Size: ...
+Dimensions:     (y: ..., x: ...)
+Coordinates:
+...
+# Only load into memory with no processing
+>>> ridal.read("path/to/file.rad", return_dataset_format="xarray")
+<same as above>
 ```
 
 See [scripts/render_kroppbreen.py](https://github.com/erikmannerfelt/ridal/blob/main/scripts/render_kroppbreen.py) for an example of how it can be used.
@@ -67,18 +81,27 @@ See the help page of `ridal` for info on how to interact with the CLI:
 ridal -h
 ```
 
-To toggle useful information on a file, the `-i` or `--info` argument shows the metadata and a summary of the location data:
+To toggle useful information on a file, the `info` subcommand shows the metadata and a summary of the location data:
 ```bash
-ridal -f DAT_001_A1.rd3 -i
+ridal info DAT_001_A1.rd3
 ```
 
 Processing a file using the default processing profile:
 
 ```bash
-ridal -f DAT_001_A1.rd3 --default
+ridal process DAT_001_A1.rd3 --default
 ```
 
-**All processing steps** are shown in the [steps.md](https://github.com/erikmannerfelt/ridal/blob/main/steps.md) file.
+**All processing steps** are shown in the [steps.md](https://github.com/erikmannerfelt/ridal/blob/main/steps.md) file. It can also be printed with `ridal steps`.
+
+A processing step pipeline is defined using `ridal process file.rad --steps "zero_corr,dewow,..."` or using a file: `--steps steps.txt`:
+```bash
+subset(1 100) # Comments are supported!
+zero_corr
+dewow
+
+correct_topography
+```
 
 The output will be a NetCDF file with the same name but an `.nc` suffix.
 By default, the output is saved in the same directory as the input.
@@ -87,7 +110,7 @@ For more control, the output directory and/or filename can be controlled with `-
 To process multiple files in "batch mode", provide a ["glob"](https://en.wikipedia.org/wiki/Glob_(programming)) pattern as the filename.
 Optionally, for many sequential files, the `--merge` argument allows merging multiple files into one.
 ```bash
-ridal -f "data/*.rd3" --merge "10 min" --default -o output/
+ridal batch-process data/*.rd3 --merge "10 min" --default -o output/
 ```
 
 A rudimentary profile renderer is available with the `-r` argument.

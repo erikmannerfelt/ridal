@@ -2,13 +2,15 @@ use std::error::Error;
 /// Functions to process GPR data
 use std::path::{Path, PathBuf};
 
+use crate::formats::{self, FormatKind, ResolvedInput};
 use ndarray_stats::QuantileExt;
-use std::time::{Duration, SystemTime};
+use serde::Serialize;
+use std::time::SystemTime;
 
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
 
-use crate::{dem, filters, io, tools};
+use crate::{dem, filters, io, tools, user_metadata};
 
 const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
 const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
@@ -374,6 +376,8 @@ pub struct GPR {
     horizontal_signal_distance: f32,
     /// The calculated zero-point (ns). It represents the delay between the transmitter and the receiver.
     zero_point_ns: f32,
+    /// User-supplied metadata that should be carried through processing/export.
+    pub user_metadata: user_metadata::UserMetadata,
 }
 
 impl GPR {
@@ -694,6 +698,7 @@ impl GPR {
             topo_data: self.topo_data.clone(),
             horizontal_signal_distance: self.horizontal_signal_distance,
             zero_point_ns: self.zero_point_ns,
+            user_metadata: self.user_metadata.clone(),
         };
         new_gpr.log_event(
             "subset",
@@ -747,6 +752,7 @@ impl GPR {
             topo_data: None,
             horizontal_signal_distance,
             zero_point_ns: 0.,
+            user_metadata: user_metadata::UserMetadata::new(),
         })
     }
 
@@ -1512,8 +1518,10 @@ impl GPR {
     pub fn width(&self) -> usize {
         self.data.shape()[1]
     }
+
     pub fn export(&self, nc_filepath: &Path) -> Result<(), String> {
-        io::export_netcdf(self, nc_filepath)
+        let ds = self.export_dataset();
+        io::export_netcdf(&ds, nc_filepath)
     }
 
     pub fn depths(&self) -> Array1<f32> {
@@ -1560,6 +1568,7 @@ impl GPR {
             self.metadata.time_window *= self.height() as f32 / self.metadata.samples as f32;
             self.metadata.samples = self.height() as u32;
             self.metadata.last_trace = self.width() as u32;
+            user_metadata::merge_prefer_first(&mut self.user_metadata, &other.user_metadata);
 
             self.log_event(
                 "merge",
@@ -1571,10 +1580,10 @@ impl GPR {
         }
     }
 }
+#[derive(Debug, Clone)]
 pub struct RunParams {
     pub filepaths: Vec<PathBuf>,
     pub output_path: Option<PathBuf>,
-    pub only_info: bool,
     pub dem_path: Option<PathBuf>,
     pub cor_path: Option<PathBuf>,
     pub medium_velocity: f32,
@@ -1584,266 +1593,684 @@ pub struct RunParams {
     pub steps: Vec<String>,
     pub no_export: bool,
     pub render_path: Option<Option<PathBuf>>,
-    pub merge: Option<Duration>,
+    pub override_antenna_mhz: Option<f32>,
+    pub user_metadata: user_metadata::UserMetadata,
+}
+#[derive(Debug, Clone)]
+pub struct BatchRunParams {
+    pub filepaths: Vec<PathBuf>,
+    pub output_dir: PathBuf,
+    pub dem_path: Option<PathBuf>,
+    pub cor_path: Option<PathBuf>,
+    pub medium_velocity: f32,
+    pub crs: Option<String>,
+    pub quiet: bool,
+    pub track_dir: Option<PathBuf>,
+    pub steps: Vec<String>,
+    pub no_export: bool,
+    pub render_dir: Option<PathBuf>,
+    pub merge: Option<String>,
+    pub override_antenna_mhz: Option<f32>,
+    pub user_metadata: user_metadata::UserMetadata,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchProcessResult {
+    pub output_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InfoParams {
+    pub filepaths: Vec<PathBuf>,
+    pub dem_path: Option<PathBuf>,
+    pub cor_path: Option<PathBuf>,
+    pub medium_velocity: f32,
+    pub crs: Option<String>,
     pub override_antenna_mhz: Option<f32>,
 }
 
-pub fn run(params: RunParams) -> Result<Vec<GPR>, Box<dyn Error>> {
-    let empty: Vec<GPR> = Vec::new();
-    let mut gprs: Vec<(PathBuf, GPR)> = Vec::new();
-    for filepath in &params.filepaths {
-        let ext = filepath
-            .extension()
-            .and_then(|s| s.to_str())
-            .ok_or(format!("Extension-less filepath: {:?}", filepath).to_string())?;
+#[derive(Debug, Clone, Serialize)]
+pub struct NamedFormat {
+    pub name: &'static str,
+    pub description: &'static str,
+}
 
-        let (gpr_meta, mut gpr_locations) = if ["hd", "dt1"].contains(&ext) {
-            let hd_filepath = filepath.with_extension("hd");
-            // Make sure that it exists
-            if !hd_filepath.is_file() {
-                if filepath.is_file() {
-                    return Err(
-                        format!("File found but no '.hd' file found: {:?}", hd_filepath).into(),
-                    );
-                }
-                return Err(format!("File not found: {:?}", hd_filepath).into());
-            };
+#[derive(Debug, Clone, Serialize)]
+pub struct MetadataSummary {
+    pub samples: u32,
+    pub sampling_frequency_mhz: f32,
+    pub frequency_steps: u32,
+    pub time_interval_s: f32,
+    pub antenna_name: String,
+    pub antenna_mhz: f32,
+    pub antenna_separation_m: f32,
+    pub time_window_ns: f32,
+    pub last_trace: u32,
+    pub medium_velocity_m_per_ns: f32,
+}
 
-            let gpr_meta = io::load_pe_hd(
-                &hd_filepath,
-                params.medium_velocity,
-                params.override_antenna_mhz,
-            )?;
+#[derive(Debug, Clone, Serialize)]
+pub struct CentroidSummary {
+    pub easting: f64,
+    pub northing: f64,
+    pub altitude: f64,
+}
 
-            let gpr_locations =
-                io::load_pe_gp2(&filepath.with_extension("gp2"), params.crs.as_ref())?;
-            (gpr_meta, gpr_locations)
-        } else {
-            // The given filepath may be ".rd3" or may not have an extension at all
-            // Counterintuitively to the user point of view, it's the ".rad" file that should be given
-            let rad_filepath = filepath.with_extension("rad");
+#[derive(Debug, Clone, Serialize)]
+pub struct CorrectionSummary {
+    pub kind: String,
+    pub source: Option<String>,
+}
 
-            // Make sure that it exists
-            if !rad_filepath.is_file() {
-                if filepath.is_file() {
-                    return Err(
-                        format!("File found but no '.rad' file found: {:?}", rad_filepath).into(),
-                    );
-                }
-                return Err(format!("File not found: {:?}", rad_filepath).into());
-            };
-            // Load the GPR metadata from the rad file
-            let gpr_meta = io::load_rad(
-                &rad_filepath,
-                params.medium_velocity,
-                params.override_antenna_mhz,
-            )?;
+#[derive(Debug, Clone, Serialize)]
+pub struct LocationSummary {
+    pub n_points: usize,
+    pub crs: String,
+    pub start_time: String,
+    pub stop_time: String,
+    pub duration_s: f64,
+    pub track_length_m: f64,
+    pub altitude_min_m: f64,
+    pub altitude_max_m: f64,
+    pub centroid: CentroidSummary,
+    pub correction: CorrectionSummary,
+}
 
-            // Load the GPR location data
-            // If the "--cor" argument was used, load from there. Otherwise, try to find a ".cor" file
-            let gpr_locations = match &params.cor_path {
-                Some(fp) => io::load_cor(fp, params.crs.as_ref())?,
-                None => match gpr_meta.find_cor(params.crs.as_ref()) {
-                    Ok(v) => Ok(v),
-                    Err(e) => match params.filepaths.len() > 1 {
-                        true => {
-                            eprintln!("Error in batch mode, continuing anyway: {:?}", e);
-                            continue;
-                        }
-                        false => Err(e),
-                    },
-                }?,
-            };
-            (gpr_meta, gpr_locations)
-        };
+#[derive(Debug, Clone, Serialize)]
+pub struct RelatedFiles {
+    pub header: String,
+    pub data: String,
+    pub coordinates: String,
+}
 
-        // If a "--dem" was given, substitute elevations using said DEM
-        if let Some(dem_path) = &params.dem_path {
-            gpr_locations.get_dem_elevations(dem_path)?;
-        };
+#[derive(Debug, Clone, Serialize)]
+pub struct InfoRecord {
+    pub input: String,
+    pub format: NamedFormat,
+    pub metadata: MetadataSummary,
+    pub location: LocationSummary,
+    pub related_files: RelatedFiles,
+}
 
-        // Construct the output filepath. If one was given, use that.
-        // If a path was given and it's a directory, use the file stem + ".nc" of the input
-        // filename. If no output path was given, default to the directory of the input.
-        let output_filepath = match &params.output_path {
-            Some(p) => match p.is_dir() {
-                true => p.join(filepath.file_stem().unwrap()).with_extension("nc"),
-                false => {
-                    if let Some(parent) = p.parent() {
-                        if !parent.is_dir() {
-                            return Err(format!(
-                                "Output directory of path is not a directory: {:?}",
-                                p
-                            )
-                            .into());
-                        };
-                    };
-                    p.clone()
-                }
-            },
-            None => filepath.with_extension("nc"),
-        };
+#[derive(Debug, Clone)]
+pub struct ProcessResult {
+    pub output_path: PathBuf,
+}
 
-        // If the "--info" argument was given, stop here and just show info.
-        if params.only_info {
-            println!("{}", gpr_meta);
-            println!("{}", gpr_locations);
-            // If the track should be exported, do so.
-            if let Some(potential_track_path) = &params.track_path {
-                io::export_locations(
-                    &gpr_locations,
-                    potential_track_path.into(),
-                    &output_filepath,
-                    !params.quiet,
-                )?;
-            };
-        } else {
-            // At this point, the data should be processed.
-            let gpr = match GPR::from_meta_and_loc(gpr_locations, gpr_meta) {
-                Ok(g) => g,
-                Err(e) => {
-                    return Err(format!(
-                        "Error loading GPR data from {:?}: {:?}",
-                        filepath.with_extension("rd3"),
-                        e
-                    )
-                    .into())
-                }
-            };
+fn has_glob_chars(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    text.contains('*') || text.contains('?') || text.contains('[')
+}
 
-            gprs.push((output_filepath, gpr));
-        };
-    }
-
-    // Merge GPR profiles if the merge flag was used
-    if let Some(merge) = params.merge.map(|m| m.as_secs_f64()) {
-        let mut incompatible: Vec<(usize, usize)> = Vec::new();
-        for _ in 0..gprs.len() {
-            let mut distances: Vec<(usize, usize, f64)> = Vec::new();
-            for i in 0..gprs.len() {
-                for j in (0..gprs.len()).rev() {
-                    if let Some(incomp) = incompatible.get(i) {
-                        if (i == incomp.0) & (j == incomp.1) {
-                            continue;
-                        };
-                    };
-                    if (j >= gprs.len()) | (i >= gprs.len()) | (i == j) {
-                        continue;
-                    };
-                    let diff = gprs[i].1.location.duration_since(&gprs[j].1.location);
-
-                    distances.push((i, j, diff));
-                }
+pub fn expand_input_paths(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut expanded = Vec::<PathBuf>::new();
+    for input in inputs {
+        if has_glob_chars(input) {
+            let mut matches = glob::glob(&input.to_string_lossy())
+                .map_err(|e| format!("Invalid glob pattern {:?}: {e}", input))?
+                .filter_map(Result::ok)
+                .collect::<Vec<PathBuf>>();
+            matches.sort();
+            if matches.is_empty() {
+                return Err(format!("Glob pattern matched no files: {:?}", input));
             }
-            distances.sort_by(
-                |(i0, j0, _), (i1, j1, _)| match i0.partial_cmp(i1).unwrap() {
-                    std::cmp::Ordering::Equal => j0.partial_cmp(j1).unwrap(),
-                    o => o,
-                },
-            );
+            expanded.extend(matches);
+        } else {
+            expanded.push(input.clone());
+        }
+    }
+    if expanded.is_empty() {
+        return Err("No input files were provided.".to_string());
+    }
+    Ok(expanded)
+}
 
-            if let Some(min_i) = distances.iter().map(|d| d.0).min() {
-                let mut merged = 0_usize;
-                for (_, j, distance) in distances.iter().filter(|d| d.0 == min_i) {
-                    if distance > &merge {
-                        continue;
-                    };
-                    let (output_fp, gpr) = gprs.remove(j - merged);
-                    match gprs[min_i].1.merge(&gpr) {
-                        Ok(_) => (),
-                        Err(e) => {
-                            eprintln!(
-                                "Could not merge {:?} -> {:?}: {}",
-                                output_fp, &gprs[min_i].0, e
-                            );
-                            gprs.insert(j - merged, (output_fp, gpr));
-                            incompatible.push((min_i, j - merged));
-                            continue;
-                        }
-                    };
-                    println!("Merged {:?} -> {:?}", output_fp, &gprs[min_i].0);
-                    merged += 1;
-                }
+fn derive_output_path(
+    output_path: Option<&PathBuf>,
+    first_resolved: &ResolvedInput,
+) -> Result<PathBuf, String> {
+    let default_output = first_resolved.header.with_extension("nc");
+    match output_path {
+        Some(path) => {
+            if path.is_dir() {
+                Ok(path
+                    .join(first_resolved.header.file_stem().unwrap())
+                    .with_extension("nc"))
             } else {
-                continue;
+                if let Some(parent) = path.parent() {
+                    if !parent.as_os_str().is_empty() && !parent.is_dir() {
+                        return Err(format!(
+                            "Output directory of path is not a directory: {:?}",
+                            path
+                        ));
+                    }
+                }
+                Ok(path.clone())
+            }
+        }
+        None => Ok(default_output),
+    }
+}
+
+fn load_meta_and_location(
+    resolved: &ResolvedInput,
+    medium_velocity: f32,
+    crs: Option<&String>,
+    cor_path: Option<&PathBuf>,
+    dem_path: Option<&PathBuf>,
+    override_antenna_mhz: Option<f32>,
+) -> Result<(GPRMeta, GPRLocation), Box<dyn Error>> {
+    let (gpr_meta, mut gpr_location) = match resolved.kind {
+        FormatKind::Ramac => {
+            if !resolved.header.is_file() {
+                return Err(format!("File not found: {:?}", resolved.header).into());
+            }
+            let meta = io::load_rad(&resolved.header, medium_velocity, override_antenna_mhz)?;
+            let cor_source = match cor_path {
+                Some(path) => path.clone(),
+                None => resolved.coordinates.clone(),
             };
+            let location = io::load_cor(&cor_source, crs)?;
+            (meta, location)
+        }
+        FormatKind::PulseEkko => {
+            if cor_path.is_some() {
+                return Err("The --cor option is only supported for RAMAC inputs.".into());
+            }
+            if !resolved.header.is_file() {
+                return Err(format!("File not found: {:?}", resolved.header).into());
+            }
+            let meta = io::load_pe_hd(&resolved.header, medium_velocity, override_antenna_mhz)?;
+            let location = io::load_pe_gp2(&resolved.coordinates, crs)?;
+            (meta, location)
         }
     };
 
-    for (output_filepath, mut gpr) in gprs {
-        // Record the starting time to show "t+XX" times
-        let start_time = SystemTime::now();
-        if !params.quiet {
-            println!("Processing {:?}", gpr.metadata.data_filepath);
-        };
-
-        // Run each step sequentially
-        for (i, step) in params.steps.iter().enumerate() {
-            if !params.quiet {
-                println!(
-                    "{}/{}, t+{:.2} s, Running step {}. ",
-                    i + 1,
-                    params.steps.len(),
-                    SystemTime::now()
-                        .duration_since(start_time)
-                        .unwrap()
-                        .as_secs_f32(),
-                    step,
-                );
-            };
-
-            // Stop if any error occurs
-            match gpr.process(step) {
-                Ok(_) => 0,
-                Err(e) => return Err(format!("Error on step {}: {:?}", step, e).into()),
-            };
-        }
-
-        // Unless the "--no-export" flag was given, export the ".nc" result
-        if !params.no_export {
-            if !params.quiet {
-                println!("Exporting to {:?}", output_filepath);
-            };
-            match gpr.export(&output_filepath) {
-                Ok(_) => (),
-                Err(e) => return Err(format!("Error exporting data: {:?}", e).into()),
-            }
-        };
-
-        // If "--render" was given, render an image of the output
-        // The flag may or may not have a filepath (it can either be "-r" or "-r img.jpg")
-        if let Some(potential_fp) = &params.render_path {
-            // Find out the output filepath. If one was given, use that. If none was given, use
-            // the output filepath with a ".jpg" extension. If a directory was given, use the
-            // file stem of the output filename and a ".jpg" extension
-            let render_filepath = match potential_fp {
-                Some(fp) => match fp.is_dir() {
-                    true => fp
-                        .join(output_filepath.file_stem().unwrap())
-                        .with_extension("jpg"),
-                    false => fp.clone(),
-                },
-                None => output_filepath.with_extension("jpg"),
-            };
-            if !params.quiet {
-                println!("Rendering image to {:?}", render_filepath);
-            };
-            gpr.render(&render_filepath)
-                .map_err(|e| format!("Error writing JPG: {e:?}"))?;
-        };
-
-        // If "--track" was given, export the track file.
-        if let Some(potential_track_path) = &params.track_path {
-            io::export_locations(
-                &gpr.location,
-                potential_track_path.into(),
-                &output_filepath,
-                !params.quiet,
-            )?;
-        };
+    if let Some(dem_path) = dem_path {
+        gpr_location.get_dem_elevations(dem_path)?;
     }
 
-    Ok(empty)
+    Ok((gpr_meta, gpr_location))
+}
+
+fn metadata_summary(meta: &GPRMeta) -> MetadataSummary {
+    MetadataSummary {
+        samples: meta.samples,
+        sampling_frequency_mhz: meta.frequency,
+        frequency_steps: meta.frequency_steps,
+        time_interval_s: meta.time_interval,
+        antenna_name: meta.antenna.clone(),
+        antenna_mhz: meta.antenna_mhz,
+        antenna_separation_m: meta.antenna_separation,
+        time_window_ns: meta.time_window,
+        last_trace: meta.last_trace,
+        medium_velocity_m_per_ns: meta.medium_velocity,
+    }
+}
+
+fn correction_summary(location: &GPRLocation) -> CorrectionSummary {
+    match &location.correction {
+        LocationCorrection::None => CorrectionSummary {
+            kind: "none".to_string(),
+            source: None,
+        },
+        LocationCorrection::Dem(path) => CorrectionSummary {
+            kind: "dem".to_string(),
+            source: Some(path.to_string_lossy().to_string()),
+        },
+    }
+}
+
+fn location_summary(location: &GPRLocation) -> Result<LocationSummary, String> {
+    if location.cor_points.is_empty() {
+        return Err("No coordinate points were available for the input.".to_string());
+    }
+    let altitudes = Array1::from_iter(location.cor_points.iter().map(|point| point.altitude));
+    let eastings = Array1::from_iter(location.cor_points.iter().map(|point| point.easting));
+    let northings = Array1::from_iter(location.cor_points.iter().map(|point| point.northing));
+    let length = location.length();
+    let duration = location.cor_points[location.cor_points.len() - 1].time_seconds
+        - location.cor_points[0].time_seconds;
+
+    Ok(LocationSummary {
+        n_points: location.cor_points.len(),
+        crs: location.crs.clone(),
+        start_time: tools::seconds_to_rfc3339(location.cor_points[0].time_seconds),
+        stop_time: tools::seconds_to_rfc3339(
+            location.cor_points[location.cor_points.len() - 1].time_seconds,
+        ),
+        duration_s: duration,
+        track_length_m: length,
+        altitude_min_m: *altitudes.min().unwrap(),
+        altitude_max_m: *altitudes.max().unwrap(),
+        centroid: CentroidSummary {
+            easting: eastings.mean().unwrap(),
+            northing: northings.mean().unwrap(),
+            altitude: altitudes.mean().unwrap(),
+        },
+        correction: correction_summary(location),
+    })
+}
+
+fn info_record(
+    resolved: &ResolvedInput,
+    meta: &GPRMeta,
+    location: &GPRLocation,
+) -> Result<InfoRecord, String> {
+    let fmt = formats::format_info(resolved.kind);
+    Ok(InfoRecord {
+        input: resolved.input.to_string_lossy().to_string(),
+        format: NamedFormat {
+            name: fmt.name,
+            description: fmt.description,
+        },
+        metadata: metadata_summary(meta),
+        location: location_summary(location)?,
+        related_files: RelatedFiles {
+            header: resolved.header.to_string_lossy().to_string(),
+            data: resolved.data.to_string_lossy().to_string(),
+            coordinates: resolved.coordinates.to_string_lossy().to_string(),
+        },
+    })
+}
+
+pub fn inspect(params: InfoParams) -> Result<Vec<InfoRecord>, Box<dyn Error>> {
+    let expanded = expand_input_paths(&params.filepaths)?;
+    let mut records = Vec::<InfoRecord>::new();
+
+    for input in expanded {
+        let resolved = formats::resolve_input(&input)?;
+        let (meta, location) = load_meta_and_location(
+            &resolved,
+            params.medium_velocity,
+            params.crs.as_ref(),
+            params.cor_path.as_ref(),
+            params.dem_path.as_ref(),
+            params.override_antenna_mhz,
+        )?;
+        records.push(info_record(&resolved, &meta, &location)?);
+    }
+
+    Ok(records)
+}
+
+pub fn build_processed_gpr(
+    params: RunParams,
+) -> Result<(GPR, PathBuf), Box<dyn std::error::Error>> {
+    let expanded = expand_input_paths(&params.filepaths)?;
+    if expanded.is_empty() {
+        return Err("No input files were provided.".into());
+    }
+    let mut resolved_inputs = expanded
+        .iter()
+        .map(|input| crate::formats::resolve_input(input))
+        .collect::<Result<Vec<crate::formats::ResolvedInput>, String>>()?;
+    if resolved_inputs.is_empty() {
+        return Err("No input files were resolved.".into());
+    }
+
+    let output_path = derive_output_path(params.output_path.as_ref(), &resolved_inputs[0])?;
+    let first_resolved = resolved_inputs.remove(0);
+    let (first_meta, first_location) = load_meta_and_location(
+        &first_resolved,
+        params.medium_velocity,
+        params.crs.as_ref(),
+        params.cor_path.as_ref(),
+        params.dem_path.as_ref(),
+        params.override_antenna_mhz,
+    )?;
+    let mut gpr = GPR::from_meta_and_loc(first_location, first_meta).map_err(|e| {
+        format!(
+            "Error loading GPR data from {:?}: {:?}",
+            first_resolved.data, e
+        )
+    })?;
+    gpr.user_metadata = params.user_metadata.clone();
+
+    for resolved in resolved_inputs {
+        let (meta, location) = load_meta_and_location(
+            &resolved,
+            params.medium_velocity,
+            params.crs.as_ref(),
+            params.cor_path.as_ref(),
+            params.dem_path.as_ref(),
+            params.override_antenna_mhz,
+        )?;
+        let other = GPR::from_meta_and_loc(location, meta)
+            .map_err(|e| format!("Error loading GPR data from {:?}: {:?}", resolved.data, e))?;
+        if !params.quiet {
+            println!(
+                "Merging {:?} -> {:?}",
+                resolved.header, first_resolved.header
+            );
+        }
+        gpr.merge(&other)?;
+    }
+
+    let start_time = std::time::SystemTime::now();
+    if !params.quiet {
+        println!("Processing {:?}", gpr.metadata.data_filepath);
+    }
+    for (i, step) in params.steps.iter().enumerate() {
+        if !params.quiet {
+            println!(
+                "{}/{}, t+{:.2} s, Running step {}.",
+                i + 1,
+                params.steps.len(),
+                std::time::SystemTime::now()
+                    .duration_since(start_time)
+                    .unwrap()
+                    .as_secs_f32(),
+                step,
+            );
+        }
+        gpr.process(step)
+            .map_err(|e| format!("Error on step {}: {:?}", step, e))?;
+    }
+
+    Ok((gpr, output_path))
+}
+
+pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn std::error::Error>> {
+    let (gpr, output_path) = build_processed_gpr(params.clone())?;
+
+    if !params.no_export {
+        if !params.quiet {
+            println!("Exporting to {:?}", output_path);
+        }
+        gpr.export(&output_path)
+            .map_err(|e| format!("Error exporting data: {:?}", e))?;
+    }
+
+    if let Some(potential_fp) = &params.render_path {
+        let render_filepath = match potential_fp {
+            Some(fp) => {
+                if fp.is_dir() {
+                    fp.join(output_path.file_stem().unwrap())
+                        .with_extension("jpg")
+                } else {
+                    fp.clone()
+                }
+            }
+            None => output_path.with_extension("jpg"),
+        };
+        if !params.quiet {
+            println!("Rendering image to {:?}", render_filepath);
+        }
+        gpr.render(&render_filepath)
+            .map_err(|e| format!("Error writing JPG: {:?}", e))?;
+    }
+
+    if let Some(potential_track_path) = &params.track_path {
+        crate::io::export_locations(
+            &gpr.location,
+            potential_track_path.into(),
+            &output_path,
+            !params.quiet,
+        )?;
+    }
+
+    Ok(ProcessResult { output_path })
+}
+
+pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
+    if !params.output_dir.is_dir() {
+        return Err(format!(
+            "output_dir must be an existing directory: {}",
+            params.output_dir.display()
+        ));
+    }
+    if let Some(render_dir) = &params.render_dir {
+        if !render_dir.is_dir() {
+            return Err(format!(
+                "render_dir must be an existing directory: {}",
+                render_dir.display()
+            ));
+        }
+    }
+    if let Some(track_dir) = &params.track_dir {
+        if !track_dir.is_dir() {
+            return Err(format!(
+                "track_dir must be an existing directory: {}",
+                track_dir.display()
+            ));
+        }
+    }
+
+    // Expand globs exactly like process mode does now.
+    let expanded_filepaths = expand_cli_inputs(&params.filepaths)?;
+
+    // Group inputs for batch processing.
+    let groups = if let Some(merge_threshold) = params.merge.as_deref() {
+        group_batch_inputs_chronologically(
+            &expanded_filepaths,
+            merge_threshold,
+            params.medium_velocity,
+            params.cor_path.clone(),
+            params.dem_path.clone(),
+            params.crs.clone(),
+            params.override_antenna_mhz,
+        )?
+    } else {
+        expanded_filepaths
+            .into_iter()
+            .map(|p| vec![p])
+            .collect::<Vec<Vec<PathBuf>>>()
+    };
+
+    let mut output_paths = Vec::<PathBuf>::new();
+
+    for group in groups {
+        if group.is_empty() {
+            continue;
+        }
+
+        let first = &group[0];
+        let stem = first
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| format!("Could not derive output stem from {}", first.display()))?;
+        let output_nc = params.output_dir.join(format!("{stem}.nc"));
+
+        let render_path = params
+            .render_dir
+            .as_ref()
+            .map(|dir| Some(dir.join(format!("{stem}.jpg"))));
+
+        let track_path = params
+            .track_dir
+            .as_ref()
+            .map(|dir| Some(dir.join(format!("{stem}_track.csv"))));
+
+        let run_params = RunParams {
+            filepaths: group.clone(),
+            output_path: Some(output_nc.clone()),
+            dem_path: params.dem_path.clone(),
+            cor_path: params.cor_path.clone(),
+            medium_velocity: params.medium_velocity,
+            crs: params.crs.clone(),
+            quiet: params.quiet,
+            track_path,
+            steps: params.steps.clone(),
+            no_export: params.no_export,
+            render_path,
+            override_antenna_mhz: params.override_antenna_mhz,
+            user_metadata: params.user_metadata.clone(),
+        };
+
+        // process-mode semantics: one group -> one output, in the order we pass here.
+        // For merge groups, group_batch_inputs_chronologically() already ordered them chronologically.
+        let result = run(run_params).map_err(|e| e.to_string())?;
+        output_paths.push(result.output_path);
+    }
+
+    Ok(BatchProcessResult { output_paths })
+}
+
+fn expand_cli_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::<PathBuf>::new();
+
+    for input in inputs {
+        let text = input.to_string_lossy();
+        let looks_like_glob = text.contains('*') || text.contains('?') || text.contains('[');
+
+        if looks_like_glob {
+            let mut matched_any = false;
+            let pattern =
+                glob::glob(&text).map_err(|e| format!("Invalid glob pattern '{}': {e}", text))?;
+            for entry in pattern {
+                let path = entry.map_err(|e| format!("Error expanding glob '{}': {e}", text))?;
+                matched_any = true;
+                out.push(path);
+            }
+            if !matched_any {
+                return Err(format!("Glob did not match any files: {text}"));
+            }
+        } else {
+            out.push(input.clone());
+        }
+    }
+
+    if out.is_empty() {
+        return Err("No input files were provided".to_string());
+    }
+
+    Ok(out)
+}
+
+fn load_single_gpr_for_grouping(
+    path: &Path,
+    medium_velocity: f32,
+    cor_path: Option<PathBuf>,
+    dem_path: Option<PathBuf>,
+    crs: Option<String>,
+    override_antenna_mhz: Option<f32>,
+) -> Result<GPR, String> {
+    // Resolve input using the same format machinery as normal processing.
+    let resolved = formats::resolve_input(path)
+        .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
+
+    let metadata = match resolved.kind {
+        FormatKind::Ramac => io::load_rad(&resolved.header, medium_velocity, override_antenna_mhz)
+            .map_err(|e| {
+                format!(
+                    "Failed to load RAMAC header '{}': {e}",
+                    resolved.header.display()
+                )
+            })?,
+        FormatKind::PulseEkko => {
+            io::load_pe_hd(&resolved.header, medium_velocity, override_antenna_mhz).map_err(
+                |e| {
+                    format!(
+                        "Failed to load pulseEKKO header '{}': {e}",
+                        resolved.header.display()
+                    )
+                },
+            )?
+        }
+    };
+
+    let mut location = if let Some(cor_override) = &cor_path {
+        io::load_cor(cor_override, crs.as_ref()).map_err(|e| {
+            format!(
+                "Failed to load overridden .cor '{}': {e}",
+                cor_override.display()
+            )
+        })?
+    } else {
+        match resolved.kind {
+            FormatKind::Ramac => metadata.find_cor(crs.as_ref()).map_err(|e| {
+                format!(
+                    "Failed to find/load .cor for '{}': {e}",
+                    metadata.data_filepath.display()
+                )
+            })?,
+            FormatKind::PulseEkko => {
+                let gp2 = &resolved.coordinates;
+                io::load_pe_gp2(gp2, crs.as_ref())
+                    .map_err(|e| format!("Failed to load .gp2 '{}': {e}", gp2.display()))?
+            }
+        }
+    };
+
+    if let Some(dem_path) = &dem_path {
+        location.get_dem_elevations(dem_path)?;
+    }
+
+    let mut gpr = GPR::from_meta_and_loc(location, metadata)
+        .map_err(|e| format!("Failed to build GPR for '{}': {e}", path.display()))?;
+    gpr.user_metadata = user_metadata::UserMetadata::new();
+    Ok(gpr)
+}
+
+fn group_batch_inputs_chronologically(
+    filepaths: &[PathBuf],
+    merge_threshold: &str,
+    medium_velocity: f32,
+    cor_path: Option<PathBuf>,
+    dem_path: Option<PathBuf>,
+    crs: Option<String>,
+    override_antenna_mhz: Option<f32>,
+) -> Result<Vec<Vec<PathBuf>>, String> {
+    let threshold = parse_duration::parse(merge_threshold)
+        .map_err(|e| format!("Failed to parse merge duration '{merge_threshold}': {e}"))?
+        .as_secs_f64();
+
+    let mut loaded = filepaths
+        .iter()
+        .map(|path| {
+            let gpr = load_single_gpr_for_grouping(
+                path,
+                medium_velocity,
+                cor_path.clone(),
+                dem_path.clone(),
+                crs.clone(),
+                override_antenna_mhz,
+            )?;
+            let start_time = gpr
+                .location
+                .cor_points
+                .first()
+                .map(|p| p.time_seconds)
+                .ok_or_else(|| format!("No location points found in '{}'", path.display()))?;
+            Ok::<_, String>((path.clone(), start_time, gpr))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    // Chronological grouping for batch --merge
+    loaded.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut groups = Vec::<Vec<PathBuf>>::new();
+    let mut current = Vec::<PathBuf>::new();
+    let mut current_gpr: Option<GPR> = None;
+
+    for (path, _start, gpr) in loaded {
+        match current_gpr.as_mut() {
+            None => {
+                current.push(path);
+                current_gpr = Some(gpr);
+            }
+            Some(existing) => {
+                let gap = existing.location.duration_since(&gpr.location).abs();
+                let compatible = existing.merge(&gpr).is_ok();
+
+                if (gap <= threshold) && compatible {
+                    // We already merged into 'existing' above to test compatibility, so keep this path in group.
+                    current.push(path);
+                } else {
+                    groups.push(current);
+                    current = vec![path];
+                    current_gpr = Some(gpr);
+                }
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        groups.push(current);
+    }
+
+    Ok(groups)
 }
 // src/steps.rs
 const STEPS_MD: &str = include_str!("../steps.md");
@@ -1865,6 +2292,18 @@ pub fn all_available_steps() -> Vec<(String, String)> {
             Some((name, description))
         })
         .collect()
+}
+pub fn validate_steps(steps: &[String]) -> Result<(), String> {
+    let allowed_steps = all_available_steps()
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect::<Vec<String>>();
+    for step in steps {
+        if !allowed_steps.iter().any(|allowed| step.contains(allowed)) {
+            return Err(format!("Unrecognized step: {step}"));
+        }
+    }
+    Ok(())
 }
 
 pub fn default_processing_profile() -> Vec<String> {
@@ -1966,6 +2405,7 @@ pub mod tests {
             zero_point_ns: 0.,
             horizontal_signal_distance: 1.,
             log: Vec::new(),
+            user_metadata: crate::user_metadata::UserMetadata::new(),
         }
     }
 
@@ -2069,6 +2509,7 @@ pub mod tests {
             log: Vec::new(),
             horizontal_signal_distance: antenna_separation,
             zero_point_ns: 0.,
+            user_metadata: crate::user_metadata::UserMetadata::new(),
         }
     }
 

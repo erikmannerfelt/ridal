@@ -7,6 +7,10 @@ name = "ridal"
 requires-python = ">=3.8"
 dynamic = ["version", "description", "authors", "license", "urls"]
 readme = "README.md"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+full = ["xarray"]
 
 [tool.maturin]
 # Bindings type
