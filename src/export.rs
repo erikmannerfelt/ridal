@@ -23,12 +23,57 @@ pub enum ExportAttr {
     U8(u8),
 }
 
+impl ExportAttr {
+    pub fn as_string(&self) -> String {
+        match self {
+            ExportAttr::String(s) => s.to_owned(),
+            ExportAttr::Strings(v) => v.join(""),
+            ExportAttr::F64(v) => format!("{v}"),
+            ExportAttr::F32(v) => format!("{v}"),
+            ExportAttr::I64(v) => format!("{v}"),
+            ExportAttr::U8(v) => format!("{v}"),
+        }
+    }
+}
+
+#[cfg(feature = "python")]
+impl ExportAttr {
+    pub fn to_python<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+        match self {
+            ExportAttr::String(s) => Ok(s.into_py(py)),
+            ExportAttr::Strings(vs) => Ok(vs.clone().into_py(py)),
+            ExportAttr::F64(x) => {
+                let item = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
+                Ok(item.into_py(py))
+            }
+            ExportAttr::F32(x) => {
+                let item = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
+                Ok(item.into_py(py))
+            }
+            ExportAttr::I64(x) => {
+                let item = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
+                Ok(item.into_py(py))
+            }
+            ExportAttr::U8(x) => {
+                let item = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
+                Ok(item.into_py(py))
+            }
+        }
+    }
+}
+impl From<&str> for ExportAttr {
+    fn from(value: &str) -> Self {
+        ExportAttr::String(value.to_string())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ExportArray<'a> {
     F32Borrowed2D(&'a Array2<f32>),
     F32Owned1D(Vec<f32>),
     F64Owned1D(Vec<f64>),
     U32Owned1D(Vec<u32>),
+    U8Scalar(u8), // For grid_mapping
 }
 
 #[derive(Clone, Debug)]
@@ -36,7 +81,7 @@ pub struct ExportVariable<'a> {
     pub dims: Vec<String>,
     pub data: ExportArray<'a>,
     /// Variable attributes (e.g., "unit", "coordinates")
-    pub attrs: BTreeMap<String, String>,
+    pub attrs: BTreeMap<String, ExportAttr>,
 }
 
 #[derive(Clone, Debug)]
@@ -68,28 +113,7 @@ impl<'a> ExportDataset<'a> {
         // attrs
         let attrs_py = PyDict::new_bound(py);
         for (k, v) in &self.attrs {
-            match v {
-                ExportAttr::String(s) => attrs_py.set_item(k, s)?,
-                ExportAttr::Strings(vs) => attrs_py.set_item(k, vs)?,
-
-                ExportAttr::F64(x) => {
-                    // This creates a numpy type and extracts the item
-                    let f = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
-                    attrs_py.set_item(k, f)?
-                }
-                ExportAttr::F32(x) => {
-                    let f = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
-                    attrs_py.set_item(k, f)?
-                }
-                ExportAttr::I64(x) => {
-                    let f = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
-                    attrs_py.set_item(k, f)?
-                }
-                ExportAttr::U8(x) => {
-                    let f = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
-                    attrs_py.set_item(k, f)?
-                }
-            }
+            attrs_py.set_item(k, v.to_python(py)?);
         }
         out.set_item("attrs", attrs_py)?;
 
@@ -135,12 +159,16 @@ fn export_var_to_py<'py>(py: Python<'py>, var: &ExportVariable<'_>) -> PyResult<
             let py_arr = PyArray1::from_slice_bound(py, v);
             dict.set_item("data", py_arr)?;
         }
+        ExportArray::U8Scalar(v) => {
+            let py_arr = PyArray1::from_slice_bound(py, &[v.to_owned()]);
+            dict.set_item("data", py_arr)?;
+        }
     }
 
     // variable attrs
     let attrs_py = PyDict::new_bound(py);
     for (k, v) in &var.attrs {
-        attrs_py.set_item(k, v)?;
+        attrs_py.set_item(k, v.to_python(py)?)?;
     }
     dict.set_item("attrs", attrs_py)?;
 

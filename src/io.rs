@@ -634,23 +634,33 @@ pub fn export_netcdf(
             }
             crate::export::ExportArray::F32Owned1D(v) => {
                 // collect unit attr if present
-                let unit = var.attrs.get("unit").map(|s| s.as_str());
+                let unit = var.attrs.get("unit").map(|s| s.as_string());
                 add_nc_variable::<f32>(
                     &mut file,
                     name,
                     &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     v,
-                    unit,
+                    unit.as_deref(),
                 )?;
             }
             crate::export::ExportArray::F64Owned1D(v) => {
-                let unit = var.attrs.get("unit").map(|s| s.as_str());
+                let unit = var.attrs.get("unit").map(|s| s.as_string());
                 add_nc_variable::<f64>(
                     &mut file,
                     name,
                     &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     v,
-                    unit,
+                    unit.as_deref(),
+                )?;
+            }
+            crate::export::ExportArray::U8Scalar(v) => {
+                let unit = var.attrs.get("unit").map(|s| s.as_string());
+                add_nc_variable::<u8>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &[*v],
+                    unit.as_deref(),
                 )?;
             }
             crate::export::ExportArray::F32Borrowed2D(_) => {
@@ -670,10 +680,10 @@ pub fn export_netcdf(
                 let flat: Vec<f32> = arr2d.iter().copied().collect();
 
                 // unit & extra attributes (coordinates)
-                let unit = var.attrs.get("unit").map(|s| s.as_str());
-                let mut extras: Vec<(&str, &str)> = Vec::new();
+                let unit = var.attrs.get("unit").map(|s| s.as_string());
+                let mut extras: Vec<(&str, String)> = Vec::new();
                 if let Some(coord_str) = var.attrs.get("coordinates") {
-                    extras.push(("coordinates", coord_str.as_str()));
+                    extras.push(("coordinates", coord_str.as_string()));
                 }
 
                 add_nc_variable_compressed_2d::<f32>(
@@ -682,8 +692,11 @@ pub fn export_netcdf(
                     &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     &flat,
                     (ny, nx),
-                    unit,
-                    &extras,
+                    unit.as_deref(),
+                    &extras
+                        .iter()
+                        .map(|s| (s.0, s.1.as_str()))
+                        .collect::<Vec<(&str, &str)>>(),
                 )?;
             }
             // data variables are expected to be 2D here; ignore other shapes
