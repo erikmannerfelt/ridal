@@ -15,6 +15,7 @@ pkgs.mkShell {
       pytest
       virtualenv
       xarray
+      h5netcdf
       numpy
       matplotlib
     ]))

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 #[derive(Debug, Copy, Clone)]
 pub struct Coord {
     pub x: f64,
@@ -344,6 +345,347 @@ pub fn from_wgs84(coords: &[Coord], crs: &Crs) -> Result<Vec<Coord>, String> {
 
     Ok(new_coords)
 }
+#[derive(Clone, Debug)]
+pub struct GridMappingSpec {
+    pub variable_name: String,
+    pub attrs: BTreeMap<String, crate::export::ExportAttr>,
+}
+
+fn parse_proj_params(proj_str: &str) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for token in proj_str.split_whitespace() {
+        if !token.starts_with('+') {
+            continue;
+        }
+        let token = &token[1..];
+        if let Some((k, v)) = token.split_once('=') {
+            out.insert(k.to_string(), v.to_string());
+        } else {
+            // flag-style parameter such as +south
+            out.insert(token.to_string(), String::new());
+        }
+    }
+    out
+}
+
+fn param_f64(params: &BTreeMap<String, String>, key: &str) -> Option<f64> {
+    params.get(key)?.parse::<f64>().ok()
+}
+
+fn insert_attr_f64(
+    attrs: &mut BTreeMap<String, crate::export::ExportAttr>,
+    params: &BTreeMap<String, String>,
+    proj_key: &str,
+    cf_key: &str,
+) {
+    if let Some(v) = param_f64(params, proj_key) {
+        attrs.insert(cf_key.to_string(), v.into());
+    }
+}
+
+fn insert_known_ellipsoid_attrs(
+    attrs: &mut BTreeMap<String, crate::export::ExportAttr>,
+    params: &BTreeMap<String, String>,
+) {
+    // Prefer explicit numeric axes if present
+    if let Some(a) = param_f64(params, "a") {
+        attrs.insert("semi_major_axis".into(), a.into());
+
+        if let Some(rf) = param_f64(params, "rf") {
+            attrs.insert("inverse_flattening".into(), rf.into());
+            return;
+        }
+
+        if let Some(b) = param_f64(params, "b") {
+            if (a - b).abs() > f64::EPSILON {
+                let inv_f = a / (a - b);
+                attrs.insert("inverse_flattening".into(), inv_f.into());
+            } else {
+                attrs.insert("inverse_flattening".into(), 0.0f64.into());
+            }
+            return;
+        }
+    }
+
+    // Common named ellipsoids / datums
+    if let Some(ellps) = params.get("ellps") {
+        match ellps.as_str() {
+            "WGS84" => {
+                attrs.insert("semi_major_axis".into(), 6378137.0f64.into());
+                attrs.insert("inverse_flattening".into(), 298.257223563f64.into());
+            }
+            "GRS80" => {
+                attrs.insert("semi_major_axis".into(), 6378137.0f64.into());
+                attrs.insert("inverse_flattening".into(), 298.257222101f64.into());
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    if let Some(datum) = params.get("datum") {
+        match datum.as_str() {
+            "WGS84" => {
+                attrs.insert("semi_major_axis".into(), 6378137.0f64.into());
+                attrs.insert("inverse_flattening".into(), 298.257223563f64.into());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn utm_grid_mapping_attrs(utm: &UtmCrs) -> BTreeMap<String, crate::export::ExportAttr> {
+    let mut attrs = BTreeMap::new();
+
+    let lon0 = (utm.zone as f64) * 6.0 - 183.0;
+    let false_northing = if utm.north { 0.0 } else { 10_000_000.0 };
+
+    attrs.insert("grid_mapping_name".into(), "transverse_mercator".into());
+    attrs.insert("scale_factor_at_central_meridian".into(), 0.9996f64.into());
+    attrs.insert("longitude_of_central_meridian".into(), lon0.into());
+    attrs.insert("latitude_of_projection_origin".into(), 0.0f64.into());
+    attrs.insert("false_easting".into(), 500_000.0f64.into());
+    attrs.insert("false_northing".into(), false_northing.into());
+    attrs.insert("semi_major_axis".into(), 6378137.0f64.into());
+    attrs.insert("inverse_flattening".into(), 298.257223563f64.into());
+
+    attrs
+}
+
+fn projinfo_to_wkt(definition: &str) -> Result<String, String> {
+    let output = std::process::Command::new("projinfo")
+        .args(["-o", "WKT2:2019", "--single-line", definition])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            if e.to_string().contains("No such file or directory") {
+                format!("PROJ (projinfo) cannot be found / is not installed: {e}")
+            } else {
+                format!("Call error when spawning projinfo: {e}")
+            }
+        })?
+        .wait_with_output()
+        .map_err(|e| format!("Call process error: {e}"))?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+
+    let mut take_next_nonempty = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Common case: header line, WKT on the next line
+        if take_next_nonempty {
+            return Ok(trimmed.to_string());
+        }
+
+        // Exact header emitted by projinfo for this output mode
+        if trimmed == "WKT2:2019 string:" {
+            take_next_nonempty = true;
+            continue;
+        }
+
+        // Defensive fallback in case some projinfo version puts the WKT on the same line
+        if let Some(rest) = trimmed.strip_prefix("WKT2:2019 string:") {
+            let rest = rest.trim();
+            if !rest.is_empty() {
+                return Ok(rest.to_string());
+            }
+            take_next_nonempty = true;
+        }
+    }
+
+    Err("Could not extract WKT2:2019 from projinfo output.".into())
+}
+
+fn proj_grid_mapping_attrs(
+    crs_str: &str,
+) -> Result<Option<BTreeMap<String, crate::export::ExportAttr>>, String> {
+    let proj_str = proj_parse_crs(crs_str)?;
+    let params = parse_proj_params(&proj_str);
+
+    // If the PROJ string is really just WGS84 UTM, normalize to the UTM branch
+    if params.get("proj").map(|s| s.as_str()) == Some("utm") {
+        if let Some(zone_s) = params.get("zone") {
+            if let Ok(zone) = zone_s.parse::<usize>() {
+                let utm = UtmCrs {
+                    zone,
+                    north: !params.contains_key("south"),
+                };
+                let mut attrs = utm_grid_mapping_attrs(&utm);
+                if let Ok(wkt) = projinfo_to_wkt(crs_str) {
+                    attrs.insert("crs_wkt".into(), wkt.into());
+                }
+                return Ok(Some(attrs));
+            }
+        }
+    }
+
+    let proj_name = match params.get("proj").map(|s| s.as_str()) {
+        Some("tmerc") => "transverse_mercator",
+        Some("merc") => "mercator",
+        Some("laea") => "lambert_azimuthal_equal_area",
+        Some("aeqd") => "azimuthal_equidistant",
+        Some("ortho") => "orthographic",
+        Some("stere") => "stereographic",
+        Some("geos") => "vertical_perspective",
+        _ => return Ok(None),
+    };
+
+    let mut attrs = BTreeMap::new();
+    attrs.insert("grid_mapping_name".into(), proj_name.into());
+
+    match proj_name {
+        "transverse_mercator" => {
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "k_0",
+                "scale_factor_at_central_meridian",
+            );
+            if !attrs.contains_key("scale_factor_at_central_meridian") {
+                insert_attr_f64(&mut attrs, &params, "k", "scale_factor_at_central_meridian");
+            }
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lon_0",
+                "longitude_of_central_meridian",
+            );
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lat_0",
+                "latitude_of_projection_origin",
+            );
+            insert_attr_f64(&mut attrs, &params, "x_0", "false_easting");
+            insert_attr_f64(&mut attrs, &params, "y_0", "false_northing");
+        }
+        "mercator" => {
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lon_0",
+                "longitude_of_projection_origin",
+            );
+            insert_attr_f64(&mut attrs, &params, "lat_ts", "standard_parallel");
+            if !attrs.contains_key("standard_parallel") {
+                insert_attr_f64(
+                    &mut attrs,
+                    &params,
+                    "k_0",
+                    "scale_factor_at_projection_origin",
+                );
+                if !attrs.contains_key("scale_factor_at_projection_origin") {
+                    insert_attr_f64(
+                        &mut attrs,
+                        &params,
+                        "k",
+                        "scale_factor_at_projection_origin",
+                    );
+                }
+            }
+            insert_attr_f64(&mut attrs, &params, "x_0", "false_easting");
+            insert_attr_f64(&mut attrs, &params, "y_0", "false_northing");
+        }
+        "lambert_azimuthal_equal_area" | "azimuthal_equidistant" | "orthographic" => {
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lon_0",
+                "longitude_of_projection_origin",
+            );
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lat_0",
+                "latitude_of_projection_origin",
+            );
+            insert_attr_f64(&mut attrs, &params, "x_0", "false_easting");
+            insert_attr_f64(&mut attrs, &params, "y_0", "false_northing");
+        }
+        "stereographic" => {
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lon_0",
+                "longitude_of_projection_origin",
+            );
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lat_0",
+                "latitude_of_projection_origin",
+            );
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "k_0",
+                "scale_factor_at_projection_origin",
+            );
+            if !attrs.contains_key("scale_factor_at_projection_origin") {
+                insert_attr_f64(
+                    &mut attrs,
+                    &params,
+                    "k",
+                    "scale_factor_at_projection_origin",
+                );
+            }
+            insert_attr_f64(&mut attrs, &params, "x_0", "false_easting");
+            insert_attr_f64(&mut attrs, &params, "y_0", "false_northing");
+        }
+        "vertical_perspective" => {
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lon_0",
+                "longitude_of_projection_origin",
+            );
+            insert_attr_f64(
+                &mut attrs,
+                &params,
+                "lat_0",
+                "latitude_of_projection_origin",
+            );
+            insert_attr_f64(&mut attrs, &params, "h", "perspective_point_height");
+            insert_attr_f64(&mut attrs, &params, "x_0", "false_easting");
+            insert_attr_f64(&mut attrs, &params, "y_0", "false_northing");
+        }
+        _ => {}
+    }
+
+    insert_known_ellipsoid_attrs(&mut attrs, &params);
+
+    if let Ok(wkt) = projinfo_to_wkt(crs_str) {
+        attrs.insert("crs_wkt".into(), wkt.into());
+    }
+
+    Ok(Some(attrs))
+}
+
+pub fn build_grid_mapping_from_crs(crs_str: &str) -> Result<Option<GridMappingSpec>, String> {
+    let crs = Crs::from_user_input(crs_str)?;
+    let attrs = match crs {
+        Crs::Utm(utm) => {
+            let mut attrs = utm_grid_mapping_attrs(&utm);
+
+            // Optional enhancement: if PROJ is available, also attach crs_wkt using the EPSG code
+            if let Ok(wkt) = projinfo_to_wkt(crs_str) {
+                attrs.insert("crs_wkt".into(), wkt.into());
+            }
+
+            Some(attrs)
+        }
+        Crs::Proj(_) => proj_grid_mapping_attrs(crs_str)?,
+    };
+
+    Ok(attrs.map(|attrs| GridMappingSpec {
+        variable_name: "projected_crs".into(),
+        attrs,
+    }))
+}
 
 #[cfg(test)]
 mod tests {
@@ -500,5 +842,13 @@ mod tests {
                 assert!(coords_approx_eq(&coords[i], &conv_back[i], 0.01));
             }
         }
+    }
+    #[test]
+    #[cfg(not(target_os = "windows"))] // Added 2026-04-06 because proj is hard to install in CI
+    fn test_projinfo_to_wkt() {
+        let retval = super::projinfo_to_wkt("EPSG:32633").unwrap();
+
+        println!("{}", retval);
+        assert!(retval.starts_with("PROJCRS[\"WGS 84"));
     }
 }

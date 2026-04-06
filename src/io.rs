@@ -699,6 +699,15 @@ pub fn export_netcdf(
                         .collect::<Vec<(&str, &str)>>(),
                 )?;
             }
+            crate::export::ExportArray::U8Scalar(v) => {
+                add_nc_variable::<u8>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &[*v],
+                    None,
+                )?;
+            }
             // data variables are expected to be 2D here; ignore other shapes
             _ => continue,
         }
@@ -1160,6 +1169,7 @@ mod tests {
 
         assert!(nc_path.is_file());
 
+        std::thread::sleep(std::time::Duration::from_secs(1));
         let out = netcdf::open(&nc_path)
             .map_err(|e| format!("Error reading NetCDF: {e:?}"))
             .unwrap();
@@ -1185,6 +1195,9 @@ mod tests {
                 ]),
             ),
         ];
+
+        let grid_mapping = out.variable("projected_crs").unwrap();
+        grid_mapping.attribute("grid_mapping_name").unwrap();
 
         // Load the data and check that it's identical
         let mut data = ndarray::Array2::<f32>::zeros((gpr.height(), gpr.width()));

@@ -67,6 +67,18 @@ impl From<&str> for ExportAttr {
     }
 }
 
+impl From<f64> for ExportAttr {
+    fn from(value: f64) -> Self {
+        ExportAttr::F64(value)
+    }
+}
+
+impl From<String> for ExportAttr {
+    fn from(value: String) -> Self {
+        ExportAttr::String(value)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ExportArray<'a> {
     F32Borrowed2D(&'a Array2<f32>),
@@ -113,7 +125,7 @@ impl<'a> ExportDataset<'a> {
         // attrs
         let attrs_py = PyDict::new_bound(py);
         for (k, v) in &self.attrs {
-            attrs_py.set_item(k, v.to_python(py)?);
+            attrs_py.set_item(k, v.to_python(py)?)?;
         }
         out.set_item("attrs", attrs_py)?;
 
@@ -160,7 +172,7 @@ fn export_var_to_py<'py>(py: Python<'py>, var: &ExportVariable<'_>) -> PyResult<
             dict.set_item("data", py_arr)?;
         }
         ExportArray::U8Scalar(v) => {
-            let py_arr = PyArray1::from_slice_bound(py, &[v.to_owned()]);
+            let py_arr = PyArray1::from_slice_bound(py, &[v.to_owned()]).get_item(0)?;
             dict.set_item("data", py_arr)?;
         }
     }
@@ -412,115 +424,7 @@ impl GPR {
             },
         );
 
-        // easting, northing, elevation (x)
-        let easting_vals: Vec<f64> = self.location.cor_points.iter().map(|p| p.easting).collect();
-        let northing_vals: Vec<f64> = self
-            .location
-            .cor_points
-            .iter()
-            .map(|p| p.northing)
-            .collect();
-        let elevation_vals: Vec<f64> = self
-            .location
-            .cor_points
-            .iter()
-            .map(|p| p.altitude)
-            .collect();
-
-        coords.insert(
-            "easting".into(),
-            ExportVariable {
-                dims: vec!["x".into()],
-                data: ExportArray::F64Owned1D(easting_vals),
-                attrs: [
-                    ("units".into(), "m".into()),
-                    ("long_name".into(), "easting".into()),
-                ]
-                .into_iter()
-                .collect(),
-            },
-        );
-
-        coords.insert(
-            "northing".into(),
-            ExportVariable {
-                dims: vec!["x".into()],
-                data: ExportArray::F64Owned1D(northing_vals),
-                attrs: [
-                    ("units".into(), "m".into()),
-                    ("long_name".into(), "northing".into()),
-                ]
-                .into_iter()
-                .collect(),
-            },
-        );
-
-        coords.insert(
-            "elevation".into(),
-            ExportVariable {
-                dims: vec!["x".into()],
-                data: ExportArray::F64Owned1D(elevation_vals.clone()),
-                attrs: [
-                    ("units".into(), "m".into()),
-                    ("long_name".into(), "elevation".into()),
-                ]
-                .into_iter()
-                .collect(),
-            },
-        );
-
         // latitude / longitude (x) as auxiliary coordinates derived from native CRS
-        let native_coords: Vec<crate::coords::Coord> = self
-            .location
-            .cor_points
-            .iter()
-            .map(|p| crate::coords::Coord {
-                x: p.easting,
-                y: p.northing,
-            })
-            .collect();
-
-        let crs_obj = crate::coords::Crs::from_user_input(&self.location.crs).ok();
-        let wgs84_coords =
-            crs_obj.and_then(|crs| crate::coords::to_wgs84(&native_coords, &crs).ok());
-        // This should never happen but I have this to be on the safe side.
-        if wgs84_coords.is_none() {
-            eprintln!("CRS conversion failed. Skipping longitude/latitude export");
-        };
-        if let Some(wgs84_coords) = wgs84_coords {
-            let longitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.x).collect();
-            let latitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.y).collect();
-
-            coords.insert(
-                "longitude".into(),
-                ExportVariable {
-                    dims: vec!["x".into()],
-                    data: ExportArray::F64Owned1D(longitude_vals),
-                    attrs: [
-                        ("units".into(), "degrees_east".into()),
-                        ("long_name".into(), "longitude".into()),
-                        ("standard_name".into(), "longitude".into()),
-                    ]
-                    .into_iter()
-                    .collect(),
-                },
-            );
-
-            coords.insert(
-                "latitude".into(),
-                ExportVariable {
-                    dims: vec!["x".into()],
-                    data: ExportArray::F64Owned1D(latitude_vals),
-                    attrs: [
-                        ("units".into(), "degrees_north".into()),
-                        ("long_name".into(), "latitude".into()),
-                        ("standard_name".into(), "latitude".into()),
-                    ]
-                    .into_iter()
-                    .collect(),
-                },
-            );
-        }
 
         // twtt (y) [ns]
         let twtt: Vec<f32> = {
@@ -627,6 +531,141 @@ impl GPR {
         // ---------- Data variables ----------
         let mut data_vars: BTreeMap<String, ExportVariable<'_>> = BTreeMap::new();
 
+        let grid_mapping = crate::coords::build_grid_mapping_from_crs(&self.location.crs)
+            .ok()
+            .flatten();
+        if grid_mapping.is_none() {
+            eprintln!("Grid mapping construction failed. No grid_mapping variable exported");
+        };
+        if let Some(gm) = &grid_mapping {
+            data_vars.insert(
+                gm.variable_name.clone(),
+                ExportVariable {
+                    dims: vec![],
+                    data: ExportArray::U8Scalar(0),
+                    attrs: gm.attrs.clone(),
+                },
+            );
+        };
+        if let Some(crs_obj) = crate::coords::Crs::from_user_input(&self.location.crs).ok() {
+            let native_coords: Vec<crate::coords::Coord> = self
+                .location
+                .cor_points
+                .iter()
+                .map(|p| crate::coords::Coord {
+                    x: p.easting,
+                    y: p.northing,
+                })
+                .collect();
+            let wgs84_coords = crate::coords::to_wgs84(&native_coords, &crs_obj).ok();
+            // This should never happen but I have this to be on the safe side.
+            if wgs84_coords.is_none() {
+                eprintln!("CRS conversion failed. Skipping longitude/latitude export");
+            };
+            if let Some(wgs84_coords) = wgs84_coords {
+                let longitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.x).collect();
+                let latitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.y).collect();
+
+                coords.insert(
+                    "longitude".into(),
+                    ExportVariable {
+                        dims: vec!["x".into()],
+                        data: ExportArray::F64Owned1D(longitude_vals),
+                        attrs: [
+                            ("units".into(), "degrees_east".into()),
+                            ("long_name".into(), "longitude".into()),
+                            ("standard_name".into(), "longitude".into()),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    },
+                );
+
+                coords.insert(
+                    "latitude".into(),
+                    ExportVariable {
+                        dims: vec!["x".into()],
+                        data: ExportArray::F64Owned1D(latitude_vals),
+                        attrs: [
+                            ("units".into(), "degrees_north".into()),
+                            ("long_name".into(), "latitude".into()),
+                            ("standard_name".into(), "latitude".into()),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    },
+                );
+            }
+            // easting, northing, elevation (x)
+            let easting_vals: Vec<f64> =
+                self.location.cor_points.iter().map(|p| p.easting).collect();
+            let northing_vals: Vec<f64> = self
+                .location
+                .cor_points
+                .iter()
+                .map(|p| p.northing)
+                .collect();
+            let elevation_vals: Vec<f64> = self
+                .location
+                .cor_points
+                .iter()
+                .map(|p| p.altitude)
+                .collect();
+
+            let mut easting_attrs: BTreeMap<String, ExportAttr> = [
+                ("units".into(), "m".into()),
+                ("long_name".into(), "easting".into()),
+            ]
+            .into_iter()
+            .collect();
+
+            let mut northing_attrs: BTreeMap<String, ExportAttr> = [
+                ("units".into(), "m".into()),
+                ("long_name".into(), "northing".into()),
+            ]
+            .into_iter()
+            .collect();
+
+            if grid_mapping.is_some() {
+                easting_attrs.insert("standard_name".into(), "projection_x_coordinate".into());
+                northing_attrs.insert("standard_name".into(), "projection_y_coordinate".into());
+            }
+
+            coords.insert(
+                "easting".into(),
+                ExportVariable {
+                    dims: vec!["x".into()],
+                    data: ExportArray::F64Owned1D(easting_vals),
+                    attrs: easting_attrs,
+                },
+            );
+
+            coords.insert(
+                "northing".into(),
+                ExportVariable {
+                    dims: vec!["x".into()],
+                    data: ExportArray::F64Owned1D(northing_vals),
+                    attrs: northing_attrs,
+                },
+            );
+
+            coords.insert(
+                "elevation".into(),
+                ExportVariable {
+                    dims: vec!["x".into()],
+                    data: ExportArray::F64Owned1D(elevation_vals.clone()),
+                    attrs: [
+                        ("units".into(), "m".into()),
+                        ("long_name".into(), "elevation".into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            );
+        } else {
+            eprintln!("CRS conversion failed. Skipping longitude/latitude/grid_mapping export");
+        }
+
         // main data (y, x)
         let mut dv_attrs = BTreeMap::new();
         dv_attrs.insert("units".into(), "mV".into());
@@ -635,6 +674,10 @@ impl GPR {
             "coordinates".into(),
             "distance time easting northing elevation longitude latitude elevation twtt".into(),
         );
+
+        if grid_mapping.is_some() {
+            dv_attrs.insert("grid_mapping".into(), "projected_crs".into());
+        };
 
         data_vars.insert(
             "data".into(),
@@ -658,7 +701,9 @@ impl GPR {
                 "distance time easting northing elevation longitude latitude elevation_topocorr"
                     .into(),
             );
-
+            if grid_mapping.is_some() {
+                dv2_attrs.insert("grid_mapping".into(), "projected_crs".into());
+            };
             data_vars.insert(
                 "data_topocorr".into(),
                 ExportVariable {
