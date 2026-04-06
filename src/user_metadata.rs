@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub type UserMetadata = BTreeMap<String, Value>;
 
-const RESERVED_PREFIXES: [&str; 2] = ["ridal-", "meta-"];
+const RESERVED_PREFIXES: [&str; 2] = ["ridal_", "meta_"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlattenedMetadataValue {
@@ -140,21 +140,22 @@ pub fn canonical_json(metadata: &UserMetadata) -> Result<String, String> {
 pub fn sanitize_key_for_netcdf(key: &str) -> Result<String, String> {
     let lowered = key.to_lowercase();
 
+    let separator = '_';
     let mut out = String::with_capacity(lowered.len());
-    let mut last_was_hyphen = false;
+    let mut last_was_separator = false;
 
     for ch in lowered.chars() {
         let is_alnum = ch.is_ascii_alphanumeric();
         if is_alnum {
             out.push(ch);
-            last_was_hyphen = false;
-        } else if !last_was_hyphen {
-            out.push('-');
-            last_was_hyphen = true;
+            last_was_separator = false;
+        } else if !last_was_separator {
+            out.push(separator);
+            last_was_separator = true;
         }
     }
 
-    let out = out.trim_matches('-').to_string();
+    let out = out.trim_matches(separator).to_string();
 
     if out.is_empty() {
         return Err(format!(
@@ -173,7 +174,7 @@ pub fn flatten_for_netcdf(
 
     for (key, value) in metadata {
         let sanitized = sanitize_key_for_netcdf(key)?;
-        let attr_name = format!("meta-{sanitized}");
+        let attr_name = format!("meta_{sanitized}");
 
         if !used_names.insert(attr_name.clone()) {
             return Err(format!(
@@ -280,14 +281,14 @@ mod tests {
 
     #[test]
     fn test_reserved_prefix_fails() {
-        let err = parse_cli_metadata(&["meta-foo=bar".to_string()]).unwrap_err();
+        let err = parse_cli_metadata(&["meta_foo=bar".to_string()]).unwrap_err();
         assert!(err.contains("may not start with"));
     }
 
     #[test]
     fn test_sanitize_key() {
-        assert_eq!(sanitize_key_for_netcdf("Some Key!").unwrap(), "some-key");
-        assert_eq!(sanitize_key_for_netcdf("___A___B___").unwrap(), "a-b");
+        assert_eq!(sanitize_key_for_netcdf("Some Key!").unwrap(), "some_key");
+        assert_eq!(sanitize_key_for_netcdf("___A___B___").unwrap(), "a_b");
     }
 
     #[test]
@@ -304,16 +305,16 @@ mod tests {
             .map(|x| (x.name, x.value))
             .collect::<BTreeMap<_, _>>();
         assert_eq!(
-            by_name["meta-nested"],
+            by_name["meta_nested"],
             FlattenedMetadataValue::String("{\"key2\":1}".to_string())
         );
         assert_eq!(
-            by_name["meta-arr"],
+            by_name["meta_arr"],
             FlattenedMetadataValue::String("[1,2]".to_string())
         );
-        assert_eq!(by_name["meta-flag"], FlattenedMetadataValue::U8(1));
+        assert_eq!(by_name["meta_flag"], FlattenedMetadataValue::U8(1));
         assert_eq!(
-            by_name["meta-none"],
+            by_name["meta_none"],
             FlattenedMetadataValue::String("null".to_string())
         );
     }

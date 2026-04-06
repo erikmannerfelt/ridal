@@ -1152,19 +1152,19 @@ mod tests {
 
         let expected_attrs = vec![
             (
-                "processing-steps",
+                "processing_steps",
                 netcdf::AttributeValue::Strs(vec!["subset(0 50)".to_string()]),
             ),
             (
-                "processing-log",
+                "processing_log",
                 netcdf::AttributeValue::Str(
                     "merge (duration: 0.00s):\tMerged \"other_filepath.rd3\"\nsubset (duration: 0.00s):\tSubset data from [10, 200] to (0:10, 0:50)"
                         .to_string(),
                 ),
             ),
-            ("total-distance", netcdf::AttributeValue::Double(49.)),
+            ("total_distance", netcdf::AttributeValue::Double(49.)),
             (
-                "original-filepaths",
+                "original_filepaths",
                 netcdf::AttributeValue::Strs(vec![
                     "filepath.rd3".to_string(),
                     "other_filepath.rd3".to_string(),
