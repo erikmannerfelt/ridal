@@ -19,6 +19,38 @@ const PROGRAM_NAME: &str = env!("CARGO_PKG_NAME");
 #[allow(dead_code)]
 const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 
+/// Python interface for ridal.
+///
+/// ridal provides fast, Rust-backed tools for reading, inspecting, and
+/// processing ground-penetrating radar (GPR) data from Python.
+///
+/// Main entry points
+/// -----------------
+/// read(...)
+///     Read one or more GPR files into memory without applying a processing
+///     workflow.
+/// info(...)
+///     Inspect one or more GPR files and return metadata summaries.
+/// process(...)
+///     Process one or more GPR files into a single output or an in-memory
+///     dataset.
+/// batch_process(...)
+///     Batch-process one or more GPR files into multiple outputs.
+///
+/// Discovery helpers
+/// -----------------
+/// all_steps, all_step_descriptions
+///     Available processing steps and their descriptions.
+/// all_formats, all_format_descriptions
+///     Supported file formats and their capabilities.
+/// version, __version__
+///     Installed ridal version.
+///
+/// Notes
+/// -----
+/// `xarray` is an optional dependency. If it is installed, some functions can
+/// return `xarray.Dataset` objects. Otherwise, use the plain Python dataset
+/// representations such as `"xarray_dict"`.
 #[cfg(feature = "python")]
 #[pyo3::pymodule]
 pub mod ridal {
@@ -152,24 +184,109 @@ pub mod ridal {
         Ok(())
     }
 
-    /// Process one or more GPR files.
+    /// Process one or more GPR files into a single output or an in-memory dataset.
+    ///
+    /// Use this function when you want to modify or process radar data. One or more
+    /// input files are read and optionally corrected or transformed. By default,
+    /// the result is written to a single output dataset and the output path is
+    /// returned. If `return_dataset=True`, the processed result is returned in
+    /// memory instead of being written to disk.
     ///
     /// Parameters
     /// ----------
-    /// inputs
-    ///     A path-like object or a list/tuple of path-like objects.
-    /// output
-    ///     Output filename or directory. If None, a default .nc path is derived from the first input.
-    /// steps
-    ///     Processing steps to run, either as a comma-separated string or a list of strings.
-    /// default
+    /// inputs : path-like or sequence of path-like
+    ///     One or more input files to read. A single path, list, or tuple of
+    ///     path-like objects is accepted.
+    /// output : path-like, optional
+    ///     Output file path or output directory. If omitted, a default output path
+    ///     is derived from the first input. Ignored when `return_dataset=True`.
+    /// steps : str or sequence of str, optional
+    ///     Processing steps to apply. This may be given either as a comma-separated
+    ///     string or as a sequence of step names.
+    ///
+    ///     Available steps are exposed as `ridal.all_steps`, and descriptions are
+    ///     available in `ridal.all_step_descriptions`.
+    ///
+    ///     Exactly one of `steps`, `default`, and `default_with_topo` may be given.
+    /// return_dataset : bool, default False
+    ///     If True, return the processed data as an in-memory dataset object instead
+    ///     of writing the dataset to disk. In this mode, `output`, `render`, and
+    ///     `track` must not be provided.
+    /// default : bool, default False
     ///     Use the default processing profile.
-    /// default_with_topo
-    ///     Use the default processing profile plus topographic correction.
+    ///
+    ///     Exactly one of `steps`, `default`, and `default_with_topo` may be given.
+    /// default_with_topo : bool, default False
+    ///     Use the default processing profile and include topographic correction.
+    ///
+    ///     Exactly one of `steps`, `default`, and `default_with_topo` may be given.
+    /// velocity : float, default 0.168
+    ///     Propagation velocity in meters per nanosecond.
+    /// cor : path-like, optional
+    ///     Coordinate file to use instead of any coordinate information implied by
+    ///     the input format.
+    /// dem : path-like, optional
+    ///     Digital elevation model to sample for topographic information.
+    /// crs : str, optional
+    ///     Coordinate reference system for interpreting or transforming coordinates.
+    ///     If omitted, the most appropriate WGS84 UTM zone is used.
+    /// track : path-like, optional
+    ///     Output path for exported track data. Not allowed when
+    ///     `return_dataset=True`.
+    /// quiet : bool, default False
+    ///     Reduce logging and progress output.
+    /// render : path-like, optional
+    ///     Output path for a rendered figure. Not allowed when
+    ///     `return_dataset=True`.
+    /// no_export : bool, default False
+    ///     Run processing without writing the main dataset output. Side outputs such
+    ///     as rendered figures or exported tracks may still be produced.
+    /// override_antenna_mhz : float, optional
+    ///     Override the antenna center frequency inferred from the input data.
+    /// metadata : mapping, optional
+    ///     Additional user metadata to attach to the result. This should be a
+    ///     JSON-serializable mapping. Root keys are interpreted as strings.
+    /// return_dataset_format : str, default "xarray_dict"
+    ///     Format used when `return_dataset=True`.
+    ///
+    ///     Supported values currently include:
+    ///
+    ///     - ``"xarray_dict"`` for a plain Python representation that does not
+    ///       require importing `xarray`.
+    ///     - ``"xarray"`` for an `xarray.Dataset`, which requires `xarray` to be
+    ///       installed.
+    ///
+    ///     More return formats may be added in the future.
+    ///
+    /// Returns
+    /// -------
+    /// str or object
+    ///     The output dataset path as a string in normal export mode, or an
+    ///     in-memory dataset object when `return_dataset=True`.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If incompatible arguments are provided, including:
+    ///
+    ///     - more than one of `steps`, `default`, and `default_with_topo`
+    ///     - `return_dataset=True` together with `output`, `render`, or `track`
+    ///     - an invalid `steps` value
+    /// RuntimeError
+    ///     If processing fails.
+    /// NotImplementedError
+    ///     If `return_dataset_format` is not supported.
+    ///
+    /// Notes
+    /// -----
+    /// `process()` is the main processing entry point and is intended for workflows
+    /// that modify the data. For lightweight loading of raw data without heavy
+    /// processing, use `read()`.
     #[pyfunction]
     #[pyo3(signature = (
         inputs,
         output=None,
+        *,
         steps=None,
         return_dataset=false,
         default=false,
@@ -233,6 +350,14 @@ pub mod ridal {
                     "return_dataset=True is incompatible with track=...",
                 ));
             }
+        }
+        let profile_flags =
+            usize::from(steps.is_some()) + usize::from(default) + usize::from(default_with_topo);
+
+        if profile_flags > 1 {
+            return Err(PyValueError::new_err(
+                "Only one of steps=..., default=True, and default_with_topo=True may be provided",
+            ));
         }
         let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
         let output_path = optional_path(py, output)?;
@@ -343,23 +468,65 @@ pub mod ridal {
             .call1((result.output_path.to_string_lossy().to_string(),))?
             .into())
     }
-    /// Process one or more GPR files.
+    /// Read one or more GPR files into memory without applying a processing workflow.
+    ///
+    /// Use this function to load radar data in a lightweight form for inspection,
+    /// exploration, or downstream processing in Python. Unlike `process()`,
+    /// `read()` is intended to return the data essentially as read from disk rather
+    /// than applying a full processing workflow.
     ///
     /// Parameters
     /// ----------
-    /// inputs
-    ///     A path-like object or a list/tuple of path-like objects.
-    /// output
-    ///     Output filename or directory. If None, a default .nc path is derived from the first input.
-    /// steps
-    ///     Processing steps to run, either as a comma-separated string or a list of strings.
-    /// default
-    ///     Use the default processing profile.
-    /// default_with_topo
-    ///     Use the default processing profile plus topographic correction.
+    /// inputs : path-like or sequence of path-like
+    ///     One or more input files to read. A single path, list, or tuple of
+    ///     path-like objects is accepted.
+    /// velocity : float, default 0.168
+    ///     Propagation velocity in meters per nanosecond.
+    /// cor : path-like, optional
+    ///     Coordinate file to use instead of any coordinate information implied by
+    ///     the input format.
+    /// dem : path-like, optional
+    ///     Digital elevation model to sample for topographic information.
+    /// crs : str, optional
+    ///     Coordinate reference system for interpreting or transforming coordinates.
+    ///     If omitted, the most appropriate WGS84 UTM zone is used.
+    /// override_antenna_mhz : float, optional
+    ///     Override the antenna center frequency inferred from the input data.
+    /// metadata : mapping, optional
+    ///     Additional user metadata to attach to the returned dataset. This should
+    ///     be a JSON-serializable mapping. Root keys are interpreted as strings.
+    /// return_dataset_format : str, default "xarray_dict"
+    ///     Format of the returned in-memory dataset.
+    ///
+    ///     Supported values currently include:
+    ///
+    ///     - ``"xarray_dict"`` for a plain Python representation that does not
+    ///       require importing `xarray`.
+    ///     - ``"xarray"`` for an `xarray.Dataset`, which requires `xarray` to be
+    ///       installed.
+    ///
+    ///     More return formats may be added in the future.
+    ///
+    /// Returns
+    /// -------
+    /// object
+    ///     An in-memory dataset representation of the input data.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If reading fails.
+    /// NotImplementedError
+    ///     If `return_dataset_format` is not supported.
+    ///
+    /// Notes
+    /// -----
+    /// `read()` is intended as a lightweight loader. If you want to apply filtering,
+    /// corrections, or export a processed dataset, use `process()` instead.
     #[pyfunction]
     #[pyo3(signature = (
         inputs,
+        *,
         velocity=0.168,
         cor=None,
         dem=None,
@@ -400,29 +567,100 @@ pub mod ridal {
             return_dataset_format,
         )
     }
-    /// Batch-process one or more GPR files into many outputs.
+    /// Batch-process one or more GPR files into multiple outputs.
+    ///
+    /// Use this function when many input files should be processed in one call and
+    /// written as separate outputs in an existing output directory.
     ///
     /// Parameters
     /// ----------
-    /// inputs
-    /// A path-like object or a list/tuple of path-like objects.
-    /// output
-    /// Output directory (must already exist).
-    /// steps
-    /// Processing steps to run, either as a comma-separated string or a list of strings.
-    /// default
-    /// Use the default processing profile.
-    /// default_with_topo
-    /// Use the default processing profile plus topographic correction.
-    /// merge
-    /// Optional merge threshold (e.g. "10 min"). Neighboring chronological profiles
-    /// closer than this threshold will be merged if compatible.
-    /// metadata
-    /// Optional user metadata mapping attached independently to every produced output.
+    /// inputs : path-like or sequence of path-like
+    ///     One or more input files to process. A single path, list, or tuple of
+    ///     path-like objects is accepted.
+    /// output : path-like
+    ///     Existing output directory where processed datasets will be written.
+    /// steps : str or sequence of str, optional
+    ///     Processing steps to apply. This may be given either as a comma-separated
+    ///     string or as a sequence of step names.
+    ///
+    ///     Available steps are exposed as `ridal.all_steps`, and descriptions are
+    ///     available in `ridal.all_step_descriptions`.
+    ///
+    ///     Exactly one of `steps`, `default`, and `default_with_topo` may be given.
+    /// default : bool, default False
+    ///     Use the default processing profile.
+    ///
+    ///     Exactly one of `steps`, `default`, and `default_with_topo` may be given.
+    /// default_with_topo : bool, default False
+    ///     Use the default processing profile and include topographic correction.
+    ///
+    ///     Exactly one of `steps`, `default`, and `default_with_topo` may be given.
+    /// velocity : float, default 0.168
+    ///     Propagation velocity in meters per nanosecond.
+    /// cor : path-like, optional
+    ///     Coordinate file to use instead of any coordinate information implied by
+    ///     the input format.
+    /// dem : path-like, optional
+    ///     Digital elevation model to sample for topographic information.
+    /// crs : str, optional
+    ///     Coordinate reference system for interpreting or transforming coordinates.
+    ///     If omitted, the most appropriate WGS84 UTM zone is used.
+    /// track : path-like, optional
+    ///     Existing directory where exported track files should be written.
+    /// quiet : bool, default False
+    ///     Reduce logging and progress output.
+    /// render : path-like, optional
+    ///     Existing directory where rendered figures should be written.
+    /// no_export : bool, default False
+    ///     Run processing without writing the main dataset outputs. Side outputs
+    ///     such as rendered figures or exported tracks may still be produced.
+    /// merge : str, optional
+    ///     Merge chronologically neighboring profiles when they are close enough in
+    ///     time and otherwise compatible.
+    ///
+    ///     For example, ``"10 min"`` will merge neighboring profiles separated by
+    ///     less than ten minutes.
+    ///
+    ///     The value is parsed using the `parse_duration` syntax. Briefly, it
+    ///     accepts sequences of ``[value] [unit]`` pairs such as
+    ///     ``"15 days 20 seconds 100 milliseconds"``; spaces are optional, and
+    ///     unit order does not matter. See the full syntax and accepted
+    ///     abbreviations at:
+    ///     https://docs.rs/parse_duration/latest/parse_duration/#syntax
+    /// override_antenna_mhz : float, optional
+    ///     Override the antenna center frequency inferred from the input data.
+    /// metadata : mapping, optional
+    ///     Additional user metadata to attach independently to each produced output.
+    ///     This should be a JSON-serializable mapping. Root keys are interpreted as
+    ///     strings.
+    ///
+    /// Returns
+    /// -------
+    /// list of str
+    ///     Output dataset paths as strings, in the order produced.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If incompatible arguments are provided, including:
+    ///
+    ///     - more than one of `steps`, `default`, and `default_with_topo`
+    ///     - `output` is not an existing directory
+    ///     - `track` is provided but is not an existing directory
+    ///     - `render` is provided but is not an existing directory
+    ///     - an invalid `steps` value
+    /// RuntimeError
+    ///     If batch processing fails.
+    ///
+    /// Notes
+    /// -----
+    /// Unlike `process()`, `batch_process()` always targets an existing output
+    /// directory and produces multiple outputs.
     #[pyfunction]
     #[pyo3(signature = (
     inputs,
     output,
+    *,
     steps=None,
     default=false,
     default_with_topo=false,
@@ -497,6 +735,14 @@ pub mod ridal {
             None => None,
         };
 
+        let profile_flags =
+            usize::from(steps.is_some()) + usize::from(default) + usize::from(default_with_topo);
+
+        if profile_flags > 1 {
+            return Err(PyValueError::new_err(
+                "Only one of steps=..., default=True, and default_with_topo=True may be provided",
+            ));
+        }
         let steps_text = match steps {
             Some(step_obj) => {
                 let bound = step_obj.bind(py);
@@ -565,12 +811,48 @@ pub mod ridal {
             .collect())
     }
 
-    /// Inspect one or more GPR files.
+    /// Inspect one or more GPR files and return metadata summaries.
     ///
-    /// Returns a dictionary for one input and a list of dictionaries for many inputs.
+    /// This function reads metadata and summary information without performing a
+    /// full processing workflow.
+    ///
+    /// Parameters
+    /// ----------
+    /// inputs : path-like or sequence of path-like
+    ///     One or more input files to inspect. A single path, list, or tuple of
+    ///     path-like objects is accepted.
+    /// velocity : float, default 0.168
+    ///     Propagation velocity in meters per nanosecond.
+    /// cor : path-like, optional
+    ///     Coordinate file to use instead of any coordinate information implied by
+    ///     the input format.
+    /// dem : path-like, optional
+    ///     Digital elevation model to sample for topographic information.
+    /// crs : str, optional
+    ///     Coordinate reference system for interpreting or transforming coordinates.
+    ///     If omitted, the most appropriate WGS84 UTM zone is used.
+    /// override_antenna_mhz : float, optional
+    ///     Override the antenna center frequency inferred from the input data.
+    ///
+    /// Returns
+    /// -------
+    /// list of dict
+    ///     One metadata summary dictionary per input file.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If inspection fails.
+    ///
+    /// Notes
+    /// -----
+    /// `info()` is intended for lightweight inspection. For loading in-memory data,
+    /// use `read()`. For modifying or exporting processed data, use `process()` or
+    /// `batch_process()`.
     #[pyfunction]
     #[pyo3(signature = (
         inputs,
+        *,
         velocity=0.168,
         cor=None,
         dem=None,
@@ -585,7 +867,7 @@ pub mod ridal {
         dem: Option<PyObject>,
         crs: Option<String>,
         override_antenna_mhz: Option<f32>,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Vec<PyObject>> {
         let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
         let cor_path = optional_path(py, cor)?;
         let dem_path = optional_path(py, dem)?;
@@ -601,14 +883,26 @@ pub mod ridal {
         let records =
             gpr::inspect(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
 
-        if records.len() == 1 {
-            json_to_py(py, &serde_json::to_string(&records[0]).unwrap())
-        } else {
-            json_to_py(py, &serde_json::to_string(&records).unwrap())
-        }
+        records
+            .iter()
+            .map(|r| {
+                let text = serde_json::to_string(r).map_err(|e| {
+                    PyRuntimeError::new_err(format!("Failed to serialize info record to JSON: {e}"))
+                })?;
+                json_to_py(py, &text)
+            })
+            .collect::<PyResult<Vec<PyObject>>>()
     }
 
-    /// Legacy compatibility shim for the removed CLI-in-Python interface.
+    /// Removed legacy entry point for the old Python CLI wrapper.
+    ///
+    /// `ridal.run_cli()` is no longer supported. Use `ridal.process()` for
+    /// processing workflows and `ridal.info()` for metadata inspection.
+    ///
+    /// Raises
+    /// ------
+    /// NotImplementedError
+    ///     Always raised.
     #[pyfunction(signature = (*_args, **_kwargs))]
     fn run_cli(_args: &Bound<'_, PyTuple>, _kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<()> {
         Err(PyNotImplementedError::new_err(
