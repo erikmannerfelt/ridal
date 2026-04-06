@@ -1520,7 +1520,7 @@ impl GPR {
     }
 
     pub fn export(&self, nc_filepath: &Path) -> Result<(), String> {
-        let ds = self.export_dataset();
+        let ds = self.export_dataset()?;
         io::export_netcdf(&ds, nc_filepath)
     }
 

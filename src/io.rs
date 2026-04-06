@@ -1,10 +1,11 @@
 /// Functions to handle input and output (I/O) of GPR data files.
 use ndarray::Array2;
 use rayon::prelude::*;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
+use crate::export::ExportAttr;
 use crate::{gpr, tools};
 
 /// Load and parse a Malå metadata file (.rad)
@@ -482,12 +483,24 @@ pub fn load_pe_gp2(
     }
 }
 
+impl From<ExportAttr> for netcdf::AttributeValue {
+    fn from(val: ExportAttr) -> Self {
+        match val {
+            ExportAttr::String(s) => netcdf::AttributeValue::Str(s),
+            ExportAttr::Strings(s) => netcdf::AttributeValue::Strs(s),
+            ExportAttr::F64(v) => netcdf::AttributeValue::Double(v),
+            ExportAttr::F32(v) => netcdf::AttributeValue::Float(v),
+            ExportAttr::U8(v) => netcdf::AttributeValue::Uchar(v),
+            ExportAttr::I64(v) => netcdf::AttributeValue::Longlong(v),
+        }
+    }
+}
 /// Common functionality for writing NetCDF variables
 fn write_nc_variable_common<T>(
     v: &mut netcdf::VariableMut,
     name: &str,
     data: &[T],
-    unit: Option<&str>,
+    attrs: Option<&BTreeMap<String, ExportAttr>>,
 ) -> Result<(), String>
 where
     T: netcdf::NcTypeDescriptor,
@@ -495,10 +508,13 @@ where
     v.put_values(data, ..)
         .map_err(|e| format!("NetCDF export error when adding variable '{name}' data: {e}"))?;
 
-    if let Some(unit) = unit {
-        v.put_attribute("unit", unit)
-            .map_err(|e| format!("NetCDF export error when setting variable '{name}' unit: {e}"))?;
-    }
+    if let Some(attrs) = attrs {
+        for (k, attr) in attrs {
+            v.put_attribute(k, attr.to_owned()).map_err(|e| {
+                format!("NetCDF export error when setting variable '{name}' attribute '{k}': {e}")
+            })?;
+        }
+    };
 
     Ok(())
 }
@@ -509,7 +525,7 @@ fn add_nc_variable<T>(
     name: &str,
     dims: &[&str],
     data: &[T],
-    unit: Option<&str>,
+    attrs: Option<&BTreeMap<String, ExportAttr>>,
 ) -> Result<(), String>
 where
     T: netcdf::NcTypeDescriptor,
@@ -518,7 +534,7 @@ where
         .add_variable::<T>(name, dims)
         .map_err(|e| format!("NetCDF export error when adding variable '{name}': {e}"))?;
 
-    write_nc_variable_common(&mut v, name, data, unit)
+    write_nc_variable_common(&mut v, name, data, attrs)
 }
 
 /// Add a 2D variable with compression/chunking
@@ -528,8 +544,7 @@ fn add_nc_variable_compressed_2d<T>(
     dims: &[&str],
     data: &[T],
     shape: (usize, usize), // (ny, nx) in the same order as `dims`
-    unit: Option<&str>,
-    extra_attrs: &[(&str, &str)], // e.g. [("coordinates", "distance return-time")]
+    attrs: Option<&BTreeMap<String, ExportAttr>>,
 ) -> Result<(), String>
 where
     T: netcdf::NcTypeDescriptor,
@@ -552,15 +567,7 @@ where
         break;
     }
 
-    write_nc_variable_common(&mut v, name, data, unit)?;
-
-    for (attr_name, attr_val) in extra_attrs {
-        v.put_attribute(attr_name, *attr_val).map_err(|e| {
-            format!(
-                "NetCDF export error when setting variable '{name}' attribute '{attr_name}': {e}"
-            )
-        })?;
-    }
+    write_nc_variable_common(&mut v, name, data, attrs)?;
 
     Ok(())
 }
@@ -610,14 +617,7 @@ pub fn export_netcdf(
 
     // ---- Global attributes from dataset ----
     for (k, v) in &ds.attrs {
-        match v {
-            crate::export::ExportAttr::String(s) => add_nc_attribute(&mut file, k, s.as_str())?,
-            crate::export::ExportAttr::Strings(vs) => add_nc_attribute(&mut file, k, vs.clone())?,
-            crate::export::ExportAttr::F64(x) => add_nc_attribute(&mut file, k, *x)?,
-            crate::export::ExportAttr::F32(x) => add_nc_attribute(&mut file, k, *x)?,
-            crate::export::ExportAttr::I64(x) => add_nc_attribute(&mut file, k, *x)?,
-            crate::export::ExportAttr::U8(x) => add_nc_attribute(&mut file, k, *x)?,
-        }
+        add_nc_attribute(&mut file, k, v.to_owned())?;
     }
 
     // ---- Coordinates (1D) ----
@@ -629,28 +629,35 @@ pub fn export_netcdf(
                     name,
                     &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     v,
-                    None,
+                    Some(&var.attrs),
                 )?;
             }
             crate::export::ExportArray::F32Owned1D(v) => {
                 // collect unit attr if present
-                let unit = var.attrs.get("unit").map(|s| s.as_str());
                 add_nc_variable::<f32>(
                     &mut file,
                     name,
                     &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     v,
-                    unit,
+                    Some(&var.attrs),
                 )?;
             }
             crate::export::ExportArray::F64Owned1D(v) => {
-                let unit = var.attrs.get("unit").map(|s| s.as_str());
                 add_nc_variable::<f64>(
                     &mut file,
                     name,
                     &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     v,
-                    unit,
+                    Some(&var.attrs),
+                )?;
+            }
+            crate::export::ExportArray::U8Scalar(v) => {
+                add_nc_variable::<u8>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &[*v],
+                    Some(&var.attrs),
                 )?;
             }
             crate::export::ExportArray::F32Borrowed2D(_) => {
@@ -669,21 +676,22 @@ pub fn export_netcdf(
                 let nx = ds.dims[var.dims[1].as_str()];
                 let flat: Vec<f32> = arr2d.iter().copied().collect();
 
-                // unit & extra attributes (coordinates)
-                let unit = var.attrs.get("unit").map(|s| s.as_str());
-                let mut extras: Vec<(&str, &str)> = Vec::new();
-                if let Some(coord_str) = var.attrs.get("coordinates") {
-                    extras.push(("coordinates", coord_str.as_str()));
-                }
-
                 add_nc_variable_compressed_2d::<f32>(
                     &mut file,
                     name,
                     &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     &flat,
                     (ny, nx),
-                    unit,
-                    &extras,
+                    Some(&var.attrs),
+                )?;
+            }
+            crate::export::ExportArray::U8Scalar(v) => {
+                add_nc_variable::<u8>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &[*v],
+                    Some(&var.attrs),
                 )?;
             }
             // data variables are expected to be 2D here; ignore other shapes
@@ -1129,7 +1137,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Added 2026-03-13 because it randomly fails sometimes. Unclear why
+    // #[ignore] // Added 2026-03-13 because it randomly fails sometimes. Unclear why
+    #[test_retry::retry]
     fn test_save_netcdf() {
         let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
 
@@ -1146,31 +1155,50 @@ mod tests {
 
         assert!(nc_path.is_file());
 
+        std::thread::sleep(std::time::Duration::from_millis(200));
         let out = netcdf::open(&nc_path)
             .map_err(|e| format!("Error reading NetCDF: {e:?}"))
             .unwrap();
 
         let expected_attrs = vec![
             (
-                "processing-steps",
+                "processing_steps",
                 netcdf::AttributeValue::Strs(vec!["subset(0 50)".to_string()]),
             ),
             (
-                "processing-log",
+                "processing_log",
                 netcdf::AttributeValue::Str(
                     "merge (duration: 0.00s):\tMerged \"other_filepath.rd3\"\nsubset (duration: 0.00s):\tSubset data from [10, 200] to (0:10, 0:50)"
                         .to_string(),
                 ),
             ),
-            ("total-distance", netcdf::AttributeValue::Double(49.)),
+            ("total_distance", netcdf::AttributeValue::Double(49.)),
             (
-                "original-filepaths",
+                "original_filepaths",
                 netcdf::AttributeValue::Strs(vec![
                     "filepath.rd3".to_string(),
                     "other_filepath.rd3".to_string(),
                 ]),
             ),
         ];
+
+        let grid_mapping = out.variable("projected_crs").unwrap();
+        assert_eq!(
+            grid_mapping
+                .attribute("grid_mapping_name")
+                .unwrap()
+                .value()
+                .unwrap(),
+            netcdf::AttributeValue::Str("transverse_mercator".into())
+        );
+        assert_eq!(
+            grid_mapping
+                .attribute("false_easting")
+                .unwrap()
+                .value()
+                .unwrap(),
+            netcdf::AttributeValue::Double(500000.0)
+        );
 
         // Load the data and check that it's identical
         let mut data = ndarray::Array2::<f32>::zeros((gpr.height(), gpr.width()));

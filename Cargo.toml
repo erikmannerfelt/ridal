@@ -46,6 +46,7 @@ tempfile = "3.5.0"
 temp-env = "0.3.6"
 serial_test = "3.2.0"
 approx = "0.5.0"
+test_retry = "0.1.0"
 
 [features]
 default = ["cli", "python"]

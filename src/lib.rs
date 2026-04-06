@@ -433,7 +433,9 @@ pub mod ridal {
             };
             let (gpr_obj, _default_path) = gpr::build_processed_gpr(params2)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
-            let ds = gpr_obj.export_dataset();
+            let ds = gpr_obj
+                .export_dataset()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
             let ds_py = ds.to_python(py);
             if return_dataset_format == "xarray_dict" {
                 return ds_py;
