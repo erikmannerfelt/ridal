@@ -1,5 +1,4 @@
 import ridal
-import matplotlib.pyplot as plt
 
 def main():
 
@@ -9,6 +8,7 @@ def main():
     obj = ridal.read(filepath, return_dataset_format="xarray")
     data = obj
 
+    # import matplotlib.pyplot as plt
     # data["data_topographically_corrected"].plot()
     # plt.ylim(plt.gca().get_ylim()[::-1])
     # plt.show()
