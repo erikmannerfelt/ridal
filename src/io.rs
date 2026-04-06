@@ -529,7 +529,7 @@ fn add_nc_variable_compressed_2d<T>(
     data: &[T],
     shape: (usize, usize), // (ny, nx) in the same order as `dims`
     unit: Option<&str>,
-    extra_attrs: &[(&str, &str)], // e.g. [("coordinates", "distance return-time")]
+    extra_attrs: &[(&str, &str)], // e.g. [("coordinates", "distance twtt")]
 ) -> Result<(), String>
 where
     T: netcdf::NcTypeDescriptor,
@@ -1129,7 +1129,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Added 2026-03-13 because it randomly fails sometimes. Unclear why
+    // #[ignore] // Added 2026-03-13 because it randomly fails sometimes. Unclear why
+    #[test_retry::retry]
     fn test_save_netcdf() {
         let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
 

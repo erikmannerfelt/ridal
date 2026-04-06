@@ -239,6 +239,10 @@ impl GPR {
             ExportAttr::F32(self.metadata.antenna_separation),
         );
         attrs.insert(
+            "antenna_separation_unit".into(),
+            ExportAttr::String("m".into()),
+        );
+        attrs.insert(
             "frequency_steps".into(),
             ExportAttr::I64(self.metadata.frequency_steps as i64),
         );
@@ -246,11 +250,16 @@ impl GPR {
             "vertical_sampling_frequency".into(),
             ExportAttr::F32(self.metadata.frequency),
         );
+        attrs.insert(
+            "vertical_sampling_frequency_unit".into(),
+            ExportAttr::String("MHz".into()),
+        );
         if self.metadata.time_interval.is_finite() {
             attrs.insert(
                 "time_interval".into(),
                 ExportAttr::F32(self.metadata.time_interval),
             );
+            attrs.insert("time_interval_unit".into(), ExportAttr::String("s".into()));
         }
 
         // processing log & steps
@@ -432,8 +441,61 @@ impl GPR {
             },
         );
 
-        // return_time (y) [ns]
-        let rt: Vec<f32> = {
+        // latitude / longitude (x) as auxiliary coordinates derived from native CRS
+        let native_coords: Vec<crate::coords::Coord> = self
+            .location
+            .cor_points
+            .iter()
+            .map(|p| crate::coords::Coord {
+                x: p.easting,
+                y: p.northing,
+            })
+            .collect();
+
+        let crs_obj = crate::coords::Crs::from_user_input(&self.location.crs).ok();
+        let wgs84_coords =
+            crs_obj.and_then(|crs| crate::coords::to_wgs84(&native_coords, &crs).ok());
+        // This should never happen but I have this to be on the safe side.
+        if wgs84_coords.is_none() {
+            eprintln!("CRS conversion failed. Skipping longitude/latitude export");
+        };
+        if let Some(wgs84_coords) = wgs84_coords {
+            let longitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.x).collect();
+            let latitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.y).collect();
+
+            coords.insert(
+                "longitude".into(),
+                ExportVariable {
+                    dims: vec!["x".into()],
+                    data: ExportArray::F64Owned1D(longitude_vals),
+                    attrs: [
+                        ("units".into(), "degrees_east".into()),
+                        ("long_name".into(), "longitude".into()),
+                        ("standard_name".into(), "longitude".into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            );
+
+            coords.insert(
+                "latitude".into(),
+                ExportVariable {
+                    dims: vec!["x".into()],
+                    data: ExportArray::F64Owned1D(latitude_vals),
+                    attrs: [
+                        ("units".into(), "degrees_north".into()),
+                        ("long_name".into(), "latitude".into()),
+                        ("standard_name".into(), "latitude".into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            );
+        }
+
+        // twtt (y) [ns]
+        let twtt: Vec<f32> = {
             let step = self.vertical_resolution_ns();
             (0..height).map(|i| i as f32 * step).collect()
         };
@@ -441,7 +503,7 @@ impl GPR {
             "twtt".into(),
             ExportVariable {
                 dims: vec!["y".into()],
-                data: ExportArray::F32Owned1D(rt),
+                data: ExportArray::F32Owned1D(twtt),
                 attrs: [
                     ("units".into(), "ns".into()),
                     ("long_name".into(), "two-way travel time".into()),
@@ -541,7 +603,10 @@ impl GPR {
         let mut dv_attrs = BTreeMap::new();
         dv_attrs.insert("units".into(), "mV".into());
         dv_attrs.insert("long_name".into(), "radar amplitude".into());
-        dv_attrs.insert("coordinates".into(), "distance twtt".into());
+        dv_attrs.insert(
+            "coordinates".into(),
+            "distance time easting northing elevation longitude latitude elevation twtt".into(),
+        );
 
         data_vars.insert(
             "data".into(),
@@ -560,7 +625,11 @@ impl GPR {
                 "long_name".into(),
                 "topographically corrected radar amplitude".into(),
             );
-            dv2_attrs.insert("coordinates".into(), "distance elevation_topocorr".into());
+            dv2_attrs.insert(
+                "coordinates".into(),
+                "distance time easting northing elevation longitude latitude elevation_topocorr"
+                    .into(),
+            );
 
             data_vars.insert(
                 "data_topocorr".into(),
