@@ -181,7 +181,7 @@ fn seconds_to_rfc3339(sec: f64) -> String {
 }
 
 impl GPR {
-    pub fn export_dataset(&self) -> ExportDataset<'_> {
+    pub fn export_dataset(&self) -> Result<ExportDataset<'_>, String> {
         let width = self.width();
         let height = self.height();
 
@@ -518,22 +518,22 @@ impl GPR {
         // ---------- Data variables ----------
         let mut data_vars: BTreeMap<String, ExportVariable<'_>> = BTreeMap::new();
 
-        let grid_mapping = crate::coords::build_grid_mapping_from_crs(&self.location.crs)
-            .ok()
-            .flatten();
-        if grid_mapping.is_none() {
-            eprintln!("Grid mapping construction failed. No grid_mapping variable exported");
-        };
-        if let Some(gm) = &grid_mapping {
-            data_vars.insert(
-                gm.variable_name.clone(),
-                ExportVariable {
-                    dims: vec![],
-                    data: ExportArray::U8Scalar(0),
-                    attrs: gm.attrs.clone(),
-                },
-            );
-        };
+        let grid_mapping =
+            crate::coords::build_grid_mapping_from_crs(&self.location.crs)?.ok_or(format!(
+                "CRS '{}' not supported. If it is a geographic CRS (e.g. WGS84 lat/lon), try a projected alternative.",
+                self.location.crs
+            ))?;
+        // if grid_mapping.is_none() {
+        //     eprintln!("Grid mapping construction failed. No grid_mapping variable exported");
+        // };
+        data_vars.insert(
+            grid_mapping.variable_name.clone(),
+            ExportVariable {
+                dims: vec![],
+                data: ExportArray::U8Scalar(0),
+                attrs: grid_mapping.attrs.clone(),
+            },
+        );
         if let Some(crs_obj) = crate::coords::Crs::from_user_input(&self.location.crs).ok() {
             let native_coords: Vec<crate::coords::Coord> = self
                 .location
@@ -599,24 +599,21 @@ impl GPR {
                 .map(|p| p.altitude)
                 .collect();
 
-            let mut easting_attrs: BTreeMap<String, ExportAttr> = [
+            let easting_attrs: BTreeMap<String, ExportAttr> = [
                 ("units".into(), "m".into()),
                 ("long_name".into(), "easting".into()),
+                ("standard_name".into(), "projection_x_coordinate".into()),
             ]
             .into_iter()
             .collect();
 
-            let mut northing_attrs: BTreeMap<String, ExportAttr> = [
+            let northing_attrs: BTreeMap<String, ExportAttr> = [
                 ("units".into(), "m".into()),
                 ("long_name".into(), "northing".into()),
+                ("standard_name".into(), "projection_y_coordinate".into()),
             ]
             .into_iter()
             .collect();
-
-            if grid_mapping.is_some() {
-                easting_attrs.insert("standard_name".into(), "projection_x_coordinate".into());
-                northing_attrs.insert("standard_name".into(), "projection_y_coordinate".into());
-            }
 
             coords.insert(
                 "easting".into(),
@@ -663,9 +660,7 @@ impl GPR {
                 .into(),
         );
 
-        if grid_mapping.is_some() {
-            dv_attrs.insert("grid_mapping".into(), "projected_crs".into());
-        };
+        dv_attrs.insert("grid_mapping".into(), "projected_crs".into());
 
         data_vars.insert(
             "data".into(),
@@ -689,9 +684,7 @@ impl GPR {
                 "distance time easting northing elevation longitude latitude elevation_topocorr"
                     .into(),
             );
-            if grid_mapping.is_some() {
-                dv2_attrs.insert("grid_mapping".into(), "projected_crs".into());
-            };
+            dv2_attrs.insert("grid_mapping".into(), "projected_crs".into());
             data_vars.insert(
                 "data_topocorr".into(),
                 ExportVariable {
@@ -702,11 +695,11 @@ impl GPR {
             );
         }
 
-        ExportDataset {
+        Ok(ExportDataset {
             dims,
             coords,
             data_vars,
             attrs,
-        }
+        })
     }
 }
