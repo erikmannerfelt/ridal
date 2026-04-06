@@ -23,19 +23,6 @@ pub enum ExportAttr {
     U8(u8),
 }
 
-impl ExportAttr {
-    pub fn as_string(&self) -> String {
-        match self {
-            ExportAttr::String(s) => s.to_owned(),
-            ExportAttr::Strings(v) => v.join(""),
-            ExportAttr::F64(v) => format!("{v}"),
-            ExportAttr::F32(v) => format!("{v}"),
-            ExportAttr::I64(v) => format!("{v}"),
-            ExportAttr::U8(v) => format!("{v}"),
-        }
-    }
-}
-
 #[cfg(feature = "python")]
 impl ExportAttr {
     pub fn to_python<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
@@ -672,7 +659,8 @@ impl GPR {
         dv_attrs.insert("long_name".into(), "radar amplitude".into());
         dv_attrs.insert(
             "coordinates".into(),
-            "distance time easting northing elevation longitude latitude elevation twtt".into(),
+            "distance time easting northing elevation longitude latitude elevation depth twtt"
+                .into(),
         );
 
         if grid_mapping.is_some() {
