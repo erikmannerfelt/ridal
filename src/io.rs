@@ -483,9 +483,9 @@ pub fn load_pe_gp2(
     }
 }
 
-impl Into<netcdf::AttributeValue> for ExportAttr {
-    fn into(self) -> netcdf::AttributeValue {
-        match self {
+impl From<ExportAttr> for netcdf::AttributeValue {
+    fn from(val: ExportAttr) -> Self {
+        match val {
             ExportAttr::String(s) => netcdf::AttributeValue::Str(s),
             ExportAttr::Strings(s) => netcdf::AttributeValue::Strs(s),
             ExportAttr::F64(v) => netcdf::AttributeValue::Double(v),
@@ -510,7 +510,7 @@ where
 
     if let Some(attrs) = attrs {
         for (k, attr) in attrs {
-            v.put_attribute(&k, attr.to_owned()).map_err(|e| {
+            v.put_attribute(k, attr.to_owned()).map_err(|e| {
                 format!("NetCDF export error when setting variable '{name}' attribute '{k}': {e}")
             })?;
         }

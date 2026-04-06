@@ -423,14 +423,9 @@ fn insert_known_ellipsoid_attrs(
         return;
     }
 
-    if let Some(datum) = params.get("datum") {
-        match datum.as_str() {
-            "WGS84" => {
-                attrs.insert("semi_major_axis".into(), 6378137.0f64.into());
-                attrs.insert("inverse_flattening".into(), 298.257223563f64.into());
-            }
-            _ => {}
-        }
+    if Some(&"WGS84".to_string()) == params.get("datum") {
+        attrs.insert("semi_major_axis".into(), 6378137.0f64.into());
+        attrs.insert("inverse_flattening".into(), 298.257223563f64.into());
     }
 }
 

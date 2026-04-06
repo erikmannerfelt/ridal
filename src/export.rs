@@ -534,55 +534,50 @@ impl GPR {
                 attrs: grid_mapping.attrs.clone(),
             },
         );
-        if let Some(crs_obj) = crate::coords::Crs::from_user_input(&self.location.crs).ok() {
-            let native_coords: Vec<crate::coords::Coord> = self
-                .location
-                .cor_points
-                .iter()
-                .map(|p| crate::coords::Coord {
-                    x: p.easting,
-                    y: p.northing,
-                })
-                .collect();
-            let wgs84_coords = crate::coords::to_wgs84(&native_coords, &crs_obj).ok();
-            // This should never happen but I have this to be on the safe side.
-            if wgs84_coords.is_none() {
-                eprintln!("CRS conversion failed. Skipping longitude/latitude export");
-            };
-            if let Some(wgs84_coords) = wgs84_coords {
-                let longitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.x).collect();
-                let latitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.y).collect();
+        let crs_obj = crate::coords::Crs::from_user_input(&self.location.crs)?;
+        let native_coords: Vec<crate::coords::Coord> = self
+            .location
+            .cor_points
+            .iter()
+            .map(|p| crate::coords::Coord {
+                x: p.easting,
+                y: p.northing,
+            })
+            .collect();
+        let wgs84_coords = crate::coords::to_wgs84(&native_coords, &crs_obj).ok();
+        if let Some(wgs84_coords) = wgs84_coords {
+            let longitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.x).collect();
+            let latitude_vals: Vec<f64> = wgs84_coords.iter().map(|p| p.y).collect();
 
-                coords.insert(
-                    "longitude".into(),
-                    ExportVariable {
-                        dims: vec!["x".into()],
-                        data: ExportArray::F64Owned1D(longitude_vals),
-                        attrs: [
-                            ("units".into(), "degrees_east".into()),
-                            ("long_name".into(), "longitude".into()),
-                            ("standard_name".into(), "longitude".into()),
-                        ]
-                        .into_iter()
-                        .collect(),
-                    },
-                );
+            coords.insert(
+                "longitude".into(),
+                ExportVariable {
+                    dims: vec!["x".into()],
+                    data: ExportArray::F64Owned1D(longitude_vals),
+                    attrs: [
+                        ("units".into(), "degrees_east".into()),
+                        ("long_name".into(), "longitude".into()),
+                        ("standard_name".into(), "longitude".into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            );
 
-                coords.insert(
-                    "latitude".into(),
-                    ExportVariable {
-                        dims: vec!["x".into()],
-                        data: ExportArray::F64Owned1D(latitude_vals),
-                        attrs: [
-                            ("units".into(), "degrees_north".into()),
-                            ("long_name".into(), "latitude".into()),
-                            ("standard_name".into(), "latitude".into()),
-                        ]
-                        .into_iter()
-                        .collect(),
-                    },
-                );
-            }
+            coords.insert(
+                "latitude".into(),
+                ExportVariable {
+                    dims: vec!["x".into()],
+                    data: ExportArray::F64Owned1D(latitude_vals),
+                    attrs: [
+                        ("units".into(), "degrees_north".into()),
+                        ("long_name".into(), "latitude".into()),
+                        ("standard_name".into(), "latitude".into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                },
+            );
             // easting, northing, elevation (x)
             let easting_vals: Vec<f64> =
                 self.location.cor_points.iter().map(|p| p.easting).collect();
