@@ -1204,7 +1204,7 @@ mod tests {
         let mut data = ndarray::Array2::<f32>::zeros((gpr.height(), gpr.width()));
         out.variable("data")
             .unwrap()
-            .get_into(.., data.view_mut())
+            .get_into(data.view_mut(), ..)
             .unwrap();
         assert_eq!((data - gpr.data).mapv(|v| v.abs()).sum(), 0.);
 
