@@ -108,12 +108,11 @@ pub mod ridal {
         Ok(PathBuf::from(expanded_str))
     }
 
-    #[allow(deprecated)]
     fn inputs_to_paths(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<PathBuf>> {
-        if let Ok(list) = value.downcast::<PyList>() {
+        if let Ok(list) = value.cast::<PyList>() {
             return list.iter().map(|item| fspath(py, &item)).collect();
         }
-        if let Ok(tuple) = value.downcast::<PyTuple>() {
+        if let Ok(tuple) = value.cast::<PyTuple>() {
             return tuple.iter().map(|item| fspath(py, &item)).collect();
         }
         Ok(vec![fspath(py, value)?])
@@ -285,7 +284,7 @@ pub mod ridal {
     /// that modify the data. For lightweight loading of raw data without heavy
     /// processing, use `read()`.
     #[pyfunction]
-    #[allow(deprecated, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         inputs,
         output=None,
@@ -380,13 +379,13 @@ pub mod ridal {
                 let bound = step_obj.bind(py);
                 if let Ok(step_text) = bound.extract::<String>() {
                     Some(step_text)
-                } else if let Ok(step_list) = bound.downcast::<PyList>() {
+                } else if let Ok(step_list) = bound.cast::<PyList>() {
                     let parts = step_list
                         .iter()
                         .map(|item| item.extract::<String>())
                         .collect::<PyResult<Vec<String>>>()?;
                     Some(parts.join(","))
-                } else if let Ok(step_tuple) = bound.downcast::<PyTuple>() {
+                } else if let Ok(step_tuple) = bound.cast::<PyTuple>() {
                     let parts = step_tuple
                         .iter()
                         .map(|item| item.extract::<String>())
@@ -529,7 +528,7 @@ pub mod ridal {
     /// `read()` is intended as a lightweight loader. If you want to apply filtering,
     /// corrections, or export a processed dataset, use `process()` instead.
     #[pyfunction]
-    #[allow(deprecated, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         inputs,
         *,
@@ -663,7 +662,7 @@ pub mod ridal {
     /// Unlike `process()`, `batch_process()` always targets an existing output
     /// directory and produces multiple outputs.
     #[pyfunction]
-    #[allow(deprecated, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
     inputs,
     output,
@@ -755,13 +754,13 @@ pub mod ridal {
                 let bound = step_obj.bind(py);
                 if let Ok(step_text) = bound.extract::<String>() {
                     Some(step_text)
-                } else if let Ok(step_list) = bound.downcast::<PyList>() {
+                } else if let Ok(step_list) = bound.cast::<PyList>() {
                     let parts = step_list
                         .iter()
                         .map(|item| item.extract::<String>())
                         .collect::<PyResult<Vec<String>>>()?;
                     Some(parts.join(","))
-                } else if let Ok(step_tuple) = bound.downcast::<PyTuple>() {
+                } else if let Ok(step_tuple) = bound.cast::<PyTuple>() {
                     let parts = step_tuple
                         .iter()
                         .map(|item| item.extract::<String>())
@@ -857,7 +856,7 @@ pub mod ridal {
     /// use `read()`. For modifying or exporting processed data, use `process()` or
     /// `batch_process()`.
     #[pyfunction]
-    #[allow(deprecated, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         inputs,
         *,
