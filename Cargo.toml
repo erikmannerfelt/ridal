@@ -21,7 +21,7 @@ path = "src/main.rs"
 [dependencies]
 pyo3 = { version = "0.28.3", features = ["extension-module"], optional = true}
 numpy = { version = "0.28", optional = true }
-ndarray = "0.16"   # For base ndarrays
+ndarray = "0.17"   # For base ndarrays
 ndarray-stats = "0.7"  # For ndarray statistics
 chrono = "0.4"  # Convert timestamps to seconds before epoch
 image = "0.24"  # Write images
@@ -36,7 +36,7 @@ glob = "0.3"
 parse_duration = "2.1"
 num = "0.4"
 num-complex = "0.4"
-enterpolation = "0.2"
+enterpolation = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

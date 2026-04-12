@@ -1,5 +1,5 @@
 use core::ops::{Add, Div, Mul, Sub};
-use enterpolation::Generator;
+use enterpolation::{linear::Linear, Signal};
 use ndarray::{Array1, Array2, ArrayView1};
 use num::Float;
 use rayon::prelude::*;
@@ -118,12 +118,12 @@ fn interpolate_vec<T: Float + Copy + Sub<Output = T> + std::fmt::Debug>(
         panic!("Interpolation failed. x_old and y_old must have the same length");
     }
 
-    let model = enterpolation::linear::Linear::builder()
+    let model = Linear::builder()
         .elements(y_old)
         .knots(x_old)
         .build()
         .unwrap();
-    model.sample(x_new.iter().map(|v| v.to_owned())).collect()
+    model.sample(x_new.iter().copied()).collect()
 }
 
 fn interpolate_ndarray<T: Float + std::fmt::Debug>(
