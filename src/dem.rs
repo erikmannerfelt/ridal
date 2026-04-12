@@ -79,11 +79,15 @@ fn parse_elevations_from_output(
     }
 
     if elevations.len() != coords_wgs84.len() {
-        if !output.stderr.is_empty() {
-            return Err(format!(
-                "DEM sampling error: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+
+        if !stderr_str.is_empty() {
+            return Err(format!("DEM sampling error: {}", stderr_str));
+        }
+
+        // Empty output but no stderr - gdallocationinfo may have failed silently
+        if elevations.is_empty() {
+            return Err("DEM sampling failed. gdallocationinfo returned no data. Check that GDAL is properly installed and in PATH.".to_string());
         }
 
         return Err(format!(

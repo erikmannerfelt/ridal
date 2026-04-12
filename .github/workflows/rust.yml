@@ -36,7 +36,7 @@ jobs:
     - name: Install dependencies (Windows GDAL + PROJ via OSGeo4W)
       if: runner.os == 'Windows'
       id: osgeo4w
-      uses: echoix/setup-OSGeo4W@v0.2.0
+      uses: echoix/setup-OSGeo4W@v0.3.0
       with:
         packages: >-
           gdal
