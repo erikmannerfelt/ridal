@@ -31,7 +31,7 @@ jobs:
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install gdal proj
+        brew install gdal proj hdf5
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
