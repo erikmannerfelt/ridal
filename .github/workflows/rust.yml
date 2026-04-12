@@ -17,10 +17,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-14]
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
+
+    - name: Install dependencies (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install gdal proj
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
@@ -47,6 +52,10 @@ jobs:
 
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
+
+    - name: Use system zlib (MacOS)
+      if: runner.os == 'macOS'
+      run: echo "LIBZ_SYS_STATIC=0" >> $GITHUB_ENV
 
     - name: Verify CMake (Windows)
       if: runner.os == 'Windows'
@@ -81,6 +90,10 @@ jobs:
       run: |
         CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" "%USERPROFILE%\.cargo\bin\cargo.exe" test  --no-default-features -F cli -- --nocapture
 
+    - name: Test (MacOS)
+      if: runner.os == 'macOS'
+      run: cargo test --no-default-features -F cli -- --nocapture
+
     - name: Dry-run cargo publish
       if: runner.os == 'Linux' && !startsWith(github.ref, 'refs/tags/')
       run: cargo publish --dry-run
@@ -103,7 +116,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
 
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
