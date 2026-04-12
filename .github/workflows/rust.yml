@@ -7,6 +7,12 @@ on:
     - v*
   pull_request:
     branches: [main]
+    paths:
+    - src/**
+    - Cargo.toml
+    - Cargo.lock
+    - .github/workflows/rust.yml
+    - .github/workflows/pre-commit.yml
 
 env:
   CARGO_TERM_COLOR: always

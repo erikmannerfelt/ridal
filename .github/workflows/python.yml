@@ -7,6 +7,14 @@ on:
     - v*
   pull_request:
     branches: [main]
+    paths:
+    - src/**
+    - pyproject.toml
+    - Cargo.toml
+    - Cargo.lock
+    - .github/workflows/python.yml
+    - .github/workflows/python-build.yml
+    - test_ridal_interface.py
   workflow_dispatch:
 
 jobs:
