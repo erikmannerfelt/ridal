@@ -25,25 +25,25 @@ pub enum ExportAttr {
 
 #[cfg(feature = "python")]
 impl ExportAttr {
-    pub fn to_python<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
+    pub fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         match self {
-            ExportAttr::String(s) => Ok(s.into_py(py)),
-            ExportAttr::Strings(vs) => Ok(vs.clone().into_py(py)),
+            ExportAttr::String(s) => Ok(s.into_pyobject(py).unwrap().unbind().into()),
+            ExportAttr::Strings(vs) => Ok(vs.clone().into_pyobject(py).unwrap().unbind()),
             ExportAttr::F64(x) => {
-                let item = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
-                Ok(item.into_py(py))
+                let item = PyArray1::from_slice(py, &[*x]).get_item(0)?;
+                Ok(item.into_pyobject(py).unwrap().unbind())
             }
             ExportAttr::F32(x) => {
-                let item = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
-                Ok(item.into_py(py))
+                let item = PyArray1::from_slice(py, &[*x]).get_item(0)?;
+                Ok(item.into_pyobject(py).unwrap().unbind())
             }
             ExportAttr::I64(x) => {
-                let item = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
-                Ok(item.into_py(py))
+                let item = PyArray1::from_slice(py, &[*x]).get_item(0)?;
+                Ok(item.into_pyobject(py).unwrap().unbind())
             }
             ExportAttr::U8(x) => {
-                let item = PyArray1::from_slice_bound(py, &[*x]).get_item(0)?;
-                Ok(item.into_py(py))
+                let item = PyArray1::from_slice(py, &[*x]).get_item(0)?;
+                Ok(item.into_pyobject(py).unwrap().unbind())
             }
         }
     }
@@ -99,79 +99,79 @@ pub struct ExportDataset<'a> {
 impl<'a> ExportDataset<'a> {
     /// Convert to a Python dict that matches `xarray.Dataset.from_dict(...)`.
     #[allow(dead_code)]
-    pub fn to_python<'py>(&self, py: Python<'py>) -> PyResult<PyObject> {
-        let out = PyDict::new_bound(py);
+    pub fn to_python<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let out = PyDict::new(py);
 
         // dims
-        let dims_py = PyDict::new_bound(py);
+        let dims_py = PyDict::new(py);
         for (k, v) in &self.dims {
             dims_py.set_item(k, *v)?;
         }
         out.set_item("dims", dims_py)?;
 
         // attrs
-        let attrs_py = PyDict::new_bound(py);
+        let attrs_py = PyDict::new(py);
         for (k, v) in &self.attrs {
             attrs_py.set_item(k, v.to_python(py)?)?;
         }
         out.set_item("attrs", attrs_py)?;
 
         // coords
-        let coords_py = PyDict::new_bound(py);
+        let coords_py = PyDict::new(py);
         for (name, var) in &self.coords {
             coords_py.set_item(name, export_var_to_py(py, var)?)?;
         }
         out.set_item("coords", coords_py)?;
 
         // data_vars
-        let dvs_py = PyDict::new_bound(py);
+        let dvs_py = PyDict::new(py);
         for (name, var) in &self.data_vars {
             dvs_py.set_item(name, export_var_to_py(py, var)?)?;
         }
         out.set_item("data_vars", dvs_py)?;
 
-        Ok(out.into())
+        Ok(out.unbind().into())
     }
 }
 
 #[cfg(feature = "python")]
 #[allow(dead_code)]
-fn export_var_to_py<'py>(py: Python<'py>, var: &ExportVariable<'_>) -> PyResult<PyObject> {
-    let dict = PyDict::new_bound(py);
+fn export_var_to_py<'py>(py: Python<'py>, var: &ExportVariable<'_>) -> PyResult<Py<PyAny>> {
+    let dict = PyDict::new(py);
 
     dict.set_item("dims", var.dims.clone())?;
 
     match &var.data {
         ExportArray::F32Borrowed2D(arr) => {
-            let py_arr = PyArray2::from_array_bound(py, arr);
+            let py_arr = PyArray2::from_array(py, *arr);
             dict.set_item("data", py_arr)?;
         }
         ExportArray::F32Owned1D(v) => {
-            let py_arr = PyArray1::from_slice_bound(py, v);
+            let py_arr = PyArray1::from_slice(py, v);
             dict.set_item("data", py_arr)?;
         }
         ExportArray::F64Owned1D(v) => {
-            let py_arr = PyArray1::from_slice_bound(py, v);
+            let py_arr = PyArray1::from_slice(py, v);
             dict.set_item("data", py_arr)?;
         }
         ExportArray::U32Owned1D(v) => {
-            let py_arr = PyArray1::from_slice_bound(py, v);
+            let py_arr = PyArray1::from_slice(py, v);
             dict.set_item("data", py_arr)?;
         }
         ExportArray::U8Scalar(v) => {
-            let py_arr = PyArray1::from_slice_bound(py, &[v.to_owned()]).get_item(0)?;
+            let py_arr = PyArray1::from_slice(py, &[v.to_owned()]).get_item(0)?;
             dict.set_item("data", py_arr)?;
         }
     }
 
     // variable attrs
-    let attrs_py = PyDict::new_bound(py);
+    let attrs_py = PyDict::new(py);
     for (k, v) in &var.attrs {
         attrs_py.set_item(k, v.to_python(py)?)?;
     }
     dict.set_item("attrs", attrs_py)?;
 
-    Ok(dict.into())
+    Ok(dict.unbind().into())
 }
 
 /// Helper: RFC3339 from seconds since epoch (UTC), safe unwrap for your data.

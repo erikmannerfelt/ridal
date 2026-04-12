@@ -3,7 +3,6 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use crate::formats::{self, FormatKind, ResolvedInput};
-use ndarray_stats::QuantileExt;
 use serde::Serialize;
 use std::time::SystemTime;
 
@@ -294,18 +293,34 @@ impl GPRLocation {
     }
 
     pub fn length(&self) -> f64 {
-        self.distances().max().unwrap().to_owned()
+        let dists = self.distances();
+        dists.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
     }
 
     pub fn duration_since(&self, other: &GPRLocation) -> f64 {
         let self_times = Array1::from_iter(self.cor_points.iter().map(|p| p.time_seconds));
         let other_times = Array1::from_iter(other.cor_points.iter().map(|p| p.time_seconds));
 
-        let self_min = self_times.min().unwrap();
-        let self_max = self_times.max().unwrap();
+        let self_times_iter = self_times.iter().cloned().collect::<Vec<f64>>();
+        let other_times_iter = other_times.iter().cloned().collect::<Vec<f64>>();
 
-        let other_min = other_times.min().unwrap();
-        let other_max = other_times.max().unwrap();
+        let self_min = self_times_iter
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        let self_max = self_times_iter
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
+
+        let other_min = other_times_iter
+            .iter()
+            .cloned()
+            .fold(f64::INFINITY, f64::min);
+        let other_max = other_times_iter
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
 
         if self_min > other_min {
             other_max - self_min
@@ -347,8 +362,8 @@ CRS:\t\t\t{}
             self.cor_points.len() as f32 / length as f32,
             self.cor_points.len() as f64 / duration,
             length,
-            altitudes.min().unwrap(),
-            altitudes.max().unwrap(),
+            altitudes.iter().cloned().fold(f64::INFINITY, f64::min),
+            altitudes.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             eastings.mean().unwrap(),
             northings.mean().unwrap(),
             altitudes.mean().unwrap(),
@@ -791,14 +806,20 @@ impl GPR {
 
         let mut i = 0_usize;
         for col in self.data.columns() {
-            positive_peaks[i] = col.argmax().unwrap() as isize;
+            positive_peaks[i] = col
+                .into_iter()
+                .enumerate()
+                .max_by_key(|(_, v)| v.abs().abs() as u64)
+                .map(|(idx, _)| idx as isize)
+                .unwrap();
 
             i += 1;
         }
 
         let mut new_data = Array2::from_elem(
             (
-                self.height() - positive_peaks.min().unwrap().to_owned() as usize,
+                self.height()
+                    - positive_peaks.iter().cloned().fold(isize::MAX, isize::min) as usize,
                 self.width(),
             ),
             0_f32,
@@ -824,8 +845,8 @@ impl GPR {
             "zero_corr_max_peak",
             &format!(
                 "Applied a per-trace zero-corr by removing the first {}-{} rows",
-                positive_peaks.min().unwrap(),
-                positive_peaks.max().unwrap()
+                positive_peaks.iter().cloned().fold(isize::MAX, isize::min),
+                positive_peaks.iter().cloned().fold(isize::MIN, isize::max)
             ),
             start_time,
         );
@@ -854,8 +875,9 @@ impl GPR {
         let height_before = self.height();
 
         let depths = self.depths();
+        let max_depth = depths.iter().cloned().fold(0.0f32, f32::max);
 
-        if depths.max().unwrap() == &0. {
+        if max_depth == 0.0 {
             eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.horizontal_signal_distance);
             panic!("");
         }
@@ -909,7 +931,7 @@ impl GPR {
                 .iter()
                 .map(|point| point.altitude as f32),
         );
-        altitudes -= *altitudes.max().unwrap();
+        altitudes -= altitudes.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         altitudes *= -1.;
 
         let max_depth = tools::return_time_to_depth(
@@ -923,7 +945,8 @@ impl GPR {
         let start_indices = altitudes.mapv(|altitude| (altitude * sample_per_meter) as isize);
 
         let mut topo_data = Array2::<f32>::zeros((
-            ((max_depth + *altitudes.max().unwrap()) * sample_per_meter) as usize,
+            ((max_depth + altitudes.iter().cloned().fold(f32::NEG_INFINITY, f32::max))
+                * sample_per_meter) as usize,
             self.width(),
         ));
 
@@ -957,8 +980,18 @@ impl GPR {
         let mut negative_peaks = Array1::<isize>::zeros(self.width());
 
         for (i, col) in self.data.columns().into_iter().enumerate() {
-            positive_peaks[i] = col.argmax().unwrap() as isize;
-            negative_peaks[i] = col.argmin().unwrap() as isize;
+            positive_peaks[i] = col
+                .into_iter()
+                .enumerate()
+                .max_by_key(|(_, v)| v.abs().abs() as u64)
+                .map(|(idx, _)| idx as isize)
+                .unwrap();
+            negative_peaks[i] = col
+                .into_iter()
+                .enumerate()
+                .min_by_key(|(_, v)| v.abs().abs() as u64)
+                .map(|(idx, _)| idx as isize)
+                .unwrap();
         }
 
         let mean_peak_spacing = (negative_peaks - positive_peaks).mean().unwrap().abs();
@@ -1109,7 +1142,7 @@ impl GPR {
     pub fn make_equidistant(&mut self, step: Option<f32>) {
         let start_time = SystemTime::now();
         let distances = self.location.distances().mapv(|v| v as f32);
-        let max_distance = *distances.max().unwrap();
+        let max_distance = distances.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
         let step = step.unwrap_or({
             let velocities = self.location.velocities().mapv(|v| v as f32);
@@ -1283,7 +1316,7 @@ impl GPR {
                 .iter()
                 .map(|point| point.altitude as f32),
         );
-        z_coords -= *z_coords.max().unwrap();
+        z_coords -= z_coords.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         z_coords *= -1.0;
 
         // The vertical resolution in ns
@@ -1841,8 +1874,8 @@ fn location_summary(location: &GPRLocation) -> Result<LocationSummary, String> {
         ),
         duration_s: duration,
         track_length_m: length,
-        altitude_min_m: *altitudes.min().unwrap(),
-        altitude_max_m: *altitudes.max().unwrap(),
+        altitude_min_m: altitudes.iter().cloned().fold(f64::INFINITY, f64::min),
+        altitude_max_m: altitudes.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
         centroid: CentroidSummary {
             easting: eastings.mean().unwrap(),
             northing: northings.mean().unwrap(),

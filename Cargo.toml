@@ -19,16 +19,16 @@ name = "ridal"
 path = "src/main.rs"
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true}
-numpy = { version = "0.22", optional = true }
+pyo3 = { version = "0.28.3", features = ["extension-module"], optional = true}
+numpy = { version = "0.28", optional = true }
 ndarray = "0.16"   # For base ndarrays
-ndarray-stats = "0.6"  # For ndarray statistics
+ndarray-stats = "0.7"  # For ndarray statistics
 chrono = "0.4"  # Convert timestamps to seconds before epoch
 image = "0.24"  # Write images
 smartcore = "0.3"  # (Linear) regression packages
 noisy_float = "0.2"  # For inputs to ndarray-stats
 rayon = "1.10"  # For parallelization of functions
-netcdf = {version = "0.10.5", features = ["ndarray", "static"]}
+netcdf = {version = "0.12", features = ["ndarray", "static"]}
 clap = { version = "4.5", features = ["derive"] }
 geomorph = "2.0" # UTM zone conversion functions
 utm = "0.1"  # More UTM zone conversion functions

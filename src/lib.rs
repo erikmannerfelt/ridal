@@ -56,6 +56,7 @@ const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 pub mod ridal {
     use crate::{formats, gpr};
     use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
+    use pyo3::ffi::c_str;
     use pyo3::prelude::*;
     use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
 
@@ -64,13 +65,13 @@ pub mod ridal {
 
     fn optional_metadata(
         py: Python<'_>,
-        value: Option<PyObject>,
+        value: Option<Py<PyAny>>,
     ) -> PyResult<crate::user_metadata::UserMetadata> {
         match value {
             None => Ok(crate::user_metadata::UserMetadata::new()),
             Some(obj) => {
                 let bound = obj.bind(py);
-                let json = py.import_bound("json")?;
+                let json = py.import("json")?;
                 let text: String = json.getattr("dumps")?.call1((bound,))?.extract()?;
                 let value: serde_json::Value = serde_json::from_str(&text)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e:?}")))?;
@@ -80,13 +81,13 @@ pub mod ridal {
         }
     }
 
-    fn json_to_py(py: Python<'_>, text: &str) -> PyResult<PyObject> {
-        let json = py.import_bound("json")?;
+    fn json_to_py(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+        let json = py.import("json")?;
         Ok(json.getattr("loads")?.call1((text,))?.unbind())
     }
 
-    fn xarray_dict_to_ds(py: Python<'_>, dict: Py<PyAny>) -> PyResult<PyObject> {
-        let xarray = py.import_bound("xarray")?;
+    fn xarray_dict_to_ds(py: Python<'_>, dict: Py<PyAny>) -> PyResult<Py<PyAny>> {
+        let xarray = py.import("xarray")?;
 
         Ok(xarray
             .getattr("Dataset")?
@@ -96,7 +97,7 @@ pub mod ridal {
     }
 
     fn fspath(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<PathBuf> {
-        let os = py.import_bound("os")?;
+        let os = py.import("os")?;
         let path = os.getattr("fspath")?.call1((value,))?;
         let path_str: String = path.extract()?;
 
@@ -107,6 +108,7 @@ pub mod ridal {
         Ok(PathBuf::from(expanded_str))
     }
 
+    #[allow(deprecated)]
     fn inputs_to_paths(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<PathBuf>> {
         if let Ok(list) = value.downcast::<PyList>() {
             return list.iter().map(|item| fspath(py, &item)).collect();
@@ -117,11 +119,11 @@ pub mod ridal {
         Ok(vec![fspath(py, value)?])
     }
 
-    fn optional_path(py: Python<'_>, value: Option<PyObject>) -> PyResult<Option<PathBuf>> {
+    fn optional_path(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<Option<PathBuf>> {
         match value {
             Some(obj) => {
                 let bound = obj.bind(py);
-                Ok(Some(fspath(py, &bound)?))
+                Ok(Some(fspath(py, bound)?))
             }
             None => Ok(None),
         }
@@ -283,6 +285,7 @@ pub mod ridal {
     /// that modify the data. For lightweight loading of raw data without heavy
     /// processing, use `read()`.
     #[pyfunction]
+    #[allow(deprecated, clippy::too_many_arguments)]
     #[pyo3(signature = (
         inputs,
         output=None,
@@ -305,24 +308,24 @@ pub mod ridal {
     ))]
     fn process(
         py: Python<'_>,
-        inputs: PyObject,
-        output: Option<PyObject>,
-        steps: Option<PyObject>,
+        inputs: Py<PyAny>,
+        output: Option<Py<PyAny>>,
+        steps: Option<Py<PyAny>>,
         return_dataset: bool,
         default: bool,
         default_with_topo: bool,
         velocity: f32,
-        cor: Option<PyObject>,
-        dem: Option<PyObject>,
+        cor: Option<Py<PyAny>>,
+        dem: Option<Py<PyAny>>,
         crs: Option<String>,
-        track: Option<PyObject>,
+        track: Option<Py<PyAny>>,
         quiet: bool,
-        render: Option<PyObject>,
+        render: Option<Py<PyAny>>,
         no_export: bool,
         override_antenna_mhz: Option<f32>,
-        metadata: Option<PyObject>,
+        metadata: Option<Py<PyAny>>,
         return_dataset_format: String,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         use pyo3::exceptions::PyValueError;
 
         if !["xarray", "xarray_dict"]
@@ -359,16 +362,16 @@ pub mod ridal {
                 "Only one of steps=..., default=True, and default_with_topo=True may be provided",
             ));
         }
-        let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
+        let input_paths = inputs_to_paths(py, inputs.bind(py))?;
         let output_path = optional_path(py, output)?;
         let cor_path = optional_path(py, cor)?;
         let dem_path = optional_path(py, dem)?;
         let track_path = match track {
-            Some(obj) => Some(Some(fspath(py, &obj.bind(py))?)),
+            Some(obj) => Some(Some(fspath(py, obj.bind(py))?)),
             None => None,
         };
         let render_path = match render {
-            Some(obj) => Some(Some(fspath(py, &obj.bind(py))?)),
+            Some(obj) => Some(Some(fspath(py, obj.bind(py))?)),
             None => None,
         };
 
@@ -466,9 +469,9 @@ pub mod ridal {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
         // Ok(result.output_path.to_string_lossy().to_string())
         Ok(py
-            .eval_bound("str", None, None)?
+            .eval(c_str!("str"), None, None)?
             .call1((result.output_path.to_string_lossy().to_string(),))?
-            .into())
+            .unbind())
     }
     /// Read one or more GPR files into memory without applying a processing workflow.
     ///
@@ -526,6 +529,7 @@ pub mod ridal {
     /// `read()` is intended as a lightweight loader. If you want to apply filtering,
     /// corrections, or export a processed dataset, use `process()` instead.
     #[pyfunction]
+    #[allow(deprecated, clippy::too_many_arguments)]
     #[pyo3(signature = (
         inputs,
         *,
@@ -539,15 +543,15 @@ pub mod ridal {
     ))]
     fn read(
         py: Python<'_>,
-        inputs: PyObject,
+        inputs: Py<PyAny>,
         velocity: f32,
-        cor: Option<PyObject>,
-        dem: Option<PyObject>,
+        cor: Option<Py<PyAny>>,
+        dem: Option<Py<PyAny>>,
         crs: Option<String>,
         override_antenna_mhz: Option<f32>,
-        metadata: Option<PyObject>,
+        metadata: Option<Py<PyAny>>,
         return_dataset_format: String,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         process(
             py,
             inputs,
@@ -659,6 +663,7 @@ pub mod ridal {
     /// Unlike `process()`, `batch_process()` always targets an existing output
     /// directory and produces multiple outputs.
     #[pyfunction]
+    #[allow(deprecated, clippy::too_many_arguments)]
     #[pyo3(signature = (
     inputs,
     output,
@@ -677,30 +682,30 @@ pub mod ridal {
     merge=None,
     override_antenna_mhz=None,
     metadata=None,
-))]
+ ))]
     fn batch_process(
         py: Python<'_>,
-        inputs: PyObject,
-        output: PyObject,
-        steps: Option<PyObject>,
+        inputs: Py<PyAny>,
+        output: Py<PyAny>,
+        steps: Option<Py<PyAny>>,
         default: bool,
         default_with_topo: bool,
         velocity: f32,
-        cor: Option<PyObject>,
-        dem: Option<PyObject>,
+        cor: Option<Py<PyAny>>,
+        dem: Option<Py<PyAny>>,
         crs: Option<String>,
-        track: Option<PyObject>,
+        track: Option<Py<PyAny>>,
         quiet: bool,
-        render: Option<PyObject>,
+        render: Option<Py<PyAny>>,
         no_export: bool,
         merge: Option<String>,
         override_antenna_mhz: Option<f32>,
-        metadata: Option<PyObject>,
+        metadata: Option<Py<PyAny>>,
     ) -> PyResult<Vec<String>> {
         use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
-        let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
-        let output_dir = fspath(py, &output.bind(py))?;
+        let input_paths = inputs_to_paths(py, inputs.bind(py))?;
+        let output_dir = fspath(py, output.bind(py))?;
         if !output_dir.is_dir() {
             return Err(PyValueError::new_err(format!(
                 "output must be an existing directory in batch_process(): {}",
@@ -712,7 +717,7 @@ pub mod ridal {
         let dem_path = optional_path(py, dem)?;
         let track_dir = match track {
             Some(obj) => {
-                let p = fspath(py, &obj.bind(py))?;
+                let p = fspath(py, obj.bind(py))?;
                 if !p.is_dir() {
                     return Err(PyValueError::new_err(format!(
                         "track must be an existing directory in batch_process(): {}",
@@ -725,7 +730,7 @@ pub mod ridal {
         };
         let render_dir = match render {
             Some(obj) => {
-                let p = fspath(py, &obj.bind(py))?;
+                let p = fspath(py, obj.bind(py))?;
                 if !p.is_dir() {
                     return Err(PyValueError::new_err(format!(
                         "render must be an existing directory in batch_process(): {}",
@@ -852,6 +857,7 @@ pub mod ridal {
     /// use `read()`. For modifying or exporting processed data, use `process()` or
     /// `batch_process()`.
     #[pyfunction]
+    #[allow(deprecated, clippy::too_many_arguments)]
     #[pyo3(signature = (
         inputs,
         *,
@@ -863,14 +869,14 @@ pub mod ridal {
     ))]
     fn info(
         py: Python<'_>,
-        inputs: PyObject,
+        inputs: Py<PyAny>,
         velocity: f32,
-        cor: Option<PyObject>,
-        dem: Option<PyObject>,
+        cor: Option<Py<PyAny>>,
+        dem: Option<Py<PyAny>>,
         crs: Option<String>,
         override_antenna_mhz: Option<f32>,
-    ) -> PyResult<Vec<PyObject>> {
-        let input_paths = inputs_to_paths(py, &inputs.bind(py))?;
+    ) -> PyResult<Vec<Py<PyAny>>> {
+        let input_paths = inputs_to_paths(py, inputs.bind(py))?;
         let cor_path = optional_path(py, cor)?;
         let dem_path = optional_path(py, dem)?;
 
@@ -893,7 +899,7 @@ pub mod ridal {
                 })?;
                 json_to_py(py, &text)
             })
-            .collect::<PyResult<Vec<PyObject>>>()
+            .collect::<PyResult<Vec<Py<PyAny>>>>()
     }
 
     /// Removed legacy entry point for the old Python CLI wrapper.
