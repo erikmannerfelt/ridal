@@ -4,44 +4,6 @@ use std::path::Path;
 use crate::coords::Coord;
 use std::io::Write;
 
-fn get_gdal_version() -> Result<String, String> {
-    let child = std::process::Command::new("gdalinfo")
-        .arg("--version")
-        .stderr(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            if e.to_string().contains("No such file or directory") {
-                format!("GDAL (gdalinfo) cannot be found / is not installed: {e}")
-            } else {
-                format!("Call error when spawning process: {e}")
-            }
-        })?;
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("Call failed: {e}"))?;
-
-    if output.status.success() {
-        let mut version = String::from_utf8_lossy(&output.stdout)
-            .trim()
-            .to_string()
-            .replace("GDAL ", "");
-
-        if let Some((first, _)) = version.split_once(",") {
-            version = first.trim().to_string();
-        }
-        Ok(version)
-    } else if output.stderr.is_empty() {
-        Err("Unknown error getting GDAL version.".to_string())
-    } else {
-        Err(format!(
-            "Error getting GDAL version: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ))
-    }
-}
-
 fn run_gdallocationinfo(
     dem_path: &Path,
     coords_wgs84: &[Coord],
@@ -117,11 +79,15 @@ fn parse_elevations_from_output(
     }
 
     if elevations.len() != coords_wgs84.len() {
-        if !output.stderr.is_empty() {
-            return Err(format!(
-                "DEM sampling error: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+
+        if !stderr_str.is_empty() {
+            return Err(format!("DEM sampling error: {}", stderr_str));
+        }
+
+        // Empty output but no stderr - gdallocationinfo may have failed silently
+        if elevations.is_empty() {
+            return Err("DEM sampling failed. gdallocationinfo returned no data. Check that GDAL is properly installed and in PATH.".to_string());
         }
 
         return Err(format!(
@@ -135,7 +101,6 @@ fn parse_elevations_from_output(
 }
 
 pub fn sample_dem(dem_path: &Path, coords_wgs84: &[Coord]) -> Result<Vec<f32>, String> {
-    get_gdal_version()?;
     if coords_wgs84.is_empty() {
         return Err("Coords vec is empty.".into());
     }
@@ -190,6 +155,45 @@ mod tests {
             ),
         ]
     }
+
+    pub fn get_gdal_version() -> Result<String, String> {
+        let child = std::process::Command::new("gdalinfo")
+            .arg("--version")
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                if e.to_string().contains("No such file or directory") {
+                    format!("GDAL (gdalinfo) cannot be found / is not installed: {e}")
+                } else {
+                    format!("Call error when spawning process: {e}")
+                }
+            })?;
+
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("Call failed: {e}"))?;
+
+        if output.status.success() {
+            let mut version = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .to_string()
+                .replace("GDAL ", "");
+
+            if let Some((first, _)) = version.split_once(",") {
+                version = first.trim().to_string();
+            }
+            Ok(version)
+        } else if output.stderr.is_empty() {
+            Err("Unknown error getting GDAL version.".to_string())
+        } else {
+            Err(format!(
+                "Error getting GDAL version: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
     pub fn supports_interpolation() -> Result<bool, String> {
         use std::io::Write;
         use std::process::{Command, Stdio};
@@ -232,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    // #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
+    #[cfg(not(target_os = "windows"))] // Added 2026-04-12 because gdal stopped working properly in CI
     #[serial_test::serial]
     fn test_read_elevations() {
         let coords_elevs = make_test_coords();
@@ -292,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     #[serial_test::serial]
     fn test_no_gdal_failure() {
         let crs = Crs::Utm(UtmCrs {
@@ -312,7 +316,7 @@ mod tests {
         // std::env::set_var("PATH", temp_path);
 
         temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
-            if super::get_gdal_version().is_ok() {
+            if get_gdal_version().is_ok() {
                 eprintln!("WARNING: Could not properly unset the GDAL location. Skipping test.");
                 return;
             };

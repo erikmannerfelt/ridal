@@ -1,56 +1,58 @@
-name: Build & publish wheels
+name: Build & publish Python wheels
 
 on:
   push:
+    branches: [main]
     tags:
     - v*
+  pull_request:
+    branches: [main]
+    paths:
+    - src/**
+    - pyproject.toml
+    - Cargo.toml
+    - Cargo.lock
+    - .github/workflows/python.yml
+    - .github/workflows/python-build.yml
+    - test_ridal_interface.py
   workflow_dispatch:
 
 jobs:
-  build-wheels:
-    name: Wheels on ${{ matrix.os }} / Python ${{ matrix.python-version }}
-    runs-on: ${{ matrix.os }}
+  build-pr:
+    name: Build PR (ubuntu / python 3.12)
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/python-build.yml
+    with:
+      os: ubuntu-latest
+      python-version: '3.12'
+
+  build-all:
+    name: Build all platforms
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/python-build.yml
+    with:
+      os: ${{ matrix.os }}
+      python-version: ${{ matrix.python-version }}
     strategy:
-      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-14]
         python-version: ['3.10', '3.11', '3.12', '3.13']
 
+  publish:
+    name: Publish to PyPI
+    needs: build-all
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || github.event_name == 'workflow_dispatch'
+
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Download all wheels
+      uses: actions/download-artifact@v4
       with:
-        python-version: ${{ matrix.python-version }}
+        path: wheels
 
-    - name: Set up Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Install maturin and pytest
-      run: pip install maturin pytest
-
-    - name: Build wheels
-      run: |
-        maturin build --release --features python --no-default-features
-
-    - name: Install built wheel
-      run: |
-        pip install --force-reinstall --find-links target/wheels ridal
-
-    - name: Smoke test
-      run: |
-        python -c "import ridal; print(ridal.__version__)"
-        python -m pytest
-
-    - name: Publish to PyPi
+    - name: Publish to PyPI
       env:
         MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       run: |
-        maturin publish --features python --no-default-features --skip-existing
-
-    - name: Upload wheels (CI artifact)
-      uses: actions/upload-artifact@v4
-      with:
-        name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
-        path: target/wheels/*.whl
+        pip install maturin
+        maturin publish --features python --no-default-features --skip-existing --glob "wheels/*.whl"
