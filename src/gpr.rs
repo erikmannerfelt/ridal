@@ -923,7 +923,7 @@ impl GPR {
         let start_indices = altitudes.mapv(|altitude| (altitude * sample_per_meter) as isize);
 
         let mut topo_data = Array2::<f32>::zeros((
-            ((max_depth + altitudes.max().unwrap()) * sample_per_meter) as usize,
+            ((max_depth + *altitudes.max().unwrap()) * sample_per_meter) as usize,
             self.width(),
         ));
 
@@ -1109,7 +1109,7 @@ impl GPR {
     pub fn make_equidistant(&mut self, step: Option<f32>) {
         let start_time = SystemTime::now();
         let distances = self.location.distances().mapv(|v| v as f32);
-        let max_distance = distances.max().unwrap();
+        let max_distance = *distances.max().unwrap();
 
         let step = step.unwrap_or({
             let velocities = self.location.velocities().mapv(|v| v as f32);
