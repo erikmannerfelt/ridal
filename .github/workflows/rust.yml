@@ -47,6 +47,7 @@ jobs:
       shell: cmd
       run: |
         CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" gdalinfo --version
+        CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" gdallocationinfo --help > NUL
         CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" ogr2ogr --help > NUL
         CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" proj
 

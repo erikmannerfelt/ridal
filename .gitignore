@@ -2,3 +2,4 @@
 img.jpg
 .env
 __pycache__/
+.venv

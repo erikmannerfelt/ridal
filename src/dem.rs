@@ -236,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    // #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
+    #[cfg(not(target_os = "windows"))] // Added 2026-04-12 because gdal stopped working properly in CI
     #[serial_test::serial]
     fn test_read_elevations() {
         let coords_elevs = make_test_coords();
