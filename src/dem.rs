@@ -159,7 +159,7 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| {
-                if e.to_string().contains("No such file") {
+                if e.to_string().contains("No such file or directory") {
                     format!("GDAL (gdalinfo) cannot be found / is not installed: {e}")
                 } else {
                     format!("Call error when spawning process: {e}")
@@ -288,11 +288,11 @@ mod tests {
         assert!(super::sample_dem(&wrong_path, &coords_wgs84)
             .err()
             .unwrap()
-            .contains("No such file"));
+            .contains("No such file or directory"));
     }
 
     #[test]
-    #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     #[serial_test::serial]
     fn test_no_gdal_failure() {
         let crs = Crs::Utm(UtmCrs {

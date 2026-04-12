@@ -13,7 +13,7 @@ jobs:
   build-pr:
     name: Build PR (ubuntu / python 3.12)
     if: github.event_name == 'pull_request'
-    uses: ./.github/workflows/python-build.yml@main
+    uses: ./.github/workflows/python-build.yml
     with:
       os: ubuntu-latest
       python-version: '3.12'
@@ -21,7 +21,7 @@ jobs:
   build-all:
     name: Build all platforms
     if: github.event_name != 'pull_request'
-    uses: ./.github/workflows/python-build.yml@main
+    uses: ./.github/workflows/python-build.yml
     with:
       os: ${{ matrix.os }}
       python-version: ${{ matrix.python-version }}
