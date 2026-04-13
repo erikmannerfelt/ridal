@@ -10,7 +10,7 @@ repository="https://github.com/erikmannerfelt/ridal"
 authors = ["Erik Schytt Mannerfelt"]
 
 [lib]
-name = "ridal"
+name = "ridal_lib"
 crate-type = ["cdylib"]
 path = "src/lib.rs"
 
