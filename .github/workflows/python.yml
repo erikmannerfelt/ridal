@@ -31,6 +31,8 @@ jobs:
     needs: build-pr
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
 
     steps:
     - name: Download wheels
@@ -43,7 +45,7 @@ jobs:
         UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       run: |
         pip install uv
-        uv publish --dry-run wheels/*.whl
+        uv publish --dry-run --check-url https://pypi.org/simple/ wheels/**/*.whl
 
   build-all:
     name: Build all platforms
@@ -62,6 +64,8 @@ jobs:
     needs: build-all
     runs-on: ubuntu-latest
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
 
     steps:
     - name: Download all wheels
@@ -74,4 +78,4 @@ jobs:
         UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       run: |
         pip install uv
-        uv publish wheels/*.whl
+        uv publish --check-url https://pypi.org/simple/ wheels/**/*.whl
