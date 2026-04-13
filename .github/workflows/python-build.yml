@@ -52,7 +52,7 @@ jobs:
 
     - name: Build wheels
       run: |
-        maturin build --release --features python --no-default-features
+        maturin build --release --features python --no-default-features --auditwheel repair
 
     - name: Install built wheel
       run: |
