@@ -45,7 +45,7 @@ jobs:
         UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       run: |
         pip install uv
-        uv publish --dry-run --check-url https://pypi.org/simple/ wheels/**/*.whl
+        uv publish --dry-run wheels/**/*.whl
 
   build-all:
     name: Build all platforms
