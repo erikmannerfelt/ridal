@@ -10,7 +10,7 @@ repository="https://github.com/erikmannerfelt/ridal"
 authors = ["Erik Schytt Mannerfelt"]
 
 [lib]
-name = "ridal"
+name = "ridal_lib"
 crate-type = ["cdylib"]
 path = "src/lib.rs"
 
@@ -19,7 +19,7 @@ name = "ridal"
 path = "src/main.rs"
 
 [dependencies]
-pyo3 = { version = "0.28.3", features = ["extension-module"], optional = true}
+pyo3 = { version = "0.28.3", optional = true}
 numpy = { version = "0.28", optional = true }
 ndarray = "0.17"   # For base ndarrays
 ndarray-stats = "0.7"  # For ndarray statistics

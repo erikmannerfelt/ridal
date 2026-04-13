@@ -26,6 +26,27 @@ jobs:
       os: ubuntu-latest
       python-version: '3.12'
 
+  dry-run-publish:
+    name: Dry-run publish
+    needs: build-pr
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+    - name: Download wheels
+      uses: actions/download-artifact@v4
+      with:
+        path: wheels
+
+    - name: Dry-run publish
+      env:
+        UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      run: |
+        pip install uv
+        uv publish --dry-run wheels/**/*.whl
+
   build-all:
     name: Build all platforms
     if: github.event_name != 'pull_request'
@@ -43,6 +64,8 @@ jobs:
     needs: build-all
     runs-on: ubuntu-latest
     if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
 
     steps:
     - name: Download all wheels
@@ -52,7 +75,7 @@ jobs:
 
     - name: Publish to PyPI
       env:
-        MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       run: |
-        pip install maturin
-        maturin publish --features python --no-default-features --skip-existing --glob "wheels/*.whl"
+        pip install uv
+        uv publish --check-url https://pypi.org/simple/ wheels/**/*.whl

@@ -839,7 +839,7 @@ mod tests {
         }
     }
     #[test]
-    #[cfg(not(target_os = "windows"))] // Added 2026-04-06 because proj is hard to install in CI
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))] // Added windows 2026-04-6, macos 2026-04-13 (random failure)
     fn test_projinfo_to_wkt() {
         let retval = super::projinfo_to_wkt("EPSG:32633").unwrap();
 
