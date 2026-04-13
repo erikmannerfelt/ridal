@@ -73,9 +73,11 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
 
-    - name: Use system zlib (MacOS)
+    - name: Use system zlib and HDF5 (MacOS)
       if: runner.os == 'macOS'
-      run: echo "LIBZ_SYS_STATIC=0" >> $GITHUB_ENV
+      run: |
+        echo "LIBZ_SYS_STATIC=0" >> $GITHUB_ENV
+        echo "HDF5_DIR=$(brew --prefix hdf5)" >> $GITHUB_ENV
 
     - name: Verify CMake (Windows)
       if: runner.os == 'Windows'
