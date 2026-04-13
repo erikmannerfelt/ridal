@@ -52,7 +52,7 @@ jobs:
 
     - name: Publish to PyPI
       env:
-        MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
       run: |
-        pip install maturin
-        maturin publish --features python --no-default-features --skip-existing --glob "wheels/*.whl"
+        pip install uv
+        uv publish wheels/*.whl
