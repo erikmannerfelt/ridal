@@ -31,7 +31,7 @@ jobs:
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install gdal proj hdf5
+        brew install gdal proj hdf5 pkg-config
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
@@ -60,24 +60,26 @@ jobs:
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Cache cargo registry and target
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+    # - name: Cache cargo registry and target
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       ~/.cargo/bin/
+    #       ~/.cargo/registry/index/
+    #       ~/.cargo/registry/cache/
+    #       ~/.cargo/git/db/
+    #       target/
+    #     key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+    #     restore-keys: |
+    #       ${{ runner.os }}-cargo-
 
     - name: Use system zlib and HDF5 (MacOS)
       if: runner.os == 'macOS'
       run: |
         echo "LIBZ_SYS_STATIC=0" >> $GITHUB_ENV
         echo "HDF5_DIR=$(brew --prefix hdf5)" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=$(brew --prefix hdf5)/lib:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+        echo "DYLD_LIBRARY_PATH=$(brew --prefix hdf5)/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
 
     - name: Verify CMake (Windows)
       if: runner.os == 'Windows'
