@@ -1,7 +1,6 @@
 use core::ops::{Add, Div, Mul, Sub};
-use enterpolation::Generator;
+use enterpolation::{linear::Linear, Signal};
 use ndarray::{Array1, Array2, ArrayView1};
-use ndarray_stats::QuantileExt;
 use num::Float;
 use rayon::prelude::*;
 /// Miscellaneous functions that are used in other parts of the program
@@ -119,12 +118,12 @@ fn interpolate_vec<T: Float + Copy + Sub<Output = T> + std::fmt::Debug>(
         panic!("Interpolation failed. x_old and y_old must have the same length");
     }
 
-    let model = enterpolation::linear::Linear::builder()
+    let model = Linear::builder()
         .elements(y_old)
         .knots(x_old)
         .build()
         .unwrap();
-    model.sample(x_new.iter().map(|v| v.to_owned())).collect()
+    model.sample(x_new.iter().copied()).collect()
 }
 
 fn interpolate_ndarray<T: Float + std::fmt::Debug>(
@@ -305,11 +304,9 @@ pub struct Resampler<F: Float> {
 }
 
 fn equally_spaced_from_sparse<F: Float>(sparse: &Array1<F>, resolution: F) -> Array1<F> {
-    Array1::<F>::range(
-        *sparse.min().unwrap(),
-        *sparse.max().unwrap() + resolution,
-        resolution,
-    )
+    let min_val = sparse.iter().cloned().fold(F::max_value(), F::min);
+    let max_val = sparse.iter().cloned().fold(F::min_value(), F::max);
+    Array1::<F>::range(min_val, max_val + resolution, resolution)
 }
 
 impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Debug> Resampler<F> {

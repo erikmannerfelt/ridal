@@ -31,7 +31,52 @@ jobs:
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install gdal proj
+        brew install gdal proj hdf5 netcdf zlib
+
+    - name: Configure native deps (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        ZLIB_PREFIX="$(brew --prefix zlib)"
+        HDF5_PREFIX="$(brew --prefix hdf5)"
+        NETCDF_PREFIX="$(brew --prefix netcdf)"
+        BREW_PREFIX="$(brew --prefix)"
+
+        {
+          echo "LIBZ_SYS_STATIC=0"
+          echo "ZLIB_DIR=$ZLIB_PREFIX"
+          echo "HDF5_DIR=$HDF5_PREFIX"
+          echo "NETCDF_DIR=$NETCDF_PREFIX"
+
+          echo "ZLIB_ROOT=$ZLIB_PREFIX"
+          echo "HDF5_ROOT=$HDF5_PREFIX"
+          echo "NETCDF_ROOT=$NETCDF_PREFIX"
+
+          echo "PKG_CONFIG_PATH=$ZLIB_PREFIX/lib/pkgconfig:$HDF5_PREFIX/lib/pkgconfig:$NETCDF_PREFIX/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig"
+          echo "CPPFLAGS=-I$ZLIB_PREFIX/include -I$HDF5_PREFIX/include -I$NETCDF_PREFIX/include ${CPPFLAGS:-}"
+          echo "LDFLAGS=-L$ZLIB_PREFIX/lib -L$HDF5_PREFIX/lib -L$NETCDF_PREFIX/lib ${LDFLAGS:-}"
+        } >> "$GITHUB_ENV"
+
+    - name: Debug native deps (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        echo "ZLIB_DIR=$ZLIB_DIR"
+        echo "HDF5_DIR=$HDF5_DIR"
+        echo "NETCDF_DIR=$NETCDF_DIR"
+        echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+        echo "CPPFLAGS=$CPPFLAGS"
+        echo "LDFLAGS=$LDFLAGS"
+
+        pkg-config --modversion zlib
+        pkg-config --cflags zlib
+        pkg-config --libs zlib
+
+        pkg-config --modversion hdf5
+        pkg-config --cflags hdf5
+        pkg-config --libs hdf5
+
+        pkg-config --modversion netcdf
+        pkg-config --cflags netcdf
+        pkg-config --libs netcdf
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
@@ -60,22 +105,19 @@ jobs:
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Cache cargo registry and target
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+    # - name: Cache cargo registry and target
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       ~/.cargo/bin/
+    #       ~/.cargo/registry/index/
+    #       ~/.cargo/registry/cache/
+    #       ~/.cargo/git/db/
+    #       target/
+    #     key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+    #     restore-keys: |
+    #       ${{ runner.os }}-cargo-
 
-    - name: Use system zlib (MacOS)
-      if: runner.os == 'macOS'
-      run: echo "LIBZ_SYS_STATIC=0" >> $GITHUB_ENV
 
     - name: Verify CMake (Windows)
       if: runner.os == 'Windows'
