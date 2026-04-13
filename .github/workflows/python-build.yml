@@ -24,9 +24,28 @@ jobs:
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
 
-    - name: Use system zlib (MacOS)
+    - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
-      run: echo "LIBZ_SYS_STATIC=0" >> $GITHUB_ENV
+      run: |
+        brew install netcdf hdf5 zlib
+
+    - name: Configure native deps (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        ZLIB_PREFIX="$(brew --prefix zlib)"
+        HDF5_PREFIX="$(brew --prefix hdf5)"
+        NETCDF_PREFIX="$(brew --prefix netcdf)"
+        BREW_PREFIX="$(brew --prefix)"
+
+        {
+          echo "LIBZ_SYS_STATIC=0"
+          echo "ZLIB_DIR=$ZLIB_PREFIX"
+          echo "HDF5_DIR=$HDF5_PREFIX"
+          echo "NETCDF_DIR=$NETCDF_PREFIX"
+          echo "PKG_CONFIG_PATH=$ZLIB_PREFIX/lib/pkgconfig:$HDF5_PREFIX/lib/pkgconfig:$NETCDF_PREFIX/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig"
+          echo "CPPFLAGS=-I$ZLIB_PREFIX/include -I$HDF5_PREFIX/include -I$NETCDF_PREFIX/include ${CPPFLAGS:-}"
+          echo "LDFLAGS=-L$ZLIB_PREFIX/lib -L$HDF5_PREFIX/lib -L$NETCDF_PREFIX/lib ${LDFLAGS:-}"
+        } >> "$GITHUB_ENV"
 
     - name: Install maturin and pytest
       run: pip install maturin pytest

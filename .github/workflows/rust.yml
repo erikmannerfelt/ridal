@@ -31,7 +31,7 @@ jobs:
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install gdal proj hdf5 netcdf zlib pkg-config
+        brew install gdal proj hdf5 netcdf zlib
 
     - name: Configure native deps (macOS)
       if: runner.os == 'macOS'
