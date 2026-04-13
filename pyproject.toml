@@ -13,7 +13,7 @@ dependencies = ["numpy"]
 full = ["xarray"]
 
 [tool.maturin]
-# Bindings type
+module-name = "ridal"
 bindings = "pyo3"
 features = ["python"]
 default-features = false

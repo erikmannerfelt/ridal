@@ -26,6 +26,25 @@ jobs:
       os: ubuntu-latest
       python-version: '3.12'
 
+  dry-run-publish:
+    name: Dry-run publish
+    needs: build-pr
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - name: Download wheels
+      uses: actions/download-artifact@v4
+      with:
+        path: wheels
+
+    - name: Dry-run publish
+      env:
+        UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+      run: |
+        pip install uv
+        uv publish --dry-run wheels/*.whl
+
   build-all:
     name: Build all platforms
     if: github.event_name != 'pull_request'
