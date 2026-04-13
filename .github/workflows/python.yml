@@ -23,8 +23,7 @@ jobs:
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/python-build.yml
     with:
-      # os: ubuntu-latest
-      os: macos-14
+      os: ubuntu-latest
       python-version: '3.12'
 
   build-all:
