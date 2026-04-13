@@ -31,34 +31,55 @@ jobs:
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install gdal proj hdf5 pkg-config zlib
+        brew install gdal proj hdf5 netcdf pkg-config zlib
 
-    - name: Configure Homebrew paths (macOS)
+    - name: Configure native deps (macOS)
       if: runner.os == 'macOS'
       run: |
         ZLIB_PREFIX="$(brew --prefix zlib)"
         HDF5_PREFIX="$(brew --prefix hdf5)"
+        NETCDF_PREFIX="$(brew --prefix netcdf)"
         BREW_PREFIX="$(brew --prefix)"
 
         {
           echo "LIBZ_SYS_STATIC=0"
           echo "ZLIB_DIR=$ZLIB_PREFIX"
           echo "HDF5_DIR=$HDF5_PREFIX"
-          echo "PKG_CONFIG_PATH=$ZLIB_PREFIX/lib/pkgconfig:$HDF5_PREFIX/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig"
-          echo "CPPFLAGS=-I$ZLIB_PREFIX/include -I$HDF5_PREFIX/include ${CPPFLAGS:-}"
-          echo "LDFLAGS=-L$ZLIB_PREFIX/lib -L$HDF5_PREFIX/lib ${LDFLAGS:-}"
+          echo "NETCDF_DIR=$NETCDF_PREFIX"
+
+          echo "ZLIB_ROOT=$ZLIB_PREFIX"
+          echo "HDF5_ROOT=$HDF5_PREFIX"
+          echo "NETCDF_ROOT=$NETCDF_PREFIX"
+
+          echo "PKG_CONFIG_PATH=$ZLIB_PREFIX/lib/pkgconfig:$HDF5_PREFIX/lib/pkgconfig:$NETCDF_PREFIX/lib/pkgconfig:$BREW_PREFIX/lib/pkgconfig"
+
+          echo "CPPFLAGS=-I$ZLIB_PREFIX/include -I$HDF5_PREFIX/include -I$NETCDF_PREFIX/include ${CPPFLAGS:-}"
+          echo "LDFLAGS=-L$ZLIB_PREFIX/lib -L$HDF5_PREFIX/lib -L$NETCDF_PREFIX/lib ${LDFLAGS:-}"
+
+          echo "CMAKE_PREFIX_PATH=$ZLIB_PREFIX;$HDF5_PREFIX;$NETCDF_PREFIX;$BREW_PREFIX"
+          echo "CMAKE_INCLUDE_PATH=$ZLIB_PREFIX/include:$HDF5_PREFIX/include:$NETCDF_PREFIX/include"
+          echo "CMAKE_LIBRARY_PATH=$ZLIB_PREFIX/lib:$HDF5_PREFIX/lib:$NETCDF_PREFIX/lib"
         } >> "$GITHUB_ENV"
 
-    - name: Verify pkg-config sees zlib and hdf5 (macOS)
+    - name: Debug native deps (macOS)
       if: runner.os == 'macOS'
       run: |
         echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH"
+        echo "CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH"
+        echo "CMAKE_INCLUDE_PATH=$CMAKE_INCLUDE_PATH"
+        echo "CMAKE_LIBRARY_PATH=$CMAKE_LIBRARY_PATH"
+
         pkg-config --modversion zlib
         pkg-config --cflags zlib
         pkg-config --libs zlib
-        pkg-config --modversion hdf5 || true
-        pkg-config --cflags hdf5 || true
-        pkg-config --libs hdf5 || true
+
+        pkg-config --modversion hdf5
+        pkg-config --cflags hdf5
+        pkg-config --libs hdf5
+
+        pkg-config --modversion netcdf || true
+        pkg-config --cflags netcdf || true
+        pkg-config --libs netcdf || true
 
     - name: Install dependencies (Ubuntu)
       if: runner.os == 'Linux'
