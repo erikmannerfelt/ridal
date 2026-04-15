@@ -17,6 +17,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
 jobs:
   build:
     name: Build & test on ${{ matrix.os }}
@@ -28,8 +31,21 @@ jobs:
     steps:
     - uses: actions/checkout@v6
 
+
+    - name: Cache Homebrew downloads
+      if: runner.os == 'macOS'
+      uses: actions/cache@v5
+      with:
+        path: ~/Library/Caches/Homebrew
+        key: ${{ runner.os }}-brew-${{ hashFiles('**/Cargo.lock', '.github/workflows/rust.yml') }}
+        restore-keys: |
+          ${{ runner.os }}-brew-
+
+
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: '1'  # Added for caching to work.
       run: |
         brew install gdal proj hdf5 netcdf zlib
 
@@ -105,19 +121,7 @@ jobs:
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@stable
 
-    # - name: Cache cargo registry and target
-    #   uses: actions/cache@v4
-    #   with:
-    #     path: |
-    #       ~/.cargo/bin/
-    #       ~/.cargo/registry/index/
-    #       ~/.cargo/registry/cache/
-    #       ~/.cargo/git/db/
-    #       target/
-    #     key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-    #     restore-keys: |
-    #       ${{ runner.os }}-cargo-
-
+    - uses: Swatinem/rust-cache@v2
 
     - name: Verify CMake (Windows)
       if: runner.os == 'Windows'
@@ -170,6 +174,34 @@ jobs:
       run: |
         echo "Lint (cargo clippy) failed; marking job as failed."
         exit 1
+
+  coverage:
+    name: Coverage (ubuntu)
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        sudo apt update -y
+        sudo apt install -y gdal-bin proj-bin
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+
+    - uses: Swatinem/rust-cache@v2
+
+    - uses: taiki-e/install-action@cargo-llvm-cov
+
+    - run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+    - uses: codecov/codecov-action@v6
+      with:
+        files: lcov.info
+        token: ${{ secrets.CODECOV_TOKEN }}
+        fail_ci_if_error: true
 
   publish:
     name: Publish to crates.io

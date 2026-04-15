@@ -3,3 +3,7 @@ img.jpg
 .env
 __pycache__/
 .venv
+venv/
+.coverage
+AGENTS.md
+*.jpg

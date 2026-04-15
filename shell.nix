@@ -1,34 +1,37 @@
-{ pkgs ? import <nixpkgs> { }, gdal ? null }:
+{ pkgs ? import <nixpkgs> { }, gdal ? null, rustToolchain ? null }:
 
 let
-  package = import ./default.nix { inherit pkgs gdal; };
-
+  package = import ./default.nix {
+    inherit pkgs gdal rustToolchain;
+  };
 in
-pkgs.mkShell {
 
+pkgs.mkShell {
   inputsFrom = [ package ];
 
-  buildInputs = with pkgs; [
-    cargo-tarpaulin # Get test coverage statistics
-    (pkgs.python312.withPackages (ps: with ps; [
-      pip
-      pytest
-      virtualenv
-      xarray
-      h5netcdf
-      numpy
-      matplotlib
-    ]))
-    rustfmt
-    clippy
-    proj
-    gdal
-    netcdf
-    maturin
-  ];
+  packages =
+    (pkgs.lib.optionals (rustToolchain != null) [ rustToolchain ])
+    ++ (with pkgs; [
+      cargo-llvm-cov
+
+      (python312.withPackages (ps: with ps; [
+        pip
+        pytest
+        pytest-cov
+        virtualenv
+        xarray
+        h5netcdf
+        numpy
+        matplotlib
+      ]))
+
+      proj
+      gdal
+      netcdf
+      maturin
+    ]);
 
   shellHook = ''
-    ${pkgs.zsh}/bin/zsh
-    alias ridal="$(pwd)/target/release/ridal";
+    alias ridal="$(pwd)/target/release/ridal"
   '';
 }
