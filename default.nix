@@ -28,6 +28,9 @@ rustPlatform.buildRustPackage {
   src = pkgs.lib.cleanSource ./.;
   cargoLock.lockFile = ./Cargo.lock;
 
+  buildNoDefaultFeatures = true;
+  buildFeatures = ["cli"];
+
   nativeBuildInputs = with pkgs; [
     pkg-config
     cmake
