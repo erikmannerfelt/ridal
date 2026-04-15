@@ -3,6 +3,7 @@
 [![CI](https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml/badge.svg)](
 https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml
 )
+[![codecov](https://codecov.io/github/erikmannerfelt/ridal/graph/badge.svg?token=187FAAJB4B)](https://codecov.io/github/erikmannerfelt/ridal)
 
 # ![](https://raw.githubusercontent.com/erikmannerfelt/ridal/v0.5.0/images/logo.svg) Ridal — Speeding up Ground Penetrating Radar (GPR) processing
 The aim of `ridal` is to quickly and accurately process GPR data.
