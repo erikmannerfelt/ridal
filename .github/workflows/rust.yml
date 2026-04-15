@@ -106,19 +106,6 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
 
     - uses: Swatinem/rust-cache@v2
-    # - name: Cache cargo registry and target
-    #   uses: actions/cache@v4
-    #   with:
-    #     path: |
-    #       ~/.cargo/bin/
-    #       ~/.cargo/registry/index/
-    #       ~/.cargo/registry/cache/
-    #       ~/.cargo/git/db/
-    #       target/
-    #     key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-    #     restore-keys: |
-    #       ${{ runner.os }}-cargo-
-
 
     - name: Verify CMake (Windows)
       if: runner.os == 'Windows'
@@ -175,10 +162,14 @@ jobs:
   coverage:
     name: Coverage (ubuntu)
     runs-on: ubuntu-latest
-    needs: build
 
     steps:
     - uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        sudo apt update -y
+        sudo apt install -y gdal-bin proj-bin
 
     - uses: dtolnay/rust-toolchain@stable
       with:
