@@ -244,6 +244,8 @@ pub mod ridal {
     ///     as rendered figures or exported tracks may still be produced.
     /// override_antenna_mhz : float, optional
     ///     Override the antenna center frequency inferred from the input data.
+    /// override_antenna_separation : float, optional
+    ///     Override the antenna separation inferred from the input data.
     /// metadata : mapping, optional
     ///     Additional user metadata to attach to the result. This should be a
     ///     JSON-serializable mapping. Root keys are interpreted as strings.
@@ -302,6 +304,7 @@ pub mod ridal {
         render=None,
         no_export=false,
         override_antenna_mhz=None,
+        override_antenna_separation=None,
         metadata=None,
         return_dataset_format="xarray_dict".to_string()
     ))]
@@ -322,6 +325,7 @@ pub mod ridal {
         render: Option<Py<PyAny>>,
         no_export: bool,
         override_antenna_mhz: Option<f32>,
+        override_antenna_separation: Option<f32>,
         metadata: Option<Py<PyAny>>,
         return_dataset_format: String,
     ) -> PyResult<Py<PyAny>> {
@@ -431,6 +435,7 @@ pub mod ridal {
                 no_export: true,
                 render_path: None,
                 override_antenna_mhz,
+                override_antenna_separation,
                 user_metadata,
             };
             let (gpr_obj, _default_path) = gpr::build_processed_gpr(params2)
@@ -462,6 +467,7 @@ pub mod ridal {
             no_export,
             render_path,
             override_antenna_mhz,
+            override_antenna_separation,
             user_metadata,
         };
         let result = gpr::run(params)
@@ -537,6 +543,7 @@ pub mod ridal {
         dem=None,
         crs=None,
         override_antenna_mhz=None,
+        override_antenna_separation=None,
         metadata=None,
         return_dataset_format="xarray_dict".to_string()
     ))]
@@ -548,6 +555,7 @@ pub mod ridal {
         dem: Option<Py<PyAny>>,
         crs: Option<String>,
         override_antenna_mhz: Option<f32>,
+        override_antenna_separation: Option<f32>,
         metadata: Option<Py<PyAny>>,
         return_dataset_format: String,
     ) -> PyResult<Py<PyAny>> {
@@ -568,6 +576,7 @@ pub mod ridal {
             None,
             false,
             override_antenna_mhz,
+            override_antenna_separation,
             metadata,
             return_dataset_format,
         )
@@ -677,10 +686,11 @@ pub mod ridal {
     track=None,
     quiet=false,
     render=None,
-    no_export=false,
-    merge=None,
-    override_antenna_mhz=None,
-    metadata=None,
+        no_export=false,
+        merge=None,
+        override_antenna_mhz=None,
+        override_antenna_separation=None,
+        metadata=None,
  ))]
     fn batch_process(
         py: Python<'_>,
@@ -699,6 +709,7 @@ pub mod ridal {
         no_export: bool,
         merge: Option<String>,
         override_antenna_mhz: Option<f32>,
+        override_antenna_separation: Option<f32>,
         metadata: Option<Py<PyAny>>,
     ) -> PyResult<Vec<String>> {
         use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -804,6 +815,7 @@ pub mod ridal {
             render_dir,
             merge,
             override_antenna_mhz,
+            override_antenna_separation,
             user_metadata,
         };
 
@@ -865,6 +877,7 @@ pub mod ridal {
         dem=None,
         crs=None,
         override_antenna_mhz=None,
+        override_antenna_separation=None,
     ))]
     fn info(
         py: Python<'_>,
@@ -874,6 +887,7 @@ pub mod ridal {
         dem: Option<Py<PyAny>>,
         crs: Option<String>,
         override_antenna_mhz: Option<f32>,
+        override_antenna_separation: Option<f32>,
     ) -> PyResult<Vec<Py<PyAny>>> {
         let input_paths = inputs_to_paths(py, inputs.bind(py))?;
         let cor_path = optional_path(py, cor)?;
@@ -886,6 +900,7 @@ pub mod ridal {
             medium_velocity: velocity,
             crs,
             override_antenna_mhz,
+            override_antenna_separation,
         };
         let records =
             gpr::inspect(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
