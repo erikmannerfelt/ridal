@@ -55,7 +55,9 @@ impl GPRMeta {
     /// # Arguments
     /// - `projected_crs`: The CRS to project coordinates into
     pub fn find_cor(&self, projected_crs: Option<&String>) -> Result<GPRLocation, Box<dyn Error>> {
-        io::load_cor(&self.data_filepath.with_extension("cor"), projected_crs)
+        let cor = crate::formats::find_neighbor_case_insensitive(&self.data_filepath, "cor")
+            .unwrap_or_else(|| self.data_filepath.with_extension("cor"));
+        io::load_cor(&cor, projected_crs)
     }
 }
 
@@ -740,14 +742,18 @@ impl GPR {
         metadata: GPRMeta,
     ) -> Result<GPR, Box<dyn Error>> {
         let data = match metadata.data_filepath.extension().and_then(|s| s.to_str()) {
-            Some("rd3") => Ok(io::load_rd3(
+            Some(ext) if ext.eq_ignore_ascii_case("rd3") => Ok(io::load_rd3(
                 &metadata.data_filepath,
                 metadata.samples as usize,
             )?),
-            Some("dt1") => Ok(io::load_pe_dt1(
+            Some(ext) if ext.eq_ignore_ascii_case("dt1") => Ok(io::load_pe_dt1(
                 &metadata.data_filepath,
                 metadata.samples as usize,
                 metadata.last_trace as usize,
+            )?),
+            Some(ext) if ext.eq_ignore_ascii_case("dzt") => Ok(io::load_dzt(
+                &metadata.data_filepath,
+                metadata.samples as usize,
             )?),
             _ => Err(format!("Unknown filetype: {:?}", metadata.data_filepath)),
         }?;
@@ -1817,6 +1823,17 @@ fn load_meta_and_location(
             let location = io::load_pe_gp2(&resolved.coordinates, crs)?;
             (meta, location)
         }
+        FormatKind::Gssi => {
+            if cor_path.is_some() {
+                return Err("The --cor option is only supported for RAMAC inputs.".into());
+            }
+            if !resolved.header.is_file() {
+                return Err(format!("File not found: {:?}", resolved.header).into());
+            }
+            let meta = io::load_gssi_dzt(&resolved.header, medium_velocity, override_antenna_mhz)?;
+            let location = io::load_gssi_dzg(&resolved.coordinates, crs)?;
+            (meta, location)
+        }
     };
 
     if let Some(dem_path) = dem_path {
@@ -2201,6 +2218,16 @@ fn load_single_gpr_for_grouping(
                 },
             )?
         }
+        FormatKind::Gssi => {
+            io::load_gssi_dzt(&resolved.header, medium_velocity, override_antenna_mhz).map_err(
+                |e| {
+                    format!(
+                        "Failed to load GSSI header '{}': {e}",
+                        resolved.header.display()
+                    )
+                },
+            )?
+        }
     };
 
     let mut location = if let Some(cor_override) = &cor_path {
@@ -2222,6 +2249,11 @@ fn load_single_gpr_for_grouping(
                 let gp2 = &resolved.coordinates;
                 io::load_pe_gp2(gp2, crs.as_ref())
                     .map_err(|e| format!("Failed to load .gp2 '{}': {e}", gp2.display()))?
+            }
+            FormatKind::Gssi => {
+                let dzg = &resolved.coordinates;
+                io::load_gssi_dzg(dzg, crs.as_ref())
+                    .map_err(|e| format!("Failed to load .dzg '{}': {e}", dzg.display()))?
             }
         }
     };
