@@ -99,11 +99,6 @@ pub fn format_info(kind: FormatKind) -> FormatInfo {
 }
 
 pub fn find_neighbor_case_insensitive(base: &Path, target_extension: &str) -> Option<PathBuf> {
-    let exact = base.with_extension(target_extension);
-    if exact.is_file() {
-        return Some(exact);
-    }
-
     let parent = base.parent().unwrap_or_else(|| Path::new("."));
     let stem = base.file_stem().or_else(|| base.file_name())?.to_str()?;
     let target_extension = target_extension.trim_start_matches('.');
