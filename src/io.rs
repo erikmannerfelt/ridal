@@ -385,9 +385,9 @@ fn gssi_date_to_iso(date: &str) -> Result<String, Box<dyn Error>> {
     Ok(format!("{year}-{month}-{day}"))
 }
 
-fn read_gssi_header(
-    bytes: &[u8],
-) -> Result<(u16, u16, u16, f32, f32, f32, f32, u16, String), Box<dyn Error>> {
+type GssiHeader = (u16, u16, u16, f32, f32, f32, f32, u16, String);
+
+fn read_gssi_header(bytes: &[u8]) -> Result<GssiHeader, Box<dyn Error>> {
     if bytes.len() < 128 {
         return Err("GSSI header is too short".into());
     }

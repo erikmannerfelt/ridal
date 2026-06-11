@@ -340,8 +340,8 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
             }
 
             if indices_between.len() < 2 {
-                potential_outside_behind.sort_by(|a, b| a.0.cmp(&b.0));
-                potential_outside_ahead.sort_by(|a, b| a.0.cmp(&b.0));
+                potential_outside_behind.sort_by_key(|a| a.0);
+                potential_outside_ahead.sort_by_key(|a| a.0);
 
                 if let Some(point_behind) = potential_outside_behind.first() {
                     for index in potential_outside_behind
