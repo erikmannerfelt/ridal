@@ -15,7 +15,7 @@ A near-term goal of Ridal is to enable easy conversion between formats, such as 
 
 
 Much of the functionality has been inspired from the projects [RGPR](https://github.com/emanuelhuber/RGPR) and [ImpDAR](https://github.com/dlilien/ImpDAR); both of which are more mature projects.
-For example, Ridal currently only works on Malå (.rd3) and pulseEKKO (.dt1) radar formats.
+For example, Ridal currently only works on Malå (.rd3), GSSI (.dzt) and pulseEKKO (.dt1) radar formats.
 For many uses, these will more likely be the tools for you!
 
 ![Image of a glacier radargram](https://raw.githubusercontent.com/erikmannerfelt/ridal/v0.5.0/images/kroppbreen_rgm.webp)
