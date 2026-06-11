@@ -1633,6 +1633,7 @@ pub struct RunParams {
     pub no_export: bool,
     pub render_path: Option<Option<PathBuf>>,
     pub override_antenna_mhz: Option<f32>,
+    pub override_antenna_separation: Option<f32>,
     pub user_metadata: user_metadata::UserMetadata,
 }
 #[derive(Debug, Clone)]
@@ -1650,6 +1651,7 @@ pub struct BatchRunParams {
     pub render_dir: Option<PathBuf>,
     pub merge: Option<String>,
     pub override_antenna_mhz: Option<f32>,
+    pub override_antenna_separation: Option<f32>,
     pub user_metadata: user_metadata::UserMetadata,
 }
 
@@ -1666,6 +1668,7 @@ pub struct InfoParams {
     pub medium_velocity: f32,
     pub crs: Option<String>,
     pub override_antenna_mhz: Option<f32>,
+    pub override_antenna_separation: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1798,13 +1801,19 @@ fn load_meta_and_location(
     cor_path: Option<&PathBuf>,
     dem_path: Option<&PathBuf>,
     override_antenna_mhz: Option<f32>,
+    override_antenna_separation: Option<f32>,
 ) -> Result<(GPRMeta, GPRLocation), Box<dyn Error>> {
     let (gpr_meta, mut gpr_location) = match resolved.kind {
         FormatKind::Ramac => {
             if !resolved.header.is_file() {
                 return Err(format!("File not found: {:?}", resolved.header).into());
             }
-            let meta = io::load_rad(&resolved.header, medium_velocity, override_antenna_mhz)?;
+            let meta = io::load_rad(
+                &resolved.header,
+                medium_velocity,
+                override_antenna_mhz,
+                override_antenna_separation,
+            )?;
             let cor_source = match cor_path {
                 Some(path) => path.clone(),
                 None => resolved.coordinates.clone(),
@@ -1819,7 +1828,12 @@ fn load_meta_and_location(
             if !resolved.header.is_file() {
                 return Err(format!("File not found: {:?}", resolved.header).into());
             }
-            let meta = io::load_pe_hd(&resolved.header, medium_velocity, override_antenna_mhz)?;
+            let meta = io::load_pe_hd(
+                &resolved.header,
+                medium_velocity,
+                override_antenna_mhz,
+                override_antenna_separation,
+            )?;
             let location = io::load_pe_gp2(&resolved.coordinates, crs)?;
             (meta, location)
         }
@@ -1830,7 +1844,12 @@ fn load_meta_and_location(
             if !resolved.header.is_file() {
                 return Err(format!("File not found: {:?}", resolved.header).into());
             }
-            let meta = io::load_gssi_dzt(&resolved.header, medium_velocity, override_antenna_mhz)?;
+            let meta = io::load_gssi_dzt(
+                &resolved.header,
+                medium_velocity,
+                override_antenna_mhz,
+                override_antenna_separation,
+            )?;
             let location = io::load_gssi_dzg(&resolved.coordinates, crs)?;
             (meta, location)
         }
@@ -1937,6 +1956,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<InfoRecord>, Box<dyn Error>> {
             params.cor_path.as_ref(),
             params.dem_path.as_ref(),
             params.override_antenna_mhz,
+            params.override_antenna_separation,
         )?;
         records.push(info_record(&resolved, &meta, &location)?);
     }
@@ -1968,6 +1988,7 @@ pub fn build_processed_gpr(
         params.cor_path.as_ref(),
         params.dem_path.as_ref(),
         params.override_antenna_mhz,
+        params.override_antenna_separation,
     )?;
     let mut gpr = GPR::from_meta_and_loc(first_location, first_meta).map_err(|e| {
         format!(
@@ -1985,6 +2006,7 @@ pub fn build_processed_gpr(
             params.cor_path.as_ref(),
             params.dem_path.as_ref(),
             params.override_antenna_mhz,
+            params.override_antenna_separation,
         )?;
         let other = GPR::from_meta_and_loc(location, meta)
             .map_err(|e| format!("Error loading GPR data from {:?}: {:?}", resolved.data, e))?;
@@ -2100,6 +2122,7 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             params.dem_path.clone(),
             params.crs.clone(),
             params.override_antenna_mhz,
+            params.override_antenna_separation,
         )?
     } else {
         expanded_filepaths
@@ -2145,6 +2168,7 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             no_export: params.no_export,
             render_path,
             override_antenna_mhz: params.override_antenna_mhz,
+            override_antenna_separation: params.override_antenna_separation,
             user_metadata: params.user_metadata.clone(),
         };
 
@@ -2195,39 +2219,49 @@ fn load_single_gpr_for_grouping(
     dem_path: Option<PathBuf>,
     crs: Option<String>,
     override_antenna_mhz: Option<f32>,
+    override_antenna_separation: Option<f32>,
 ) -> Result<GPR, String> {
     // Resolve input using the same format machinery as normal processing.
     let resolved = formats::resolve_input(path)
         .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
 
     let metadata = match resolved.kind {
-        FormatKind::Ramac => io::load_rad(&resolved.header, medium_velocity, override_antenna_mhz)
-            .map_err(|e| {
-                format!(
-                    "Failed to load RAMAC header '{}': {e}",
-                    resolved.header.display()
-                )
-            })?,
-        FormatKind::PulseEkko => {
-            io::load_pe_hd(&resolved.header, medium_velocity, override_antenna_mhz).map_err(
-                |e| {
-                    format!(
-                        "Failed to load pulseEKKO header '{}': {e}",
-                        resolved.header.display()
-                    )
-                },
-            )?
-        }
-        FormatKind::Gssi => {
-            io::load_gssi_dzt(&resolved.header, medium_velocity, override_antenna_mhz).map_err(
-                |e| {
-                    format!(
-                        "Failed to load GSSI header '{}': {e}",
-                        resolved.header.display()
-                    )
-                },
-            )?
-        }
+        FormatKind::Ramac => io::load_rad(
+            &resolved.header,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to load RAMAC header '{}': {e}",
+                resolved.header.display()
+            )
+        })?,
+        FormatKind::PulseEkko => io::load_pe_hd(
+            &resolved.header,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to load pulseEKKO header '{}': {e}",
+                resolved.header.display()
+            )
+        })?,
+        FormatKind::Gssi => io::load_gssi_dzt(
+            &resolved.header,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+        )
+        .map_err(|e| {
+            format!(
+                "Failed to load GSSI header '{}': {e}",
+                resolved.header.display()
+            )
+        })?,
     };
 
     let mut location = if let Some(cor_override) = &cor_path {
@@ -2268,6 +2302,7 @@ fn load_single_gpr_for_grouping(
     Ok(gpr)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn group_batch_inputs_chronologically(
     filepaths: &[PathBuf],
     merge_threshold: &str,
@@ -2276,6 +2311,7 @@ fn group_batch_inputs_chronologically(
     dem_path: Option<PathBuf>,
     crs: Option<String>,
     override_antenna_mhz: Option<f32>,
+    override_antenna_separation: Option<f32>,
 ) -> Result<Vec<Vec<PathBuf>>, String> {
     let threshold = parse_duration::parse(merge_threshold)
         .map_err(|e| format!("Failed to parse merge duration '{merge_threshold}': {e}"))?
@@ -2291,6 +2327,7 @@ fn group_batch_inputs_chronologically(
                 dem_path.clone(),
                 crs.clone(),
                 override_antenna_mhz,
+                override_antenna_separation,
             )?;
             let start_time = gpr
                 .location

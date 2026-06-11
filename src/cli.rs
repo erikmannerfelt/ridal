@@ -87,6 +87,10 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub override_antenna_mhz: Option<f32>,
 
+    /// Override the antenna separation (in m) from file metadata
+    #[arg(long)]
+    pub override_antenna_separation: Option<f32>,
+
     /// Add user metadata as key=value. Repeatable.
     #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub metadata: Vec<String>,
@@ -160,6 +164,10 @@ pub struct BatchProcessArgs {
     #[arg(long)]
     pub override_antenna_mhz: Option<f32>,
 
+    /// Override the antenna separation (in m) from file metadata
+    #[arg(long)]
+    pub override_antenna_separation: Option<f32>,
+
     /// Add user metadata as key=value. Repeatable.
     #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub metadata: Vec<String>,
@@ -194,6 +202,10 @@ pub struct InfoArgs {
     /// Override the antenna center frequency (in MHz) from file metadata
     #[arg(long)]
     pub override_antenna_mhz: Option<f32>,
+
+    /// Override the antenna separation (in m) from file metadata
+    #[arg(long)]
+    pub override_antenna_separation: Option<f32>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -305,6 +317,7 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
         no_export: args.no_export,
         render_path: args.render.clone(),
         override_antenna_mhz: args.override_antenna_mhz,
+        override_antenna_separation: args.override_antenna_separation,
         user_metadata,
     };
 
@@ -343,6 +356,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         render_dir,
         merge: args.merge.clone(),
         override_antenna_mhz: args.override_antenna_mhz,
+        override_antenna_separation: args.override_antenna_separation,
         user_metadata,
     };
 
@@ -362,6 +376,7 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
         medium_velocity: args.velocity,
         crs: args.crs,
         override_antenna_mhz: args.override_antenna_mhz,
+        override_antenna_separation: args.override_antenna_separation,
     };
     let records = gpr::inspect(params).map_err(|e| format!("{e:?}"))?;
     if args.json {
@@ -622,6 +637,23 @@ mod tests {
                 assert!(info.json);
             }
             _ => panic!("Expected info command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_override_antenna_separation() {
+        let args = Args::parse_from([
+            "ridal",
+            "process",
+            "line01.DZT",
+            "--override-antenna-separation",
+            "1.25",
+        ]);
+        match args.command {
+            Commands::Process(process) => {
+                assert_eq!(process.override_antenna_separation, Some(1.25));
+            }
+            _ => panic!("Expected process command"),
         }
     }
 
