@@ -39,6 +39,18 @@ enterpolation = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Web server and browser GUI (feature "server"). See tracking issue #115.
+axum = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"], optional = true }
+minijinja = { version = "2", optional = true }
+blake3 = { version = "1", optional = true }  # Revision and render identities
+walkdir = { version = "2", optional = true }  # Recursive catalog discovery
+lru = { version = "0.12", optional = true }  # Wrapped in a byte-bounded cache
+webbrowser = { version = "1", optional = true }  # `ridal gui` browser opening
+toml = { version = "0.8", optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 netcdf = { version = "0.12", features = ["ndarray"] }
 
@@ -53,8 +65,23 @@ temp-env = "0.3.6"
 serial_test = "3.2.0"
 approx = "0.5.0"
 test_retry = "0.1.0"
+# Drives the axum Router in-process via ServiceExt::oneshot, so route tests need
+# no HTTP client. Browser-facing tests bind a real port and use Chromium instead.
+tower = { version = "0.5", features = ["util"] }
 
 [features]
-default = ["cli", "python"]
+default = ["cli", "python", "server"]
 cli = []
 python = ["pyo3", "numpy"]
+server = [
+    "axum",
+    "tokio",
+    "minijinja",
+    "blake3",
+    "walkdir",
+    "lru",
+    "webbrowser",
+    "toml",
+    "tracing",
+    "tracing-subscriber",
+]
