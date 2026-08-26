@@ -18,8 +18,8 @@ update). Milestone numbering matches that plan.
 | M3: catalog + track (#122 + new) | done | `4fd2e7a` |
 | M4: streaming renderer (#118) | done | `33ab2e6` |
 | M5: render service + cache (#119) | done | `f75bc6e` |
-| M6: HTTP app + launch modes (#120) | **next** | - |
-| M7: index, viewer, sync, x-scale (#121 + new) | pending | - |
+| M6: HTTP app + launch modes (#120) | done | `ac753a8` |
+| M7: index, viewer, sync, x-scale (#121 + new) | **next** | - |
 | M8: concurrency hardening | stretch | - |
 
 ## Gate applied before every commit
@@ -251,34 +251,77 @@ build is available).
   M4 and is deferred again, now explicitly to M6/M8 once real HTTP load
   exists to justify it.
 
+## M6 findings
+
+- Built `app.rs` (AppState + router), `routes.rs` (handlers), `templates.rs`
+  + `templates/*.jinja` (MiniJinja base/index/viewer/error shells),
+  `assets.rs` (embedded Leaflet via `include_bytes!`), `launch.rs`
+  (`ridal gui` / `ridal server start`, sharing one `serve()`).
+  `AppState::build()` opens every catalog entry's `RenderService` eagerly
+  at startup (matches #122/#123's ~100-file target scale) so a broken
+  file is a clear startup warning, not a request-time surprise.
+- API versioned under `/api/v1`: health, profiles, datasets,
+  dataset detail, overview, chunks. Structured JSON error envelope
+  throughout, correctly distinguishing structurally-invalid input (400)
+  from legitimately-absent (404) per #118's explicit requirement --
+  covered by a comprehensive route test that checks every status code and
+  error `code` field, not just "the request succeeded."
+- **Real bug caught immediately by that same test suite**: the viewer
+  template's `{{ radargram_id | tojson }}` needs minijinja's `"json"`
+  feature, which isn't enabled -- every single `/view/{id}` request
+  500'd. Fixed by interpolating the (already-validated,
+  `[a-z0-9_-]`-only) radargram ID directly instead of adding a whole
+  crate feature for one substitution.
+- **Verified end-to-end against real data, beyond what the plan strictly
+  asked for.** Processed both `assets/mala` fixtures into a real
+  two-radargram catalog (one with a display name, one in a group),
+  started `ridal server start` for real (not a test harness), and drove
+  it with headless Chromium exactly as in M0. Confirmed: the index page
+  lists both radargrams with correct effective labels and group; the
+  viewer page for the 2022 asset loads all 80 real chunks
+  (10x8, matching `ceil(2529/256) x ceil(1988/256)` exactly) with zero
+  console errors; screenshots show actual recognizable GPR structure, not
+  placeholder or corrupted output.
+- **A false claim from earlier in this session, found and corrected**: I
+  had reported `cargo check -F python` as clean during the mid-session
+  audit. It actually fails to build the *binary* target
+  (`main.rs` calls `cli::main()`, which is gated behind
+  `#[cfg(feature = "cli")]`). Traced this all the way down: it reproduces
+  identically with every uncommitted M6 change stashed away, and the same
+  gating already existed on `main` at `05b9611`, before this session
+  touched anything. It's harmless in practice -- `maturin` only packages
+  the `cdylib` for the Python wheel, never the `[[bin]]` target, and
+  `cargo check -F python --lib` (what actually matters) is clean. Not
+  fixed, since it's unrelated to #115 and pre-existing; flagging the
+  correction here rather than letting a wrong claim stand uncorrected.
+- Updated `.github/workflows/rust.yml`: the Linux job now builds and
+  tests `-F cli,server`. Windows/macOS deliberately left at `-F cli`
+  only -- the server feature is pure Rust so it should work there in
+  principle, but that has not been verified on those platforms, and I
+  did not want to claim a cross-platform guarantee I hadn't checked.
+  Also updated `AGENTS.md` (gitignored, invisible to `git status`, but
+  kept current for local dev).
+- Diagnostic CLI commands (`ridal server render overview|chunk`) from
+  #118, still deferred -- not because of new information, just genuinely
+  lower priority than the actual serving path, and the renderer they'd
+  wrap is already fully tested via M4's unit tests.
+
 ## Where to resume
 
-**Next: M6, the HTTP application and launch modes (#120).** This is the
-largest remaining milestone: shared axum `Router` + `AppState`, `ridal
-gui` and `ridal server start` (loopback default, ephemeral port
-selection, browser opening that warns-not-fails, graceful shutdown),
-MiniJinja base/index/viewer/error templates, versioned API routes, embedded
-frontend assets (`include_bytes!` over M0's vendored Leaflet), structured
-JSON error envelopes, and the `ridal server render overview|chunk`
-diagnostic CLI commands deferred from M4.
+**Next: M7, the index/viewer feature completion (#121 + new).** Per the
+plan: group maps and sibling-track display on the index and viewer maps
+(M3's `Track` type is fully built and tested but not yet wired into any
+route -- `/api/v1/datasets/{id}/track` doesn't exist yet), cursor
+synchronization between the radargram viewer and the map (client-side JS,
+using `Track::locate_trace`'s trace-index-based lookup so M3's fix
+actually reaches the browser), the horizontal x-scale control (a pure
+`setBounds()` rewrite per the plan -- no new render IDs, no server
+round-trip), and the metadata dialog (a button opening a `<dialog>` with
+the complete attribute set, per your PFA-style preference from the
+planning conversation). M6's viewer already has a working profile
+switcher and real chunk rendering to build on top of.
 
-**Two things M0 already found that apply directly here**:
-1. Route paths must NOT put a parameter directly before a literal
-   extension -- axum 0.8 rejects `{y}.jpg` at registration
-   ("Only one parameter is allowed per path segment"). Use
-   `.../chunks/{profile}/{x}/{y}` (no extension) and carry format via
-   `Content-Type`, exactly as M0's throwaway smoke server proved works.
-2. The `[[-(y*C+C), x*C], [-(y*C), x*C+C]]` Leaflet bounds formula is
-   already verified against a real headless-Chromium screenshot -- no
-   need to re-derive or re-verify that math, `grid.rs` (M4) already
-   implements it and is tested.
-
-**Also update**: `AGENTS.md` build lines and both CI workflow files need
-`-F cli,server` added, per the plan. `AGENTS.md` is gitignored in this
-repo, so that specific edit won't show up in `git status` -- don't let
-that read as "forgotten."
-
-**Before starting M6**, worth 5 minutes: decide whether to also fix the
+**Before starting M7**, worth 5 minutes: decide whether to also fix the
 `test_projinfo_to_wkt` pre-existing flake noted above (unrelated to this
 work, already flagged in its own code comment) -- not blocking, just
 noting it's now confirmed to still occur.
@@ -286,9 +329,11 @@ noting it's now confirmed to still occur.
 **Process reminder for whoever continues this**: gate every commit with
 the three commands under "Gate applied before every commit" above, run the
 test suite at least 3x before trusting a green result (this session found
-two real bugs and one real flake this way that a single run would have
+several real bugs and one real flake this way that a single run would have
 missed), and update this file's Status table before moving to the next
-milestone.
+milestone. Verify any claim about a build/test configuration by actually
+running it, even (especially) one you believe you already checked earlier
+in the same session.
 
 ## Open questions for the user
 
