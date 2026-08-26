@@ -1,0 +1,33 @@
+{% extends "base.html.jinja" %}
+{% block title %}Radargram catalog - Ridal{% endblock %}
+{% block content %}
+  <h1>Radargram catalog</h1>
+  {% if warnings %}
+    <div class="warning">
+      <strong>{{ warnings | length }} warning(s):</strong>
+      <ul>
+        {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+  {% if entries %}
+    <table>
+      <thead>
+        <tr><th>Label</th><th>Radargram ID</th><th>Group</th><th>Path</th><th>Processed</th></tr>
+      </thead>
+      <tbody>
+        {% for e in entries %}
+        <tr id="card-{{ e.radargram_id }}">
+          <td><a href="/view/{{ e.radargram_id }}">{{ e.effective_label }}</a></td>
+          <td><code>{{ e.radargram_id }}</code></td>
+          <td>{{ e.group or "" }}</td>
+          <td>{{ e.relative_path }}</td>
+          <td>{{ e.processing_datetime }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No radargrams found.</p>
+  {% endif %}
+{% endblock %}

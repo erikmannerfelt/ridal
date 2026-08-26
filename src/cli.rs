@@ -22,6 +22,70 @@ pub enum Commands {
     Steps(StepsArgs),
     /// Inspect supported formats
     Formats(FormatsArgs),
+    /// Open a local browser GUI for one radargram or a directory of them
+    #[cfg(feature = "server")]
+    Gui(GuiArgs),
+    /// Run the web server explicitly (for remote or persistent deployment)
+    #[cfg(feature = "server")]
+    Server(ServerArgs),
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, clap::Args)]
+pub struct GuiArgs {
+    /// A single processed .nc file, or a directory to scan recursively.
+    pub path: PathBuf,
+
+    /// In-memory cache budget for encoded chunk/overview images, in MB.
+    #[arg(long)]
+    pub cache_memory_mb: Option<usize>,
+
+    /// Number of worker threads for CPU-heavy rendering.
+    #[arg(long)]
+    pub n_workers: Option<usize>,
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, clap::Args)]
+pub struct ServerArgs {
+    #[command(subcommand)]
+    pub command: ServerCommand,
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, Subcommand)]
+pub enum ServerCommand {
+    /// Start the HTTP server
+    Start(ServerStartArgs),
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, clap::Args)]
+pub struct ServerStartArgs {
+    /// A single processed .nc file, or a directory to scan recursively.
+    pub path: PathBuf,
+
+    /// Bind address. Loopback by default; binding elsewhere is explicit
+    /// because this milestone implements no authentication (#120).
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+
+    /// Bind port. A stable default rather than an OS-assigned ephemeral
+    /// port, since this mode is for persistent/remote deployment.
+    #[arg(long, default_value_t = 8000)]
+    pub port: u16,
+
+    /// Open a browser after starting (off by default in this mode).
+    #[arg(long)]
+    pub open_browser: bool,
+
+    /// In-memory cache budget for encoded chunk/overview images, in MB.
+    #[arg(long)]
+    pub cache_memory_mb: Option<usize>,
+
+    /// Number of worker threads for CPU-heavy rendering.
+    #[arg(long)]
+    pub n_workers: Option<usize>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -315,6 +379,49 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Info(args) => info_command(args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
+        #[cfg(feature = "server")]
+        Commands::Gui(args) => gui_command(args),
+        #[cfg(feature = "server")]
+        Commands::Server(args) => server_command(args),
+    }
+}
+
+#[cfg(feature = "server")]
+fn render_service_config(
+    cache_memory_mb: Option<usize>,
+    n_workers: Option<usize>,
+) -> crate::server::render::service::RenderServiceConfig {
+    let default = crate::server::render::service::RenderServiceConfig::default();
+    crate::server::render::service::RenderServiceConfig {
+        cache_memory_mb: cache_memory_mb.unwrap_or(default.cache_memory_mb),
+        n_workers: n_workers.unwrap_or(default.n_workers),
+        ..default
+    }
+}
+
+#[cfg(feature = "server")]
+fn gui_command(args: GuiArgs) -> Result<(), String> {
+    let config = render_service_config(args.cache_memory_mb, args.n_workers);
+    crate::server::launch::run_gui(&args.path, config)
+}
+
+#[cfg(feature = "server")]
+fn server_command(args: ServerArgs) -> Result<(), String> {
+    match args.command {
+        ServerCommand::Start(start_args) => {
+            let host: std::net::IpAddr = start_args
+                .host
+                .parse()
+                .map_err(|e| format!("Invalid --host '{}': {e}", start_args.host))?;
+            let config = render_service_config(start_args.cache_memory_mb, start_args.n_workers);
+            crate::server::launch::run_server_start(
+                &start_args.path,
+                host,
+                start_args.port,
+                start_args.open_browser,
+                config,
+            )
+        }
     }
 }
 

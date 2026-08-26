@@ -5,7 +5,12 @@
 //! or template types -- those live in `app.rs`/`routes.rs`/`templates.rs`
 //! once they exist, and compose the modules below rather than the reverse.
 
+pub mod app;
+pub mod assets;
 pub mod catalog;
+pub mod launch;
 pub mod render;
+pub mod routes;
 pub mod source;
+pub mod templates;
 pub mod track;
