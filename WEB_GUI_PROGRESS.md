@@ -15,8 +15,8 @@ update). Milestone numbering matches that plan.
 | Fixtures: MALA assets added to repo | done | `a929025` |
 | M1: identity metadata (#116) | done | `1c3c04b` |
 | M2: inspection + revision identity (#123, #117) | done (revision identity deferred, see below) | - |
-| M3: catalog + track (#122 + new) | pending | - |
-| M4: streaming renderer (#118) | pending | - |
+| M3: catalog + track (#122 + new) | done | `4fd2e7a` |
+| M4: streaming renderer (#118) | **next** | - |
 | M5: render service + cache (#119) | pending | - |
 | M6: HTTP app + launch modes (#120) | pending | - |
 | M7: index, viewer, sync, x-scale (#121 + new) | pending | - |
@@ -114,12 +114,109 @@ grows as tests are added. A *new* failure beyond this one stops the run.
   wiring them in (the same transitional pattern used for `identity.rs` in
   M1).
 
+## M3 findings
+
+- **`src/server/track.rs` (new)**: `Track::from_location()` fixes the
+  PFA_website cursor-sync bug directly. `format_radargrams.py` samples
+  vertices evenly by *distance*; `digitize.js` indexes them by *trace
+  fraction*; any standstill desynchronizes the two (measured up to 140m on
+  a real Dronbreen line). The fix stores each retained vertex's real trace
+  index, so lookups stay exact regardless of vertex spacing.
+- **Real algorithmic gap found while building this, not just a test
+  artifact**: plain 2D Douglas-Peucker is blind to velocity. A standstill
+  sitting on an otherwise-straight line adds zero geometric deviation, so
+  2D simplification collapses it away -- which silently reintroduces the
+  exact bug class this module exists to fix, since trace-index
+  interpolation between the two straight-line endpoints then implies
+  constant speed straight through the standstill. **Fixed** by simplifying
+  in 3D -- `(trace_index * speed_scale, easting, northing)` -- so a
+  non-uniform-speed stretch shows up as a genuine chord deviation and gets
+  a retained vertex. `speed_scale` is the segment's own average m/trace.
+- Added a regression test that processes both real `assets/mala` fixtures
+  at the exact standstill windows identified during planning
+  (`subset(1200 1700 0 400)` on 2022, `subset(2400 2800 0 400)` on 2025)
+  and checks *both* halves of the fix on real data in one place: the new
+  method stays under the plan's 2m bound, and a faithful reimplementation
+  of PFA's actual distance-indexed approach demonstrably does not.
+- **`src/server/catalog.rs` (new)**: recursive discovery via `walkdir`,
+  deterministic path-sorted ordering, duplicate-radargram-ID resolution
+  (newest `processing_datetime` wins, path order breaks ties, collision
+  retained as a warning), one bad candidate doesn't abort discovery. Group
+  resolves from `ridal_group` if present, else the catalog-relative parent
+  directory as a fallback slug.
+- Implements the `RevisionId`/`FastRevisionFingerprintV1` deferred from M2
+  (see M2 findings above for why it lives here, not in `io.rs`).
+- **Second real bug found and fixed**: the hidden/cache-directory exclusion
+  rule (skip dot-prefixed dirs) was being applied to the walk *root*
+  itself, not just its descendants. `tempfile::tempdir()` names its
+  directories `.tmpXXXXXX` -- dot-prefixed -- so every catalog test against
+  a tempdir silently discovered **zero** entries until root was exempted
+  from its own exclusion rule. Caught immediately by the test suite (7 of
+  12 catalog tests failed with `entries.len() == 0`), not left latent.
+  Worth remembering for `ridal gui`/`ridal server start` too: a real user
+  could plausibly point the server at a dot-prefixed directory.
+- `io.rs`'s `inspect_ridal_netcdf()` and helpers move from unconditional
+  `#[allow(dead_code)]` to `#[cfg_attr(not(feature = "server"), allow(dead_code))]`,
+  since `catalog.rs` is their first real (non-test) caller and it only
+  exists under the `server` feature. More honest than a blanket allow.
+- The M2 netcdf flake (see below) reappeared once under the *added* load of
+  M3's tests before the M2 fix was strengthened -- see the updated M2 entry
+  below for what changed.
+
+## M2 fix, revisited during M3
+
+The `#[serial_test::serial(netcdf)]` fix from M2 measurably reduced but did
+**not** fully eliminate the netcdf-c/HDF5 concurrency flake once more
+netcdf-touching tests were added in M3: stress-testing showed roughly 1
+failure in 10 full-suite runs (down from ~3 of 4 before any fix), always
+`NetCDF: HDF error` when reopening a file the same test had just written.
+Serial execution (`--test-threads=1`) was 100% clean across 3 runs,
+confirming this is concurrency-related, not a logic bug.
+
+**Fix strengthened**: added `#[test_retry::retry]` alongside the existing
+serial tag on all netcdf-touching tests, matching the codebase's own
+pre-existing precedent for this exact issue (`test_save_netcdf` already
+carried retry with a "randomly fails, unclear why" comment before this
+session). Confirmed 0 unexpected failures across 25 stress-test runs after
+combining both. This is believed to be an inherent limitation of the
+statically-linked netcdf-c/HDF5 build in this environment, not something
+fixable at the Rust call-site level within this session's scope --
+worth a closer look with more time (e.g. checking whether `netcdf-sys`'s
+lock actually wraps every FFI entry point, or whether a threadsafe HDF5
+build is available).
+
 ## Deviations from the plan so far
 
 - Route paths drop file extensions (axum constraint, M0). Plan will be
   updated to match before M6.
 - `RevisionId`/`FastRevisionFingerprintV1` moved from M2 to M3 (see above).
 
-## Open questions for the morning
+## Where to resume
 
-(none yet)
+**Next: M4, the streaming renderer (#118).** Per the plan: `SourceReader`
+with hyperslab reads + an aligned block cache, run-based sampled amplitude
+limits (128 runs x 16 traces, fixed seed from the revision ID),
+`RenderProfile`, chunk grid math (`[[-(y*C+C), x*C], [-(y*C), x*C+C]]` --
+already empirically verified in M0), NaN-aware area-weighted mean
+resampling, edge padding, JPEG encoding (not WebP -- see plan §02), and the
+`ridal server render overview|chunk` diagnostic CLI commands. Test against
+an asymmetric synthetic fixture to catch transposition/mirroring, and
+against both `scale == 1` (real assets, since both are under the 8192x4096
+cap) and `scale < 1` paths.
+
+**Before starting M4**, worth 5 minutes: decide whether to also fix the
+`test_projinfo_to_wkt` pre-existing flake noted above (unrelated to this
+work, already flagged in its own code comment) -- not blocking, just
+noting it's now confirmed to still occur.
+
+**Process reminder for whoever continues this**: gate every commit with
+the three commands under "Gate applied before every commit" above, run the
+test suite at least 3x before trusting a green result (this session found
+two real bugs and one real flake this way that a single run would have
+missed), and update this file's Status table before moving to the next
+milestone.
+
+## Open questions for the user
+
+(none blocking; see plan artifact §11 for the pre-existing open items,
+which remain unanswered but non-blocking as of M3)
