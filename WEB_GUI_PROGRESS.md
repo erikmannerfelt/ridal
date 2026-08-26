@@ -120,7 +120,7 @@ grows as tests are added. A *new* failure beyond this one stops the run.
   PFA_website cursor-sync bug directly. `format_radargrams.py` samples
   vertices evenly by *distance*; `digitize.js` indexes them by *trace
   fraction*; any standstill desynchronizes the two (measured up to 140m on
-  a real Dronbreen line). The fix stores each retained vertex's real trace
+  a real Drønbreen line). The fix stores each retained vertex's real trace
   index, so lookups stay exact regardless of vertex spacing.
 - **Real algorithmic gap found while building this, not just a test
   artifact**: plain 2D Douglas-Peucker is blind to velocity. A standstill

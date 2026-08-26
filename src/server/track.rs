@@ -5,7 +5,7 @@
 //! *trace fraction* (`digitize.js`). Those only agree when traces are
 //! evenly spaced; any standstill desynchronizes them, and the error
 //! accumulates along the profile -- measured up to 140 m on a real
-//! Dronbreen line with an 18-trace standstill.
+//! Drønbreen line with an 18-trace standstill.
 //!
 //! This module keeps the correspondence exact by storing each retained
 //! vertex's source trace index directly. Client-side (and

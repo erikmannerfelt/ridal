@@ -62,17 +62,47 @@ fn validate_slug(kind: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Lowercase `stem`, collapse runs of unsupported characters to `-`, and trim
-/// leading/trailing separators. Deterministic: the same stem always produces
-/// the same slug. Does not itself validate the result -- an all-separator or
-/// empty stem produces an empty string, which the caller must reject with an
-/// actionable error rather than accept silently.
+/// Transliterate the Nordic letters into their conventional ASCII forms.
+///
+/// Without this, the charset filter in [`sanitize_to_slug`] treats them as
+/// unsupported and collapses each to `-`, so "Drønbreen" would become
+/// "dr-nbreen" and "Ålesund" would become "lesund" (the leading separator
+/// is trimmed). That is a poor default for a tool whose domain is Svalbard
+/// and mainland Norwegian glaciology, where these letters are common in
+/// place names.
+///
+/// Deliberately narrow: only ø/æ/å, the three letters of the Norwegian
+/// alphabet beyond ASCII. Broader Latin-1 folding (ä, ö, é, ñ, ...) would
+/// need either a much longer table or a dependency, and neither is
+/// justified by the data this tool actually sees. #116 permits
+/// slugification as long as the output satisfies the ASCII rules.
+fn transliterate_nordic(c: char) -> Option<&'static str> {
+    match c {
+        'ø' | 'Ø' => Some("o"),
+        'æ' | 'Æ' => Some("ae"),
+        'å' | 'Å' => Some("aa"),
+        _ => None,
+    }
+}
+
+/// Lowercase `stem`, transliterate Nordic letters, collapse runs of
+/// unsupported characters to `-`, and trim leading/trailing separators.
+/// Deterministic: the same stem always produces the same slug. Does not
+/// itself validate the result -- an all-separator or empty stem produces an
+/// empty string, which the caller must reject with an actionable error
+/// rather than accept silently.
 fn sanitize_to_slug(stem: &str) -> String {
     let lowered = stem.to_lowercase();
     let mut out = String::with_capacity(lowered.len());
     let mut last_was_sep = false;
     for c in lowered.chars() {
-        if is_valid_slug_char(c) {
+        // Transliteration runs before the charset check, so its output
+        // ("o", "ae", "aa") is always already valid and never treated as a
+        // separator.
+        if let Some(ascii) = transliterate_nordic(c) {
+            out.push_str(ascii);
+            last_was_sep = false;
+        } else if is_valid_slug_char(c) {
             out.push(c);
             last_was_sep = c == '-' || c == '_';
         } else if !last_was_sep {
@@ -313,6 +343,73 @@ mod tests {
     fn fallback_sanitation_preserves_existing_separator_runs() {
         let id = RadargramId::from_fallback("a___b---c").unwrap();
         assert_eq!(id.as_str(), "a___b---c");
+    }
+
+    #[test]
+    fn nordic_letters_transliterate_rather_than_becoming_separators() {
+        // Before transliteration existed these produced "dr-nbreen",
+        // "kvit-ya" and "lesund" (the leading '-' being trimmed away),
+        // which is a poor auto-derived ID for a Svalbard/Norwegian tool.
+        assert_eq!(
+            RadargramId::from_fallback("Drønbreen").unwrap().as_str(),
+            "dronbreen"
+        );
+        assert_eq!(
+            RadargramId::from_fallback("Kvitøya").unwrap().as_str(),
+            "kvitoya"
+        );
+        assert_eq!(
+            RadargramId::from_fallback("Ålesund").unwrap().as_str(),
+            "aalesund"
+        );
+        assert_eq!(
+            RadargramId::from_fallback("Blåbærdalen").unwrap().as_str(),
+            "blaabaerdalen"
+        );
+    }
+
+    #[test]
+    fn nordic_and_ascii_spellings_produce_the_same_slug() {
+        // The property that makes this change safe for existing catalogs:
+        // a user who renames "Dronbreen_2022.nc" to "Drønbreen_2022.nc"
+        // still gets the same radargram ID, so interpretations keyed by it
+        // continue to match.
+        assert_eq!(
+            RadargramId::from_fallback("Drønbreen_2022").unwrap(),
+            RadargramId::from_fallback("Dronbreen_2022").unwrap()
+        );
+    }
+
+    #[test]
+    fn transliterated_slugs_are_deterministic_and_valid() {
+        let a = RadargramId::from_fallback("Drønbreen 2022-03-29 (A1)").unwrap();
+        let b = RadargramId::from_fallback("Drønbreen 2022-03-29 (A1)").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.as_str(), "dronbreen-2022-03-29-a1");
+        // Round-trips through the strict explicit-value validator, i.e. the
+        // sanitizer cannot emit something `RadargramId::new` would reject.
+        assert!(RadargramId::new(a.as_str()).is_ok());
+    }
+
+    #[test]
+    fn uppercase_nordic_letters_also_transliterate() {
+        // to_lowercase() runs first so these arrive lowercased, but the
+        // mapping covers both cases explicitly rather than relying on that.
+        assert_eq!(transliterate_nordic('Ø'), Some("o"));
+        assert_eq!(transliterate_nordic('Æ'), Some("ae"));
+        assert_eq!(transliterate_nordic('Å'), Some("aa"));
+        assert_eq!(transliterate_nordic('a'), None);
+    }
+
+    #[test]
+    fn explicit_ids_still_reject_nordic_letters() {
+        // Transliteration is a *fallback* convenience for deriving an ID
+        // from a filename. An explicitly supplied --radargram-id is still
+        // validated strictly and rejected, rather than silently rewritten
+        // into something the user did not type (#116: "with a clear error
+        // rather than silently sanitizing").
+        let err = RadargramId::new("drønbreen").unwrap_err();
+        assert!(err.contains("disallowed character"), "{err}");
     }
 
     #[test]
