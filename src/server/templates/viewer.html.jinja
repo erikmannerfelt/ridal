@@ -2,9 +2,16 @@
 {% block title %}{{ effective_label }} - Ridal{% endblock %}
 {% block extrahead %}
 <style>
-  #map { width: 100%; height: 70vh; background: #222; }
+  .layout { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; }
+  #map { flex: 2 1 500px; height: 70vh; min-height: 400px; background: #222; }
+  #overview-map { flex: 1 1 260px; height: 70vh; min-height: 400px; background: #ddd; }
   table.meta { border-collapse: collapse; margin-bottom: 0.75rem; }
-  table.meta th, table.meta td { text-align: left; padding: 2px 10px 2px 0; }
+  table.meta th, table.meta td { text-align: left; padding: 2px 10px 2px 0; vertical-align: top; }
+  .controls { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
+  dialog { max-width: 90vw; max-height: 80vh; overflow: auto; }
+  dialog table { border-collapse: collapse; font-size: 0.85rem; }
+  dialog th, dialog td { text-align: left; padding: 2px 12px 2px 0; border-bottom: 1px solid #8883; vertical-align: top; word-break: break-word; }
+  #cursor-readout { font-family: ui-monospace, monospace; font-size: 0.85rem; min-height: 1.2em; }
 </style>
 {% endblock %}
 {% block content %}
@@ -16,31 +23,57 @@
     <tr><th>Revision</th><td><code>{{ revision_id }}</code></td></tr>
     <tr><th>Processed</th><td>{{ processing_datetime }}</td></tr>
     <tr><th>Shape (samples x traces)</th><td>{{ shape_height }} &times; {{ shape_width }}</td></tr>
-    <tr><th>Render profile</th>
-      <td>
-        <select id="profile-select">
-          {% for p in profiles %}
-          <option value="{{ p }}" {% if p == active_profile %}selected{% endif %}>{{ p }}</option>
-          {% endfor %}
-        </select>
-      </td>
-    </tr>
   </table>
-  <div id="map"></div>
+
+  <div class="controls">
+    <label>Render profile:
+      <select id="profile-select">
+        {% for p in profiles %}
+        <option value="{{ p }}" {% if p == active_profile %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Horizontal scale:
+      <select id="xscale-select">
+        <option value="0.25">0.25&times;</option>
+        <option value="0.5">0.5&times;</option>
+        <option value="1" selected>1&times;</option>
+        <option value="2">2&times;</option>
+        <option value="4">4&times;</option>
+      </select>
+    </label>
+    <button id="metadata-button" type="button">Metadata</button>
+    <span id="cursor-readout"></span>
+  </div>
+
+  <div class="layout">
+    <div id="map"></div>
+    <div id="overview-map"></div>
+  </div>
+
+  <dialog id="metadata-dialog">
+    <h2>All attributes</h2>
+    <table id="metadata-table"><tbody></tbody></table>
+    <p><button type="button" id="metadata-close">Close</button></p>
+  </dialog>
 {% endblock %}
 {% block extrascript %}
 <script>
-  {# radargram_id is a validated slug (identity.rs: [a-z0-9_-]+ only), so
-     direct interpolation is safe -- it cannot contain quotes or
-     backslashes. Avoids the `tojson` filter, which needs minijinja's
-     "json" feature (not enabled). #}
   const RADARGRAM_ID = "{{ radargram_id }}";
+  const GROUP = {% if group %}"{{ group }}"{% else %}null{% endif %};
   const VIEW = "standard";
   const CHUNK_SIZE = {{ chunk_size }};
   const N_COLS = {{ n_cols }};
   const N_ROWS = {{ n_rows }};
   const VIEWER_WIDTH = {{ viewer_width }};
   const VIEWER_HEIGHT = {{ viewer_height }};
+  const SOURCE_WIDTH = {{ shape_width }};
+  // viewer pixels per source trace -- inverts the render raster's own
+  // downsampling scale, so the cursor-sync trace lookup below can map a
+  // viewer x-pixel back to a real source trace index.
+  const RASTER_SCALE = VIEWER_WIDTH / SOURCE_WIDTH;
+
+  let xScale = 1;
 
   function currentProfile() {
     return document.getElementById('profile-select').value;
@@ -50,32 +83,174 @@
     return `/api/v1/datasets/${RADARGRAM_ID}/views/${VIEW}/chunks/${profile}/${x}/${y}`;
   }
 
-  function loadChunks(map, profile) {
+  function chunkBounds(x, y, scale) {
     // Bounds formula verified in M0 against a real headless-Chromium
     // screenshot: places chunk (0,0) upper-left with no transposition.
+    // The x-scale factor stretches/squeezes only the horizontal extent --
+    // a pure client-side view transform, no new render, no server
+    // round-trip (the plan's explicit design for this control).
+    return [
+      [-(y * CHUNK_SIZE + CHUNK_SIZE), x * CHUNK_SIZE * scale],
+      [-(y * CHUNK_SIZE), (x * CHUNK_SIZE + CHUNK_SIZE) * scale],
+    ];
+  }
+
+  let chunkLayers = [];
+  function loadChunks(map, profile, scale) {
+    chunkLayers.forEach((l) => map.removeLayer(l));
+    chunkLayers = [];
     for (let y = 0; y < N_ROWS; y++) {
       for (let x = 0; x < N_COLS; x++) {
-        const bounds = [
-          [-(y * CHUNK_SIZE + CHUNK_SIZE), x * CHUNK_SIZE],
-          [-(y * CHUNK_SIZE), x * CHUNK_SIZE + CHUNK_SIZE],
-        ];
-        L.imageOverlay(chunkUrl(x, y, profile), bounds).addTo(map);
+        const layer = L.imageOverlay(chunkUrl(x, y, profile), chunkBounds(x, y, scale)).addTo(map);
+        chunkLayers.push(layer);
       }
     }
   }
 
   const map = L.map('map', { crs: L.CRS.Simple, minZoom: -6, attributionControl: false });
-  const overallBounds = [[-VIEWER_HEIGHT, 0], [0, VIEWER_WIDTH]];
-  map.fitBounds(overallBounds);
-  loadChunks(map, currentProfile());
+  function fitToScale(scale) {
+    map.fitBounds([[-VIEWER_HEIGHT, 0], [0, VIEWER_WIDTH * scale]]);
+  }
+  fitToScale(xScale);
+  loadChunks(map, currentProfile(), xScale);
 
   document.getElementById('profile-select').addEventListener('change', () => {
-    const profile = currentProfile();
-    const url = new URL(window.location.href);
-    url.searchParams.set('profile', profile);
-    window.history.replaceState({}, '', url);
-    map.eachLayer((layer) => { if (layer instanceof L.ImageOverlay) map.removeLayer(layer); });
-    loadChunks(map, profile);
+    loadChunks(map, currentProfile(), xScale);
   });
+
+  document.getElementById('xscale-select').addEventListener('change', (event) => {
+    xScale = parseFloat(event.target.value);
+    loadChunks(map, currentProfile(), xScale);
+  });
+
+  // --- Overview map: this radargram's track, plus sibling tracks in the
+  // same group (clickable, navigating to that radargram), plus a marker
+  // that follows the viewer cursor (#121's cursor-sync feature). ---
+  const overviewMap = L.map('overview-map');
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 18,
+    attribution: 'Esri',
+  }).addTo(overviewMap);
+
+  let ownTrack = null;
+  const cursorMarker = L.circleMarker([0, 0], { color: 'red', radius: 6 }).addTo(overviewMap);
+  cursorMarker.setStyle({ opacity: 0 });
+
+  function trackToLatLngs(track) {
+    return track.segments.map((seg) => seg.vertices.map((v) => [v.lat, v.lon]));
+  }
+
+  function fitOverviewToTrack(track) {
+    const lines = trackToLatLngs(track);
+    const points = lines.flat();
+    if (points.length > 0) {
+      overviewMap.fitBounds(points);
+    } else {
+      overviewMap.setView([0, 0], 2);
+    }
+  }
+
+  fetch(`/api/v1/datasets/${RADARGRAM_ID}/track`)
+    .then((r) => r.json())
+    .then((track) => {
+      ownTrack = track;
+      trackToLatLngs(track).forEach((latlngs) => {
+        L.polyline(latlngs, { color: '#e63', weight: 4 }).addTo(overviewMap);
+      });
+      fitOverviewToTrack(track);
+    });
+
+  if (GROUP) {
+    fetch(`/api/v1/groups/${GROUP}/tracks`)
+      .then((r) => r.json())
+      .then((siblings) => {
+        for (const [siblingId, info] of Object.entries(siblings)) {
+          if (siblingId === RADARGRAM_ID) continue;
+          trackToLatLngs(info.track).forEach((latlngs) => {
+            L.polyline(latlngs, { color: '#999', weight: 3, opacity: 0.7 })
+              .bindPopup(`<a href="/view/${siblingId}">${info.effective_label}</a>`)
+              .addTo(overviewMap);
+          });
+        }
+      });
+  }
+
+  // --- Cursor sync: mousemove over the radargram viewer moves a marker on
+  // the overview map, using the same trace-indexed lookup as
+  // Track::locate_trace (Rust reference implementation in
+  // src/server/track.rs), so this stays exact regardless of standstills
+  // or uneven vertex spacing -- the whole reason track.rs stores trace
+  // indices instead of assuming uniform spacing. ---
+  function locateInVertices(vertices, traceIndex) {
+    if (vertices.length === 0) return null;
+    if (vertices.length === 1) return [vertices[0].lat, vertices[0].lon];
+    let pos = vertices.findIndex((v) => v.trace_index >= traceIndex);
+    let a, b;
+    if (pos === -1) { a = vertices.length - 2; b = vertices.length - 1; }
+    else if (pos === 0) { a = 0; b = 1; }
+    else { a = pos - 1; b = pos; }
+    const va = vertices[a], vb = vertices[b];
+    const span = vb.trace_index - va.trace_index;
+    const t = span > 0 ? Math.min(1, Math.max(0, (traceIndex - va.trace_index) / span)) : 0;
+    return [va.lat + t * (vb.lat - va.lat), va.lon + t * (vb.lon - va.lon)];
+  }
+
+  function locateTrace(track, traceIndex) {
+    for (const seg of track.segments) {
+      if (traceIndex >= seg.trace_start - 1e-6 && traceIndex <= seg.trace_end + 1e-6) {
+        return locateInVertices(seg.vertices, traceIndex);
+      }
+    }
+    return null;
+  }
+
+  const readout = document.getElementById('cursor-readout');
+  map.on('mousemove', (event) => {
+    const viewerX = event.latlng.lng / xScale;
+    const viewerY = -event.latlng.lat;
+    if (viewerX < 0 || viewerX > VIEWER_WIDTH || viewerY < 0 || viewerY > VIEWER_HEIGHT) {
+      cursorMarker.setStyle({ opacity: 0 });
+      readout.textContent = '';
+      return;
+    }
+    const traceIndex = viewerX / RASTER_SCALE;
+    readout.textContent = `trace ${traceIndex.toFixed(1)} / ${SOURCE_WIDTH}`;
+    if (ownTrack) {
+      const pos = locateTrace(ownTrack, traceIndex);
+      if (pos) {
+        cursorMarker.setLatLng(pos);
+        cursorMarker.setStyle({ opacity: 1 });
+      }
+    }
+  });
+  map.on('mouseout', () => {
+    cursorMarker.setStyle({ opacity: 0 });
+    readout.textContent = '';
+  });
+
+  // --- Metadata dialog: a button opening a <dialog> with the complete
+  // attribute set, per the PFA_website-style preference from planning
+  // (function borrowed, not its styling). ---
+  const dialog = document.getElementById('metadata-dialog');
+  document.getElementById('metadata-button').addEventListener('click', () => {
+    fetch(`/api/v1/datasets/${RADARGRAM_ID}/attributes`)
+      .then((r) => r.json())
+      .then((attrs) => {
+        const tbody = document.querySelector('#metadata-table tbody');
+        tbody.innerHTML = '';
+        Object.keys(attrs).sort().forEach((key) => {
+          const row = document.createElement('tr');
+          const keyCell = document.createElement('th');
+          keyCell.textContent = key;
+          const valCell = document.createElement('td');
+          const value = attrs[key];
+          valCell.textContent = Array.isArray(value) ? value.join(', ') : String(value);
+          row.append(keyCell, valCell);
+          tbody.appendChild(row);
+        });
+        dialog.showModal();
+      });
+  });
+  document.getElementById('metadata-close').addEventListener('click', () => dialog.close());
 </script>
 {% endblock %}

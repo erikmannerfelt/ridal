@@ -25,6 +25,7 @@ pub struct OpenRadargram {
 }
 
 pub struct AppState {
+    pub root: PathBuf,
     pub catalog: Catalog,
     pub radargrams: HashMap<String, OpenRadargram>,
 }
@@ -64,6 +65,7 @@ impl AppState {
         }
 
         Ok(Self {
+            root: root.to_path_buf(),
             catalog,
             radargrams,
         })
@@ -77,11 +79,27 @@ impl AppState {
         }
     }
 
+    /// The absolute filesystem path for a catalog entry. Never exposed to
+    /// HTTP clients directly (#122: "keep filesystem paths internal") --
+    /// only used server-side, e.g. to re-open a file for track reading.
+    pub fn absolute_path(&self, entry: &super::catalog::CatalogEntry) -> PathBuf {
+        Self::resolve_absolute_path(&self.root, entry)
+    }
+
     pub fn find_entry(&self, radargram_id: &str) -> Option<&super::catalog::CatalogEntry> {
         self.catalog
             .entries
             .iter()
             .find(|e| e.radargram_id.as_str() == radargram_id)
+    }
+
+    /// All entries sharing `group`, ordered like the catalog itself.
+    pub fn entries_in_group(&self, group: &str) -> Vec<&super::catalog::CatalogEntry> {
+        self.catalog
+            .entries
+            .iter()
+            .filter(|e| e.group.as_ref().is_some_and(|g| g.as_str() == group))
+            .collect()
     }
 }
 
@@ -115,6 +133,18 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route(
             "/api/v1/datasets/{radargram_id}",
             get(super::routes::dataset_detail),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/track",
+            get(super::routes::dataset_track),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/attributes",
+            get(super::routes::dataset_attributes),
+        )
+        .route(
+            "/api/v1/groups/{group}/tracks",
+            get(super::routes::group_tracks),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/views/{view}/overview",
@@ -155,6 +185,44 @@ mod tests {
             .unwrap();
         file.add_attribute("ridal_radargram_id", radargram_id)
             .unwrap();
+    }
+
+    /// Like `write_test_nc`, but with real track variables (crs, easting,
+    /// northing, time) so `dataset_track`/`group_tracks` have something to
+    /// read, and an optional group.
+    fn write_test_nc_with_track(path: &StdPath, radargram_id: &str, group: Option<&str>) {
+        let n_traces = 50;
+        let mut file = netcdf::create(path).unwrap();
+        file.add_dimension("y", 5).unwrap();
+        file.add_dimension("x", n_traces).unwrap();
+        let mut data_var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+        data_var
+            .put_values(&vec![1.0f32; 5 * n_traces], ..)
+            .unwrap();
+
+        let mut easting_var = file.add_variable::<f64>("easting", &["x"]).unwrap();
+        let easting: Vec<f64> = (0..n_traces).map(|i| 500000.0 + i as f64).collect();
+        easting_var.put_values(&easting, ..).unwrap();
+
+        let mut northing_var = file.add_variable::<f64>("northing", &["x"]).unwrap();
+        northing_var
+            .put_values(&vec![8_000_000.0f64; n_traces], ..)
+            .unwrap();
+
+        let mut time_var = file.add_variable::<f64>("time", &["x"]).unwrap();
+        let time: Vec<f64> = (0..n_traces).map(|i| i as f64 * 0.1).collect();
+        time_var.put_values(&time, ..).unwrap();
+
+        file.add_attribute("crs", "EPSG:32633").unwrap();
+        file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+            .unwrap();
+        file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
+            .unwrap();
+        file.add_attribute("ridal_radargram_id", radargram_id)
+            .unwrap();
+        if let Some(group) = group {
+            file.add_attribute("ridal_group", group).unwrap();
+        }
     }
 
     fn test_app(dir: &StdPath) -> Router {
@@ -307,6 +375,53 @@ mod tests {
             let (status, body) = get(&app, "/static/leaflet.js").await;
             assert_eq!(status, StatusCode::OK);
             assert!(!body.is_empty());
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn track_attributes_and_group_routes() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc_with_track(&dir.path().join("a.nc"), "track-a", Some("shared-group"));
+            write_test_nc_with_track(&dir.path().join("b.nc"), "track-b", Some("shared-group"));
+            write_test_nc_with_track(&dir.path().join("c.nc"), "track-c", None);
+            let app = test_app(dir.path());
+
+            // This radargram's own track.
+            let (status, body) = get(&app, "/api/v1/datasets/track-a/track").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            let segments = json["segments"].as_array().unwrap();
+            assert!(!segments.is_empty());
+            let first_vertex = &segments[0]["vertices"][0];
+            assert!(first_vertex["lon"].as_f64().is_some());
+            assert!(first_vertex["lat"].as_f64().is_some());
+
+            // Full raw attribute set, for the metadata dialog.
+            let (status, body) = get(&app, "/api/v1/datasets/track-a/attributes").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["ridal_radargram_id"], "track-a");
+            assert_eq!(json["crs"], "EPSG:32633");
+
+            // Group tracks: both group members present, the ungrouped one absent.
+            let (status, body) = get(&app, "/api/v1/groups/shared-group/tracks").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            let obj = json.as_object().unwrap();
+            assert!(obj.contains_key("track-a"));
+            assert!(obj.contains_key("track-b"));
+            assert!(!obj.contains_key("track-c"));
+            assert!(obj["track-a"]["track"]["segments"].is_array());
+
+            // An empty/unknown group is an empty object, not an error.
+            let (status, body) = get(&app, "/api/v1/groups/no-such-group/tracks").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json.as_object().unwrap().len(), 0);
         });
     }
 

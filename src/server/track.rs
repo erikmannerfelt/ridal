@@ -14,12 +14,6 @@
 //! retained vertex and monotone in trace index regardless of how unevenly
 //! the vertices are spaced in distance.
 
-// Consumed by the viewer's track/cursor-sync API (M7); until then the only
-// callers are this module's own tests. Not consumed by catalog discovery
-// (M3) -- track geometry is fetched separately, per radargram, not as part
-// of the catalog listing.
-#![allow(dead_code)]
-
 use crate::coords;
 use crate::gpr::GPRLocation;
 
@@ -193,6 +187,13 @@ impl Track {
     /// built by [`Track::from_location`], since segments cover every trace,
     /// but is possible for a caller-constructed `Track` or an
     /// out-of-range query.
+    ///
+    /// Not called by production code: cursor sync happens client-side in
+    /// JS against the same JSON the `/track` route serves, to avoid an
+    /// HTTP round trip per `mousemove`. Kept here (and exercised directly
+    /// by this module's own tests, including the real-asset regression)
+    /// as the reference implementation the client-side lookup mirrors.
+    #[allow(dead_code)]
     pub fn locate_trace(&self, trace_index: f64) -> Option<(f64, f64)> {
         let segment = self.segments.iter().find(|s| {
             trace_index >= s.trace_start as f64 - f64::EPSILON
@@ -202,6 +203,72 @@ impl Track {
     }
 }
 
+/// Read `easting`/`northing`/`time`/`crs` back from a processed Ridal
+/// NetCDF file and build a [`Track`] from them.
+///
+/// Reconstructs a temporary [`GPRLocation`] rather than duplicating
+/// `Track::from_location`'s logic, so track-reading for the web API goes
+/// through the exact same tested path as track extraction from a
+/// just-processed in-memory `GPR` does.
+pub fn read_track_from_netcdf(path: &std::path::Path) -> Result<Track, String> {
+    let file = netcdf::open(path).map_err(|e| format!("Failed to open {path:?} as NetCDF: {e}"))?;
+
+    let crs = read_global_str(&file, "crs")?;
+    let easting = read_f64_variable(&file, "easting")?;
+    let northing = read_f64_variable(&file, "northing")?;
+    let time = read_f64_variable(&file, "time")?;
+    if easting.len() != northing.len() || easting.len() != time.len() {
+        return Err(format!(
+            "Inconsistent track variable lengths in {path:?}: easting={}, northing={}, time={}",
+            easting.len(),
+            northing.len(),
+            time.len()
+        ));
+    }
+
+    let cor_points = easting
+        .into_iter()
+        .zip(northing)
+        .zip(time)
+        .enumerate()
+        .map(
+            |(i, ((easting, northing), time_seconds))| crate::gpr::CorPoint {
+                trace_n: i as u32,
+                time_seconds,
+                easting,
+                northing,
+                altitude: 0.0,
+            },
+        )
+        .collect();
+
+    let location = GPRLocation {
+        cor_points,
+        correction: crate::gpr::LocationCorrection::None,
+        crs,
+    };
+    Track::from_location(&location)
+}
+
+fn read_global_str(file: &netcdf::File, name: &str) -> Result<String, String> {
+    let attr = file
+        .attribute(name)
+        .ok_or_else(|| format!("Missing global attribute '{name}'"))?;
+    match attr.value() {
+        Ok(netcdf::AttributeValue::Str(s)) => Ok(s),
+        other => Err(format!("Attribute '{name}' is not a string: {other:?}")),
+    }
+}
+
+fn read_f64_variable(file: &netcdf::File, name: &str) -> Result<Vec<f64>, String> {
+    let var = file
+        .variable(name)
+        .ok_or_else(|| format!("Missing variable '{name}'"))?;
+    var.get_values::<f64, _>(..)
+        .map_err(|e| format!("Failed to read variable '{name}': {e}"))
+}
+
+#[allow(dead_code)]
 fn locate_in_vertices(vertices: &[TrackVertex], trace_index: f64) -> Option<(f64, f64)> {
     match vertices.len() {
         0 => None,
@@ -724,5 +791,70 @@ mod tests {
              bound on at least one real fixture -- if it no longer does, the standstill windows may \
              have gone stale and should be re-measured"
         );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn read_track_from_netcdf_matches_in_memory_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let nc_path = dir.path().join("t.nc");
+        let params = crate::gpr::RunParams {
+            filepaths: vec![std::path::PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/mala/dronbreen-20220329-DAT_0237_A1.rad"
+            ))],
+            output_path: Some(nc_path.clone()),
+            dem_path: None,
+            cor_path: None,
+            medium_velocity: 0.168,
+            crs: None,
+            quiet: true,
+            track_path: None,
+            steps: vec!["subset(0 300 0 50)".to_string()],
+            no_export: false,
+            render_path: None,
+            override_antenna_mhz: None,
+            override_antenna_separation: None,
+            user_metadata: Default::default(),
+            radargram_id: Some("track-read-test".to_string()),
+            display_name: None,
+            group: None,
+        };
+        let (gpr, _) = crate::gpr::build_processed_gpr(params.clone()).unwrap();
+        crate::gpr::run(params).unwrap();
+
+        let from_memory = Track::from_location(&gpr.location).unwrap();
+        let from_file = read_track_from_netcdf(&nc_path).unwrap();
+
+        assert_eq!(from_memory.segments.len(), from_file.segments.len());
+        for (a, b) in from_memory.segments.iter().zip(from_file.segments.iter()) {
+            assert_eq!(a.trace_start, b.trace_start);
+            assert_eq!(a.trace_end, b.trace_end);
+            assert_eq!(a.vertices.len(), b.vertices.len());
+            for (va, vb) in a.vertices.iter().zip(b.vertices.iter()) {
+                assert_eq!(va.trace_index, vb.trace_index);
+                assert!((va.lon - vb.lon).abs() < 1e-9);
+                assert!((va.lat - vb.lat).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn read_track_from_netcdf_reports_missing_variable_clearly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_track.nc");
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_dimension("y", 2).unwrap();
+            file.add_dimension("x", 2).unwrap();
+            let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+            var.put_values(&[0.0f32, 0., 0., 0.], ..).unwrap();
+            file.add_attribute("crs", "EPSG:32633").unwrap();
+        }
+        let err = read_track_from_netcdf(&path).unwrap_err();
+        assert!(err.contains("easting"), "{err}");
     }
 }

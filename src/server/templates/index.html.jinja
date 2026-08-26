@@ -1,5 +1,13 @@
 {% extends "base.html.jinja" %}
 {% block title %}Radargram catalog - Ridal{% endblock %}
+{% block extrahead %}
+<style>
+  .group-map { width: 100%; max-width: 700px; height: 320px; margin-bottom: 0.5rem; background: #ddd; }
+  section.group { margin-bottom: 2rem; }
+  table { border-collapse: collapse; margin-bottom: 1rem; }
+  th, td { text-align: left; padding: 2px 12px 2px 0; }
+</style>
+{% endblock %}
 {% block content %}
   <h1>Radargram catalog</h1>
   {% if warnings %}
@@ -10,24 +18,82 @@
       </ul>
     </div>
   {% endif %}
-  {% if entries %}
+
+  {% for group in groups %}
+  <section class="group">
+    <h2>{{ group.name }}</h2>
+    <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.name }}"></div>
     <table>
-      <thead>
-        <tr><th>Label</th><th>Radargram ID</th><th>Group</th><th>Path</th><th>Processed</th></tr>
-      </thead>
+      <thead><tr><th>Label</th><th>Radargram ID</th><th>Path</th><th>Processed</th></tr></thead>
       <tbody>
-        {% for e in entries %}
+        {% for e in group.entries %}
         <tr id="card-{{ e.radargram_id }}">
           <td><a href="/view/{{ e.radargram_id }}">{{ e.effective_label }}</a></td>
           <td><code>{{ e.radargram_id }}</code></td>
-          <td>{{ e.group or "" }}</td>
           <td>{{ e.relative_path }}</td>
           <td>{{ e.processing_datetime }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-  {% else %}
+  </section>
+  {% endfor %}
+
+  {% if ungrouped %}
+  <section class="group">
+    {% if groups %}<h2>Ungrouped</h2>{% endif %}
+    <table>
+      <thead><tr><th>Label</th><th>Radargram ID</th><th>Path</th><th>Processed</th></tr></thead>
+      <tbody>
+        {% for e in ungrouped %}
+        <tr id="card-{{ e.radargram_id }}">
+          <td><a href="/view/{{ e.radargram_id }}">{{ e.effective_label }}</a></td>
+          <td><code>{{ e.radargram_id }}</code></td>
+          <td>{{ e.relative_path }}</td>
+          <td>{{ e.processing_datetime }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+  {% if not entries %}
     <p>No radargrams found.</p>
   {% endif %}
+{% endblock %}
+{% block extrascript %}
+<script>
+  // One map per group (#121), each showing every member's track. The
+  // catalog's target scale (~100 files, #122/#123) keeps this cheap
+  // enough to load eagerly rather than needing PFA_website's
+  // IntersectionObserver lazy-init trick for per-card maps.
+  document.querySelectorAll('.group-map').forEach((el) => {
+    const map = L.map(el.id);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 18,
+      attribution: 'Esri',
+    }).addTo(map);
+
+    fetch(`/api/v1/groups/${el.dataset.group}/tracks`)
+      .then((r) => r.json())
+      .then((members) => {
+        const allPoints = [];
+        for (const [radargramId, info] of Object.entries(members)) {
+          info.track.segments.forEach((seg) => {
+            const latlngs = seg.vertices.map((v) => [v.lat, v.lon]);
+            allPoints.push(...latlngs);
+            L.polyline(latlngs, { color: '#e63', weight: 3 })
+              .bindPopup(`<a href="/view/${radargramId}">${info.effective_label}</a>`)
+              .addTo(map);
+          });
+        }
+        if (allPoints.length > 0) {
+          map.fitBounds(allPoints);
+        } else {
+          map.setView([0, 0], 2);
+        }
+      });
+  });
+</script>
 {% endblock %}
