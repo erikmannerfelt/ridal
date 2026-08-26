@@ -6,4 +6,6 @@
 //! once they exist, and compose the modules below rather than the reverse.
 
 pub mod catalog;
+pub mod render;
+pub mod source;
 pub mod track;
