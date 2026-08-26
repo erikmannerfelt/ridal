@@ -14,7 +14,7 @@ update). Milestone numbering matches that plan.
 | M0: dependency smoke test + vendor Leaflet | done | `d150314` |
 | Fixtures: MALA assets added to repo | done | `a929025` |
 | M1: identity metadata (#116) | done | `1c3c04b` |
-| M2: inspection + revision identity (#123, #117) | in progress | - |
+| M2: inspection + revision identity (#123, #117) | done (revision identity deferred, see below) | - |
 | M3: catalog + track (#122 + new) | pending | - |
 | M4: streaming renderer (#118) | pending | - |
 | M5: render service + cache (#119) | pending | - |
@@ -79,10 +79,46 @@ grows as tests are added. A *new* failure beyond this one stops the run.
   parameter so wiring this in later is not a redesign -- currently always
   called with `None`.
 
+## M2 findings
+
+- **Real, previously-unexplained bug found and fixed**: `netcdf-c`/HDF5 is
+  not thread-safe for concurrent `open`/`create` across tests. The existing
+  `test_save_netcdf` carried a `#[test_retry::retry]` with a comment
+  "randomly fails sometimes. Unclear why" (added 2026-03-13) -- almost
+  certainly this. Adding 6 new tests that also touch `netcdf::create`/`open`
+  multiplied the concurrent-call surface enough to make the race reproduce
+  on *every* run instead of occasionally, which is what surfaced it.
+  Fixed by tagging every netcdf-touching test with
+  `#[serial_test::serial(netcdf)]` (a new named lock group, kept separate
+  from the existing PATH-mutation `#[serial]` tests in `dem.rs`/`coords.rs`).
+  Confirmed clean across 4 consecutive full-suite runs after the fix, vs.
+  failing on 3 of 4 runs before it. This will matter a lot more from M3
+  onward, once catalog discovery opens many NetCDF files per test.
+- `inspect_ridal_netcdf()` added to `io.rs` (unconditional, not gated behind
+  `server`): metadata-only recognition via `ridal_version` +
+  `ridal_processing_datetime` (legacy unprefixed fallback per M1's
+  decision), typed `RidalNetcdfKind::{NotRidal, Supported}`. A malformed
+  `ridal_radargram_id` or missing/non-2D `data` variable is reported as
+  `NotRidal` rather than an error, per #123's stated first-implementation
+  simplicity allowance.
+- **Deviation from the plan**: `RevisionId`/`FastRevisionFingerprintV1` are
+  deferred to M3, not implemented here as originally scoped. Reason: they
+  need `blake3`, which is gated behind the `server` feature (cache
+  invalidation is a server-only concern), while `inspect_ridal_netcdf`
+  needs to stay available unconditionally in `io.rs` per #123 ("should be
+  placed outside src/server/"). Computing the fingerprint from metadata the
+  inspector already returns is a pure function that fits naturally in
+  `src/server/catalog.rs` once that module exists, without requiring
+  `io.rs` to depend on `blake3` for CLI-only builds.
+- 7 new tests, all `#[allow(dead_code)]`-annotated pending M3's catalog
+  wiring them in (the same transitional pattern used for `identity.rs` in
+  M1).
+
 ## Deviations from the plan so far
 
-- Route paths drop file extensions (axum constraint, see above). Plan will
-  be updated to match before M6.
+- Route paths drop file extensions (axum constraint, M0). Plan will be
+  updated to match before M6.
+- `RevisionId`/`FastRevisionFingerprintV1` moved from M2 to M3 (see above).
 
 ## Open questions for the morning
 
