@@ -110,6 +110,8 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/view/{radargram_id}", get(super::routes::viewer_page))
         .route("/static/leaflet.js", get(super::assets::leaflet_js))
         .route("/static/leaflet.css", get(super::assets::leaflet_css))
+        .route("/static/app.css", get(super::assets::app_css))
+        .route("/static/app.js", get(super::assets::app_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -372,9 +374,55 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND);
 
             // Static assets are embedded, not proxied to a filesystem path.
-            let (status, body) = get(&app, "/static/leaflet.js").await;
+            for asset in [
+                "/static/leaflet.js",
+                "/static/leaflet.css",
+                "/static/app.css",
+                "/static/app.js",
+            ] {
+                let (status, body) = get(&app, asset).await;
+                assert_eq!(status, StatusCode::OK, "{asset}");
+                assert!(!body.is_empty(), "{asset}");
+            }
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn index_page_renders_lazy_overview_thumbnails() {
+        // #121 requires an ~512px overview per catalog entry, and names
+        // loading="lazy" as the mechanism bounding initial render work.
+        // Both were missing when M7 was first reported complete, so they
+        // are pinned here rather than left to visual inspection.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc(&dir.path().join("a.nc"), "thumb-test-a");
+            let app = test_app(dir.path());
+
+            let (status, body) = get(&app, "/").await;
             assert_eq!(status, StatusCode::OK);
-            assert!(!body.is_empty());
+            let html = String::from_utf8(body.to_vec()).unwrap();
+
+            assert!(
+                html.contains("/api/v1/datasets/thumb-test-a/views/standard/overview"),
+                "index must embed the overview image URL"
+            );
+            assert!(
+                html.contains("loading=\"lazy\""),
+                "overview images must be lazily loaded"
+            );
+            // The viewer's back-link targets /#card-{id}; the anchor has to
+            // survive the table -> card-grid restructuring.
+            assert!(
+                html.contains("id=\"card-thumb-test-a\""),
+                "per-entry anchor must be preserved"
+            );
+            assert!(
+                html.contains("/static/app.css"),
+                "first-party stylesheet must be linked"
+            );
         });
     }
 

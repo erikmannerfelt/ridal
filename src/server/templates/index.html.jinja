@@ -1,14 +1,30 @@
 {% extends "base.html.jinja" %}
 {% block title %}Radargram catalog - Ridal{% endblock %}
-{% block extrahead %}
-<style>
-  .group-map { width: 100%; max-width: 700px; height: 320px; margin-bottom: 0.5rem; background: #ddd; }
-  section.group { margin-bottom: 2rem; }
-  table { border-collapse: collapse; margin-bottom: 1rem; }
-  th, td { text-align: left; padding: 2px 12px 2px 0; }
-</style>
-{% endblock %}
 {% block content %}
+  {#- One card definition, used by both the grouped and ungrouped sections,
+      so the two cannot drift apart. -#}
+  {% macro entry_card(e) %}
+  <li class="card" id="card-{{ e.radargram_id }}">
+    <a class="card-link" href="/view/{{ e.radargram_id }}">
+      <span class="card-thumb">
+        {#- loading="lazy" is load-bearing, not decoration: #121 names it as
+            the mechanism by which "the browser and server render-worker
+            limit naturally bound initial work". Without it a 100-entry
+            catalog would ask the server to render 100 overviews at once. -#}
+        <img src="/api/v1/datasets/{{ e.radargram_id }}/views/standard/overview"
+             alt="" loading="lazy" decoding="async" fetchpriority="low">
+      </span>
+      <span class="card-title">{{ e.effective_label }}</span>
+    </a>
+    <dl class="card-meta">
+      <dt>ID</dt><dd><code>{{ e.radargram_id }}</code></dd>
+      <dt>Size</dt><dd>{{ e.shape[1] }} traces &times; {{ e.shape[0] }} samples</dd>
+      <dt>Path</dt><dd class="path">{{ e.relative_path }}</dd>
+      <dt>Processed</dt><dd>{{ e.processing_datetime_display }}</dd>
+    </dl>
+  </li>
+  {% endmacro %}
+
   <h1>Radargram catalog</h1>
   {% if warnings %}
     <div class="warning">
@@ -23,38 +39,18 @@
   <section class="group">
     <h2>{{ group.name }}</h2>
     <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.name }}"></div>
-    <table>
-      <thead><tr><th>Label</th><th>Radargram ID</th><th>Path</th><th>Processed</th></tr></thead>
-      <tbody>
-        {% for e in group.entries %}
-        <tr id="card-{{ e.radargram_id }}">
-          <td><a href="/view/{{ e.radargram_id }}">{{ e.effective_label }}</a></td>
-          <td><code>{{ e.radargram_id }}</code></td>
-          <td>{{ e.relative_path }}</td>
-          <td>{{ e.processing_datetime }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <ul class="card-grid">
+      {% for e in group.entries %}{{ entry_card(e) }}{% endfor %}
+    </ul>
   </section>
   {% endfor %}
 
   {% if ungrouped %}
   <section class="group">
     {% if groups %}<h2>Ungrouped</h2>{% endif %}
-    <table>
-      <thead><tr><th>Label</th><th>Radargram ID</th><th>Path</th><th>Processed</th></tr></thead>
-      <tbody>
-        {% for e in ungrouped %}
-        <tr id="card-{{ e.radargram_id }}">
-          <td><a href="/view/{{ e.radargram_id }}">{{ e.effective_label }}</a></td>
-          <td><code>{{ e.radargram_id }}</code></td>
-          <td>{{ e.relative_path }}</td>
-          <td>{{ e.processing_datetime }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <ul class="card-grid">
+      {% for e in ungrouped %}{{ entry_card(e) }}{% endfor %}
+    </ul>
   </section>
   {% endif %}
 
@@ -64,26 +60,33 @@
 {% endblock %}
 {% block extrascript %}
 <script>
+  // A cataloged entry can still fail to produce a preview: AppState::build
+  // skips files SourceReader::open rejects, and any render failure is a
+  // 500. Either way the browser would show a broken-image glyph, so
+  // degrade to an explicit "no preview" instead (#121: rendering failures
+  // should be reported to the user).
+  document.querySelectorAll('.card-thumb img').forEach((img) => {
+    img.addEventListener('error', () => img.parentElement.classList.add('is-missing'));
+  });
+
   // One map per group (#121), each showing every member's track. The
   // catalog's target scale (~100 files, #122/#123) keeps this cheap
   // enough to load eagerly rather than needing PFA_website's
   // IntersectionObserver lazy-init trick for per-card maps.
   document.querySelectorAll('.group-map').forEach((el) => {
-    const map = L.map(el.id);
-    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 18,
-      attribution: 'Esri',
-    }).addTo(map);
+    const map = RIDAL.basemap(L.map(el.id));
 
     fetch(`/api/v1/groups/${el.dataset.group}/tracks`)
       .then((r) => r.json())
       .then((members) => {
         const allPoints = [];
         for (const [radargramId, info] of Object.entries(members)) {
-          info.track.segments.forEach((seg) => {
-            const latlngs = seg.vertices.map((v) => [v.lat, v.lon]);
+          RIDAL.trackToLatLngs(info.track).forEach((latlngs) => {
             allPoints.push(...latlngs);
-            L.polyline(latlngs, { color: '#e63', weight: 3 })
+            L.polyline(latlngs, {
+              color: RIDAL.trackColor,
+              weight: RIDAL.trackWeight,
+            })
               .bindPopup(`<a href="/view/${radargramId}">${info.effective_label}</a>`)
               .addTo(map);
           });

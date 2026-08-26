@@ -1,19 +1,5 @@
 {% extends "base.html.jinja" %}
 {% block title %}{{ effective_label }} - Ridal{% endblock %}
-{% block extrahead %}
-<style>
-  .layout { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-start; }
-  #map { flex: 2 1 500px; height: 70vh; min-height: 400px; background: #222; }
-  #overview-map { flex: 1 1 260px; height: 70vh; min-height: 400px; background: #ddd; }
-  table.meta { border-collapse: collapse; margin-bottom: 0.75rem; }
-  table.meta th, table.meta td { text-align: left; padding: 2px 10px 2px 0; vertical-align: top; }
-  .controls { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.75rem; }
-  dialog { max-width: 90vw; max-height: 80vh; overflow: auto; }
-  dialog table { border-collapse: collapse; font-size: 0.85rem; }
-  dialog th, dialog td { text-align: left; padding: 2px 12px 2px 0; border-bottom: 1px solid #8883; vertical-align: top; word-break: break-word; }
-  #cursor-readout { font-family: ui-monospace, monospace; font-size: 0.85rem; min-height: 1.2em; }
-</style>
-{% endblock %}
 {% block content %}
   <p><a href="/#card-{{ radargram_id }}">&larr; Back to catalog</a></p>
   <h1>{{ effective_label }}</h1>
@@ -126,19 +112,16 @@
   // --- Overview map: this radargram's track, plus sibling tracks in the
   // same group (clickable, navigating to that radargram), plus a marker
   // that follows the viewer cursor (#121's cursor-sync feature). ---
-  const overviewMap = L.map('overview-map');
-  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    maxZoom: 18,
-    attribution: 'Esri',
-  }).addTo(overviewMap);
+  const overviewMap = RIDAL.basemap(L.map('overview-map'));
 
   let ownTrack = null;
-  const cursorMarker = L.circleMarker([0, 0], { color: 'red', radius: 6 }).addTo(overviewMap);
+  const cursorMarker = L.circleMarker([0, 0], {
+    color: RIDAL.cursorColor,
+    radius: RIDAL.cursorRadius,
+  }).addTo(overviewMap);
   cursorMarker.setStyle({ opacity: 0 });
 
-  function trackToLatLngs(track) {
-    return track.segments.map((seg) => seg.vertices.map((v) => [v.lat, v.lon]));
-  }
+  const trackToLatLngs = RIDAL.trackToLatLngs;
 
   function fitOverviewToTrack(track) {
     const lines = trackToLatLngs(track);
@@ -155,7 +138,10 @@
     .then((track) => {
       ownTrack = track;
       trackToLatLngs(track).forEach((latlngs) => {
-        L.polyline(latlngs, { color: '#e63', weight: 4 }).addTo(overviewMap);
+        L.polyline(latlngs, {
+          color: RIDAL.trackColor,
+          weight: RIDAL.trackFocusWeight,
+        }).addTo(overviewMap);
       });
       fitOverviewToTrack(track);
     });
@@ -167,7 +153,11 @@
         for (const [siblingId, info] of Object.entries(siblings)) {
           if (siblingId === RADARGRAM_ID) continue;
           trackToLatLngs(info.track).forEach((latlngs) => {
-            L.polyline(latlngs, { color: '#999', weight: 3, opacity: 0.7 })
+            L.polyline(latlngs, {
+              color: RIDAL.siblingColor,
+              weight: RIDAL.siblingWeight,
+              opacity: RIDAL.siblingOpacity,
+            })
               .bindPopup(`<a href="/view/${siblingId}">${info.effective_label}</a>`)
               .addTo(overviewMap);
           });

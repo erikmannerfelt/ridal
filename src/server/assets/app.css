@@ -1,0 +1,378 @@
+/* Ridal web GUI styles (#115, #121).
+ *
+ * First-party, embedded in the binary via assets.rs. Deliberately NOT under
+ * assets/vendor/ -- scripts/vendor_leaflet.sh does `rm -rf` on that
+ * directory, so anything first-party placed there would be silently
+ * deleted on the next Leaflet refresh.
+ *
+ * Every colour is a token with both a light and a dark value. Nothing
+ * below hardcodes a colour, so `prefers-color-scheme: dark` is a real
+ * theme rather than a declaration that leaves light-only values in place.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --color-bg: #fcfcfb;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #eceae6;
+  --color-text: #1b1b1a;
+  --color-text-muted: #5f5e5a;
+  --color-border: #d9d7d2;
+  --color-border-strong: #b6b3ac;
+  --color-accent: #1f6f8b;
+  --color-accent-hover: #14556c;
+  --color-warning-bg: #fdf0d5;
+  --color-warning-border: #e0b23c;
+  --color-warning-text: #5a4310;
+
+  /* Theme-independent on purpose: this is the letterbox behind grayscale
+   * radargram chunks. A light backdrop around a grayscale section
+   * destroys perceived contrast, so it stays dark in both themes. */
+  --color-viewer-bg: #202022;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --text-sm: 0.85rem;
+  --text-base: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.6rem;
+  --line-base: 1.5;
+
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --table-cell-pad: 2px var(--space-3) 2px 0;
+  --map-height-group: 320px;
+  --map-height-viewer: 70vh;
+  --map-min-height: 400px;
+  --card-min: 18rem;
+  --thumb-aspect: 5 / 2;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #16171a;
+    --color-surface: #1e2024;
+    --color-surface-sunken: #26282d;
+    --color-text: #e6e5e1;
+    --color-text-muted: #a3a19b;
+    --color-border: #34373d;
+    --color-border-strong: #4b4f57;
+    --color-accent: #6fb7cf;
+    --color-accent-hover: #9ad2e6;
+    --color-warning-bg: #3a2f14;
+    --color-warning-border: #8a6a20;
+    --color-warning-text: #f2dfae;
+  }
+}
+
+/* ---------- base ---------- */
+
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--line-base);
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+header a {
+  text-decoration: none;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+header a:hover {
+  color: var(--color-accent-hover);
+}
+
+main {
+  padding: var(--space-4);
+}
+
+h1 {
+  font-size: var(--text-xl);
+  margin: 0 0 var(--space-4);
+}
+
+h2 {
+  font-size: var(--text-lg);
+  margin: 0 0 var(--space-3);
+}
+
+a {
+  color: var(--color-accent);
+}
+
+a:hover {
+  color: var(--color-accent-hover);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.warning {
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-3);
+}
+
+/* ---------- index: groups and cards ---------- */
+
+section.group {
+  margin-bottom: var(--space-6);
+}
+
+.group-map {
+  width: 100%;
+  max-width: 700px;
+  height: var(--map-height-group);
+  margin-bottom: var(--space-4);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr));
+  gap: var(--space-4);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  scroll-margin-top: var(--space-5);
+}
+
+/* The viewer's "back to catalog" link targets /#card-{id}; without this
+ * the jump is silent and the user has to hunt for which card they came
+ * from. */
+.card:target {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent);
+}
+
+.card-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.card-thumb {
+  display: grid;
+  place-items: center;
+  aspect-ratio: var(--thumb-aspect);
+  background: var(--color-surface-sunken);
+  border-bottom: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+/* `contain`, not `cover`. OverviewSpec scales by width only and never
+ * upscales, so a thumbnail's aspect ratio is the radargram's own
+ * (traces x samples) and varies enormously -- a long profile can be
+ * 512x8. `cover` would crop nearly all of it away, and cropping a
+ * scientific preview misrepresents the data. Letterboxing is honest.
+ * The fixed aspect-ratio box also means lazily-loaded images cause no
+ * layout shift as they arrive. */
+.card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.card-thumb.is-missing img {
+  display: none;
+}
+
+.card-thumb.is-missing::after {
+  content: "no preview";
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.card-title {
+  display: block;
+  padding: var(--space-3) var(--space-3) 0;
+  font-weight: 600;
+  color: var(--color-accent);
+}
+
+.card-link:hover .card-title {
+  color: var(--color-accent-hover);
+}
+
+.card-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0;
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.card-meta dt {
+  color: var(--color-text-muted);
+}
+
+.card-meta dd {
+  margin: 0;
+}
+
+.card-meta .path {
+  overflow-wrap: anywhere;
+}
+
+/* ---------- viewer ---------- */
+
+.layout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  align-items: flex-start;
+}
+
+#map {
+  flex: 2 1 500px;
+  height: var(--map-height-viewer);
+  min-height: var(--map-min-height);
+  background: var(--color-viewer-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+#overview-map {
+  flex: 1 1 260px;
+  height: var(--map-height-viewer);
+  min-height: var(--map-min-height);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+table.meta {
+  border-collapse: collapse;
+  margin-bottom: var(--space-3);
+}
+
+table.meta th,
+table.meta td {
+  text-align: left;
+  padding: var(--table-cell-pad);
+  vertical-align: top;
+}
+
+table.meta th {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
+.controls {
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: var(--space-3);
+}
+
+.controls button,
+.controls select {
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.controls button {
+  cursor: pointer;
+}
+
+.controls button:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+#cursor-readout {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  min-height: 1.2em;
+}
+
+/* ---------- metadata dialog ---------- */
+
+dialog {
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow: auto;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 45%);
+}
+
+dialog h2 {
+  margin-top: 0;
+}
+
+dialog table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+dialog th,
+dialog td {
+  text-align: left;
+  padding: var(--table-cell-pad);
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+dialog th {
+  color: var(--color-text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}

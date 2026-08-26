@@ -92,9 +92,29 @@ struct DatasetSummary {
     display_name: Option<String>,
     group: Option<String>,
     relative_path: String,
+    /// The exact stored string. Kept verbatim because the revision
+    /// fingerprint (#117) hashes it -- reformatting here would silently
+    /// change identity.
     processing_datetime: String,
+    /// A human-readable rendering of the same instant, for UI display
+    /// only. The raw value carries nanosecond precision and a numeric
+    /// offset, which is noise in a catalog listing and wraps badly in a
+    /// narrow card.
+    processing_datetime_display: String,
     revision_id: String,
     shape: (usize, usize),
+}
+
+/// Format an RFC3339 processing datetime for display as `YYYY-MM-DD HH:MM`.
+///
+/// Falls back to the input unchanged if it does not parse: a file written
+/// by a future or third-party tool should still show *something* rather
+/// than an empty cell or an error.
+fn format_datetime_for_display(raw: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(raw) {
+        Ok(dt) => dt.format("%Y-%m-%d %H:%M").to_string(),
+        Err(_) => raw.to_string(),
+    }
 }
 
 fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
@@ -105,6 +125,7 @@ fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
         group: entry.group.as_ref().map(|g| g.to_string()),
         relative_path: entry.relative_path.clone(),
         processing_datetime: entry.processing_datetime.clone(),
+        processing_datetime_display: format_datetime_for_display(&entry.processing_datetime),
         revision_id: entry.revision_id.to_string(),
         shape: entry.shape,
     }
@@ -361,7 +382,7 @@ pub async fn viewer_page(
             effective_label => entry.effective_label(),
             group => entry.group.as_ref().map(|g| g.to_string()),
             revision_id => entry.revision_id.to_string(),
-            processing_datetime => entry.processing_datetime.clone(),
+            processing_datetime => format_datetime_for_display(&entry.processing_datetime),
             shape_height => height,
             shape_width => width,
             profiles => profiles,
@@ -507,4 +528,38 @@ pub async fn dataset_attributes(
         }
     }
     Ok(Json(serde_json::Value::Object(out)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_datetime_for_display;
+
+    #[test]
+    fn display_datetime_drops_subsecond_noise() {
+        // The real shape written by export.rs: chrono::Local::now()
+        // to_rfc3339(), i.e. nanosecond precision plus a numeric offset.
+        assert_eq!(
+            format_datetime_for_display("2026-08-26T20:57:41.407887786+00:00"),
+            "2026-08-26 20:57"
+        );
+    }
+
+    #[test]
+    fn display_datetime_handles_z_suffix_and_whole_seconds() {
+        assert_eq!(
+            format_datetime_for_display("2020-01-01T00:00:00Z"),
+            "2020-01-01 00:00"
+        );
+    }
+
+    #[test]
+    fn display_datetime_falls_back_to_the_raw_value() {
+        // A file from a future or third-party writer should still show
+        // something rather than an empty cell.
+        assert_eq!(
+            format_datetime_for_display("not a datetime"),
+            "not a datetime"
+        );
+        assert_eq!(format_datetime_for_display(""), "");
+    }
 }

@@ -4,15 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Ridal{% endblock %}</title>
+  {# app.css must come after leaflet.css so our .leaflet-* overrides win. #}
   <link rel="stylesheet" href="/static/leaflet.css">
-  <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 0; }
-    header { padding: 0.75rem 1rem; border-bottom: 1px solid #8884; display: flex; align-items: center; gap: 1rem; }
-    header a { text-decoration: none; font-weight: 600; }
-    main { padding: 1rem; }
-    .warning { background: #fdf0d5; border: 1px solid #e0b23c; padding: 0.5rem 0.75rem; border-radius: 4px; margin-bottom: 0.75rem; }
-  </style>
+  <link rel="stylesheet" href="/static/app.css">
   {% block extrahead %}{% endblock %}
 </head>
 <body>
@@ -22,7 +16,9 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  {# app.js after leaflet.js, so both L and RIDAL exist before page scripts. #}
   <script src="/static/leaflet.js"></script>
+  <script src="/static/app.js"></script>
   {% block extrascript %}{% endblock %}
 </body>
 </html>
