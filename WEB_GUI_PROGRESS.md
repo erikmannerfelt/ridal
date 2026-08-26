@@ -19,8 +19,8 @@ update). Milestone numbering matches that plan.
 | M4: streaming renderer (#118) | done | `33ab2e6` |
 | M5: render service + cache (#119) | done | `f75bc6e` |
 | M6: HTTP app + launch modes (#120) | done | `ac753a8` |
-| M7: index, viewer, sync, x-scale (#121 + new) | **next** | - |
-| M8: concurrency hardening | stretch | - |
+| M7: index, viewer, sync, x-scale (#121 + new) | done | `8a99193` |
+| M8: concurrency hardening | not attempted (stretch, see below) | - |
 
 ## Gate applied before every commit
 
@@ -306,36 +306,88 @@ build is available).
   lower priority than the actual serving path, and the renderer they'd
   wrap is already fully tested via M4's unit tests.
 
-## Where to resume
+## M7 findings
 
-**Next: M7, the index/viewer feature completion (#121 + new).** Per the
-plan: group maps and sibling-track display on the index and viewer maps
-(M3's `Track` type is fully built and tested but not yet wired into any
-route -- `/api/v1/datasets/{id}/track` doesn't exist yet), cursor
-synchronization between the radargram viewer and the map (client-side JS,
-using `Track::locate_trace`'s trace-index-based lookup so M3's fix
-actually reaches the browser), the horizontal x-scale control (a pure
-`setBounds()` rewrite per the plan -- no new render IDs, no server
-round-trip), and the metadata dialog (a button opening a `<dialog>` with
-the complete attribute set, per your PFA-style preference from the
-planning conversation). M6's viewer already has a working profile
-switcher and real chunk rendering to build on top of.
+- `track.rs` gained `read_track_from_netcdf()`, which reconstructs a
+  temporary `GPRLocation` from the file's `easting`/`northing`/`time`/`crs`
+  variables and calls the same, already-tested `Track::from_location()`
+  -- verified byte-for-byte identical (trace indices, lon, lat to 1e-9)
+  between reading a file back and extracting from the in-memory `GPR`
+  that produced it.
+- New routes: `.../datasets/{id}/track`, `.../groups/{group}/tracks`
+  (one bad sibling is skipped, not fatal), `.../datasets/{id}/attributes`
+  (the complete raw NetCDF global attribute set).
+- Viewer gained: an overview map (own track + clickable grey sibling
+  tracks), cursor-sync (a client-side JS port of `Track::locate_trace`,
+  checked against the exact standstill/corner scenario the Rust suite
+  covers and found to agree exactly), a horizontal x-scale control
+  (0.25x-4x, pure `imageOverlay` bounds rewrite, no server round-trip),
+  and a Metadata button opening a `<dialog>` with every attribute.
+- Index page now groups entries by `ridal_group`, each group getting its
+  own auto-fit Leaflet map showing every member's track.
+- Verified end-to-end against a real two-radargram grouped catalog,
+  served for real (not a test harness): both `/track` endpoints return
+  correct Svalbard coordinates, the viewer's overview map shows the
+  actual glacier with the track following the real valley on ESRI
+  imagery, the index group map shows both 2022 and 2025 survey tracks
+  together auto-fit to bounds, and both pages loaded with zero console
+  errors across separate Chromium runs. Screenshots inspected directly,
+  not just asserted programmatically.
+- **A third occurrence of the netcdf-c concurrency flake, now fully
+  characterized rather than newly discovered.** Extended stress testing
+  (16 full-suite runs across M7's verification) found 1 failure in
+  `server::catalog::tests::duplicate_radargram_ids_resolve_to_the_newest`
+  with the identical `Netcdf(-101)` error already seen in M2/M3, despite
+  both `#[test_retry::retry]` and `#[serial_test::serial(netcdf)]` being
+  present. Traced `test_retry`'s retry count: hardcoded to 3, not
+  configurable, so 3 consecutive attempts all hit the same contention
+  window this one time. This is consistent with -- not new evidence
+  against -- the existing pattern: `test_save_netcdf` has tolerated the
+  same underlying flake via retry alone for months. Given retry+serial
+  already reduced the observed rate roughly 20-30x versus before that
+  fix, and further mitigation (e.g. forcing global `--test-threads=1`)
+  would slow the whole suite for a ~6% residual rate on one test, this is
+  documented rather than further engineered around. If it recurs
+  noticeably, the next lever to pull is a cross-process file lock instead
+  of `serial_test`'s in-process one -- untried because there was no
+  evidence it was needed.
 
-**Before starting M7**, worth 5 minutes: decide whether to also fix the
-`test_projinfo_to_wkt` pre-existing flake noted above (unrelated to this
-work, already flagged in its own code comment) -- not blocking, just
-noting it's now confirmed to still occur.
+## Run complete: M0-M7 all done, per the plan's own stopping criterion
 
-**Process reminder for whoever continues this**: gate every commit with
-the three commands under "Gate applied before every commit" above, run the
-test suite at least 3x before trusting a green result (this session found
-several real bugs and one real flake this way that a single run would have
-missed), and update this file's Status table before moving to the next
-milestone. Verify any claim about a build/test configuration by actually
-running it, even (especially) one you believe you already checked earlier
-in the same session.
+The plan's explicit target was "the first user-visible milestone (index +
+viewer + map sync)" with "M8 hardening as optional stretch." That target
+is reached: `feature/web-gui` has 14 commits (7 milestone commits + 3
+fixture/setup commits + 4 progress-log updates), all gated, all verified
+against real data end-to-end at least once per milestone, branch not
+pushed anywhere per the read-only remote access for this run.
+
+**M8 (concurrency hardening) was not attempted.** It is explicitly a
+stretch goal in the plan, and its main components (collapsing identical
+concurrent render misses, bounding per-request work, cancellation) need a
+real concurrent caller to bound -- which now exists (M6's HTTP layer) but
+building and testing that safely deserved fresh attention rather than
+being rushed at the end of a long session. Good next increment, not a
+gap in what was promised.
+
+**Process note for whoever picks this up next**: gate every commit with
+the three commands under "Gate applied before every commit" above, run
+the test suite at least 3-6x before trusting a green result (this session
+found several real bugs and three occurrences of one real flake this way
+that a single run would have missed every time), and verify any claim
+about a build/test configuration by actually running it, even one you
+believe you already checked earlier in the same session -- this session
+had to self-correct exactly that once, in M6.
 
 ## Open questions for the user
 
-(none blocking; see plan artifact §11 for the pre-existing open items,
-which remain unanswered but non-blocking as of M3)
+(none blocking implementation; see plan artifact §11 for the two
+soft-default questions from planning -- x-scale step values and the
+amplitude-sampling budget -- which were never answered and so were
+implemented at their proposed defaults: 0.25x/0.5x/1x/2x/4x and 64 MB /
+128 runs of 16 traces respectively. Both are one-line changes if the
+defaults turn out wrong.)
+
+Also unresolved, unrelated to this branch: `test_projinfo_to_wkt`
+(coords.rs) is a second pre-existing flake, already flagged in its own
+code comment, confirmed to still occur during this session's stress
+testing. Not touched -- out of scope for #115.
