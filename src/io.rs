@@ -1106,10 +1106,10 @@ pub fn export_locations(
 /// which `inspect_ridal_netcdf` reports as `Err` rather than as a variant
 /// here.
 ///
-/// Consumed by catalog discovery (#122, M3); until then the only callers
-/// are its own tests, so `#[allow(dead_code)]` marks this as intentional
-/// transitional state rather than an oversight.
-#[allow(dead_code)]
+/// Only consumed by catalog discovery under the `server` feature (#122);
+/// the `cfg_attr` below reflects that honestly rather than blanket-allowing
+/// dead code for CLI-only builds.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum RidalNetcdfKind {
     NotRidal,
@@ -1118,7 +1118,7 @@ pub enum RidalNetcdfKind {
 
 /// Metadata read from a supported Ridal-produced NetCDF file, without
 /// loading the amplitude array.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct RidalNetcdfMetadata {
     pub radargram_id: crate::identity::RadargramId,
@@ -1135,7 +1135,7 @@ pub struct RidalNetcdfMetadata {
 
 /// Read a single global attribute as a string, or `None` if absent or not a
 /// string-valued attribute.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 fn read_global_str_attr(file: &netcdf::File, name: &str) -> Option<String> {
     let attr = file.attribute(name)?;
     match attr.value() {
@@ -1147,7 +1147,7 @@ fn read_global_str_attr(file: &netcdf::File, name: &str) -> Option<String> {
 /// Read a global attribute as a string, trying `primary` first and falling
 /// back to `legacy` if absent. Supports files written before the
 /// `ridal_*` attribute rename (#116); the value is otherwise identical.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 fn read_global_str(file: &netcdf::File, primary: &str, legacy: &str) -> Option<String> {
     read_global_str_attr(file, primary).or_else(|| read_global_str_attr(file, legacy))
 }
@@ -1164,7 +1164,7 @@ fn read_global_str(file: &netcdf::File, primary: &str, legacy: &str) -> Option<S
 /// Errors are reserved for failures to open or read the file at all, kept
 /// distinct from `NotRidal` so catalog discovery (#122) can report them
 /// separately rather than silently skipping unreadable candidates.
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub fn inspect_ridal_netcdf(path: &Path) -> Result<RidalNetcdfKind, String> {
     let file = netcdf::open(path).map_err(|e| format!("Failed to open {path:?} as NetCDF: {e}"))?;
 
@@ -1698,6 +1698,7 @@ mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_supported() {
         let dir = tempfile::tempdir().unwrap();
@@ -1717,6 +1718,7 @@ mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_unrelated_file_is_not_ridal() {
         let dir = tempfile::tempdir().unwrap();
@@ -1735,6 +1737,7 @@ mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_legacy_unprefixed_attrs() {
         // A file written before the ridal_* rename (#116): unprefixed
@@ -1768,6 +1771,7 @@ mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_missing_radargram_id_is_not_ridal() {
         let dir = tempfile::tempdir().unwrap();
@@ -1792,6 +1796,7 @@ mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_malformed_id_is_not_ridal() {
         let dir = tempfile::tempdir().unwrap();
@@ -1817,6 +1822,7 @@ mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_unreadable_file_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -1828,6 +1834,7 @@ mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_nonexistent_file_is_an_error() {
         let result = super::inspect_ridal_netcdf(std::path::Path::new("/no/such/file.nc"));

@@ -20,6 +20,8 @@ mod formats;
 mod gpr;
 mod identity;
 mod io;
+#[cfg(feature = "server")]
+mod server;
 mod tools;
 mod user_metadata;
 
