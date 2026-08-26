@@ -823,7 +823,14 @@ where
     v.set_compression(5, true)
         .map_err(|e| format!("NetCDF export error when setting '{name}' compression: {e}"))?;
 
-    for chunking in [1024_usize, 512, 256, 128, 64, 32, 16, 8] {
+    // 256 matches the web viewer's render chunk size (see #115 / #118), so a
+    // render chunk decompresses exactly one HDF5 chunk instead of a fraction
+    // of a larger one. Measured on a ~1 GB synthetic radargram: 5x lower
+    // latency for a single chunk (8.4 -> 1.7 ms) and 3x for a full viewer
+    // sweep (6.9 -> 2.2 s), for no change in file size -- radar amplitudes
+    // compress ~1.17x regardless of chunk size, so there is no space/speed
+    // tradeoff here to weigh against.
+    for chunking in [256_usize, 128, 64, 32, 16, 8] {
         if ny < chunking || nx < chunking {
             continue;
         }

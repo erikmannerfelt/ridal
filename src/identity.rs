@@ -1,0 +1,420 @@
+//! Persistent identity metadata for processed radargrams.
+//!
+//! Three concepts that the web catalog (#115) and gprinterp need kept apart:
+//!
+//! - [`RadargramId`]: the stable, user-facing identity of one conceptual
+//!   radargram. Independent of filename, path, display name and processing
+//!   settings. Referenced by gprinterp for interpretation matching.
+//! - [`GroupId`]: an optional grouping label (survey, campaign, location)
+//!   used only by the catalog and index UI. No identity semantics.
+//! - [`DisplayName`]: an optional human-facing label. No identity semantics;
+//!   must never affect revision or render identity.
+//!
+//! `RadargramId` and `GroupId` share validation rules because both are used
+//! in path-like ways by the web server (#116): ASCII lowercase,
+//! `[a-z0-9_-]`, 1-128 characters, no leading/trailing separator, and not a
+//! reserved name.
+
+use std::fmt;
+
+const MAX_SLUG_LEN: usize = 128;
+
+/// Names disallowed for any slug because both radargram and group IDs are
+/// used in URL-path and (potentially) filesystem-adjacent contexts.
+const RESERVED_SLUGS: &[&str] = &[
+    ".", "..", "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+    "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+fn is_valid_slug_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'
+}
+
+/// Validate `value` as a slug of the given `kind` (used only in error text).
+///
+/// Rejects with a specific, actionable error rather than silently sanitizing;
+/// callers that want sanitized fallback behavior use [`sanitize_to_slug`]
+/// instead and validate its result.
+fn validate_slug(kind: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("{kind} must not be empty"));
+    }
+    if value.chars().count() > MAX_SLUG_LEN {
+        return Err(format!(
+            "{kind} '{value}' is too long ({} chars, max {MAX_SLUG_LEN})",
+            value.chars().count()
+        ));
+    }
+    if let Some(bad) = value.chars().find(|c| !is_valid_slug_char(*c)) {
+        return Err(format!(
+            "{kind} '{value}' contains disallowed character '{bad}'. \
+             Only lowercase ASCII letters, digits, '-' and '_' are allowed."
+        ));
+    }
+    if value.starts_with(['-', '_']) || value.ends_with(['-', '_']) {
+        return Err(format!(
+            "{kind} '{value}' must not start or end with '-' or '_'"
+        ));
+    }
+    if RESERVED_SLUGS.contains(&value) {
+        return Err(format!("{kind} '{value}' is a reserved name"));
+    }
+    Ok(())
+}
+
+/// Lowercase `stem`, collapse runs of unsupported characters to `-`, and trim
+/// leading/trailing separators. Deterministic: the same stem always produces
+/// the same slug. Does not itself validate the result -- an all-separator or
+/// empty stem produces an empty string, which the caller must reject with an
+/// actionable error rather than accept silently.
+fn sanitize_to_slug(stem: &str) -> String {
+    let lowered = stem.to_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_was_sep = false;
+    for c in lowered.chars() {
+        if is_valid_slug_char(c) {
+            out.push(c);
+            last_was_sep = c == '-' || c == '_';
+        } else if !last_was_sep {
+            out.push('-');
+            last_was_sep = true;
+        }
+    }
+    out.trim_matches(['-', '_']).to_string()
+}
+
+macro_rules! slug_newtype {
+    ($name:ident, $kind:literal) => {
+        #[doc = concat!("A validated ", $kind, " slug.")]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(String);
+
+        impl $name {
+            /// Validate `value` as an explicit user-supplied identifier.
+            /// Rejects invalid input rather than sanitizing it.
+            pub fn new(value: impl Into<String>) -> Result<Self, String> {
+                let value = value.into();
+                validate_slug($kind, &value)?;
+                Ok(Self(value))
+            }
+
+            /// Derive a slug from a fallback source (typically an output file
+            /// stem), sanitizing deterministically. Fails with an actionable
+            /// error if no valid slug remains after sanitation.
+            ///
+            /// `GroupId`'s fallback source is the catalog-relative parent
+            /// directory, computed by catalog discovery (M3) rather than at
+            /// export time, so this is unused until then.
+            #[allow(dead_code)]
+            pub fn from_fallback(stem: &str) -> Result<Self, String> {
+                let sanitized = sanitize_to_slug(stem);
+                if sanitized.is_empty() {
+                    return Err(format!(
+                        "Could not derive a valid {} from '{stem}': no valid \
+                         characters remained after sanitization. Supply one \
+                         explicitly.",
+                        $kind
+                    ));
+                }
+                // Sanitization guarantees charset and separator rules; only
+                // length and reserved-name checks can still fail here.
+                validate_slug($kind, &sanitized)?;
+                Ok(Self(sanitized))
+            }
+
+            // Used by the catalog and inspector added in M2/M3; unused for
+            // now since export.rs reaches the inner string via Display.
+            #[allow(dead_code)]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                &self.0
+            }
+        }
+    };
+}
+
+slug_newtype!(RadargramId, "radargram ID");
+slug_newtype!(GroupId, "group");
+
+/// An optional human-facing label with no identity semantics. An empty or
+/// whitespace-only value is treated as absent by [`DisplayName::from_input`]
+/// rather than as a valid (empty) display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayName(String);
+
+impl DisplayName {
+    /// Returns `None` for empty or whitespace-only input, matching the rule
+    /// that an absent display name should not be written to the output at
+    /// all (#116).
+    pub fn from_input(value: impl AsRef<str>) -> Option<Self> {
+        let trimmed = value.as_ref().trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(Self(trimmed.to_string()))
+        }
+    }
+
+    // Used by the catalog and viewer added in M3/M7; unused for now since
+    // export.rs reaches the inner string via Display.
+    #[allow(dead_code)]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DisplayName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Resolve the effective radargram ID for a new or reprocessed output,
+/// following the precedence from #116:
+/// explicit `--radargram-id` > inherited `ridal_radargram_id` > output stem.
+///
+/// Returns the resolved ID together with a human-readable note when the
+/// value came from the output-stem fallback, so the caller can print the
+/// recommended informational warning.
+pub fn resolve_radargram_id(
+    explicit: Option<&str>,
+    inherited: Option<&str>,
+    output_stem: &str,
+) -> Result<(RadargramId, Option<String>), String> {
+    if let Some(explicit) = explicit {
+        return Ok((RadargramId::new(explicit)?, None));
+    }
+    if let Some(inherited) = inherited {
+        // Inherited values were valid when written; re-validate defensively
+        // in case the source file predates this scheme or was hand-edited.
+        return Ok((RadargramId::new(inherited)?, None));
+    }
+    let id = RadargramId::from_fallback(output_stem)?;
+    let note = format!(
+        "No radargram ID was supplied. Using output stem \"{id}\" as the \
+         radargram ID.\n\nExplicitly assigning a stable, unique ID with \
+         --radargram-id is recommended, particularly when processing \
+         collections of radargrams."
+    );
+    Ok((id, Some(note)))
+}
+
+/// Resolve the effective display name, following the precedence from #116:
+/// explicit `--display-name` > inherited `ridal_display_name` > absent.
+///
+/// An explicit flag that was *passed* but empty (`Some("")`) is a deliberate
+/// clear, not a fall-through to `inherited`: `--display-name ""` is the only
+/// way to remove an inherited display name on reprocessing. Only a wholly
+/// absent explicit value (`None`, i.e. the flag was not given) falls
+/// through.
+pub fn resolve_display_name(
+    explicit: Option<&str>,
+    inherited: Option<&str>,
+) -> Option<DisplayName> {
+    match explicit {
+        Some(value) => DisplayName::from_input(value),
+        None => inherited.and_then(DisplayName::from_input),
+    }
+}
+
+/// Resolve the effective group, following the same precedence shape as
+/// display name, but validated like a [`GroupId`] slug since it is used in
+/// path-like ways by the catalog and index UI.
+pub fn resolve_group(
+    explicit: Option<&str>,
+    inherited: Option<&str>,
+) -> Result<Option<GroupId>, String> {
+    if let Some(explicit) = explicit {
+        return Ok(Some(GroupId::new(explicit)?));
+    }
+    if let Some(inherited) = inherited {
+        return Ok(Some(GroupId::new(inherited)?));
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn valid_explicit_id_accepted() {
+        assert!(RadargramId::new("kroppbreen-centerline-01").is_ok());
+        assert!(RadargramId::new("a").is_ok());
+        assert!(RadargramId::new("a_b-c9").is_ok());
+    }
+
+    #[test]
+    fn uppercase_explicit_id_rejected() {
+        let err = RadargramId::new("Kroppbreen").unwrap_err();
+        assert!(err.contains("disallowed character"), "{err}");
+    }
+
+    #[test]
+    fn leading_trailing_separator_rejected() {
+        assert!(RadargramId::new("-leading").is_err());
+        assert!(RadargramId::new("trailing-").is_err());
+        assert!(RadargramId::new("_leading").is_err());
+        assert!(RadargramId::new("trailing_").is_err());
+    }
+
+    #[test]
+    fn reserved_names_rejected() {
+        for reserved in [".", "..", "con", "com1", "nul"] {
+            assert!(
+                RadargramId::new(reserved).is_err(),
+                "{reserved} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_id_rejected() {
+        assert!(RadargramId::new("").is_err());
+    }
+
+    #[test]
+    fn too_long_id_rejected() {
+        let long = "a".repeat(129);
+        assert!(RadargramId::new(&long).is_err());
+        let ok = "a".repeat(128);
+        assert!(RadargramId::new(&ok).is_ok());
+    }
+
+    #[test]
+    fn fallback_sanitation_is_deterministic() {
+        let a = RadargramId::from_fallback("Dronbreen 2022-03-29 (A1)").unwrap();
+        let b = RadargramId::from_fallback("Dronbreen 2022-03-29 (A1)").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a.as_str(), "dronbreen-2022-03-29-a1");
+    }
+
+    #[test]
+    fn fallback_sanitation_collapses_unsupported_character_runs() {
+        // #116's algorithm collapses runs of *unsupported* characters to a
+        // single '-'. Characters that are already valid separators ('-'/'_')
+        // pass through unchanged rather than being collapsed together.
+        let id = RadargramId::from_fallback("a   b!!!c").unwrap();
+        assert_eq!(id.as_str(), "a-b-c");
+    }
+
+    #[test]
+    fn fallback_sanitation_preserves_existing_separator_runs() {
+        let id = RadargramId::from_fallback("a___b---c").unwrap();
+        assert_eq!(id.as_str(), "a___b---c");
+    }
+
+    #[test]
+    fn fallback_sanitation_trims_edges() {
+        let id = RadargramId::from_fallback("--Weird Name!!--").unwrap();
+        assert_eq!(id.as_str(), "weird-name");
+    }
+
+    #[test]
+    fn fallback_sanitation_actionable_error_when_empty() {
+        let err = RadargramId::from_fallback("!!!___---").unwrap_err();
+        assert!(err.contains("Supply one explicitly"), "{err}");
+    }
+
+    #[test]
+    fn fallback_sanitation_rejects_reserved_result() {
+        // "CON" sanitizes to the non-empty, charset-valid slug "con", which
+        // is then caught by the reserved-name check. "." or ".." would
+        // instead sanitize to an empty string and hit the empty-result
+        // error path tested separately above.
+        let err = RadargramId::from_fallback("CON").unwrap_err();
+        assert!(err.contains("reserved"), "{err}");
+    }
+
+    #[test]
+    fn resolve_radargram_id_precedence() {
+        // explicit wins over inherited and stem
+        let (id, note) =
+            resolve_radargram_id(Some("explicit-id"), Some("inherited-id"), "stem").unwrap();
+        assert_eq!(id.as_str(), "explicit-id");
+        assert!(note.is_none());
+
+        // inherited wins over stem
+        let (id, note) = resolve_radargram_id(None, Some("inherited-id"), "stem").unwrap();
+        assert_eq!(id.as_str(), "inherited-id");
+        assert!(note.is_none());
+
+        // stem is the last resort, and is noted
+        let (id, note) = resolve_radargram_id(None, None, "My Output Stem").unwrap();
+        assert_eq!(id.as_str(), "my-output-stem");
+        assert!(note.is_some());
+    }
+
+    #[test]
+    fn resolve_radargram_id_rejects_invalid_explicit() {
+        assert!(resolve_radargram_id(Some("Bad ID"), None, "stem").is_err());
+    }
+
+    #[test]
+    fn display_name_empty_is_absent() {
+        assert!(DisplayName::from_input("").is_none());
+        assert!(DisplayName::from_input("   ").is_none());
+        assert!(DisplayName::from_input(" Kroppbreen ").is_some());
+    }
+
+    #[test]
+    fn display_name_allows_unicode_and_spaces() {
+        let name = DisplayName::from_input("Kroppbreen sentrallinje nr 1 – øst").unwrap();
+        assert_eq!(name.as_str(), "Kroppbreen sentrallinje nr 1 – øst");
+    }
+
+    #[test]
+    fn resolve_display_name_precedence() {
+        assert_eq!(
+            resolve_display_name(Some("explicit"), Some("inherited")).map(|d| d.0),
+            Some("explicit".to_string())
+        );
+        assert_eq!(
+            resolve_display_name(None, Some("inherited")).map(|d| d.0),
+            Some("inherited".to_string())
+        );
+        assert_eq!(resolve_display_name(None, None), None);
+        // An explicit empty override does not fall through to "inherited";
+        // per #116 the display name changing (including to absent) has no
+        // identity semantics and is respected as given.
+        assert_eq!(resolve_display_name(Some(""), Some("inherited")), None);
+    }
+
+    #[test]
+    fn resolve_group_precedence_and_validation() {
+        assert_eq!(
+            resolve_group(Some("dronbreen-2022"), None)
+                .unwrap()
+                .map(|g| g.0),
+            Some("dronbreen-2022".to_string())
+        );
+        assert_eq!(
+            resolve_group(None, Some("dronbreen-2022"))
+                .unwrap()
+                .map(|g| g.0),
+            Some("dronbreen-2022".to_string())
+        );
+        assert_eq!(resolve_group(None, None).unwrap(), None);
+        assert!(resolve_group(Some("Bad Group"), None).is_err());
+    }
+
+    #[test]
+    fn radargram_id_and_group_id_are_distinct_types() {
+        // Compile-time check: this would not compile if the macro produced
+        // interchangeable types.
+        fn takes_radargram_id(_: RadargramId) {}
+        let id = RadargramId::new("a").unwrap();
+        takes_radargram_id(id);
+    }
+}

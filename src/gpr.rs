@@ -395,6 +395,19 @@ pub struct GPR {
     zero_point_ns: f32,
     /// User-supplied metadata that should be carried through processing/export.
     pub user_metadata: user_metadata::UserMetadata,
+    /// Persistent radargram identity metadata (#116). Resolved once, at the
+    /// end of [`build_processed_gpr`], from CLI arguments and the output
+    /// stem -- not populated on GPR instances still mid-processing.
+    pub identity: RidalIdentity,
+}
+
+/// Persistent identity metadata for one processed output. See
+/// [`crate::identity`] for the concepts and their precedence rules.
+#[derive(Debug, Clone, Default)]
+pub struct RidalIdentity {
+    pub radargram_id: Option<crate::identity::RadargramId>,
+    pub display_name: Option<crate::identity::DisplayName>,
+    pub group: Option<crate::identity::GroupId>,
 }
 
 impl GPR {
@@ -716,6 +729,7 @@ impl GPR {
             horizontal_signal_distance: self.horizontal_signal_distance,
             zero_point_ns: self.zero_point_ns,
             user_metadata: self.user_metadata.clone(),
+            identity: self.identity.clone(),
         };
         new_gpr.log_event(
             "subset",
@@ -774,6 +788,7 @@ impl GPR {
             horizontal_signal_distance,
             zero_point_ns: 0.,
             user_metadata: user_metadata::UserMetadata::new(),
+            identity: RidalIdentity::default(),
         })
     }
 
@@ -1635,6 +1650,9 @@ pub struct RunParams {
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
     pub user_metadata: user_metadata::UserMetadata,
+    pub radargram_id: Option<String>,
+    pub display_name: Option<String>,
+    pub group: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub struct BatchRunParams {
@@ -1653,6 +1671,11 @@ pub struct BatchRunParams {
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
     pub user_metadata: user_metadata::UserMetadata,
+    // Batch mode derives a radargram ID and (absent) display name per output
+    // from each output's own stem -- an explicit single ID or display name
+    // would collide across outputs. A group applies uniformly to the whole
+    // batch, since batch runs typically process one survey or campaign.
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2040,6 +2063,31 @@ pub fn build_processed_gpr(
             .map_err(|e| format!("Error on step {}: {:?}", step, e))?;
     }
 
+    // Resolved once, here, from CLI arguments and the output stem. There is
+    // no "inherited" tier yet because Ridal cannot currently read its own
+    // processed NetCDF outputs back in as input (#123 adds metadata-only
+    // inspection; full reading into GPR is explicitly future work there).
+    // Passing `None` for `inherited` keeps `identity::resolve_*` already
+    // shaped for that follow-up rather than requiring a redesign then.
+    let output_stem = output_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("Output path has no valid file stem: {output_path:?}"))?;
+    let (radargram_id, id_note) =
+        crate::identity::resolve_radargram_id(params.radargram_id.as_deref(), None, output_stem)?;
+    if let Some(note) = id_note {
+        if !params.quiet {
+            println!("{note}");
+        }
+    }
+    let display_name = crate::identity::resolve_display_name(params.display_name.as_deref(), None);
+    let group = crate::identity::resolve_group(params.group.as_deref(), None)?;
+    gpr.identity = RidalIdentity {
+        radargram_id: Some(radargram_id),
+        display_name,
+        group,
+    };
+
     Ok((gpr, output_path))
 }
 
@@ -2170,6 +2218,9 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             override_antenna_mhz: params.override_antenna_mhz,
             override_antenna_separation: params.override_antenna_separation,
             user_metadata: params.user_metadata.clone(),
+            radargram_id: None,
+            display_name: None,
+            group: params.group.clone(),
         };
 
         // process-mode semantics: one group -> one output, in the order we pass here.
@@ -2412,7 +2463,6 @@ pub fn default_processing_profile() -> Vec<String> {
     vec![
         "remove_empty_traces".to_string(),
         format!("zero_corr_max_peak"),
-        "equidistant_traces".to_string(),
         "correct_antenna_separation".to_string(),
         format!(
             "normalize_horizontal_magnitudes({})",
@@ -2508,6 +2558,14 @@ pub mod tests {
             horizontal_signal_distance: 1.,
             log: Vec::new(),
             user_metadata: crate::user_metadata::UserMetadata::new(),
+            // A real radargram_id is required for export() to succeed
+            // (#116); test helpers give it one directly rather than routing
+            // through build_processed_gpr()'s CLI-argument resolution.
+            identity: super::RidalIdentity {
+                radargram_id: Some(crate::identity::RadargramId::new("test-radargram").unwrap()),
+                display_name: None,
+                group: None,
+            },
         }
     }
 
@@ -2612,6 +2670,7 @@ pub mod tests {
             horizontal_signal_distance: antenna_separation,
             zero_point_ns: 0.,
             user_metadata: crate::user_metadata::UserMetadata::new(),
+            identity: super::RidalIdentity::default(),
         }
     }
 

@@ -18,6 +18,7 @@ mod export;
 mod filters;
 mod formats;
 mod gpr;
+mod identity;
 mod io;
 mod tools;
 mod user_metadata;

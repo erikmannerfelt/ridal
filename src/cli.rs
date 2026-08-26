@@ -94,6 +94,19 @@ pub struct ProcessArgs {
     /// Add user metadata as key=value. Repeatable.
     #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub metadata: Vec<String>,
+
+    /// Stable, unique identifier for this radargram (lowercase ASCII, digits, '-', '_').
+    /// Defaults to the output file stem if not given.
+    #[arg(long = "radargram-id")]
+    pub radargram_id: Option<String>,
+
+    /// Human-readable display label. Purely cosmetic: has no identity semantics.
+    #[arg(long = "display-name")]
+    pub display_name: Option<String>,
+
+    /// Group this radargram belongs to (survey, campaign, location), for catalog grouping.
+    #[arg(long = "group")]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -171,6 +184,12 @@ pub struct BatchProcessArgs {
     /// Add user metadata as key=value. Repeatable.
     #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub metadata: Vec<String>,
+
+    /// Group all outputs in this batch belong to (survey, campaign, location), for
+    /// catalog grouping. Applied uniformly; radargram IDs and display names are
+    /// still derived per-output since an explicit single value would collide.
+    #[arg(long = "group")]
+    pub group: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -319,6 +338,9 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
         user_metadata,
+        radargram_id: args.radargram_id.clone(),
+        display_name: args.display_name.clone(),
+        group: args.group.clone(),
     };
 
     let result = gpr::run(params).map_err(|e| e.to_string())?;
@@ -358,6 +380,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
         user_metadata,
+        group: args.group.clone(),
     };
 
     let result = gpr::run_batch(params)?;

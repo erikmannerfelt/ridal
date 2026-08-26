@@ -8,6 +8,7 @@ mod export;
 mod filters;
 mod formats;
 mod gpr;
+mod identity;
 mod io;
 mod tools;
 mod user_metadata;
@@ -437,6 +438,11 @@ pub mod ridal {
                 override_antenna_mhz,
                 override_antenna_separation,
                 user_metadata,
+                // Not yet exposed as Python kwargs (#116); falls back to the
+                // output-stem-derived radargram ID, same as the CLI default.
+                radargram_id: None,
+                display_name: None,
+                group: None,
             };
             let (gpr_obj, _default_path) = gpr::build_processed_gpr(params2)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
@@ -469,6 +475,9 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             user_metadata,
+            radargram_id: None,
+            display_name: None,
+            group: None,
         };
         let result = gpr::run(params)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
@@ -817,6 +826,7 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             user_metadata,
+            group: None,
         };
 
         let result =
