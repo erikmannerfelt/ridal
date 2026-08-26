@@ -16,8 +16,8 @@ update). Milestone numbering matches that plan.
 | M1: identity metadata (#116) | done | `1c3c04b` |
 | M2: inspection + revision identity (#123, #117) | done (revision identity deferred, see below) | - |
 | M3: catalog + track (#122 + new) | done | `4fd2e7a` |
-| M4: streaming renderer (#118) | **next** | - |
-| M5: render service + cache (#119) | pending | - |
+| M4: streaming renderer (#118) | done | `33ab2e6` |
+| M5: render service + cache (#119) | **next** | - |
 | M6: HTTP app + launch modes (#120) | pending | - |
 | M7: index, viewer, sync, x-scale (#121 + new) | pending | - |
 | M8: concurrency hardening | stretch | - |
@@ -185,26 +185,63 @@ worth a closer look with more time (e.g. checking whether `netcdf-sys`'s
 lock actually wraps every FFI entry point, or whether a threadsafe HDF5
 build is available).
 
+## M4 findings
+
+- Built the full pipeline: `render/grid.rs` (chunk/overview geometry),
+  `render/resample.rs` (area-weighted mean, NaN-aware), `render/profile.rs`
+  (the 3 built-in profiles), `render/stats.rs` (sampled amplitude limits),
+  `render/colormap.rs` (normalize + grayscale + encode), `render/renderer.rs`
+  (ties it together), `source.rs` (windowed netcdf reads). 169 tests, 168
+  passing (1 opt-in `#[ignore]`d real-asset check).
+- **No new bugs found this milestone** -- every test passed on its first
+  real run, including the seam-consistency test and both orientation
+  guards. Credit goes to M0's early verification of the Leaflet bounds
+  formula and M1's chunk-size decision: both were exactly right when
+  finally exercised for real here.
+- **Verified against real acquisition data, not just synthetic fixtures.**
+  An opt-in test (`manual_visual_check_against_real_asset`, run with
+  `--ignored`) processes a real MALA asset, estimates its amplitude limits
+  (came out to -1093.7..1161.6 on the 2022 asset), and renders an overview
+  plus two chunks. All three visually inspected: the overview shows a
+  recognizable direct-wave band and a plausible arcing subsurface
+  reflector; the direct-wave-band chunk shows the same banding at full
+  resolution; a mid-radargram chunk shows clean noise-like clutter texture
+  with no transposition, mirroring, tiling, or corruption artifacts.
+- **Deferred, deliberately, within #118's own stated scope**:
+  - The `ridal server render overview|chunk` diagnostic CLI commands --
+    these need the CLI/HTTP wiring that belongs in M6, not before it.
+  - The LRU block-alignment read cache from the plan's §05 (one HDF5-chunk
+    read serving all render chunks inside it). `source.rs`'s *correctness*
+    property (never loading a full radargram) does not depend on this --
+    it's a pure performance layer that belongs with M5's caching
+    infrastructure rather than duplicated ahead of it.
+  - Multilevel `(z, x, y)` tiling: explicitly out of scope for the entire
+    first milestone per #115/#118, not specific to this session.
+
 ## Deviations from the plan so far
 
 - Route paths drop file extensions (axum constraint, M0). Plan will be
   updated to match before M6.
 - `RevisionId`/`FastRevisionFingerprintV1` moved from M2 to M3 (see above).
+- Diagnostic CLI render commands moved from M4 to M6 (see M4 findings).
 
 ## Where to resume
 
-**Next: M4, the streaming renderer (#118).** Per the plan: `SourceReader`
-with hyperslab reads + an aligned block cache, run-based sampled amplitude
-limits (128 runs x 16 traces, fixed seed from the revision ID),
-`RenderProfile`, chunk grid math (`[[-(y*C+C), x*C], [-(y*C), x*C+C]]` --
-already empirically verified in M0), NaN-aware area-weighted mean
-resampling, edge padding, JPEG encoding (not WebP -- see plan §02), and the
-`ridal server render overview|chunk` diagnostic CLI commands. Test against
-an asymmetric synthetic fixture to catch transposition/mirroring, and
-against both `scale == 1` (real assets, since both are under the 8192x4096
-cap) and `scale < 1` paths.
+**Next: M5, the render service and cache (#119).** Per the plan:
+`RenderVariantId`/`RenderObjectKey` (fold in `RevisionId` from M3's
+`catalog.rs` + `RenderProfile::cache_key_fragment()` from M4's `profile.rs`
++ resampler/renderer version constants), a byte-bounded (not item-count-
+bounded) in-memory LRU for encoded images, `--cache-memory-mb`, and the
+`--source-cache-mb` block-alignment read cache deferred from M4 (see M4
+findings for why it landed here). The read/render split from the plan's
+§05 matters here: reads must stay serialized behind netcdf's lock (see the
+M2/M3 concurrency findings above -- this is the same underlying
+constraint), while rendering fans out across `spawn_blocking` workers
+bounded by `--n-workers`. `RenderService` should compose `SourceReader`
+(M4) + `Renderer` (M4) + the cache, in that order: key construction ->
+cache lookup -> render on miss -> insert -> return.
 
-**Before starting M4**, worth 5 minutes: decide whether to also fix the
+**Before starting M5**, worth 5 minutes: decide whether to also fix the
 `test_projinfo_to_wkt` pre-existing flake noted above (unrelated to this
 work, already flagged in its own code comment) -- not blocking, just
 noting it's now confirmed to still occur.
