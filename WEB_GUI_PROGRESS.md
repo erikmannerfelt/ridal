@@ -17,8 +17,8 @@ update). Milestone numbering matches that plan.
 | M2: inspection + revision identity (#123, #117) | done (revision identity deferred, see below) | - |
 | M3: catalog + track (#122 + new) | done | `4fd2e7a` |
 | M4: streaming renderer (#118) | done | `33ab2e6` |
-| M5: render service + cache (#119) | **next** | - |
-| M6: HTTP app + launch modes (#120) | pending | - |
+| M5: render service + cache (#119) | done | `f75bc6e` |
+| M6: HTTP app + launch modes (#120) | **next** | - |
 | M7: index, viewer, sync, x-scale (#121 + new) | pending | - |
 | M8: concurrency hardening | stretch | - |
 
@@ -225,23 +225,60 @@ build is available).
 - `RevisionId`/`FastRevisionFingerprintV1` moved from M2 to M3 (see above).
 - Diagnostic CLI render commands moved from M4 to M6 (see M4 findings).
 
+## M5 findings
+
+- Built `render/service.rs`: `RenderVariantId`/`RenderObjectKey` (blake3
+  over revision ID + view + `profile.cache_key_fragment()` from M4 +
+  version constants), `ByteBoundedCache` (wraps `lru::LruCache` with
+  manual byte tracking, since the `lru` crate itself is item-count-
+  bounded, not byte-bounded), and `RenderService` composing `SourceReader`
+  + `Renderer` (both M4) with the cache in the required order.
+- No new bugs this milestone either -- all 7 new tests passed first try,
+  including the one that actually matters most: reusing sampled limits
+  across multiple chunks in the same variant (verified by asserting
+  `limits_cache.len() == 1` after rendering two different chunks).
+- **Deliberate scope decision, not a shortfall**: `RenderService`'s
+  concurrency policy (bound rendering via `--n-workers` +
+  `spawn_blocking`, keep reads serialized behind netcdf's lock) is
+  *documented* in the module but not yet *enforced* by concrete async
+  primitives. Reasoning: `&mut self` methods already serialize read
+  access correctly for now, and there is no concurrent caller yet to
+  bound -- that's HTTP request handling, which is M6. Wiring a semaphore
+  around nothing untested seemed worse than deferring it to where it's
+  actually exercised.
+- `--source-cache-mb` remains a documented placeholder in
+  `RenderServiceConfig` -- the read cache it configures was deferred from
+  M4 and is deferred again, now explicitly to M6/M8 once real HTTP load
+  exists to justify it.
+
 ## Where to resume
 
-**Next: M5, the render service and cache (#119).** Per the plan:
-`RenderVariantId`/`RenderObjectKey` (fold in `RevisionId` from M3's
-`catalog.rs` + `RenderProfile::cache_key_fragment()` from M4's `profile.rs`
-+ resampler/renderer version constants), a byte-bounded (not item-count-
-bounded) in-memory LRU for encoded images, `--cache-memory-mb`, and the
-`--source-cache-mb` block-alignment read cache deferred from M4 (see M4
-findings for why it landed here). The read/render split from the plan's
-§05 matters here: reads must stay serialized behind netcdf's lock (see the
-M2/M3 concurrency findings above -- this is the same underlying
-constraint), while rendering fans out across `spawn_blocking` workers
-bounded by `--n-workers`. `RenderService` should compose `SourceReader`
-(M4) + `Renderer` (M4) + the cache, in that order: key construction ->
-cache lookup -> render on miss -> insert -> return.
+**Next: M6, the HTTP application and launch modes (#120).** This is the
+largest remaining milestone: shared axum `Router` + `AppState`, `ridal
+gui` and `ridal server start` (loopback default, ephemeral port
+selection, browser opening that warns-not-fails, graceful shutdown),
+MiniJinja base/index/viewer/error templates, versioned API routes, embedded
+frontend assets (`include_bytes!` over M0's vendored Leaflet), structured
+JSON error envelopes, and the `ridal server render overview|chunk`
+diagnostic CLI commands deferred from M4.
 
-**Before starting M5**, worth 5 minutes: decide whether to also fix the
+**Two things M0 already found that apply directly here**:
+1. Route paths must NOT put a parameter directly before a literal
+   extension -- axum 0.8 rejects `{y}.jpg` at registration
+   ("Only one parameter is allowed per path segment"). Use
+   `.../chunks/{profile}/{x}/{y}` (no extension) and carry format via
+   `Content-Type`, exactly as M0's throwaway smoke server proved works.
+2. The `[[-(y*C+C), x*C], [-(y*C), x*C+C]]` Leaflet bounds formula is
+   already verified against a real headless-Chromium screenshot -- no
+   need to re-derive or re-verify that math, `grid.rs` (M4) already
+   implements it and is tested.
+
+**Also update**: `AGENTS.md` build lines and both CI workflow files need
+`-F cli,server` added, per the plan. `AGENTS.md` is gitignored in this
+repo, so that specific edit won't show up in `git status` -- don't let
+that read as "forgotten."
+
+**Before starting M6**, worth 5 minutes: decide whether to also fix the
 `test_projinfo_to_wkt` pre-existing flake noted above (unrelated to this
 work, already flagged in its own code comment) -- not blocking, just
 noting it's now confirmed to still occur.
