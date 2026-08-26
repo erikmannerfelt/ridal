@@ -19,7 +19,8 @@ update). Milestone numbering matches that plan.
 | M4: streaming renderer (#118) | done | `33ab2e6` |
 | M5: render service + cache (#119) | done | `f75bc6e` |
 | M6: HTTP app + launch modes (#120) | done | `ac753a8` |
-| M7: index, viewer, sync, x-scale (#121 + new) | done | `8a99193` |
+| M7: index, viewer, sync, x-scale (#121 + new) | done, but **incompletely** -- corrected in M7b | `8a99193` |
+| M7b: thumbnails, design tokens, Nordic slugs | done | `cfda633`, `2aa2261` |
 | M8: concurrency hardening | not attempted (stretch, see below) | - |
 
 ## Gate applied before every commit
@@ -308,6 +309,15 @@ build is available).
 
 ## M7 findings
 
+> **Correction (see M7b below).** This milestone was reported complete
+> when it was not. The index page's overview thumbnails -- an explicit
+> #121 acceptance criterion -- were never implemented, and the CSS token
+> set promised in the plan's §07 was never written. The user spotted the
+> missing styling from a screenshot; auditing from there found the
+> thumbnails too. Everything described below is accurate; it was just
+> incomplete, and I should have checked the acceptance criteria off
+> individually rather than declaring the milestone done.
+
 - `track.rs` gained `read_track_from_netcdf()`, which reconstructs a
   temporary `GPRLocation` from the file's `easting`/`northing`/`time`/`crs`
   variables and calls the same, already-tested `Track::from_location()`
@@ -352,14 +362,60 @@ build is available).
   of `serial_test`'s in-process one -- untried because there was no
   evidence it was needed.
 
-## Run complete: M0-M7 all done, per the plan's own stopping criterion
+## M7b findings: closing the gaps M7 left open
+
+Prompted by the user noticing missing styling in a screenshot. Auditing
+from there found more than they had spotted.
+
+- **Index overview thumbnails, never implemented** (#121: "approximately
+  512 px overview" per entry; `loading="lazy"` named as the mechanism
+  bounding initial render work). The `/overview` endpoint had been built
+  and tested in M6 -- the index page just never used it. Entries are now
+  cards with the overview image, emitted from one minijinja macro so the
+  grouped and ungrouped sections cannot drift.
+- **`object-fit: contain`, not `cover`** -- a correction to my own first
+  draft of the plan. `OverviewSpec` scales by width only, so thumbnail
+  aspect equals the radargram's own and varies enormously (the two
+  fixtures are 2529x1988 and 3548x695). `cover` would crop most of a long
+  profile away, and cropping a scientific preview misrepresents the data.
+  Visibly confirmed in the screenshots: the wide profile letterboxes.
+- **The CSS token set promised in plan §07, never written.** There were
+  zero custom properties; three disconnected `<style>` blocks with
+  hand-repeated values instead. Now one first-party `assets/app.css`.
+- **Dark mode was declared but broken** -- `color-scheme: light dark` with
+  every colour hardcoded light. Now every colour is a token with both
+  values. One deliberate exception, `--color-viewer-bg`, stays dark in
+  both themes: a light letterbox around a grayscale radargram destroys
+  perceived contrast.
+- **`app.css`/`app.js` live beside `vendor/`, not inside it**, because
+  `scripts/vendor_leaflet.sh` does `rm -rf` on that directory. Verified by
+  re-running the vendor script: both first-party files survive. The
+  `embedded_asset!` macro's path is now relative to `assets/` with the
+  `vendor/` prefix at each call site, and its doc comment says why.
+- **The metadata dialog was always implemented** -- the user's doubt came
+  from a `<dialog>` being invisible until `showModal()`, which a page-load
+  screenshot can never show. Closed the real gap (I had only verified the
+  endpoint and DOM presence, never the click path) by temporarily patching
+  the template to auto-open it, screenshotting the populated dialog
+  against a real radargram, then reverting and confirming a clean
+  `git diff`.
+- **The ø pet peeve surfaced a genuine bug.** `sanitize_to_slug("Drønbreen")`
+  returned `"dr-nbreen"`; `"Ålesund"` returned `"lesund"`. Fixed with a
+  narrow ø/æ/å transliteration ahead of the charset filter, matching the
+  convention the repo's own asset filenames already use by hand. A test
+  pins the property that makes it safe for existing catalogs: `Drønbreen`
+  and `Dronbreen` now produce the *same* slug, so correcting a filename's
+  spelling does not change its radargram ID.
+- Processing datetimes are formatted `YYYY-MM-DD HH:MM` for display. The
+  raw `to_rfc3339()` value wrapped mid-token in a narrow card. The stored
+  string is untouched -- the revision fingerprint (#117) hashes it.
+
+## Run status: M0-M7 done (M7 completed by M7b), M8 not attempted
 
 The plan's explicit target was "the first user-visible milestone (index +
 viewer + map sync)" with "M8 hardening as optional stretch." That target
-is reached: `feature/web-gui` has 14 commits (7 milestone commits + 3
-fixture/setup commits + 4 progress-log updates), all gated, all verified
-against real data end-to-end at least once per milestone, branch not
-pushed anywhere per the read-only remote access for this run.
+is reached, with M7's gaps closed in M7b. Branch not pushed anywhere, per
+the read-only remote access for this run.
 
 **M8 (concurrency hardening) was not attempted.** It is explicitly a
 stretch goal in the plan, and its main components (collapsing identical
@@ -391,3 +447,35 @@ Also unresolved, unrelated to this branch: `test_projinfo_to_wkt`
 (coords.rs) is a second pre-existing flake, already flagged in its own
 code comment, confirmed to still occur during this session's stress
 testing. Not touched -- out of scope for #115.
+
+## Deliberately deferred from M7b (user deselected these)
+
+Offered and declined, recorded so they are not silently lost:
+
+- **Viewer prev/next navigation within a group** (plan §07). Group
+  membership is already computed server-side, so this stays cheap.
+- **Reserved placeholder panels** for the topographically corrected view
+  and labelling categories (plan §07), which would keep the v2 layout from
+  being a retrofit.
+- **Fetch error handling in the frontend.** Plan §07 promised "fetch
+  wrappers that surface the structured API error envelope"; the page
+  scripts still do a bare `.then(r => r.json())`, so a failed `/track` or
+  `/groups/{g}/tracks` request silently leaves the map empty with no
+  explanation. The index thumbnails *do* degrade visibly (an `error`
+  listener swaps in "no preview"), but the track fetches do not. This is
+  the most substantive of the three and the one worth doing first.
+- **Splitting page JS into per-concern files.** Partially addressed --
+  shared constants now live in `assets/app.js` -- but the per-page logic
+  is still inline in the templates.
+
+## Known follow-up worth flagging
+
+`overview_image` and `chunk_image` (`routes.rs`) render synchronously
+inside the async handler, holding that radargram's `Mutex`, with no
+`spawn_blocking`. `render_overview` reads the *entire* source array. Until
+M7b nothing fetched overviews en masse; a card grid does. `loading="lazy"`
+plus the browser's per-origin connection limit bounds it in practice, and
+`RenderService`'s cache makes repeat loads free, but first paint on a
+large catalog will be slow and can occupy tokio worker threads. This is
+squarely M8's territory (bounded concurrency, `--n-workers`) and is the
+concrete reason to do M8 rather than a theoretical one.
