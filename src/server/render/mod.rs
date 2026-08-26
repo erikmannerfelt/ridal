@@ -12,4 +12,5 @@ pub mod grid;
 pub mod profile;
 pub mod renderer;
 pub mod resample;
+pub mod service;
 pub mod stats;
