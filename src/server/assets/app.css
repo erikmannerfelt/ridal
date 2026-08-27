@@ -26,6 +26,13 @@
   --color-warning-border: #e0b23c;
   --color-warning-text: #5a4310;
 
+  /* Frosted map-popup background (PFA_website's style.css:632-637,
+   * ported through tokens so it works in both themes -- their literal
+   * white would be wrong in dark mode). Drawn over satellite imagery, so
+   * it needs its own alpha-blended tone rather than reusing
+   * --color-surface directly. */
+  --color-popup-frost: rgb(255 255 255 / 55%);
+
   /* Theme-independent on purpose: this is the letterbox behind grayscale
    * radargram chunks. A light backdrop around a grayscale section
    * destroys perceived contrast, so it stays dark in both themes. */
@@ -70,6 +77,7 @@
     --color-warning-bg: #3a2f14;
     --color-warning-border: #8a6a20;
     --color-warning-text: #f2dfae;
+    --color-popup-frost: rgb(30 32 36 / 55%);
   }
 }
 
@@ -102,6 +110,17 @@ header a {
 
 header a:hover {
   color: var(--color-accent-hover);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.brand-logo {
+  height: 1.5em;
+  width: auto;
 }
 
 main {
@@ -181,7 +200,8 @@ section.group {
 /* The viewer's "back to catalog" link targets /#card-{id}; without this
  * the jump is silent and the user has to hunt for which card they came
  * from. */
-.card:target {
+.card:target,
+.card.is-hovered {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 2px var(--color-accent);
 }
@@ -282,6 +302,29 @@ section.group {
   background: var(--color-surface-sunken);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+}
+
+/* ---------- Leaflet popup frosting ---------- */
+
+.leaflet-popup-content-wrapper,
+.leaflet-popup-tip {
+  background: var(--color-popup-frost);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  color: var(--color-text);
+}
+
+.leaflet-popup-content a {
+  font-weight: 600;
+}
+
+.popup-thumb {
+  display: block;
+  margin-top: var(--space-1);
+  max-width: 220px;
+  max-height: 120px;
+  width: 100%;
+  object-fit: contain;
 }
 
 table.meta {

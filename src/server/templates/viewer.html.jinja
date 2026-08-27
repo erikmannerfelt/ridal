@@ -175,15 +175,16 @@
       .then((siblings) => {
         for (const [siblingId, info] of Object.entries(siblings)) {
           if (siblingId === RADARGRAM_ID) continue;
-          trackToLatLngs(info.track).forEach((latlngs) => {
+          const layers = trackToLatLngs(info.track).map((latlngs) =>
             L.polyline(latlngs, {
               color: RIDAL.siblingColor,
               weight: RIDAL.siblingWeight,
               opacity: RIDAL.siblingOpacity,
             })
-              .bindPopup(`<a href="/view/${siblingId}">${info.effective_label}</a>`)
-              .addTo(overviewMap);
-          });
+              .bindPopup(RIDAL.popupContent(siblingId, info.effective_label))
+              .addTo(overviewMap),
+          );
+          RIDAL.bindTrackHighlight(layers, null, RIDAL.siblingWeight, RIDAL.siblingFocusWeight);
         }
       });
   }

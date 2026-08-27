@@ -129,6 +129,8 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             "/static/images/layers-2x.png",
             get(super::assets::layers_2x_png),
         )
+        .route("/static/images/logo.svg", get(super::assets::logo_svg))
+        .route("/favicon.ico", get(super::assets::favicon))
         .route("/api/v1/health", get(super::routes::health))
         .route("/api/v1/profiles", get(super::routes::list_profiles))
         .route("/api/v1/datasets", get(super::routes::list_datasets))
@@ -383,6 +385,8 @@ mod tests {
                 "/static/leaflet.css",
                 "/static/app.css",
                 "/static/app.js",
+                "/static/images/logo.svg",
+                "/favicon.ico",
             ] {
                 let (status, body) = get(&app, asset).await;
                 assert_eq!(status, StatusCode::OK, "{asset}");
@@ -426,6 +430,10 @@ mod tests {
             assert!(
                 html.contains("/static/app.css"),
                 "first-party stylesheet must be linked"
+            );
+            assert!(
+                html.contains("/static/images/logo.svg"),
+                "logo must be shown beside the wordmark in the shared header"
             );
         });
     }
