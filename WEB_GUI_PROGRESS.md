@@ -22,6 +22,7 @@ update). Milestone numbering matches that plan.
 | M7: index, viewer, sync, x-scale (#121 + new) | done, but **incompletely** -- corrected in M7b | `8a99193` |
 | M7b: thumbnails, design tokens, Nordic slugs | done | `cfda633`, `2aa2261` |
 | M8: concurrency hardening | not attempted (stretch, see below) | - |
+| M7c: viewer refinement round (see below) | done | `b63dbcf`, `290ea53`, `3fea81c`, `91023ed`, `2b43d8d` |
 
 ## Gate applied before every commit
 
@@ -410,7 +411,92 @@ from there found more than they had spotted.
   raw `to_rfc3339()` value wrapped mid-token in a narrow card. The stored
   string is untouched -- the revision fingerprint (#117) hashes it.
 
-## Run status: M0-M7 done (M7 completed by M7b), M8 not attempted
+## M7c findings: viewer refinement round (real-usage feedback)
+
+The first pass of feedback after M7b landed -- five commits, all local to
+`feature/web-gui`.
+
+- **`positive` render profile** (`b63dbcf`). PFA_website's own "abslog"
+  turned out not to be a log transform at all: `normalize()` estimates
+  percentile bounds from `|amplitude|` (skipping the direct-wave band)
+  and stretches the *signed* value against those bounds, biasing the
+  display toward positive returns. `RenderProfile.abslog: bool` became
+  an `AmplitudeTransform` enum (`Linear`/`AbsLog`/`Positive`), because
+  `Positive` needs a different domain for percentile estimation (`|x|`)
+  than for the displayed pixel (signed `x`) -- something a single bool
+  couldn't express, and genuinely two different functions
+  (`to_stats_domain` vs `to_display_domain`) rather than one reused for
+  both, unlike the two pre-existing profiles.
+- **X-scale centring + distance/TWTT/depth readout** (`290ea53`).
+  Changing horizontal scale used to re-lay the profile from its left
+  edge, silently scrolling you away from whatever you were looking at;
+  now the view re-centers on the same trace. New `/api/v1/datasets/{id}/axes`
+  route serves distance/twtt/depth (each degrading independently to
+  `null` for fixtures that never wrote it -- depth and distance are both
+  nonlinear, so they must be served as arrays, not reconstructed
+  client-side from a step size).
+- **Metadata dialog presentation** (`290ea53`, `2b43d8d`). Moved from a
+  raw attribute dump to a curated view: prettified labels
+  (`ridal_processing_datetime` -> "Processing datetime"), `*_unit`
+  attributes merged into their value's parenthetical instead of a
+  separate row, every float rounded to 4dp on top of fixing the
+  underlying `f32`->`f64` widening artifact at its root
+  (`f32_to_f64_exact` recovers the shortest round-trip decimal, so
+  `0.168_f32` no longer reaches the dialog as `0.16799999773502350`),
+  start/stop datetime merged into one row, a synthetic Shape row, and a
+  curated identity/acquisition/processing/everything-else order. The
+  banner collapsed to a single Radargram ID row
+  ("dronbreen-2022 (Rev. 493a1cc; processed ...)"); Group, full
+  Revision, Processed and Shape all moved into the dialog. Processing
+  steps/log got their own `<details>`, with the log's tab-separated
+  per-step detail broken onto its own line (it used to collapse into an
+  unreadable run-on paragraph, since HTML collapses whitespace).
+- **Frosted popups, two-way hover highlight, header logo** (`3fea81c`).
+  Sibling/group track popups gained an overview thumbnail and
+  PFA_website's frosted `backdrop-filter` background, ported through the
+  theme tokens (plus the `-webkit-` prefix PFA's own CSS omits) so it
+  works in dark mode too. Index cards and their matching map tracks now
+  highlight each other on hover in both directions, sharing one
+  hover/popup-open flag (`RIDAL.bindTrackHighlight`) so the two
+  highlight sources don't fight over the layer's weight when one ends
+  before the other. `images/logo.svg` now shows beside the wordmark in
+  the shared header via a new `embedded_repo_asset!` macro arm (the logo
+  lives at the repo root, not under `src/server/assets/`); `logo.png`
+  is served as `/favicon.ico`, previously unhandled entirely.
+- **Group name/ID split** (`2b43d8d`, the largest of the five: 13 files).
+  A group previously had one field doing double duty as both the
+  display heading and the URL/API key, forcing a group's name into the
+  same ASCII-slug rules as its id. Applied #116's radargram-id/
+  display-name pattern one level up: `GroupName` (free-form Unicode,
+  mirrors `DisplayName`) plus a derived `GroupId` slug (via
+  `sanitize_to_slug`, so `--group-name "Drønbreen"` derives id
+  "dronbreen" for free), with `--group-id` as an explicit override.
+  `--group` keeps working as an alias for `--group-name`. Conflicting
+  names across entries sharing one group id resolve exactly like a
+  duplicate radargram id already does (newest `processing_datetime`
+  wins, ties broken by path order, with a `CatalogWarning` either way)
+  -- reused, not reinvented, via a new `Catalog::group_names` map.
+- Verified end-to-end against both real `assets/mala` fixtures processed
+  with `--group-name "Drønbreen"`: exported attributes, catalog
+  discovery, the index heading, and the viewer's "(Group: Drønbreen)"
+  all show the Unicode name, while `/api/v1/groups/dronbreen/tracks` and
+  `data-group` use the derived ASCII id. Zero console errors across a
+  headless-Chromium pass over the index and viewer pages (including the
+  metadata dialog, verified with the same temporarily-auto-open-then-
+  revert trick M7b used, confirmed via `git diff` afterward). Dark theme
+  verified statically via the CSS token diff rather than a screenshot --
+  this container's headless Chromium build did not honor
+  `--blink-settings=preferredColorScheme` or `--force-dark-mode`, and
+  the earlier M7b round already established that the token mechanism
+  itself renders correctly in both themes.
+- Test suite run 5x across this round's commits (4 clean, 1 hitting the
+  documented `Netcdf(-101)` flake on a different test than before --
+  consistent with a shared-lock concurrency flake shifting location as
+  new `#[serial_test::serial(netcdf)]` tests were added, not a
+  regression); `cargo fmt --check` and `cargo clippy -F cli,server`/
+  `-F cli -- -D warnings` both clean throughout.
+
+## Run status: M0-M7 done (M7 completed by M7b, refined in M7c), M8 not attempted
 
 The plan's explicit target was "the first user-visible milestone (index +
 viewer + map sync)" with "M8 hardening as optional stretch." That target
