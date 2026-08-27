@@ -14,7 +14,7 @@ use ndarray::Array2;
 use super::colormap::{self, encode};
 use super::grid::{Chunk, OverviewSpec, SourceWindow};
 use super::profile::RenderProfile;
-use super::resample::resample_area_weighted_mean;
+use super::resample::resample;
 use crate::server::source::SourceReader;
 
 /// Fill color for pixels with no valid source data: padding beyond the
@@ -44,11 +44,25 @@ impl<'a> Renderer<'a> {
         limits: (f32, f32),
     ) -> Result<Vec<u8>, String> {
         let source = self.read_source_for_window(&chunk.source_window, super::grid::CHUNK_SIZE)?;
-        let resampled = resample_area_weighted_mean(
+        // Resample into the chunk's *valid* extent, which for a
+        // rightmost/bottommost chunk is smaller than CHUNK_SIZE. Rendering
+        // straight into a full CHUNK_SIZE output stretched that chunk's
+        // source window across the whole box (by CHUNK_SIZE/valid_width),
+        // shifting every trace in it off its true position and making the
+        // last chunk row/column visibly discontinuous.
+        //
+        // The image is returned at its true size rather than padded out:
+        // the viewer places each chunk using the same valid extent (see
+        // `chunkBounds` in viewer.html.jinja), so padding would only add a
+        // border of dead pixels beyond the radargram's real extent.
+        // `PAD_VALUE` still fills footprints with no valid source data
+        // *inside* the chunk, which is a different thing entirely.
+        let resampled = resample(
             source.view(),
             &self.local_window(&chunk.source_window),
-            super::grid::CHUNK_SIZE,
-            super::grid::CHUNK_SIZE,
+            chunk.valid_width,
+            chunk.valid_height,
+            profile.resampling,
         );
         let image = colormap::render_grayscale(&resampled, profile, limits, PAD_VALUE);
         encode(&image, profile.format)
@@ -69,8 +83,13 @@ impl<'a> Renderer<'a> {
             col1: src_w as f64,
         };
         let source = self.reader.read_window(0, src_h, 0, src_w)?;
-        let resampled =
-            resample_area_weighted_mean(source.view(), &window, spec.width, spec.height);
+        let resampled = resample(
+            source.view(),
+            &window,
+            spec.width,
+            spec.height,
+            profile.resampling,
+        );
         let image = colormap::render_grayscale(&resampled, profile, limits, PAD_VALUE);
         encode(&image, profile.format)
     }
@@ -155,7 +174,7 @@ mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
-    fn edge_chunk_renders_without_error_and_is_padded() {
+    fn edge_chunk_renders_at_its_valid_extent() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.nc");
         // 300x300 with 256px chunks -> edge chunk (1,1) is only 44x44 valid.
@@ -173,9 +192,79 @@ mod tests {
             .render_chunk(&chunk, &profile, (0.0, (300 * 300) as f32))
             .unwrap();
         let decoded = image::load_from_memory(&bytes).unwrap();
-        // Still a full CHUNK_SIZE image -- padding fills the rest.
-        assert_eq!(decoded.width(), super::super::grid::CHUNK_SIZE as u32);
-        assert_eq!(decoded.height(), super::super::grid::CHUNK_SIZE as u32);
+        // Exactly the valid extent, not padded out to CHUNK_SIZE: the
+        // viewer places edge chunks using the same extent, so padding
+        // would just add dead pixels past the radargram's real edge.
+        assert_eq!(decoded.width(), chunk.valid_width as u32);
+        assert_eq!(decoded.height(), chunk.valid_height as u32);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn edge_chunk_is_not_stretched_across_a_full_chunk_box() {
+        // Regression: render_chunk used to resample an edge chunk's source
+        // window into the *full* CHUNK_SIZE output, stretching it by
+        // CHUNK_SIZE/valid_width. That put the chunk's traces at the wrong
+        // x positions and made the last chunk row/column visibly
+        // discontinuous against their neighbours -- glaring under the
+        // high-contrast `positive` profile, subtle but still wrong under
+        // `default`.
+        //
+        // Pinned by comparing the edge chunk against the same source
+        // region resampled at its true scale: a stretched render would
+        // disagree everywhere except the leftmost column.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_asymmetric_nc(&path, 300, 300);
+
+        let reader = SourceReader::open(&path).unwrap();
+        let renderer = Renderer::new(&reader);
+        let raster = ViewerRaster::new(300, 300);
+        let grid = raster.grid();
+        let chunk = grid.chunk(1, 1).unwrap();
+        assert!(chunk.valid_width < super::super::grid::CHUNK_SIZE);
+        assert!(chunk.valid_height < super::super::grid::CHUNK_SIZE);
+
+        // PNG so the assertion reads exact pixel values rather than JPEG's
+        // approximations of them.
+        let profile = RenderProfile {
+            format: super::super::profile::ImageFormat::Png,
+            ..RenderProfile::default_profile()
+        };
+        let limits = (0.0, (300 * 300) as f32);
+        let bytes = renderer.render_chunk(&chunk, &profile, limits).unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().to_luma8();
+        assert_eq!(decoded.width(), chunk.valid_width as u32);
+        assert_eq!(decoded.height(), chunk.valid_height as u32);
+
+        // Independently resample the same source window at the chunk's
+        // true output size and render it the same way; the chunk route
+        // must agree pixel for pixel.
+        let source = renderer
+            .read_source_for_window(&chunk.source_window, super::super::grid::CHUNK_SIZE)
+            .unwrap();
+        let expected = colormap::render_grayscale(
+            &resample(
+                source.view(),
+                &renderer.local_window(&chunk.source_window),
+                chunk.valid_width,
+                chunk.valid_height,
+                profile.resampling,
+            ),
+            &profile,
+            limits,
+            PAD_VALUE,
+        );
+        for y in 0..chunk.valid_height as u32 {
+            for x in 0..chunk.valid_width as u32 {
+                assert_eq!(
+                    decoded.get_pixel(x, y).0[0],
+                    expected.get_pixel(x, y).0[0],
+                    "edge chunk disagrees at ({x}, {y})"
+                );
+            }
+        }
     }
 
     #[test]

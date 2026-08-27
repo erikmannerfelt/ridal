@@ -10,10 +10,18 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResamplingMethod {
-    /// Area-weighted mean over source-pixel footprints (#118). The only
-    /// method implemented in v1; nearest-neighbor is deliberately excluded
-    /// per the issue's own guidance for this data.
+    /// Area-weighted mean over source-pixel footprints (#118).
+    /// Nearest-neighbor is deliberately excluded per the issue's own
+    /// guidance for this data.
     Mean,
+    /// Largest source value in each footprint. For a profile that reads
+    /// *signed* amplitude asymmetrically (see
+    /// [`AmplitudeTransform::Positive`]), the mean is the wrong reducer:
+    /// radar traces oscillate about zero, so averaging a large footprint
+    /// cancels them toward zero and the asymmetric stretch then clips the
+    /// result to black. Identical to `Mean` at a 1:1 footprint. See
+    /// `resample::resample` for the full rationale.
+    Peak,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +155,11 @@ impl RenderProfile {
             // percentile estimate, matching PFA_website's
             // `normalize()`, which skips the first 50 sample rows.
             stats_skip_first_samples: 50,
+            // Not `Mean`: averaging signed, oscillating amplitude over a
+            // downsampled footprint cancels it toward zero, which this
+            // profile's black level then clips to black -- the reason
+            // `positive` overviews rendered almost entirely dark.
+            resampling: ResamplingMethod::Peak,
             ..Self::default_profile()
         }
     }

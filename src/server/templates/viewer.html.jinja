@@ -92,9 +92,16 @@
     // The x-scale factor stretches/squeezes only the horizontal extent --
     // a pure client-side view transform, no new render, no server
     // round-trip (the plan's explicit design for this control).
+    //
+    // The rightmost/bottommost chunks cover fewer than CHUNK_SIZE pixels
+    // (the raster rarely divides evenly), and the server renders them at
+    // exactly that size. Placing them in a full CHUNK_SIZE box instead
+    // would stretch them over their neighbours' edges.
+    const validWidth = Math.min(CHUNK_SIZE, VIEWER_WIDTH - x * CHUNK_SIZE);
+    const validHeight = Math.min(CHUNK_SIZE, VIEWER_HEIGHT - y * CHUNK_SIZE);
     return [
-      [-(y * CHUNK_SIZE + CHUNK_SIZE), x * CHUNK_SIZE * scale],
-      [-(y * CHUNK_SIZE), (x * CHUNK_SIZE + CHUNK_SIZE) * scale],
+      [-(y * CHUNK_SIZE + validHeight), x * CHUNK_SIZE * scale],
+      [-(y * CHUNK_SIZE), (x * CHUNK_SIZE + validWidth) * scale],
     ];
   }
 

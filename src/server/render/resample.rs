@@ -13,6 +13,7 @@
 use ndarray::{Array2, ArrayView2};
 
 use super::grid::SourceWindow;
+use super::profile::ResamplingMethod;
 
 fn overlap_1d(a0: f64, a1: f64, b0: f64, b1: f64) -> f64 {
     (a1.min(b1) - a0.max(b0)).max(0.0)
@@ -33,6 +34,37 @@ pub fn resample_area_weighted_mean(
     window: &SourceWindow,
     out_width: usize,
     out_height: usize,
+) -> Array2<f32> {
+    resample(
+        source,
+        window,
+        out_width,
+        out_height,
+        ResamplingMethod::Mean,
+    )
+}
+
+/// Resample `source` over `window` into an `out_height x out_width` grid
+/// using `method`.
+///
+/// [`ResamplingMethod::Peak`] exists because the mean is the wrong
+/// reducer for a profile that reads *signed* amplitude asymmetrically.
+/// Radar traces oscillate about zero, so averaging a footprint of many
+/// source samples largely cancels them out; the `positive` profile then
+/// clips the collapsed result below its black level and the whole image
+/// goes black. That is exactly what happened to `positive` overviews,
+/// which downsample ~5x in each axis. Taking the largest value in the
+/// footprint instead keeps "the strongest positive return here", which is
+/// what that profile is trying to show in the first place. At a 1:1
+/// footprint (a single source sample, i.e. the viewer's own chunks when
+/// the raster is not downsampled) `Peak` and `Mean` agree exactly, so
+/// this changes nothing about the full-resolution view.
+pub fn resample(
+    source: ArrayView2<f32>,
+    window: &SourceWindow,
+    out_width: usize,
+    out_height: usize,
+    method: ResamplingMethod,
 ) -> Array2<f32> {
     let mut out = Array2::from_elem((out_height, out_width), f32::NAN);
     if out_width == 0 || out_height == 0 {
@@ -63,6 +95,8 @@ pub fn resample_area_weighted_mean(
 
             let mut weighted_sum = 0.0_f64;
             let mut weight_sum = 0.0_f64;
+            let mut peak = f32::NEG_INFINITY;
+            let mut any_valid = false;
             for row in ir0..ir1 {
                 let row_w = overlap_1d(row as f64, (row + 1) as f64, r0, r1);
                 if row_w <= 0.0 {
@@ -75,6 +109,14 @@ pub fn resample_area_weighted_mean(
                     }
                     let v = source[[row, col]];
                     if v.is_finite() {
+                        // Peak is deliberately unweighted: a footprint's
+                        // strongest return is its strongest return
+                        // regardless of what fraction of the pixel it
+                        // covers. Weighting would scale peaks down near
+                        // footprint edges and reintroduce the very
+                        // dimming this method exists to avoid.
+                        any_valid = true;
+                        peak = peak.max(v);
                         let w = row_w * col_w;
                         weighted_sum += v as f64 * w;
                         weight_sum += w;
@@ -82,9 +124,13 @@ pub fn resample_area_weighted_mean(
                 }
             }
 
-            if weight_sum > 0.0 {
-                out[[oy, ox]] = (weighted_sum / weight_sum) as f32;
-            }
+            out[[oy, ox]] = match method {
+                ResamplingMethod::Mean if weight_sum > 0.0 => (weighted_sum / weight_sum) as f32,
+                ResamplingMethod::Peak if any_valid => peak,
+                // No valid contributions: stays NaN, the caller's "no
+                // data here" signal (rendered as the pad color).
+                _ => f32::NAN,
+            };
         }
     }
 
@@ -199,5 +245,44 @@ mod tests {
         let window = full_window(&source);
         let out = resample_area_weighted_mean(source.view(), &window, 1, 1);
         assert!((out[[0, 0]] - 20.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn peak_survives_the_cancellation_that_collapses_the_mean() {
+        // An oscillating trace, exactly the shape of real radar data: the
+        // mean of a large footprint collapses to ~0, which the `positive`
+        // profile's black level then clips away entirely. Peak keeps the
+        // strongest positive return, which is what that profile is for.
+        let source = array![[5.0f32, -5.0, 4.0, -4.0, 6.0, -6.0, 3.0, -3.0]];
+        let window = full_window(&source);
+
+        let mean = resample(source.view(), &window, 1, 1, ResamplingMethod::Mean);
+        let peak = resample(source.view(), &window, 1, 1, ResamplingMethod::Peak);
+
+        assert!(mean[[0, 0]].abs() < 0.5, "mean collapsed: {}", mean[[0, 0]]);
+        assert!((peak[[0, 0]] - 6.0).abs() < 1e-6, "peak: {}", peak[[0, 0]]);
+    }
+
+    #[test]
+    fn peak_and_mean_agree_at_a_one_to_one_footprint() {
+        // The viewer's own chunks resample 1:1 whenever the raster is not
+        // downsampled, so switching the `positive` profile to Peak must
+        // leave the full-resolution view untouched.
+        let source = array![[5.0f32, -5.0, 4.0], [-4.0, 6.0, -6.0]];
+        let window = full_window(&source);
+
+        let mean = resample(source.view(), &window, 3, 2, ResamplingMethod::Mean);
+        let peak = resample(source.view(), &window, 3, 2, ResamplingMethod::Peak);
+        for (m, p) in mean.iter().zip(peak.iter()) {
+            assert!((m - p).abs() < 1e-6, "{m} vs {p}");
+        }
+    }
+
+    #[test]
+    fn peak_reports_no_data_for_an_all_nan_footprint() {
+        let source = array![[f32::NAN, f32::NAN]];
+        let window = full_window(&source);
+        let out = resample(source.view(), &window, 1, 1, ResamplingMethod::Peak);
+        assert!(out[[0, 0]].is_nan());
     }
 }
