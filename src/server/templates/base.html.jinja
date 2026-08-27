@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Ridal{% endblock %}</title>
+  <link rel="icon" href="/favicon.ico" type="image/png">
   {# app.css must come after leaflet.css so our .leaflet-* overrides win. #}
   <link rel="stylesheet" href="/static/leaflet.css">
   <link rel="stylesheet" href="/static/app.css">
@@ -11,7 +12,10 @@
 </head>
 <body>
   <header>
-    <a href="/">Ridal</a>
+    <a href="/" class="brand">
+      <img src="/static/images/logo.svg" alt="" class="brand-logo">
+      Ridal
+    </a>
   </header>
   <main>
     {% block content %}{% endblock %}

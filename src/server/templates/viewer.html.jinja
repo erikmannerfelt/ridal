@@ -2,13 +2,15 @@
 {% block title %}{{ effective_label }} - Ridal{% endblock %}
 {% block content %}
   <p><a href="/#card-{{ radargram_id }}">&larr; Back to catalog</a></p>
-  <h1>{{ effective_label }}</h1>
+  <h1>{{ effective_label }}{% if group %} (Group: {{ group }}){% endif %}</h1>
   <table class="meta">
-    <tr><th>Radargram ID</th><td><code>{{ radargram_id }}</code></td></tr>
-    <tr><th>Group</th><td>{{ group or "(none)" }}</td></tr>
-    <tr><th>Revision</th><td><code>{{ revision_id }}</code></td></tr>
-    <tr><th>Processed</th><td>{{ processing_datetime }}</td></tr>
-    <tr><th>Shape (samples x traces)</th><td>{{ shape_height }} &times; {{ shape_width }}</td></tr>
+    <tr>
+      <th>Radargram ID</th>
+      <td>
+        <code>{{ radargram_id }}</code>
+        (Rev. {{ revision_short }}; processed {{ processing_datetime }})
+      </td>
+    </tr>
   </table>
 
   <div class="controls">
@@ -38,8 +40,13 @@
   </div>
 
   <dialog id="metadata-dialog">
-    <h2>All attributes</h2>
+    <h2>Metadata</h2>
     <table id="metadata-table"><tbody></tbody></table>
+    <details id="processing-details">
+      <summary>Processing steps &amp; log</summary>
+      <ol id="processing-steps-list"></ol>
+      <pre id="processing-log"></pre>
+    </details>
     <p><button type="button" id="metadata-close">Close</button></p>
   </dialog>
 {% endblock %}
@@ -54,10 +61,12 @@
   const VIEWER_WIDTH = {{ viewer_width }};
   const VIEWER_HEIGHT = {{ viewer_height }};
   const SOURCE_WIDTH = {{ shape_width }};
-  // viewer pixels per source trace -- inverts the render raster's own
-  // downsampling scale, so the cursor-sync trace lookup below can map a
-  // viewer x-pixel back to a real source trace index.
+  const SOURCE_HEIGHT = {{ shape_height }};
+  // viewer pixels per source trace/sample -- inverts the render raster's
+  // own downsampling scale, so the cursor-sync trace lookup below can map a
+  // viewer pixel back to a real source trace/sample index.
   const RASTER_SCALE = VIEWER_WIDTH / SOURCE_WIDTH;
+  const VERTICAL_RASTER_SCALE = VIEWER_HEIGHT / SOURCE_HEIGHT;
 
   let xScale = 1;
 
@@ -105,8 +114,22 @@
   });
 
   document.getElementById('xscale-select').addEventListener('change', (event) => {
-    xScale = parseFloat(event.target.value);
+    // Rescale from the centre trace, not the left edge: re-lay the
+    // overlays at the new scale, then re-derive the map centre's
+    // longitude by the same scale ratio the overlays themselves just
+    // moved by. Latitude and zoom are untouched -- chunkBounds only ever
+    // stretches the horizontal extent, and keeping zoom fixed is what
+    // makes this a horizontal-only zoom rather than a no-op.
+    const oldScale = xScale;
+    const newScale = parseFloat(event.target.value);
+    const center = map.getCenter();
+    xScale = newScale;
     loadChunks(map, currentProfile(), xScale);
+    map.setView(
+      [center.lat, center.lng * (newScale / oldScale)],
+      map.getZoom(),
+      { animate: false },
+    );
   });
 
   // --- Overview map: this radargram's track, plus sibling tracks in the
@@ -194,6 +217,22 @@
     return null;
   }
 
+  // --- Axes (distance/TWTT/depth) for the readout, fetched once. Each
+  // axis degrades independently to null server-side (`/axes`'s contract)
+  // for fixtures that never wrote it, so the readout below must check
+  // each one rather than assuming all-or-nothing. ---
+  let axes = null;
+  fetch(`/api/v1/datasets/${RADARGRAM_ID}/axes`)
+    .then((r) => r.json())
+    .then((a) => { axes = a; });
+
+  function axisValue(array, index) {
+    if (!array) return null;
+    const i = Math.round(index);
+    if (i < 0 || i >= array.length) return null;
+    return array[i];
+  }
+
   const readout = document.getElementById('cursor-readout');
   map.on('mousemove', (event) => {
     const viewerX = event.latlng.lng / xScale;
@@ -204,7 +243,19 @@
       return;
     }
     const traceIndex = viewerX / RASTER_SCALE;
-    readout.textContent = `trace ${traceIndex.toFixed(1)} / ${SOURCE_WIDTH}`;
+    const sampleIndex = viewerY / VERTICAL_RASTER_SCALE;
+
+    let text = `trace ${Math.round(traceIndex)} / ${SOURCE_WIDTH}`;
+    if (axes) {
+      const distance = axisValue(axes.distance, traceIndex);
+      const twtt = axisValue(axes.twtt, sampleIndex);
+      const depth = axisValue(axes.depth, sampleIndex);
+      if (distance !== null) text += ` · ${distance.toFixed(1)} m`;
+      if (twtt !== null) text += ` · TWTT ${twtt.toFixed(1)} ns`;
+      if (depth !== null) text += ` · depth ${depth.toFixed(1)} m`;
+    }
+    readout.textContent = text;
+
     if (ownTrack) {
       const pos = locateTrace(ownTrack, traceIndex);
       if (pos) {
@@ -218,26 +269,44 @@
     readout.textContent = '';
   });
 
-  // --- Metadata dialog: a button opening a <dialog> with the complete
-  // attribute set, per the PFA_website-style preference from planning
-  // (function borrowed, not its styling). ---
+  // --- Metadata dialog: a button opening a <dialog> with the server's
+  // curated, human-readable attribute view (prettified labels, merged
+  // units, rounded floats -- see routes.rs::build_metadata_entries),
+  // plus the processing steps/log in their own <details>. ---
   const dialog = document.getElementById('metadata-dialog');
   document.getElementById('metadata-button').addEventListener('click', () => {
     fetch(`/api/v1/datasets/${RADARGRAM_ID}/attributes`)
       .then((r) => r.json())
-      .then((attrs) => {
+      .then((data) => {
         const tbody = document.querySelector('#metadata-table tbody');
         tbody.innerHTML = '';
-        Object.keys(attrs).sort().forEach((key) => {
+        data.entries.forEach(({ label, value }) => {
           const row = document.createElement('tr');
           const keyCell = document.createElement('th');
-          keyCell.textContent = key;
+          keyCell.textContent = label;
           const valCell = document.createElement('td');
-          const value = attrs[key];
-          valCell.textContent = Array.isArray(value) ? value.join(', ') : String(value);
+          valCell.textContent = value;
           row.append(keyCell, valCell);
           tbody.appendChild(row);
         });
+
+        const stepsList = document.getElementById('processing-steps-list');
+        stepsList.innerHTML = '';
+        data.processing_steps.forEach((step) => {
+          const li = document.createElement('li');
+          li.textContent = step;
+          stepsList.appendChild(li);
+        });
+
+        // The log is `step (duration: Xs):\tdetail\n...` -- split on
+        // newlines, then turn each step's embedded tab into its own
+        // indented line, so it renders as one line per step detail
+        // instead of collapsing into an unreadable run-on paragraph.
+        const logLines = data.processing_log
+          .split('\n')
+          .map((line) => line.replace(/\t/g, '\n  '));
+        document.getElementById('processing-log').textContent = logLines.join('\n');
+
         dialog.showModal();
       });
   });

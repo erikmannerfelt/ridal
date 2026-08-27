@@ -145,6 +145,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::routes::dataset_attributes),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/axes",
+            get(super::routes::dataset_axes),
+        )
+        .route(
             "/api/v1/groups/{group}/tracks",
             get(super::routes::group_tracks),
         )
@@ -448,12 +452,29 @@ mod tests {
             assert!(first_vertex["lon"].as_f64().is_some());
             assert!(first_vertex["lat"].as_f64().is_some());
 
-            // Full raw attribute set, for the metadata dialog.
+            // Full raw attribute set, for the metadata dialog, plus the
+            // curated display entries built from it.
             let (status, body) = get(&app, "/api/v1/datasets/track-a/attributes").await;
             assert_eq!(status, StatusCode::OK);
             let json: Value = serde_json::from_slice(&body).unwrap();
-            assert_eq!(json["ridal_radargram_id"], "track-a");
-            assert_eq!(json["crs"], "EPSG:32633");
+            assert_eq!(json["raw"]["ridal_radargram_id"], "track-a");
+            assert_eq!(json["raw"]["crs"], "EPSG:32633");
+            let entries = json["entries"].as_array().unwrap();
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| e["label"] == "CRS" && e["value"] == "EPSG:32633"),
+                "{entries:?}"
+            );
+
+            // The `/axes` route degrades each axis to null independently
+            // when the fixture never wrote distance/twtt/depth.
+            let (status, body) = get(&app, "/api/v1/datasets/track-a/axes").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert!(json["distance"].is_null());
+            assert!(json["twtt"].is_null());
+            assert!(json["depth"].is_null());
 
             // Group tracks: both group members present, the ungrouped one absent.
             let (status, body) = get(&app, "/api/v1/groups/shared-group/tracks").await;

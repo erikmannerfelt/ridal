@@ -382,6 +382,9 @@ pub async fn viewer_page(
             effective_label => entry.effective_label(),
             group => entry.group.as_ref().map(|g| g.to_string()),
             revision_id => entry.revision_id.to_string(),
+            // First 7 hex characters, `git`-style, for the collapsed
+            // banner row -- the full ID moves to the metadata dialog.
+            revision_short => entry.revision_id.to_string().chars().take(7).collect::<String>(),
             processing_datetime => format_datetime_for_display(&entry.processing_datetime),
             shape_height => height,
             shape_width => width,
@@ -481,6 +484,17 @@ pub async fn group_tracks(
     Json(serde_json::Value::Object(out))
 }
 
+/// Widen an `f32` NetCDF attribute to `f64` via its shortest round-trip
+/// decimal string, rather than a plain numeric cast. A plain cast (`v as
+/// f64`) preserves the `f32`'s exact binary value, which `f64`'s extra
+/// precision then renders as noise (`0.168_f32` -> `0.16799999773502350`).
+/// `f32::to_string()` already produces the shortest decimal that
+/// round-trips to the same `f32`, so re-parsing it as `f64` recovers the
+/// value a human actually meant.
+fn f32_to_f64_exact(v: f32) -> f64 {
+    v.to_string().parse().unwrap_or(v as f64)
+}
+
 fn attribute_value_to_json(value: netcdf::AttributeValue) -> serde_json::Value {
     use netcdf::AttributeValue::*;
     match value {
@@ -500,8 +514,10 @@ fn attribute_value_to_json(value: netcdf::AttributeValue) -> serde_json::Value {
         Ulonglongs(v) => serde_json::json!(v),
         Longlong(v) => serde_json::json!(v),
         Longlongs(v) => serde_json::json!(v),
-        Float(v) => serde_json::json!(v),
-        Floats(v) => serde_json::json!(v),
+        Float(v) => serde_json::json!(f32_to_f64_exact(v)),
+        Floats(v) => {
+            serde_json::json!(v.into_iter().map(f32_to_f64_exact).collect::<Vec<_>>())
+        }
         Double(v) => serde_json::json!(v),
         Doubles(v) => serde_json::json!(v),
         Str(v) => serde_json::json!(v),
@@ -509,9 +525,220 @@ fn attribute_value_to_json(value: netcdf::AttributeValue) -> serde_json::Value {
     }
 }
 
-/// The complete raw global attribute set, for the viewer's metadata
-/// dialog (a button opening a `<dialog>` with everything, per your
-/// PFA-style preference -- see the planning conversation).
+/// Attribute name -> display label overrides for cases the generic
+/// strip-prefix/underscore-to-space/capitalize rule gets wrong (acronyms,
+/// mainly).
+fn label_override(name: &str) -> Option<&'static str> {
+    match name {
+        "crs" => Some("CRS"),
+        _ => None,
+    }
+}
+
+/// `ridal_processing_datetime` -> "Processing datetime",
+/// `original_filepaths` -> "Original filepaths": strip the `ridal_`
+/// namespace prefix (meaningless to a human reader), replace underscores
+/// with spaces, and capitalize only the first letter -- matching how the
+/// rest of the dialog's prose is cased.
+fn prettify_label(name: &str) -> String {
+    if let Some(overridden) = label_override(name) {
+        return overridden.to_string();
+    }
+    let stripped = name.strip_prefix("ridal_").unwrap_or(name);
+    let mut words = stripped.split('_');
+    let mut out = String::new();
+    if let Some(first) = words.next() {
+        let mut chars = first.chars();
+        if let Some(c) = chars.next() {
+            out.extend(c.to_uppercase());
+        }
+        out.push_str(chars.as_str());
+    }
+    for word in words {
+        out.push(' ');
+        out.push_str(word);
+    }
+    out
+}
+
+/// Round a float to 4 decimal places for display, trimming trailing zeros
+/// (and a bare trailing `.`) so a whole number like `5.0` still reads as
+/// `5`. Fixes the `f32`-precision-widening artifact at the point it
+/// actually matters -- what a human reads -- on top of the exact-string
+/// recovery `f32_to_f64_exact` already does at parse time.
+fn format_rounded(v: f64) -> String {
+    if !v.is_finite() {
+        return v.to_string();
+    }
+    let rounded = (v * 10_000.0).round() / 10_000.0;
+    let mut s = format!("{rounded:.4}");
+    while s.ends_with('0') {
+        s.pop();
+    }
+    if s.ends_with('.') {
+        s.pop();
+    }
+    if s == "-0" {
+        s = "0".to_string();
+    }
+    s
+}
+
+fn plain_value_string(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Number(n) if n.is_f64() => format_rounded(n.as_f64().unwrap()),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(plain_value_string)
+            .collect::<Vec<_>>()
+            .join(", "),
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::Object(_) => value.to_string(),
+    }
+}
+
+/// Format one attribute's value for display, appending its `*_unit`
+/// sibling (if any) in parentheses rather than showing it as a separate
+/// row -- "Time interval  0.3 (s)".
+fn format_display_value(value: &serde_json::Value, unit: Option<&str>) -> String {
+    let base = plain_value_string(value);
+    match unit {
+        Some(unit) => format!("{base} ({unit})"),
+        None => base,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct MetadataEntry {
+    label: String,
+    value: String,
+}
+
+/// Curated priority for known attribute keys: `(tier, order-within-tier)`.
+/// Keys not listed fall into tier 3 ("everything else"), ordered
+/// alphabetically by their prettified label -- the plan's "identity ->
+/// acquisition -> processing -> everything else alphabetically".
+///
+/// `__start_stop_datetime` and `__shape` are synthetic keys for entries
+/// this function builds itself rather than reading verbatim from `raw`.
+fn curated_priority(key: &str) -> (u8, usize) {
+    const IDENTITY: &[&str] = &[
+        "ridal_radargram_id",
+        "ridal_display_name",
+        "ridal_group",
+        "__start_stop_datetime",
+        "__shape",
+    ];
+    const ACQUISITION: &[&str] = &[
+        "antenna",
+        "antenna_separation",
+        "frequency_steps",
+        "vertical_sampling_frequency",
+        "time_interval",
+        "medium_velocity",
+        "crs",
+        "elevation_correction",
+        "total_distance",
+    ];
+    const PROCESSING: &[&str] = &["ridal_processing_datetime", "ridal_version", "original_filepaths"];
+
+    if let Some(i) = IDENTITY.iter().position(|&k| k == key) {
+        return (0, i);
+    }
+    if let Some(i) = ACQUISITION.iter().position(|&k| k == key) {
+        return (1, i);
+    }
+    if let Some(i) = PROCESSING.iter().position(|&k| k == key) {
+        return (2, i);
+    }
+    (3, 0)
+}
+
+/// Attribute keys never shown as their own row: `processing_log` and
+/// `processing_steps` get dedicated fields in the response instead (see
+/// [`dataset_attributes`]); `start_datetime`/`stop_datetime` are merged
+/// into one synthetic "Start/stop datetime" row;
+/// `ridal_user_metadata_json` duplicates the flattened user-metadata
+/// attributes already shown individually. `*_unit` keys are consumed by
+/// their base attribute, not skipped by name here.
+const SKIP_FROM_ENTRIES: &[&str] = &[
+    "start_datetime",
+    "stop_datetime",
+    "processing_log",
+    "processing_steps",
+    "ridal_user_metadata_json",
+];
+
+fn build_metadata_entries(
+    raw: &serde_json::Map<String, serde_json::Value>,
+    shape: (usize, usize),
+) -> Vec<MetadataEntry> {
+    struct Entry {
+        key: String,
+        label: String,
+        value: String,
+    }
+    let mut entries = Vec::new();
+
+    if let (Some(start), Some(stop)) = (
+        raw.get("start_datetime").and_then(|v| v.as_str()),
+        raw.get("stop_datetime").and_then(|v| v.as_str()),
+    ) {
+        entries.push(Entry {
+            key: "__start_stop_datetime".to_string(),
+            label: "Start/stop datetime".to_string(),
+            value: format!(
+                "{} / {}",
+                format_datetime_for_display(start),
+                format_datetime_for_display(stop)
+            ),
+        });
+    }
+
+    entries.push(Entry {
+        key: "__shape".to_string(),
+        label: "Shape (samples \u{d7} traces)".to_string(),
+        value: format!("{} \u{d7} {}", shape.0, shape.1),
+    });
+
+    for (key, value) in raw {
+        if SKIP_FROM_ENTRIES.contains(&key.as_str()) || key.ends_with("_unit") {
+            continue;
+        }
+        let unit = raw
+            .get(&format!("{key}_unit"))
+            .and_then(|v| v.as_str());
+        entries.push(Entry {
+            key: key.clone(),
+            label: prettify_label(key),
+            value: format_display_value(value, unit),
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        curated_priority(&a.key)
+            .cmp(&curated_priority(&b.key))
+            .then_with(|| a.label.cmp(&b.label))
+    });
+
+    entries
+        .into_iter()
+        .map(|e| MetadataEntry {
+            label: e.label,
+            value: e.value,
+        })
+        .collect()
+}
+
+/// The viewer's metadata dialog: curated, human-readable `entries`
+/// (prettified labels, merged units, rounded floats, merged start/stop,
+/// curated order), `processing_steps`/`processing_log` as their own
+/// fields (the log needs its per-step structure preserved, not squashed
+/// into a single-line entry value), and the complete `raw` attribute set
+/// as an escape hatch for anything the curated view doesn't surface.
 pub async fn dataset_attributes(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -520,19 +747,73 @@ pub async fn dataset_attributes(
     let path = state.absolute_path(entry);
     let file = netcdf::open(&path)
         .map_err(|e| ApiError::internal("attributes_read_failed", format!("{e}")))?;
-    let mut out = serde_json::Map::new();
+    let mut raw = serde_json::Map::new();
     for attr in file.attributes() {
         let name = attr.name().to_string();
         if let Ok(value) = attr.value() {
-            out.insert(name, attribute_value_to_json(value));
+            raw.insert(name, attribute_value_to_json(value));
         }
     }
-    Ok(Json(serde_json::Value::Object(out)))
+
+    let processing_steps: Vec<String> = raw
+        .get("processing_steps")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let processing_log = raw
+        .get("processing_log")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let entries = build_metadata_entries(&raw, entry.shape);
+
+    Ok(Json(serde_json::json!({
+        "entries": entries,
+        "processing_steps": processing_steps,
+        "processing_log": processing_log,
+        "raw": raw,
+    })))
+}
+
+/// Distance/TWTT/depth axes for the viewer's cursor readout (item 3 of the
+/// planning round). `distance`/`twtt`/`depth` are written unconditionally
+/// by `export.rs`, but small hand-built test fixtures
+/// (`write_test_nc`/`write_test_nc_with_track`) do not write them -- so
+/// each axis degrades independently to `null` rather than failing the
+/// whole response.
+#[derive(serde::Serialize)]
+struct AxesJson {
+    distance: Option<Vec<f64>>,
+    twtt: Option<Vec<f64>>,
+    depth: Option<Vec<f64>>,
+}
+
+pub async fn dataset_axes(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let entry = lookup_dataset(&state, &radargram_id)?;
+    let path = state.absolute_path(entry);
+    let file = netcdf::open(&path)
+        .map_err(|e| ApiError::internal("axes_read_failed", format!("{e}")))?;
+    Ok(Json(AxesJson {
+        distance: super::track::read_f64_variable(&file, "distance").ok(),
+        twtt: super::track::read_f64_variable(&file, "twtt").ok(),
+        depth: super::track::read_f64_variable(&file, "depth").ok(),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::format_datetime_for_display;
+    use super::{
+        build_metadata_entries, f32_to_f64_exact, format_datetime_for_display, format_rounded,
+        prettify_label,
+    };
 
     #[test]
     fn display_datetime_drops_subsecond_noise() {
@@ -561,5 +842,75 @@ mod tests {
             "not a datetime"
         );
         assert_eq!(format_datetime_for_display(""), "");
+    }
+
+    #[test]
+    fn f32_widening_recovers_the_shortest_decimal() {
+        // The exact reported artifact: 0.168_f32 cast plainly to f64
+        // reads back as 0.16799999773502350.
+        assert_eq!(f32_to_f64_exact(0.168_f32), 0.168_f64);
+    }
+
+    #[test]
+    fn prettify_label_strips_ridal_prefix_and_title_cases() {
+        assert_eq!(
+            prettify_label("ridal_processing_datetime"),
+            "Processing datetime"
+        );
+        assert_eq!(prettify_label("original_filepaths"), "Original filepaths");
+        assert_eq!(prettify_label("crs"), "CRS");
+    }
+
+    #[test]
+    fn format_rounded_trims_to_four_decimals() {
+        assert_eq!(format_rounded(0.168_f32 as f64), "0.168");
+        assert_eq!(format_rounded(5.0), "5");
+        assert_eq!(format_rounded(1.0 / 3.0), "0.3333");
+        assert_eq!(format_rounded(-0.00001), "0");
+    }
+
+    #[test]
+    fn metadata_entries_merge_units_and_start_stop_and_curate_order() {
+        let raw: serde_json::Map<String, serde_json::Value> = serde_json::json!({
+            "ridal_radargram_id": "dronbreen-2022",
+            "start_datetime": "2022-03-29T00:00:00Z",
+            "stop_datetime": "2022-03-29T01:00:00Z",
+            "time_interval": 0.3,
+            "time_interval_unit": "s",
+            "processing_log": "step 1 (duration: 1s):\tdid a thing",
+            "processing_steps": ["step 1"],
+            "ridal_user_metadata_json": "{}",
+            "crs": "EPSG:32633",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let entries = build_metadata_entries(&raw, (400, 1200));
+        let by_label: std::collections::HashMap<&str, &str> = entries
+            .iter()
+            .map(|e| (e.label.as_str(), e.value.as_str()))
+            .collect();
+
+        assert_eq!(
+            by_label["Start/stop datetime"],
+            "2022-03-29 00:00 / 2022-03-29 01:00"
+        );
+        assert_eq!(by_label["Time interval"], "0.3 (s)");
+        assert_eq!(by_label["Shape (samples \u{d7} traces)"], "400 \u{d7} 1200");
+        // Merged-unit and internal-use attributes must not also appear as
+        // their own separate rows.
+        assert!(!by_label.contains_key("Time interval unit"));
+        assert!(!by_label.contains_key("Processing log"));
+        assert!(!by_label.contains_key("Processing steps"));
+        assert!(!by_label.contains_key("User metadata json"));
+
+        // Identity tier (radargram ID) sorts ahead of acquisition (CRS).
+        let id_pos = entries
+            .iter()
+            .position(|e| e.label == "Radargram id")
+            .unwrap();
+        let crs_pos = entries.iter().position(|e| e.label == "CRS").unwrap();
+        assert!(id_pos < crs_pos);
     }
 }

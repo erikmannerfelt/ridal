@@ -260,7 +260,7 @@ fn read_global_str(file: &netcdf::File, name: &str) -> Result<String, String> {
     }
 }
 
-fn read_f64_variable(file: &netcdf::File, name: &str) -> Result<Vec<f64>, String> {
+pub(super) fn read_f64_variable(file: &netcdf::File, name: &str) -> Result<Vec<f64>, String> {
     let var = file
         .variable(name)
         .ok_or_else(|| format!("Missing variable '{name}'"))?;

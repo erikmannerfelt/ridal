@@ -28,6 +28,9 @@ const RIDAL = Object.freeze({
   siblingColor: "#bbb",
   siblingWeight: 3,
   siblingOpacity: 0.7,
+  // Weight while a sibling's track is hovered or its popup is open --
+  // mirrors trackFocusWeight's role for the index page's own tracks.
+  siblingFocusWeight: 5,
 
   // Marker tracking the cursor's trace position along the track.
   cursorColor: "#ff3b30",
@@ -50,5 +53,49 @@ const RIDAL = Object.freeze({
   /** Latitude/longitude pairs for every vertex, per track segment. */
   trackToLatLngs(track) {
     return track.segments.map((seg) => seg.vertices.map((v) => [v.lat, v.lon]));
+  },
+
+  /** One track's popup content: a link plus a lazy-loaded overview
+   * thumbnail, matching PFA_website's overview_map.js. The frosted
+   * background/blur that makes the thumbnail readable against the
+   * basemap underneath comes from app.css's .leaflet-popup-content-wrapper
+   * rule, not from anything here. */
+  popupContent(radargramId, label) {
+    return (
+      `<a href="/view/${radargramId}">${label}</a>` +
+      `<img class="popup-thumb" src="/api/v1/datasets/${radargramId}/views/standard/overview" ` +
+      'loading="lazy" alt="">'
+    );
+  },
+
+  /** Wire up a track's hover/popup highlighting, and -- if `card` is
+   * given -- two-way highlighting with its catalog card: hovering either
+   * the track or the card highlights both, and the track's own popup
+   * being open counts as "highlighted" too (PFA_website's
+   * popupopen/popupclose pattern), so the two highlight sources agree
+   * rather than fighting over the layer's weight when one ends before
+   * the other. `layers` is an array because one track can be several
+   * polyline segments. */
+  bindTrackHighlight(layers, card, baseWeight, focusWeight) {
+    let hovered = false;
+    let popupOpen = false;
+    const apply = () => {
+      const on = hovered || popupOpen;
+      layers.forEach((layer) => {
+        layer.setStyle({ weight: on ? focusWeight : baseWeight });
+        if (on) layer.bringToFront();
+      });
+      if (card) card.classList.toggle("is-hovered", on);
+    };
+    layers.forEach((layer) => {
+      layer.on("mouseover", () => { hovered = true; apply(); });
+      layer.on("mouseout", () => { hovered = false; apply(); });
+      layer.on("popupopen", () => { popupOpen = true; apply(); });
+      layer.on("popupclose", () => { popupOpen = false; apply(); });
+    });
+    if (card) {
+      card.addEventListener("mouseenter", () => { hovered = true; apply(); });
+      card.addEventListener("mouseleave", () => { hovered = false; apply(); });
+    }
   },
 });
