@@ -407,7 +407,8 @@ pub struct GPR {
 pub struct RidalIdentity {
     pub radargram_id: Option<crate::identity::RadargramId>,
     pub display_name: Option<crate::identity::DisplayName>,
-    pub group: Option<crate::identity::GroupId>,
+    pub group_name: Option<crate::identity::GroupName>,
+    pub group_id: Option<crate::identity::GroupId>,
 }
 
 impl GPR {
@@ -1653,6 +1654,7 @@ pub struct RunParams {
     pub radargram_id: Option<String>,
     pub display_name: Option<String>,
     pub group: Option<String>,
+    pub group_id: Option<String>,
 }
 #[derive(Debug, Clone)]
 pub struct BatchRunParams {
@@ -1676,6 +1678,7 @@ pub struct BatchRunParams {
     // would collide across outputs. A group applies uniformly to the whole
     // batch, since batch runs typically process one survey or campaign.
     pub group: Option<String>,
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2081,11 +2084,21 @@ pub fn build_processed_gpr(
         }
     }
     let display_name = crate::identity::resolve_display_name(params.display_name.as_deref(), None);
-    let group = crate::identity::resolve_group(params.group.as_deref(), None)?;
+    let group = crate::identity::resolve_group(
+        params.group.as_deref(),
+        params.group_id.as_deref(),
+        None,
+        None,
+    )?;
+    let (group_name, group_id) = match group {
+        Some((name, id)) => (Some(name), Some(id)),
+        None => (None, None),
+    };
     gpr.identity = RidalIdentity {
         radargram_id: Some(radargram_id),
         display_name,
-        group,
+        group_name,
+        group_id,
     };
 
     Ok((gpr, output_path))
@@ -2221,6 +2234,7 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             radargram_id: None,
             display_name: None,
             group: params.group.clone(),
+            group_id: params.group_id.clone(),
         };
 
         // process-mode semantics: one group -> one output, in the order we pass here.
@@ -2564,7 +2578,8 @@ pub mod tests {
             identity: super::RidalIdentity {
                 radargram_id: Some(crate::identity::RadargramId::new("test-radargram").unwrap()),
                 display_name: None,
-                group: None,
+                group_name: None,
+                group_id: None,
             },
         }
     }

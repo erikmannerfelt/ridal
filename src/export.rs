@@ -252,8 +252,17 @@ impl GPR {
                 ExportAttr::String(display_name.to_string()),
             );
         }
-        if let Some(group) = &self.identity.group {
-            attrs.insert("ridal_group".into(), ExportAttr::String(group.to_string()));
+        if let Some(group_name) = &self.identity.group_name {
+            attrs.insert(
+                "ridal_group_name".into(),
+                ExportAttr::String(group_name.to_string()),
+            );
+        }
+        if let Some(group_id) = &self.identity.group_id {
+            attrs.insert(
+                "ridal_group_id".into(),
+                ExportAttr::String(group_id.to_string()),
+            );
         }
 
         // user metadata (canonical JSON + flattened attributes)

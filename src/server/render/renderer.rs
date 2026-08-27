@@ -269,6 +269,7 @@ mod tests {
             radargram_id: Some("manual-check".to_string()),
             display_name: None,
             group: None,
+            group_id: None,
         };
         crate::gpr::run(params).unwrap();
 

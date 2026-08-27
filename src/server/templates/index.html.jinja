@@ -37,8 +37,8 @@
 
   {% for group in groups %}
   <section class="group">
-    <h2>{{ group.name }}</h2>
-    <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.name }}"></div>
+    <h2>{{ group.label }}</h2>
+    <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
     <ul class="card-grid">
       {% for e in group.entries %}{{ entry_card(e) }}{% endfor %}
     </ul>

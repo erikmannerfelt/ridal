@@ -90,7 +90,8 @@ struct DatasetSummary {
     radargram_id: String,
     effective_label: String,
     display_name: Option<String>,
-    group: Option<String>,
+    group_name: Option<String>,
+    group_id: Option<String>,
     relative_path: String,
     /// The exact stored string. Kept verbatim because the revision
     /// fingerprint (#117) hashes it -- reformatting here would silently
@@ -122,7 +123,8 @@ fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
         radargram_id: entry.radargram_id.to_string(),
         effective_label: entry.effective_label(),
         display_name: entry.display_name.as_ref().map(|d| d.to_string()),
-        group: entry.group.as_ref().map(|g| g.to_string()),
+        group_name: entry.group_name.as_ref().map(|g| g.to_string()),
+        group_id: entry.group_id.as_ref().map(|g| g.to_string()),
         relative_path: entry.relative_path.clone(),
         processing_datetime: entry.processing_datetime.clone(),
         processing_datetime_display: format_datetime_for_display(&entry.processing_datetime),
@@ -285,9 +287,16 @@ pub async fn chunk_image(
     Ok(image_response(bytes, &profile))
 }
 
+/// One group's heading and members for the index page. `id` is also the
+/// `data-group` value the group map's JS fetches
+/// `/api/v1/groups/{id}/tracks` with, so it must stay the stable
+/// [`crate::identity::GroupId`] -- never the free-form, possibly-changing
+/// display name, which is `label` instead (#121 planning round: mirror the
+/// radargram id/display-name split one level up).
 #[derive(serde::Serialize)]
 struct GroupSummary {
-    name: String,
+    id: String,
+    label: String,
     entries: Vec<DatasetSummary>,
 }
 
@@ -303,30 +312,40 @@ pub async fn index_page(State(state): State<Arc<AppState>>) -> impl IntoResponse
     // Grouped entries get one map each on the index page (#121); ungrouped
     // entries have no siblings to show together, so they stay in the
     // plain table only.
-    let mut group_names: Vec<&str> = state
+    let mut group_ids: Vec<&str> = state
         .catalog
         .entries
         .iter()
-        .filter_map(|e| e.group.as_ref().map(|g| g.as_str()))
+        .filter_map(|e| e.group_id.as_ref().map(|g| g.as_str()))
         .collect();
-    group_names.sort_unstable();
-    group_names.dedup();
-    let groups: Vec<GroupSummary> = group_names
+    group_ids.sort_unstable();
+    group_ids.dedup();
+    let groups: Vec<GroupSummary> = group_ids
         .into_iter()
-        .map(|name| GroupSummary {
-            name: name.to_string(),
-            entries: state
-                .entries_in_group(name)
-                .into_iter()
-                .map(to_summary)
-                .collect(),
+        .map(|id| {
+            let label = state
+                .catalog
+                .group_names
+                .iter()
+                .find(|(gid, _)| gid.as_str() == id)
+                .map(|(_, name)| name.to_string())
+                .unwrap_or_else(|| id.to_string());
+            GroupSummary {
+                id: id.to_string(),
+                label,
+                entries: state
+                    .entries_in_group(id)
+                    .into_iter()
+                    .map(to_summary)
+                    .collect(),
+            }
         })
         .collect();
     let ungrouped: Vec<DatasetSummary> = state
         .catalog
         .entries
         .iter()
-        .filter(|e| e.group.is_none())
+        .filter(|e| e.group_id.is_none())
         .map(to_summary)
         .collect();
 
@@ -380,7 +399,8 @@ pub async fn viewer_page(
         .render(minijinja::context! {
             radargram_id => entry.radargram_id.to_string(),
             effective_label => entry.effective_label(),
-            group => entry.group.as_ref().map(|g| g.to_string()),
+            group_name => entry.group_name.as_ref().map(|g| g.to_string()),
+            group_id => entry.group_id.as_ref().map(|g| g.to_string()),
             revision_id => entry.revision_id.to_string(),
             // First 7 hex characters, `git`-style, for the collapsed
             // banner row -- the full ID moves to the metadata dialog.
@@ -531,6 +551,7 @@ fn attribute_value_to_json(value: netcdf::AttributeValue) -> serde_json::Value {
 fn label_override(name: &str) -> Option<&'static str> {
     match name {
         "crs" => Some("CRS"),
+        "ridal_group_id" => Some("Group ID"),
         _ => None,
     }
 }
@@ -628,7 +649,8 @@ fn curated_priority(key: &str) -> (u8, usize) {
     const IDENTITY: &[&str] = &[
         "ridal_radargram_id",
         "ridal_display_name",
-        "ridal_group",
+        "ridal_group_name",
+        "ridal_group_id",
         "__start_stop_datetime",
         "__shape",
     ];
@@ -643,7 +665,11 @@ fn curated_priority(key: &str) -> (u8, usize) {
         "elevation_correction",
         "total_distance",
     ];
-    const PROCESSING: &[&str] = &["ridal_processing_datetime", "ridal_version", "original_filepaths"];
+    const PROCESSING: &[&str] = &[
+        "ridal_processing_datetime",
+        "ridal_version",
+        "original_filepaths",
+    ];
 
     if let Some(i) = IDENTITY.iter().position(|&k| k == key) {
         return (0, i);
@@ -708,9 +734,20 @@ fn build_metadata_entries(
         if SKIP_FROM_ENTRIES.contains(&key.as_str()) || key.ends_with("_unit") {
             continue;
         }
-        let unit = raw
-            .get(&format!("{key}_unit"))
-            .and_then(|v| v.as_str());
+        // The only other raw datetime attribute besides start/stop
+        // (merged above): needs the same display formatting, not the raw
+        // nanosecond-precision RFC3339 string.
+        if key == "ridal_processing_datetime" {
+            if let Some(raw_dt) = value.as_str() {
+                entries.push(Entry {
+                    key: key.clone(),
+                    label: prettify_label(key),
+                    value: format_datetime_for_display(raw_dt),
+                });
+                continue;
+            }
+        }
+        let unit = raw.get(&format!("{key}_unit")).and_then(|v| v.as_str());
         entries.push(Entry {
             key: key.clone(),
             label: prettify_label(key),
@@ -799,8 +836,8 @@ pub async fn dataset_axes(
 ) -> Result<impl IntoResponse, ApiError> {
     let entry = lookup_dataset(&state, &radargram_id)?;
     let path = state.absolute_path(entry);
-    let file = netcdf::open(&path)
-        .map_err(|e| ApiError::internal("axes_read_failed", format!("{e}")))?;
+    let file =
+        netcdf::open(&path).map_err(|e| ApiError::internal("axes_read_failed", format!("{e}")))?;
     Ok(Json(AxesJson {
         distance: super::track::read_f64_variable(&file, "distance").ok(),
         twtt: super::track::read_f64_variable(&file, "twtt").ok(),
@@ -873,6 +910,9 @@ mod tests {
     fn metadata_entries_merge_units_and_start_stop_and_curate_order() {
         let raw: serde_json::Map<String, serde_json::Value> = serde_json::json!({
             "ridal_radargram_id": "dronbreen-2022",
+            "ridal_group_name": "Drønbreen",
+            "ridal_group_id": "dronbreen",
+            "ridal_processing_datetime": "2026-08-26T20:57:41.407887786+00:00",
             "start_datetime": "2022-03-29T00:00:00Z",
             "stop_datetime": "2022-03-29T01:00:00Z",
             "time_interval": 0.3,
@@ -898,6 +938,11 @@ mod tests {
         );
         assert_eq!(by_label["Time interval"], "0.3 (s)");
         assert_eq!(by_label["Shape (samples \u{d7} traces)"], "400 \u{d7} 1200");
+        assert_eq!(by_label["Group name"], "Drønbreen");
+        assert_eq!(by_label["Group ID"], "dronbreen");
+        // ridal_processing_datetime gets the same display formatting as
+        // start/stop, not the raw nanosecond-precision RFC3339 string.
+        assert_eq!(by_label["Processing datetime"], "2026-08-26 20:57");
         // Merged-unit and internal-use attributes must not also appear as
         // their own separate rows.
         assert!(!by_label.contains_key("Time interval unit"));

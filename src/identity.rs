@@ -258,20 +258,76 @@ pub fn resolve_display_name(
     }
 }
 
-/// Resolve the effective group, following the same precedence shape as
-/// display name, but validated like a [`GroupId`] slug since it is used in
-/// path-like ways by the catalog and index UI.
+/// An optional human-facing group label with no identity semantics, no
+/// character restrictions (Unicode is encouraged -- a group is a survey,
+/// campaign, or place name, and those are not ASCII in general). Mirrors
+/// [`DisplayName`] exactly: an empty or whitespace-only value is treated
+/// as absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupName(String);
+
+impl GroupName {
+    /// Returns `None` for empty or whitespace-only input, matching
+    /// [`DisplayName::from_input`]'s rule.
+    pub fn from_input(value: impl AsRef<str>) -> Option<Self> {
+        let trimmed = value.as_ref().trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(Self(trimmed.to_string()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for GroupName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Resolve the effective group name, following the same precedence shape
+/// as display name: explicit > inherited > absent. An explicit empty
+/// override (`Some("")`) is a deliberate clear, matching
+/// [`resolve_display_name`].
+pub fn resolve_group_name(explicit: Option<&str>, inherited: Option<&str>) -> Option<GroupName> {
+    match explicit {
+        Some(value) => GroupName::from_input(value),
+        None => inherited.and_then(GroupName::from_input),
+    }
+}
+
+/// Resolve the effective group as a `(name, id)` pair, mirroring #116's
+/// radargram-ID/display-name split one level up: a group's *name* is
+/// free-form Unicode text a human enters, while its *id* is always a
+/// validated [`GroupId`] slug for path-like uses (the catalog's
+/// `data-group` key, `/api/v1/groups/{id}/tracks`). The id is derived
+/// from the name via [`sanitize_to_slug`] (which already transliterates
+/// ø/æ/å, so a name of "Drønbreen" derives id "dronbreen") unless
+/// `explicit_id`/`inherited_id` override that derivation.
+///
+/// No name means no group at all: an id is never meaningful on its own,
+/// since it exists only to give the name a URL/filesystem-safe form.
 pub fn resolve_group(
-    explicit: Option<&str>,
-    inherited: Option<&str>,
-) -> Result<Option<GroupId>, String> {
-    if let Some(explicit) = explicit {
-        return Ok(Some(GroupId::new(explicit)?));
-    }
-    if let Some(inherited) = inherited {
-        return Ok(Some(GroupId::new(inherited)?));
-    }
-    Ok(None)
+    explicit_name: Option<&str>,
+    explicit_id: Option<&str>,
+    inherited_name: Option<&str>,
+    inherited_id: Option<&str>,
+) -> Result<Option<(GroupName, GroupId)>, String> {
+    let Some(name) = resolve_group_name(explicit_name, inherited_name) else {
+        return Ok(None);
+    };
+    let id = if let Some(id) = explicit_id {
+        GroupId::new(id)?
+    } else if let Some(id) = inherited_id {
+        GroupId::new(id)?
+    } else {
+        GroupId::from_fallback(name.as_str())?
+    };
+    Ok(Some((name, id)))
 }
 
 #[cfg(test)]
@@ -489,21 +545,53 @@ mod tests {
     }
 
     #[test]
-    fn resolve_group_precedence_and_validation() {
+    fn resolve_group_precedence_derives_id_from_name() {
+        let (name, id) = resolve_group(Some("Dronbreen 2022"), None, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(name.as_str(), "Dronbreen 2022");
+        assert_eq!(id.as_str(), "dronbreen-2022");
+
+        let (name, id) = resolve_group(None, None, Some("Dronbreen 2022"), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(name.as_str(), "Dronbreen 2022");
+        assert_eq!(id.as_str(), "dronbreen-2022");
+
+        assert_eq!(resolve_group(None, None, None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_group_unicode_name_transliterates_to_ascii_id() {
+        let (name, id) = resolve_group(Some("Drønbreen"), None, None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(name.as_str(), "Drønbreen");
+        assert_eq!(id.as_str(), "dronbreen");
+    }
+
+    #[test]
+    fn resolve_group_explicit_id_overrides_derivation() {
+        let (name, id) = resolve_group(Some("Drønbreen"), Some("db"), None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(name.as_str(), "Drønbreen");
+        assert_eq!(id.as_str(), "db");
+    }
+
+    #[test]
+    fn resolve_group_id_without_a_name_is_not_a_group() {
+        // An id is only ever a derived byproduct of a name; a name-less id
+        // has nothing to attach to.
         assert_eq!(
-            resolve_group(Some("dronbreen-2022"), None)
-                .unwrap()
-                .map(|g| g.0),
-            Some("dronbreen-2022".to_string())
+            resolve_group(None, Some("some-id"), None, None).unwrap(),
+            None
         );
-        assert_eq!(
-            resolve_group(None, Some("dronbreen-2022"))
-                .unwrap()
-                .map(|g| g.0),
-            Some("dronbreen-2022".to_string())
-        );
-        assert_eq!(resolve_group(None, None).unwrap(), None);
-        assert!(resolve_group(Some("Bad Group"), None).is_err());
+    }
+
+    #[test]
+    fn resolve_group_rejects_invalid_explicit_id() {
+        assert!(resolve_group(Some("Dronbreen"), Some("Bad Id"), None, None).is_err());
     }
 
     #[test]

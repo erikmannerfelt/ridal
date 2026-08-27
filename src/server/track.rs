@@ -741,6 +741,7 @@ mod tests {
                 radargram_id: None,
                 display_name: None,
                 group: None,
+                group_id: None,
             };
             let (gpr, _) = crate::gpr::build_processed_gpr(params).unwrap();
             let location = &gpr.location;
@@ -820,6 +821,7 @@ mod tests {
             radargram_id: Some("track-read-test".to_string()),
             display_name: None,
             group: None,
+            group_id: None,
         };
         let (gpr, _) = crate::gpr::build_processed_gpr(params.clone()).unwrap();
         crate::gpr::run(params).unwrap();

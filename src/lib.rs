@@ -445,6 +445,7 @@ pub mod ridal {
                 radargram_id: None,
                 display_name: None,
                 group: None,
+                group_id: None,
             };
             let (gpr_obj, _default_path) = gpr::build_processed_gpr(params2)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
@@ -480,6 +481,7 @@ pub mod ridal {
             radargram_id: None,
             display_name: None,
             group: None,
+            group_id: None,
         };
         let result = gpr::run(params)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
@@ -829,6 +831,7 @@ pub mod ridal {
             override_antenna_separation,
             user_metadata,
             group: None,
+            group_id: None,
         };
 
         let result =

@@ -10,7 +10,7 @@
 
 use std::path::Path;
 
-use crate::identity::{DisplayName, GroupId, RadargramId};
+use crate::identity::{DisplayName, GroupId, GroupName, RadargramId};
 use crate::io::{self, RidalNetcdfKind};
 
 /// A derived identity for one processed revision (#117). Changes when
@@ -57,7 +57,8 @@ pub struct CatalogEntry {
     pub radargram_id: RadargramId,
     pub revision_id: RevisionId,
     pub display_name: Option<DisplayName>,
-    pub group: Option<GroupId>,
+    pub group_name: Option<GroupName>,
+    pub group_id: Option<GroupId>,
     pub processing_datetime: String,
     pub shape: (usize, usize),
     /// Catalog-relative path, `/`-normalized regardless of platform. UI
@@ -90,6 +91,13 @@ pub struct CatalogWarning {
 pub struct Catalog {
     pub entries: Vec<CatalogEntry>,
     pub warnings: Vec<CatalogWarning>,
+    /// One representative display name per group id, for the index page
+    /// (a group has one heading, even though every entry carries its own
+    /// `group_name` for provenance). When entries sharing a `group_id`
+    /// disagree on the name, resolved exactly like a duplicate
+    /// `radargram_id` (#122): most recent `processing_datetime` wins, ties
+    /// broken by path order, with a `CatalogWarning` either way.
+    pub group_names: std::collections::BTreeMap<GroupId, GroupName>,
 }
 
 /// Directory names that recursive discovery does not descend into,
@@ -212,12 +220,25 @@ impl Catalog {
                 continue; // NotRidal: silently ignored, per #122/#123.
             };
 
-            let group = meta.group.clone().or_else(|| {
-                candidate
+            // The file's own ridal_group_name/ridal_group_id win; absent
+            // that, fall back to the catalog-relative parent directory as
+            // both the name and (derived) id -- e.g. a file discovered
+            // under "Drønbreen/2022/" with no group metadata of its own
+            // gets name "Drønbreen", id "dronbreen".
+            let (group_name, group_id) = match meta.group_name {
+                Some(name) => (Some(name), meta.group_id),
+                None => match candidate
                     .group_hint
                     .as_deref()
-                    .and_then(|hint| GroupId::from_fallback(hint).ok())
-            });
+                    .and_then(GroupName::from_input)
+                {
+                    Some(name) => {
+                        let id = GroupId::from_fallback(name.as_str()).ok();
+                        (Some(name), id)
+                    }
+                    None => (None, None),
+                },
+            };
 
             let revision_id =
                 RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime);
@@ -225,7 +246,8 @@ impl Catalog {
                 radargram_id: meta.radargram_id.clone(),
                 revision_id,
                 display_name: meta.display_name,
-                group,
+                group_name,
+                group_id,
                 processing_datetime: meta.processing_datetime,
                 shape: meta.shape,
                 relative_path: candidate.relative_path.clone(),
@@ -271,7 +293,70 @@ impl Catalog {
         let mut entries: Vec<CatalogEntry> = by_id.into_values().map(|(e, _)| e).collect();
         entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
-        Catalog { entries, warnings }
+        // One representative name per group id (see `Catalog::group_names`
+        // doc comment): resolved with the same rule as a duplicate
+        // radargram_id above, applied one level up.
+        let mut group_name_state: std::collections::BTreeMap<GroupId, (GroupName, String, String)> =
+            std::collections::BTreeMap::new();
+        for entry in &entries {
+            let (Some(id), Some(name)) = (&entry.group_id, &entry.group_name) else {
+                continue;
+            };
+            match group_name_state.get(id) {
+                None => {
+                    group_name_state.insert(
+                        id.clone(),
+                        (
+                            name.clone(),
+                            entry.processing_datetime.clone(),
+                            entry.relative_path.clone(),
+                        ),
+                    );
+                }
+                Some((existing_name, existing_dt, existing_path)) => {
+                    if existing_name != name {
+                        let new_is_newer = entry.processing_datetime > *existing_dt;
+                        let tie_new_wins = entry.processing_datetime == *existing_dt
+                            && entry.relative_path < *existing_path;
+
+                        warnings.push(CatalogWarning {
+                            message: format!(
+                                "Group '{id}' has disagreeing names: '{existing_name}' \
+                                 ('{existing_path}') and '{name}' ('{}'). Using the name from \
+                                 the entry with the most recent processing datetime{}.",
+                                entry.relative_path,
+                                if entry.processing_datetime == *existing_dt {
+                                    " (datetimes equal; broke the tie by path order)"
+                                } else {
+                                    ""
+                                }
+                            ),
+                        });
+
+                        if new_is_newer || tie_new_wins {
+                            group_name_state.insert(
+                                id.clone(),
+                                (
+                                    name.clone(),
+                                    entry.processing_datetime.clone(),
+                                    entry.relative_path.clone(),
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let group_names = group_name_state
+            .into_iter()
+            .map(|(id, (name, _, _))| (id, name))
+            .collect();
+
+        Catalog {
+            entries,
+            warnings,
+            group_names,
+        }
     }
 }
 
@@ -304,6 +389,39 @@ mod tests {
             radargram_id: radargram_id.map(str::to_string),
             display_name: None,
             group: group.map(str::to_string),
+            group_id: None,
+        };
+        gpr::run(params).unwrap();
+    }
+
+    /// Like `process_to`, but with an explicit group id override, for
+    /// exercising that precedence tier specifically.
+    fn process_to_with_group_id(
+        input: &str,
+        output: &std::path::Path,
+        radargram_id: Option<&str>,
+        group: &str,
+        group_id: &str,
+    ) {
+        let params = RunParams {
+            filepaths: vec![std::path::PathBuf::from(input)],
+            output_path: Some(output.to_path_buf()),
+            dem_path: None,
+            cor_path: None,
+            medium_velocity: 0.168,
+            crs: None,
+            quiet: true,
+            track_path: None,
+            steps: vec!["subset(0 -1 0 50)".to_string()],
+            no_export: false,
+            render_path: None,
+            override_antenna_mhz: None,
+            override_antenna_separation: None,
+            user_metadata: Default::default(),
+            radargram_id: radargram_id.map(str::to_string),
+            display_name: None,
+            group: Some(group.to_string()),
+            group_id: Some(group_id.to_string()),
         };
         gpr::run(params).unwrap();
     }
@@ -498,7 +616,8 @@ mod tests {
                 "2020-01-01T00:00:00Z",
             ),
             display_name: DisplayName::from_input("Kroppbreen line 1"),
-            group: None,
+            group_name: None,
+            group_id: None,
             processing_datetime: "2020-01-01T00:00:00Z".to_string(),
             shape: (10, 10),
             relative_path: "a.nc".to_string(),
@@ -535,14 +654,18 @@ mod tests {
             ASSET_2022,
             &dir.path().join("dronbreen/2022/a.nc"),
             Some("group-fallback-test"),
-            None, // no explicit --group
+            None, // no explicit --group-name
         );
 
         let catalog = Catalog::discover(dir.path());
         assert_eq!(catalog.entries.len(), 1);
         assert_eq!(
-            catalog.entries[0].group.as_ref().map(|g| g.as_str()),
+            catalog.entries[0].group_id.as_ref().map(|g| g.as_str()),
             Some("dronbreen-2022")
+        );
+        assert_eq!(
+            catalog.entries[0].group_name.as_ref().map(|g| g.as_str()),
+            Some("dronbreen/2022")
         );
     }
 
@@ -561,8 +684,118 @@ mod tests {
 
         let catalog = Catalog::discover(dir.path());
         assert_eq!(
-            catalog.entries[0].group.as_ref().map(|g| g.as_str()),
+            catalog.entries[0].group_name.as_ref().map(|g| g.as_str()),
             Some("real-group")
+        );
+        assert_eq!(
+            catalog.entries[0].group_id.as_ref().map(|g| g.as_str()),
+            Some("real-group")
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn unicode_group_name_derives_an_ascii_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let nc_path = dir.path().join("a.nc");
+        process_to(
+            ASSET_2022,
+            &nc_path,
+            Some("unicode-group-test"),
+            Some("Drønbreen"),
+        );
+
+        let catalog = Catalog::discover(dir.path());
+        assert_eq!(
+            catalog.entries[0].group_name.as_ref().map(|g| g.as_str()),
+            Some("Drønbreen")
+        );
+        assert_eq!(
+            catalog.entries[0].group_id.as_ref().map(|g| g.as_str()),
+            Some("dronbreen")
+        );
+        assert_eq!(
+            catalog
+                .group_names
+                .get(catalog.entries[0].group_id.as_ref().unwrap())
+                .map(|n| n.as_str()),
+            Some("Drønbreen")
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn explicit_group_id_overrides_derivation_from_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let nc_path = dir.path().join("a.nc");
+        process_to_with_group_id(
+            ASSET_2022,
+            &nc_path,
+            Some("explicit-id-test"),
+            "Drønbreen",
+            "db",
+        );
+
+        let catalog = Catalog::discover(dir.path());
+        assert_eq!(
+            catalog.entries[0].group_name.as_ref().map(|g| g.as_str()),
+            Some("Drønbreen")
+        );
+        assert_eq!(
+            catalog.entries[0].group_id.as_ref().map(|g| g.as_str()),
+            Some("db")
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn disagreeing_group_names_pick_the_newest_and_warn() {
+        let dir = tempfile::tempdir().unwrap();
+        let older = dir.path().join("older.nc");
+        let newer = dir.path().join("newer.nc");
+        process_to_with_group_id(
+            ASSET_2022,
+            &older,
+            Some("older-member"),
+            "Old Name",
+            "shared-id",
+        );
+        process_to_with_group_id(
+            ASSET_2022,
+            &newer,
+            Some("newer-member"),
+            "New Name",
+            "shared-id",
+        );
+        // Force a deterministic ordering, matching the duplicate-id test's
+        // own approach: real clock timing is not what's being exercised.
+        {
+            let mut f = netcdf::append(&older).unwrap();
+            f.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+                .unwrap();
+        }
+        {
+            let mut f = netcdf::append(&newer).unwrap();
+            f.add_attribute("ridal_processing_datetime", "2021-01-01T00:00:00Z")
+                .unwrap();
+        }
+
+        let catalog = Catalog::discover(dir.path());
+        let id = GroupId::new("shared-id").unwrap();
+        assert_eq!(
+            catalog.group_names.get(&id).map(|n| n.as_str()),
+            Some("New Name")
+        );
+        assert!(
+            catalog
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("disagreeing names")),
+            "{:?}",
+            catalog.warnings
         );
     }
 }

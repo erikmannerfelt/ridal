@@ -98,7 +98,7 @@ impl AppState {
         self.catalog
             .entries
             .iter()
-            .filter(|e| e.group.as_ref().is_some_and(|g| g.as_str() == group))
+            .filter(|e| e.group_id.as_ref().is_some_and(|g| g.as_str() == group))
             .collect()
     }
 }
@@ -229,7 +229,8 @@ mod tests {
         file.add_attribute("ridal_radargram_id", radargram_id)
             .unwrap();
         if let Some(group) = group {
-            file.add_attribute("ridal_group", group).unwrap();
+            file.add_attribute("ridal_group_name", group).unwrap();
+            file.add_attribute("ridal_group_id", group).unwrap();
         }
     }
 

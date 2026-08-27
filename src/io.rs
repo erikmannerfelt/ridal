@@ -1123,7 +1123,8 @@ pub enum RidalNetcdfKind {
 pub struct RidalNetcdfMetadata {
     pub radargram_id: crate::identity::RadargramId,
     pub display_name: Option<crate::identity::DisplayName>,
-    pub group: Option<crate::identity::GroupId>,
+    pub group_name: Option<crate::identity::GroupName>,
+    pub group_id: Option<crate::identity::GroupId>,
     /// Kept as the raw RFC3339 string rather than parsed: the fingerprint in
     /// #117 hashes this exact string, so re-serializing a parsed value could
     /// silently change revision identity by changing formatting.
@@ -1186,8 +1187,21 @@ pub fn inspect_ridal_netcdf(path: &Path) -> Result<RidalNetcdfKind, String> {
 
     let display_name = read_global_str_attr(&file, "ridal_display_name")
         .and_then(crate::identity::DisplayName::from_input);
-    let group = read_global_str_attr(&file, "ridal_group")
-        .and_then(|raw| crate::identity::GroupId::new(&raw).ok());
+    // Legacy fallback: files from before the group name/id split (#116
+    // extended one level up) wrote a single "ridal_group" attribute that
+    // was itself a validated slug, used directly as both display heading
+    // and id. Reading it as the *name* here and deriving the id from it
+    // below reproduces that value unchanged for such files, since
+    // sanitizing an already-valid slug is a no-op.
+    let group_name = read_global_str(&file, "ridal_group_name", "ridal_group")
+        .and_then(crate::identity::GroupName::from_input);
+    let group_id = read_global_str_attr(&file, "ridal_group_id")
+        .and_then(|raw| crate::identity::GroupId::new(&raw).ok())
+        .or_else(|| {
+            group_name
+                .as_ref()
+                .and_then(|name| crate::identity::GroupId::from_fallback(name.as_str()).ok())
+        });
 
     let Some(data_var) = file.variable("data") else {
         return Ok(RidalNetcdfKind::NotRidal);
@@ -1201,7 +1215,8 @@ pub fn inspect_ridal_netcdf(path: &Path) -> Result<RidalNetcdfKind, String> {
     Ok(RidalNetcdfKind::Supported(RidalNetcdfMetadata {
         radargram_id,
         display_name,
-        group,
+        group_name,
+        group_id,
         processing_datetime,
         ridal_version,
         shape,
@@ -1709,7 +1724,8 @@ mod tests {
             super::RidalNetcdfKind::Supported(meta) => {
                 assert_eq!(meta.radargram_id.as_str(), "test-radargram");
                 assert_eq!(meta.display_name, None);
-                assert_eq!(meta.group, None);
+                assert_eq!(meta.group_name, None);
+                assert_eq!(meta.group_id, None);
                 assert_eq!(meta.shape, (10, 20)); // (n_samples, n_traces)
                 assert!(meta.ridal_version.contains("ridal version"));
             }

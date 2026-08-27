@@ -2,7 +2,7 @@
 {% block title %}{{ effective_label }} - Ridal{% endblock %}
 {% block content %}
   <p><a href="/#card-{{ radargram_id }}">&larr; Back to catalog</a></p>
-  <h1>{{ effective_label }}{% if group %} (Group: {{ group }}){% endif %}</h1>
+  <h1>{{ effective_label }}{% if group_name %} (Group: {{ group_name }}){% endif %}</h1>
   <table class="meta">
     <tr>
       <th>Radargram ID</th>
@@ -53,7 +53,7 @@
 {% block extrascript %}
 <script>
   const RADARGRAM_ID = "{{ radargram_id }}";
-  const GROUP = {% if group %}"{{ group }}"{% else %}null{% endif %};
+  const GROUP = {% if group_id %}"{{ group_id }}"{% else %}null{% endif %};
   const VIEW = "standard";
   const CHUNK_SIZE = {{ chunk_size }};
   const N_COLS = {{ n_cols }};

@@ -168,9 +168,17 @@ pub struct ProcessArgs {
     #[arg(long = "display-name")]
     pub display_name: Option<String>,
 
-    /// Group this radargram belongs to (survey, campaign, location), for catalog grouping.
-    #[arg(long = "group")]
+    /// Human-readable name of the group this radargram belongs to (survey,
+    /// campaign, location; Unicode is fine), for catalog grouping. A stable
+    /// URL/filesystem-safe id is derived from this automatically unless
+    /// --group-id overrides it. `--group` is a supported alias.
+    #[arg(long = "group-name", alias = "group")]
     pub group: Option<String>,
+
+    /// Explicit override for the group's id, when the id automatically
+    /// derived from --group-name is not the one wanted.
+    #[arg(long = "group-id")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -249,11 +257,18 @@ pub struct BatchProcessArgs {
     #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub metadata: Vec<String>,
 
-    /// Group all outputs in this batch belong to (survey, campaign, location), for
-    /// catalog grouping. Applied uniformly; radargram IDs and display names are
-    /// still derived per-output since an explicit single value would collide.
-    #[arg(long = "group")]
+    /// Human-readable name of the group all outputs in this batch belong to
+    /// (survey, campaign, location; Unicode is fine), for catalog grouping.
+    /// Applied uniformly; radargram IDs and display names are still derived
+    /// per-output since an explicit single value would collide. `--group`
+    /// is a supported alias.
+    #[arg(long = "group-name", alias = "group")]
     pub group: Option<String>,
+
+    /// Explicit override for the group's id, when the id automatically
+    /// derived from --group-name is not the one wanted.
+    #[arg(long = "group-id")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -448,6 +463,7 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
         radargram_id: args.radargram_id.clone(),
         display_name: args.display_name.clone(),
         group: args.group.clone(),
+        group_id: args.group_id.clone(),
     };
 
     let result = gpr::run(params).map_err(|e| e.to_string())?;
@@ -488,6 +504,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         override_antenna_separation: args.override_antenna_separation,
         user_metadata,
         group: args.group.clone(),
+        group_id: args.group_id.clone(),
     };
 
     let result = gpr::run_batch(params)?;
