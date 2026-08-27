@@ -145,6 +145,100 @@
   // that follows the viewer cursor (#121's cursor-sync feature). ---
   const overviewMap = RIDAL.basemap(L.map('overview-map'));
 
+  // --- Resizable split between the radargram and overview map. Only
+  // meaningful when the two are actually laid out side by side --
+  // `.layout` is flex-wrap: wrap, so on a narrow screen they stack, at
+  // which point a horizontal drag handle makes no sense and is hidden.
+  // Detected exactly (offsetTop equality), not guessed via a media-query
+  // breakpoint, since the wrap point depends on both panes' flex-basis. ---
+  (function setupSplitResizer() {
+    const layout = document.getElementById('viewer-layout');
+    const resizer = document.getElementById('split-resizer');
+    const mapEl = document.getElementById('map');
+    const overviewEl = document.getElementById('overview-map');
+    const MIN_PANE_PX = 200;
+    const KEYBOARD_STEP_PX = 24;
+
+    function isSideBySide() {
+      return mapEl.offsetTop === overviewEl.offsetTop;
+    }
+
+    // Leaflet does not re-lay its tiles when its container is resized by
+    // something other than a window resize event it listens for itself --
+    // it has to be told. Throttled to one call per frame since pointermove
+    // fires far more often than the browser can usefully repaint.
+    let invalidateQueued = false;
+    function scheduleInvalidate() {
+      if (invalidateQueued) return;
+      invalidateQueued = true;
+      requestAnimationFrame(() => {
+        invalidateQueued = false;
+        map.invalidateSize();
+        overviewMap.invalidateSize();
+      });
+    }
+
+    function updateSideBySideState() {
+      const sideBySide = isSideBySide();
+      resizer.classList.toggle('is-hidden', !sideBySide);
+      if (!sideBySide) {
+        // Clear the override so the CSS defaults resume when the layout
+        // wraps back to stacked -- otherwise a resize made while wide
+        // would stick around, meaninglessly, once stacked.
+        mapEl.style.flex = '';
+      }
+    }
+
+    function setMapBasisPx(px) {
+      const layoutWidth = layout.getBoundingClientRect().width;
+      const resizerWidth = resizer.getBoundingClientRect().width;
+      const maxPx = Math.max(MIN_PANE_PX, layoutWidth - resizerWidth - MIN_PANE_PX);
+      const clamped = Math.min(Math.max(px, MIN_PANE_PX), maxPx);
+      // `0 0 <px>` (not just flex-basis) zeroes out grow/shrink on this
+      // pane specifically, so the drag result is exactly what was set --
+      // the overview pane's own flex:1 absorbs whatever space is left.
+      mapEl.style.flex = `0 0 ${clamped}px`;
+      resizer.setAttribute(
+        'aria-valuenow',
+        Math.round((clamped / (layoutWidth - resizerWidth)) * 100),
+      );
+      scheduleInvalidate();
+    }
+
+    let dragging = false;
+    resizer.addEventListener('pointerdown', (event) => {
+      if (!isSideBySide()) return;
+      dragging = true;
+      resizer.setPointerCapture(event.pointerId);
+    });
+    resizer.addEventListener('pointermove', (event) => {
+      if (!dragging) return;
+      setMapBasisPx(event.clientX - layout.getBoundingClientRect().left);
+    });
+    resizer.addEventListener('pointerup', (event) => {
+      dragging = false;
+      resizer.releasePointerCapture(event.pointerId);
+    });
+
+    resizer.addEventListener('keydown', (event) => {
+      if (!isSideBySide()) return;
+      const currentPx = mapEl.getBoundingClientRect().width;
+      if (event.key === 'ArrowLeft') {
+        setMapBasisPx(currentPx - KEYBOARD_STEP_PX);
+        event.preventDefault();
+      } else if (event.key === 'ArrowRight') {
+        setMapBasisPx(currentPx + KEYBOARD_STEP_PX);
+        event.preventDefault();
+      }
+    });
+
+    updateSideBySideState();
+    new ResizeObserver(() => {
+      updateSideBySideState();
+      scheduleInvalidate();
+    }).observe(layout);
+  })();
+
   let ownTrack = null;
   const cursorMarker = L.circleMarker([0, 0], {
     color: RIDAL.cursorColor,
