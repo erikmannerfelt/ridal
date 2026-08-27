@@ -30,7 +30,11 @@ fn sanitize(v: f32) -> f32 {
 
 fn log_abs(v: f32) -> f32 {
     let a = v.abs();
-    if a == 0.0 { f32::NEG_INFINITY } else { a.log10() }
+    if a == 0.0 {
+        f32::NEG_INFINITY
+    } else {
+        a.log10()
+    }
 }
 
 /// Transform a resampled amplitude value into the domain that the pixel
@@ -62,9 +66,7 @@ pub fn to_stats_domain(v: f32, transform: AmplitudeTransform) -> f32 {
     }
     match transform {
         AmplitudeTransform::Positive => sanitize(v).abs(),
-        AmplitudeTransform::Linear | AmplitudeTransform::AbsLog => {
-            to_display_domain(v, transform)
-        }
+        AmplitudeTransform::Linear | AmplitudeTransform::AbsLog => to_display_domain(v, transform),
     }
 }
 
