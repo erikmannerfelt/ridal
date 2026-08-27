@@ -446,8 +446,14 @@ The first pass of feedback after M7b landed -- five commits, all local to
   start/stop datetime merged into one row, a synthetic Shape row, and a
   curated identity/acquisition/processing/everything-else order. The
   banner collapsed to a single Radargram ID row
-  ("dronbreen-2022 (Rev. 493a1cc; processed ...)"); Group, full
-  Revision, Processed and Shape all moved into the dialog. Processing
+  ("dronbreen-2022 (Rev. 493a1cc; processed ...)"); Group, Processed and
+  Shape moved into the dialog. **Correction, caught in the next feedback
+  round: the full revision checksum did not actually move into the
+  dialog** -- `revision_id` is a server-computed fingerprint
+  (`RevisionId::fingerprint_v1`), never written as a file attribute, so
+  it was never in `dataset_attributes`'s `raw` map to begin with; the
+  abbreviated banner form is currently the only place it appears at all.
+  See "Open feedback" below. Processing
   steps/log got their own `<details>`, with the log's tab-separated
   per-step detail broken onto its own line (it used to collapse into an
   unreadable run-on paragraph, since HTML collapses whitespace).
@@ -495,6 +501,49 @@ The first pass of feedback after M7b landed -- five commits, all local to
   new `#[serial_test::serial(netcdf)]` tests were added, not a
   regression); `cargo fmt --check` and `cargo clippy -F cli,server`/
   `-F cli -- -D warnings` both clean throughout.
+
+## Open feedback for a future round (logged only, not yet implemented)
+
+Collected from real-usage feedback after M7c shipped. Deliberately not
+acted on now -- logged so the next round has it, not lost to context.
+
+- **Full revision checksum is missing from the metadata dialog entirely**
+  (see the M7c correction above): `revision_id` is a server-side
+  fingerprint, not a file attribute, so `dataset_attributes` never sees
+  it. Needs a synthetic entry injected the same way Shape already is
+  (`routes.rs::build_metadata_entries` takes `shape` as a side input;
+  it would need `revision_id` passed in alongside it).
+- **Add `8x` to the horizontal-scale dropdown** (currently
+  0.25x/0.5x/1x/2x/4x, per M0's planning defaults). One line in
+  `viewer.html.jinja`'s `<select id="xscale-select">`.
+- **`Original filepaths` can be arbitrarily long** (many merged inputs,
+  each a long path) and currently renders as one plain comma-joined
+  metadata row. Needs its own `<details>` (like Processing steps/log)
+  rather than assuming it stays short.
+- **Index page: a card can already be highlighted (`.card:target`, blue
+  rim, from the viewer's `/#card-{id}` back-link) when its track is also
+  hover-highlighted from the group map** -- the two treatments look
+  identical, so hovering such a card's track visibly does nothing. Needs
+  a distinct visual state for hover vs. target (or a state that composes
+  visibly with target).
+- **Map tooltip readability**: the frosted/translucent popup background
+  is hard to read, especially over dark satellite imagery -- and
+  PFA_website has the same problem for the same reason (a translucent
+  background can't guarantee contrast against arbitrary imagery
+  underneath). Needs a design that doesn't depend on what's beneath it
+  (e.g. a solid or near-solid background, or a text shadow/outline).
+- **Popup thumbnail should be part of the link**, so clicking the image
+  itself (not just the label text) navigates to the radargram.
+- **Index card fields `Path` and `Processed` should move behind some
+  "more info" affordance** to declutter the card -- unclear yet whether
+  that's a `<details>`, a popup, or something else; needs a design
+  decision, not just an implementation.
+- **Ability to change the default render profile from the index page**
+  (i.e. per-thumbnail or global, without visiting each viewer) was
+  requested but how to store that choice is unresolved -- a URL query
+  param, `localStorage`, or a server-side per-session/per-user setting
+  all have different tradeoffs (shareability vs. persistence vs. needing
+  no server state) that need deciding before implementation.
 
 ## Run status: M0-M7 done (M7 completed by M7b, refined in M7c), M8 not attempted
 
