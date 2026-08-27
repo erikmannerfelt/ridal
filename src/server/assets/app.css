@@ -26,12 +26,14 @@
   --color-warning-border: #e0b23c;
   --color-warning-text: #5a4310;
 
-  /* Frosted map-popup background (PFA_website's style.css:632-637,
-   * ported through tokens so it works in both themes -- their literal
-   * white would be wrong in dark mode). Drawn over satellite imagery, so
-   * it needs its own alpha-blended tone rather than reusing
-   * --color-surface directly. */
-  --color-popup-frost: rgb(255 255 255 / 55%);
+  /* Map-popup background. PFA_website's style.css:632-637 uses
+   * rgba(255,255,255,0.3) + backdrop-filter blur, ported faithfully in
+   * an earlier round -- but 30% alpha cannot guarantee legibility
+   * against arbitrary satellite imagery underneath (PFA_website has the
+   * same flaw for the same reason), and blur fixes texture, not
+   * contrast. Near-opaque instead; the small blur below is now purely a
+   * soft-edge touch, not what legibility depends on. */
+  --color-popup-bg: rgb(255 255 255 / 92%);
 
   /* Theme-independent on purpose: this is the letterbox behind grayscale
    * radargram chunks. A light backdrop around a grayscale section
@@ -77,7 +79,7 @@
     --color-warning-bg: #3a2f14;
     --color-warning-border: #8a6a20;
     --color-warning-text: #f2dfae;
-    --color-popup-frost: rgb(30 32 36 / 55%);
+    --color-popup-bg: rgb(30 32 36 / 92%);
   }
 }
 
@@ -197,10 +199,21 @@ section.group {
   scroll-margin-top: var(--space-5);
 }
 
-/* The viewer's "back to catalog" link targets /#card-{id}; without this
- * the jump is silent and the user has to hunt for which card they came
- * from. */
-.card:target,
+/* Two distinct highlight states, previously the identical accent ring --
+ * which made hovering a card's track from the group map look like it did
+ * nothing whenever that card was also the :target (arriving via the
+ * viewer's "back to catalog" link, /#card-{id}, leaves it targeted for
+ * as long as the hash stays in the URL). Now they compose visibly
+ * instead of one masking the other. */
+
+/* Persistent: "this is where you came from". */
+.card:target {
+  border-color: var(--color-accent);
+  background: var(--color-surface-sunken);
+}
+
+/* Transient: "this is what your cursor is over right now", on either
+ * end of the two-way card/track hover link (RIDAL.bindTrackHighlight). */
 .card.is-hovered {
   border-color: var(--color-accent);
   box-shadow: 0 0 0 2px var(--color-accent);
@@ -304,13 +317,33 @@ section.group {
   border-radius: var(--radius-md);
 }
 
-/* ---------- Leaflet popup frosting ---------- */
+/* Drag handle between #map and #overview-map -- only shown when they're
+ * actually side by side (JS toggles .is-hidden when .layout wraps them
+ * to stacked, where a horizontal resize handle makes no sense). */
+#split-resizer {
+  flex: 0 0 8px;
+  align-self: stretch;
+  cursor: col-resize;
+  background: var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+#split-resizer:hover,
+#split-resizer:focus-visible {
+  background: var(--color-accent);
+}
+
+#split-resizer.is-hidden {
+  display: none;
+}
+
+/* ---------- Leaflet popup ---------- */
 
 .leaflet-popup-content-wrapper,
 .leaflet-popup-tip {
-  background: var(--color-popup-frost);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  background: var(--color-popup-bg);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
   color: var(--color-text);
 }
 

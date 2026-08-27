@@ -55,16 +55,20 @@ const RIDAL = Object.freeze({
     return track.segments.map((seg) => seg.vertices.map((v) => [v.lat, v.lon]));
   },
 
-  /** One track's popup content: a link plus a lazy-loaded overview
-   * thumbnail, matching PFA_website's overview_map.js. The frosted
-   * background/blur that makes the thumbnail readable against the
-   * basemap underneath comes from app.css's .leaflet-popup-content-wrapper
-   * rule, not from anything here. */
+  /** One track's popup content: a link wrapping both the label and a
+   * lazy-loaded overview thumbnail, so clicking the image navigates just
+   * like clicking the label does -- matching PFA_website's
+   * overview_map.js, but with the image inside the anchor rather than
+   * beside it. The near-opaque popup background that makes this legible
+   * over arbitrary basemap imagery comes from app.css's
+   * .leaflet-popup-content-wrapper rule, not from anything here. */
   popupContent(radargramId, label) {
     return (
-      `<a href="/view/${radargramId}">${label}</a>` +
+      `<a class="popup-link" href="/view/${radargramId}">` +
+      `${label}` +
       `<img class="popup-thumb" src="/api/v1/datasets/${radargramId}/views/standard/overview" ` +
-      'loading="lazy" alt="">'
+      'loading="lazy" alt="">' +
+      '</a>'
     );
   },
 
