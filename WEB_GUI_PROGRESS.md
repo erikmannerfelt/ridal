@@ -544,6 +544,22 @@ acted on now -- logged so the next round has it, not lost to context.
   param, `localStorage`, or a server-side per-session/per-user setting
   all have different tradeoffs (shareability vs. persistence vs. needing
   no server state) that need deciding before implementation.
+- **Resizable split between the radargram and overview map** in the
+  viewer's side-by-side layout -- only relevant when they're actually
+  laid out left/right (i.e. not on narrow screens where `.layout`
+  already wraps them to stacked). A simple drag handle between the two
+  flex children.
+- **Drop `Conventions: CF-1.7` from the metadata dialog.** It's a
+  NetCDF/CF attribute Ridal always writes and never varies -- a file has
+  to already be Ridal-produced (and thus CF-1.7) to be recognized as
+  "Supported" by `inspect_ridal_netcdf` at all, so the row conveys
+  nothing a user can act on. Add `"Conventions"` to
+  `routes.rs::SKIP_FROM_ENTRIES`.
+- **`Version` label is ambiguous** -- it's `ridal_version` (e.g. "ridal
+  version 0.5.2 by ..."), currently prettified to just "Version" by the
+  generic strip-prefix rule. Rename via `label_override` to "Ridal
+  version" ("Processed with ridal version" was considered but is
+  probably too long for the label column).
 
 ## Run status: M0-M7 done (M7 completed by M7b, refined in M7c), M8 not attempted
 
