@@ -24,6 +24,7 @@ update). Milestone numbering matches that plan.
 | M8: concurrency hardening | not attempted (stretch, see below) | - |
 | M7c: viewer refinement round (see below) | done | `b63dbcf`, `290ea53`, `3fea81c`, `91023ed`, `2b43d8d` |
 | M7d: backlog clearing round (see below) | done | `7ad1401`, `84782ec`, `27cbc40`, `0f74dac` |
+| M7e: bug fixes found using M7d (see below) | done | `1cf9d85`, `d82a43b` |
 
 ## Gate applied before every commit
 
@@ -577,7 +578,46 @@ documented `dem::tests::test_no_gdal_failure` baseline;
 `cargo fmt --check` and `cargo clippy -F cli,server`/`-F cli --
 -D warnings` clean throughout; `cargo check -F python --lib` clean.
 
-## Run status: M0-M7 done (M7 completed by M7b, refined in M7c and M7d), M8 not attempted
+## M7e findings: four bugs found by using M7d against real data
+
+Reported after M7d shipped, all four fixed in `1cf9d85` and `d82a43b`.
+Two are worth reading as more than bug notes:
+
+- **Edge chunks were being stretched rather than padded** -- a
+  pre-existing bug (`render_chunk` resampled into a full `CHUNK_SIZE`
+  output regardless of how much of it the chunk covered) that `positive`
+  finally made visible. On the reported 1994x2529 file, chunk column 9
+  starts at trace 2304 and chunk row 7 at sample 1792 = 2223 ns, which
+  is precisely where the user saw the appearance change, with their
+  intersection as the "square of very weird data" in the corner. The
+  smear was 256/225 horizontally and 256/202 vertically, so every trace
+  in those chunks sat at the wrong position -- a correctness bug, not
+  just a cosmetic one, and one `default`'s smooth grayscale had been
+  hiding since M4. Chunks are now rendered at their true extent and
+  `chunkBounds` places them there. **Lesson worth keeping: the
+  high-contrast profile is a useful diagnostic. Rendering bugs that
+  `default` visually absorbs show up immediately under `positive`.**
+- **`positive` overviews rendered almost entirely black**, which the
+  user correctly guessed was a resampling issue. Area-weighted mean is
+  the wrong reducer for a profile that reads *signed* amplitude
+  asymmetrically: radar traces oscillate about zero, so averaging the
+  ~5x5 footprint an overview downsamples over largely cancels them, and
+  `positive`'s black level then clips the remainder away. Added
+  `ResamplingMethod::Peak` (the `ResamplingMethod` enum's first real
+  second variant, which is what it was designed for) and switched
+  `positive` to it. Peak and Mean agree exactly at a 1:1 footprint, so
+  the full-resolution viewer is untouched and only downsampled views
+  change.
+
+The other two were straightforward: "Back to catalog" dropped
+`?profile=`, and the split resizer hid itself with `display: none`,
+whose removal of 8px from the flex line freed exactly enough room to
+un-wrap the layout, which re-showed the handle, which re-wrapped it --
+a feedback loop that flickered at the threshold. `visibility` keeps the
+box in flow so the ResizeObserver's measurement no longer depends on
+the toggle's own effect; verified monotonic across 760-1000px.
+
+## Run status: M0-M7 done (M7 completed by M7b, refined in M7c/M7d/M7e), M8 not attempted
 
 The plan's explicit target was "the first user-visible milestone (index +
 viewer + map sync)" with "M8 hardening as optional stretch." That target
