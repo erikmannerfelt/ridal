@@ -420,20 +420,25 @@ dialog th {
   white-space: nowrap;
 }
 
-#processing-details {
+/* Shared by every collapsible section of the metadata dialog (currently
+ * processing steps/log and original filepaths) so they stay visually
+ * consistent without duplicating the rules per section. */
+.meta-details {
   margin-top: var(--space-3);
   font-size: var(--text-sm);
 }
 
-#processing-details summary {
+.meta-details summary {
   cursor: pointer;
   color: var(--color-text-muted);
   font-weight: 600;
 }
 
-#processing-steps-list {
+.meta-details ol,
+.meta-details ul {
   margin: var(--space-2) 0;
   padding-left: var(--space-4);
+  overflow-wrap: anywhere;
 }
 
 #processing-log {

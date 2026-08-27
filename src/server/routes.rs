@@ -552,6 +552,10 @@ fn label_override(name: &str) -> Option<&'static str> {
     match name {
         "crs" => Some("CRS"),
         "ridal_group_id" => Some("Group ID"),
+        // The generic strip-`ridal_`-prefix rule would otherwise reduce
+        // this to a bare "Version", which reads as the *radargram's* own
+        // version rather than the tool that processed it.
+        "ridal_version" => Some("Ridal version"),
         _ => None,
     }
 }
@@ -643,11 +647,13 @@ struct MetadataEntry {
 /// alphabetically by their prettified label -- the plan's "identity ->
 /// acquisition -> processing -> everything else alphabetically".
 ///
-/// `__start_stop_datetime` and `__shape` are synthetic keys for entries
-/// this function builds itself rather than reading verbatim from `raw`.
+/// `__revision_id`, `__start_stop_datetime` and `__shape` are synthetic
+/// keys for entries this function builds itself rather than reading
+/// verbatim from `raw`.
 fn curated_priority(key: &str) -> (u8, usize) {
     const IDENTITY: &[&str] = &[
         "ridal_radargram_id",
+        "__revision_id",
         "ridal_display_name",
         "ridal_group_name",
         "ridal_group_id",
@@ -665,11 +671,7 @@ fn curated_priority(key: &str) -> (u8, usize) {
         "elevation_correction",
         "total_distance",
     ];
-    const PROCESSING: &[&str] = &[
-        "ridal_processing_datetime",
-        "ridal_version",
-        "original_filepaths",
-    ];
+    const PROCESSING: &[&str] = &["ridal_processing_datetime", "ridal_version"];
 
     if let Some(i) = IDENTITY.iter().position(|&k| k == key) {
         return (0, i);
@@ -688,19 +690,28 @@ fn curated_priority(key: &str) -> (u8, usize) {
 /// [`dataset_attributes`]); `start_datetime`/`stop_datetime` are merged
 /// into one synthetic "Start/stop datetime" row;
 /// `ridal_user_metadata_json` duplicates the flattened user-metadata
-/// attributes already shown individually. `*_unit` keys are consumed by
-/// their base attribute, not skipped by name here.
+/// attributes already shown individually; `original_filepaths` gets its
+/// own field and a dedicated `<details>` in the viewer, since it can be
+/// arbitrarily long (many merged inputs, each a long path) and would
+/// otherwise render as one unreadable comma-joined row; `Conventions` is
+/// always `CF-1.7` -- a file has to already be Ridal-produced (and thus
+/// CF-1.7) to be recognized as `Supported` at all, so the row is never
+/// actionable. `*_unit` keys are consumed by their base attribute, not
+/// skipped by name here.
 const SKIP_FROM_ENTRIES: &[&str] = &[
     "start_datetime",
     "stop_datetime",
     "processing_log",
     "processing_steps",
     "ridal_user_metadata_json",
+    "original_filepaths",
+    "Conventions",
 ];
 
 fn build_metadata_entries(
     raw: &serde_json::Map<String, serde_json::Value>,
     shape: (usize, usize),
+    revision_id: &str,
 ) -> Vec<MetadataEntry> {
     struct Entry {
         key: String,
@@ -708,6 +719,17 @@ fn build_metadata_entries(
         value: String,
     }
     let mut entries = Vec::new();
+
+    // `revision_id` is a server-computed fingerprint
+    // (`RevisionId::fingerprint_v1`), never written as a file attribute,
+    // so it is never in `raw` -- without this synthetic entry the full
+    // checksum would not appear anywhere in the UI at all (only the
+    // abbreviated form in the banner).
+    entries.push(Entry {
+        key: "__revision_id".to_string(),
+        label: "Revision".to_string(),
+        value: revision_id.to_string(),
+    });
 
     if let (Some(start), Some(stop)) = (
         raw.get("start_datetime").and_then(|v| v.as_str()),
@@ -806,13 +828,26 @@ pub async fn dataset_attributes(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // Its own field (not a curated entry, see `SKIP_FROM_ENTRIES`): can be
+    // arbitrarily long, so the viewer gives it a dedicated `<details>`
+    // rather than one comma-joined row.
+    let original_filepaths: Vec<String> = raw
+        .get("original_filepaths")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
 
-    let entries = build_metadata_entries(&raw, entry.shape);
+    let entries = build_metadata_entries(&raw, entry.shape, entry.revision_id.as_str());
 
     Ok(Json(serde_json::json!({
         "entries": entries,
         "processing_steps": processing_steps,
         "processing_log": processing_log,
+        "original_filepaths": original_filepaths,
         "raw": raw,
     })))
 }
@@ -913,6 +948,7 @@ mod tests {
             "ridal_group_name": "Drønbreen",
             "ridal_group_id": "dronbreen",
             "ridal_processing_datetime": "2026-08-26T20:57:41.407887786+00:00",
+            "ridal_version": "ridal version 0.5.2 by Erik Schytt Mannerfelt",
             "start_datetime": "2022-03-29T00:00:00Z",
             "stop_datetime": "2022-03-29T01:00:00Z",
             "time_interval": 0.3,
@@ -920,13 +956,15 @@ mod tests {
             "processing_log": "step 1 (duration: 1s):\tdid a thing",
             "processing_steps": ["step 1"],
             "ridal_user_metadata_json": "{}",
+            "original_filepaths": ["a.rd3", "b.rd3"],
+            "Conventions": "CF-1.7",
             "crs": "EPSG:32633",
         })
         .as_object()
         .unwrap()
         .clone();
 
-        let entries = build_metadata_entries(&raw, (400, 1200));
+        let entries = build_metadata_entries(&raw, (400, 1200), "0123456789abcdef");
         let by_label: std::collections::HashMap<&str, &str> = entries
             .iter()
             .map(|e| (e.label.as_str(), e.value.as_str()))
@@ -943,19 +981,36 @@ mod tests {
         // ridal_processing_datetime gets the same display formatting as
         // start/stop, not the raw nanosecond-precision RFC3339 string.
         assert_eq!(by_label["Processing datetime"], "2026-08-26 20:57");
+        // The full revision checksum: a server-computed fingerprint, never
+        // a file attribute, so it must come from the explicit parameter,
+        // not from `raw`.
+        assert_eq!(by_label["Revision"], "0123456789abcdef");
+        // ridal_version gets a clearer label than the generic strip-prefix
+        // rule would produce ("Version" reads as the radargram's own).
+        assert_eq!(
+            by_label["Ridal version"],
+            "ridal version 0.5.2 by Erik Schytt Mannerfelt"
+        );
         // Merged-unit and internal-use attributes must not also appear as
         // their own separate rows.
         assert!(!by_label.contains_key("Time interval unit"));
         assert!(!by_label.contains_key("Processing log"));
         assert!(!by_label.contains_key("Processing steps"));
         assert!(!by_label.contains_key("User metadata json"));
+        // Unbounded (could be many long paths) and always-constant
+        // attributes get their own handling elsewhere, not a curated row.
+        assert!(!by_label.contains_key("Original filepaths"));
+        assert!(!by_label.contains_key("Conventions"));
 
-        // Identity tier (radargram ID) sorts ahead of acquisition (CRS).
+        // Identity tier (radargram ID, revision) sorts ahead of
+        // acquisition (CRS).
         let id_pos = entries
             .iter()
             .position(|e| e.label == "Radargram id")
             .unwrap();
+        let revision_pos = entries.iter().position(|e| e.label == "Revision").unwrap();
         let crs_pos = entries.iter().position(|e| e.label == "CRS").unwrap();
-        assert!(id_pos < crs_pos);
+        assert!(id_pos < revision_pos);
+        assert!(revision_pos < crs_pos);
     }
 }

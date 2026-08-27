@@ -475,6 +475,16 @@ mod tests {
                     .any(|e| e["label"] == "CRS" && e["value"] == "EPSG:32633"),
                 "{entries:?}"
             );
+            // The revision checksum is server-computed, never a file
+            // attribute, so it must still show up as a curated entry.
+            assert!(
+                entries.iter().any(|e| e["label"] == "Revision"),
+                "{entries:?}"
+            );
+            // The fixture writes no original_filepaths attribute; the
+            // dedicated field must still be present (as an empty array),
+            // not missing or an error.
+            assert_eq!(json["original_filepaths"].as_array().unwrap().len(), 0);
 
             // The `/axes` route degrades each axis to null independently
             // when the fixture never wrote distance/twtt/depth.

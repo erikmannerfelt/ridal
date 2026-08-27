@@ -28,24 +28,32 @@
         <option value="1" selected>1&times;</option>
         <option value="2">2&times;</option>
         <option value="4">4&times;</option>
+        <option value="8">8&times;</option>
       </select>
     </label>
     <button id="metadata-button" type="button">Metadata</button>
     <span id="cursor-readout"></span>
   </div>
 
-  <div class="layout">
+  <div class="layout" id="viewer-layout">
     <div id="map"></div>
+    <div id="split-resizer" role="separator" aria-orientation="vertical"
+         aria-label="Resize radargram and map panels"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" tabindex="0"></div>
     <div id="overview-map"></div>
   </div>
 
   <dialog id="metadata-dialog">
     <h2>Metadata</h2>
     <table id="metadata-table"><tbody></tbody></table>
-    <details id="processing-details">
+    <details class="meta-details" id="processing-details">
       <summary>Processing steps &amp; log</summary>
       <ol id="processing-steps-list"></ol>
       <pre id="processing-log"></pre>
+    </details>
+    <details class="meta-details" id="filepaths-details">
+      <summary>Original filepaths</summary>
+      <ul id="filepaths-list"></ul>
     </details>
     <p><button type="button" id="metadata-close">Close</button></p>
   </dialog>
@@ -307,6 +315,17 @@
           .split('\n')
           .map((line) => line.replace(/\t/g, '\n  '));
         document.getElementById('processing-log').textContent = logLines.join('\n');
+
+        // Its own <details>, not a metadata-table row: an acquisition
+        // that merged many inputs can have an arbitrarily long list of
+        // arbitrarily long paths.
+        const filepathsList = document.getElementById('filepaths-list');
+        filepathsList.innerHTML = '';
+        data.original_filepaths.forEach((path) => {
+          const li = document.createElement('li');
+          li.textContent = path;
+          filepathsList.appendChild(li);
+        });
 
         dialog.showModal();
       });
