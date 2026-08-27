@@ -442,6 +442,39 @@ mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
+    fn index_page_render_profile_switcher_propagates_to_links() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc(&dir.path().join("a.nc"), "profile-test-a");
+            let app = test_app(dir.path());
+
+            let (status, body) = get(&app, "/?profile=positive").await;
+            assert_eq!(status, StatusCode::OK);
+            let html = String::from_utf8(body.to_vec()).unwrap();
+            // The chosen profile propagates to both the thumbnail source
+            // and the card's own link, so opening a radargram keeps the
+            // profile the index was browsing in.
+            assert!(html.contains(
+                "/api/v1/datasets/profile-test-a/views/standard/overview?profile=positive"
+            ));
+            assert!(html.contains("/view/profile-test-a?profile=positive"));
+            assert!(
+                html.contains("value=\"positive\" selected"),
+                "the switcher must reflect the active profile"
+            );
+            // Path/Processed are tucked behind "More info", not shown
+            // directly in the scannable part of the card.
+            assert!(html.contains("More info"));
+
+            let (status, _) = get(&app, "/?profile=nonexistent").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
     fn track_attributes_and_group_routes() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {

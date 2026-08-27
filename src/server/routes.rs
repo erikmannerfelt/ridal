@@ -300,7 +300,17 @@ struct GroupSummary {
     entries: Vec<DatasetSummary>,
 }
 
-pub async fn index_page(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn index_page(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProfileQuery>,
+) -> Result<impl IntoResponse, PageError> {
+    let active_profile = query.profile.unwrap_or_else(|| "default".to_string());
+    lookup_profile(&active_profile).map_err(PageError)?;
+    let profiles: Vec<String> = RenderProfile::built_in_profiles()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+
     let entries: Vec<DatasetSummary> = state.catalog.entries.iter().map(to_summary).collect();
     let warnings: Vec<String> = state
         .catalog
@@ -359,9 +369,11 @@ pub async fn index_page(State(state): State<Arc<AppState>>) -> impl IntoResponse
             warnings => warnings,
             groups => groups,
             ungrouped => ungrouped,
+            profiles => profiles,
+            active_profile => active_profile,
         })
-        .unwrap_or_else(|e| format!("<h1>Template error</h1><p>{e}</p>"));
-    Html(html)
+        .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
+    Ok(Html(html))
 }
 
 pub async fn viewer_page(

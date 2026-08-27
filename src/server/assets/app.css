@@ -290,6 +290,22 @@ section.group {
   overflow-wrap: anywhere;
 }
 
+/* The "More info" <details> reuses .meta-details' summary styling (see
+ * the metadata-dialog section below) but needs its own horizontal
+ * padding, since .card itself carries none -- .card-meta supplies its
+ * own instead, which would otherwise double up here. */
+.card-more {
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.card-more summary {
+  padding: var(--space-1) 0;
+}
+
+.card-more .card-meta {
+  padding: 0;
+}
+
 /* ---------- viewer ---------- */
 
 .layout {
