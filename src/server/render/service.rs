@@ -230,10 +230,11 @@ impl RenderService {
                 let seed = seed_from_variant(variant);
                 Some(sampled_amplitude_limits(
                     &self.reader,
-                    profile.abslog,
+                    profile.transform,
                     seed,
                     low,
                     high,
+                    profile.stats_skip_first_samples,
                 )?)
             }
             AmplitudeLimits::Explicit { .. } => None,

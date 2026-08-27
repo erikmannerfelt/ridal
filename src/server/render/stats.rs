@@ -8,7 +8,8 @@
 //! row-wise mixture in correct proportion regardless of which traces are
 //! drawn.
 
-use super::colormap::to_display_domain;
+use super::colormap::to_stats_domain;
+use super::profile::AmplitudeTransform;
 use crate::server::source::SourceReader;
 
 /// Spread across the profile. 128 well-separated locations is ample for a
@@ -27,12 +28,19 @@ const TRACES_PER_RUN: usize = 16;
 /// `seed` should be derived from the revision ID, not the clock, so limits
 /// are reproducible across restarts and identical between the CLI and the
 /// server for the same processed file.
+///
+/// `skip_first_samples` drops that many sample rows from the top of every
+/// sampled trace before estimating percentiles -- the `positive` profile's
+/// way of excluding the direct-wave band (see
+/// `RenderProfile::stats_skip_first_samples`). `0` reproduces the original
+/// whole-trace behavior.
 pub fn sampled_amplitude_limits(
     reader: &SourceReader,
-    abslog: bool,
+    transform: AmplitudeTransform,
     seed: u64,
     low_pct: f32,
     high_pct: f32,
+    skip_first_samples: usize,
 ) -> Result<(f32, f32), String> {
     let n_traces = reader.shape().1;
     if n_traces == 0 {
@@ -41,10 +49,10 @@ pub fn sampled_amplitude_limits(
     let step = (n_traces / N_RUNS).max(1);
     let offset = (seed as usize) % step;
 
-    let samples = reader.sample_trace_runs(N_RUNS, TRACES_PER_RUN, offset)?;
+    let samples = reader.sample_trace_runs(N_RUNS, TRACES_PER_RUN, offset, skip_first_samples)?;
     let mut transformed: Vec<f32> = samples
         .into_iter()
-        .map(|v| to_display_domain(v, abslog))
+        .map(|v| to_stats_domain(v, transform))
         .filter(|v| v.is_finite())
         .collect();
     if transformed.is_empty() {
@@ -94,7 +102,9 @@ mod tests {
         write_test_nc_with(&path, height, width, &values);
         let reader = SourceReader::open(&path).unwrap();
 
-        let (low, high) = sampled_amplitude_limits(&reader, false, 0, 0.01, 0.99).unwrap();
+        let (low, high) =
+            sampled_amplitude_limits(&reader, AmplitudeTransform::Linear, 0, 0.01, 0.99, 0)
+                .unwrap();
         assert!(low >= 0.0 && low < 5.0, "low={low}");
         assert!(high > 15.0 && high <= 19.0, "high={high}");
         assert!(low < high);
@@ -117,8 +127,12 @@ mod tests {
         write_test_nc_with(&path, height, width, &values);
         let reader = SourceReader::open(&path).unwrap();
 
-        let (low_a, high_a) = sampled_amplitude_limits(&reader, false, 1, 0.01, 0.99).unwrap();
-        let (low_b, high_b) = sampled_amplitude_limits(&reader, false, 999, 0.01, 0.99).unwrap();
+        let (low_a, high_a) =
+            sampled_amplitude_limits(&reader, AmplitudeTransform::Linear, 1, 0.01, 0.99, 0)
+                .unwrap();
+        let (low_b, high_b) =
+            sampled_amplitude_limits(&reader, AmplitudeTransform::Linear, 999, 0.01, 0.99, 0)
+                .unwrap();
         assert!((low_a - low_b).abs() < 1.0);
         assert!((high_a - high_b).abs() < 1.0);
     }
@@ -132,8 +146,10 @@ mod tests {
         write_test_nc_with(&path, 5, 300, &vec![1.0; 5 * 300]);
         let reader = SourceReader::open(&path).unwrap();
 
-        let a = sampled_amplitude_limits(&reader, false, 42, 0.01, 0.99).unwrap();
-        let b = sampled_amplitude_limits(&reader, false, 42, 0.01, 0.99).unwrap();
+        let a = sampled_amplitude_limits(&reader, AmplitudeTransform::Linear, 42, 0.01, 0.99, 0)
+            .unwrap();
+        let b = sampled_amplitude_limits(&reader, AmplitudeTransform::Linear, 42, 0.01, 0.99, 0)
+            .unwrap();
         assert_eq!(a, b);
     }
 
@@ -148,10 +164,62 @@ mod tests {
         write_test_nc_with(&path, height, width, &vec![100.0f32; height * width]);
         let reader = SourceReader::open(&path).unwrap();
 
-        let (low_lin, high_lin) = sampled_amplitude_limits(&reader, false, 7, 0.01, 0.99).unwrap();
-        let (low_log, high_log) = sampled_amplitude_limits(&reader, true, 7, 0.01, 0.99).unwrap();
+        let (low_lin, high_lin) =
+            sampled_amplitude_limits(&reader, AmplitudeTransform::Linear, 7, 0.01, 0.99, 0)
+                .unwrap();
+        let (low_log, high_log) =
+            sampled_amplitude_limits(&reader, AmplitudeTransform::AbsLog, 7, 0.01, 0.99, 0)
+                .unwrap();
         assert!((low_lin - 100.0).abs() < 1e-3);
         assert!((low_log - 2.0).abs() < 1e-3); // log10(100) == 2
         assert_ne!((low_lin, high_lin), (low_log, high_log));
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn positive_transform_estimates_limits_from_absolute_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        let height = 5;
+        let width = 300;
+        // All-negative data: a `Linear` estimate would report both bounds
+        // negative, but `Positive` estimates from `|x|`, so both bounds
+        // should come back positive.
+        write_test_nc_with(&path, height, width, &vec![-100.0f32; height * width]);
+        let reader = SourceReader::open(&path).unwrap();
+
+        let (low, high) =
+            sampled_amplitude_limits(&reader, AmplitudeTransform::Positive, 7, 0.01, 0.99, 0)
+                .unwrap();
+        assert!((low - 100.0).abs() < 1e-3, "low={low}");
+        assert!((high - 100.0).abs() < 1e-3, "high={high}");
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn skip_first_samples_excludes_the_direct_wave_band() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        let height = 20;
+        let width = 300;
+        // A huge-amplitude "direct wave" in the first 5 rows, small
+        // amplitude everywhere else -- skipping those rows should keep the
+        // estimate near the small values instead of the spike.
+        let mut values = Vec::with_capacity(height * width);
+        for row in 0..height {
+            let v = if row < 5 { 1000.0 } else { 1.0 };
+            for _ in 0..width {
+                values.push(v);
+            }
+        }
+        write_test_nc_with(&path, height, width, &values);
+        let reader = SourceReader::open(&path).unwrap();
+
+        let (_, high) =
+            sampled_amplitude_limits(&reader, AmplitudeTransform::Linear, 0, 0.01, 0.99, 5)
+                .unwrap();
+        assert!(high < 10.0, "high={high} should exclude the skipped spike");
     }
 }

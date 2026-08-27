@@ -39,6 +39,28 @@ impl ImageFormat {
     }
 }
 
+/// How raw amplitude is mapped into the domain that limits and
+/// normalization operate in, both for percentile estimation (`stats.rs`)
+/// and for the pixel value that actually gets normalized (`colormap.rs`).
+///
+/// `AbsLog` uses the same domain (`log10|x|`) for both purposes. `Positive`
+/// does not: PFA_website's `normalize()` estimates percentile bounds from
+/// `|x|` but stretches the *signed* value against those bounds, which is
+/// what pushes negative returns toward black while favoring positive ones.
+/// That asymmetry is why `Positive` needs its own variant rather than
+/// reusing a single "domain" transform for both stats and display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AmplitudeTransform {
+    /// Plain linear amplitude, no transform.
+    Linear,
+    /// `log10(|amplitude|)`, matching svalbard_radar's "Absolute" display
+    /// mode.
+    AbsLog,
+    /// Percentile bounds from `|amplitude|`, signed amplitude displayed --
+    /// PFA_website's (mis-named there) "abslog" stretch.
+    Positive,
+}
+
 /// How amplitude limits are determined for normalization.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum AmplitudeLimits {
@@ -63,13 +85,22 @@ pub enum DatasetView {
 pub struct RenderProfile {
     pub name: String,
     pub view: DatasetView,
-    /// `log10(|amplitude|)` applied before normalization, matching
-    /// svalbard_radar's "Absolute" display mode. `false` for a plain
-    /// linear-amplitude view.
-    pub abslog: bool,
+    pub transform: AmplitudeTransform,
     pub limits: AmplitudeLimits,
     pub resampling: ResamplingMethod,
     pub format: ImageFormat,
+    /// Post-normalization contrast multiplier: `1.0` (the default profile's
+    /// value) leaves the plain min-max stretch untouched.
+    pub contrast: f32,
+    /// Post-normalization black-level offset, subtracted before the
+    /// contrast multiplier: `0.0` (the default profile's value) leaves the
+    /// plain min-max stretch untouched.
+    pub black_level: f32,
+    /// Sample rows dropped from the top of every trace before estimating
+    /// percentile limits (`stats.rs`), excluding the direct-wave band from
+    /// the estimate. `0` (the default profile's value) samples whole
+    /// traces, unchanged from before this field existed.
+    pub stats_skip_first_samples: usize,
 }
 
 impl RenderProfile {
@@ -78,13 +109,16 @@ impl RenderProfile {
         Self {
             name: "default".to_string(),
             view: DatasetView::Standard,
-            abslog: false,
+            transform: AmplitudeTransform::Linear,
             limits: AmplitudeLimits::Percentile {
                 low: 0.01,
                 high: 0.99,
             },
             resampling: ResamplingMethod::Mean,
             format: ImageFormat::Jpeg { quality: 85 },
+            contrast: 1.0,
+            black_level: 0.0,
+            stats_skip_first_samples: 0,
         }
     }
 
@@ -92,7 +126,27 @@ impl RenderProfile {
     pub fn abslog_profile() -> Self {
         Self {
             name: "abslog".to_string(),
-            abslog: true,
+            transform: AmplitudeTransform::AbsLog,
+            ..Self::default_profile()
+        }
+    }
+
+    /// `positive`: PFA_website's asymmetric stretch (mis-named "abslog"
+    /// there, and not a log transform at all -- see `AmplitudeTransform`).
+    /// Biases the display heavily toward positive returns, clipping
+    /// negative ones toward black; deliberately not the default, useful in
+    /// specific cases rather than as a general-purpose view.
+    pub fn positive_profile() -> Self {
+        Self {
+            name: "positive".to_string(),
+            transform: AmplitudeTransform::Positive,
+            contrast: 0.9,
+            black_level: 0.1,
+            // Excludes the direct-wave band (the source wavelet's own very
+            // high amplitude near the top of the radargram) from the
+            // percentile estimate, matching PFA_website's
+            // `normalize()`, which skips the first 50 sample rows.
+            stats_skip_first_samples: 50,
             ..Self::default_profile()
         }
     }
@@ -109,10 +163,11 @@ impl RenderProfile {
         }
     }
 
-    /// The three server-defined profiles offered in v1 (#121's dropdown).
+    /// The server-defined profiles offered in v1 (#121's dropdown).
     pub fn built_in_profiles() -> Vec<Self> {
         vec![
             Self::default_profile(),
+            Self::positive_profile(),
             Self::abslog_profile(),
             Self::high_contrast_profile(),
         ]
@@ -138,8 +193,15 @@ impl RenderProfile {
             ImageFormat::Png => "png".to_string(),
         };
         format!(
-            "{:?}|{}|{}|{:?}|{}",
-            self.view, self.abslog, limits, self.resampling, format
+            "{:?}|{:?}|{}|{:?}|{}|{}|{}|{}",
+            self.view,
+            self.transform,
+            limits,
+            self.resampling,
+            format,
+            self.contrast,
+            self.black_level,
+            self.stats_skip_first_samples
         )
     }
 }
@@ -167,9 +229,21 @@ mod tests {
     #[test]
     fn by_name_finds_built_ins_and_rejects_unknown() {
         assert!(RenderProfile::by_name("default").is_some());
+        assert!(RenderProfile::by_name("positive").is_some());
         assert!(RenderProfile::by_name("abslog").is_some());
         assert!(RenderProfile::by_name("high-contrast").is_some());
         assert!(RenderProfile::by_name("nonexistent").is_none());
+    }
+
+    #[test]
+    fn positive_profile_is_not_the_default() {
+        assert_ne!(
+            RenderProfile::positive_profile(),
+            RenderProfile::default_profile()
+        );
+        assert_eq!(RenderProfile::default_profile().contrast, 1.0);
+        assert_eq!(RenderProfile::default_profile().black_level, 0.0);
+        assert_eq!(RenderProfile::default_profile().stats_skip_first_samples, 0);
     }
 
     #[test]

@@ -278,10 +278,11 @@ mod tests {
         let seed = 0;
         let (low, high) = super::super::stats::sampled_amplitude_limits(
             &reader,
-            profile.abslog,
+            profile.transform,
             seed,
             0.01,
             0.99,
+            profile.stats_skip_first_samples,
         )
         .unwrap();
         println!("estimated limits: {low} .. {high}");

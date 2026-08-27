@@ -75,27 +75,35 @@ impl SourceReader {
             .map_err(|e| format!("Unexpected array rank reading window: {e}"))
     }
 
-    /// Read `n_traces` complete traces (all rows, `col..col+1` each),
-    /// drawn as `n_runs` short contiguous runs spread across the profile,
-    /// for amplitude-limit sampling (`stats.rs`).
+    /// Read `n_traces` complete traces (all rows from `skip_rows` down, each
+    /// spanning `col..col+1`), drawn as `n_runs` short contiguous runs
+    /// spread across the profile, for amplitude-limit sampling (`stats.rs`).
     ///
     /// Runs rather than isolated single-trace reads: benchmarked at ~1 GB,
     /// isolated evenly-strided traces cost nearly as much as reading the
     /// entire array (they land in every storage chunk), while the same
     /// trace count drawn as short runs is ~7.6x faster, because each run
     /// stays inside a small number of storage chunks. Every sampled trace
-    /// is still complete (all samples), which is what makes the sample
-    /// represent the source wavelet at its true share of the data.
+    /// is still complete (all samples below `skip_rows`), which is what
+    /// makes the sample represent the source wavelet at its true share of
+    /// the data.
+    ///
+    /// `skip_rows` drops the top `skip_rows` sample rows from every run --
+    /// used by the `positive` render profile to exclude the direct-wave
+    /// band from its percentile estimate. `0` reproduces the original
+    /// whole-trace behavior.
     pub fn sample_trace_runs(
         &self,
         n_runs: usize,
         traces_per_run: usize,
         offset: usize,
+        skip_rows: usize,
     ) -> Result<Vec<f32>, String> {
         let n_traces = self.shape.1;
         if n_traces == 0 || n_runs == 0 || traces_per_run == 0 {
             return Ok(Vec::new());
         }
+        let row_start = skip_rows.min(self.shape.0);
         let step = (n_traces / n_runs).max(1);
         let mut samples = Vec::new();
         for i in 0..n_runs {
@@ -104,7 +112,7 @@ impl SourceReader {
             if start >= end {
                 continue;
             }
-            let block = self.read_window(0, self.shape.0, start, end)?;
+            let block = self.read_window(row_start, self.shape.0, start, end)?;
             samples.extend(block.iter().copied());
         }
         Ok(samples)
@@ -177,7 +185,7 @@ mod tests {
         write_test_nc(&path, 4, 100);
         let reader = SourceReader::open(&path).unwrap();
 
-        let samples = reader.sample_trace_runs(5, 2, 0).unwrap();
+        let samples = reader.sample_trace_runs(5, 2, 0, 0).unwrap();
         // 5 runs x 2 traces x 4 samples/trace = 40 values, each run fully
         // covering the vertical extent of its columns.
         assert_eq!(samples.len(), 40);
@@ -192,8 +200,28 @@ mod tests {
         write_test_nc(&path, 4, 100);
         let reader = SourceReader::open(&path).unwrap();
 
-        let a = reader.sample_trace_runs(5, 2, 3).unwrap();
-        let b = reader.sample_trace_runs(5, 2, 3).unwrap();
+        let a = reader.sample_trace_runs(5, 2, 3, 0).unwrap();
+        let b = reader.sample_trace_runs(5, 2, 3, 0).unwrap();
         assert_eq!(a, b);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn sample_trace_runs_skip_rows_drops_the_top_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_test_nc(&path, 10, 100);
+        let reader = SourceReader::open(&path).unwrap();
+
+        let full = reader.sample_trace_runs(5, 2, 0, 0).unwrap();
+        let skipped = reader.sample_trace_runs(5, 2, 0, 4).unwrap();
+        // 5 runs x 2 traces x (10 - 4) samples/trace = 60 values.
+        assert_eq!(skipped.len(), 60);
+        assert_eq!(full.len(), 100);
+        // write_test_nc fills row-major values `row * width + col`, so row 4
+        // (the first retained row) starts at exactly 4*100 = 400; anything
+        // below that belongs to a dropped row.
+        assert!(skipped.iter().cloned().fold(f32::INFINITY, f32::min) >= 400.0);
     }
 }
