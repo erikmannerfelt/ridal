@@ -349,8 +349,16 @@ section.group {
   background: var(--color-accent);
 }
 
+/* `visibility`, deliberately not `display: none`. Hiding the handle with
+ * `display` removes its 8px from the flex line, which frees exactly
+ * enough room for the two panes to fit side by side again -- so the
+ * layout un-wraps, the handle comes back, its 8px re-wraps the layout,
+ * and it hides again. That feedback loop made the viewer flicker rapidly
+ * right at the wrap threshold. Keeping the box in flow makes the
+ * measurement the ResizeObserver takes independent of the toggle. */
 #split-resizer.is-hidden {
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* ---------- Leaflet popup ---------- */

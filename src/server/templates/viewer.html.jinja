@@ -1,7 +1,10 @@
 {% extends "base.html.jinja" %}
 {% block title %}{{ effective_label }} - Ridal{% endblock %}
 {% block content %}
-  <p><a href="/#card-{{ radargram_id }}">&larr; Back to catalog</a></p>
+  {#- Carries the active profile back to the catalog, so a round trip
+      viewer -> catalog -> viewer stays in the profile you were browsing
+      in rather than silently resetting to the default. -#}
+  <p><a href="/?profile={{ active_profile }}#card-{{ radargram_id }}">&larr; Back to catalog</a></p>
   <h1>{{ effective_label }}{% if group_name %} (Group: {{ group_name }}){% endif %}</h1>
   <table class="meta">
     <tr>
@@ -187,6 +190,9 @@
 
     function updateSideBySideState() {
       const sideBySide = isSideBySide();
+      // `.is-hidden` only flips visibility, never `display` -- see the
+      // rule in app.css for why removing the handle from flow makes the
+      // layout oscillate across the wrap threshold.
       resizer.classList.toggle('is-hidden', !sideBySide);
       if (!sideBySide) {
         // Clear the override so the CSS defaults resume when the layout
