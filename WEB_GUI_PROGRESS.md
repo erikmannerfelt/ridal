@@ -23,6 +23,7 @@ update). Milestone numbering matches that plan.
 | M7b: thumbnails, design tokens, Nordic slugs | done | `cfda633`, `2aa2261` |
 | M8: concurrency hardening | not attempted (stretch, see below) | - |
 | M7c: viewer refinement round (see below) | done | `b63dbcf`, `290ea53`, `3fea81c`, `91023ed`, `2b43d8d` |
+| M7d: backlog clearing round (see below) | done | `7ad1401`, `84782ec`, `27cbc40`, `0f74dac` |
 
 ## Gate applied before every commit
 
@@ -502,66 +503,81 @@ The first pass of feedback after M7b landed -- five commits, all local to
   regression); `cargo fmt --check` and `cargo clippy -F cli,server`/
   `-F cli -- -D warnings` both clean throughout.
 
-## Open feedback for a future round (logged only, not yet implemented)
+## M7d findings: clearing the open-feedback backlog
 
-Collected from real-usage feedback after M7c shipped. Deliberately not
-acted on now -- logged so the next round has it, not lost to context.
+All eleven items logged after M7c are implemented. Two were design
+questions rather than gaps, settled before coding:
 
-- **Full revision checksum is missing from the metadata dialog entirely**
-  (see the M7c correction above): `revision_id` is a server-side
-  fingerprint, not a file attribute, so `dataset_attributes` never sees
-  it. Needs a synthetic entry injected the same way Shape already is
-  (`routes.rs::build_metadata_entries` takes `shape` as a side input;
-  it would need `revision_id` passed in alongside it).
-- **Add `8x` to the horizontal-scale dropdown** (currently
-  0.25x/0.5x/1x/2x/4x, per M0's planning defaults). One line in
-  `viewer.html.jinja`'s `<select id="xscale-select">`.
-- **`Original filepaths` can be arbitrarily long** (many merged inputs,
-  each a long path) and currently renders as one plain comma-joined
-  metadata row. Needs its own `<details>` (like Processing steps/log)
-  rather than assuming it stays short.
-- **Index page: a card can already be highlighted (`.card:target`, blue
-  rim, from the viewer's `/#card-{id}` back-link) when its track is also
-  hover-highlighted from the group map** -- the two treatments look
-  identical, so hovering such a card's track visibly does nothing. Needs
-  a distinct visual state for hover vs. target (or a state that composes
-  visibly with target).
-- **Map tooltip readability**: the frosted/translucent popup background
-  is hard to read, especially over dark satellite imagery -- and
-  PFA_website has the same problem for the same reason (a translucent
-  background can't guarantee contrast against arbitrary imagery
-  underneath). Needs a design that doesn't depend on what's beneath it
-  (e.g. a solid or near-solid background, or a text shadow/outline).
-- **Popup thumbnail should be part of the link**, so clicking the image
-  itself (not just the label text) navigates to the radargram.
-- **Index card fields `Path` and `Processed` should move behind some
-  "more info" affordance** to declutter the card -- unclear yet whether
-  that's a `<details>`, a popup, or something else; needs a design
-  decision, not just an implementation.
-- **Ability to change the default render profile from the index page**
-  (i.e. per-thumbnail or global, without visiting each viewer) was
-  requested but how to store that choice is unresolved -- a URL query
-  param, `localStorage`, or a server-side per-session/per-user setting
-  all have different tradeoffs (shareability vs. persistence vs. needing
-  no server state) that need deciding before implementation.
-- **Resizable split between the radargram and overview map** in the
-  viewer's side-by-side layout -- only relevant when they're actually
-  laid out left/right (i.e. not on narrow screens where `.layout`
-  already wraps them to stacked). A simple drag handle between the two
-  flex children.
-- **Drop `Conventions: CF-1.7` from the metadata dialog.** It's a
-  NetCDF/CF attribute Ridal always writes and never varies -- a file has
-  to already be Ridal-produced (and thus CF-1.7) to be recognized as
-  "Supported" by `inspect_ridal_netcdf` at all, so the row conveys
-  nothing a user can act on. Add `"Conventions"` to
-  `routes.rs::SKIP_FROM_ENTRIES`.
-- **`Version` label is ambiguous** -- it's `ridal_version` (e.g. "ridal
-  version 0.5.2 by ..."), currently prettified to just "Version" by the
-  generic strip-prefix rule. Rename via `label_override` to "Ridal
-  version" ("Processed with ridal version" was considered but is
-  probably too long for the label column).
+- **Index render-profile switching** uses a **URL query param**
+  (`/?profile=positive`) -- shareable, bookmarkable, no server state,
+  reusing the `?profile=` support `overview_image` already had.
+  `index_page` now validates it through the existing `lookup_profile`,
+  mirroring `viewer_page` exactly.
+- **Index card `Path`/`Processed`** move into a native
+  `<details class="card-more">` ("More info"), the same pattern the
+  viewer's processing log already used, generalised into a shared
+  `.meta-details` CSS class so both stay visually consistent.
 
-## Run status: M0-M7 done (M7 completed by M7b, refined in M7c), M8 not attempted
+Findings, by commit:
+
+- **`7ad1401`** -- three metadata corrections. The full revision
+  checksum was missing from the dialog *entirely*: `revision_id` is a
+  server-computed fingerprint, never a file attribute, so it was never
+  in `raw` -- the abbreviated banner form was the only place it appeared
+  anywhere (correcting the M7c note above, which wrongly claimed it had
+  already moved into the dialog). `build_metadata_entries` now takes it
+  as an explicit parameter, the same way it already takes `shape`.
+  `ridal_version` gets "Ridal version" instead of a bare "Version" (the
+  generic strip-prefix rule reads as the *radargram's* own version).
+  `original_filepaths` -- unbounded, since a merged acquisition can have
+  many long paths -- moves to its own field and dedicated `<details>`
+  rather than one comma-joined row. `Conventions` (always `CF-1.7`; a
+  file has to already be Ridal-produced to be `Supported` at all, so the
+  row was never actionable) is dropped.
+- **`84782ec`** -- the 8x scale option needed no JS (the control is
+  already a pure client-side view transform). The resizable split
+  needed more: Leaflet does not re-lay tiles on a container resize it
+  wasn't told about, so the drag handler throttles `invalidateSize()` on
+  both maps through `requestAnimationFrame`. Side-by-side detection is
+  exact (`offsetTop` equality between the two panes, re-checked via a
+  `ResizeObserver`), not a guessed media-query breakpoint, since
+  `.layout`'s wrap point depends on both panes' flex-basis.
+- **`27cbc40`** -- the ported PFA_website popup background
+  (`rgba(255,255,255,0.3)` + blur) carried PFA's own flaw forward: 30%
+  alpha cannot guarantee legibility against arbitrary satellite imagery,
+  and blur fixes texture, not contrast. Raised to 92% in both themes;
+  the blur is now purely a soft-edge touch. The two card highlight
+  states (`:target`, `.is-hovered`) were the identical accent ring, so
+  hovering a card's track from the group map looked like it did nothing
+  whenever that card was already `:target` (which persists as long as
+  `/#card-{id}` stays in the URL) -- split into a border+tint for
+  `:target` and a distinct ring for hover, so they compose visibly.
+- **`0f74dac`** -- the two settled design questions above.
+
+Verified end-to-end against the same real-asset scratch catalog as
+M7c, headless-Chromium, zero console errors throughout:
+- metadata dialog: full revision checksum present, "Ridal version",
+  no Conventions row, filepaths in their own `<details>` -- screenshotted
+  with the same temporarily-auto-open-then-revert trick M7b established,
+  confirmed via a clean `git diff` afterward;
+- index page: profile switcher changes thumbnails and propagates
+  `?profile=` to every card link, "More info" hides Path/Processed;
+- a sibling-track popup over satellite imagery -- legible, and clicking
+  the thumbnail navigates (confirmed via a temporary auto-`openPopup()`
+  patch, also reverted and diff-checked);
+- the resizer's **wiring** was verified statically rather than by
+  simulating an actual drag (not practical headlessly): `--dump-dom` at
+  a wide window shows `#split-resizer` without `.is-hidden`, at a narrow
+  one (500px) shows it with `.is-hidden` -- confirming the exact
+  side-by-side detection in both directions. The drag interaction itself
+  was not exercised.
+
+Test suite run 3x across this round's commits, all clean except the
+documented `dem::tests::test_no_gdal_failure` baseline;
+`cargo fmt --check` and `cargo clippy -F cli,server`/`-F cli --
+-D warnings` clean throughout; `cargo check -F python --lib` clean.
+
+## Run status: M0-M7 done (M7 completed by M7b, refined in M7c and M7d), M8 not attempted
 
 The plan's explicit target was "the first user-visible milestone (index +
 viewer + map sync)" with "M8 hardening as optional stretch." That target
