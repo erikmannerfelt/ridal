@@ -23,6 +23,14 @@ use crate::server::source::SourceReader;
 /// real radargram content.
 const PAD_VALUE: u8 = 96;
 
+/// Ceiling on how much source an overview render reads at once. An
+/// overview is small (~512 px wide) but its *input* is the whole
+/// radargram, so without a cap one thumbnail request allocates the
+/// entire array as `f32` -- ~180 MB for the largest file in the test
+/// corpus, multiplied by every concurrent request. 64 MB keeps reads
+/// large enough to stay HDF5-chunk-efficient while bounding the peak.
+const OVERVIEW_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
 pub struct Renderer<'a> {
     reader: &'a SourceReader,
 }
@@ -69,27 +77,84 @@ impl<'a> Renderer<'a> {
     }
 
     /// Render a full-radargram overview to encoded image bytes.
+    ///
+    /// Reads the source in horizontal bands rather than all at once. A
+    /// single whole-array read is proportional to the *entire* radargram
+    /// regardless of how small the overview is: the 3678x12187 file in
+    /// the test corpus is ~180 MB of `f32` per call, per profile, and
+    /// several concurrent index thumbnails multiply that. Banding caps
+    /// the read at [`OVERVIEW_READ_BUDGET_BYTES`] while producing the
+    /// same picture, because area-weighted resampling is separable by
+    /// output row -- each output row draws only on its own contiguous
+    /// source-row footprint, so no row straddles a band boundary.
     pub fn render_overview(
         &self,
         spec: &OverviewSpec,
         profile: &RenderProfile,
         limits: (f32, f32),
     ) -> Result<Vec<u8>, String> {
+        self.render_overview_banded(spec, profile, limits, self.overview_rows_per_band(spec))
+    }
+
+    /// Output rows per read, derived from [`OVERVIEW_READ_BUDGET_BYTES`]:
+    /// how many output rows' worth of source fits in the budget. At least
+    /// one, so a radargram whose single source row already exceeds the
+    /// budget still renders (one row at a time) rather than dividing to
+    /// zero and looping forever.
+    fn overview_rows_per_band(&self, spec: &OverviewSpec) -> usize {
         let (src_h, src_w) = self.reader.shape();
-        let window = SourceWindow {
-            row0: 0.0,
-            row1: src_h as f64,
-            col0: 0.0,
-            col1: src_w as f64,
-        };
-        let source = self.reader.read_window(0, src_h, 0, src_w)?;
-        let resampled = resample(
-            source.view(),
-            &window,
-            spec.width,
-            spec.height,
-            profile.resampling,
-        );
+        let bytes_per_source_row = src_w.max(1) * std::mem::size_of::<f32>();
+        let max_source_rows = (OVERVIEW_READ_BUDGET_BYTES / bytes_per_source_row.max(1)).max(1);
+        let source_rows_per_output_row = src_h as f64 / spec.height.max(1) as f64;
+        if source_rows_per_output_row <= 1.0 {
+            return spec.height.max(1);
+        }
+        ((max_source_rows as f64 / source_rows_per_output_row).floor() as usize).max(1)
+    }
+
+    /// The banded implementation behind [`Renderer::render_overview`],
+    /// with the band height injected so tests can force many small bands
+    /// and compare against the single-band (whole-array) path.
+    fn render_overview_banded(
+        &self,
+        spec: &OverviewSpec,
+        profile: &RenderProfile,
+        limits: (f32, f32),
+        out_rows_per_band: usize,
+    ) -> Result<Vec<u8>, String> {
+        let (src_h, src_w) = self.reader.shape();
+        let out_height = spec.height.max(1);
+        let source_rows_per_output_row = src_h as f64 / out_height as f64;
+
+        let mut resampled = Array2::from_elem((out_height, spec.width), f32::NAN);
+        let band = out_rows_per_band.max(1);
+        let mut oy0 = 0usize;
+        while oy0 < out_height {
+            let oy1 = (oy0 + band).min(out_height);
+            // Absolute source-row span of this band's output rows. The
+            // same arithmetic the resampler would do internally for these
+            // rows given the whole array, so the picture does not depend
+            // on where the band boundaries fall.
+            let window = SourceWindow {
+                row0: oy0 as f64 * source_rows_per_output_row,
+                row1: oy1 as f64 * source_rows_per_output_row,
+                col0: 0.0,
+                col1: src_w as f64,
+            };
+            let source = self.read_source_for_window(&window, 0)?;
+            let band_out = resample(
+                source.view(),
+                &self.local_window(&window),
+                spec.width,
+                oy1 - oy0,
+                profile.resampling,
+            );
+            resampled
+                .slice_mut(ndarray::s![oy0..oy1, ..])
+                .assign(&band_out);
+            oy0 = oy1;
+        }
+
         let image = colormap::render_grayscale(&resampled, profile, limits, PAD_VALUE);
         encode(&image, profile.format)
     }
@@ -287,6 +352,102 @@ mod tests {
         assert_eq!(decoded.width(), spec.width as u32);
         assert_eq!(decoded.height(), spec.height as u32);
         assert!(decoded.width() > decoded.height()); // wide source stays wide
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn banded_overview_is_identical_to_whole_array_at_an_integer_scale() {
+        // Banding must change how much source is held in memory at once
+        // and nothing else. At an integer downsample ratio every band
+        // boundary lands on an exact source row, so the two paths agree
+        // bit for bit and the comparison can be byte-exact.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_asymmetric_nc(&path, 200, 800); // 200 rows -> 50 out rows = 4x
+        let reader = SourceReader::open(&path).unwrap();
+        let renderer = Renderer::new(&reader);
+
+        let spec = OverviewSpec::new(800, 200, 200);
+        assert_eq!(spec.height, 50, "expected an exact 4x row ratio");
+        let profile = RenderProfile {
+            format: super::super::profile::ImageFormat::Png,
+            ..RenderProfile::default_profile()
+        };
+        let limits = (0.0, (200 * 800) as f32);
+
+        let whole = renderer
+            .render_overview_banded(&spec, &profile, limits, usize::MAX)
+            .unwrap();
+        for band in [1usize, 2, 7, 49] {
+            let banded = renderer
+                .render_overview_banded(&spec, &profile, limits, band)
+                .unwrap();
+            assert_eq!(banded, whole, "band height {band} changed the output");
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn banded_overview_matches_whole_array_at_a_fractional_scale() {
+        // A non-integer ratio puts band boundaries between source rows.
+        // Re-basing each band's window on its own floored origin costs a
+        // little floating-point precision versus computing the same
+        // footprint from the whole array, so this asserts near-identity
+        // (within one grey level) rather than bit-exactness -- enough to
+        // catch a real off-by-one or misplaced band, which would shift
+        // content by whole rows, not by one level.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_asymmetric_nc(&path, 197, 613);
+        let reader = SourceReader::open(&path).unwrap();
+        let renderer = Renderer::new(&reader);
+
+        let spec = OverviewSpec::new(613, 197, 100);
+        let profile = RenderProfile {
+            format: super::super::profile::ImageFormat::Png,
+            ..RenderProfile::default_profile()
+        };
+        let limits = (0.0, (197 * 613) as f32);
+
+        let whole = image::load_from_memory(
+            &renderer
+                .render_overview_banded(&spec, &profile, limits, usize::MAX)
+                .unwrap(),
+        )
+        .unwrap()
+        .to_luma8();
+        let banded = image::load_from_memory(
+            &renderer
+                .render_overview_banded(&spec, &profile, limits, 3)
+                .unwrap(),
+        )
+        .unwrap()
+        .to_luma8();
+
+        assert_eq!(whole.dimensions(), banded.dimensions());
+        for (a, b) in whole.pixels().zip(banded.pixels()) {
+            let diff = a.0[0].abs_diff(b.0[0]);
+            assert!(diff <= 1, "pixel differs by {diff}, not a rounding artifact");
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn overview_band_height_is_at_least_one_row() {
+        // A source row wider than the whole byte budget must still
+        // render, one output row at a time, rather than dividing to a
+        // zero-height band and looping forever.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_asymmetric_nc(&path, 40, 500);
+        let reader = SourceReader::open(&path).unwrap();
+        let renderer = Renderer::new(&reader);
+
+        let spec = OverviewSpec::new(500, 40, 100);
+        assert!(renderer.overview_rows_per_band(&spec) >= 1);
     }
 
     #[test]
