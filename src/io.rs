@@ -1155,12 +1155,18 @@ fn read_global_str(file: &netcdf::File, primary: &str, legacy: &str) -> Option<S
 
 /// Inspect `path` for Ridal recognition without loading the amplitude array.
 ///
-/// Recognition requires `ridal_version` (or legacy `program_version`) and
-/// `ridal_processing_datetime` (or legacy `processing_datetime`) to both be
-/// present; anything else is reported as `NotRidal` rather than an error,
-/// including a malformed `ridal_radargram_id` or a missing/non-2D `data`
-/// variable. This keeps the compatibility policy simple and deterministic
-/// for the first implementation, as #123 allows explicitly.
+/// Recognition requires `ridal_version`, `ridal_processing_datetime` and a
+/// valid `ridal_radargram_id` to all be present; anything else is reported
+/// as `NotRidal` rather than an error. No legacy-unprefixed-name fallback
+/// is needed for these two: `ridal_radargram_id` became a mandatory,
+/// always-written attribute in the exact same change that renamed
+/// `program_version`/`processing_datetime` to their `ridal_` forms (#116),
+/// so a file old enough to have the unprefixed names is always also old
+/// enough to lack `ridal_radargram_id` -- and gets rejected on that check
+/// regardless. (The group name/id legacy fallback below is a different
+/// case: that split landed well after `ridal_radargram_id` was already
+/// mandatory, so files genuinely exist with a valid id and only the old
+/// unsplit `ridal_group` attribute.)
 ///
 /// Errors are reserved for failures to open or read the file at all, kept
 /// distinct from `NotRidal` so catalog discovery (#122) can report them
@@ -1169,9 +1175,8 @@ fn read_global_str(file: &netcdf::File, primary: &str, legacy: &str) -> Option<S
 pub fn inspect_ridal_netcdf(path: &Path) -> Result<RidalNetcdfKind, String> {
     let file = netcdf::open(path).map_err(|e| format!("Failed to open {path:?} as NetCDF: {e}"))?;
 
-    let ridal_version = read_global_str(&file, "ridal_version", "program_version");
-    let processing_datetime =
-        read_global_str(&file, "ridal_processing_datetime", "processing_datetime");
+    let ridal_version = read_global_str_attr(&file, "ridal_version");
+    let processing_datetime = read_global_str_attr(&file, "ridal_processing_datetime");
     let (ridal_version, processing_datetime) = match (ridal_version, processing_datetime) {
         (Some(v), Some(d)) => (v, d),
         _ => return Ok(RidalNetcdfKind::NotRidal),
@@ -1755,12 +1760,16 @@ mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
-    fn test_inspect_ridal_netcdf_legacy_unprefixed_attrs() {
-        // A file written before the ridal_* rename (#116): unprefixed
-        // processing_datetime/program_version, but already has the newer
-        // ridal_radargram_id (added in the same PR as the rename, so this
-        // exact combination should not occur in practice; it exercises the
-        // fallback path in isolation regardless).
+    fn test_inspect_ridal_netcdf_rejects_unprefixed_legacy_attrs() {
+        // Unprefixed processing_datetime/program_version, with no
+        // ridal_processing_datetime/ridal_version at all: not recognized.
+        // A prior version of this function fell back to these unprefixed
+        // names, on the theory that a file might predate the ridal_*
+        // rename (#116) while still having ridal_radargram_id -- but that
+        // combination can never occur, since ridal_radargram_id became
+        // mandatory in the exact same change that introduced the rename.
+        // Any file with only the unprefixed names necessarily also lacks
+        // ridal_radargram_id, and is rejected on that check regardless.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy.nc");
         {
@@ -1777,13 +1786,10 @@ mod tests {
                 .unwrap();
         }
 
-        match super::inspect_ridal_netcdf(&path).unwrap() {
-            super::RidalNetcdfKind::Supported(meta) => {
-                assert_eq!(meta.radargram_id.as_str(), "legacy-radargram");
-                assert_eq!(meta.processing_datetime, "2020-01-01T00:00:00Z");
-            }
-            other => panic!("expected Supported, got {other:?}"),
-        }
+        assert_eq!(
+            super::inspect_ridal_netcdf(&path).unwrap(),
+            super::RidalNetcdfKind::NotRidal
+        );
     }
 
     #[test]
