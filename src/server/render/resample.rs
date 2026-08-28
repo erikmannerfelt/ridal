@@ -71,6 +71,17 @@ pub fn resample(
         return out;
     }
 
+    if matches!(
+        method,
+        ResamplingMethod::Lanczos | ResamplingMethod::LanczosRectified
+    ) {
+        // Needs a different neighbourhood entirely -- a kernel radius
+        // rather than the box footprint the loop below walks -- and a
+        // separable two-pass structure to stay affordable.
+        let rectify = method == ResamplingMethod::LanczosRectified;
+        return resample_lanczos(source, window, out_width, out_height, rectify);
+    }
+
     let (src_h, src_w) = (source.shape()[0], source.shape()[1]);
     let row_step = (window.row1 - window.row0) / out_height as f64;
     let col_step = (window.col1 - window.col0) / out_width as f64;
@@ -131,6 +142,135 @@ pub fn resample(
                 // data here" signal (rendered as the pad color).
                 _ => f32::NAN,
             };
+        }
+    }
+
+    out
+}
+
+/// Lanczos kernel order. `a = 3` is the usual choice: enough lobes to
+/// preserve detail, few enough that the ringing the negative lobes cause
+/// stays modest.
+const LANCZOS_A: f64 = 3.0;
+
+fn sinc(x: f64) -> f64 {
+    if x.abs() < 1e-12 {
+        1.0
+    } else {
+        let pix = std::f64::consts::PI * x;
+        pix.sin() / pix
+    }
+}
+
+fn lanczos_weight(x: f64) -> f64 {
+    if x.abs() >= LANCZOS_A {
+        0.0
+    } else {
+        sinc(x) * sinc(x / LANCZOS_A)
+    }
+}
+
+/// Kernel taps along one axis for an output sample centred at `center`
+/// (in source coordinates), returning the first source index and the
+/// weights for the contiguous run from there.
+///
+/// The kernel is *widened* by the downsampling ratio: filtering has to
+/// happen at the output's band limit, not the input's, or the result is
+/// aliased regardless of how good the kernel is. At a 1:1 ratio the taps
+/// land exactly on integers, where `sinc` is zero everywhere except the
+/// centre, so this reduces to an identity — the same graceful-degradation
+/// property `Peak` has.
+fn lanczos_axis_weights(center: f64, scale: f64, src_len: usize) -> (usize, Vec<f64>) {
+    let s = scale.max(1.0);
+    let radius = LANCZOS_A * s;
+    let lo = (center - radius).floor().max(0.0) as usize;
+    let hi = ((center + radius).ceil().max(0.0) as usize).min(src_len);
+    if lo >= hi {
+        return (0, Vec::new());
+    }
+    let weights = (lo..hi)
+        .map(|i| lanczos_weight((i as f64 + 0.5 - center) / s))
+        .collect();
+    (lo, weights)
+}
+
+/// Separable two-pass Lanczos: rows first into an intermediate, then
+/// columns.
+///
+/// Separability is not an optimisation detail here, it is what makes the
+/// filter usable at all. An overview downsamples ~24x, so the kernel
+/// spans `2 * 3 * 24` source pixels per axis; applied as a 2-D kernel
+/// that is ~21k taps *per output pixel*, or billions of operations for
+/// one thumbnail. Two passes make it ~290 taps per pixel instead.
+///
+/// NaN (the "no valid source data" signal) is excluded from both passes
+/// and the weights renormalised over what remains, so a footprint that
+/// straddles the edge of the data is not dragged toward zero. Because
+/// Lanczos weights are signed, a footprint whose surviving taps nearly
+/// cancel would divide by ~0; those produce NaN rather than a wild value.
+/// `rectify` takes `|v|` before filtering, which is what
+/// [`ResamplingMethod::LanczosRectified`] needs: it removes the
+/// cancellation that makes a linear filter useless on signed oscillating
+/// traces, without giving up proper anti-aliasing. Applied in pass 1
+/// only -- once rectified, the intermediate is already non-negative.
+fn resample_lanczos(
+    source: ArrayView2<f32>,
+    window: &SourceWindow,
+    out_width: usize,
+    out_height: usize,
+    rectify: bool,
+) -> Array2<f32> {
+    let (src_h, src_w) = (source.shape()[0], source.shape()[1]);
+    let row_step = (window.row1 - window.row0) / out_height as f64;
+    let col_step = (window.col1 - window.col0) / out_width as f64;
+
+    // Pass 1: vertical. Full source width is kept so pass 2 has every
+    // column available to filter across.
+    let mut vertical = Array2::from_elem((out_height, src_w), f32::NAN);
+    for oy in 0..out_height {
+        let center = window.row0 + (oy as f64 + 0.5) * row_step;
+        let (start, weights) = lanczos_axis_weights(center, row_step, src_h);
+        if weights.is_empty() {
+            continue;
+        }
+        for col in 0..src_w {
+            let mut acc = 0.0_f64;
+            let mut wsum = 0.0_f64;
+            for (k, &w) in weights.iter().enumerate() {
+                let v = source[[start + k, col]];
+                if v.is_finite() {
+                    let v = if rectify { v.abs() } else { v };
+                    acc += v as f64 * w;
+                    wsum += w;
+                }
+            }
+            if wsum.abs() > 1e-6 {
+                vertical[[oy, col]] = (acc / wsum) as f32;
+            }
+        }
+    }
+
+    // Pass 2: horizontal, over the already row-filtered intermediate.
+    let mut out = Array2::from_elem((out_height, out_width), f32::NAN);
+    for ox in 0..out_width {
+        let center = window.col0 + (ox as f64 + 0.5) * col_step;
+        let (start, weights) = lanczos_axis_weights(center, col_step, src_w);
+        if weights.is_empty() {
+            continue;
+        }
+        for oy in 0..out_height {
+            let mut acc = 0.0_f64;
+            let mut wsum = 0.0_f64;
+            for (k, &w) in weights.iter().enumerate() {
+                let v = vertical[[oy, start + k]];
+                if v.is_finite() {
+                    acc += v as f64 * w;
+                    wsum += w;
+                }
+            }
+            if wsum.abs() > 1e-6 {
+                out[[oy, ox]] = (acc / wsum) as f32;
+            }
         }
     }
 
@@ -276,6 +416,87 @@ mod tests {
         for (m, p) in mean.iter().zip(peak.iter()) {
             assert!((m - p).abs() < 1e-6, "{m} vs {p}");
         }
+    }
+
+    #[test]
+    fn lanczos_is_an_identity_at_an_aligned_one_to_one_footprint() {
+        // Same graceful-degradation property the other methods have, and
+        // the reason adding Lanczos cannot disturb the full-resolution
+        // viewer: at a 1:1 ratio every kernel tap lands on an integer,
+        // where sinc is zero except at the centre.
+        let source = array![[5.0f32, -5.0, 4.0], [-4.0, 6.0, -6.0]];
+        let window = full_window(&source);
+
+        let out = resample(source.view(), &window, 3, 2, ResamplingMethod::Lanczos);
+        for (a, b) in out.iter().zip(source.iter()) {
+            assert!((a - b).abs() < 1e-5, "{a} vs {b}");
+        }
+    }
+
+    #[test]
+    fn lanczos_downsamples_a_smooth_ramp_without_distorting_it() {
+        // A linear ramp is where a correct filter should be essentially
+        // exact: an output pixel takes the ramp's value at its centre.
+        // Catches sign errors, off-by-one tap placement and missing
+        // weight normalisation at once.
+        //
+        // Asserted only where the kernel fits entirely inside the source.
+        // There is no edge extension, so near the borders the kernel is
+        // truncated and renormalised over the surviving (asymmetric) taps,
+        // which is approximate by construction -- measured at ~0.2% of
+        // range on this ramp, small but not exact. Testing the interior
+        // keeps the assertion tight enough to be worth something.
+        let width = 64;
+        let out_width = 32;
+        let scale = width as f64 / out_width as f64;
+        let radius = LANCZOS_A * scale;
+        let source = Array2::from_shape_fn((1, width), |(_, c)| c as f32);
+        let window = full_window(&source);
+
+        let out = resample(
+            source.view(),
+            &window,
+            out_width,
+            1,
+            ResamplingMethod::Lanczos,
+        );
+        let mut checked = 0;
+        for ox in 0..out_width {
+            let center = (ox as f64 + 0.5) * scale;
+            if center - radius < 0.0 || center + radius > width as f64 {
+                continue;
+            }
+            // Source pixel i is centred at i + 0.5 and holds value i, so
+            // the ramp's value at source coordinate x is x - 0.5.
+            let expected = (center - 0.5) as f32;
+            let got = out[[0, ox]];
+            assert!(
+                (got - expected).abs() < 0.01,
+                "output {ox}: got {got}, expected about {expected}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 10, "only {checked} interior pixels were checked");
+    }
+
+    #[test]
+    fn lanczos_excludes_nan_and_renormalises() {
+        // Same contract as the other methods: NaN means "no data here",
+        // not "zero", so it must not drag the result toward zero.
+        let source = array![[2.0f32, f32::NAN, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]];
+        let window = full_window(&source);
+        let out = resample(source.view(), &window, 2, 1, ResamplingMethod::Lanczos);
+        for v in out.iter() {
+            assert!((v - 2.0).abs() < 0.2, "constant input became {v}");
+        }
+    }
+
+    #[test]
+    fn lanczos_reports_no_data_for_an_all_nan_footprint() {
+        let source = array![[f32::NAN, f32::NAN, f32::NAN, f32::NAN]];
+        let window = full_window(&source);
+        let out = resample(source.view(), &window, 1, 1, ResamplingMethod::Lanczos);
+        assert!(out[[0, 0]].is_nan());
     }
 
     #[test]
