@@ -55,6 +55,9 @@
     </label>
   </div>
 
+  {#- "Ungrouped" is just another entry in `groups` (see routes.rs's
+      index_page), not a special case: same map, same heading treatment,
+      always shown even when it's the only section on the page. -#}
   {% for group in groups %}
   <section class="group">
     <h2>{{ group.label }}</h2>
@@ -64,15 +67,6 @@
     </ul>
   </section>
   {% endfor %}
-
-  {% if ungrouped %}
-  <section class="group">
-    {% if groups %}<h2>Ungrouped</h2>{% endif %}
-    <ul class="card-grid">
-      {% for e in ungrouped %}{{ entry_card(e, active_profile) }}{% endfor %}
-    </ul>
-  </section>
-  {% endif %}
 
   {% if not entries %}
     <p>No radargrams found.</p>

@@ -94,14 +94,36 @@ impl AppState {
     }
 
     /// All entries sharing `group`, ordered like the catalog itself.
+    /// `group == NO_GROUP_ID` matches entries with no group at all,
+    /// rather than a literal group id -- see [`NO_GROUP_ID`].
     pub fn entries_in_group(&self, group: &str) -> Vec<&super::catalog::CatalogEntry> {
         self.catalog
             .entries
             .iter()
-            .filter(|e| e.group_id.as_ref().is_some_and(|g| g.as_str() == group))
+            .filter(|e| {
+                if group == NO_GROUP_ID {
+                    e.group_id.is_none()
+                } else {
+                    e.group_id.as_ref().is_some_and(|g| g.as_str() == group)
+                }
+            })
             .collect()
     }
 }
+
+/// Reserved id for the "Ungrouped" pseudo-group on the index page and its
+/// `/api/v1/groups/{id}/tracks` map. Safe by construction: `GroupId`
+/// validation (`identity.rs::validate_slug`) rejects any id starting with
+/// `_`, so no explicit `--group-id` or directory-derived slug can ever
+/// collide with it -- the same guarantee `routes.rs`'s synthetic
+/// `__revision_id`/`__shape` metadata keys rely on.
+///
+/// This is a presentation concept only: `CatalogEntry::group_id` itself
+/// stays `None` for a genuinely ungrouped radargram. Widening that to a
+/// real `GroupId` would leak into the viewer, which correctly treats
+/// `None` as "no group" (no banner suffix, no sibling-track fetch) --
+/// every ungrouped radargram in the catalog is not one group.
+pub const NO_GROUP_ID: &str = "_none";
 
 /// Build the complete Axum application over `state`.
 pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
@@ -543,6 +565,69 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             let json: Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(json.as_object().unwrap().len(), 0);
+
+            // The reserved "no group" sentinel matches ungrouped entries
+            // specifically -- not a literal group id -- so track-c (the
+            // only ungrouped member of this catalog) is the one that
+            // shows up here.
+            let (status, body) = get(&app, &format!("/api/v1/groups/{NO_GROUP_ID}/tracks")).await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            let obj = json.as_object().unwrap();
+            assert!(obj.contains_key("track-c"));
+            assert!(!obj.contains_key("track-a"));
+            assert!(!obj.contains_key("track-b"));
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn index_page_gives_ungrouped_entries_a_map_like_any_group() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc_with_track(&dir.path().join("a.nc"), "grouped-a", Some("Some Group"));
+            write_test_nc_with_track(&dir.path().join("b.nc"), "ungrouped-b", None);
+            let app = test_app(dir.path());
+
+            let (status, body) = get(&app, "/").await;
+            assert_eq!(status, StatusCode::OK);
+            let html = String::from_utf8(body.to_vec()).unwrap();
+
+            assert!(html.contains(">Ungrouped<"), "{html}");
+            // Same map treatment as a named group: a group-map div keyed
+            // by the reserved sentinel id, which entries_in_group and
+            // group_tracks both already resolve to "no group".
+            assert!(
+                html.contains(&format!("data-group=\"{NO_GROUP_ID}\"")),
+                "{html}"
+            );
+
+            let (status, body) = get(&app, &format!("/api/v1/groups/{NO_GROUP_ID}/tracks")).await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert!(json.as_object().unwrap().contains_key("ungrouped-b"));
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn index_page_shows_ungrouped_heading_even_when_it_is_the_only_section() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc(&dir.path().join("a.nc"), "solo-ungrouped");
+            let app = test_app(dir.path());
+
+            let (status, body) = get(&app, "/").await;
+            assert_eq!(status, StatusCode::OK);
+            let html = String::from_utf8(body.to_vec()).unwrap();
+            assert!(
+                html.contains(">Ungrouped<"),
+                "heading must show even with no named groups present: {html}"
+            );
         });
     }
 

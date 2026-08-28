@@ -9,7 +9,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
-use super::app::{validate_radargram_id, AppState};
+use super::app::{validate_radargram_id, AppState, NO_GROUP_ID};
 use super::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
 use super::render::profile::{DatasetView, RenderProfile};
 use super::templates;
@@ -319,9 +319,10 @@ pub async fn index_page(
         .map(|w| w.message.clone())
         .collect();
 
-    // Grouped entries get one map each on the index page (#121); ungrouped
-    // entries have no siblings to show together, so they stay in the
-    // plain table only.
+    // Every entry gets one map on the index page (#121): named groups,
+    // and "Ungrouped" for entries with none, presented identically
+    // rather than as a special case -- entries_in_group(NO_GROUP_ID)
+    // already matches group_id.is_none() for exactly this reason.
     let mut group_ids: Vec<&str> = state
         .catalog
         .entries
@@ -330,7 +331,7 @@ pub async fn index_page(
         .collect();
     group_ids.sort_unstable();
     group_ids.dedup();
-    let groups: Vec<GroupSummary> = group_ids
+    let mut groups: Vec<GroupSummary> = group_ids
         .into_iter()
         .map(|id| {
             let label = state
@@ -351,13 +352,20 @@ pub async fn index_page(
             }
         })
         .collect();
-    let ungrouped: Vec<DatasetSummary> = state
+    let ungrouped_entries: Vec<DatasetSummary> = state
         .catalog
         .entries
         .iter()
         .filter(|e| e.group_id.is_none())
         .map(to_summary)
         .collect();
+    if !ungrouped_entries.is_empty() {
+        groups.push(GroupSummary {
+            id: NO_GROUP_ID.to_string(),
+            label: "Ungrouped".to_string(),
+            entries: ungrouped_entries,
+        });
+    }
 
     let env = templates::environment();
     let tmpl = env
@@ -368,7 +376,6 @@ pub async fn index_page(
             entries => entries,
             warnings => warnings,
             groups => groups,
-            ungrouped => ungrouped,
             profiles => profiles,
             active_profile => active_profile,
         })
