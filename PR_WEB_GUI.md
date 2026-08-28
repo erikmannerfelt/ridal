@@ -183,24 +183,32 @@ These are the decisions most likely to constrain or annoy whoever works
 here next. Listed because they are load-bearing, not because they are
 regrettable.
 
-### 1. `--n-workers` is accepted but inert
+### 1. `--source-cache-mb` is accepted but inert
 
-The flag exists on both `gui` and `server start`, is parsed, and is
-stored in `RenderServiceConfig` — **and then read by nothing.** It was
-added in anticipation of the bounded-concurrency work (see Phase 1 of the
-roadmap) that this PR does not include. It should either be wired up or
-removed before release;
+The flag is parsed and stored in `RenderServiceConfig` — **and then read
+by nothing.** It is reserved for `source.rs`'s deferred HDF5-chunk-aligned
+read cache, and its doc comment says so, but a user typing it gets no
+error and no effect. It should be wired up or removed before release;
 shipping a flag that silently does nothing is worse than not having it.
 
-### 2. Rendering is synchronous inside async handlers
+*(`--n-workers` was in the same state and is now live — it sizes the
+render permit semaphore. See Phase 1 of the roadmap.)*
 
-`overview_image` and `chunk_image` render on the tokio worker thread,
-holding that radargram's `Mutex`, with no `spawn_blocking`.
-`render_overview` reads the **entire** source array. `loading="lazy"`
-plus the browser's per-origin connection limit bound this in practice,
-and the cache makes repeat loads free, but first paint on a large catalog
-will be slow and can occupy tokio workers. This is the single most
-important thing to fix next.
+### 2. Renders serialise per radargram
+
+Rendering now runs on `spawn_blocking` threads under a permit bounded by
+`--n-workers`, so it no longer occupies tokio workers. What remains is
+that each radargram's `RenderService` sits behind a `Mutex` held for the
+whole read-and-render, so two chunks of the *same* radargram never render
+concurrently. Splitting the netcdf read from the CPU-heavy render would
+fix that, and is deliberately deferred — the `netcdf` crate serialises
+its C calls behind its own global lock regardless (see #3), so the win
+would be across radargrams, not within one.
+
+One useful side effect of that `Mutex`: it is also what makes #119's
+"concurrent requests generate an item only once" true, since requests
+queued behind a render find the result already cached. A test pins that
+rather than reimplementing it.
 
 ### 3. netcdf-c/HDF5 is not thread-safe
 
@@ -320,6 +328,8 @@ If that rule ever needs to change, grep for these sentinels first.
 | **Placeholder panels for the topo view and digitization** | #121 | Would keep the eventual digitization layout from being a retrofit. |
 | **Multiple named basemaps** | — | Deliberately parked; currently Esri World Imagery only. Wants a proper config for names and attribution rather than a hardcoded second entry. |
 | **Windows/macOS verification of the server feature** | — | Pure Rust, so it should work; CI builds/tests it on Linux only and says so. |
+| **Splitting the netcdf read from the render** | — | Would let two chunks of one radargram render concurrently, which the per-radargram `Mutex` currently prevents. Left out of Phase 1 on purpose: the `netcdf` crate serialises its C calls anyway, so the gain is across radargrams only, against a sizeable refactor. |
+| **`Retry-After` on the 503** | — | The `render_busy` response is a temporary overload and should say when to come back. `ApiError` has no mechanism for custom headers; adding one for a single call site was scope creep. Worth doing when a second case needs it. |
 
 ### Should **not** be pursued
 
@@ -345,24 +355,37 @@ viewer is scaffolding for it — so it is the natural boundary for a
 separate PR, or several. Phases 5–6 are incremental, and Phase 6 should
 not be started without measurements justifying it.
 
-### Phase 1 — Concurrency and resource bounds
+### Phase 1 — Concurrency and resource bounds ✅ *(done, on a follow-up branch)*
 
-The current design is correct but unbounded. This phase is what makes it
-safe to point at a 100-file catalog on a shared machine.
+The design was correct but unbounded. This phase is what makes it safe
+to point at a 100-file catalog on a shared machine.
 
-1. Move rendering off the async executor (`spawn_blocking`, or a
-   dedicated rayon pool sized by `--n-workers`).
-2. **Wire up `--n-workers`, or delete it.** Do not ship it inert.
-3. Single-flight: collapse concurrent misses for the same
-   `(revision, view, profile, object)` so N simultaneous requests render
-   once. #119 names this explicitly.
-4. Bound per-request work and honour client disconnects — a user
-   scrolling fast should not queue hundreds of doomed renders.
-5. Backpressure: a bounded render queue that returns 503 rather than
-   growing without limit.
+1. ✅ Rendering moved off the async executor via `spawn_blocking`.
+2. ✅ **`--n-workers` wired up** — it sizes the render permit semaphore,
+   and `--n-workers 0` is now rejected rather than silently accepted.
+3. ✅ Single-flight — found to be *already satisfied* by the
+   per-radargram `Mutex` plus the cache re-check, so it is pinned by a
+   test rather than reimplemented. #119's requirement holds.
+4. ✅ Per-request work bounded: overviews now read the source in
+   ≤64 MB bands instead of slurping the whole array. Measured on a
+   3678×12187 file, peak RSS **268 MB → 159 MB** with render time
+   unchanged. Client disconnects are honoured to the extent they can
+   be — the permit is acquired before spawning, so a client that leaves
+   while queued never starts a render; a render already in flight cannot
+   be cancelled, because `spawn_blocking` tasks are not cancellable.
+5. ✅ Backpressure: permit acquisition times out into a `503`
+   `render_busy` rather than queueing without limit.
 
-*Exit criterion:* a 100-radargram catalog loads without saturating tokio
-workers, and `ab -c 50` against the chunk route degrades gracefully.
+*Measured against the exit criterion:* 12 concurrent distinct overview
+renders of large files return 200 across the board at the default
+`--n-workers`; at `--n-workers 2` peak RSS roughly halves and the
+excess is shed as 503s, which is the intended behaviour under genuine
+saturation.
+
+**Not done, deliberately:** splitting the netcdf read from the CPU-heavy
+render, which would allow two chunks of the *same* radargram to render
+concurrently. See challenge #2. Also outstanding: the 503 carries no
+`Retry-After` header, since `ApiError` has no way to attach one yet.
 
 ### Phase 2 — Persistence and invalidation
 
