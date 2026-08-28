@@ -75,7 +75,7 @@ Four server-defined profiles, all typed (`RenderProfile`), never
 client-defined:
 
 - `default` — 1–99 % quantile, linear
-- `positive` — PFA_website's asymmetric stretch (see below)
+- `positive` — asymmetric stretch biased toward positive returns (see below)
 - `abslog` — genuine `log10|A|`
 - `high-contrast` — 5–95 % quantile
 
@@ -101,11 +101,11 @@ scale control, a resizable split, and a metadata dialog.
 
 ### Cursor sync, done exactly
 
-PFA_website samples track vertices evenly by *distance* but looks a
-cursor position up by *trace fraction*. Those only agree when traces are
-evenly spaced; any standstill desynchronises them and the error
-accumulates. Measured **up to 140 m of error** on a real Drønbreen line
-with an 18-trace standstill.
+The obvious way to simplify a track — sample vertices evenly by
+*distance*, then look a cursor position up by *trace fraction* — only
+works when traces are evenly spaced. Any standstill desynchronises the
+two and the error accumulates along the profile: **up to 140 m** on a
+real Drønbreen line with an 18-trace standstill.
 
 This implementation stores each retained vertex's source trace index
 directly, so lookup is exact at every vertex and monotone in trace index
@@ -113,10 +113,11 @@ regardless of spacing. Douglas–Peucker simplification runs in
 `(trace_index × speed_scale, easting, northing)` — 3-D, not 2-D, because
 a standstill on an otherwise straight line adds no *geometric* deviation
 and plain 2-D simplification collapses it away, silently reintroducing
-the exact bug this module exists to fix.
+the exact problem this module exists to avoid.
 
-A regression test asserts both halves against real assets: the new method
-stays within 2 m, and the old method demonstrably does not.
+A regression test pins both halves against real assets: the trace-indexed
+method stays within 2 m, and the distance-indexed one demonstrably does
+not.
 
 ### Cursor readout
 
@@ -169,8 +170,9 @@ regrettable.
 
 The flag exists on both `gui` and `server start`, is parsed, and is
 stored in `RenderServiceConfig` — **and then read by nothing.** It was
-added in anticipation of the bounded-concurrency work (M8) that this PR
-does not include. It should either be wired up or removed before release;
+added in anticipation of the bounded-concurrency work (see Phase 1 of the
+roadmap) that this PR does not include. It should either be wired up or
+removed before release;
 shipping a flag that silently does nothing is worse than not having it.
 
 ### 2. Rendering is synchronous inside async handlers
@@ -198,12 +200,13 @@ strongly varying gain down-profile cannot be locally normalised without
 breaking that guarantee. Per-region normalisation and seamlessness are
 mutually exclusive under the current design.
 
-### 5. `positive` is faithful to PFA_website, including its quirks
+### 5. The `positive` profile reads amplitude asymmetrically
 
-PFA's `normalize()` is not a log transform despite being called
-"abslog" there: it derives percentile bounds from `|x|` (skipping the
-first 50 sample rows) and stretches the *signed* data against them.
-Reproduced deliberately. Consequences:
+`positive` derives its percentile bounds from `|x|` (skipping the first
+50 sample rows, i.e. the direct wave) and then stretches the *signed*
+data against those bounds, so negative returns fall below the black level
+and clip. That asymmetry is the point of the profile, and it has two
+consequences the codebase now carries:
 
 - `RenderProfile.abslog: bool` had to become an `AmplitudeTransform`
   enum, because `Positive` needs a different domain for *statistics*
@@ -266,16 +269,16 @@ beyond localhost requires a reverse proxy that provides it.
 | Item | Issue | Notes |
 |---|---|---|
 | **On-disk render cache** | #119 | Explicitly deferred by the issue itself. When added, it **must** key on the revision ID so a reprocess invalidates it, and needs a documented cache location and an enablement flag. The in-memory LRU already keys correctly, so this is additive. |
-| **Bounded concurrency / M8 hardening** | #119, #120 | Collapse identical concurrent render misses so N requests generate an item once; bound per-request work; support cancellation. `--n-workers` exists for exactly this. |
-| **`spawn_blocking` for renders** | — | See "challenges" #2. Should land with M8. |
+| **Bounded concurrency and cancellation** | #119, #120 | Collapse identical concurrent render misses so N requests generate an item once; bound per-request work; support cancellation. `--n-workers` exists for exactly this. |
+| **`spawn_blocking` for renders** | — | See "challenges" #2. Should land alongside bounded concurrency. |
 | **Topographically corrected view** | #118 | `DatasetView` is an enum with one variant precisely so this can be added without reshaping the API. |
 | **Multiresolution / server-side (z,x,y) tiles** | #118, #121 | Named as a future optimisation *if* representative radargrams show it is needed. Not yet measured. |
-| **Labelling / interpretation categories** | #115 | Out of scope for a read-only v1; gprinterp is the intended consumer of `ridal_radargram_id`. |
+| **Digitization and labelling categories** | #115 | Out of scope for a read-only v1, and the largest remaining piece of work — see Phase 4, where it belongs together with gprinterp development. |
 | **Reading ridal NetCDF back into a full `GPR`** | #123 | Only metadata-only inspection exists. `identity::resolve_*` already takes an `inherited` tier that is always `None` today, shaped for this. |
 | **Config-file support for render settings** | #119 | The issue names "CLI, configuration file, API, and future GUI controls" sharing one typed `RenderProfile`. CLI and API share it; there is no config file yet. |
 | **Frontend fetch error handling** | #121 | Page scripts do bare `.then(r => r.json())`. A failed `/track` leaves the map silently empty. Index thumbnails *do* degrade visibly. This is the most substantive of the deferred UI items. |
 | **Viewer prev/next navigation within a group** | #121 | Group membership is already computed server-side, so this stays cheap. |
-| **Placeholder panels for the topo view and labelling** | #121 | Would keep the eventual v2 layout from being a retrofit. |
+| **Placeholder panels for the topo view and digitization** | #121 | Would keep the eventual digitization layout from being a retrofit. |
 | **Multiple named basemaps** | — | Deliberately parked; currently Esri World Imagery only. Wants a proper config for names and attribution rather than a hardcoded second entry. |
 | **Windows/macOS verification of the server feature** | — | Pure Rust, so it should work; CI builds/tests it on Linux only and says so. |
 
@@ -296,10 +299,14 @@ beyond localhost requires a reverse proxy that provides it.
 
 ## Roadmap to a fully robust implementation
 
-Ordered by ratio of risk-retired to effort. Phases 1–2 are the ones that
-should block a production deployment; the rest are incremental.
+Phases 1–2 harden what already exists and are the ones that should block
+a production deployment. Phase 3 is small. **Phase 4 (digitization) is
+the largest by a wide margin and is the actual goal** — a read-only
+viewer is scaffolding for it — so it is the natural boundary for a
+separate PR, or several. Phases 5–6 are incremental, and Phase 6 should
+not be started without measurements justifying it.
 
-### Phase 1 — Concurrency and resource bounds *(the real M8)*
+### Phase 1 — Concurrency and resource bounds
 
 The current design is correct but unbounded. This phase is what makes it
 safe to point at a 100-file catalog on a shared machine.
@@ -340,19 +347,51 @@ run already produced, and a reprocess invalidates exactly what it should.
     endpoint, so the client stops re-deriving geometry the server
     already knows.
 
-### Phase 4 — Capability
+### Phase 4 — Digitization *(the point of the whole thing)*
 
-12. Topographically corrected view as a second `DatasetView`.
-13. Config-file support so render settings are shared by CLI, config,
+Everything above makes the viewer robust; this is what makes it *useful*.
+A read-only viewer is a means to an end — the end is picking bed and
+internal reflectors and getting those picks back out as data. This phase
+is the largest of the six and is the natural boundary for a separate PR,
+or several.
+
+12. **Interactive digitization in the viewer:** pick, edit and delete
+    reflector traces on the radargram; snap to trace index (the
+    trace-indexed track model already guarantees a pick's position is
+    exact, which is precisely why it was built that way).
+13. **Labelling categories** (#115) — bed, internal layers, surface,
+    uncertain — as a typed, server-defined vocabulary rather than
+    free-form strings, for the same reason render profiles are
+    server-defined.
+14. **Persistence and a write path.** This is the first time the server
+    stops being read-only, and it changes the threat model completely:
+    it needs an ownership/authorship model, concurrent-edit semantics,
+    and a storage format that is not the processed NetCDF itself
+    (picks must survive reprocessing, which by definition changes the
+    revision ID).
+15. **gprinterp development in step with it.** gprinterp is the intended
+    consumer of `ridal_radargram_id` and the reason that ID is stable
+    across reprocessing. The interchange format between the two — how a
+    pick made against one revision is carried forward to the next — has
+    to be designed jointly, not bolted on afterwards. Doing the viewer
+    side first and inferring the contract later is the main risk in this
+    phase.
+16. Topographically corrected view as a second `DatasetView` — needed
+    for digitization to be interpretable, not just cosmetic.
+
+### Phase 5 — Remaining capability
+
+17. Config-file support so render settings are shared by CLI, config,
     API and GUI (#119's stated goal).
-14. Viewer prev/next within a group; placeholder panels for v2 layout.
-15. Multiple named basemaps with proper attribution config.
+18. Viewer prev/next within a group; placeholder panels for the
+    digitization layout.
+19. Multiple named basemaps with proper attribution config.
 
-### Phase 5 — Measure before optimising
+### Phase 6 — Measure before optimising
 
-16. Benchmark first paint and pan/zoom latency on a genuinely large
+20. Benchmark first paint and pan/zoom latency on a genuinely large
     radargram and a genuinely large catalog.
-17. **Only if that shows a need:** multiresolution server-side `(z,x,y)`
+21. **Only if that shows a need:** multiresolution server-side `(z,x,y)`
     tiles with a formal Leaflet-zoom-to-resolution mapping (#118, #121).
     This replaces the client-side x-scale transform rather than
     extending it, so it should not be started speculatively.
