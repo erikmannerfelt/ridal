@@ -7,3 +7,10 @@ venv/
 .coverage
 AGENTS.md
 *.jpg
+
+# Working notes kept on disk for back-checking, not repo content.
+# PR1_WEB_GUI_LOG.md is the log for the web-GUI PR (#115); it records
+# what was tried, what broke and why, which is useful when auditing that
+# work but is not something the repository should carry.
+PR1_WEB_GUI_LOG.md
+PHASE1_LOG.md
