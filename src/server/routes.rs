@@ -19,6 +19,11 @@ pub struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: String,
+    /// Extra response headers. Empty for almost every error -- the
+    /// envelope is meant to carry the detail -- but a few statuses are
+    /// incomplete without one, `503` + `Retry-After` being the case that
+    /// prompted this.
+    headers: Vec<(header::HeaderName, String)>,
 }
 
 impl ApiError {
@@ -27,7 +32,16 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            headers: Vec::new(),
         }
+    }
+
+    /// Attach a response header. Invalid header values are dropped rather
+    /// than panicking: a malformed hint is not worth turning an error
+    /// response into a different, more confusing error response.
+    fn with_header(mut self, name: header::HeaderName, value: impl Into<String>) -> Self {
+        self.headers.push((name, value.into()));
+        self
     }
 
     fn not_found(code: &'static str, message: impl Into<String>) -> Self {
@@ -54,7 +68,13 @@ impl IntoResponse for ApiError {
         let body = serde_json::json!({
             "error": { "code": self.code, "message": self.message }
         });
-        (self.status, Json(body)).into_response()
+        let mut response = (self.status, Json(body)).into_response();
+        for (name, value) in self.headers {
+            if let Ok(value) = header::HeaderValue::from_str(&value) {
+                response.headers_mut().insert(name, value);
+            }
+        }
+        response
     }
 }
 
@@ -210,6 +230,9 @@ fn image_response(bytes: Vec<u8>, profile: &RenderProfile) -> Response {
 /// unbounded queue from the thread pool into the connection table.
 const RENDER_PERMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// `Retry-After` value on the `render_busy` 503, in seconds.
+const RENDER_BUSY_RETRY_AFTER_SECS: u64 = 5;
+
 /// Run one render on a blocking thread, under a permit from
 /// `AppState::render_permits`.
 ///
@@ -244,11 +267,16 @@ where
     )
     .await
     .map_err(|_| {
+        // A 503 without Retry-After leaves a client guessing. The hint is
+        // deliberately short relative to the timeout that produced it: by
+        // the time this fires, a permit is likely to free up sooner than
+        // the full wait the caller just endured.
         ApiError::service_unavailable(
             "render_busy",
             "The server is at its render concurrency limit. Retry shortly, \
              or start it with a higher --n-workers.",
         )
+        .with_header(header::RETRY_AFTER, RENDER_BUSY_RETRY_AFTER_SECS.to_string())
     })?
     .map_err(|_| ApiError::internal("render_permits_closed", "Render permits were closed"))?;
 
@@ -977,8 +1005,35 @@ pub async fn dataset_axes(
 mod tests {
     use super::{
         build_metadata_entries, f32_to_f64_exact, format_datetime_for_display, format_rounded,
-        prettify_label,
+        prettify_label, ApiError, RENDER_BUSY_RETRY_AFTER_SECS,
     };
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn service_unavailable_carries_a_retry_after_hint() {
+        // A 503 without Retry-After leaves the client guessing how long
+        // to back off. The envelope still carries the code and message.
+        let response = ApiError::service_unavailable("render_busy", "busy")
+            .with_header(
+                header::RETRY_AFTER,
+                RENDER_BUSY_RETRY_AFTER_SECS.to_string(),
+            )
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response.headers().get(header::RETRY_AFTER).unwrap(),
+            &RENDER_BUSY_RETRY_AFTER_SECS.to_string()
+        );
+    }
+
+    #[test]
+    fn errors_without_extra_headers_are_unaffected() {
+        let response = ApiError::internal("boom", "went wrong").into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(response.headers().get(header::RETRY_AFTER).is_none());
+    }
 
     #[test]
     fn display_datetime_drops_subsecond_noise() {
