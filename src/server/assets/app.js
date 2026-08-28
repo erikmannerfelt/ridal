@@ -41,6 +41,88 @@ const RIDAL = Object.freeze({
   tileAttribution: "Esri",
   tileMaxZoom: 18,
 
+  /** Fetch JSON, turning a non-2xx response into a rejection carrying
+   * the server's own message.
+   *
+   * Every API route answers failures with the same envelope (#120):
+   * `{"error": {"code", "message"}}`. A bare `fetch(...).then(r =>
+   * r.json())` throws that away -- a 500 parses as JSON perfectly well,
+   * so the caller silently proceeds with an object that has no `track`
+   * or `entries` field and fails later, somewhere unrelated. This
+   * surfaces the message the server already took the trouble to write.
+   *
+   * The `code` is attached to the Error so a caller can branch on it
+   * without string-matching the human-readable message. */
+  async fetchJson(url, options) {
+    let response;
+    try {
+      response = await fetch(url, options);
+    } catch (networkError) {
+      // fetch() rejects only on network-level failure, where there is no
+      // response and therefore no envelope to read.
+      throw new Error(`network request failed (${networkError.message})`);
+    }
+
+    let body = null;
+    try {
+      body = await response.json();
+    } catch {
+      // A non-JSON body is itself the problem when the status is bad;
+      // when the status is fine it means the route broke its contract.
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      throw new Error('response was not valid JSON');
+    }
+
+    if (!response.ok) {
+      const envelope = body && body.error;
+      const error = new Error(
+        (envelope && envelope.message) || `HTTP ${response.status}`,
+      );
+      error.code = (envelope && envelope.code) || null;
+      error.status = response.status;
+      throw error;
+    }
+    return body;
+  },
+
+  /** Show `message` over the element with id `hostId`, as a dismissible
+   * overlay.
+   *
+   * Failures used to be invisible: a failed `/track` left a blank map
+   * that reads as "no data here" rather than "the request failed". The
+   * overlay sits on the element that would otherwise be mysteriously
+   * empty, so the explanation is where the user is already looking. */
+  reportError(hostId, message) {
+    const host = document.getElementById(hostId);
+    if (!host) {
+      console.error(message);
+      return;
+    }
+    // The host is usually a Leaflet container, which is positioned;
+    // guard the case where it is not so the overlay cannot escape it.
+    if (getComputedStyle(host).position === 'static') {
+      host.style.position = 'relative';
+    }
+    const box = document.createElement('div');
+    box.className = 'error-overlay';
+    box.setAttribute('role', 'status');
+
+    const text = document.createElement('span');
+    text.textContent = message;
+
+    const dismiss = document.createElement('button');
+    dismiss.type = 'button';
+    dismiss.className = 'error-overlay-dismiss';
+    dismiss.textContent = '×';
+    dismiss.setAttribute('aria-label', 'Dismiss');
+    dismiss.addEventListener('click', () => box.remove());
+
+    box.append(text, dismiss);
+    host.appendChild(box);
+  },
+
   /** Add the shared basemap layer to `map` and return it. */
   basemap(map) {
     L.tileLayer(RIDAL.tileUrl, {

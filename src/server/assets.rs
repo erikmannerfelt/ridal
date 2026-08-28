@@ -56,9 +56,14 @@ embedded_asset!(
 embedded_asset!(layers_png, "vendor/images/layers.png", "image/png");
 embedded_asset!(layers_2x_png, "vendor/images/layers-2x.png", "image/png");
 
-// First-party.
+// First-party. `app.js` is shared; `index.js`/`viewer.js` are the
+// per-page scripts, extracted from their templates so page logic is
+// ordinary static JS rather than something only reachable through
+// minijinja. The templates keep only what must be interpolated.
 embedded_asset!(app_css, "app.css", "text/css");
 embedded_asset!(app_js, "app.js", "text/javascript");
+embedded_asset!(index_js, "index.js", "text/javascript");
+embedded_asset!(viewer_js, "viewer.js", "text/javascript");
 
 // Repo-root, first-party. Shown beside the "Ridal" wordmark in the shared
 // header (base.html.jinja); logo.png doubles as the favicon.
@@ -152,8 +157,47 @@ mod tests {
         );
         let js = body_of(response).await;
         assert!(js.contains("const RIDAL"));
-        for key in ["trackColor", "siblingColor", "cursorColor", "basemap"] {
+        for key in [
+            "trackColor",
+            "siblingColor",
+            "cursorColor",
+            "basemap",
+            "fetchJson",
+            "reportError",
+        ] {
             assert!(js.contains(key), "missing shared constant {key}");
+        }
+    }
+
+    #[tokio::test]
+    async fn page_scripts_are_served_and_contain_no_template_syntax() {
+        // These were extracted out of their jinja templates; the whole
+        // point is that they are now plain static assets. A stray `{{ }}`
+        // would mean something template-dependent came along with them
+        // and would reach the browser uninterpolated.
+        for (name, response) in [
+            ("index.js", index_js().await),
+            ("viewer.js", viewer_js().await),
+        ] {
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "text/javascript",
+                "{name}"
+            );
+            let js = body_of(response).await;
+            assert!(!js.is_empty(), "{name} is empty");
+            assert!(
+                !js.contains("{{") && !js.contains("{%"),
+                "{name} still contains template syntax"
+            );
+            // Both pages fetch through the shared wrapper rather than a
+            // bare `.then(r => r.json())`, which discards the server's
+            // error envelope.
+            assert!(js.contains("RIDAL.fetchJson"), "{name} bypasses fetchJson");
+            assert!(
+                !js.contains("r.json()"),
+                "{name} still has a bare fetch-and-parse"
+            );
         }
     }
 }

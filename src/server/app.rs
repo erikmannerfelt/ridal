@@ -150,6 +150,8 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/leaflet.css", get(super::assets::leaflet_css))
         .route("/static/app.css", get(super::assets::app_css))
         .route("/static/app.js", get(super::assets::app_js))
+        .route("/static/index.js", get(super::assets::index_js))
+        .route("/static/viewer.js", get(super::assets::viewer_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -435,6 +437,8 @@ mod tests {
                 "/static/leaflet.css",
                 "/static/app.css",
                 "/static/app.js",
+                "/static/index.js",
+                "/static/viewer.js",
                 "/static/images/logo.svg",
                 "/favicon.ico",
             ] {

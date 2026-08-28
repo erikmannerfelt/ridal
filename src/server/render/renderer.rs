@@ -429,7 +429,10 @@ mod tests {
         assert_eq!(whole.dimensions(), banded.dimensions());
         for (a, b) in whole.pixels().zip(banded.pixels()) {
             let diff = a.0[0].abs_diff(b.0[0]);
-            assert!(diff <= 1, "pixel differs by {diff}, not a rounding artifact");
+            assert!(
+                diff <= 1,
+                "pixel differs by {diff}, not a rounding artifact"
+            );
         }
     }
 

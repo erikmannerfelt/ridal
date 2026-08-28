@@ -166,6 +166,52 @@ code {
   margin-bottom: var(--space-3);
 }
 
+/* A failed fetch used to leave a blank map, which reads as "no data
+ * here" rather than "the request failed". RIDAL.reportError overlays
+ * this on the element that would otherwise be mysteriously empty, so the
+ * explanation is where the user is already looking. Above Leaflet's own
+ * panes (z-index 400-700) and its controls (800), below its popups. */
+.error-overlay {
+  position: absolute;
+  z-index: 900;
+  top: var(--space-2);
+  /* Clears Leaflet's top-left zoom control (30px wide plus its own 10px
+   * margin), which both current hosts have and which otherwise sits on
+   * top of the first few characters of every line. A non-map host just
+   * gets a slightly indented box. */
+  left: 52px;
+  right: var(--space-2);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.error-overlay-dismiss {
+  margin-left: auto;
+  flex: none;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-base);
+  line-height: 1;
+  padding: 0 var(--space-1);
+}
+
+/* Same colour language inside the metadata dialog, which is a table
+ * rather than a positioned container, so it needs no overlay. */
+.error-text {
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+}
+
 /* ---------- index: groups and cards ---------- */
 
 section.group {

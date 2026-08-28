@@ -73,57 +73,5 @@
   {% endif %}
 {% endblock %}
 {% block extrascript %}
-<script>
-  // A cataloged entry can still fail to produce a preview: AppState::build
-  // skips files SourceReader::open rejects, and any render failure is a
-  // 500. Either way the browser would show a broken-image glyph, so
-  // degrade to an explicit "no preview" instead (#121: rendering failures
-  // should be reported to the user).
-  document.querySelectorAll('.card-thumb img').forEach((img) => {
-    img.addEventListener('error', () => img.parentElement.classList.add('is-missing'));
-  });
-
-  // Reload with the chosen profile as a URL query param -- shareable and
-  // bookmarkable, and reused as-is by every thumbnail/card link the
-  // template already rendered with it (see entry_card's `profile` arg).
-  document.getElementById('index-profile-select').addEventListener('change', (event) => {
-    const params = new URLSearchParams(location.search);
-    params.set('profile', event.target.value);
-    location.search = params.toString();
-  });
-
-  // One map per group (#121), each showing every member's track. The
-  // catalog's target scale (~100 files, #122/#123) keeps this cheap
-  // enough to load eagerly rather than needing PFA_website's
-  // IntersectionObserver lazy-init trick for per-card maps.
-  document.querySelectorAll('.group-map').forEach((el) => {
-    const map = RIDAL.basemap(L.map(el.id));
-
-    fetch(`/api/v1/groups/${el.dataset.group}/tracks`)
-      .then((r) => r.json())
-      .then((members) => {
-        const allPoints = [];
-        for (const [radargramId, info] of Object.entries(members)) {
-          const layers = RIDAL.trackToLatLngs(info.track).map((latlngs) => {
-            allPoints.push(...latlngs);
-            return L.polyline(latlngs, {
-              color: RIDAL.trackColor,
-              weight: RIDAL.trackWeight,
-            })
-              .bindPopup(RIDAL.popupContent(radargramId, info.effective_label))
-              .addTo(map);
-          });
-          // Two-way highlight with the matching catalog card (#121
-          // planning round item 7): hovering either one highlights both.
-          const card = document.getElementById(`card-${radargramId}`);
-          RIDAL.bindTrackHighlight(layers, card, RIDAL.trackWeight, RIDAL.trackFocusWeight);
-        }
-        if (allPoints.length > 0) {
-          map.fitBounds(allPoints);
-        } else {
-          map.setView([0, 0], 2);
-        }
-      });
-  });
-</script>
+<script src="/static/index.js"></script>
 {% endblock %}

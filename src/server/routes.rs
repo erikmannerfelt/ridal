@@ -276,7 +276,10 @@ where
             "The server is at its render concurrency limit. Retry shortly, \
              or start it with a higher --n-workers.",
         )
-        .with_header(header::RETRY_AFTER, RENDER_BUSY_RETRY_AFTER_SECS.to_string())
+        .with_header(
+            header::RETRY_AFTER,
+            RENDER_BUSY_RETRY_AFTER_SECS.to_string(),
+        )
     })?
     .map_err(|_| ApiError::internal("render_permits_closed", "Render permits were closed"))?;
 
