@@ -41,6 +41,12 @@ impl ApiError {
     fn internal(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, code, message)
     }
+
+    /// Temporary overload rather than a fault: the request was valid and
+    /// retrying it later may well succeed.
+    fn service_unavailable(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::SERVICE_UNAVAILABLE, code, message)
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -198,6 +204,76 @@ fn image_response(bytes: Vec<u8>, profile: &RenderProfile) -> Response {
         .into_response()
 }
 
+/// How long a request waits for a render permit before giving up with a
+/// 503. Waiting is the right default -- a burst of index thumbnails is
+/// normal traffic, not an overload -- but waiting *forever* just moves an
+/// unbounded queue from the thread pool into the connection table.
+const RENDER_PERMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Run one render on a blocking thread, under a permit from
+/// `AppState::render_permits`.
+///
+/// Two things this buys, in order of importance:
+///
+/// 1. **Rendering leaves the async executor.** It is CPU-bound work that
+///    previously ran directly on a tokio worker while holding the
+///    radargram's `Mutex`, so enough concurrent image requests could
+///    starve every other route -- including the HTML pages.
+/// 2. **Concurrency is bounded** by `--n-workers` rather than by tokio's
+///    512-thread blocking pool default.
+///
+/// The permit is acquired *here*, in async context, before anything is
+/// spawned. That is what makes client disconnects matter: a client that
+/// goes away while queued drops this future and never starts a render.
+/// A render already in flight cannot be cancelled -- `spawn_blocking`
+/// tasks are not cancellable -- but it finishes into the cache, so the
+/// work is not thrown away.
+async fn render_under_permit<F>(
+    state: Arc<AppState>,
+    radargram_id: String,
+    render: F,
+) -> Result<Vec<u8>, ApiError>
+where
+    F: FnOnce(&mut super::render::service::RenderService) -> Result<Vec<u8>, String>
+        + Send
+        + 'static,
+{
+    let permit = tokio::time::timeout(
+        RENDER_PERMIT_TIMEOUT,
+        state.render_permits.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::service_unavailable(
+            "render_busy",
+            "The server is at its render concurrency limit. Retry shortly, \
+             or start it with a higher --n-workers.",
+        )
+    })?
+    .map_err(|_| ApiError::internal("render_permits_closed", "Render permits were closed"))?;
+
+    tokio::task::spawn_blocking(move || {
+        // Held until the render finishes, then released for the next
+        // waiter.
+        let _permit = permit;
+        let radargram = state.radargrams.get(&radargram_id).ok_or_else(|| {
+            ApiError::internal(
+                "dataset_unavailable",
+                "Dataset is cataloged but its render service failed to initialize.",
+            )
+        })?;
+        let mut service = radargram.service.lock().map_err(|_| {
+            ApiError::internal(
+                "render_service_poisoned",
+                "Render service lock was poisoned",
+            )
+        })?;
+        render(&mut service).map_err(|e| ApiError::internal("render_failed", e))
+    })
+    .await
+    .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))?
+}
+
 pub async fn overview_image(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, view)): Path<(String, String)>,
@@ -219,15 +295,14 @@ pub async fn overview_image(
 
     let (height, width) = radargram.shape;
     let spec = OverviewSpec::new(width, height, 512);
-    let mut service = radargram.service.lock().map_err(|_| {
-        ApiError::internal(
-            "render_service_poisoned",
-            "Render service lock was poisoned",
-        )
-    })?;
-    let bytes = service
-        .get_or_render_overview(&spec, dataset_view, &profile)
-        .map_err(|e| ApiError::internal("render_failed", e))?;
+    // Owned before spawning: everything above borrows `state`.
+    let radargram_id = entry.radargram_id.to_string();
+    let render_profile = profile.clone();
+
+    let bytes = render_under_permit(state.clone(), radargram_id, move |service| {
+        service.get_or_render_overview(&spec, dataset_view, &render_profile)
+    })
+    .await?;
     Ok(image_response(bytes, &profile))
 }
 
@@ -275,15 +350,14 @@ pub async fn chunk_image(
         )
     })?;
 
-    let mut service = radargram.service.lock().map_err(|_| {
-        ApiError::internal(
-            "render_service_poisoned",
-            "Render service lock was poisoned",
-        )
-    })?;
-    let bytes = service
-        .get_or_render_chunk(&chunk, dataset_view, &profile)
-        .map_err(|e| ApiError::internal("render_failed", e))?;
+    // Owned before spawning: everything above borrows `state`.
+    let radargram_id = entry.radargram_id.to_string();
+    let render_profile = profile.clone();
+
+    let bytes = render_under_permit(state.clone(), radargram_id, move |service| {
+        service.get_or_render_chunk(&chunk, dataset_view, &render_profile)
+    })
+    .await?;
     Ok(image_response(bytes, &profile))
 }
 

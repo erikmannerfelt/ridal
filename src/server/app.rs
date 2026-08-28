@@ -6,10 +6,11 @@
 
 use std::collections::HashMap;
 use std::path::{Path as StdPath, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use axum::routing::get;
 use axum::Router;
+use tokio::sync::Semaphore;
 
 use super::catalog::{Catalog, RevisionId};
 use super::render::service::{RenderService, RenderServiceConfig};
@@ -28,6 +29,17 @@ pub struct AppState {
     pub root: PathBuf,
     pub catalog: Catalog,
     pub radargrams: HashMap<String, OpenRadargram>,
+    /// Bounds how many renders may be in flight at once, across every
+    /// radargram, sized from `--n-workers`.
+    ///
+    /// Rendering is CPU-bound and runs on `spawn_blocking` threads, whose
+    /// pool tokio sizes at 512 by default -- far more than is useful for
+    /// work that is already competing for cores, and enough that a card
+    /// grid requesting one overview per catalog entry could start
+    /// hundreds of simultaneous renders, each holding its own source
+    /// band in memory. The permit is acquired *before* spawning so a
+    /// client that disconnects while queued never starts one at all.
+    pub render_permits: Arc<Semaphore>,
 }
 
 impl AppState {
@@ -68,6 +80,10 @@ impl AppState {
             root: root.to_path_buf(),
             catalog,
             radargrams,
+            // `.max(1)`: a zero-permit semaphore would deadlock every
+            // render forever. The CLI rejects `--n-workers 0` with a
+            // clear message, so this only guards programmatic callers.
+            render_permits: Arc::new(Semaphore::new(config.n_workers.max(1))),
         })
     }
 
@@ -260,6 +276,17 @@ mod tests {
         let config = RenderServiceConfig::default();
         let state = std::sync::Arc::new(AppState::build(dir, &config).unwrap());
         build_router(state)
+    }
+
+    /// `test_app`, but keeping the state so a test can inspect the render
+    /// cache afterwards, and with a caller-chosen `n_workers`.
+    fn test_app_with_state(dir: &StdPath, n_workers: usize) -> (Router, Arc<AppState>) {
+        let config = RenderServiceConfig {
+            n_workers,
+            ..RenderServiceConfig::default()
+        };
+        let state = std::sync::Arc::new(AppState::build(dir, &config).unwrap());
+        (build_router(state.clone()), state)
     }
 
     async fn get(app: &Router, uri: &str) -> (StatusCode, axum::body::Bytes) {
@@ -628,6 +655,80 @@ mod tests {
                 html.contains(">Ungrouped<"),
                 "heading must show even with no named groups present: {html}"
             );
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn concurrent_requests_for_one_chunk_render_it_only_once() {
+        // #119 requires that concurrent requests generate an item only
+        // once. Nothing implements that explicitly -- it falls out of the
+        // per-radargram Mutex plus the cache re-check at the top of
+        // get_or_render_chunk: whichever request wins the lock renders and
+        // inserts, and the ones queued behind it find the result already
+        // cached. This pins that property so a future change to the
+        // locking cannot quietly reintroduce duplicate rendering.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc(&dir.path().join("a.nc"), "dup-test");
+            let (app, state) = test_app_with_state(dir.path(), 8);
+
+            let uri = "/api/v1/datasets/dup-test/views/standard/chunks/default/0/0";
+            let mut handles = Vec::new();
+            for _ in 0..8 {
+                let app = app.clone();
+                handles.push(tokio::spawn(async move { get(&app, uri).await }));
+            }
+            let mut responses = Vec::new();
+            for handle in handles {
+                responses.push(handle.await.unwrap());
+            }
+
+            let first = responses[0].1.clone();
+            for (status, body) in &responses {
+                assert_eq!(*status, StatusCode::OK);
+                assert_eq!(body, &first, "concurrent renders disagreed");
+            }
+
+            let service = state.radargrams["dup-test"].service.lock().unwrap();
+            assert_eq!(
+                service.cache_len(),
+                1,
+                "the same chunk was rendered and cached more than once"
+            );
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_single_render_worker_still_serves_every_request() {
+        // The permit semaphore is sized from --n-workers; at 1 it fully
+        // serialises rendering. Everything must still be served (just
+        // slower) rather than deadlocking or timing out into a 503.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc(&dir.path().join("a.nc"), "one-worker");
+            let (app, _state) = test_app_with_state(dir.path(), 1);
+
+            let uris = [
+                "/api/v1/datasets/one-worker/views/standard/chunks/default/0/0",
+                "/api/v1/datasets/one-worker/views/standard/chunks/default/1/0",
+                "/api/v1/datasets/one-worker/views/standard/overview",
+            ];
+            let mut handles = Vec::new();
+            for uri in uris {
+                let app = app.clone();
+                handles.push(tokio::spawn(async move { get(&app, uri).await }));
+            }
+            for handle in handles {
+                let (status, body) = handle.await.unwrap();
+                assert_eq!(status, StatusCode::OK);
+                assert!(!body.is_empty());
+            }
         });
     }
 

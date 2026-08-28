@@ -405,18 +405,25 @@ pub fn run(arguments: Args) -> Result<(), String> {
 fn render_service_config(
     cache_memory_mb: Option<usize>,
     n_workers: Option<usize>,
-) -> crate::server::render::service::RenderServiceConfig {
+) -> Result<crate::server::render::service::RenderServiceConfig, String> {
+    // Rejected rather than silently clamped: n_workers sizes the render
+    // permit semaphore, and zero permits would leave every image request
+    // waiting until it times out into a 503. A user who typed 0 meant
+    // something, and it is not that.
+    if n_workers == Some(0) {
+        return Err("--n-workers must be at least 1".to_string());
+    }
     let default = crate::server::render::service::RenderServiceConfig::default();
-    crate::server::render::service::RenderServiceConfig {
+    Ok(crate::server::render::service::RenderServiceConfig {
         cache_memory_mb: cache_memory_mb.unwrap_or(default.cache_memory_mb),
         n_workers: n_workers.unwrap_or(default.n_workers),
         ..default
-    }
+    })
 }
 
 #[cfg(feature = "server")]
 fn gui_command(args: GuiArgs) -> Result<(), String> {
-    let config = render_service_config(args.cache_memory_mb, args.n_workers);
+    let config = render_service_config(args.cache_memory_mb, args.n_workers)?;
     crate::server::launch::run_gui(&args.path, config)
 }
 
@@ -428,7 +435,7 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
                 .host
                 .parse()
                 .map_err(|e| format!("Invalid --host '{}': {e}", start_args.host))?;
-            let config = render_service_config(start_args.cache_memory_mb, start_args.n_workers);
+            let config = render_service_config(start_args.cache_memory_mb, start_args.n_workers)?;
             crate::server::launch::run_server_start(
                 &start_args.path,
                 host,
@@ -750,6 +757,23 @@ fn error(message: &str, code: i32) -> i32 {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn n_workers_zero_is_rejected_not_silently_clamped() {
+        // n_workers sizes the render permit semaphore; zero permits would
+        // leave every image request waiting until it times out into a 503,
+        // which is a confusing way to learn about a typo.
+        let err = super::render_service_config(None, Some(0)).unwrap_err();
+        assert!(err.contains("--n-workers"), "{err}");
+
+        assert!(super::render_service_config(None, Some(1)).is_ok());
+        assert_eq!(
+            super::render_service_config(None, None).unwrap().n_workers,
+            crate::server::render::service::RenderServiceConfig::default().n_workers,
+            "an omitted flag must keep the default, not become an error"
+        );
+    }
 
     #[test]
     fn test_parse_process_command() {
