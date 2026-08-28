@@ -34,9 +34,24 @@ Four concepts that were previously conflated, now kept apart:
 | Processed revision | derived `RevisionId` | **no** — changes every run |
 
 Radargram and group IDs are validated ASCII slugs (`[a-z0-9_-]`, ≤128
-chars, no reserved names). Display names and group *names* are free-form
-Unicode; their IDs are derived by slugification, which transliterates
-ø/æ/å so `--group-name "Drønbreen"` yields the id `dronbreen`.
+chars, no reserved names, never starting with `_` or `-`). Display names
+and group *names* are free-form Unicode; their IDs are derived by
+slugification, which transliterates ø/æ/å so `--group-name "Drønbreen"`
+yields the id `dronbreen`. A radargram with no group at all is not an
+edge case in the UI: it gets its own "Ungrouped" category on the index
+page, identical in presentation to any named group (map included), via a
+reserved id (`_none`) that can never collide with a real slug precisely
+because real slugs can't start with `_`.
+
+File-format compatibility is intentionally shallow, not absent: reading
+back an older file's attributes falls back to a prior unprefixed/unsplit
+name only where that combination can actually occur (e.g.
+`ridal_group_name`/`ridal_group`, for files from before the name/id
+split). A fallback for an attribute pair that was renamed in the *same*
+change that made `ridal_radargram_id` mandatory was removed as dead code:
+any file old enough to have the old name is also old enough to be
+missing the id, and gets rejected on that check regardless of the name
+it used.
 
 `RevisionId` is a blake3 fingerprint of `(radargram_id,
 processing_datetime)`, deliberately excluding path, filesystem
@@ -94,6 +109,8 @@ An in-memory, byte-bounded LRU cache (`--cache-memory-mb`) keys on
 **Index:** lazily-loaded overview thumbnail per entry, one Leaflet map
 per group showing every member's track, a render-profile switcher, and
 bidirectional hover highlighting between a card and its track on the map.
+Radargrams with no group get the same treatment under an "Ungrouped"
+heading, not a lesser one — same map, same card grid.
 
 **Viewer:** chunked Leaflet radargram with `L.CRS.Simple`, a synchronised
 overview map, clickable sibling tracks, a cursor readout, a horizontal
@@ -268,6 +285,16 @@ no-build-step tradeoff; it will not scale past roughly the current size.
 `server start` binds loopback by default and binding elsewhere is an
 explicit flag, but there is no authN/authZ of any kind. Deploying this
 beyond localhost requires a reverse proxy that provides it.
+
+### 11. Reserved, underscore-prefixed sentinel values appear in a few places
+
+The "Ungrouped" pseudo-group id (`_none`) and the metadata dialog's
+synthetic entries (`__revision_id`, `__shape`, `__start_stop_datetime`)
+all lean on the same fact: a real `GroupId`/`RadargramId` can never start
+with `_`, so a hardcoded sentinel can never collide with real data. This
+works, but it is an implicit convention rather than a typed one — nothing
+stops a future change to slug validation from invalidating it silently.
+If that rule ever needs to change, grep for these sentinels first.
 
 ---
 

@@ -25,6 +25,7 @@ update). Milestone numbering matches that plan.
 | M7c: viewer refinement round (see below) | done | `b63dbcf`, `290ea53`, `3fea81c`, `91023ed`, `2b43d8d` |
 | M7d: backlog clearing round (see below) | done | `7ad1401`, `84782ec`, `27cbc40`, `0f74dac` |
 | M7e: bug fixes found using M7d (see below) | done | `1cf9d85`, `d82a43b` |
+| M7f: ungrouped-map treatment + dead-code removal (see below) | done | `6ec71ae`, `484337d` |
 
 ## Gate applied before every commit
 
@@ -101,7 +102,8 @@ grows as tests are added. A *new* failure beyond this one stops the run.
 - `inspect_ridal_netcdf()` added to `io.rs` (unconditional, not gated behind
   `server`): metadata-only recognition via `ridal_version` +
   `ridal_processing_datetime` (legacy unprefixed fallback per M1's
-  decision), typed `RidalNetcdfKind::{NotRidal, Supported}`. A malformed
+  decision — **removed later, see the M7f note below**: it turned out to
+  be unreachable), typed `RidalNetcdfKind::{NotRidal, Supported}`. A malformed
   `ridal_radargram_id` or missing/non-2D `data` variable is reported as
   `NotRidal` rather than an error, per #123's stated first-implementation
   simplicity allowance.
@@ -617,7 +619,38 @@ a feedback loop that flickered at the threshold. `visibility` keeps the
 box in flow so the ResizeObserver's measurement no longer depends on
 the toggle's own effect; verified monotonic across 760-1000px.
 
-## Run status: M0-M7 done (M7 completed by M7b, refined in M7c/M7d/M7e), M8 not attempted
+## M7f findings: ungrouped-map treatment and a dead-code removal
+
+Two small, independent review questions, both landed as separate commits.
+
+- **`6ec71ae`** — ungrouped radargrams were second-class on the index
+  page: no Leaflet map, and a heading conditionally hidden when there
+  were no other groups. "Ungrouped" is now a real category, presented
+  identically to any named group (map included), via a reserved sentinel
+  id (`NO_GROUP_ID = "_none"`) that `AppState::entries_in_group` resolves
+  to "`group_id` is `None`". Safe by construction: `GroupId` validation
+  rejects any id starting with `_`, the same non-collision guarantee
+  `__revision_id`/`__shape` already rely on. Deliberately does not touch
+  `CatalogEntry.group_id` itself, which stays `None` — the sentinel is a
+  presentation concept for the index page and its `/tracks` route only;
+  letting it leak into the viewer would make every ungrouped radargram
+  in the catalog appear as a "sibling" of every other, which is wrong.
+- **`484337d`** — `inspect_ridal_netcdf`'s legacy-name fallback for
+  `ridal_version`/`program_version` and
+  `ridal_processing_datetime`/`processing_datetime` was checked against
+  history and found unreachable: `ridal_radargram_id` became mandatory
+  in the exact same commit that renamed those two attributes (#116), so
+  a file old enough to have the unprefixed names is always also old
+  enough to lack `ridal_radargram_id` — and gets rejected on that check
+  regardless of the fallback. The existing test for this path already
+  said as much in its own comment. Removed, with the test turned into a
+  regression pin (`NotRidal`, not `Supported`) rather than deleted
+  outright. **Not the same situation as the group name/id legacy
+  fallback** (`ridal_group_name`/`ridal_group`), which stays: that split
+  landed well after `ridal_radargram_id` was already mandatory, so real
+  files exist with a valid id and only the old unsplit attribute.
+
+## Run status: M0-M7 done (M7 completed by M7b, refined in M7c/M7d/M7e/M7f), M8 not attempted
 
 The plan's explicit target was "the first user-visible milestone (index +
 viewer + map sync)" with "M8 hardening as optional stretch." That target
