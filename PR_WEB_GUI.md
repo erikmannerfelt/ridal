@@ -218,8 +218,17 @@ consequences the codebase now carries:
   level clips the remainder away — `positive` overviews rendered almost
   entirely black until `ResamplingMethod::Peak` was added. Peak and Mean
   agree exactly at a 1:1 footprint, so this only affects downsampled
-  views. **Any future profile that reads amplitude asymmetrically must
-  make the same choice.**
+  views. **Any future profile that reads amplitude asymmetrically has to
+  make a comparable choice.**
+
+  **Peak is a stopgap, not the right answer.** It fixes the cancellation
+  but is a crude reducer: it biases every footprint upward, so
+  downsampled `positive` views look noisier and lose the smooth falloff
+  a proper filter would preserve. **Lanczos resampling should be
+  implemented and is expected to handle `positive` considerably better
+  than peak** — it is a windowed-sinc filter, so it preserves peak
+  structure and the shape of the signal around it instead of just
+  reporting a maximum. See the roadmap.
 
 ### 6. The x-scale control is a pure client-side transform
 
@@ -271,9 +280,12 @@ beyond localhost requires a reverse proxy that provides it.
 | **On-disk render cache** | #119 | Explicitly deferred by the issue itself. When added, it **must** key on the revision ID so a reprocess invalidates it, and needs a documented cache location and an enablement flag. The in-memory LRU already keys correctly, so this is additive. |
 | **Bounded concurrency and cancellation** | #119, #120 | Collapse identical concurrent render misses so N requests generate an item once; bound per-request work; support cancellation. `--n-workers` exists for exactly this. |
 | **`spawn_blocking` for renders** | — | See "challenges" #2. Should land alongside bounded concurrency. |
-| **Topographically corrected view** | #118 | `DatasetView` is an enum with one variant precisely so this can be added without reshaping the API. |
+| **Topographically corrected view** | #118 | `DatasetView` is an enum with one variant precisely so this can be added without reshaping the API. A significant bonus rather than an essential component — digitization does not depend on it — so it sits in Phase 5. |
 | **Multiresolution / server-side (z,x,y) tiles** | #118, #121 | Named as a future optimisation *if* representative radargrams show it is needed. Not yet measured. |
-| **Digitization and labelling categories** | #115 | Out of scope for a read-only v1, and the largest remaining piece of work — see Phase 4, where it belongs together with gprinterp development. |
+| **Digitization** | #115 | Out of scope for a read-only v1, and the largest remaining piece of work — see Phase 4, where it belongs together with gprinterp development. |
+| **User-editable interpreted-layer names and colours** | #115 | **Essential, not optional.** A fixed vocabulary of layer names/colours will not survive contact with real interpretation work — users need to name and colour their own layers. The open question is purely *how*: it has to be convenient enough to edit inline without a config-file round trip, while staying validated, persisted server-side, and bounded. Design it together with digitization, not after. |
+| **User-defined render profiles** | #119, #120 | Needed eventually. The design constraint is that they be **named, validated and persisted server-side**, so a profile is still an enumerable render-variant key — that keeps caching and bounded work intact while giving users full control. What must *not* happen is per-request free-form parameters (see the do-not-pursue list). |
+| **Lanczos resampling** | #118 | `ResamplingMethod` was built as an extension point for exactly this. Expected to serve `positive` considerably better than the current `Peak`, which fixes cancellation but biases footprints upward and looks noisy when downsampled. Worth doing before investing in multiresolution tiling. |
 | **Reading ridal NetCDF back into a full `GPR`** | #123 | Only metadata-only inspection exists. `identity::resolve_*` already takes an `inherited` tier that is always `None` today, shaped for this. |
 | **Config-file support for render settings** | #119 | The issue names "CLI, configuration file, API, and future GUI controls" sharing one typed `RenderProfile`. CLI and API share it; there is no config file yet. |
 | **Frontend fetch error handling** | #121 | Page scripts do bare `.then(r => r.json())`. A failed `/track` leaves the map silently empty. Index thumbnails *do* degrade visibly. This is the most substantive of the deferred UI items. |
@@ -286,7 +298,7 @@ beyond localhost requires a reverse proxy that provides it.
 
 | Item | Why not |
 |---|---|
-| **Client-defined render profiles** | #120 warns explicitly against unbounded client-driven render work. Accepting arbitrary limits/transforms from a query string turns every request into an uncacheable, unbounded server job. Profiles must stay server-defined and enumerable. |
+| **Arbitrary render parameters as free-form query strings** | Not the same thing as user-defined profiles, which *are* wanted (see deferred). #120 warns against unbounded client-driven render work: `?min=…&max=…&contrast=…` on every chunk request makes each one a distinct, uncacheable render variant, and lets a client trivially thrash the cache or pin the CPU. User customisation should go through named, validated, persisted profiles instead — same expressive power, bounded work. |
 | **Nearest-neighbour resampling** | #118 is explicit that it preserves this data's high-frequency noise poorly. Adding it as an option would produce visibly wrong-looking radargrams and invite bug reports that are not bugs. |
 | **Per-chunk amplitude limit estimation** | Superficially attractive (better local contrast, no full-radargram sampling pass) and definitively wrong: adjacent chunks would normalise differently and every chunk boundary would become a visible seam. |
 | **Folding display name or group into the revision fingerprint** | #117 lists what must *not* change a revision. Renaming a radargram would needlessly invalidate every cached tile. The current split is load-bearing — keep it. |
@@ -351,18 +363,30 @@ run already produced, and a reprocess invalidates exactly what it should.
 
 Everything above makes the viewer robust; this is what makes it *useful*.
 A read-only viewer is a means to an end — the end is picking bed and
-internal reflectors and getting those picks back out as data. This phase
-is the largest of the six and is the natural boundary for a separate PR,
-or several.
+internal reflectors, naming and colouring them, and getting those picks
+back out as data. This phase is the largest of the six and is the natural
+boundary for a separate PR, or several.
 
 12. **Interactive digitization in the viewer:** pick, edit and delete
     reflector traces on the radargram; snap to trace index (the
     trace-indexed track model already guarantees a pick's position is
     exact, which is precisely why it was built that way).
-13. **Labelling categories** (#115) — bed, internal layers, surface,
-    uncertain — as a typed, server-defined vocabulary rather than
-    free-form strings, for the same reason render profiles are
-    server-defined.
+13. **User-editable interpreted layers — names and colours.** Essential,
+    and the part most likely to be got wrong by deferring it. A fixed
+    server-side vocabulary (bed / internal / surface / uncertain) is not
+    enough: interpretation work needs users naming and colouring their
+    own layers. The design has to be *both* safe and convenient, which
+    is the whole difficulty:
+    - **Convenient** means editing a layer's name and colour inline in
+      the viewer, applying immediately, with no config-file round trip
+      and no server restart.
+    - **Safe** means the definitions are validated (colour format, name
+      length/charset, no duplicate identities), persisted server-side
+      rather than living in browser state, and carry a stable layer *id*
+      distinct from the editable display name — the same
+      id-versus-label split already used for radargrams and groups, for
+      the same reason: renaming a layer must not orphan the picks
+      attached to it.
 14. **Persistence and a write path.** This is the first time the server
     stops being read-only, and it changes the threat model completely:
     it needs an ownership/authorship model, concurrent-edit semantics,
@@ -372,26 +396,39 @@ or several.
 15. **gprinterp development in step with it.** gprinterp is the intended
     consumer of `ridal_radargram_id` and the reason that ID is stable
     across reprocessing. The interchange format between the two — how a
-    pick made against one revision is carried forward to the next — has
-    to be designed jointly, not bolted on afterwards. Doing the viewer
-    side first and inferring the contract later is the main risk in this
-    phase.
-16. Topographically corrected view as a second `DatasetView` — needed
-    for digitization to be interpretable, not just cosmetic.
+    pick made against one revision is carried forward to the next, and
+    how layer identities are shared — has to be designed jointly, not
+    bolted on afterwards. Doing the viewer side first and inferring the
+    contract later is the main risk in this phase.
 
 ### Phase 5 — Remaining capability
 
-17. Config-file support so render settings are shared by CLI, config,
+16. **Lanczos resampling** as a third `ResamplingMethod`. Expected to
+    render `positive` considerably better than the current `Peak`, which
+    fixes amplitude cancellation but biases footprints upward and looks
+    noisy downsampled. Cheap relative to its visible benefit, and worth
+    doing before any multiresolution work, since it changes what
+    downsampled output should look like.
+17. **User-defined render profiles** — named, validated and persisted
+    server-side so each stays an enumerable render-variant key and the
+    cache and work bounds keep holding. Shares its persistence and
+    validation design with the layer customisation in Phase 4; doing
+    them with one mechanism rather than two is the obvious economy.
+18. **Topographically corrected view** as a second `DatasetView`. A
+    significant bonus rather than an essential component — digitization
+    is perfectly workable in the standard view — so it sits here rather
+    than gating Phase 4. `DatasetView` is already an enum for this.
+19. Config-file support so render settings are shared by CLI, config,
     API and GUI (#119's stated goal).
-18. Viewer prev/next within a group; placeholder panels for the
+20. Viewer prev/next within a group; placeholder panels for the
     digitization layout.
-19. Multiple named basemaps with proper attribution config.
+21. Multiple named basemaps with proper attribution config.
 
 ### Phase 6 — Measure before optimising
 
-20. Benchmark first paint and pan/zoom latency on a genuinely large
+22. Benchmark first paint and pan/zoom latency on a genuinely large
     radargram and a genuinely large catalog.
-21. **Only if that shows a need:** multiresolution server-side `(z,x,y)`
+23. **Only if that shows a need:** multiresolution server-side `(z,x,y)`
     tiles with a formal Leaflet-zoom-to-resolution mapping (#118, #121).
     This replaces the client-side x-scale transform rather than
     extending it, so it should not be started speculatively.
