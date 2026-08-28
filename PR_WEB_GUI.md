@@ -474,14 +474,22 @@ boundary for a separate PR, or several.
     digitization layout.
 21. Multiple named basemaps with proper attribution config.
 
-### Phase 6 — Measure before optimising
+### Phase 6 — Measure before optimising ✅ *(measured; answer is "don't")*
 
-22. Benchmark first paint and pan/zoom latency on a genuinely large
-    radargram and a genuinely large catalog.
-23. **Only if that shows a need:** multiresolution server-side `(z,x,y)`
-    tiles with a formal Leaflet-zoom-to-resolution mapping (#118, #121).
-    This replaces the client-side x-scale transform rather than
-    extending it, so it should not be started speculatively.
+22. ✅ Benchmarked via `scripts/bench_server.py`, release build, against
+    the real catalog (largest radargram 12187×3678).
+23. ❌ **Multiresolution tiling is not justified. Do not start it.**
+    Chunks — the viewer's actual unit of work — cost **2–6 ms cold and
+    0.2 ms warm**; pan and zoom are already far faster than a user can
+    perceive, so tiling would fix a problem that is not present. The one
+    expensive request is a cold overview of the largest file at 1.8 s,
+    which a tile pyramid cannot help: an overview is a whole-radargram
+    reduction, so there is no coarser level to serve it from. What does
+    help is Phase 2's on-disk cache — the warm/cold ratio is ~9 000×,
+    which dominates any rendering optimisation.
+
+**This reorders the roadmap:** the on-disk cache is now the highest-value
+remaining item, ahead of any further render work.
 
 ### Cross-cutting, throughout
 
