@@ -147,15 +147,18 @@ impl ByteBoundedCache {
     }
 }
 
-/// Configuration the CLI (`ridal gui` / `ridal server start`, M6) parses
-/// its `--cache-memory-mb` / `--source-cache-mb` / `--n-workers` flags
-/// into. Defined here, alongside the service it configures, rather than
-/// in `cli.rs`, since M6 only needs to parse and pass these through.
+/// Configuration the CLI (`ridal gui` / `ridal server start`) parses its
+/// `--cache-memory-mb` / `--n-workers` flags into. Defined here, alongside
+/// the service it configures, rather than in `cli.rs`, since the CLI only
+/// needs to parse and pass these through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderServiceConfig {
     pub cache_memory_mb: usize,
-    /// Reserved for `source.rs`'s deferred HDF5-chunk-aligned read cache
-    /// (see M4's progress notes); unused until that lands.
+    /// Reserved for `source.rs`'s deferred HDF5-chunk-aligned read cache;
+    /// unused until that lands, and **not currently exposed as a CLI flag
+    /// at all** -- always its `Default` value. Do not describe this as an
+    /// inert `--source-cache-mb` flag: no such flag is parsed, so passing
+    /// one is a hard CLI error, not a silent no-op.
     pub source_cache_mb: usize,
     pub n_workers: usize,
 }
