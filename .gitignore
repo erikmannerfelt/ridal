@@ -14,3 +14,7 @@ AGENTS.md
 # work but is not something the repository should carry.
 PR1_WEB_GUI_LOG.md
 PHASE1_LOG.md
+# PR_WEB_GUI.md is PR #125's description text, meant to live on GitHub
+# once the PR is opened/updated, not as a permanent tracked file that
+# would survive a squash merge into main.
+PR_WEB_GUI.md
