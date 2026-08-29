@@ -4,11 +4,20 @@ repos:
   hooks:
   - id: check-yaml
   - id: end-of-file-fixer
-    exclude: \.txt$
+    # `assets/vendor/` is overwritten wholesale by scripts/vendor_leaflet.sh
+    # on every refresh, so a byte-for-byte upstream file (missing a
+    # trailing newline, as leaflet.js ships) would just fail this again
+    # next time someone updates the vendored version -- vendored content
+    # isn't ours to reformat.
+    exclude: \.txt$|^src/server/assets/vendor/
   - id: trailing-whitespace                # Remove trailing whitespaces
+    exclude: ^src/server/assets/vendor/
   - id: check-merge-conflict
   - id: check-added-large-files
     args: [--maxkb=2000]
+    # Real MALA fixtures needed for the web GUI's integration tests
+    # (#115) -- deliberately committed, not an accidental large add.
+    exclude: ^assets/mala/
   - id: detect-private-key
   - id: sort-simple-yaml
 
