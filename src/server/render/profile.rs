@@ -51,11 +51,13 @@ pub enum ResamplingMethod {
     /// (an order statistic that biases every footprint upward into
     /// speckle) does not provide. Compared against both on real data (see
     /// `PHASE1_LOG.md`) and read best of the three; used by
-    /// [`RenderProfile::positive_profile`].
+    /// [`RenderProfile::positive_profile`] and
+    /// [`RenderProfile::abslog_profile`].
     ///
-    /// Only meaningful for a profile that already reads amplitude
-    /// asymmetrically; for a linear profile it would change what the
-    /// image means rather than just how it is anti-aliased.
+    /// Safe for any profile whose display value is already sign-agnostic
+    /// (`positive`'s asymmetric stretch, `abslog`'s `log10|amplitude|`).
+    /// For a plain signed-linear profile it would change what the image
+    /// means rather than just how it is anti-aliased.
     LanczosRectified,
 }
 
@@ -170,6 +172,12 @@ impl RenderProfile {
         Self {
             name: "abslog".to_string(),
             transform: AmplitudeTransform::AbsLog,
+            // Unlike `default`, rectifying before filtering doesn't change
+            // what this profile's image means: its display value is
+            // already `log10|amplitude|`, sign-agnostic by construction.
+            // Compared against Mean/Peak/Lanczos on real data and read
+            // best of the four.
+            resampling: ResamplingMethod::LanczosRectified,
             ..Self::default_profile()
         }
     }
@@ -302,7 +310,7 @@ mod tests {
         let expected: &[(&str, ResamplingMethod)] = &[
             ("default", ResamplingMethod::Mean),
             ("positive", ResamplingMethod::LanczosRectified),
-            ("abslog", ResamplingMethod::Mean),
+            ("abslog", ResamplingMethod::LanczosRectified),
             ("high-contrast", ResamplingMethod::Mean),
         ];
         for (name, method) in expected {
