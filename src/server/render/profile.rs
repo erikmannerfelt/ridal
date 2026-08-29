@@ -21,6 +21,11 @@ pub enum ResamplingMethod {
     /// cancels them toward zero and the asymmetric stretch then clips the
     /// result to black. Identical to `Mean` at a 1:1 footprint. See
     /// `resample::resample` for the full rationale.
+    ///
+    /// Superseded by [`LanczosRectified`](Self::LanczosRectified) for
+    /// `positive` (biases every footprint upward into speckle, which the
+    /// rectified windowed-sinc filter does not); not currently used by any
+    /// built-in profile, kept as a documented option.
     Peak,
     /// Windowed-sinc (Lanczos-3) filtering, applied separably.
     ///
@@ -32,23 +37,25 @@ pub enum ResamplingMethod {
     /// footprint, where the kernel taps land on integers and `sinc` is
     /// zero at all of them but the centre.
     ///
-    /// **Not the default for any profile.** Whether it suits `positive`
-    /// better than `Peak` is a visual judgement against real data, not
-    /// something to assert here.
+    /// Plain (unrectified) Lanczos is still a *linear* filter, so on
+    /// signed oscillating amplitude it cancels toward zero exactly the way
+    /// `Mean` does -- measured, not assumed: `positive` overviews under
+    /// this came out nearly black. Not currently used by any built-in
+    /// profile as a result; kept as a documented option for a profile
+    /// whose amplitude is not signed and asymmetric.
     Lanczos,
     /// Lanczos applied to `|amplitude|` rather than signed amplitude.
     ///
-    /// Plain `Lanczos` is a *linear* filter, so it cancels signed
-    /// oscillating traces exactly the way the box mean does -- measured,
-    /// not assumed: `positive` overviews under `Lanczos` come out nearly
-    /// black, reproducing the failure `Peak` was introduced to fix.
-    /// Rectifying first removes the cancellation while keeping proper
-    /// anti-aliasing, which `Peak` (an order statistic that biases every
-    /// footprint upward and turns noise into speckle) does not provide.
+    /// Removes the cancellation plain `Lanczos` suffers on signed
+    /// oscillating traces while keeping proper anti-aliasing, which `Peak`
+    /// (an order statistic that biases every footprint upward into
+    /// speckle) does not provide. Compared against both on real data (see
+    /// `PHASE1_LOG.md`) and read best of the three; used by
+    /// [`RenderProfile::positive_profile`].
     ///
     /// Only meaningful for a profile that already reads amplitude
     /// asymmetrically; for a linear profile it would change what the
-    /// image means. Also an experiment pending judgement.
+    /// image means rather than just how it is anti-aliased.
     LanczosRectified,
 }
 
@@ -183,11 +190,17 @@ impl RenderProfile {
             // percentile estimate, matching PFA_website's
             // `normalize()`, which skips the first 50 sample rows.
             stats_skip_first_samples: 50,
-            // Not `Mean`: averaging signed, oscillating amplitude over a
-            // downsampled footprint cancels it toward zero, which this
-            // profile's black level then clips to black -- the reason
-            // `positive` overviews rendered almost entirely dark.
-            resampling: ResamplingMethod::Peak,
+            // Settled after comparing Peak, Lanczos and LanczosRectified
+            // against real data (see PHASE1_LOG.md): plain `Mean` or
+            // `Lanczos` cancel signed, oscillating amplitude toward zero
+            // over a downsampled footprint, which this profile's black
+            // level then clips to black -- the reason `positive` overviews
+            // once rendered almost entirely dark. `Peak` fixed that but
+            // biases every footprint upward into speckle. `LanczosRectified`
+            // (filtering `|amplitude|`) removes the cancellation while
+            // keeping proper anti-aliasing, and read best of the three on
+            // real data.
+            resampling: ResamplingMethod::LanczosRectified,
             ..Self::default_profile()
         }
     }
@@ -208,78 +221,10 @@ impl RenderProfile {
     pub fn built_in_profiles() -> Vec<Self> {
         vec![
             Self::default_profile(),
-            Self::default_lanczos_profile(),
-            Self::default_lanczos_rect_profile(),
             Self::positive_profile(),
-            Self::positive_lanczos_profile(),
-            Self::positive_lanczos_rect_profile(),
             Self::abslog_profile(),
             Self::high_contrast_profile(),
         ]
-    }
-
-    /// `positive-lanczos`: `positive` with [`ResamplingMethod::Lanczos`]
-    /// in place of `Peak`.
-    ///
-    /// Exists to make the two directly comparable in the viewer against
-    /// real data, since which one reads better at a given downsample
-    /// ratio is a visual judgement. Expected to be short-lived: once
-    /// that judgement is made, either `positive` adopts Lanczos and this
-    /// goes away, or it stays on `Peak` and this goes away.
-    pub fn positive_lanczos_profile() -> Self {
-        Self {
-            name: "positive-lanczos".to_string(),
-            resampling: ResamplingMethod::Lanczos,
-            ..Self::positive_profile()
-        }
-    }
-
-    /// `positive-lanczos-rect`: `positive` with
-    /// [`ResamplingMethod::LanczosRectified`].
-    ///
-    /// The candidate that should, in principle, beat both: `Peak`'s
-    /// freedom from cancellation plus `Lanczos`'s proper anti-aliasing,
-    /// without `Peak`'s upward bias. Also short-lived.
-    pub fn positive_lanczos_rect_profile() -> Self {
-        Self {
-            name: "positive-lanczos-rect".to_string(),
-            resampling: ResamplingMethod::LanczosRectified,
-            ..Self::positive_profile()
-        }
-    }
-
-    /// `default-lanczos`: `default` with [`ResamplingMethod::Lanczos`] in
-    /// place of `Mean`.
-    ///
-    /// The comparison that matters more than `positive-lanczos`, on
-    /// evidence: `default` is a plain linear stretch with no asymmetric
-    /// clipping, so a box mean's blurring is the only thing hurting it
-    /// and a windowed-sinc filter is exactly the standard remedy. Also
-    /// short-lived -- it exists to be judged.
-    pub fn default_lanczos_profile() -> Self {
-        Self {
-            name: "default-lanczos".to_string(),
-            resampling: ResamplingMethod::Lanczos,
-            ..Self::default_profile()
-        }
-    }
-
-    /// `default-lanczos-rect`: `default` with
-    /// [`ResamplingMethod::LanczosRectified`].
-    ///
-    /// Unlike `positive-lanczos-rect`, this one is not expected to win:
-    /// `default` reads *signed* linear amplitude, so rectifying before
-    /// filtering changes what the image means, not just how it is
-    /// anti-aliased -- the doc on `LanczosRectified` says as much. Added
-    /// purely so both Lanczos variants are visible against `default` for
-    /// comparison; keeping it past that judgement would need a reason
-    /// beyond "it exists". Also short-lived.
-    pub fn default_lanczos_rect_profile() -> Self {
-        Self {
-            name: "default-lanczos-rect".to_string(),
-            resampling: ResamplingMethod::LanczosRectified,
-            ..Self::default_profile()
-        }
     }
 
     pub fn by_name(name: &str) -> Option<Self> {
@@ -339,27 +284,32 @@ mod tests {
     fn by_name_finds_built_ins_and_rejects_unknown() {
         assert!(RenderProfile::by_name("default").is_some());
         assert!(RenderProfile::by_name("positive").is_some());
-        assert!(RenderProfile::by_name("positive-lanczos").is_some());
         assert!(RenderProfile::by_name("abslog").is_some());
         assert!(RenderProfile::by_name("high-contrast").is_some());
         assert!(RenderProfile::by_name("nonexistent").is_none());
+        // The comparison profiles this settled from no longer exist.
+        assert!(RenderProfile::by_name("positive-lanczos").is_none());
+        assert!(RenderProfile::by_name("positive-lanczos-rect").is_none());
+        assert!(RenderProfile::by_name("default-lanczos").is_none());
+        assert!(RenderProfile::by_name("default-lanczos-rect").is_none());
     }
 
     #[test]
-    fn no_built_in_profile_defaults_to_lanczos_except_the_comparison_one() {
-        // Lanczos is added as an option to be judged, not adopted. If a
-        // profile other than the explicit comparison one starts using it,
-        // that was a decision and should be a deliberate edit here.
-        for profile in RenderProfile::built_in_profiles() {
-            let is_experiment = profile.name.contains("-lanczos");
-            let uses_lanczos = matches!(
-                profile.resampling,
-                ResamplingMethod::Lanczos | ResamplingMethod::LanczosRectified
-            );
+    fn built_in_resampling_methods_are_the_settled_choice() {
+        // Pins the outcome of the Peak/Lanczos/LanczosRectified comparison
+        // (PHASE1_LOG.md) so a change here is a deliberate edit, not a
+        // silent side effect of something else.
+        let expected: &[(&str, ResamplingMethod)] = &[
+            ("default", ResamplingMethod::Mean),
+            ("positive", ResamplingMethod::LanczosRectified),
+            ("abslog", ResamplingMethod::Mean),
+            ("high-contrast", ResamplingMethod::Mean),
+        ];
+        for (name, method) in expected {
+            let profile = RenderProfile::by_name(name).unwrap();
             assert_eq!(
-                is_experiment, uses_lanczos,
-                "profile '{}' and its resampling method disagree about being an experiment",
-                profile.name
+                profile.resampling, *method,
+                "profile '{name}' resampling method changed"
             );
         }
     }
