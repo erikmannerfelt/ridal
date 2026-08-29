@@ -209,6 +209,7 @@ impl RenderProfile {
         vec![
             Self::default_profile(),
             Self::default_lanczos_profile(),
+            Self::default_lanczos_rect_profile(),
             Self::positive_profile(),
             Self::positive_lanczos_profile(),
             Self::positive_lanczos_rect_profile(),
@@ -259,6 +260,24 @@ impl RenderProfile {
         Self {
             name: "default-lanczos".to_string(),
             resampling: ResamplingMethod::Lanczos,
+            ..Self::default_profile()
+        }
+    }
+
+    /// `default-lanczos-rect`: `default` with
+    /// [`ResamplingMethod::LanczosRectified`].
+    ///
+    /// Unlike `positive-lanczos-rect`, this one is not expected to win:
+    /// `default` reads *signed* linear amplitude, so rectifying before
+    /// filtering changes what the image means, not just how it is
+    /// anti-aliased -- the doc on `LanczosRectified` says as much. Added
+    /// purely so both Lanczos variants are visible against `default` for
+    /// comparison; keeping it past that judgement would need a reason
+    /// beyond "it exists". Also short-lived.
+    pub fn default_lanczos_rect_profile() -> Self {
+        Self {
+            name: "default-lanczos-rect".to_string(),
+            resampling: ResamplingMethod::LanczosRectified,
             ..Self::default_profile()
         }
     }
