@@ -247,8 +247,8 @@ pub fn load_rd3(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn s
     let bits_to_millivolt = 50000. / i16::MAX as f32;
 
     // The values are read as 16 bit little endian signed integers, and are converted to millivolts
-    for byte_pair in bytes.chunks_exact(2) {
-        let value = i16::from_le_bytes([byte_pair[0], byte_pair[1]]);
+    for byte_pair in bytes.as_chunks::<2>().0 {
+        let value = i16::from_le_bytes(*byte_pair);
         data.push(value as f32 * bits_to_millivolt);
     }
 
@@ -549,14 +549,14 @@ pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn E
             }
         }
         16 => {
-            for chunk in payload.chunks_exact(2) {
-                let value = u16::from_le_bytes([chunk[0], chunk[1]]) as i32 - 32768;
+            for chunk in payload.as_chunks::<2>().0 {
+                let value = u16::from_le_bytes(*chunk) as i32 - 32768;
                 data.push(value as f32 * scale);
             }
         }
         32 => {
-            for chunk in payload.chunks_exact(4) {
-                let value = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            for chunk in payload.as_chunks::<4>().0 {
+                let value = i32::from_le_bytes(*chunk);
                 data.push(value as f32 * scale);
             }
         }

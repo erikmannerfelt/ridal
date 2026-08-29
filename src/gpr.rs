@@ -2476,7 +2476,7 @@ pub fn validate_steps(steps: &[String]) -> Result<(), String> {
 pub fn default_processing_profile() -> Vec<String> {
     vec![
         "remove_empty_traces".to_string(),
-        format!("zero_corr_max_peak"),
+        "zero_corr_max_peak".to_string(),
         "correct_antenna_separation".to_string(),
         format!(
             "normalize_horizontal_magnitudes({})",
