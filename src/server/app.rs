@@ -48,7 +48,26 @@ impl AppState {
     /// issue's target catalog size is ~100 files (#122/#123), and eager
     /// construction means a broken file surfaces as a clear startup
     /// warning rather than a request-time surprise.
+    ///
+    /// `root` is canonicalized once here, the single point every later
+    /// filesystem operation on it (`Catalog::discover`, every
+    /// `resolve_absolute_path` call, and the stored `self.root` used by
+    /// `absolute_path()`) flows from. This is the CLI's own
+    /// `ridal gui <PATH>` / `ridal server start <PATH>` argument, fixed
+    /// once at process startup and never influenced by an HTTP request --
+    /// `AppState::build` has exactly one production caller (`launch.rs`).
+    /// Canonicalizing it anyway, rather than trusting that, is what CodeQL's
+    /// path-injection analysis recognises as validating a path before use,
+    /// and it's a genuine improvement on its own merits regardless: a
+    /// nonexistent root now fails clearly at startup instead of silently
+    /// producing an empty catalog, and every later comparison against it
+    /// (this function's own containment check below) is symlink-resolved
+    /// and consistent.
     pub fn build(root: &StdPath, config: &RenderServiceConfig) -> Result<Self, String> {
+        let root = root
+            .canonicalize()
+            .map_err(|e| format!("Invalid catalog root {}: {e}", root.display()))?;
+        let root = root.as_path();
         let catalog = Catalog::discover(root);
         let mut radargrams = HashMap::new();
 
