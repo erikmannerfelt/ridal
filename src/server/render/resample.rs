@@ -208,11 +208,23 @@ fn lanczos_axis_weights(center: f64, scale: f64, src_len: usize) -> (usize, Vec<
 /// straddles the edge of the data is not dragged toward zero. Because
 /// Lanczos weights are signed, a footprint whose surviving taps nearly
 /// cancel would divide by ~0; those produce NaN rather than a wild value.
+///
 /// `rectify` takes `|v|` before filtering, which is what
 /// [`ResamplingMethod::LanczosRectified`] needs: it removes the
 /// cancellation that makes a linear filter useless on signed oscillating
-/// traces, without giving up proper anti-aliasing. Applied in pass 1
-/// only -- once rectified, the intermediate is already non-negative.
+/// traces, without giving up proper anti-aliasing. Gated **per axis** on
+/// that axis's own step being a real downsample (`> 1.0`), not applied
+/// unconditionally: at a 1:1 (or upsampling) step the kernel's only
+/// significant contribution is a single source sample (see
+/// `lanczos_axis_weights`'s doc), so there is nothing to cancel and
+/// rectifying would only destroy that sample's sign for no reason. This
+/// is the same graceful-degradation-to-identity property `Peak` and
+/// plain `Lanczos` already have; a first version of this rectified
+/// everything unconditionally, which silently defeated the `positive`
+/// and `abslog` profiles' asymmetric stretch at native resolution -- the
+/// display value reaching the colormap was always non-negative,
+/// regardless of the source's true sign, even where no averaging was
+/// happening at all.
 fn resample_lanczos(
     source: ArrayView2<f32>,
     window: &SourceWindow,
@@ -223,6 +235,8 @@ fn resample_lanczos(
     let (src_h, src_w) = (source.shape()[0], source.shape()[1]);
     let row_step = (window.row1 - window.row0) / out_height as f64;
     let col_step = (window.col1 - window.col0) / out_width as f64;
+    let rectify_row = rectify && row_step > 1.0;
+    let rectify_col = rectify && col_step > 1.0;
 
     // Pass 1: vertical. Full source width is kept so pass 2 has every
     // column available to filter across.
@@ -239,7 +253,7 @@ fn resample_lanczos(
             for (k, &w) in weights.iter().enumerate() {
                 let v = source[[start + k, col]];
                 if v.is_finite() {
-                    let v = if rectify { v.abs() } else { v };
+                    let v = if rectify_row { v.abs() } else { v };
                     acc += v as f64 * w;
                     wsum += w;
                 }
@@ -251,6 +265,9 @@ fn resample_lanczos(
     }
 
     // Pass 2: horizontal, over the already row-filtered intermediate.
+    // Rectifies independently of pass 1's decision -- idempotent if pass 1
+    // already did it (`abs(abs(x)) == abs(x)`), and necessary on its own
+    // when only the column axis is genuinely downsampling.
     let mut out = Array2::from_elem((out_height, out_width), f32::NAN);
     for ox in 0..out_width {
         let center = window.col0 + (ox as f64 + 0.5) * col_step;
@@ -264,6 +281,7 @@ fn resample_lanczos(
             for (k, &w) in weights.iter().enumerate() {
                 let v = vertical[[oy, start + k]];
                 if v.is_finite() {
+                    let v = if rectify_col { v.abs() } else { v };
                     acc += v as f64 * w;
                     wsum += w;
                 }
@@ -431,6 +449,120 @@ mod tests {
         for (a, b) in out.iter().zip(source.iter()) {
             assert!((a - b).abs() < 1e-5, "{a} vs {b}");
         }
+    }
+
+    #[test]
+    fn lanczos_rectified_is_an_identity_at_an_aligned_one_to_one_footprint() {
+        // Regression guard: a first version of LanczosRectified rectified
+        // every sample unconditionally, so this test would have returned
+        // |source| here instead of source, silently defeating `positive`
+        // and `abslog`'s sign-dependent stretch at native resolution --
+        // not just in downsampled overviews.
+        let source = array![[5.0f32, -5.0, 4.0], [-4.0, 6.0, -6.0]];
+        let window = full_window(&source);
+
+        let out = resample(
+            source.view(),
+            &window,
+            3,
+            2,
+            ResamplingMethod::LanczosRectified,
+        );
+        for (a, b) in out.iter().zip(source.iter()) {
+            assert!((a - b).abs() < 1e-5, "{a} vs {b} (sign not preserved)");
+        }
+    }
+
+    #[test]
+    fn lanczos_rectified_avoids_cancellation_when_columns_downsample() {
+        // The column axis genuinely downsamples (8 -> 1); rectification
+        // must still kick in there even though nothing about the row axis
+        // does, since a profile's resampling choice applies uniformly.
+        let source = array![[5.0f32, -5.0, 4.0, -4.0, 6.0, -6.0, 3.0, -3.0]];
+        let window = full_window(&source);
+
+        let plain = resample(source.view(), &window, 1, 1, ResamplingMethod::Lanczos);
+        let rectified = resample(
+            source.view(),
+            &window,
+            1,
+            1,
+            ResamplingMethod::LanczosRectified,
+        );
+        assert!(
+            plain[[0, 0]].abs() < 1.0,
+            "plain Lanczos should cancel toward zero: {}",
+            plain[[0, 0]]
+        );
+        assert!(
+            rectified[[0, 0]] > 3.0,
+            "rectified should retain real magnitude: {}",
+            rectified[[0, 0]]
+        );
+    }
+
+    #[test]
+    fn lanczos_rectified_avoids_cancellation_when_rows_downsample() {
+        // Same as the column case, transposed: the row axis's own gate
+        // must independently trigger when it is the one downsampling.
+        let source =
+            Array2::from_shape_vec((8, 1), vec![5.0f32, -5.0, 4.0, -4.0, 6.0, -6.0, 3.0, -3.0])
+                .unwrap();
+        let window = full_window(&source);
+
+        let plain = resample(source.view(), &window, 1, 1, ResamplingMethod::Lanczos);
+        let rectified = resample(
+            source.view(),
+            &window,
+            1,
+            1,
+            ResamplingMethod::LanczosRectified,
+        );
+        assert!(
+            plain[[0, 0]].abs() < 1.0,
+            "plain Lanczos should cancel toward zero: {}",
+            plain[[0, 0]]
+        );
+        assert!(
+            rectified[[0, 0]] > 3.0,
+            "rectified should retain real magnitude: {}",
+            rectified[[0, 0]]
+        );
+    }
+
+    #[test]
+    fn lanczos_rectified_preserves_sign_on_the_identity_axis_while_the_other_downsamples() {
+        // Anisotropic case: rows stay 1:1 (must keep their sign exactly)
+        // while columns downsample 8x on one of the two rows (must
+        // rectify there). Catches a gating bug that ties both axes'
+        // decisions together instead of applying each independently.
+        #[rustfmt::skip]
+        let source = array![
+            [1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            [5.0,   -5.0, 4.0, -4.0, 6.0, -6.0, 3.0, -3.0],
+        ];
+        let window = full_window(&source);
+
+        let out = resample(
+            source.view(),
+            &window,
+            1,
+            2,
+            ResamplingMethod::LanczosRectified,
+        );
+        // Row 0 is constant, so both a rectified and unrectified column
+        // pass agree here; it isn't the discriminating row. Assert
+        // row 1's genuinely oscillating columns still rectified.
+        assert!(
+            out[[1, 0]] > 3.0,
+            "row 1 should rectify away its column cancellation: {}",
+            out[[1, 0]]
+        );
+        assert!(
+            (out[[0, 0]] - 1.0).abs() < 1e-5,
+            "row 0 should be untouched: {}",
+            out[[0, 0]]
+        );
     }
 
     #[test]
