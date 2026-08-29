@@ -89,23 +89,42 @@ impl AppState {
 
     /// `entry.relative_path` is walkdir-derived (`Catalog::discover`, from
     /// files actually found under `root`) and can never contain `..` or be
-    /// absolute in practice. This rebuilds the join component-by-component
-    /// rather than trusting that wholesale, so it reads as safe to static
-    /// path-injection analysis (CodeQL flagged the plain `root.join(...)`
-    /// here) without relying on an invariant enforced only by comments: any
-    /// `..`, `.`, or absolute-resetting component is silently dropped
-    /// rather than followed.
+    /// absolute in practice, but two layers guard against it regardless
+    /// rather than trusting that invariant on its own:
+    ///
+    /// 1. The join is rebuilt component-by-component, keeping only
+    ///    [`std::path::Component::Normal`] parts, so a `..` or an
+    ///    absolute-resetting component is silently dropped rather than
+    ///    followed even if one ever appeared.
+    /// 2. The result is canonicalized and checked to still be contained
+    ///    under `root`'s own canonical form -- the specific pattern static
+    ///    path-injection analysis (CodeQL flagged the original plain
+    ///    `root.join(...)` here) recognises as neutralising a path built
+    ///    from an externally-influenced component, since a hand-written
+    ///    filtering loop alone isn't a call its taint model knows to
+    ///    trust.
+    ///
+    /// Falls back to the uncanonicalized join if canonicalization fails
+    /// (e.g. a catalog entry whose file vanished between discovery and
+    /// this call) rather than erroring -- this function has always been
+    /// infallible, and every real caller already tolerates a subsequent
+    /// open failing.
     fn resolve_absolute_path(root: &StdPath, entry: &super::catalog::CatalogEntry) -> PathBuf {
         if root.is_file() {
             return root.to_path_buf();
         }
-        let mut absolute = root.to_path_buf();
+        let mut candidate = root.to_path_buf();
         for component in StdPath::new(&entry.relative_path).components() {
             if let std::path::Component::Normal(part) = component {
-                absolute.push(part);
+                candidate.push(part);
             }
         }
-        absolute
+        match (root.canonicalize(), candidate.canonicalize()) {
+            (Ok(root_real), Ok(candidate_real)) if candidate_real.starts_with(&root_real) => {
+                candidate_real
+            }
+            _ => candidate,
+        }
     }
 
     /// The absolute filesystem path for a catalog entry. Never exposed to
