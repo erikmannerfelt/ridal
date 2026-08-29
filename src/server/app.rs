@@ -87,12 +87,25 @@ impl AppState {
         })
     }
 
+    /// `entry.relative_path` is walkdir-derived (`Catalog::discover`, from
+    /// files actually found under `root`) and can never contain `..` or be
+    /// absolute in practice. This rebuilds the join component-by-component
+    /// rather than trusting that wholesale, so it reads as safe to static
+    /// path-injection analysis (CodeQL flagged the plain `root.join(...)`
+    /// here) without relying on an invariant enforced only by comments: any
+    /// `..`, `.`, or absolute-resetting component is silently dropped
+    /// rather than followed.
     fn resolve_absolute_path(root: &StdPath, entry: &super::catalog::CatalogEntry) -> PathBuf {
         if root.is_file() {
-            root.to_path_buf()
-        } else {
-            root.join(&entry.relative_path)
+            return root.to_path_buf();
         }
+        let mut absolute = root.to_path_buf();
+        for component in StdPath::new(&entry.relative_path).components() {
+            if let std::path::Component::Normal(part) = component {
+                absolute.push(part);
+            }
+        }
+        absolute
     }
 
     /// The absolute filesystem path for a catalog entry. Never exposed to
