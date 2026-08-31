@@ -27,6 +27,18 @@ pub struct OpenRadargram {
 
 pub struct AppState {
     pub root: PathBuf,
+    /// Whether `root` itself names a single NetCDF file rather than a
+    /// catalog directory, decided once here from the freshly canonicalized
+    /// `root` so `resolve_absolute_path` never has to stat `root` itself --
+    /// it only ever touches the filesystem via the join-then-canonicalize
+    /// sequence applied to `candidate`, which is the pattern CodeQL's
+    /// path-injection analysis already recognises as validated. A raw
+    /// `root.is_file()` inside `resolve_absolute_path` kept getting
+    /// re-flagged even after `root` was canonicalized, because that
+    /// canonicalization happened in a different function than the sink --
+    /// CodeQL doesn't credit a barrier it can't see next to the check it
+    /// guards.
+    root_is_file: bool,
     pub catalog: Catalog,
     pub radargrams: HashMap<String, OpenRadargram>,
     /// Bounds how many renders may be in flight at once, across every
@@ -67,12 +79,13 @@ impl AppState {
         let root = root
             .canonicalize()
             .map_err(|e| format!("Invalid catalog root {}: {e}", root.display()))?;
+        let root_is_file = root.is_file();
         let root = root.as_path();
         let catalog = Catalog::discover(root);
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
-            let absolute_path = match Self::resolve_absolute_path(root, entry) {
+            let absolute_path = match Self::resolve_absolute_path(root, root_is_file, entry) {
                 Ok(path) => path,
                 Err(e) => {
                     eprintln!(
@@ -106,6 +119,7 @@ impl AppState {
 
         Ok(Self {
             root: root.to_path_buf(),
+            root_is_file,
             catalog,
             radargrams,
             // `.max(1)`: a zero-permit semaphore would deadlock every
@@ -119,11 +133,15 @@ impl AppState {
     ///
     /// Rejects absolute paths, parent-directory components, and paths whose
     /// canonical form escapes the catalog root, including through symlinks.
+    /// `root_is_file` is `root.is_file()`, decided once in [`Self::build`]
+    /// against the freshly canonicalized root rather than re-stated here --
+    /// see the field doc on [`AppState::root_is_file`].
     fn resolve_absolute_path(
         root: &StdPath,
+        root_is_file: bool,
         entry: &super::catalog::CatalogEntry,
     ) -> Result<PathBuf, String> {
-        if root.is_file() {
+        if root_is_file {
             return Ok(root.to_path_buf());
         }
 
@@ -157,11 +175,8 @@ impl AppState {
     /// The absolute filesystem path for a catalog entry. Never exposed to
     /// HTTP clients directly (#122: "keep filesystem paths internal") --
     /// only used server-side, e.g. to re-open a file for track reading.
-    pub fn absolute_path(
-        &self,
-        entry: &super::catalog::CatalogEntry,
-    ) -> Result<PathBuf, String> {
-        Self::resolve_absolute_path(&self.root, entry)
+    pub fn absolute_path(&self, entry: &super::catalog::CatalogEntry) -> Result<PathBuf, String> {
+        Self::resolve_absolute_path(&self.root, self.root_is_file, entry)
     }
 
     pub fn find_entry(&self, radargram_id: &str) -> Option<&super::catalog::CatalogEntry> {
