@@ -22,6 +22,70 @@ pub enum Commands {
     Steps(StepsArgs),
     /// Inspect supported formats
     Formats(FormatsArgs),
+    /// Open a local browser GUI for one radargram or a directory of them
+    #[cfg(feature = "server")]
+    Gui(GuiArgs),
+    /// Run the web server explicitly (for remote or persistent deployment)
+    #[cfg(feature = "server")]
+    Server(ServerArgs),
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, clap::Args)]
+pub struct GuiArgs {
+    /// A single processed .nc file, or a directory to scan recursively.
+    pub path: PathBuf,
+
+    /// In-memory cache budget for encoded chunk/overview images, in MB.
+    #[arg(long)]
+    pub cache_memory_mb: Option<usize>,
+
+    /// Number of worker threads for CPU-heavy rendering.
+    #[arg(long)]
+    pub n_workers: Option<usize>,
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, clap::Args)]
+pub struct ServerArgs {
+    #[command(subcommand)]
+    pub command: ServerCommand,
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, Subcommand)]
+pub enum ServerCommand {
+    /// Start the HTTP server
+    Start(ServerStartArgs),
+}
+
+#[cfg(feature = "server")]
+#[derive(Debug, clap::Args)]
+pub struct ServerStartArgs {
+    /// A single processed .nc file, or a directory to scan recursively.
+    pub path: PathBuf,
+
+    /// Bind address. Loopback by default; binding elsewhere is explicit
+    /// because this milestone implements no authentication (#120).
+    #[arg(long, default_value = "127.0.0.1")]
+    pub host: String,
+
+    /// Bind port. A stable default rather than an OS-assigned ephemeral
+    /// port, since this mode is for persistent/remote deployment.
+    #[arg(long, default_value_t = 8000)]
+    pub port: u16,
+
+    /// Open a browser after starting (off by default in this mode).
+    #[arg(long)]
+    pub open_browser: bool,
+
+    /// In-memory cache budget for encoded chunk/overview images, in MB.
+    #[arg(long)]
+    pub cache_memory_mb: Option<usize>,
+
+    /// Number of worker threads for CPU-heavy rendering.
+    #[arg(long)]
+    pub n_workers: Option<usize>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -94,6 +158,27 @@ pub struct ProcessArgs {
     /// Add user metadata as key=value. Repeatable.
     #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub metadata: Vec<String>,
+
+    /// Stable, unique identifier for this radargram (lowercase ASCII, digits, '-', '_').
+    /// Defaults to the output file stem if not given.
+    #[arg(long = "radargram-id")]
+    pub radargram_id: Option<String>,
+
+    /// Human-readable display label. Purely cosmetic: has no identity semantics.
+    #[arg(long = "display-name")]
+    pub display_name: Option<String>,
+
+    /// Human-readable name of the group this radargram belongs to (survey,
+    /// campaign, location; Unicode is fine), for catalog grouping. A stable
+    /// URL/filesystem-safe id is derived from this automatically unless
+    /// --group-id overrides it. `--group` is a supported alias.
+    #[arg(long = "group-name", alias = "group")]
+    pub group: Option<String>,
+
+    /// Explicit override for the group's id, when the id automatically
+    /// derived from --group-name is not the one wanted.
+    #[arg(long = "group-id")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -171,6 +256,19 @@ pub struct BatchProcessArgs {
     /// Add user metadata as key=value. Repeatable.
     #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub metadata: Vec<String>,
+
+    /// Human-readable name of the group all outputs in this batch belong to
+    /// (survey, campaign, location; Unicode is fine), for catalog grouping.
+    /// Applied uniformly; radargram IDs and display names are still derived
+    /// per-output since an explicit single value would collide. `--group`
+    /// is a supported alias.
+    #[arg(long = "group-name", alias = "group")]
+    pub group: Option<String>,
+
+    /// Explicit override for the group's id, when the id automatically
+    /// derived from --group-name is not the one wanted.
+    #[arg(long = "group-id")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -296,6 +394,56 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Info(args) => info_command(args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
+        #[cfg(feature = "server")]
+        Commands::Gui(args) => gui_command(args),
+        #[cfg(feature = "server")]
+        Commands::Server(args) => server_command(args),
+    }
+}
+
+#[cfg(feature = "server")]
+fn render_service_config(
+    cache_memory_mb: Option<usize>,
+    n_workers: Option<usize>,
+) -> Result<crate::server::render::service::RenderServiceConfig, String> {
+    // Rejected rather than silently clamped: n_workers sizes the render
+    // permit semaphore, and zero permits would leave every image request
+    // waiting until it times out into a 503. A user who typed 0 meant
+    // something, and it is not that.
+    if n_workers == Some(0) {
+        return Err("--n-workers must be at least 1".to_string());
+    }
+    let default = crate::server::render::service::RenderServiceConfig::default();
+    Ok(crate::server::render::service::RenderServiceConfig {
+        cache_memory_mb: cache_memory_mb.unwrap_or(default.cache_memory_mb),
+        n_workers: n_workers.unwrap_or(default.n_workers),
+        ..default
+    })
+}
+
+#[cfg(feature = "server")]
+fn gui_command(args: GuiArgs) -> Result<(), String> {
+    let config = render_service_config(args.cache_memory_mb, args.n_workers)?;
+    crate::server::launch::run_gui(&args.path, config)
+}
+
+#[cfg(feature = "server")]
+fn server_command(args: ServerArgs) -> Result<(), String> {
+    match args.command {
+        ServerCommand::Start(start_args) => {
+            let host: std::net::IpAddr = start_args
+                .host
+                .parse()
+                .map_err(|e| format!("Invalid --host '{}': {e}", start_args.host))?;
+            let config = render_service_config(start_args.cache_memory_mb, start_args.n_workers)?;
+            crate::server::launch::run_server_start(
+                &start_args.path,
+                host,
+                start_args.port,
+                start_args.open_browser,
+                config,
+            )
+        }
     }
 }
 
@@ -319,6 +467,10 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
         user_metadata,
+        radargram_id: args.radargram_id.clone(),
+        display_name: args.display_name.clone(),
+        group: args.group.clone(),
+        group_id: args.group_id.clone(),
     };
 
     let result = gpr::run(params).map_err(|e| e.to_string())?;
@@ -358,6 +510,8 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
         user_metadata,
+        group: args.group.clone(),
+        group_id: args.group_id.clone(),
     };
 
     let result = gpr::run_batch(params)?;
@@ -603,6 +757,23 @@ fn error(message: &str, code: i32) -> i32 {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn n_workers_zero_is_rejected_not_silently_clamped() {
+        // n_workers sizes the render permit semaphore; zero permits would
+        // leave every image request waiting until it times out into a 503,
+        // which is a confusing way to learn about a typo.
+        let err = super::render_service_config(None, Some(0)).unwrap_err();
+        assert!(err.contains("--n-workers"), "{err}");
+
+        assert!(super::render_service_config(None, Some(1)).is_ok());
+        assert_eq!(
+            super::render_service_config(None, None).unwrap().n_workers,
+            crate::server::render::service::RenderServiceConfig::default().n_workers,
+            "an omitted flag must keep the default, not become an error"
+        );
+    }
 
     #[test]
     fn test_parse_process_command() {

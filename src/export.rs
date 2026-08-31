@@ -212,12 +212,17 @@ impl GPR {
 
         attrs.insert("start_datetime".into(), ExportAttr::String(start_dt));
         attrs.insert("stop_datetime".into(), ExportAttr::String(stop_dt));
+        // Renamed from unprefixed "processing_datetime" / "program_version" so
+        // ridal_* attributes can be recognized unambiguously by
+        // inspect_ridal_netcdf() (#123) without colliding with arbitrary
+        // user or third-party NetCDF conventions. Legacy unprefixed names
+        // are still read as a fallback by the inspector for existing files.
         attrs.insert(
-            "processing_datetime".into(),
+            "ridal_processing_datetime".into(),
             ExportAttr::String(chrono::Local::now().to_rfc3339()),
         );
         attrs.insert(
-            "program_version".into(),
+            "ridal_version".into(),
             ExportAttr::String(format!(
                 "{} version {} by {}",
                 crate::PROGRAM_NAME,
@@ -225,6 +230,40 @@ impl GPR {
                 crate::PROGRAM_AUTHORS
             )),
         );
+
+        // Persistent identity metadata (#116). `identity.radargram_id` is
+        // always populated by build_processed_gpr() before export; a caller
+        // that reaches export_dataset() without going through it (e.g. a
+        // hand-built GPR in a test) gets an explicit error rather than a
+        // silently missing required attribute.
+        let radargram_id = self.identity.radargram_id.as_ref().ok_or(
+            "GPR.identity.radargram_id is not set. It must be resolved (e.g. via \
+             build_processed_gpr()) before export.",
+        )?;
+        attrs.insert(
+            "ridal_radargram_id".into(),
+            ExportAttr::String(radargram_id.to_string()),
+        );
+        // Written only when present, per #116: "prefer not writing the
+        // attribute when no display name is supplied."
+        if let Some(display_name) = &self.identity.display_name {
+            attrs.insert(
+                "ridal_display_name".into(),
+                ExportAttr::String(display_name.to_string()),
+            );
+        }
+        if let Some(group_name) = &self.identity.group_name {
+            attrs.insert(
+                "ridal_group_name".into(),
+                ExportAttr::String(group_name.to_string()),
+            );
+        }
+        if let Some(group_id) = &self.identity.group_id {
+            attrs.insert(
+                "ridal_group_id".into(),
+                ExportAttr::String(group_id.to_string()),
+            );
+        }
 
         // user metadata (canonical JSON + flattened attributes)
         if !self.user_metadata.is_empty() {

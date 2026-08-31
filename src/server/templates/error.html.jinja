@@ -1,0 +1,8 @@
+{% extends "base.html.jinja" %}
+{% block title %}Error {{ status }} - Ridal{% endblock %}
+{% block content %}
+  <h1>Error {{ status }}</h1>
+  <p><code>{{ code }}</code></p>
+  <p>{{ message }}</p>
+  <p><a href="/">Back to catalog</a></p>
+{% endblock %}

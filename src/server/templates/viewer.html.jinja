@@ -1,0 +1,82 @@
+{% extends "base.html.jinja" %}
+{% block title %}{{ effective_label }} - Ridal{% endblock %}
+{% block content %}
+  {#- Carries the active profile back to the catalog, so a round trip
+      viewer -> catalog -> viewer stays in the profile you were browsing
+      in rather than silently resetting to the default. -#}
+  <p><a href="/?profile={{ active_profile }}#card-{{ radargram_id }}">&larr; Back to catalog</a></p>
+  <h1>{{ effective_label }}{% if group_name %} (Group: {{ group_name }}){% endif %}</h1>
+  <table class="meta">
+    <tr>
+      <th>Radargram ID</th>
+      <td>
+        <code>{{ radargram_id }}</code>
+        (Rev. {{ revision_short }}; processed {{ processing_datetime }})
+      </td>
+    </tr>
+  </table>
+
+  <div class="controls">
+    <label>Render profile:
+      <select id="profile-select">
+        {% for p in profiles %}
+        <option value="{{ p }}" {% if p == active_profile %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Horizontal scale:
+      <select id="xscale-select">
+        <option value="0.25">0.25&times;</option>
+        <option value="0.5">0.5&times;</option>
+        <option value="1" selected>1&times;</option>
+        <option value="2">2&times;</option>
+        <option value="4">4&times;</option>
+        <option value="8">8&times;</option>
+      </select>
+    </label>
+    <button id="metadata-button" type="button">Metadata</button>
+    <span id="cursor-readout"></span>
+  </div>
+
+  <div class="layout" id="viewer-layout">
+    <div id="map"></div>
+    <div id="split-resizer" role="separator" aria-orientation="vertical"
+         aria-label="Resize radargram and map panels"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" tabindex="0"></div>
+    <div id="overview-map"></div>
+  </div>
+
+  <dialog id="metadata-dialog">
+    <h2>Metadata</h2>
+    <table id="metadata-table"><tbody></tbody></table>
+    <details class="meta-details" id="processing-details">
+      <summary>Processing steps &amp; log</summary>
+      <ol id="processing-steps-list"></ol>
+      <pre id="processing-log"></pre>
+    </details>
+    <details class="meta-details" id="filepaths-details">
+      <summary>Original filepaths</summary>
+      <ul id="filepaths-list"></ul>
+    </details>
+    <p><button type="button" id="metadata-close">Close</button></p>
+  </dialog>
+{% endblock %}
+{% block extrascript %}
+{#- The only inline JS left on this page: server-side values the static
+    viewer.js cannot know. Everything else lives in that file, so it stays
+    a plain asset with no templating in it. -#}
+<script>
+  window.RIDAL_VIEWER = {
+    radargramId: "{{ radargram_id }}",
+    groupId: {% if group_id %}"{{ group_id }}"{% else %}null{% endif %},
+    chunkSize: {{ chunk_size }},
+    nCols: {{ n_cols }},
+    nRows: {{ n_rows }},
+    viewerWidth: {{ viewer_width }},
+    viewerHeight: {{ viewer_height }},
+    sourceWidth: {{ shape_width }},
+    sourceHeight: {{ shape_height }},
+  };
+</script>
+<script src="/static/viewer.js"></script>
+{% endblock %}

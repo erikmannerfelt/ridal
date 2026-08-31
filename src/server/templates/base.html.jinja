@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Ridal{% endblock %}</title>
+  <link rel="icon" href="/favicon.ico" type="image/png">
+  {# app.css must come after leaflet.css so our .leaflet-* overrides win. #}
+  <link rel="stylesheet" href="/static/leaflet.css">
+  <link rel="stylesheet" href="/static/app.css">
+  {% block extrahead %}{% endblock %}
+</head>
+<body>
+  <header>
+    <a href="/" class="brand">
+      <img src="/static/images/logo.svg" alt="" class="brand-logo">
+      Ridal
+    </a>
+  </header>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  {# app.js after leaflet.js, so both L and RIDAL exist before page scripts. #}
+  <script src="/static/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+  {% block extrascript %}{% endblock %}
+</body>
+</html>

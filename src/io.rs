@@ -247,8 +247,8 @@ pub fn load_rd3(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn s
     let bits_to_millivolt = 50000. / i16::MAX as f32;
 
     // The values are read as 16 bit little endian signed integers, and are converted to millivolts
-    for byte_pair in bytes.chunks_exact(2) {
-        let value = i16::from_le_bytes([byte_pair[0], byte_pair[1]]);
+    for byte_pair in bytes.as_chunks::<2>().0 {
+        let value = i16::from_le_bytes(*byte_pair);
         data.push(value as f32 * bits_to_millivolt);
     }
 
@@ -549,14 +549,14 @@ pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn E
             }
         }
         16 => {
-            for chunk in payload.chunks_exact(2) {
-                let value = u16::from_le_bytes([chunk[0], chunk[1]]) as i32 - 32768;
+            for chunk in payload.as_chunks::<2>().0 {
+                let value = u16::from_le_bytes(*chunk) as i32 - 32768;
                 data.push(value as f32 * scale);
             }
         }
         32 => {
-            for chunk in payload.chunks_exact(4) {
-                let value = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            for chunk in payload.as_chunks::<4>().0 {
+                let value = i32::from_le_bytes(*chunk);
                 data.push(value as f32 * scale);
             }
         }
@@ -823,7 +823,14 @@ where
     v.set_compression(5, true)
         .map_err(|e| format!("NetCDF export error when setting '{name}' compression: {e}"))?;
 
-    for chunking in [1024_usize, 512, 256, 128, 64, 32, 16, 8] {
+    // 256 matches the web viewer's render chunk size (see #115 / #118), so a
+    // render chunk decompresses exactly one HDF5 chunk instead of a fraction
+    // of a larger one. Measured on a ~1 GB synthetic radargram: 5x lower
+    // latency for a single chunk (8.4 -> 1.7 ms) and 3x for a full viewer
+    // sweep (6.9 -> 2.2 s), for no change in file size -- radar amplitudes
+    // compress ~1.17x regardless of chunk size, so there is no space/speed
+    // tradeoff here to weigh against.
+    for chunking in [256_usize, 128, 64, 32, 16, 8] {
         if ny < chunking || nx < chunking {
             continue;
         }
@@ -1089,6 +1096,136 @@ pub fn export_locations(
     };
 
     Ok(gpr_locations.to_csv(&track_path)?)
+}
+
+/// Result of inspecting a `.nc` candidate for Ridal recognition (#123).
+///
+/// A plain `is_ridal_nc() -> bool` is deliberately avoided: callers need
+/// metadata for `Supported` files and need to distinguish an ordinary
+/// non-Ridal NetCDF file (`NotRidal`) from an I/O or NetCDF-reading failure,
+/// which `inspect_ridal_netcdf` reports as `Err` rather than as a variant
+/// here.
+///
+/// Only consumed by catalog discovery under the `server` feature (#122);
+/// the `cfg_attr` below reflects that honestly rather than blanket-allowing
+/// dead code for CLI-only builds.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq)]
+pub enum RidalNetcdfKind {
+    NotRidal,
+    Supported(RidalNetcdfMetadata),
+}
+
+/// Metadata read from a supported Ridal-produced NetCDF file, without
+/// loading the amplitude array.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct RidalNetcdfMetadata {
+    pub radargram_id: crate::identity::RadargramId,
+    pub display_name: Option<crate::identity::DisplayName>,
+    pub group_name: Option<crate::identity::GroupName>,
+    pub group_id: Option<crate::identity::GroupId>,
+    /// Kept as the raw RFC3339 string rather than parsed: the fingerprint in
+    /// #117 hashes this exact string, so re-serializing a parsed value could
+    /// silently change revision identity by changing formatting.
+    pub processing_datetime: String,
+    pub ridal_version: String,
+    /// `(n_samples, n_traces)`, i.e. `(rows, columns)` of the `data` variable.
+    pub shape: (usize, usize),
+}
+
+/// Read a single global attribute as a string, or `None` if absent or not a
+/// string-valued attribute.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+fn read_global_str_attr(file: &netcdf::File, name: &str) -> Option<String> {
+    let attr = file.attribute(name)?;
+    match attr.value() {
+        Ok(netcdf::AttributeValue::Str(s)) => Some(s),
+        _ => None,
+    }
+}
+
+/// Read a global attribute as a string, trying `primary` first and falling
+/// back to `legacy` if absent. Supports files written before the
+/// `ridal_*` attribute rename (#116); the value is otherwise identical.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+fn read_global_str(file: &netcdf::File, primary: &str, legacy: &str) -> Option<String> {
+    read_global_str_attr(file, primary).or_else(|| read_global_str_attr(file, legacy))
+}
+
+/// Inspect `path` for Ridal recognition without loading the amplitude array.
+///
+/// Recognition requires `ridal_version`, `ridal_processing_datetime` and a
+/// valid `ridal_radargram_id` to all be present; anything else is reported
+/// as `NotRidal` rather than an error. No legacy-unprefixed-name fallback
+/// is needed for these two: `ridal_radargram_id` became a mandatory,
+/// always-written attribute in the exact same change that renamed
+/// `program_version`/`processing_datetime` to their `ridal_` forms (#116),
+/// so a file old enough to have the unprefixed names is always also old
+/// enough to lack `ridal_radargram_id` -- and gets rejected on that check
+/// regardless. (The group name/id legacy fallback below is a different
+/// case: that split landed well after `ridal_radargram_id` was already
+/// mandatory, so files genuinely exist with a valid id and only the old
+/// unsplit `ridal_group` attribute.)
+///
+/// Errors are reserved for failures to open or read the file at all, kept
+/// distinct from `NotRidal` so catalog discovery (#122) can report them
+/// separately rather than silently skipping unreadable candidates.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub fn inspect_ridal_netcdf(path: &Path) -> Result<RidalNetcdfKind, String> {
+    let file = netcdf::open(path).map_err(|e| format!("Failed to open {path:?} as NetCDF: {e}"))?;
+
+    let ridal_version = read_global_str_attr(&file, "ridal_version");
+    let processing_datetime = read_global_str_attr(&file, "ridal_processing_datetime");
+    let (ridal_version, processing_datetime) = match (ridal_version, processing_datetime) {
+        (Some(v), Some(d)) => (v, d),
+        _ => return Ok(RidalNetcdfKind::NotRidal),
+    };
+
+    let radargram_id = match read_global_str_attr(&file, "ridal_radargram_id") {
+        Some(raw) => match crate::identity::RadargramId::new(&raw) {
+            Ok(id) => id,
+            Err(_) => return Ok(RidalNetcdfKind::NotRidal),
+        },
+        None => return Ok(RidalNetcdfKind::NotRidal),
+    };
+
+    let display_name = read_global_str_attr(&file, "ridal_display_name")
+        .and_then(crate::identity::DisplayName::from_input);
+    // Legacy fallback: files from before the group name/id split (#116
+    // extended one level up) wrote a single "ridal_group" attribute that
+    // was itself a validated slug, used directly as both display heading
+    // and id. Reading it as the *name* here and deriving the id from it
+    // below reproduces that value unchanged for such files, since
+    // sanitizing an already-valid slug is a no-op.
+    let group_name = read_global_str(&file, "ridal_group_name", "ridal_group")
+        .and_then(crate::identity::GroupName::from_input);
+    let group_id = read_global_str_attr(&file, "ridal_group_id")
+        .and_then(|raw| crate::identity::GroupId::new(&raw).ok())
+        .or_else(|| {
+            group_name
+                .as_ref()
+                .and_then(|name| crate::identity::GroupId::from_fallback(name.as_str()).ok())
+        });
+
+    let Some(data_var) = file.variable("data") else {
+        return Ok(RidalNetcdfKind::NotRidal);
+    };
+    let dims = data_var.dimensions();
+    if dims.len() != 2 {
+        return Ok(RidalNetcdfKind::NotRidal);
+    }
+    let shape = (dims[0].len(), dims[1].len());
+
+    Ok(RidalNetcdfKind::Supported(RidalNetcdfMetadata {
+        radargram_id,
+        display_name,
+        group_name,
+        group_id,
+        processing_datetime,
+        ridal_version,
+        shape,
+    }))
 }
 
 #[cfg(test)]
@@ -1486,7 +1623,14 @@ mod tests {
 
     #[test]
     // #[ignore] // Added 2026-03-13 because it randomly fails sometimes. Unclear why
+    // 2026-08-26: the "randomly fails" was very likely netcdf-c/HDF5 not being
+    // thread-safe for concurrent open/create across tests -- see the
+    // `#[serial_test::serial(netcdf)]` added here and on inspect_ridal_netcdf's
+    // tests below, which introduced enough concurrent netcdf::create/open calls
+    // to make the same underlying race reproduce on every run instead of
+    // occasionally. Keeping the retry as a second line of defense.
     #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
     fn test_save_netcdf() {
         let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
 
@@ -1566,5 +1710,156 @@ mod tests {
                 expected
             );
         }
+    }
+
+    fn export_dummy_ridal_nc(path: &std::path::Path) {
+        let gpr = crate::gpr::tests::make_dummy_gpr(20, 10, Some(1.));
+        gpr.export(path).unwrap();
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn test_inspect_ridal_netcdf_supported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("supported.nc");
+        export_dummy_ridal_nc(&path);
+
+        match super::inspect_ridal_netcdf(&path).unwrap() {
+            super::RidalNetcdfKind::Supported(meta) => {
+                assert_eq!(meta.radargram_id.as_str(), "test-radargram");
+                assert_eq!(meta.display_name, None);
+                assert_eq!(meta.group_name, None);
+                assert_eq!(meta.group_id, None);
+                assert_eq!(meta.shape, (10, 20)); // (n_samples, n_traces)
+                assert!(meta.ridal_version.contains("ridal version"));
+            }
+            other => panic!("expected Supported, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn test_inspect_ridal_netcdf_unrelated_file_is_not_ridal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unrelated.nc");
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_dimension("x", 3).unwrap();
+            let mut var = file.add_variable::<f32>("temperature", &["x"]).unwrap();
+            var.put_values(&[1.0f32, 2.0, 3.0], ..).unwrap();
+        }
+
+        assert_eq!(
+            super::inspect_ridal_netcdf(&path).unwrap(),
+            super::RidalNetcdfKind::NotRidal
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn test_inspect_ridal_netcdf_rejects_unprefixed_legacy_attrs() {
+        // Unprefixed processing_datetime/program_version, with no
+        // ridal_processing_datetime/ridal_version at all: not recognized.
+        // A prior version of this function fell back to these unprefixed
+        // names, on the theory that a file might predate the ridal_*
+        // rename (#116) while still having ridal_radargram_id -- but that
+        // combination can never occur, since ridal_radargram_id became
+        // mandatory in the exact same change that introduced the rename.
+        // Any file with only the unprefixed names necessarily also lacks
+        // ridal_radargram_id, and is rejected on that check regardless.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.nc");
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_dimension("y", 2).unwrap();
+            file.add_dimension("x", 2).unwrap();
+            let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+            var.put_values(&[0.0f32, 0., 0., 0.], ..).unwrap();
+            file.add_attribute("processing_datetime", "2020-01-01T00:00:00Z")
+                .unwrap();
+            file.add_attribute("program_version", "ridal version 0.1.0 by test")
+                .unwrap();
+            file.add_attribute("ridal_radargram_id", "legacy-radargram")
+                .unwrap();
+        }
+
+        assert_eq!(
+            super::inspect_ridal_netcdf(&path).unwrap(),
+            super::RidalNetcdfKind::NotRidal
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn test_inspect_ridal_netcdf_missing_radargram_id_is_not_ridal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("no_id.nc");
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_dimension("y", 2).unwrap();
+            file.add_dimension("x", 2).unwrap();
+            let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+            var.put_values(&[0.0f32, 0., 0., 0.], ..).unwrap();
+            file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+                .unwrap();
+            file.add_attribute("ridal_version", "ridal version 0.1.0 by test")
+                .unwrap();
+            // Deliberately no ridal_radargram_id.
+        }
+
+        assert_eq!(
+            super::inspect_ridal_netcdf(&path).unwrap(),
+            super::RidalNetcdfKind::NotRidal
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn test_inspect_ridal_netcdf_malformed_id_is_not_ridal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_id.nc");
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_dimension("y", 2).unwrap();
+            file.add_dimension("x", 2).unwrap();
+            let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+            var.put_values(&[0.0f32, 0., 0., 0.], ..).unwrap();
+            file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+                .unwrap();
+            file.add_attribute("ridal_version", "ridal version 0.1.0 by test")
+                .unwrap();
+            file.add_attribute("ridal_radargram_id", "Not A Valid ID!")
+                .unwrap();
+        }
+
+        assert_eq!(
+            super::inspect_ridal_netcdf(&path).unwrap(),
+            super::RidalNetcdfKind::NotRidal
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn test_inspect_ridal_netcdf_unreadable_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("garbage.nc");
+        std::fs::write(&path, b"this is not a netcdf file").unwrap();
+
+        let result = super::inspect_ridal_netcdf(&path);
+        assert!(result.is_err(), "expected an error, got {result:?}");
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn test_inspect_ridal_netcdf_nonexistent_file_is_an_error() {
+        let result = super::inspect_ridal_netcdf(std::path::Path::new("/no/such/file.nc"));
+        assert!(result.is_err());
     }
 }

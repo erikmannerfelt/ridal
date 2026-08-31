@@ -1,0 +1,77 @@
+{% extends "base.html.jinja" %}
+{% block title %}Radargram catalog - Ridal{% endblock %}
+{% block content %}
+  {#- One card definition, used by both the grouped and ungrouped sections,
+      so the two cannot drift apart. `profile` is a macro argument, not a
+      closed-over template variable -- minijinja macros do not reliably
+      see the enclosing template's context. -#}
+  {% macro entry_card(e, profile) %}
+  <li class="card" id="card-{{ e.radargram_id }}">
+    <a class="card-link" href="/view/{{ e.radargram_id }}?profile={{ profile }}">
+      <span class="card-thumb">
+        {#- loading="lazy" is load-bearing, not decoration: #121 names it as
+            the mechanism by which "the browser and server render-worker
+            limit naturally bound initial work". Without it a 100-entry
+            catalog would ask the server to render 100 overviews at once. -#}
+        <img src="/api/v1/datasets/{{ e.radargram_id }}/views/standard/overview?profile={{ profile }}"
+             alt="" loading="lazy" decoding="async" fetchpriority="low">
+      </span>
+      <span class="card-title">{{ e.effective_label }}</span>
+    </a>
+    <dl class="card-meta">
+      <dt>ID</dt><dd><code>{{ e.radargram_id }}</code></dd>
+      <dt>Size</dt><dd>{{ e.shape[1] }} traces &times; {{ e.shape[0] }} samples</dd>
+    </dl>
+    {#- Path and processed-datetime are secondary lookup info, not
+        scanning info -- tucked behind a details toggle so the card grid
+        stays scannable. -#}
+    <details class="meta-details card-more">
+      <summary>More info</summary>
+      <dl class="card-meta">
+        <dt>Path</dt><dd class="path">{{ e.relative_path }}</dd>
+        <dt>Processed</dt><dd>{{ e.processing_datetime_display }}</dd>
+      </dl>
+    </details>
+  </li>
+  {% endmacro %}
+
+  <h1>Radargram catalog</h1>
+  {% if warnings %}
+    <div class="warning">
+      <strong>{{ warnings | length }} warning(s):</strong>
+      <ul>
+        {% for w in warnings %}<li>{{ w }}</li>{% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <div class="controls">
+    <label>Render profile:
+      <select id="index-profile-select">
+        {% for p in profiles %}
+        <option value="{{ p }}" {% if p == active_profile %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+
+  {#- "Ungrouped" is just another entry in `groups` (see routes.rs's
+      index_page), not a special case: same map, same heading treatment,
+      always shown even when it's the only section on the page. -#}
+  {% for group in groups %}
+  <section class="group">
+    <h2>{{ group.label }}</h2>
+    <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
+    <ul class="card-grid">
+      {% for e in group.entries %}{{ entry_card(e, active_profile) }}{% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+
+  {% if not entries %}
+    <p>No radargrams found.</p>
+  {% endif %}
+{% endblock %}
+{% block extrascript %}
+<script src="/static/index.js"></script>
+{% endblock %}

@@ -139,14 +139,21 @@ jobs:
       if: runner.os == 'Linux'
       id: lint
       continue-on-error: true
-      run: cargo clippy --no-default-features -F cli -- -D warnings --no-deps
+      run: cargo clippy --no-default-features -F cli,server -- -D warnings --no-deps
 
     - name: Build
       run: cargo build --no-default-features -F cli --verbose
 
+    # server (web GUI, #115) is built/tested on Linux only for now: it is
+    # pure-Rust (axum/tokio/minijinja/etc.), so Windows/macOS should work in
+    # principle, but that has not been verified on those platforms yet.
+    - name: Build (server feature, Linux)
+      if: runner.os == 'Linux'
+      run: cargo build --no-default-features -F cli,server --verbose
+
     - name: Test (Linux)
       if: runner.os == 'Linux'
-      run: cargo test --no-default-features -F cli -- --nocapture
+      run: cargo test --no-default-features -F cli,server -- --nocapture
 
     - name: Test (Windows)
       if: runner.os == 'Windows'
