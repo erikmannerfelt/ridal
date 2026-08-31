@@ -597,7 +597,9 @@ pub async fn dataset_track(
     Path(radargram_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let entry = lookup_dataset(&state, &radargram_id)?;
-    let path = state.absolute_path(entry);
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
     let track = super::track::read_track_from_netcdf(&path)
         .map_err(|e| ApiError::internal("track_read_failed", e))?;
     Ok(Json(track_to_json(&track)))
@@ -614,7 +616,9 @@ pub async fn group_tracks(
 ) -> impl IntoResponse {
     let mut out = serde_json::Map::new();
     for entry in state.entries_in_group(&group) {
-        let path = state.absolute_path(entry);
+        let Ok(path) = state.absolute_path(entry) else {
+            continue;
+        };
         if let Ok(track) = super::track::read_track_from_netcdf(&path) {
             out.insert(
                 entry.radargram_id.to_string(),
@@ -927,7 +931,9 @@ pub async fn dataset_attributes(
     Path(radargram_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let entry = lookup_dataset(&state, &radargram_id)?;
-    let path = state.absolute_path(entry);
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
     let file = netcdf::open(&path)
         .map_err(|e| ApiError::internal("attributes_read_failed", format!("{e}")))?;
     let mut raw = serde_json::Map::new();
@@ -994,7 +1000,9 @@ pub async fn dataset_axes(
     Path(radargram_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let entry = lookup_dataset(&state, &radargram_id)?;
-    let path = state.absolute_path(entry);
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
     let file =
         netcdf::open(&path).map_err(|e| ApiError::internal("axes_read_failed", format!("{e}")))?;
     Ok(Json(AxesJson {

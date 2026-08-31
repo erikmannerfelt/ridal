@@ -72,7 +72,16 @@ impl AppState {
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
-            let absolute_path = Self::resolve_absolute_path(root, entry);
+            let absolute_path = match Self::resolve_absolute_path(root, entry) {
+                Ok(path) => path,
+                Err(e) => {
+                    eprintln!(
+                        "Warning: refusing unsafe catalog path {}: {e}",
+                        entry.relative_path
+                    );
+                    continue;
+                }
+            };
             let reader = match SourceReader::open(&absolute_path) {
                 Ok(r) => r,
                 Err(e) => {
@@ -106,50 +115,52 @@ impl AppState {
         })
     }
 
-    /// `entry.relative_path` is walkdir-derived (`Catalog::discover`, from
-    /// files actually found under `root`) and can never contain `..` or be
-    /// absolute in practice, but two layers guard against it regardless
-    /// rather than trusting that invariant on its own:
+    /// Resolves a catalog entry beneath the canonical catalog root.
     ///
-    /// 1. The join is rebuilt component-by-component, keeping only
-    ///    [`std::path::Component::Normal`] parts, so a `..` or an
-    ///    absolute-resetting component is silently dropped rather than
-    ///    followed even if one ever appeared.
-    /// 2. The result is canonicalized and checked to still be contained
-    ///    under `root`'s own canonical form -- the specific pattern static
-    ///    path-injection analysis (CodeQL flagged the original plain
-    ///    `root.join(...)` here) recognises as neutralising a path built
-    ///    from an externally-influenced component, since a hand-written
-    ///    filtering loop alone isn't a call its taint model knows to
-    ///    trust.
-    ///
-    /// Falls back to the uncanonicalized join if canonicalization fails
-    /// (e.g. a catalog entry whose file vanished between discovery and
-    /// this call) rather than erroring -- this function has always been
-    /// infallible, and every real caller already tolerates a subsequent
-    /// open failing.
-    fn resolve_absolute_path(root: &StdPath, entry: &super::catalog::CatalogEntry) -> PathBuf {
+    /// Rejects absolute paths, parent-directory components, and paths whose
+    /// canonical form escapes the catalog root, including through symlinks.
+    fn resolve_absolute_path(
+        root: &StdPath,
+        entry: &super::catalog::CatalogEntry,
+    ) -> Result<PathBuf, String> {
         if root.is_file() {
-            return root.to_path_buf();
+            return Ok(root.to_path_buf());
         }
+
         let mut candidate = root.to_path_buf();
         for component in StdPath::new(&entry.relative_path).components() {
-            if let std::path::Component::Normal(part) = component {
-                candidate.push(part);
+            match component {
+                std::path::Component::Normal(part) => candidate.push(part),
+                _ => {
+                    return Err(format!(
+                        "path contains a disallowed component: {}",
+                        entry.relative_path
+                    ));
+                }
             }
         }
-        match (root.canonicalize(), candidate.canonicalize()) {
-            (Ok(root_real), Ok(candidate_real)) if candidate_real.starts_with(&root_real) => {
-                candidate_real
-            }
-            _ => candidate,
+
+        let candidate = candidate
+            .canonicalize()
+            .map_err(|e| format!("could not resolve {}: {e}", candidate.display()))?;
+
+        if !candidate.starts_with(root) {
+            return Err(format!(
+                "resolved path escapes catalog root: {}",
+                candidate.display()
+            ));
         }
+
+        Ok(candidate)
     }
 
     /// The absolute filesystem path for a catalog entry. Never exposed to
     /// HTTP clients directly (#122: "keep filesystem paths internal") --
     /// only used server-side, e.g. to re-open a file for track reading.
-    pub fn absolute_path(&self, entry: &super::catalog::CatalogEntry) -> PathBuf {
+    pub fn absolute_path(
+        &self,
+        entry: &super::catalog::CatalogEntry,
+    ) -> Result<PathBuf, String> {
         Self::resolve_absolute_path(&self.root, entry)
     }
 
