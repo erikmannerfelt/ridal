@@ -2207,3 +2207,76 @@ async fn a_warning_naming_an_unlisted_radargram_is_not_shown_to_a_picker() {
         "the picker must not learn it exists: {warnings:?}"
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_radargram_from_an_external_root_says_it_is_not_in_the_project() {
+    // What the difference means to a user: one in the project can be
+    // removed, one in an archive can only be ignored, because Ridal never
+    // writes outside the project. The UI has to offer different words for
+    // those, and this is what it asks.
+    let hash = users::hash_password(password()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let archive = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    super::interp_routes_tests::write_test_nc_with_axes(
+        &dir.path().join("radargrams").join("ours.nc"),
+        "ours",
+        None,
+    );
+    super::interp_routes_tests::write_test_nc_with_axes(
+        &archive.path().join("theirs.nc"),
+        "theirs",
+        None,
+    );
+    std::fs::write(
+        dir.path().join("ridal.toml"),
+        format!(
+            "[project]\nname = \"test\"\n\n[radargrams]\nroots = [\"radargrams\", \"{}\"]\n",
+            archive.path().display()
+        ),
+    )
+    .unwrap();
+
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+    let erik = sign_in(&app, "erik").await;
+
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let entries = listing.body["entries"].as_array().unwrap();
+    let by_id = |id: &str| {
+        entries
+            .iter()
+            .find(|e| e["radargram_id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing from {entries:?}"))
+            .clone()
+    };
+    assert_eq!(
+        by_id("ours")["in_project"],
+        true,
+        "the project's own is writable"
+    );
+    assert_eq!(
+        by_id("theirs")["in_project"],
+        false,
+        "the archive's is served and never written to"
+    );
+}

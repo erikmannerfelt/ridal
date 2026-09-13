@@ -154,6 +154,29 @@ impl GroupOverride {
     }
 }
 
+/// A radargram the project has decided not to serve (#147).
+///
+/// The stand-in for removal when the file is not Ridal's to delete. An
+/// external root is read-only, so "remove this" there can only mean "stop
+/// showing it", and that decision has to live somewhere the project owns.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct IgnoredRadargram {
+    /// When it was ignored, RFC 3339. Recorded so the management list can
+    /// say how long ago rather than leaving a bare id with no story.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<String>,
+    /// The revision that was current when the decision was made.
+    ///
+    /// Ignore is on the **id**, not the file: if the external file is later
+    /// replaced with different content the radargram stays ignored, because
+    /// a file deliberately not shown should not become a file nobody
+    /// remembers not showing. Keeping the revision lets the catalog say
+    /// that the content has changed since, which is a different thing from
+    /// quietly showing it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision_id: Option<String>,
+}
+
 /// Everything a project says over its files.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CatalogOverrides {
@@ -161,6 +184,18 @@ pub struct CatalogOverrides {
     pub radargrams: BTreeMap<RadargramId, RadargramOverride>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub groups: BTreeMap<GroupId, GroupOverride>,
+    /// Radargrams the project has decided not to serve at all.
+    ///
+    /// Separate from `radargrams` rather than a field on
+    /// [`RadargramOverride`], because the two answer different questions.
+    /// That map is "what should this be called and where does it belong",
+    /// and every entry in it describes something the catalog shows. This is
+    /// "do not show this", and its entries outlive the radargram -- an
+    /// ignored id stays ignored while the file is away and while its root
+    /// is unmounted, which is the whole point of ignoring rather than
+    /// deleting.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ignored: BTreeMap<RadargramId, IgnoredRadargram>,
 }
 
 impl CatalogOverrides {
@@ -174,6 +209,9 @@ impl CatalogOverrides {
     pub fn prune(&mut self) {
         self.radargrams.retain(|_, o| !o.is_empty());
         self.groups.retain(|_, o| !o.is_empty());
+        // `ignored` is deliberately not pruned. An entry with no fields set
+        // still says "do not show this", which is the whole content of the
+        // decision; dropping it would un-ignore the radargram.
     }
 }
 

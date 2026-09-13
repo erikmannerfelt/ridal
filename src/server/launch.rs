@@ -90,17 +90,15 @@ async fn serve(
                     crate::identity::DEFAULT_USER
                 );
             }
-            // Any configured radargram root outside the served tree is not
-            // scanned yet. Saying so is better than a config key that looks
-            // honoured and is not.
-            for extra in project.radargram_roots() {
-                if !extra.starts_with(project.root()) {
-                    eprintln!(
-                        "Warning: radargram root {} is outside the project and is not \
-                         scanned yet; only the project tree is indexed.",
-                        extra.display()
-                    );
-                }
+            // Roots outside the project are scanned now (#147), read-only.
+            // Reported rather than warned about: an archive being served
+            // is the arrangement working, and what an operator needs to
+            // know is which of their directories Ridal will not write to.
+            for root in state.roots.iter().skip(1) {
+                println!(
+                    "  {} (read-only; Ridal never writes outside the project)",
+                    root.path.display()
+                );
             }
         }
         (Some(project), false) => {

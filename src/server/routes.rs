@@ -170,6 +170,14 @@ struct DatasetSummary {
     processing_datetime_display: String,
     revision_id: String,
     shape: (usize, usize),
+    /// Whether this radargram sits in the project rather than an external
+    /// root (#147).
+    ///
+    /// What the difference means to a user: a radargram in the project can
+    /// be removed, and one in an archive can only be ignored, because Ridal
+    /// never writes outside the project. The UI needs to offer different
+    /// words for those two, and this is what it asks.
+    in_project: bool,
     /// Left out of listings by a project override (#145).
     ///
     /// Only ever reaches a caller who can change it, since listings for
@@ -312,8 +320,8 @@ fn resolve_profile(state: &AppState, caller: &Caller, requested: Option<String>)
     )
 }
 
-fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
-    summarize(entry, None)
+fn to_summary(state: &AppState, entry: &super::catalog::CatalogEntry) -> DatasetSummary {
+    summarize(state, entry, None)
 }
 
 /// Count the picked lines stored for `radargram`, across all users.
@@ -340,9 +348,14 @@ fn count_lines(project: &crate::project::Project, radargram: &RadargramId) -> Op
     Some(total)
 }
 
-fn summarize(entry: &super::catalog::CatalogEntry, line_count: Option<usize>) -> DatasetSummary {
+fn summarize(
+    state: &AppState,
+    entry: &super::catalog::CatalogEntry,
+    line_count: Option<usize>,
+) -> DatasetSummary {
     DatasetSummary {
         line_count,
+        in_project: state.is_writable(entry),
         radargram_id: entry.radargram_id.to_string(),
         effective_label: entry.effective_label(),
         display_name: entry.display_name.as_ref().map(|d| d.to_string()),
@@ -410,6 +423,7 @@ pub async fn list_datasets(
         .copied()
         .map(|entry| {
             summarize(
+                &state,
                 entry,
                 state
                     .project
@@ -448,7 +462,7 @@ pub async fn dataset_detail(
 ) -> Result<impl IntoResponse, ApiError> {
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
-    Ok(Json(to_summary(entry)))
+    Ok(Json(to_summary(&state, entry)))
 }
 
 fn lookup_view(view: &str) -> Result<DatasetView, ApiError> {
@@ -828,6 +842,7 @@ pub async fn index_page(
     };
     let summarize_entry = |entry: &super::catalog::CatalogEntry| {
         summarize(
+            &state,
             entry,
             line_counts
                 .get(entry.radargram_id.as_str())

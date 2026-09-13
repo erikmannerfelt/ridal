@@ -144,6 +144,12 @@ Each point carries its layer, trace and sample, distance along the profile, two-
 It also carries what its travel time is measured against, since an antenna separation correction changes that: the separation still to be corrected for, and whether the time is between the antenna pair or from a coincident antenna.
 
 
+Radargrams can also be served from directories outside the project, listed under `[radargrams] roots` in `ridal.toml`.
+Those are read-only: Ridal never writes outside the project, so an archive can be served without any question of what a wrong click would do there.
+
+Where the same radargram id exists in both, the project's copy wins — whatever the processing dates say.
+That is what makes the project an overlay rather than another directory in the pile: a reprocessed file appearing in the archive cannot quietly replace a decision made in the project.
+
 ### Sharing a project with other people
 
 A project with no accounts behaves as it always has: everyone using it is the user `default`, and `ridal gui` needs no login step.
