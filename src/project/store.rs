@@ -279,24 +279,24 @@ impl DocumentStore {
 
     /// Read a document, or `None` if it does not exist.
     pub fn read(&self, relative: &Path) -> Result<Option<Document>, StoreError> {
-        let path = self.path_of(relative)?;
-        match std::fs::read(&path) {
-            Ok(bytes) => {
-                let version = Version::of(&bytes);
-                let text = String::from_utf8(bytes).map_err(|e| StoreError::Io {
-                    path: path.clone(),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
-                })?;
-                Ok(Some(Document { text, version }))
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(source) => Err(StoreError::Io { path, source }),
-        }
+        let Some((bytes, version)) = self.read_bytes(relative)? else {
+            return Ok(None);
+        };
+        let text = String::from_utf8(bytes).map_err(|e| StoreError::Io {
+            path: self.root.join(relative),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        })?;
+        Ok(Some(Document { text, version }))
     }
 
     /// The current version of a document, or `None` if absent.
+    ///
+    /// Over bytes, not text. A version is a content hash and has nothing to
+    /// say about encoding — reading through [`Self::read`] made every write
+    /// of a binary document fail its own conflict check, on the read-back
+    /// *after* the rename, which is a confusing place to discover it.
     pub fn version(&self, relative: &Path) -> Result<Option<Version>, StoreError> {
-        Ok(self.read(relative)?.map(|d| d.version))
+        Ok(self.read_bytes(relative)?.map(|(_, version)| version))
     }
 
     /// Write a document, refusing if `expected` no longer holds.
@@ -312,7 +312,39 @@ impl DocumentStore {
         text: &str,
         expected: &Expectation,
     ) -> Result<Version, StoreError> {
-        self.write_with_mode(relative, text, expected, None)
+        self.write_with_mode(relative, text.as_bytes(), expected, None)
+    }
+
+    /// [`Self::write`] for a document that is not text.
+    ///
+    /// The axis snapshots (#148) are compressed binary: base64 would cost a
+    /// third of their size to pretend otherwise, and the store's atomic
+    /// write and conflict checks are worth more than the pretence. Nothing
+    /// else here needs it, and nothing should reach for it lightly — a
+    /// project directory full of files people cannot read is a worse place
+    /// to debug.
+    pub fn write_bytes(
+        &self,
+        relative: &Path,
+        bytes: &[u8],
+        expected: &Expectation,
+    ) -> Result<Version, StoreError> {
+        self.write_with_mode(relative, bytes, expected, None)
+    }
+
+    /// Read a document as bytes, or `None` if it does not exist.
+    ///
+    /// What [`Self::read`] does before it insists on UTF-8.
+    pub fn read_bytes(&self, relative: &Path) -> Result<Option<(Vec<u8>, Version)>, StoreError> {
+        let path = self.path_of(relative)?;
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let version = Version::of(&bytes);
+                Ok(Some((bytes, version)))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
     }
 
     /// [`Self::write`], but leaving the document readable only by its owner.
@@ -333,13 +365,13 @@ impl DocumentStore {
         text: &str,
         expected: &Expectation,
     ) -> Result<Version, StoreError> {
-        self.write_with_mode(relative, text, expected, Some(0o600))
+        self.write_with_mode(relative, text.as_bytes(), expected, Some(0o600))
     }
 
     fn write_with_mode(
         &self,
         relative: &Path,
-        text: &str,
+        bytes: &[u8],
         expected: &Expectation,
         mode: Option<u32>,
     ) -> Result<Version, StoreError> {
@@ -379,7 +411,7 @@ impl DocumentStore {
             path: temp_path(&path),
             keep: false,
         };
-        write_file(&temp.path, text, mode)?;
+        write_file(&temp.path, bytes, mode)?;
         std::fs::rename(&temp.path, &path).map_err(|source| StoreError::Io {
             path: path.clone(),
             source,
@@ -522,7 +554,7 @@ impl DocumentStore {
 /// Unix only for the permissions half; elsewhere this is an ordinary
 /// create-and-write, which is why [`DocumentStore::write_private`]
 /// documents that its callers must not depend on the mode for secrecy.
-fn write_file(path: &Path, text: &str, mode: Option<u32>) -> Result<(), StoreError> {
+fn write_file(path: &Path, bytes: &[u8], mode: Option<u32>) -> Result<(), StoreError> {
     use std::io::Write;
 
     let mut options = std::fs::OpenOptions::new();
@@ -540,7 +572,7 @@ fn write_file(path: &Path, text: &str, mode: Option<u32>) -> Result<(), StoreErr
         source,
     };
     let mut file = options.open(path).map_err(io)?;
-    file.write_all(text.as_bytes()).map_err(io)?;
+    file.write_all(bytes).map_err(io)?;
     file.sync_all().map_err(io)
 }
 
