@@ -40,3 +40,4 @@ Combine the positive and negative phases of the signal into one positive magntiu
 Make a copy of the data and topographically correct it. In the output, the data will be called "data_topographically_corrected". Note that the copying means any step run after this will not be reflected in "data_topographically_corrected". This is thus recommended to run last.
 ## correct_antenna_separation
 Correct for the separation between the antenna transmitter and receiver. The consequence of antenna separation is that depths are slightly exaggerated at low return-times before correction. This step averages samples so that each sample represents a consistent depth interval.
+Afterwards, `twtt` is the travel time a coincident transmitter and receiver would have recorded rather than the travel time between the pair, and the output declares that with `twtt:anchor_name = "twtt_normal_incidence"` and `antenna_separation_effective = 0`.
