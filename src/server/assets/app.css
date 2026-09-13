@@ -348,6 +348,31 @@ section.group {
   color: var(--color-accent-hover);
 }
 
+/* Marks an unlisted card inside the disclosure that already says what
+ * unlisted means, so the badge can be a plain label rather than a warning:
+ * nothing is wrong, somebody chose this. */
+.card-badge {
+  margin: 0;
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Unlisted members hang below their group's grid rather than inside it, so
+ * the grid still reads as "what this group is" at a glance. */
+.unlisted-group {
+  margin-top: var(--space-4);
+}
+
+.unlisted-group > summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-weight: 600;
+}
+
 .card-meta {
   display: grid;
   grid-template-columns: max-content 1fr;

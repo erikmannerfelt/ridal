@@ -651,6 +651,11 @@ struct GroupSummary {
     id: String,
     label: String,
     entries: Vec<DatasetSummary>,
+    /// Members this caller can see but that are unlisted, partitioned here
+    /// rather than in the template so the grid and the disclosure cannot
+    /// disagree about which is which. Always empty below `operator`, since
+    /// the filter has already dropped them.
+    unlisted_entries: Vec<DatasetSummary>,
 }
 
 /// The settings page.
@@ -825,6 +830,11 @@ pub async fn index_page(
     let mut groups: Vec<GroupSummary> = group_ids
         .into_iter()
         .map(|id| {
+            let members: Vec<_> = visible
+                .iter()
+                .copied()
+                .filter(|e| e.group_id.as_ref().is_some_and(|g| g.as_str() == id))
+                .collect();
             let label = catalog
                 .group_names
                 .iter()
@@ -834,26 +844,42 @@ pub async fn index_page(
             GroupSummary {
                 id: id.to_string(),
                 label,
-                entries: visible
+                entries: members
                     .iter()
                     .copied()
-                    .filter(|e| e.group_id.as_ref().is_some_and(|g| g.as_str() == id))
+                    .filter(|e| !e.unlisted)
+                    .map(&summarize_entry)
+                    .collect(),
+                unlisted_entries: members
+                    .iter()
+                    .copied()
+                    .filter(|e| e.unlisted)
                     .map(&summarize_entry)
                     .collect(),
             }
         })
         .collect();
-    let ungrouped_entries: Vec<DatasetSummary> = visible
+    let ungrouped: Vec<_> = visible
         .iter()
         .copied()
         .filter(|e| e.group_id.is_none())
-        .map(&summarize_entry)
         .collect();
-    if !ungrouped_entries.is_empty() {
+    if !ungrouped.is_empty() {
         groups.push(GroupSummary {
             id: NO_GROUP_ID.to_string(),
             label: "Ungrouped".to_string(),
-            entries: ungrouped_entries,
+            entries: ungrouped
+                .iter()
+                .copied()
+                .filter(|e| !e.unlisted)
+                .map(&summarize_entry)
+                .collect(),
+            unlisted_entries: ungrouped
+                .iter()
+                .copied()
+                .filter(|e| e.unlisted)
+                .map(&summarize_entry)
+                .collect(),
         });
     }
 

@@ -18,6 +18,10 @@
       </span>
       <span class="card-title">{{ e.effective_label }}</span>
     </a>
+    {#- Only ever rendered for someone who can change it: the listing filter
+        drops unlisted entries for everyone else, so this badge cannot leak
+        the fact that a radargram exists. -#}
+    {% if e.unlisted %}<p class="card-badge">Unlisted</p>{% endif %}
     {#- Interpretation progress takes the front row and the shape moves
         behind the toggle: the shape is the same on every card of a survey
         and answers no question anyone is asking of a catalog, while "has
@@ -137,6 +141,25 @@
     <ul class="card-grid">
       {% for e in group.entries %}{{ entry_card(e, active_profile) }}{% endfor %}
     </ul>
+    {#- Collapsed rather than filtered away: whoever can unlist a radargram
+        is the one who needs to find it again. `unlisted_entries` is only
+        ever non-empty for `operator` and above (see routes.rs). -#}
+    {% if group.unlisted_entries %}
+    <details class="unlisted-group">
+      <summary>
+        {{ group.unlisted_entries | length }}
+        unlisted radargram{% if group.unlisted_entries | length != 1 %}s{% endif %}
+      </summary>
+      <p class="hint">
+        Unlisted radargrams are left out of listings and out of merged
+        downloads. They are not private: anyone who knows the address can
+        still open one.
+      </p>
+      <ul class="card-grid">
+        {% for e in group.unlisted_entries %}{{ entry_card(e, active_profile) }}{% endfor %}
+      </ul>
+    </details>
+    {% endif %}
   </section>
   {% endfor %}
 

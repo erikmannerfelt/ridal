@@ -1637,3 +1637,75 @@ async fn a_read_only_server_caps_even_an_administrator() {
         StatusCode::OK
     );
 }
+
+/// Builds an app with two radargrams, one of them unlisted, and the given
+/// users.
+fn app_with_an_unlisted_radargram(set: UserSet) -> (tempfile::TempDir, Router) {
+    use crate::project::overrides::{self, RadargramOverride};
+
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), "line-01");
+    write_test_nc(&dir.path().join("radargrams").join("line-02.nc"), "line-02");
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(project.documents(), &set, &Expectation::Any).unwrap();
+    overrides::update(project.documents(), |o| {
+        o.radargrams.insert(
+            crate::identity::RadargramId::new("line-02").unwrap(),
+            RadargramOverride {
+                unlisted: true,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    (dir, build_router(state))
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_unlisted_radargram_is_absent_from_a_pickers_listing_and_present_for_an_operator() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![
+            activated("student", Role::Picker, DownloadScope::All, &hash),
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+
+    let ids = |body: &Value| -> Vec<String> {
+        body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["radargram_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let student = sign_in(&app, "student").await;
+    let seen = ids(&get(&app, "/api/v1/datasets", Some(&student)).await.body);
+    assert_eq!(seen, vec!["line-01"], "a picker sees only the listed one");
+
+    // The operator is the person who can change it, so hiding it from them
+    // would leave no way to find it again.
+    let erik = sign_in(&app, "erik").await;
+    let seen = ids(&get(&app, "/api/v1/datasets", Some(&erik)).await.body);
+    assert_eq!(seen, vec!["line-01", "line-02"]);
+
+    // Curation, not access control: the picker can still open it by id,
+    // which is exactly what "unlisted" claims and all it claims.
+    let response = get(&app, "/api/v1/datasets/line-02", Some(&student)).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+}
