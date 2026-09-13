@@ -402,8 +402,14 @@ pub struct GPR {
     pub log: Vec<String>,
     /// The steps that the user provided
     pub steps: Vec<String>,
-    /// The horizontal component of the signal distance (m). Defaults to the antenna separation if no correction has been made.
-    horizontal_signal_distance: f32,
+    /// The antenna separation that the data still needs correcting for (m).
+    ///
+    /// Starts as [`GPRMeta::antenna_separation`], the acquisition fact, and
+    /// is zeroed by [`GPR::correct_antenna_separation`] once the geometry
+    /// has been taken out of the data. The two are therefore different
+    /// quantities: one is what the instrument did, this is processing
+    /// state, and only this one says what `twtt` currently refers to.
+    antenna_separation_effective: f32,
     /// The calculated zero-point (ns). It represents the delay between the transmitter and the receiver.
     zero_point_ns: f32,
     /// User-supplied metadata that should be carried through processing/export.
@@ -740,7 +746,7 @@ impl GPR {
             log,
             steps: self.steps.clone(),
             topo_data: self.topo_data.clone(),
-            horizontal_signal_distance: self.horizontal_signal_distance,
+            antenna_separation_effective: self.antenna_separation_effective,
             zero_point_ns: self.zero_point_ns,
             user_metadata: self.user_metadata.clone(),
             identity: self.identity.clone(),
@@ -790,7 +796,7 @@ impl GPR {
             true => location,
             false => location.range_fill(0, data.shape()[1] as u32),
         };
-        let horizontal_signal_distance = metadata.antenna_separation;
+        let antenna_separation_effective = metadata.antenna_separation;
 
         Ok(GPR {
             data,
@@ -799,7 +805,7 @@ impl GPR {
             log: Vec::new(),
             steps: Vec::new(),
             topo_data: None,
-            horizontal_signal_distance,
+            antenna_separation_effective,
             zero_point_ns: 0.,
             user_metadata: user_metadata::UserMetadata::new(),
             identity: RidalIdentity::default(),
@@ -938,7 +944,7 @@ impl GPR {
     pub fn correct_antenna_separation(&mut self) {
         let start_time = SystemTime::now();
 
-        if self.horizontal_signal_distance == 0. {
+        if self.antenna_separation_effective == 0. {
             self.log_event(
                 "correct_antenna_separation",
                 "Skipping antenna separation correction since the antenna separation is 0 m.",
@@ -953,7 +959,7 @@ impl GPR {
         let max_depth = depths.iter().cloned().fold(0.0f32, f32::max);
 
         if max_depth == 0.0 {
-            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.horizontal_signal_distance);
+            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.antenna_separation_effective);
             panic!("");
         }
 
@@ -963,9 +969,9 @@ impl GPR {
         //resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
         self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
         //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
-        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance, height_before, self.height()), start_time);
+        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.antenna_separation_effective, height_before, self.height()), start_time);
 
-        self.horizontal_signal_distance = 0.;
+        self.antenna_separation_effective = 0.;
         self.metadata.samples = self.height() as u32;
     }
 
@@ -1636,7 +1642,7 @@ impl GPR {
         let time_windows = (Array1::<f32>::range(0., self.height() as f32, 1.)
             / self.height() as f32)
             * self.metadata.time_window;
-        let corr_antenna_separation = (self.horizontal_signal_distance.powi(2)
+        let corr_antenna_separation = (self.antenna_separation_effective.powi(2)
             - (self.zero_point_ns * self.metadata.medium_velocity).powi(2))
         .max(0.)
         .sqrt();
@@ -2639,7 +2645,7 @@ pub mod tests {
             topo_data: None,
             steps: Vec::new(),
             zero_point_ns: 0.,
-            horizontal_signal_distance: 1.,
+            antenna_separation_effective: 1.,
             log: Vec::new(),
             user_metadata: crate::user_metadata::UserMetadata::new(),
             // A real radargram_id is required for export() to succeed
@@ -2792,7 +2798,7 @@ pub mod tests {
             metadata: meta,
             steps: Vec::new(),
             log: Vec::new(),
-            horizontal_signal_distance: antenna_separation,
+            antenna_separation_effective: antenna_separation,
             zero_point_ns: 0.,
             user_metadata: crate::user_metadata::UserMetadata::new(),
             identity: super::RidalIdentity::default(),
@@ -2814,7 +2820,7 @@ pub mod tests {
     fn test_correct_antenna_separation() {
         let mut gpr = make_test_gpr(Some(10), Some(1024));
 
-        gpr.horizontal_signal_distance = 30.;
+        gpr.antenna_separation_effective = 30.;
 
         assert_eq!(gpr.data[[10, 0]], 10.);
         assert_eq!(gpr.log.len(), 0);
