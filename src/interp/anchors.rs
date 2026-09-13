@@ -337,6 +337,40 @@ pub fn twtt_axis(
     })
 }
 
+/// The axis values an #148 snapshot keeps, on the anchor's scale.
+///
+/// The `y` values are travel time from time zero — the stored `twtt` plus
+/// the anchor offset, not the array as the file holds it, which starts at
+/// zero whether or not sample zero is time zero (#153). Taking the offset
+/// out here means a later fix to that array changes nothing about what a
+/// snapshot means.
+///
+/// `None` when the revision cannot describe its axes, which is the same
+/// condition that stops a document carrying them. A snapshot with no
+/// mapping in it is a file that says nothing.
+pub fn snapshot_values(
+    declared: &crate::interp::source::AxisDeclarations,
+) -> Option<(Option<String>, Vec<f64>, Vec<f64>)> {
+    let y = twtt_axis(
+        declared.twtt_anchor.as_deref(),
+        &declared.twtt_crop,
+        &declared.twtt_time_zero,
+        declared.dt_ns,
+    )?;
+    let t0 = y.t0?;
+    let dt = y.dt?;
+    if declared.n_samples == 0 || declared.time.len() < 2 {
+        return None;
+    }
+    Some((
+        Some(y.name),
+        (0..declared.n_samples)
+            .map(|i| t0 + i as f64 * dt)
+            .collect(),
+        declared.time.clone(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

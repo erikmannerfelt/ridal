@@ -36,6 +36,7 @@ use super::auth::Caller;
 use super::routes::ApiError;
 use crate::identity::RadargramId;
 use crate::io::RidalNetcdfKind;
+use crate::project::revisions::{self, ledger};
 use crate::project::users::Role;
 use crate::project::{audit, interpretations, overrides};
 
@@ -316,11 +317,30 @@ pub async fn remove_dataset(
     drop(catalog);
 
     let at = now();
+
+    // The axes go first, while the file is still there to read them from.
+    //
+    // A removal is a supersession with nothing on the other side (#148), and
+    // the same rule applies: take the snapshot unconditionally. Nothing
+    // needs to reference this revision *yet* for the snapshot to matter --
+    // someone with the viewer open has not saved, and their `PUT` arrives
+    // after the file is gone.
+    snapshot_axes(&state, project, &id, &path, &revision);
+
     // Archived before the file goes. If the deletion fails afterwards the
     // catalog still has the radargram and the picks are one directory over,
     // which is recoverable; the other order could lose them outright.
     let archived = interpretations::archive_all(project.documents(), &id, &at)
         .map_err(|e| ApiError::internal("archive_failed", e.to_string()))?;
+
+    if let Err(e) = ledger::update(project.documents(), |l| {
+        ledger::supersede(l, id.as_str(), &revision, None, &at);
+    }) {
+        // Not fatal, for the same reason the audit log is not: the removal
+        // is about to happen either way, and a failure to write the history
+        // is not a reason to refuse to do the thing.
+        eprintln!("Warning: could not record the supersession: {e}");
+    }
 
     let outcome = if in_project {
         // Let go of the file before unlinking it. Windows refuses to
@@ -504,6 +524,48 @@ fn writable_destination(project: &crate::project::Project) -> Result<std::path::
     Ok(resolved)
 }
 
+/// Keep this revision's axes before its file becomes unreachable.
+///
+/// Best effort, deliberately. A radargram whose axes cannot be described
+/// has no mapping to keep, and refusing to remove it on that account would
+/// be refusing to do the thing because the *record* of it could not be
+/// written. The warning says which radargram, so it can be looked at.
+fn snapshot_axes(
+    state: &AppState,
+    project: &crate::project::Project,
+    id: &RadargramId,
+    path: &std::path::Path,
+    revision: &str,
+) {
+    let _ = state;
+    let declared = crate::interp::source::read_axis_declarations(path);
+    let Some((y_anchor, y_values, x_values)) = crate::interp::anchors::snapshot_values(&declared)
+    else {
+        eprintln!(
+            "Note: '{id}' does not declare its axes, so no snapshot was kept. \
+             Interpretations drawn on it cannot be carried onto a later revision."
+        );
+        return;
+    };
+    let snapshot = revisions::AxisSnapshot {
+        radargram_id: id.to_string(),
+        revision_id: revision.to_string(),
+        y_anchor,
+        y_values,
+        x_values,
+    };
+    let checksum = snapshot.checksum();
+    if let Err(e) = revisions::put(project.documents(), id, &snapshot) {
+        eprintln!("Warning: could not keep the axes of '{id}': {e}");
+        return;
+    }
+    if let Err(e) = ledger::update(project.documents(), |l| {
+        ledger::note_current(l, id.as_str(), revision, Some(checksum.clone()));
+    }) {
+        eprintln!("Warning: could not record the axis checksum of '{id}': {e}");
+    }
+}
+
 fn too_large(needed: u64, room: u64, cap: u64) -> ApiError {
     ApiError::payload_too_large(
         "project_full",
@@ -651,4 +713,81 @@ mod tests {
         TempFile(path.clone()).installed();
         assert!(path.exists(), "an installed one stays");
     }
+}
+
+/// One revision a radargram has been through.
+#[derive(Debug, Serialize)]
+pub struct RevisionSummary {
+    revision_id: String,
+    /// Whether it is the one currently behind the id.
+    current: bool,
+    superseded_at: Option<String>,
+    superseded_by: Option<String>,
+    /// Whether this revision's axes were kept, which is what decides
+    /// whether picks drawn on it can be carried onto a later one.
+    has_axes: bool,
+    /// Sizes from the snapshot, so the history says what changed between
+    /// revisions without opening anything.
+    n_traces: Option<usize>,
+    n_samples: Option<usize>,
+    y_anchor: Option<String>,
+}
+
+/// `GET /api/v1/datasets/{id}/revisions` — what this id has been.
+///
+/// Reads the ledger rather than the files: the whole point of #148 is that
+/// a superseded revision's file may be gone while its mapping is not.
+///
+/// `viewer` and above. Which revisions a radargram has had is the same kind
+/// of fact as its processing date -- provenance about data people are
+/// already being shown, not an operator's working notes.
+pub async fn list_revisions(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(radargram_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require(Role::Viewer, "read a radargram's history")?;
+    let project = state.project.as_ref().ok_or_else(|| {
+        ApiError::not_found(
+            "not_a_project",
+            "This catalog is not a Ridal project, so it keeps no revision history.",
+        )
+    })?;
+    let id = RadargramId::new(&radargram_id)
+        .map_err(|e| ApiError::bad_request("invalid_radargram_id", e))?;
+
+    let (history, _) = ledger::read(project.documents())
+        .map_err(|e| ApiError::internal("ledger_read_failed", e.to_string()))?;
+    let current = history.current(id.as_str()).map(|r| r.revision_id.clone());
+    let records = history
+        .radargrams
+        .get(id.as_str())
+        .cloned()
+        .unwrap_or_default();
+
+    let summaries = records
+        .into_iter()
+        .map(|record| {
+            // Opened per revision rather than listed once: the header is a
+            // few hundred bytes and a history is a handful of revisions, so
+            // the simpler shape costs nothing worth saving.
+            let snapshot = revisions::get(project.documents(), &id, &record.revision_id)
+                .ok()
+                .flatten();
+            RevisionSummary {
+                // From the ledger's own definition rather than re-derived
+                // here, so there is one answer to "which is current".
+                current: current.as_deref() == Some(record.revision_id.as_str()),
+                superseded_at: record.superseded_at,
+                superseded_by: record.superseded_by,
+                has_axes: snapshot.is_some(),
+                n_traces: snapshot.as_ref().map(|s| s.n_traces()),
+                n_samples: snapshot.as_ref().map(|s| s.n_samples()),
+                y_anchor: snapshot.and_then(|s| s.y_anchor),
+                revision_id: record.revision_id,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({ "revisions": summaries })))
 }
