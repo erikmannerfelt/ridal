@@ -75,7 +75,14 @@ pub struct CatalogWarning {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Catalog {
     pub entries: Vec<CatalogEntry>,
+    /// Everything worth telling the operator: problems with the files
+    /// themselves, and groups whose members disagree about the name.
     pub warnings: Vec<CatalogWarning>,
+    /// Just the first kind, kept so [`Catalog::reresolved`] can rebuild the
+    /// combined list. Group-name disagreements depend on the overrides and
+    /// are recomputed; unreadable files and duplicate ids do not and are
+    /// not.
+    file_warnings: Vec<CatalogWarning>,
     /// One representative display name per group id, for the index page
     /// (a group has one heading, even though every entry carries its own
     /// `group_name` for provenance). When entries sharing a `group_id`
@@ -297,30 +304,75 @@ impl Catalog {
         let mut entries: Vec<CatalogEntry> = by_id.into_values().map(|(e, _)| e).collect();
         entries.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
 
-        for entry in &mut entries {
-            apply_override(entry, overrides);
-        }
+        resolve(entries, warnings, overrides)
+    }
 
-        let (group_names, group_warnings) = resolve_group_names(&entries, overrides);
-        warnings.extend(group_warnings);
+    /// Re-resolve against a different set of overrides, without touching
+    /// the disk.
+    ///
+    /// What a label edit needs. Rediscovery would re-walk the tree and
+    /// re-read every file's attributes to learn nothing new — a hundred
+    /// NetCDF headers to rename one card — and it would put a filesystem
+    /// walk on the end of an HTTP request, which is a worse shape than the
+    /// cost alone suggests.
+    ///
+    /// [`CatalogEntry::from_file`] is what makes this possible: every field
+    /// an override can change keeps the file's own value beside it, so the
+    /// starting point discovery resolved from is still here. Both paths go
+    /// through the same [`resolve`], so the two cannot drift.
+    ///
+    /// Deliberately blind to files appearing or disappearing on disk. An
+    /// override changes what the catalog *says*, never what is in it;
+    /// noticing a new file is #147's job.
+    pub fn reresolved(&self, overrides: &CatalogOverrides) -> Catalog {
+        let entries = self
+            .entries
+            .iter()
+            .map(|entry| CatalogEntry {
+                display_name: entry.from_file.display_name.clone(),
+                group_name: entry.from_file.group_name.clone(),
+                group_id: entry.from_file.group_id.clone(),
+                unlisted: false,
+                ..entry.clone()
+            })
+            .collect();
+        resolve(entries, self.file_warnings.clone(), overrides)
+    }
+}
 
-        // A radargram moved into another group has no name of its own for
-        // it, since the one in its file describes the group it was
-        // processed into. Fill that from the resolved name so the API and
-        // the index cannot disagree about what group a card is in.
-        for entry in &mut entries {
-            if entry.group_name.is_none() {
-                if let Some(id) = &entry.group_id {
-                    entry.group_name = group_names.get(id).cloned();
-                }
+/// Apply the overrides to freshly-unresolved entries and settle the group
+/// names. The one place resolution happens, so discovery and re-resolution
+/// cannot disagree.
+fn resolve(
+    mut entries: Vec<CatalogEntry>,
+    file_warnings: Vec<CatalogWarning>,
+    overrides: &CatalogOverrides,
+) -> Catalog {
+    for entry in &mut entries {
+        apply_override(entry, overrides);
+    }
+
+    let (group_names, group_warnings) = resolve_group_names(&entries, overrides);
+
+    // A radargram moved into another group has no name of its own for it,
+    // since the one in its file describes the group it was processed into.
+    // Fill that from the resolved name so the API and the index cannot
+    // disagree about what group a card is in.
+    for entry in &mut entries {
+        if entry.group_name.is_none() {
+            if let Some(id) = &entry.group_id {
+                entry.group_name = group_names.get(id).cloned();
             }
         }
+    }
 
-        Catalog {
-            entries,
-            warnings,
-            group_names,
-        }
+    let mut warnings = file_warnings.clone();
+    warnings.extend(group_warnings);
+    Catalog {
+        entries,
+        warnings,
+        file_warnings,
+        group_names,
     }
 }
 
@@ -889,6 +941,68 @@ mod tests {
         // Still discovered -- unlisted is about listings, not existence.
         assert_eq!(catalog.entries.len(), 1);
         assert!(catalog.entries[0].unlisted);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn re_resolving_gives_what_rediscovery_would_have() {
+        // The property that lets a label edit skip the disk. If these ever
+        // disagree, the cheap path is quietly serving something a restart
+        // would not.
+        let dir = tempfile::tempdir().unwrap();
+        process_to_with_group_id(
+            ASSET_2022,
+            &dir.path().join("a.nc"),
+            Some("line-01"),
+            "Kroppbreen 2022",
+            "kroppbreen",
+        );
+        process_to_with_group_id(
+            ASSET_2022,
+            &dir.path().join("b.nc"),
+            Some("line-02"),
+            "Kroppbreen 2022",
+            "kroppbreen",
+        );
+
+        let mut overrides = CatalogOverrides::default();
+        overrides
+            .radargrams
+            .insert(radargram("line-01"), named("A better name"));
+        overrides.radargrams.insert(
+            radargram("line-02"),
+            crate::project::overrides::RadargramOverride {
+                group: Some(crate::project::overrides::GroupMembership::Group(group(
+                    "dronbreen-2022",
+                ))),
+                unlisted: true,
+                ..Default::default()
+            },
+        );
+        overrides.groups.insert(
+            group("dronbreen-2022"),
+            crate::project::overrides::GroupOverride {
+                name: GroupName::from_input("Drønbreen 2022"),
+            },
+        );
+
+        let discovered = Catalog::discover_with_overrides(dir.path(), &overrides);
+        // Start from a catalog that knows nothing of the overrides, the way
+        // the server does before anyone edits anything.
+        let reresolved = Catalog::discover(dir.path()).reresolved(&overrides);
+
+        assert_eq!(reresolved.entries, discovered.entries);
+        assert_eq!(reresolved.group_names, discovered.group_names);
+        assert_eq!(reresolved.warnings, discovered.warnings);
+
+        // And re-resolving back to nothing returns the plain catalog, so an
+        // override cannot leave a residue in the cheap path.
+        let plain = Catalog::discover(dir.path());
+        let reverted = reresolved.reresolved(&CatalogOverrides::default());
+        assert_eq!(reverted.entries, plain.entries);
+        assert_eq!(reverted.group_names, plain.group_names);
+        assert_eq!(reverted.warnings, plain.warnings);
     }
 
     #[test]

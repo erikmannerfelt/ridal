@@ -277,15 +277,19 @@ fn apply(
 
 /// Re-resolve the catalog so the change is visible without a restart.
 ///
-/// Rediscovery rather than re-resolution in place, because it is the one
-/// path that cannot drift from what a fresh start would produce -- and
-/// because the alternative would have to reconstruct the resolution rules
-/// a second time. It re-reads every file's attributes, which at this
-/// catalog's scale is a directory walk, not a render.
+/// In place rather than by rediscovery. Rediscovery would re-walk the tree
+/// and re-read every file's attributes to learn nothing new -- a hundred
+/// NetCDF headers to rename one card -- and it would hang a filesystem walk
+/// off the end of an HTTP request, which is a worse shape than the cost
+/// alone suggests. An override changes what the catalog *says*, never what
+/// is in it.
 ///
-/// The render services are carried over untouched: an override changes
-/// labels and grouping, never a file's contents, so reopening them would
-/// throw away every warm cache for nothing.
+/// Both paths share one resolution function, so the re-resolved catalog is
+/// what discovery would have produced from the same files.
+///
+/// The render services are carried over untouched, for the same reason: an
+/// override never changes a file's contents, so reopening them would throw
+/// away every warm cache for nothing.
 fn refresh_catalog(state: &AppState) -> Result<(), ApiError> {
     let project = state
         .project
@@ -296,7 +300,7 @@ fn refresh_catalog(state: &AppState) -> Result<(), ApiError> {
     // act on, and failing the request after the write succeeded would
     // report a failure that did not happen.
     let stored = overrides::read_lenient(project.documents());
-    let catalog = super::catalog::Catalog::discover_with_overrides(&state.root, &stored);
-    state.replace_catalog(catalog, state.catalog().open_radargrams());
+    let snapshot = state.catalog();
+    state.replace_catalog(snapshot.reresolved(&stored), snapshot.open_radargrams());
     Ok(())
 }
