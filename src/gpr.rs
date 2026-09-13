@@ -402,10 +402,48 @@ pub struct GPR {
     pub log: Vec<String>,
     /// The steps that the user provided
     pub steps: Vec<String>,
-    /// The horizontal component of the signal distance (m). Defaults to the antenna separation if no correction has been made.
-    horizontal_signal_distance: f32,
-    /// The calculated zero-point (ns). It represents the delay between the transmitter and the receiver.
-    zero_point_ns: f32,
+    /// The antenna separation that the data still needs correcting for (m).
+    ///
+    /// Starts as [`GPRMeta::antenna_separation`], the acquisition fact, and
+    /// is zeroed by [`GPR::correct_antenna_separation`] once the geometry
+    /// has been taken out of the data. The two are therefore different
+    /// quantities: one is what the instrument did, this is processing
+    /// state, and only this one says what `twtt` currently refers to.
+    antenna_separation_effective: f32,
+    /// Where each trace's first sample sits on the original recording's
+    /// clock, in nanoseconds, one value per trace.
+    ///
+    /// A position, not an amount removed. The two are numerically the same
+    /// while a zero correction crops exactly to the first break, and they
+    /// part company as soon as it does not -- so the distinction is worth
+    /// holding now rather than discovering later (#152).
+    ///
+    /// Per trace rather than one number because `zero_corr_max_peak` crops
+    /// per trace -- it aligns each trace's first break -- and a single
+    /// value would be the mean of crops that no individual trace actually
+    /// received. That mean is not a rounding error: it is wrong by the
+    /// spread of the first breaks, on the axis whose origin re-anchoring
+    /// depends on.
+    ///
+    /// Invariant: `crop_ns.len() == width()`. Every operation that changes
+    /// the trace count maintains it alongside `location.cor_points`, which
+    /// has the same shape and the same rule.
+    crop_ns: Vec<f32>,
+    /// Where time zero -- the moment the pulse left the antenna -- sits on
+    /// the recording clock, in nanoseconds, per trace.
+    ///
+    /// Set only by a zero correction, which is the only thing that locates
+    /// it. `0` means it has never been located, which is the honest reading
+    /// of an uncorrected file: its travel times are measured from whenever
+    /// the instrument started sampling.
+    ///
+    /// Distinct from `crop_ns` because "how much was thrown away" and
+    /// "where zero is" are different facts. They are equal immediately
+    /// after a zero correction and part company the moment anything else
+    /// crops -- `subset` today, padding tomorrow (#152).
+    ///
+    /// Same length invariant, maintained by the same five operations.
+    time_zero_ns: Vec<f32>,
     /// User-supplied metadata that should be carried through processing/export.
     pub user_metadata: user_metadata::UserMetadata,
     /// Persistent radargram identity metadata (#116). Resolved once, at the
@@ -725,6 +763,14 @@ impl GPR {
             crs: self.location.crs.clone(),
         };
 
+        // Cropping leading samples moves the origin of the travel-time
+        // axis just as a zero correction does, so it adds to the same
+        // offset. Measured against the pre-subset window and height, which
+        // are what `min_sample_` indexes into; `metadata.time_window` is
+        // rescaled a few lines below.
+        let removed_ns =
+            min_sample_ as f32 * self.metadata.time_window / self.height().max(1) as f32;
+
         let mut metadata = self.metadata.clone();
 
         metadata.last_trace = max_trace_;
@@ -740,8 +786,16 @@ impl GPR {
             log,
             steps: self.steps.clone(),
             topo_data: self.topo_data.clone(),
-            horizontal_signal_distance: self.horizontal_signal_distance,
-            zero_point_ns: self.zero_point_ns,
+            antenna_separation_effective: self.antenna_separation_effective,
+            crop_ns: self.crop_ns[min_trace_ as usize..max_trace_ as usize]
+                .iter()
+                .map(|crop| crop + removed_ns)
+                .collect(),
+            // Time zero does not move: the pulse left the antenna when it
+            // left it, whatever is later done to the record. This is where
+            // the two quantities part company, and the gap is exactly the
+            // travel time of the new sample 0.
+            time_zero_ns: self.time_zero_ns[min_trace_ as usize..max_trace_ as usize].to_vec(),
             user_metadata: self.user_metadata.clone(),
             identity: self.identity.clone(),
         };
@@ -759,6 +813,110 @@ impl GPR {
         );
 
         Ok(new_gpr)
+    }
+
+    /// The antenna separation the data has **not** yet been corrected for,
+    /// in metres.
+    ///
+    /// Equal to `metadata.antenna_separation` until
+    /// [`GPR::correct_antenna_separation`] runs, and zero afterwards. This
+    /// is the one that says what `twtt` currently refers to; the metadata
+    /// field is acquisition provenance and never changes.
+    pub fn antenna_separation_effective(&self) -> f32 {
+        self.antenna_separation_effective
+    }
+
+    /// Where each trace's first sample sits on the recording clock, in
+    /// nanoseconds: how much of the front of the record was discarded.
+    ///
+    /// One value per trace, because `zero_corr_max_peak` crops per trace.
+    /// See [`GPR::twtt_crop_uniform_ns`] for the common case where they all
+    /// agree, and [`GPR::twtt_time_zero_ns`] for where time zero sits.
+    pub fn twtt_crop_ns(&self) -> &[f32] {
+        &self.crop_ns
+    }
+
+    /// The one crop that describes every trace, when there is one.
+    ///
+    /// `None` when they differ, which is the `zero_corr_max_peak` case. The
+    /// export writes an `(x)`-dimensioned variable then, rather than a mean
+    /// that is true of no trace.
+    pub fn twtt_crop_uniform_ns(&self) -> Option<f32> {
+        let first = *self.crop_ns.first()?;
+        self.crop_ns
+            .iter()
+            .all(|v| (v - first).abs() < f32::EPSILON)
+            .then_some(first)
+    }
+
+    /// Where time zero -- the moment the pulse left the antenna -- sits on
+    /// the recording clock, per trace.
+    ///
+    /// `0` until a zero correction locates it, which is the honest reading
+    /// of an uncorrected file: its travel times are measured from whenever
+    /// the instrument started sampling.
+    ///
+    /// Named `time_zero` rather than `t0` on purpose. gprinterp's `t0` for
+    /// the `twtt` axis is **neither this nor the crop** -- it is their
+    /// difference, `crop - time_zero`, the travel-time value of sample 0 --
+    /// and a reviewer with the SPEC in front of them substituted one for
+    /// the other anyway. A name nobody reaches for by mistake is cheaper
+    /// than the comment explaining why they should not have.
+    pub fn twtt_time_zero_ns(&self) -> &[f32] {
+        &self.time_zero_ns
+    }
+
+    /// The one time zero that describes every trace, when there is one.
+    pub fn twtt_time_zero_uniform_ns(&self) -> Option<f32> {
+        let first = *self.time_zero_ns.first()?;
+        self.time_zero_ns
+            .iter()
+            .all(|v| (v - first).abs() < f32::EPSILON)
+            .then_some(first)
+    }
+
+    /// The mean time zero, for the one place that can only take one number.
+    ///
+    /// Only [`GPR::depths`] uses this, where time zero feeds a second-order
+    /// geometric correction to the antenna separation rather than the depth
+    /// scale itself -- so the spread of a per-trace value sits far below the
+    /// resolution of what it corrects. The *exported* values never go
+    /// through here.
+    ///
+    /// Time zero rather than the crop, because the quantity it stands for
+    /// is the direct wave's flight through the air: a fact about the
+    /// geometry, not about how much of the record was kept.
+    fn twtt_time_zero_mean_ns(&self) -> f32 {
+        if self.time_zero_ns.is_empty() {
+            return 0.;
+        }
+        self.time_zero_ns.iter().sum::<f32>() / self.time_zero_ns.len() as f32
+    }
+
+    /// Which gprinterp `y` anchor axis (SPEC §8.2) the `twtt` coordinate is.
+    ///
+    /// After an antenna-separation correction, `twtt` is no longer travel
+    /// time between the antenna pair but travel time to and from a
+    /// theoretical coincident antenna. Both are linear in sample index and
+    /// both hold plausible nanosecond values, so a consumer cannot tell
+    /// them apart from the numbers -- and re-anchoring one onto the other
+    /// is wrong by the antenna geometry while looking entirely reasonable.
+    ///
+    /// Inferred here rather than tracked as a flag because Ridal owns both
+    /// numbers and the inference is exact: the correction is the only thing
+    /// that zeroes the effective separation, and it refuses to run when the
+    /// acquisition separation is already zero. A radargram acquired at zero
+    /// separation is reported as `twtt`, which is both true -- nothing was
+    /// corrected -- and the conservative direction, since a corrected file
+    /// is never mistaken for an uncorrected one.
+    pub fn twtt_anchor_name(&self) -> &'static str {
+        let corrected =
+            self.antenna_separation_effective == 0. && self.metadata.antenna_separation > 0.;
+        if corrected {
+            "twtt_normal_incidence"
+        } else {
+            "twtt"
+        }
     }
 
     pub fn vertical_resolution_ns(&self) -> f32 {
@@ -786,11 +944,12 @@ impl GPR {
             _ => Err(format!("Unknown filetype: {:?}", metadata.data_filepath)),
         }?;
 
+        let n_traces = data.shape()[1];
         let location_data = match data.shape()[1] == location.cor_points.len() {
             true => location,
             false => location.range_fill(0, data.shape()[1] as u32),
         };
-        let horizontal_signal_distance = metadata.antenna_separation;
+        let antenna_separation_effective = metadata.antenna_separation;
 
         Ok(GPR {
             data,
@@ -799,8 +958,9 @@ impl GPR {
             log: Vec::new(),
             steps: Vec::new(),
             topo_data: None,
-            horizontal_signal_distance,
-            zero_point_ns: 0.,
+            antenna_separation_effective,
+            crop_ns: vec![0.; n_traces],
+            time_zero_ns: vec![0.; n_traces],
             user_metadata: user_metadata::UserMetadata::new(),
             identity: RidalIdentity::default(),
         })
@@ -913,8 +1073,28 @@ impl GPR {
             i += 1;
         }
 
-        self.zero_point_ns = self.metadata.time_window * (positive_peaks.mean().unwrap() as f32)
-            / self.height() as f32;
+        // The crop this step actually applied, trace by trace. Recording
+        // the mean here was the bug: the whole point of this step is that
+        // the traces are cropped by *different* amounts, so one number
+        // describes none of them.
+        //
+        // Accumulated, not assigned, because a pipeline may crop more than
+        // once. Computed before `update_data`, so `time_window` and
+        // `height()` still describe the record this crop was measured
+        // against and the terms are in consistent units.
+        let step_ns = self.metadata.time_window / self.height() as f32;
+        for ((crop, time_zero), peak) in self
+            .crop_ns
+            .iter_mut()
+            .zip(self.time_zero_ns.iter_mut())
+            .zip(positive_peaks.iter())
+        {
+            *crop += *peak as f32 * step_ns;
+            // The crop landed on the first break, so that is where time
+            // zero is -- and unlike the crop it is an absolute position,
+            // assigned rather than accumulated.
+            *time_zero = *crop;
+        }
         self.update_data(new_data);
         self.log_event(
             "zero_corr_max_peak",
@@ -938,7 +1118,7 @@ impl GPR {
     pub fn correct_antenna_separation(&mut self) {
         let start_time = SystemTime::now();
 
-        if self.horizontal_signal_distance == 0. {
+        if self.antenna_separation_effective == 0. {
             self.log_event(
                 "correct_antenna_separation",
                 "Skipping antenna separation correction since the antenna separation is 0 m.",
@@ -953,7 +1133,7 @@ impl GPR {
         let max_depth = depths.iter().cloned().fold(0.0f32, f32::max);
 
         if max_depth == 0.0 {
-            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.horizontal_signal_distance);
+            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.antenna_separation_effective);
             panic!("");
         }
 
@@ -963,9 +1143,9 @@ impl GPR {
         //resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
         self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
         //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
-        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.horizontal_signal_distance, height_before, self.height()), start_time);
+        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.antenna_separation_effective, height_before, self.height()), start_time);
 
-        self.horizontal_signal_distance = 0.;
+        self.antenna_separation_effective = 0.;
         self.metadata.samples = self.height() as u32;
     }
 
@@ -1112,7 +1292,11 @@ impl GPR {
             .mean()
             .unwrap();
 
-        self.zero_point_ns = self.metadata.time_window * (first_rise as f32) / self.height() as f32;
+        let removed = self.metadata.time_window * (first_rise as f32) / self.height() as f32;
+        for (crop, time_zero) in self.crop_ns.iter_mut().zip(self.time_zero_ns.iter_mut()) {
+            *crop += removed;
+            *time_zero = *crop;
+        }
         self.update_data(
             self.data
                 .slice_axis(Axis(0), Slice::new(first_rise, None, 1))
@@ -1272,6 +1456,20 @@ impl GPR {
             )
             .view(),
         );
+        // Resampled onto the new trace positions like every other
+        // per-trace quantity here.
+        let crops = resampler.resample_convert::<f64>(
+            &Array1::from_vec(self.crop_ns.iter().map(|v| *v as f64).collect::<Vec<f64>>()).view(),
+        );
+        let time_zeros = resampler.resample_convert::<f64>(
+            &Array1::from_vec(
+                self.time_zero_ns
+                    .iter()
+                    .map(|v| *v as f64)
+                    .collect::<Vec<f64>>(),
+            )
+            .view(),
+        );
         let times = resampler.resample_convert::<f64>(
             &Array1::from_vec(
                 self.location
@@ -1308,6 +1506,8 @@ impl GPR {
 
         self.metadata.last_trace = self.data.shape()[1] as u32;
         self.location.cor_points = cor_points;
+        self.crop_ns = crops.iter().map(|v| *v as f32).collect();
+        self.time_zero_ns = time_zeros.iter().map(|v| *v as f32).collect();
         self.log_event(
             "equidistant_traces",
             &format!("Ran equidistant traces with a spacing of {step} m"),
@@ -1554,6 +1754,11 @@ impl GPR {
         if let Some(data) = self.topo_data.as_mut() {
             self.topo_data = Some(data.select(Axis(1), &traces_to_keep));
         };
+        self.crop_ns = traces_to_keep.iter().map(|i| self.crop_ns[*i]).collect();
+        self.time_zero_ns = traces_to_keep
+            .iter()
+            .map(|i| self.time_zero_ns[*i])
+            .collect();
         for trace in &unique_traces {
             self.location.cor_points.remove(*trace);
         }
@@ -1582,6 +1787,10 @@ impl GPR {
 
         self.location.cor_points =
             filters::window_subset_vec(self.location.cor_points.clone(), window);
+        // The same window rule as the positions, for the same reason: what
+        // survives has to describe the traces that survive.
+        self.crop_ns = filters::window_subset_vec(self.crop_ns.clone(), window);
+        self.time_zero_ns = filters::window_subset_vec(self.time_zero_ns.clone(), window);
         self.metadata.time_interval *= window as f32;
 
         self.update_data(averaged_data);
@@ -1636,8 +1845,8 @@ impl GPR {
         let time_windows = (Array1::<f32>::range(0., self.height() as f32, 1.)
             / self.height() as f32)
             * self.metadata.time_window;
-        let corr_antenna_separation = (self.horizontal_signal_distance.powi(2)
-            - (self.zero_point_ns * self.metadata.medium_velocity).powi(2))
+        let corr_antenna_separation = (self.antenna_separation_effective.powi(2)
+            - (self.twtt_time_zero_mean_ns() * self.metadata.medium_velocity).powi(2))
         .max(0.)
         .sqrt();
         time_windows.mapv(|time| {
@@ -1672,6 +1881,11 @@ impl GPR {
                 .append(other.location.cor_points.clone().as_mut());
 
             self.data.append(Axis(1), other.data.view()).unwrap();
+            // Per trace, so it concatenates with the traces. Two inputs
+            // cropped by different amounts is exactly the case a single
+            // number could not describe.
+            self.crop_ns.extend_from_slice(&other.crop_ns);
+            self.time_zero_ns.extend_from_slice(&other.time_zero_ns);
 
             self.metadata.time_window *= self.height() as f32 / self.metadata.samples as f32;
             self.metadata.samples = self.height() as u32;
@@ -2638,8 +2852,9 @@ pub mod tests {
             data,
             topo_data: None,
             steps: Vec::new(),
-            zero_point_ns: 0.,
-            horizontal_signal_distance: 1.,
+            crop_ns: vec![0.; n_traces],
+            time_zero_ns: vec![0.; n_traces],
+            antenna_separation_effective: 1.,
             log: Vec::new(),
             user_metadata: crate::user_metadata::UserMetadata::new(),
             // A real radargram_id is required for export() to succeed
@@ -2792,8 +3007,9 @@ pub mod tests {
             metadata: meta,
             steps: Vec::new(),
             log: Vec::new(),
-            horizontal_signal_distance: antenna_separation,
-            zero_point_ns: 0.,
+            antenna_separation_effective: antenna_separation,
+            crop_ns: vec![0.; width],
+            time_zero_ns: vec![0.; width],
             user_metadata: crate::user_metadata::UserMetadata::new(),
             identity: super::RidalIdentity::default(),
         }
@@ -2810,11 +3026,418 @@ pub mod tests {
         );
     }
 
+    /// `make_test_gpr` plus the identity that `export_dataset` insists on,
+    /// which `build_processed_gpr` would normally have resolved by now.
+    fn make_exportable_gpr(width: usize, height: usize) -> super::GPR {
+        let mut gpr = make_test_gpr(Some(width), Some(height));
+        gpr.identity.radargram_id = Some(crate::identity::RadargramId::new("test_line").unwrap());
+        gpr
+    }
+
+    /// A radargram with a detectable first break, which `make_test_gpr`'s
+    /// linear ramp does not have: `zero_corr` looks for a jump larger than
+    /// half the mean trace's standard deviation, and every step of a ramp
+    /// is the same size, so it finds nothing and returns immediately.
+    ///
+    /// Silence, then the direct wave, then a weaker reflector further down
+    /// so a second correction also has something to crop.
+    fn make_gpr_with_first_break(width: usize, height: usize) -> super::GPR {
+        let mut gpr = make_exportable_gpr(width, height);
+        let direct = height / 10;
+        let reflector = height / 2;
+        gpr.data = ndarray::Array2::<f32>::from_shape_fn((height, width), |(row, _)| {
+            if row == direct {
+                100.
+            } else if row == reflector {
+                40.
+            } else {
+                0.
+            }
+        });
+        gpr
+    }
+
+    fn f32_attr(ds: &crate::export::ExportDataset, name: &str) -> f32 {
+        match ds.attrs.get(name) {
+            Some(crate::export::ExportAttr::F32(v)) => *v,
+            other => panic!("{name} should be an F32 attribute, got {other:?}"),
+        }
+    }
+
+    fn str_attr(
+        attrs: &std::collections::BTreeMap<String, crate::export::ExportAttr>,
+        name: &str,
+    ) -> String {
+        match attrs.get(name) {
+            Some(crate::export::ExportAttr::String(v)) => v.clone(),
+            other => panic!("{name} should be a string attribute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_export_distinguishes_acquired_separation_from_remaining_separation() {
+        // Before the correction the two agree, and `twtt` is what the
+        // antenna pair recorded.
+        let mut gpr = make_exportable_gpr(64, 256);
+        let acquired = gpr.metadata.antenna_separation;
+        assert!(acquired > 0., "the fixture needs a real separation");
+
+        let before = gpr.export_dataset().unwrap();
+        assert_eq!(f32_attr(&before, "antenna_separation"), acquired);
+        assert_eq!(f32_attr(&before, "antenna_separation_effective"), acquired);
+        assert_eq!(
+            str_attr(&before.coords["twtt"].attrs, "anchor_name"),
+            "twtt"
+        );
+
+        gpr.correct_antenna_separation();
+        let after = gpr.export_dataset().unwrap();
+
+        // The acquisition fact survives -- it is still true that the survey
+        // was flown with the antennas that far apart.
+        assert_eq!(
+            f32_attr(&after, "antenna_separation"),
+            acquired,
+            "acquisition provenance must not be rewritten by processing"
+        );
+        // What changed is how much of it the data still carries. Exporting
+        // the acquisition value here is what would make a reader
+        // double-correct.
+        assert_eq!(f32_attr(&after, "antenna_separation_effective"), 0.);
+        assert_eq!(
+            str_attr(&after.coords["twtt"].attrs, "anchor_name"),
+            "twtt_normal_incidence",
+            "twtt now refers to a coincident antenna, not the pair"
+        );
+    }
+
+    #[test]
+    fn successive_crops_accumulate_into_one_crop() {
+        let mut accumulating = make_gpr_with_first_break(64, 512);
+        accumulating.zero_corr(None);
+        let first = accumulating.twtt_crop_uniform_ns().unwrap();
+        assert!(first > 0., "the fixture must have a first break to find");
+
+        // The same second crop, measured on a radargram that arrives at
+        // the same data carrying no history.
+        let mut in_isolation = make_gpr_with_first_break(64, 512);
+        in_isolation.zero_corr(None);
+        in_isolation.crop_ns.fill(0.);
+        in_isolation.time_zero_ns.fill(0.);
+        in_isolation.zero_corr_max_peak();
+        let second = in_isolation.twtt_crop_uniform_ns().unwrap();
+        assert!(second > 0., "the second crop must remove something too");
+
+        accumulating.zero_corr_max_peak();
+
+        // Assigning instead of accumulating would report `second` alone and
+        // describe the file as starting at the later offset — the same
+        // silently shifted origin SPEC §7.5.1 exists to prevent, arrived at
+        // from inside one pipeline rather than between two.
+        let total = accumulating.twtt_crop_uniform_ns().unwrap();
+        assert!(
+            (total - (first + second)).abs() < 1e-4,
+            "expected {first} + {second}, got {total}"
+        );
+    }
+
+    #[test]
+    fn subsetting_away_leading_samples_adds_to_the_crop() {
+        // `subset(0 -1 <n> -1)` crops the front of every trace exactly as a
+        // zero correction does, so it has to report the same way. Reporting
+        // zero here would describe the file as starting at the original
+        // time zero when it starts `n` samples later -- the silently
+        // shifted origin SPEC §7.5.1 exists to prevent, reached by a
+        // pipeline that never ran a zero correction at all.
+        let gpr = make_gpr_with_first_break(16, 512);
+        let step = gpr.metadata.time_window / gpr.height() as f32;
+        assert_eq!(gpr.twtt_crop_uniform_ns().unwrap(), 0.);
+
+        let cropped = gpr.subset(None, None, Some(40), None).unwrap();
+        let expected = 40.0 * step;
+        assert!(
+            (cropped.twtt_crop_uniform_ns().unwrap() - expected).abs() < 1e-4,
+            "expected {expected}, got {}",
+            cropped.twtt_crop_uniform_ns().unwrap()
+        );
+
+        // And it accumulates with everything else, so two crops in one
+        // pipeline still describe one origin.
+        let twice = cropped.subset(None, None, Some(10), None).unwrap();
+        let second_step = cropped.metadata.time_window / cropped.height() as f32;
+        let total = expected + 10.0 * second_step;
+        assert!(
+            (twice.twtt_crop_uniform_ns().unwrap() - total).abs() < 1e-4,
+            "expected {total}, got {}",
+            twice.twtt_crop_uniform_ns().unwrap()
+        );
+
+        // Trimming the tail changes the window, not the origin.
+        let tail = gpr.subset(None, None, None, Some(100)).unwrap();
+        assert_eq!(tail.twtt_crop_uniform_ns().unwrap(), 0.);
+    }
+
+    #[test]
+    fn cropping_further_moves_the_crop_and_leaves_time_zero_where_it_is() {
+        // The reason there are two numbers. A zero correction locates time
+        // zero and crops to it, so the two agree. Anything that crops
+        // afterwards moves the record without moving the moment the pulse
+        // left the antenna, and their difference becomes the travel time of
+        // the new first sample -- which is precisely the gprinterp anchor
+        // `t0` that neither of them is.
+        let mut gpr = make_gpr_with_first_break(16, 512);
+        gpr.zero_corr(None);
+        let at_zero = gpr.twtt_crop_uniform_ns().unwrap();
+        assert!(at_zero > 0.);
+        assert_eq!(
+            gpr.twtt_time_zero_uniform_ns().unwrap(),
+            at_zero,
+            "the crop landed on time zero, so they agree"
+        );
+
+        let step = gpr.metadata.time_window / gpr.height() as f32;
+        let cropped = gpr.subset(None, None, Some(40), None).unwrap();
+        assert!(
+            (cropped.twtt_crop_uniform_ns().unwrap() - (at_zero + 40.0 * step)).abs() < 1e-3,
+            "the crop grew"
+        );
+        assert_eq!(
+            cropped.twtt_time_zero_uniform_ns().unwrap(),
+            at_zero,
+            "time zero did not move: the pulse left when it left"
+        );
+
+        let anchor_t0 =
+            cropped.twtt_crop_uniform_ns().unwrap() - cropped.twtt_time_zero_uniform_ns().unwrap();
+        assert!(
+            (anchor_t0 - 40.0 * step).abs() < 1e-3,
+            "sample 0 is now 40 samples past time zero, got {anchor_t0}"
+        );
+    }
+
+    #[test]
+    fn a_radargram_nobody_has_zero_corrected_does_not_claim_to_know_time_zero() {
+        // Zero is the honest answer, not a guess: its travel times really
+        // are measured from whenever the instrument started sampling, and
+        // the anchor `t0` that falls out -- crop minus zero -- is the crop,
+        // which is right for exactly that reason.
+        let gpr = make_gpr_with_first_break(16, 512);
+        assert_eq!(gpr.twtt_time_zero_uniform_ns().unwrap(), 0.);
+        assert_eq!(gpr.twtt_crop_uniform_ns().unwrap(), 0.);
+
+        let cropped = gpr.subset(None, None, Some(40), None).unwrap();
+        assert_eq!(cropped.twtt_time_zero_uniform_ns().unwrap(), 0.);
+        assert!(cropped.twtt_crop_uniform_ns().unwrap() > 0.);
+    }
+
+    /// A radargram whose first break arrives at a different sample in each
+    /// trace, which is the situation `zero_corr_max_peak` exists for.
+    fn make_gpr_with_a_wandering_first_break(width: usize, height: usize) -> super::GPR {
+        let mut gpr = make_exportable_gpr(width, height);
+        let reflector = height / 2;
+        gpr.data = ndarray::Array2::<f32>::from_shape_fn((height, width), |(row, col)| {
+            // The direct wave drifts by up to a dozen samples across the
+            // profile, as it does when the antenna leaves the ground.
+            let direct = height / 10 + col % 13;
+            if row == direct {
+                100.
+            } else if row == reflector {
+                40.
+            } else {
+                0.
+            }
+        });
+        gpr
+    }
+
+    #[test]
+    fn a_per_trace_zero_correction_records_a_per_trace_offset() {
+        // The bug this replaced: `zero_corr_max_peak` crops each trace by a
+        // different amount and recorded the mean, which is an offset no
+        // trace actually received. It is not a rounding error -- it is
+        // wrong by the spread of the first breaks, on the axis whose origin
+        // re-anchoring depends on.
+        let mut gpr = make_gpr_with_a_wandering_first_break(64, 512);
+        gpr.zero_corr_max_peak();
+
+        let offsets = gpr.twtt_crop_ns();
+        assert_eq!(offsets.len(), gpr.width(), "one per trace");
+        let min = offsets.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max = offsets.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            max > min,
+            "the fixture's first break has to wander: {offsets:?}"
+        );
+        assert!(
+            gpr.twtt_crop_uniform_ns().is_none(),
+            "no single number describes these"
+        );
+
+        // A uniform crop still reports one number, which is the common case
+        // and what keeps the ordinary file simple.
+        let mut uniform = make_gpr_with_first_break(64, 512);
+        uniform.zero_corr(None);
+        assert!(uniform.twtt_crop_uniform_ns().is_some());
+    }
+
+    #[test]
+    fn the_per_trace_offset_follows_its_traces_through_every_reshaping() {
+        // The invariant the whole change rests on: one value per trace,
+        // maintained by everything that changes the trace count. A stale
+        // vector would be worse than the mean it replaced, since it would
+        // attribute one trace's crop to another.
+        let mut gpr = make_gpr_with_a_wandering_first_break(64, 512);
+        gpr.zero_corr_max_peak();
+        let before = gpr.twtt_crop_ns().to_vec();
+
+        let cropped = gpr.subset(Some(10), Some(40), None, None).unwrap();
+        assert_eq!(cropped.twtt_crop_ns().len(), cropped.width());
+        assert_eq!(
+            cropped.twtt_crop_ns(),
+            &before[10..40],
+            "the traces it kept"
+        );
+
+        let mut averaged = make_gpr_with_a_wandering_first_break(64, 512);
+        averaged.zero_corr_max_peak();
+        averaged.average_traces(4).unwrap();
+        assert_eq!(averaged.twtt_crop_ns().len(), averaged.width());
+
+        let mut thinned = make_gpr_with_a_wandering_first_break(64, 512);
+        thinned.zero_corr_max_peak();
+        thinned.remove_traces(&[0, 1, 2], true).unwrap();
+        assert_eq!(thinned.twtt_crop_ns().len(), thinned.width());
+        assert_eq!(thinned.twtt_crop_ns()[0], before[3]);
+
+        // Time zero carries the same invariant through the same operations,
+        // and a length mismatch between the two would be a silent
+        // misattribution rather than a panic.
+        for gpr in [&cropped, &averaged, &thinned] {
+            assert_eq!(
+                gpr.twtt_time_zero_ns().len(),
+                gpr.width(),
+                "time zero must stay one per trace too"
+            );
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn both_offsets_reach_the_file_shaped_by_whether_the_traces_agree() {
+        // Written and read back as real NetCDF, because both shapes are new
+        // to the writer: its `data_vars` loop took 2D arrays and `u8`
+        // scalars and silently skipped everything else, so a dataset that
+        // looks right proves nothing about the file.
+        //
+        // One test for both shapes because they are one property -- the
+        // shape is the claim -- and because every extra NetCDF file in the
+        // suite is another chance to meet #129.
+        let dir = tempfile::tempdir().unwrap();
+
+        let mut uniform = make_gpr_with_first_break(48, 512);
+        uniform.zero_corr(None);
+        let uniform_expected = uniform.twtt_crop_uniform_ns().unwrap();
+        assert!(uniform_expected > 0., "a crop of zero would prove nothing");
+        let uniform_path = dir.path().join("uniform.nc");
+        uniform.export(&uniform_path).unwrap();
+
+        let mut wandering = make_gpr_with_a_wandering_first_break(48, 512);
+        wandering.zero_corr_max_peak();
+        let wandering_expected = wandering.twtt_crop_ns().to_vec();
+        assert!(
+            wandering.twtt_crop_uniform_ns().is_none(),
+            "the fixture's first break has to wander"
+        );
+        let wandering_path = dir.path().join("wandering.nc");
+        wandering.export(&wandering_path).unwrap();
+
+        let file = netcdf::open(&uniform_path).unwrap();
+        for name in ["twtt_crop", "twtt_time_zero"] {
+            let var = file
+                .variable(name)
+                .unwrap_or_else(|| panic!("{name} should be written as a variable"));
+            assert_eq!(
+                var.dimensions().len(),
+                0,
+                "{name}: a scalar, not a length-1 array"
+            );
+            // The crop landed on time zero, so both hold it.
+            let found = var.get_value::<f64, _>(()).unwrap();
+            assert!(
+                (found - uniform_expected as f64).abs() < 1e-6,
+                "{name}: {found} != {uniform_expected}"
+            );
+            assert!(matches!(
+                var.attribute("units").unwrap().value().unwrap(),
+                netcdf::AttributeValue::Str(u) if u == "ns"
+            ));
+        }
+        drop(file);
+
+        let file = netcdf::open(&wandering_path).unwrap();
+        for name in ["twtt_crop", "twtt_time_zero"] {
+            let var = file.variable(name).unwrap();
+            // `(x)` says "these differ per trace"; a scalar would say one
+            // number is true of all of them.
+            assert_eq!(var.dimensions().len(), 1, "{name}");
+            assert_eq!(var.dimensions()[0].name(), "x", "{name}");
+            let found = var.get_values::<f64, _>(..).unwrap();
+            assert_eq!(found.len(), wandering_expected.len(), "{name}");
+            for (found, expected) in found.iter().zip(wandering_expected.iter()) {
+                assert!(
+                    (found - *expected as f64).abs() < 1e-6,
+                    "{name}: {found} != {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_level_2_export_reads_back_what_the_radargram_declared() {
+        // The writer and the reader, across a real file. Level 2 puts these
+        // on every row so a point stays self-describing once several
+        // radargrams' points are merged, and the value it writes has to be
+        // the one this radargram actually declared.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("line.nc");
+
+        let mut gpr = make_gpr_with_first_break(48, 512);
+        gpr.correct_antenna_separation();
+        gpr.export(&path).unwrap();
+
+        let geometry = crate::interp::source::read_geometry(&path).unwrap();
+        assert_eq!(geometry.antenna_separation_effective_m, Some(0.0));
+        assert_eq!(
+            geometry.twtt_anchor.as_deref(),
+            Some("twtt_normal_incidence")
+        );
+    }
+
+    #[test]
+    fn a_radargram_acquired_at_zero_separation_still_declares_plain_twtt() {
+        // Nothing was corrected -- `correct_antenna_separation` refuses to
+        // run at all here -- so the axis is the recorded one. The two
+        // quantities happen to coincide, but claiming the corrected name
+        // would let an uncorrected file be re-anchored onto a corrected
+        // one, and this is the direction that must fail closed.
+        let mut gpr = make_exportable_gpr(32, 128);
+        gpr.metadata.antenna_separation = 0.;
+        gpr.antenna_separation_effective = 0.;
+
+        gpr.correct_antenna_separation();
+        let ds = gpr.export_dataset().unwrap();
+        assert_eq!(str_attr(&ds.coords["twtt"].attrs, "anchor_name"), "twtt");
+        assert_eq!(f32_attr(&ds, "antenna_separation_effective"), 0.);
+    }
+
     #[test]
     fn test_correct_antenna_separation() {
         let mut gpr = make_test_gpr(Some(10), Some(1024));
 
-        gpr.horizontal_signal_distance = 30.;
+        gpr.antenna_separation_effective = 30.;
 
         assert_eq!(gpr.data[[10, 0]], 10.);
         assert_eq!(gpr.log.len(), 0);

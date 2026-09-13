@@ -141,6 +141,7 @@ The same export is available without a browser:
 ridal interp export line.nc picks.gprinterp.json -o points.geojson --spacing 25
 ```
 Each point carries its layer, trace and sample, distance along the profile, two-way travel time, depth, and both projected and WGS84 coordinates — along with which radargram and which processing revision it came from, since depth depends on how the radargram was processed.
+It also carries what its travel time is measured against, since an antenna separation correction changes that: the separation still to be corrected for, and whether the time is between the antenna pair or from a coincident antenna.
 
 
 ### Sharing a project with other people

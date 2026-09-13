@@ -179,6 +179,8 @@ fn properties(point: &Level2Point, export: &Level2Export) -> serde_json::Value {
         "longitude": point.longitude,
         "latitude": point.latitude,
         "crs": export.crs,
+        "antenna_separation_effective_m": export.antenna_separation_effective_m,
+        "twtt_anchor": export.twtt_anchor,
         "user": point.user,
     })
 }
@@ -186,7 +188,7 @@ fn properties(point: &Level2Point, export: &Level2Export) -> serde_json::Value {
 /// Column order for the CSV output. Also the documented field order.
 const CSV_HEADER: &str = "radargram_id,revision_id,layer,line_index,point_index,feature_id,\
                           trace,sample,distance_m,twtt_ns,depth_m,easting,northing,longitude,\
-                          latitude,crs,user";
+                          latitude,crs,antenna_separation_effective_m,twtt_anchor,user";
 
 /// Serialize as CSV.
 ///
@@ -204,7 +206,7 @@ pub fn to_csv(exports: &[Level2Export]) -> String {
         for point in &export.points {
             let _ = writeln!(
                 out,
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 csv_escape(&point.radargram_id),
                 csv_escape(&point.revision_id),
                 csv_escape(&point.layer),
@@ -221,6 +223,14 @@ pub fn to_csv(exports: &[Level2Export]) -> String {
                 point.longitude,
                 point.latitude,
                 csv_escape(&export.crs),
+                // Empty rather than a stand-in value: the older file this
+                // came from does not record it, and any number written here
+                // would be an assertion Ridal cannot make.
+                export
+                    .antenna_separation_effective_m
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+                csv_escape(export.twtt_anchor.as_deref().unwrap_or("")),
                 csv_escape(&point.user),
             );
         }
@@ -269,6 +279,8 @@ mod tests {
             revision_id: "revabc123".into(),
             crs: "EPSG:32633".into(),
             spacing_m: Some(10.0),
+            antenna_separation_effective_m: Some(0.0),
+            twtt_anchor: Some("twtt_normal_incidence".into()),
         }
     }
 
@@ -338,8 +350,46 @@ mod tests {
             row.starts_with("test-line,revabc123,bed,0,3,f-0001,30,12.5,30,5,0.5,"),
             "{row}"
         );
-        assert!(row.ends_with("EPSG:32633,default"), "{row}");
+        assert!(
+            row.ends_with("EPSG:32633,0,twtt_normal_incidence,default"),
+            "{row}"
+        );
         assert!(lines.next().is_none());
+    }
+
+    #[test]
+    fn a_row_says_what_its_travel_time_refers_to() {
+        // Both columns are needed to answer it. An effective separation of
+        // zero could equally mean "corrected" or "acquired with coincident
+        // antennas", and the anchor name is what tells them apart -- so a
+        // reader does not have to know Ridal's inference rule.
+        let text = to_csv(&[export()]);
+        let header: Vec<&str> = CSV_HEADER.split(',').collect();
+        let row: Vec<&str> = text.lines().nth(1).unwrap().split(',').collect();
+        let field = |name: &str| row[header.iter().position(|h| *h == name).unwrap()];
+
+        assert_eq!(field("antenna_separation_effective_m"), "0");
+        assert_eq!(field("twtt_anchor"), "twtt_normal_incidence");
+    }
+
+    #[test]
+    fn an_older_radargram_leaves_the_new_columns_empty_rather_than_guessing() {
+        // A radargram processed before Ridal recorded these does not say,
+        // and any number written here would be an assertion Ridal cannot
+        // make. Its picks still export.
+        let mut silent = export();
+        silent.antenna_separation_effective_m = None;
+        silent.twtt_anchor = None;
+
+        let text = to_csv(&[silent.clone()]);
+        let row = text.lines().nth(1).unwrap();
+        assert!(row.ends_with("EPSG:32633,,,default"), "{row}");
+
+        let value: serde_json::Value =
+            serde_json::from_str(&to_geojson(&[silent], &OutputCrs::Wgs84).unwrap()).unwrap();
+        let properties = &value["features"][0]["properties"];
+        assert!(properties["antenna_separation_effective_m"].is_null());
+        assert!(properties["twtt_anchor"].is_null());
     }
 
     #[test]

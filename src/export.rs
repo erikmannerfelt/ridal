@@ -73,6 +73,10 @@ pub enum ExportArray<'a> {
     F64Owned1D(Vec<f64>),
     U32Owned1D(Vec<u32>),
     U8Scalar(u8), // For grid_mapping
+    /// A dimensionless scalar. Distinct from a length-1 array: a reader
+    /// checking `ndim` can tell "one value for the whole file" from "one
+    /// value per trace, and there is one trace".
+    F64Scalar(f64),
 }
 
 #[derive(Clone, Debug)]
@@ -159,6 +163,10 @@ fn export_var_to_py<'py>(py: Python<'py>, var: &ExportVariable<'_>) -> PyResult<
             dict.set_item("data", py_arr)?;
         }
         ExportArray::U8Scalar(v) => {
+            let py_arr = PyArray1::from_slice(py, &[v.to_owned()]).get_item(0)?;
+            dict.set_item("data", py_arr)?;
+        }
+        ExportArray::F64Scalar(v) => {
             let py_arr = PyArray1::from_slice(py, &[v.to_owned()]).get_item(0)?;
             dict.set_item("data", py_arr)?;
         }
@@ -306,6 +314,18 @@ impl GPR {
         );
         attrs.insert(
             "antenna_separation_unit".into(),
+            ExportAttr::String("m".into()),
+        );
+        // Acquisition provenance, above, next to processing state, here.
+        // `antenna_separation` alone cannot distinguish "acquired at 2 m,
+        // already corrected for" from "2 m, still to correct for", and a
+        // reader using it for geometry would double-correct the second.
+        attrs.insert(
+            "antenna_separation_effective".into(),
+            ExportAttr::F32(self.antenna_separation_effective()),
+        );
+        attrs.insert(
+            "antenna_separation_effective_unit".into(),
             ExportAttr::String("m".into()),
         );
         attrs.insert(
@@ -465,6 +485,13 @@ impl GPR {
                 attrs: [
                     ("units".into(), "ns".into()),
                     ("long_name".into(), "two-way travel time".into()),
+                    // Which physical quantity this axis is, declared on the
+                    // variable alongside `units` because it is the same kind
+                    // of fact. See `GPR::twtt_anchor_name`.
+                    (
+                        "anchor_name".into(),
+                        self.twtt_anchor_name().to_string().into(),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -556,6 +583,93 @@ impl GPR {
 
         // ---------- Data variables ----------
         let mut data_vars: BTreeMap<String, ExportVariable<'_>> = BTreeMap::new();
+
+        // Two facts about the travel-time axis that a radargram knows and
+        // could not previously say.
+        //
+        // `twtt_crop` is how much of the front of the record was discarded;
+        // `twtt_time_zero` is where time zero -- the moment the pulse left the
+        // antenna -- sits on the same recording clock. They are equal
+        // immediately after a zero correction, which is why one number
+        // seemed to be enough, and they part company the moment anything
+        // else crops the record.
+        //
+        // Neither is the gprinterp SPEC §7.5.1 anchor `t0`, which is their
+        // difference `twtt_crop - twtt_time_zero`: the travel-time value of
+        // sample 0. Zero for an ordinarily zero-corrected radargram,
+        // positive for one cropped further without re-zeroing, negative
+        // once padding keeps samples from before time zero. Neither
+        // variable is named `t0`, because the one that was got substituted
+        // for the anchor by a reader who had the SPEC to hand.
+        //
+        // Each is a scalar where one number is true of every trace, and
+        // `(x)` where it is not -- which is the `zero_corr_max_peak` case,
+        // since aligning each trace's first break crops them by different
+        // amounts. Writing a mean there would be a number true of no trace.
+        // This is why they are variables rather than global attributes:
+        // attributes cannot carry a dimension.
+        let per_trace = |uniform: Option<f32>, values: &[f32]| match uniform {
+            Some(value) => (Vec::new(), ExportArray::F64Scalar(value as f64)),
+            None => (
+                vec!["x".to_string()],
+                ExportArray::F64Owned1D(values.iter().map(|v| *v as f64).collect()),
+            ),
+        };
+
+        let (crop_dims, crop_data) = per_trace(self.twtt_crop_uniform_ns(), self.twtt_crop_ns());
+        data_vars.insert(
+            "twtt_crop".into(),
+            ExportVariable {
+                dims: crop_dims,
+                data: crop_data,
+                attrs: [
+                    ("units".into(), "ns".into()),
+                    (
+                        "long_name".into(),
+                        "recording time discarded before the first sample".into(),
+                    ),
+                    (
+                        "comment".into(),
+                        "Where sample 0 sits on the original recording's clock: how \
+                         much of the front of the record was cropped away, by a zero \
+                         correction or by subsetting. Provenance about what was \
+                         discarded. See twtt_time_zero for where time zero is."
+                            .into(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+
+        let (t0_dims, t0_data) =
+            per_trace(self.twtt_time_zero_uniform_ns(), self.twtt_time_zero_ns());
+        data_vars.insert(
+            "twtt_time_zero".into(),
+            ExportVariable {
+                dims: t0_dims,
+                data: t0_data,
+                attrs: [
+                    ("units".into(), "ns".into()),
+                    (
+                        "long_name".into(),
+                        "time zero on the recording clock".into(),
+                    ),
+                    (
+                        "comment".into(),
+                        "Where the transmitted pulse left the antenna, on the original \
+                         recording's clock. Zero means it has never been located, \
+                         which is the case for a radargram no zero correction has run \
+                         on: its travel times are measured from whenever the \
+                         instrument started sampling. The travel time of sample i is \
+                         twtt[i] + twtt_crop - twtt_time_zero."
+                            .into(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
 
         let grid_mapping =
             crate::coords::build_grid_mapping_from_crs(&self.location.crs)?.ok_or(format!(
