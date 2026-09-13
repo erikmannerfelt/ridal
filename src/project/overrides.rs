@@ -72,8 +72,15 @@ pub struct RadargramOverride {
     pub display_name: Option<DisplayName>,
     /// Membership only. The group's *name* lives in [`GroupOverride`], so
     /// that two members cannot disagree about it.
+    ///
+    /// `None` means inherit, which is not the same as [`Ungrouped`]: "the
+    /// file decides" and "this one is deliberately in no group" are
+    /// different answers, and a project needs both -- the second is how a
+    /// radargram gets *out* of a group it was processed into.
+    ///
+    /// [`Ungrouped`]: GroupMembership::Ungrouped
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub group_id: Option<GroupId>,
+    pub group: Option<GroupMembership>,
     /// Curation, not access control. An unlisted radargram is absent from
     /// listings and still reachable by anyone who knows its id -- the same
     /// sense as an unlisted video or phone number. Making it enforced would
@@ -98,6 +105,30 @@ impl RadargramOverride {
     }
 }
 
+/// Where a project puts a radargram, over what its file says.
+///
+/// Tagged rather than a bare `Option<GroupId>` because there are three
+/// states and an option has two: inherit, no group, and a named group. The
+/// JSON reads as `"ungrouped"` or `{"group": "dronbreen-2022"}`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupMembership {
+    /// In no group, whatever the file says.
+    Ungrouped,
+    /// In this group. Its *name* comes from [`GroupOverride`] or from the
+    /// other members, never from here.
+    Group(GroupId),
+}
+
+impl GroupMembership {
+    pub fn id(&self) -> Option<&GroupId> {
+        match self {
+            Self::Ungrouped => None,
+            Self::Group(id) => Some(id),
+        }
+    }
+}
+
 /// What a project says about a group.
 ///
 /// An object rather than a bare string deliberately: it is the obvious home
@@ -119,9 +150,9 @@ impl GroupOverride {
 /// Everything a project says over its files.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CatalogOverrides {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub radargrams: BTreeMap<RadargramId, RadargramOverride>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub groups: BTreeMap<GroupId, GroupOverride>,
 }
 
@@ -278,7 +309,7 @@ mod tests {
                 radargram("dronbreen-0237"),
                 RadargramOverride {
                     display_name: DisplayName::from_input("Drønbreen centre line"),
-                    group_id: Some(group("dronbreen-2022")),
+                    group: Some(GroupMembership::Group(group("dronbreen-2022"))),
                     unlisted: false,
                 },
             );
@@ -298,7 +329,10 @@ mod tests {
             entry.display_name.as_ref().map(|n| n.as_str()),
             Some("Drønbreen centre line")
         );
-        assert_eq!(entry.group_id, Some(group("dronbreen-2022")));
+        assert_eq!(
+            entry.group,
+            Some(GroupMembership::Group(group("dronbreen-2022")))
+        );
         assert_eq!(
             read_back.groups[&group("dronbreen-2022")]
                 .name
@@ -329,7 +363,7 @@ mod tests {
 
         let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
         assert!(text.contains("display_name"), "{text}");
-        assert!(!text.contains("group_id"), "{text}");
+        assert!(!text.contains("\"group\":"), "{text}");
         assert!(!text.contains("unlisted"), "{text}");
     }
 
@@ -433,6 +467,41 @@ mod tests {
             Err(OverridesError::Malformed { .. })
         ));
         assert!(update(&store, |_| Ok(())).is_err());
+    }
+
+    #[test]
+    fn inherit_and_ungrouped_are_different_answers() {
+        // An `Option<GroupId>` would collapse these, and the second is how
+        // a radargram gets *out* of a group it was processed into.
+        let (dir, store) = store();
+        update(&store, |o| {
+            o.radargrams.insert(
+                radargram("stays"),
+                RadargramOverride {
+                    display_name: DisplayName::from_input("Inherits its grouping"),
+                    ..Default::default()
+                },
+            );
+            o.radargrams.insert(
+                radargram("leaves"),
+                RadargramOverride {
+                    group: Some(GroupMembership::Ungrouped),
+                    ..Default::default()
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        let (read_back, _) = read(&store).unwrap();
+        assert_eq!(read_back.radargram(&radargram("stays")).group, None);
+        assert_eq!(
+            read_back.radargram(&radargram("leaves")).group,
+            Some(GroupMembership::Ungrouped)
+        );
+
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert!(text.contains("\"ungrouped\""), "{text}");
     }
 
     #[test]

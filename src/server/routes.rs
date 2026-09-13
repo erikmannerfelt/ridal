@@ -170,6 +170,13 @@ struct DatasetSummary {
     processing_datetime_display: String,
     revision_id: String,
     shape: (usize, usize),
+    /// Left out of listings by a project override (#145).
+    ///
+    /// Only ever reaches a caller who can change it, since listings for
+    /// everyone else drop the entry entirely -- so the flag is what the
+    /// catalog page collapses behind a disclosure rather than something a
+    /// `picker` could read off the API.
+    unlisted: bool,
     /// Picked lines stored for this radargram, across every user.
     ///
     /// `None` when the catalog is not a project, which is different from
@@ -346,16 +353,36 @@ fn summarize(entry: &super::catalog::CatalogEntry, line_count: Option<usize>) ->
         processing_datetime_display: format_datetime_for_display(&entry.processing_datetime),
         revision_id: entry.revision_id.to_string(),
         shape: entry.shape,
+        unlisted: entry.unlisted,
     }
 }
 
-pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// Which catalog entries a caller sees in a listing.
+///
+/// Unlisted is **curation, not access control**. It removes a radargram
+/// from listings for `picker` and below; `operator` and above still see it,
+/// collapsed, because they are the people who can change it. Nothing stops
+/// anyone who knows the id from opening `/view/<id>` or the API, and that
+/// is deliberate: making it enforced would be per-radargram permissions,
+/// which #131 put out of scope, and a half-enforced version would promise
+/// a boundary it does not keep.
+fn listable<'a>(
+    entries: impl Iterator<Item = &'a super::catalog::CatalogEntry>,
+    caller: &Caller,
+) -> Vec<&'a super::catalog::CatalogEntry> {
+    let curates = caller.may(crate::project::users::Role::Operator);
+    entries.filter(|e| curates || !e.unlisted).collect()
+}
+
+pub async fn list_datasets(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+) -> impl IntoResponse {
     // Counted here too, so `line_count` means the same thing in the API as
     // it does on a card rather than being null for a project.
     let catalog = state.catalog();
-    let entries: Vec<DatasetSummary> = catalog
-        .entries
-        .iter()
+    let entries: Vec<DatasetSummary> = listable(catalog.entries.iter(), &caller)
+        .into_iter()
         .map(|entry| {
             summarize(
                 entry,
@@ -779,15 +806,17 @@ pub async fn index_page(
         )
     };
 
-    let entries: Vec<DatasetSummary> = catalog.entries.iter().map(&summarize_entry).collect();
+    // One filter, applied before anything is grouped or counted, so a
+    // heading cannot survive its only member being unlisted.
+    let visible = listable(catalog.entries.iter(), &caller);
+    let entries: Vec<DatasetSummary> = visible.iter().copied().map(&summarize_entry).collect();
     let warnings: Vec<String> = catalog.warnings.iter().map(|w| w.message.clone()).collect();
 
     // Every entry gets one map on the index page (#121): named groups,
     // and "Ungrouped" for entries with none, presented identically
     // rather than as a special case -- entries_in_group(NO_GROUP_ID)
     // already matches group_id.is_none() for exactly this reason.
-    let mut group_ids: Vec<&str> = catalog
-        .entries
+    let mut group_ids: Vec<&str> = visible
         .iter()
         .filter_map(|e| e.group_id.as_ref().map(|g| g.as_str()))
         .collect();
@@ -805,17 +834,18 @@ pub async fn index_page(
             GroupSummary {
                 id: id.to_string(),
                 label,
-                entries: catalog
-                    .entries_in_group(id)
-                    .into_iter()
+                entries: visible
+                    .iter()
+                    .copied()
+                    .filter(|e| e.group_id.as_ref().is_some_and(|g| g.as_str() == id))
                     .map(&summarize_entry)
                     .collect(),
             }
         })
         .collect();
-    let ungrouped_entries: Vec<DatasetSummary> = catalog
-        .entries
+    let ungrouped_entries: Vec<DatasetSummary> = visible
         .iter()
+        .copied()
         .filter(|e| e.group_id.is_none())
         .map(&summarize_entry)
         .collect();
@@ -1225,7 +1255,7 @@ fn merged_track_geojson(
 ) -> Result<Response, ApiError> {
     caller.require_download(crate::project::users::DownloadScope::All, "tracks")?;
     let catalog = state.catalog();
-    let entries = scope.entries(&catalog);
+    let (entries, unlisted) = scope.listed_entries(&catalog);
     if entries.is_empty() {
         return Err(ApiError::not_found(
             scope.empty_code(),
@@ -1250,14 +1280,36 @@ fn merged_track_geojson(
     }))
     .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
 
-    Ok((
+    let mut response = (
         [
             (header::CONTENT_TYPE, "application/geo+json".to_string()),
             attachment(&format!("{}-tracks.geojson", scope.slug())),
         ],
         body,
     )
-        .into_response())
+        .into_response();
+    if let Some(note) = unlisted_note(unlisted) {
+        if let Ok(value) = format!("199 ridal \"{note}\"").parse() {
+            response.headers_mut().insert(header::WARNING, value);
+        }
+    }
+    Ok(response)
+}
+
+/// How a merged download reports the members it left out.
+///
+/// Counted rather than named: the omission is the point of unlisting, and
+/// listing the ids in a header anyone can read would undo it for the
+/// `picker` who downloaded the file. `None` when nothing was omitted, so
+/// the ordinary case carries no header at all.
+pub(super) fn unlisted_note(omitted: usize) -> Option<String> {
+    match omitted {
+        0 => None,
+        1 => Some("1 radargram here is unlisted and is not in this file.".to_string()),
+        n => Some(format!(
+            "{n} radargrams here are unlisted and are not in this file."
+        )),
+    }
 }
 
 /// One GeoJSON Feature per track segment.

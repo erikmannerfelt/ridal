@@ -435,6 +435,23 @@ impl MergeScope {
         }
     }
 
+    /// What a merged download covers, and how many members it leaves out.
+    ///
+    /// "Everything in this project" quietly including a radargram somebody
+    /// unlisted is a surprise, so they are left out -- and counted, because
+    /// a merged file that silently omits members looks complete. The caller
+    /// puts the count in the `Warning` header beside the other caveats.
+    pub fn listed_entries<'a>(
+        &self,
+        catalog: &'a Catalog,
+    ) -> (Vec<&'a super::catalog::CatalogEntry>, usize) {
+        let all = self.entries(catalog);
+        let total = all.len();
+        let listed: Vec<_> = all.into_iter().filter(|e| !e.unlisted).collect();
+        let omitted = total - listed.len();
+        (listed, omitted)
+    }
+
     /// Leading component of the download's filename. A slug in both cases:
     /// group ids are validated slugs, and `catalog` is a fixed literal, so
     /// neither can carry a quote into a `Content-Disposition` header.

@@ -34,6 +34,22 @@ pub struct CatalogEntry {
     /// unlisted radargram is left out of listings and still reachable by
     /// anyone who knows its id.
     pub unlisted: bool,
+    /// What the file said, before the project's overrides (#145).
+    ///
+    /// Kept beside the resolved values so the Edit properties dialog can
+    /// show what each field *would* be without its override, and offer to
+    /// revert to it. Without that, an override silently shadows a later
+    /// reprocessing that set the attribute properly, and nothing on screen
+    /// explains why the new name did not take.
+    pub from_file: FileMetadata,
+}
+
+/// The catalog metadata a radargram's own file carries.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FileMetadata {
+    pub display_name: Option<DisplayName>,
+    pub group_name: Option<GroupName>,
+    pub group_id: Option<GroupId>,
 }
 
 impl CatalogEntry {
@@ -223,16 +239,22 @@ impl Catalog {
 
             let revision_id =
                 RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime);
+            let display_name = meta.display_name;
             let entry = CatalogEntry {
                 radargram_id: meta.radargram_id.clone(),
                 revision_id,
-                display_name: meta.display_name,
-                group_name,
-                group_id,
+                display_name: display_name.clone(),
+                group_name: group_name.clone(),
+                group_id: group_id.clone(),
                 processing_datetime: meta.processing_datetime,
                 shape: meta.shape,
                 relative_path: candidate.relative_path.clone(),
                 unlisted: false,
+                from_file: FileMetadata {
+                    display_name: display_name.clone(),
+                    group_name: group_name.clone(),
+                    group_id: group_id.clone(),
+                },
             };
 
             let id_key = meta.radargram_id.as_str().to_string();
@@ -313,13 +335,14 @@ fn apply_override(entry: &mut CatalogEntry, overrides: &CatalogOverrides) {
     if let Some(name) = &over.display_name {
         entry.display_name = Some(name.clone());
     }
-    if let Some(group_id) = &over.group_id {
-        if entry.group_id.as_ref() != Some(group_id) {
+    if let Some(membership) = &over.group {
+        let new_id = membership.id();
+        if entry.group_id.as_ref() != new_id {
             // The name in the file is the name of the group this radargram
             // was *processed* into, and it has just been moved out of it.
             entry.group_name = None;
         }
-        entry.group_id = Some(group_id.clone());
+        entry.group_id = new_id.cloned();
     }
     entry.unlisted = over.unlisted;
 }
@@ -729,7 +752,9 @@ mod tests {
         overrides.radargrams.insert(
             radargram("line-01"),
             crate::project::overrides::RadargramOverride {
-                group_id: Some(group("dronbreen-2022")),
+                group: Some(crate::project::overrides::GroupMembership::Group(group(
+                    "dronbreen-2022",
+                ))),
                 ..Default::default()
             },
         );
@@ -881,6 +906,7 @@ mod tests {
             shape: (10, 10),
             relative_path: "a.nc".to_string(),
             unlisted: false,
+            from_file: FileMetadata::default(),
         };
         assert_eq!(entry.effective_label(), "Kroppbreen line 1");
 
