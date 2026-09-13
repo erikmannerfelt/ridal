@@ -504,7 +504,7 @@ where
         // Held until the render finishes, then released for the next
         // waiter.
         let _permit = permit;
-        let radargram = state.radargram(&radargram_id).ok_or_else(|| {
+        let radargram = state.catalog().radargram(&radargram_id).ok_or_else(|| {
             ApiError::internal(
                 "dataset_unavailable",
                 "Dataset is cataloged but its render service failed to initialize.",
@@ -532,7 +532,9 @@ pub async fn overview_image(
     let dataset_view = lookup_view(&view)?;
     let profile = lookup_profile(query.profile.as_deref().unwrap_or("default"))?;
 
-    let radargram = state
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
         .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {
             ApiError::internal(
@@ -579,7 +581,9 @@ pub async fn chunk_image(
         ApiError::bad_request("invalid_chunk_coordinate", format!("Invalid y: '{y_raw}'"))
     })?;
 
-    let radargram = state
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
         .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {
             ApiError::internal(
@@ -852,7 +856,9 @@ pub async fn viewer_page(
     let active_profile = resolve_profile(&state, &caller, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
 
-    let radargram = state
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
         .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {
             PageError(ApiError::internal(
@@ -1032,7 +1038,9 @@ pub async fn dataset_image(
     let dataset_view = lookup_view(&view)?;
     let base = lookup_profile(&resolve_profile(&state, &caller, query.profile))?;
 
-    let radargram = state
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
         .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {
             ApiError::internal(
