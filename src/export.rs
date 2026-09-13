@@ -584,20 +584,29 @@ impl GPR {
         // ---------- Data variables ----------
         let mut data_vars: BTreeMap<String, ExportVariable<'_>> = BTreeMap::new();
 
-        // The time cropped off the start of every trace, which gprinterp
+        // The time cropped off the start of each trace, which gprinterp
         // SPEC §7.5.1 needs as the `t0` of the `twtt` axis. Without it, two
         // revisions that cropped differently both describe themselves as
         // starting at zero and re-anchor silently wrong.
         //
-        // Scalar because that is what Ridal's zero corrections produce. A
-        // per-trace first-break correction would write this same variable
-        // dimensioned `(x)`, which is why it is a variable and not another
-        // global attribute -- attributes cannot carry a dimension.
+        // A scalar where one number is true of every trace, and `(x)` where
+        // it is not -- which is the `zero_corr_max_peak` case, since
+        // aligning each trace's first break crops them by different
+        // amounts. Writing the mean there would be a number true of no
+        // trace. This is why it is a variable rather than another global
+        // attribute: attributes cannot carry a dimension.
+        let (t0_dims, t0_data) = match self.twtt_t0_uniform_ns() {
+            Some(offset) => (Vec::new(), ExportArray::F64Scalar(offset as f64)),
+            None => (
+                vec!["x".to_string()],
+                ExportArray::F64Owned1D(self.twtt_t0_ns().iter().map(|v| *v as f64).collect()),
+            ),
+        };
         data_vars.insert(
             "twtt_t0".into(),
             ExportVariable {
-                dims: Vec::new(),
-                data: ExportArray::F64Scalar(self.twtt_t0_ns() as f64),
+                dims: t0_dims,
+                data: t0_data,
                 attrs: [
                     ("units".into(), "ns".into()),
                     (
@@ -608,7 +617,9 @@ impl GPR {
                         "comment".into(),
                         "Time removed from the start of each trace by zero correction. \
                          The twtt axis is measured from the original time zero, so \
-                         twtt[i] = twtt_t0 + i * dt."
+                         twtt[i] = twtt_t0 + i * dt. A scalar where every trace was \
+                         cropped by the same amount, and dimensioned (x) where they \
+                         differ."
                             .into(),
                     ),
                 ]
