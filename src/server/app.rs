@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path as StdPath, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::routing::get;
 use axum::Router;
@@ -71,8 +71,23 @@ pub struct AppState {
     /// CodeQL doesn't credit a barrier it can't see next to the check it
     /// guards.
     root_is_file: bool,
-    pub catalog: Catalog,
-    pub radargrams: HashMap<String, OpenRadargram>,
+    /// The catalog and its render services, swappable at runtime (#147).
+    ///
+    /// One lock over both, not one each. Two locks taken in a fixed order
+    /// prevent deadlock; they do not prevent *tearing*, and a reader that
+    /// took the catalog from one generation and a render service from the
+    /// next would render a radargram at the wrong shape, or be told a
+    /// freshly added one is unavailable.
+    ///
+    /// `Arc` rather than the value so a reader takes a snapshot in O(1) and
+    /// drops the guard immediately. That matters more than it looks: these
+    /// are `async` handlers, a `std` read guard is not `Send`, and holding
+    /// one across an `.await` would not compile -- so the choice is between
+    /// copy-on-write and cloning a hundred entries per request. Mutation
+    /// builds a whole new snapshot and swaps the pointer, which also means
+    /// a request that started before an edit finishes against the state it
+    /// started with rather than seeing it change mid-flight.
+    snapshot: RwLock<Arc<CatalogSnapshot>>,
     /// The project this catalog belongs to, when it belongs to one.
     ///
     /// `None` is the read-only case Ridal has always supported: a bare
@@ -170,18 +185,20 @@ impl AppState {
             let service = RenderService::new(reader, revision_id, config);
             radargrams.insert(
                 entry.radargram_id.as_str().to_string(),
-                OpenRadargram {
+                Arc::new(OpenRadargram {
                     service: Mutex::new(service),
                     shape,
-                },
+                }),
             );
         }
 
         Ok(Self {
             root: root.to_path_buf(),
             root_is_file,
-            catalog,
-            radargrams,
+            snapshot: RwLock::new(Arc::new(CatalogSnapshot {
+                catalog,
+                radargrams,
+            })),
             access,
             session_key: Mutex::new(None),
             project,
@@ -264,10 +281,110 @@ impl AppState {
         *guard = Some(key.clone());
         Ok(key)
     }
+    /// The catalog and its services as they are right now.
+    ///
+    /// Every read goes through here rather than through a field, so there
+    /// is one place where "which state is this request working against" is
+    /// decided -- and the answer is fixed for the rest of the request even
+    /// if an edit lands meanwhile. Ask once and keep it; asking twice in
+    /// one handler is how two halves of a page come to disagree, and how a
+    /// render ends up using one generation's entry with the next
+    /// generation's service.
+    pub fn catalog(&self) -> Arc<CatalogSnapshot> {
+        self.snapshot
+            .read()
+            .map(|guard| Arc::clone(&guard))
+            // A poisoned lock means some other request panicked while
+            // holding it. The snapshot it left is still a whole, valid
+            // snapshot -- swaps replace the pointer, so there is no
+            // half-written state to inherit -- and failing every later read
+            // over it would turn one panic into an unusable server.
+            .unwrap_or_else(|poisoned| Arc::clone(&poisoned.into_inner()))
+    }
 
+    /// Replace the catalog and the render services that go with it.
+    ///
+    /// Both together and in one write, because a catalog naming a radargram
+    /// with no open service renders an error card, and a service with no
+    /// catalog entry is unreachable.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "the callers arrive with catalog overrides (#145) and \
+                      add/remove (#147); the lock lands first so those are \
+                      about their features rather than about this"
+        )
+    )]
+    pub fn replace_catalog(
+        &self,
+        catalog: Catalog,
+        radargrams: HashMap<String, Arc<OpenRadargram>>,
+    ) {
+        let mut guard = match self.snapshot.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard = Arc::new(CatalogSnapshot {
+            catalog,
+            radargrams,
+        });
+    }
+}
+
+/// One generation of what the server is serving.
+///
+/// The catalog and the render services are one value rather than two
+/// fields because they only make sense together: an entry describes a file
+/// and the service is what reads it, so a reader holding one from each
+/// generation could render at the wrong shape, or declare a freshly added
+/// radargram unavailable.
+///
+/// `Deref` to the catalog so the many places that only want an entry read
+/// as if they had a catalog, while the three that also need a render
+/// service get a matching one out of the same value.
+pub struct CatalogSnapshot {
+    catalog: Catalog,
+    radargrams: HashMap<String, Arc<OpenRadargram>>,
+}
+
+impl std::ops::Deref for CatalogSnapshot {
+    type Target = Catalog;
+
+    fn deref(&self) -> &Catalog {
+        &self.catalog
+    }
+}
+
+impl CatalogSnapshot {
+    /// The open render service for one radargram of *this* generation.
+    ///
+    /// `Arc` so a handler holds its own reference for as long as the render
+    /// takes. A swap landing meanwhile does not disturb it: the render
+    /// finishes against the file it started on, which is the same rule the
+    /// catalog entry beside it already follows.
+    pub fn radargram(&self, radargram_id: &str) -> Option<Arc<OpenRadargram>> {
+        self.radargrams.get(radargram_id).map(Arc::clone)
+    }
+
+    /// Every open render service, for carrying across a swap that does not
+    /// change any file's contents.
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "the caller arrives with catalog overrides (#145), where \
+                      a relabelled radargram keeps its warm caches"
+        )
+    )]
+    pub fn open_radargrams(&self) -> HashMap<String, Arc<OpenRadargram>> {
+        self.radargrams.clone()
+    }
+}
+
+impl Catalog {
     pub fn find_entry(&self, radargram_id: &str) -> Option<&super::catalog::CatalogEntry> {
-        self.catalog
-            .entries
+        self.entries
             .iter()
             .find(|e| e.radargram_id.as_str() == radargram_id)
     }
@@ -276,8 +393,7 @@ impl AppState {
     /// `group == NO_GROUP_ID` matches entries with no group at all,
     /// rather than a literal group id -- see [`NO_GROUP_ID`].
     pub fn entries_in_group(&self, group: &str) -> Vec<&super::catalog::CatalogEntry> {
-        self.catalog
-            .entries
+        self.entries
             .iter()
             .filter(|e| {
                 if group == NO_GROUP_ID {
@@ -305,10 +421,10 @@ pub enum MergeScope {
 }
 
 impl MergeScope {
-    pub fn entries<'a>(&self, state: &'a AppState) -> Vec<&'a super::catalog::CatalogEntry> {
+    pub fn entries<'a>(&self, catalog: &'a Catalog) -> Vec<&'a super::catalog::CatalogEntry> {
         match self {
-            Self::Catalog => state.catalog.entries.iter().collect(),
-            Self::Group(id) => state.entries_in_group(id),
+            Self::Catalog => catalog.entries.iter().collect(),
+            Self::Group(id) => catalog.entries_in_group(id),
         }
     }
 
@@ -993,6 +1109,101 @@ mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
+    fn a_replaced_catalog_is_what_later_requests_see() {
+        // The point of the whole change: the catalog a request works
+        // against is read at request time, not fixed at startup.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc(&dir.path().join("a.nc"), "first");
+            let (app, state) = test_app_with_state(dir.path(), 1);
+
+            let (status, body) = get(&app, "/api/v1/datasets").await;
+            assert_eq!(status, StatusCode::OK);
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["entries"].as_array().unwrap().len(), 1);
+            assert_eq!(body["entries"][0]["radargram_id"], "first");
+
+            // A second radargram appears on disk after startup, which today
+            // would need a restart to notice.
+            write_test_nc(&dir.path().join("b.nc"), "second");
+            let catalog = crate::server::catalog::Catalog::discover(&state.root);
+            assert_eq!(catalog.entries.len(), 2, "the rediscovery found both");
+            let services = state.catalog().open_radargrams();
+            state.replace_catalog(catalog, services);
+
+            let (status, body) = get(&app, "/api/v1/datasets").await;
+            assert_eq!(status, StatusCode::OK);
+            let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let ids: Vec<&str> = body["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["radargram_id"].as_str().unwrap())
+                .collect();
+            assert_eq!(ids, vec!["first", "second"]);
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn one_snapshot_answers_for_both_the_entry_and_its_render_service() {
+        // Two locks taken in a fixed order prevent deadlock, not tearing.
+        // With one each, a reader could take the catalog from one
+        // generation and the render service from the next -- rendering a
+        // radargram at the wrong shape, or being told a freshly added one
+        // is unavailable. One snapshot answers both, so the pair is always
+        // from one generation.
+        let dir = tempfile::tempdir().unwrap();
+        write_test_nc(&dir.path().join("a.nc"), "first");
+        let (_app, state) = test_app_with_state(dir.path(), 1);
+
+        let before = state.catalog();
+        assert!(before.find_entry("first").is_some());
+        assert!(before.radargram("first").is_some());
+
+        // A swap to a catalog that has an entry but no service for it,
+        // which is what a torn read would synthesise out of two good
+        // generations.
+        state.replace_catalog(
+            crate::server::catalog::Catalog::default(),
+            std::collections::HashMap::new(),
+        );
+
+        // The old snapshot still agrees with itself.
+        assert!(before.find_entry("first").is_some());
+        assert!(before.radargram("first").is_some());
+        // And so does the new one.
+        let after = state.catalog();
+        assert!(after.find_entry("first").is_none());
+        assert!(after.radargram("first").is_none());
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_snapshot_taken_before_a_swap_stays_usable_after_it() {
+        // What `Arc<Catalog>` buys over cloning the entries out: a handler
+        // that took a snapshot keeps working against it, so a page cannot
+        // be built half from one catalog and half from the next.
+        let dir = tempfile::tempdir().unwrap();
+        write_test_nc(&dir.path().join("a.nc"), "first");
+        let (_app, state) = test_app_with_state(dir.path(), 1);
+
+        let before = state.catalog();
+        state.replace_catalog(
+            crate::server::catalog::Catalog::default(),
+            std::collections::HashMap::new(),
+        );
+
+        assert_eq!(before.entries.len(), 1, "the old snapshot is intact");
+        assert!(state.catalog().entries.is_empty(), "the new one is empty");
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
     fn concurrent_requests_for_one_chunk_render_it_only_once() {
         // #119 requires that concurrent requests generate an item only
         // once. Nothing implements that explicitly -- it falls out of the
@@ -1024,7 +1235,8 @@ mod tests {
                 assert_eq!(body, &first, "concurrent renders disagreed");
             }
 
-            let service = state.radargrams["dup-test"].service.lock().unwrap();
+            let radargram = state.catalog().radargram("dup-test").unwrap();
+            let service = radargram.service.lock().unwrap();
             assert_eq!(
                 service.cache_len(),
                 1,

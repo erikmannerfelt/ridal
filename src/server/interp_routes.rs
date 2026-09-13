@@ -233,7 +233,7 @@ pub async fn put_interpretation(
     // The dataset must be in this catalog. Otherwise a typo in the URL
     // silently creates an interpretation directory for a radargram that does
     // not exist, which nothing would ever read.
-    if state.find_entry(radargram.as_str()).is_none() {
+    if state.catalog().find_entry(radargram.as_str()).is_none() {
         return Err(ApiError::not_found(
             "dataset_not_found",
             format!("No dataset with id '{}'", radargram.as_str()),
@@ -455,7 +455,8 @@ pub async fn interpretation_level2(
     let radargram = parse_radargram(&radargram_id)?;
     let user = parse_user(&user)?;
 
-    let entry = lookup_dataset(&state, radargram.as_str())?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, radargram.as_str())?;
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
@@ -717,7 +718,8 @@ fn merged_level2(
 ) -> Result<(HeaderMap, String), ApiError> {
     caller.require_download(DownloadScope::Derived, "level 2 points")?;
     let project = readable_project(state)?;
-    let entries = scope.entries(state);
+    let catalog = state.catalog();
+    let entries = scope.entries(&catalog);
     if entries.is_empty() {
         return Err(ApiError::not_found(
             scope.empty_code(),
@@ -890,7 +892,8 @@ pub async fn layer_usage(
     let mut undefined: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
 
-    for entry in &state.catalog.entries {
+    let catalog = state.catalog();
+    for entry in &catalog.entries {
         let radargram = &entry.radargram_id;
         let users = interpretations::list_users(project.documents(), radargram)
             .map_err(interpretation_error)?;

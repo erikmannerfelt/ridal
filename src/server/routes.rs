@@ -352,8 +352,8 @@ fn summarize(entry: &super::catalog::CatalogEntry, line_count: Option<usize>) ->
 pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     // Counted here too, so `line_count` means the same thing in the API as
     // it does on a card rather than being null for a project.
-    let entries: Vec<DatasetSummary> = state
-        .catalog
+    let catalog = state.catalog();
+    let entries: Vec<DatasetSummary> = catalog
         .entries
         .iter()
         .map(|entry| {
@@ -366,22 +366,23 @@ pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoRespo
             )
         })
         .collect();
-    let warnings: Vec<String> = state
-        .catalog
-        .warnings
-        .iter()
-        .map(|w| w.message.clone())
-        .collect();
+    let warnings: Vec<String> = catalog.warnings.iter().map(|w| w.message.clone()).collect();
     Json(serde_json::json!({ "entries": entries, "warnings": warnings }))
 }
 
+/// The entry for `radargram_id` in a catalog snapshot the caller is holding.
+///
+/// Takes the snapshot rather than the state so the borrow is tied to it:
+/// the returned reference stays valid for as long as the caller keeps the
+/// snapshot, and a catalog swap landing meanwhile cannot pull it away
+/// mid-request.
 pub(super) fn lookup_dataset<'a>(
-    state: &'a AppState,
+    catalog: &'a super::catalog::Catalog,
     radargram_id: &str,
 ) -> Result<&'a super::catalog::CatalogEntry, ApiError> {
     validate_radargram_id(radargram_id)
         .map_err(|e| ApiError::bad_request("invalid_radargram_id", e))?;
-    state.find_entry(radargram_id).ok_or_else(|| {
+    catalog.find_entry(radargram_id).ok_or_else(|| {
         ApiError::not_found(
             "dataset_not_found",
             format!("No dataset with id '{radargram_id}'"),
@@ -393,7 +394,8 @@ pub async fn dataset_detail(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     Ok(Json(to_summary(entry)))
 }
 
@@ -502,7 +504,7 @@ where
         // Held until the render finishes, then released for the next
         // waiter.
         let _permit = permit;
-        let radargram = state.radargrams.get(&radargram_id).ok_or_else(|| {
+        let radargram = state.catalog().radargram(&radargram_id).ok_or_else(|| {
             ApiError::internal(
                 "dataset_unavailable",
                 "Dataset is cataloged but its render service failed to initialize.",
@@ -525,13 +527,15 @@ pub async fn overview_image(
     Path((radargram_id, view)): Path<(String, String)>,
     Query(query): Query<ProfileQuery>,
 ) -> Result<Response, ApiError> {
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     let dataset_view = lookup_view(&view)?;
     let profile = lookup_profile(query.profile.as_deref().unwrap_or("default"))?;
 
-    let radargram = state
-        .radargrams
-        .get(entry.radargram_id.as_str())
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
+        .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {
             ApiError::internal(
                 "dataset_unavailable",
@@ -562,7 +566,8 @@ pub async fn chunk_image(
         String,
     )>,
 ) -> Result<Response, ApiError> {
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     let dataset_view = lookup_view(&view)?;
     let profile = lookup_profile(&profile_name)?;
 
@@ -576,9 +581,10 @@ pub async fn chunk_image(
         ApiError::bad_request("invalid_chunk_coordinate", format!("Invalid y: '{y_raw}'"))
     })?;
 
-    let radargram = state
-        .radargrams
-        .get(entry.radargram_id.as_str())
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
+        .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {
             ApiError::internal(
                 "dataset_unavailable",
@@ -747,9 +753,11 @@ pub async fn index_page(
     // Counted once per entry here and reused below, rather than per card:
     // the same radargram appears in both the flat list and its group, and
     // each count is a directory read plus a JSON parse.
+    // One snapshot for the whole page: asking twice is how two halves of
+    // it come to disagree after an edit lands between them.
+    let catalog = state.catalog();
     let line_counts: std::collections::HashMap<String, Option<usize>> = match &state.project {
-        Some(project) => state
-            .catalog
+        Some(project) => catalog
             .entries
             .iter()
             .map(|e| {
@@ -771,20 +779,14 @@ pub async fn index_page(
         )
     };
 
-    let entries: Vec<DatasetSummary> = state.catalog.entries.iter().map(&summarize_entry).collect();
-    let warnings: Vec<String> = state
-        .catalog
-        .warnings
-        .iter()
-        .map(|w| w.message.clone())
-        .collect();
+    let entries: Vec<DatasetSummary> = catalog.entries.iter().map(&summarize_entry).collect();
+    let warnings: Vec<String> = catalog.warnings.iter().map(|w| w.message.clone()).collect();
 
     // Every entry gets one map on the index page (#121): named groups,
     // and "Ungrouped" for entries with none, presented identically
     // rather than as a special case -- entries_in_group(NO_GROUP_ID)
     // already matches group_id.is_none() for exactly this reason.
-    let mut group_ids: Vec<&str> = state
-        .catalog
+    let mut group_ids: Vec<&str> = catalog
         .entries
         .iter()
         .filter_map(|e| e.group_id.as_ref().map(|g| g.as_str()))
@@ -794,8 +796,7 @@ pub async fn index_page(
     let mut groups: Vec<GroupSummary> = group_ids
         .into_iter()
         .map(|id| {
-            let label = state
-                .catalog
+            let label = catalog
                 .group_names
                 .iter()
                 .find(|(gid, _)| gid.as_str() == id)
@@ -804,7 +805,7 @@ pub async fn index_page(
             GroupSummary {
                 id: id.to_string(),
                 label,
-                entries: state
+                entries: catalog
                     .entries_in_group(id)
                     .into_iter()
                     .map(&summarize_entry)
@@ -812,8 +813,7 @@ pub async fn index_page(
             }
         })
         .collect();
-    let ungrouped_entries: Vec<DatasetSummary> = state
-        .catalog
+    let ungrouped_entries: Vec<DatasetSummary> = catalog
         .entries
         .iter()
         .filter(|e| e.group_id.is_none())
@@ -851,13 +851,15 @@ pub async fn viewer_page(
     caller: Caller,
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
-    let entry = lookup_dataset(&state, &radargram_id).map_err(PageError)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id).map_err(PageError)?;
     let active_profile = resolve_profile(&state, &caller, query.profile);
     lookup_profile(&active_profile).map_err(PageError)?;
 
-    let radargram = state
-        .radargrams
-        .get(entry.radargram_id.as_str())
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
+        .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {
             PageError(ApiError::internal(
                 "dataset_unavailable",
@@ -964,7 +966,8 @@ pub async fn dataset_track(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
@@ -1030,13 +1033,15 @@ pub async fn dataset_image(
         crate::project::users::DownloadScope::Derived,
         "the rendered image",
     )?;
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     let dataset_view = lookup_view(&view)?;
     let base = lookup_profile(&resolve_profile(&state, &caller, query.profile))?;
 
-    let radargram = state
-        .radargrams
-        .get(entry.radargram_id.as_str())
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
+        .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {
             ApiError::internal(
                 "dataset_unavailable",
@@ -1160,7 +1165,8 @@ pub async fn dataset_track_geojson(
     caller: Caller,
 ) -> Result<Response, ApiError> {
     caller.require_download(crate::project::users::DownloadScope::All, "the track")?;
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
@@ -1218,7 +1224,8 @@ fn merged_track_geojson(
     scope: &MergeScope,
 ) -> Result<Response, ApiError> {
     caller.require_download(crate::project::users::DownloadScope::All, "tracks")?;
-    let entries = scope.entries(state);
+    let catalog = state.catalog();
+    let entries = scope.entries(&catalog);
     if entries.is_empty() {
         return Err(ApiError::not_found(
             scope.empty_code(),
@@ -1306,7 +1313,8 @@ pub async fn dataset_download(
         crate::project::users::DownloadScope::All,
         "the radargram itself",
     )?;
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
@@ -1343,7 +1351,8 @@ pub async fn group_tracks(
     Path(group): Path<String>,
 ) -> impl IntoResponse {
     let mut out = serde_json::Map::new();
-    for entry in state.entries_in_group(&group) {
+    let catalog = state.catalog();
+    for entry in catalog.entries_in_group(&group) {
         let Ok(path) = state.absolute_path(entry) else {
             continue;
         };
@@ -1658,7 +1667,8 @@ pub async fn dataset_attributes(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
@@ -1727,7 +1737,8 @@ pub async fn dataset_axes(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let entry = lookup_dataset(&state, &radargram_id)?;
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
