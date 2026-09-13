@@ -3022,6 +3022,29 @@ pub mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_level_2_export_reads_back_what_the_radargram_declared() {
+        // The writer and the reader, across a real file. Level 2 puts these
+        // on every row so a point stays self-describing once several
+        // radargrams' points are merged, and the value it writes has to be
+        // the one this radargram actually declared.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("line.nc");
+
+        let mut gpr = make_gpr_with_first_break(48, 512);
+        gpr.correct_antenna_separation();
+        gpr.export(&path).unwrap();
+
+        let geometry = crate::interp::source::read_geometry(&path).unwrap();
+        assert_eq!(geometry.antenna_separation_effective_m, Some(0.0));
+        assert_eq!(
+            geometry.twtt_anchor.as_deref(),
+            Some("twtt_normal_incidence")
+        );
+    }
+
+    #[test]
     fn a_radargram_acquired_at_zero_separation_still_declares_plain_twtt() {
         // Nothing was corrected -- `correct_antenna_separation` refuses to
         // run at all here -- so the axis is the recorded one. The two

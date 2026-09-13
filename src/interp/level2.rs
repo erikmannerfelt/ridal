@@ -60,6 +60,16 @@ pub struct RadargramGeometry {
     pub latitude: Vec<f64>,
     /// The projected CRS `easting`/`northing` are expressed in.
     pub crs: String,
+    /// The antenna separation the radargram has not been corrected for, in
+    /// metres, and which gprinterp `y` anchor `twtt` is.
+    ///
+    /// `None` for a radargram processed before Ridal recorded either, where
+    /// the honest answer is that the file does not say. Unlike the axes
+    /// above, an absent value here is not a data error: it is a fact about
+    /// an older file, and refusing to export its picks over it would be a
+    /// worse outcome than saying so.
+    pub antenna_separation_effective_m: Option<f64>,
+    pub twtt_anchor: Option<String>,
 }
 
 impl RadargramGeometry {
@@ -172,6 +182,14 @@ pub struct Level2Export {
     pub crs: String,
     /// The spacing actually used, in metres. `None` for a per-trace export.
     pub spacing_m: Option<f64>,
+    /// Carried from the radargram so each written row can say what its
+    /// `twtt_ns` refers to, the same way `crs` says what `easting` is in.
+    ///
+    /// Both are needed to answer the question: an effective separation of
+    /// zero on its own could equally mean "corrected" or "acquired with
+    /// coincident antennas", and only the anchor name distinguishes them.
+    pub antenna_separation_effective_m: Option<f64>,
+    pub twtt_anchor: Option<String>,
 }
 
 /// Why an export could not be produced.
@@ -348,6 +366,8 @@ pub fn export(
         revision_id: geometry.revision_id.clone(),
         crs: geometry.crs.clone(),
         spacing_m: step,
+        antenna_separation_effective_m: geometry.antenna_separation_effective_m,
+        twtt_anchor: geometry.twtt_anchor.clone(),
     })
 }
 
@@ -648,6 +668,8 @@ mod tests {
             northing: (0..n).map(|_| 8_700_000.0).collect(),
             longitude: (0..n).map(|i| 15.0 + i as f64 * 1e-5).collect(),
             latitude: (0..n).map(|_| 78.0).collect(),
+            antenna_separation_effective_m: Some(0.0),
+            twtt_anchor: Some("twtt_normal_incidence".into()),
             crs: "EPSG:32633".into(),
         }
     }

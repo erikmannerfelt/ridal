@@ -51,7 +51,36 @@ pub fn read_geometry(path: &Path) -> Result<RadargramGeometry, String> {
         longitude: read_f64_variable(&file, "longitude")?,
         latitude: read_f64_variable(&file, "latitude")?,
         crs,
+        // Optional, unlike everything above: radargrams processed before
+        // Ridal recorded these exist, and their picks are still exportable.
+        // A missing value is reported as missing rather than guessed --
+        // there is no safe default, since both "uncorrected" and "corrected"
+        // are wrong half the time.
+        antenna_separation_effective_m: read_f64_attr(&file, "antenna_separation_effective"),
+        twtt_anchor: file
+            .variable("twtt")
+            .and_then(|var| read_str_attr_of(&var, "anchor_name")),
     })
+}
+
+/// Read a numeric global attribute, widening to `f64`.
+///
+/// Ridal writes this one as `f32`; the match is explicit rather than a
+/// blanket numeric cast so a future type change is a compile-time question
+/// rather than a silently absent value.
+fn read_f64_attr(file: &netcdf::File, name: &str) -> Option<f64> {
+    match file.attribute(name)?.value().ok()? {
+        netcdf::AttributeValue::Float(v) => Some(v as f64),
+        netcdf::AttributeValue::Double(v) => Some(v),
+        _ => None,
+    }
+}
+
+fn read_str_attr_of(var: &netcdf::Variable, name: &str) -> Option<String> {
+    match var.attribute(name)?.value().ok()? {
+        netcdf::AttributeValue::Str(value) => Some(value),
+        _ => None,
+    }
 }
 
 /// Read a numeric variable, widening to `f64`.
