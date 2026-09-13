@@ -16,6 +16,24 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # HDF5 takes a POSIX lock on every file it opens and refuses to open one
+  # that is already locked -- including by the same process. The NetCDF
+  # tests create a file, close it and reopen it, and on a loaded runner the
+  # reopen lands while the lock is still held, failing with NC_EHDFERR
+  # (-101).
+  #
+  # That is #129: it never reproduces on a quiet machine, it lands on
+  # whichever test happens to be unlucky, and `#[test_retry::retry]` does
+  # not save it -- its three attempts have no backoff, so all three fall
+  # inside the same window.
+  #
+  # Ridal never opens one file from two processes, so the lock protects
+  # nothing here and only manufactures the failure.
+  #
+  # Here rather than in `.cargo/config.toml`, which would give developers
+  # the same setting, because that path is gitignored for the local
+  # gprinterp override and committing it would collide with it.
+  HDF5_USE_FILE_LOCKING: 'FALSE'
 
 permissions:
   contents: read

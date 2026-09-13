@@ -1197,6 +1197,34 @@ mod tests {
 
     use super::{gssi_antenna_mhz, load_cor, load_dzt, load_gssi_dzg, load_gssi_dzt, load_rad};
 
+    /// The NetCDF tests depend on HDF5 file locking being off (#129), which
+    /// the workflow arranges with an environment variable -- a mechanism
+    /// nothing in the code points at, and therefore one that would quietly
+    /// stop being true.
+    ///
+    /// Asserted rather than assumed. The first attempt at this fix put the
+    /// variable in `.cargo/config.toml`, which is gitignored for the local
+    /// gprinterp override; it worked locally, was never committed, and CI
+    /// never saw it. This test is what said so, immediately, instead of the
+    /// flake simply continuing.
+    ///
+    /// Only under CI, because that is where the setting lives and where the
+    /// flake happens. A developer who wants the same protection can export
+    /// it or add it to their own `.cargo/config.toml`.
+    #[test]
+    fn hdf5_file_locking_is_disabled_for_the_test_run() {
+        if std::env::var("CI").is_err() {
+            return;
+        }
+        assert_eq!(
+            std::env::var("HDF5_USE_FILE_LOCKING").ok().as_deref(),
+            Some("FALSE"),
+            "CI must set HDF5_USE_FILE_LOCKING=FALSE (see the `env:` block in \
+             .github/workflows/rust.yml); without it the NetCDF tests \
+             intermittently fail to reopen a file they just wrote (#129)."
+        );
+    }
+
     fn make_gssi_dzt(bytes_per_sample: usize) -> Vec<u8> {
         let samples = 4usize;
         let traces = 2usize;
