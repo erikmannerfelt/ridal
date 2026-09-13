@@ -166,6 +166,23 @@ Two independent things are set per person. **Role** is what they may do, as a la
 
 Interpretations are strictly per person. One user cannot modify another's picks, and **not even an admin can** — that is a property of the data model rather than a permission. Removing an account keeps the picks it authored, since those are attributed scientific data.
 
+### Renaming and grouping without reprocessing
+
+The display name and the grouping in a processed file were decided when it was processed, and fine-tuning them used to mean reprocessing a radargram for a label.
+**Edit properties** on each card changes them instead, for `operator` and above.
+
+The file is never touched.
+The project keeps its own labels over what the file says, per field, so setting a name leaves the grouping alone — and the dialog shows what each field would be without the override, so reverting one puts the file's own value back.
+
+A group's name lives with the group rather than with its members, so renaming it is one edit and twenty radargrams cannot come to disagree about what their group is called.
+
+The radargram id is deliberately not editable.
+It is the join key for the interpretations stored against it, for the level 2 `radargram_id` column and for every URL, so renaming it would orphan picks.
+
+**Unlisted** takes a radargram out of the catalog listing, off the group maps, and out of merged downloads.
+
+> **Unlisted is curation, not access control.** Anyone who knows the id can still open `/view/<id>` or the API. It says "this is not part of what we are showing", not "this is private". If the data must not leave, do not grant read access to it.
+
 Serving this beyond localhost:
 ```bash
 ridal server start my-survey --host 127.0.0.1 --port 8000
