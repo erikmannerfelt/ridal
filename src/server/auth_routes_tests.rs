@@ -1709,3 +1709,172 @@ async fn an_unlisted_radargram_is_absent_from_a_pickers_listing_and_present_for_
     let response = get(&app, "/api/v1/datasets/line-02", Some(&student)).await;
     assert_eq!(response.status, StatusCode::OK, "{}", response.text);
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_operator_can_rename_a_radargram_without_restarting_the_server() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![
+            activated("student", Role::Picker, DownloadScope::All, &hash),
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+
+    // The dialog asks what the field would be without an override, which
+    // is the whole reason "revert" can be offered honestly.
+    let before = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.text);
+    assert!(before.body["effective"]["display_name"].is_null());
+    assert_eq!(before.body["overridden"]["display_name"], false);
+
+    let saved = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"display_name": "A better name", "unlisted": false}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{}", saved.text);
+
+    // Visible immediately: the catalog is re-resolved, not read once at
+    // startup.
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let entry = listing.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["radargram_id"] == "line-01")
+        .unwrap()
+        .clone();
+    assert_eq!(entry["effective_label"], "A better name");
+
+    let after = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert_eq!(after.body["overridden"]["display_name"], true);
+    // And what it would go back to, which here is "nothing, so the id".
+    assert!(after.body["from_file"]["display_name"].is_null());
+
+    // Reverting leaves no trace, rather than an empty entry that reads as
+    // "somebody configured this".
+    let reverted = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"display_name": null, "unlisted": false}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(reverted.status, StatusCode::NO_CONTENT, "{}", reverted.text);
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let entry = listing.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["radargram_id"] == "line-01")
+        .unwrap()
+        .clone();
+    assert_eq!(entry["effective_label"], "line-01");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_picker_cannot_edit_properties() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![
+            activated("student", Role::Picker, DownloadScope::All, &hash),
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+    let student = sign_in(&app, "student").await;
+
+    let response = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"display_name": "Mine now", "unlisted": false}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN, "{}", response.text);
+    // Reading is gated too: what a project says over its files is an
+    // operator's working notes, not something a picker needs.
+    assert_eq!(
+        get(&app, "/api/v1/datasets/line-01/properties", Some(&student))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn moving_a_radargram_into_a_named_group_takes_effect_at_once() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+
+    // Named without being spelled: the slug is derived exactly as
+    // processing derives it, so an operator never has to know about slugs.
+    let saved = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"grouping": "group", "group_name": "Drønbreen 2022", "unlisted": false}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{}", saved.text);
+
+    let properties = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert_eq!(properties.body["effective"]["group_name"], "Drønbreen 2022");
+    assert_eq!(properties.body["effective"]["group_id"], "dronbreen-2022");
+    // The file put it in a group of its own -- here from its directory --
+    // and the dialog still reports that, which is what makes the revert
+    // offer meaningful rather than a leap of faith.
+    assert_eq!(properties.body["from_file"]["group_id"], "radargrams");
+    assert_eq!(properties.body["overridden"]["group"], true);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn unlisting_takes_a_radargram_out_of_a_pickers_listing_at_once() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![
+            activated("student", Role::Picker, DownloadScope::All, &hash),
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+    let student = sign_in(&app, "student").await;
+    let erik = sign_in(&app, "erik").await;
+
+    let count = |body: &Value| body["entries"].as_array().unwrap().len();
+    assert_eq!(
+        count(&get(&app, "/api/v1/datasets", Some(&student)).await.body),
+        1
+    );
+
+    put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"unlisted": true}),
+        Some(&erik),
+    )
+    .await;
+
+    assert_eq!(
+        count(&get(&app, "/api/v1/datasets", Some(&student)).await.body),
+        0,
+        "the picker's listing empties"
+    );
+    assert_eq!(
+        count(&get(&app, "/api/v1/datasets", Some(&erik)).await.body),
+        2,
+        "the operator still sees both"
+    );
+}

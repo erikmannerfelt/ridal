@@ -376,14 +376,10 @@ impl CatalogSnapshot {
 
     /// Every open render service, for carrying across a swap that does not
     /// change any file's contents.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "the caller arrives with catalog overrides (#145), where \
-                      a relabelled radargram keeps its warm caches"
-        )
-    )]
+    ///
+    /// The caller is the catalog-overrides refresh (#145): an override
+    /// changes labels and grouping, never a file's contents, so reopening
+    /// every radargram would throw away every warm cache for nothing.
     pub fn open_radargrams(&self) -> HashMap<String, Arc<OpenRadargram>> {
         self.radargrams.clone()
     }
@@ -632,6 +628,11 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         )
         .route("/api/v1/profiles", get(super::routes::list_profiles))
         .route("/api/v1/datasets", get(super::routes::list_datasets))
+        .route(
+            "/api/v1/datasets/{radargram_id}/properties",
+            get(super::overrides_routes::get_properties)
+                .put(super::overrides_routes::put_properties),
+        )
         .route(
             "/api/v1/datasets/{radargram_id}",
             get(super::routes::dataset_detail),

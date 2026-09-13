@@ -162,11 +162,6 @@ impl CatalogOverrides {
         self.radargrams.get(id).cloned().unwrap_or_default()
     }
 
-    /// Whether a radargram is unlisted. Cheap enough to ask per entry.
-    pub fn is_unlisted(&self, id: &RadargramId) -> bool {
-        self.radargrams.get(id).is_some_and(|o| o.unlisted)
-    }
-
     /// Drop entries that say nothing, so a fully reverted radargram leaves
     /// the document as it was before anyone touched it.
     pub fn prune(&mut self) {
@@ -520,7 +515,8 @@ mod tests {
         .unwrap();
 
         let (overrides, _) = read(&store).unwrap();
-        assert!(overrides.is_unlisted(&radargram("quiet-one")));
-        assert!(!overrides.is_unlisted(&radargram("loud-one")));
+        assert!(overrides.radargram(&radargram("quiet-one")).unlisted);
+        // And a radargram nobody has touched is listed, without an entry.
+        assert!(!overrides.radargram(&radargram("loud-one")).unlisted);
     }
 }
