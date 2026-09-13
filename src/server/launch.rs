@@ -68,14 +68,15 @@ async fn serve(
             allow_password_login: options.host.is_loopback() || options.allow_insecure_login,
         },
     )?);
-    if !state.catalog.warnings.is_empty() {
-        for w in &state.catalog.warnings {
+    let catalog = state.catalog();
+    if !catalog.warnings.is_empty() {
+        for w in &catalog.warnings {
             eprintln!("Warning: {}", w.message);
         }
     }
     println!(
         "Discovered {} radargram(s) under {}",
-        state.catalog.entries.len(),
+        catalog.entries.len(),
         root.display()
     );
     match (state.project.as_ref(), !state.access.read_only) {
