@@ -588,17 +588,19 @@ impl GPR {
         // could not previously say.
         //
         // `twtt_crop` is how much of the front of the record was discarded;
-        // `twtt_t0` is where time zero -- the moment the pulse left the
+        // `twtt_time_zero` is where time zero -- the moment the pulse left the
         // antenna -- sits on the same recording clock. They are equal
         // immediately after a zero correction, which is why one number
         // seemed to be enough, and they part company the moment anything
         // else crops the record.
         //
-        // Note that the gprinterp SPEC §7.5.1 anchor `t0` is *neither*: it
-        // is `twtt_crop - twtt_t0`, the travel-time value of sample 0.
-        // Zero for an ordinarily zero-corrected radargram, positive for one
-        // cropped further without re-zeroing, negative once padding keeps
-        // samples from before time zero.
+        // Neither is the gprinterp SPEC §7.5.1 anchor `t0`, which is their
+        // difference `twtt_crop - twtt_time_zero`: the travel-time value of
+        // sample 0. Zero for an ordinarily zero-corrected radargram,
+        // positive for one cropped further without re-zeroing, negative
+        // once padding keeps samples from before time zero. Neither
+        // variable is named `t0`, because the one that was got substituted
+        // for the anchor by a reader who had the SPEC to hand.
         //
         // Each is a scalar where one number is true of every trace, and
         // `(x)` where it is not -- which is the `zero_corr_max_peak` case,
@@ -631,7 +633,7 @@ impl GPR {
                         "Where sample 0 sits on the original recording's clock: how \
                          much of the front of the record was cropped away, by a zero \
                          correction or by subsetting. Provenance about what was \
-                         discarded. See twtt_t0 for where time zero is."
+                         discarded. See twtt_time_zero for where time zero is."
                             .into(),
                     ),
                 ]
@@ -640,9 +642,10 @@ impl GPR {
             },
         );
 
-        let (t0_dims, t0_data) = per_trace(self.twtt_t0_uniform_ns(), self.twtt_t0_ns());
+        let (t0_dims, t0_data) =
+            per_trace(self.twtt_time_zero_uniform_ns(), self.twtt_time_zero_ns());
         data_vars.insert(
-            "twtt_t0".into(),
+            "twtt_time_zero".into(),
             ExportVariable {
                 dims: t0_dims,
                 data: t0_data,
@@ -659,7 +662,7 @@ impl GPR {
                          which is the case for a radargram no zero correction has run \
                          on: its travel times are measured from whenever the \
                          instrument started sampling. The travel time of sample i is \
-                         twtt[i] + twtt_crop - twtt_t0."
+                         twtt[i] + twtt_crop - twtt_time_zero."
                             .into(),
                     ),
                 ]

@@ -831,7 +831,7 @@ impl GPR {
     ///
     /// One value per trace, because `zero_corr_max_peak` crops per trace.
     /// See [`GPR::twtt_crop_uniform_ns`] for the common case where they all
-    /// agree, and [`GPR::twtt_t0_ns`] for where time zero sits.
+    /// agree, and [`GPR::twtt_time_zero_ns`] for where time zero sits.
     pub fn twtt_crop_ns(&self) -> &[f32] {
         &self.crop_ns
     }
@@ -856,19 +856,18 @@ impl GPR {
     /// of an uncorrected file: its travel times are measured from whenever
     /// the instrument started sampling.
     ///
-    /// Note that the gprinterp anchor `t0` for the `twtt` axis is **neither
-    /// of these two numbers** — it is their difference, `crop - t0`, the
-    /// travel-time value of sample 0. That is `0` for an ordinarily
-    /// zero-corrected radargram, positive for one cropped further without
-    /// re-zeroing, and negative once padding keeps samples from before time
-    /// zero (#152). gprinterp's `t0` is a generic axis parameter; this one
-    /// is the domain's time zero, and they are not interchangeable.
-    pub fn twtt_t0_ns(&self) -> &[f32] {
+    /// Named `time_zero` rather than `t0` on purpose. gprinterp's `t0` for
+    /// the `twtt` axis is **neither this nor the crop** -- it is their
+    /// difference, `crop - time_zero`, the travel-time value of sample 0 --
+    /// and a reviewer with the SPEC in front of them substituted one for
+    /// the other anyway. A name nobody reaches for by mistake is cheaper
+    /// than the comment explaining why they should not have.
+    pub fn twtt_time_zero_ns(&self) -> &[f32] {
         &self.time_zero_ns
     }
 
     /// The one time zero that describes every trace, when there is one.
-    pub fn twtt_t0_uniform_ns(&self) -> Option<f32> {
+    pub fn twtt_time_zero_uniform_ns(&self) -> Option<f32> {
         let first = *self.time_zero_ns.first()?;
         self.time_zero_ns
             .iter()
@@ -887,7 +886,7 @@ impl GPR {
     /// Time zero rather than the crop, because the quantity it stands for
     /// is the direct wave's flight through the air: a fact about the
     /// geometry, not about how much of the record was kept.
-    fn twtt_t0_mean_ns(&self) -> f32 {
+    fn twtt_time_zero_mean_ns(&self) -> f32 {
         if self.time_zero_ns.is_empty() {
             return 0.;
         }
@@ -1847,7 +1846,7 @@ impl GPR {
             / self.height() as f32)
             * self.metadata.time_window;
         let corr_antenna_separation = (self.antenna_separation_effective.powi(2)
-            - (self.twtt_t0_mean_ns() * self.metadata.medium_velocity).powi(2))
+            - (self.twtt_time_zero_mean_ns() * self.metadata.medium_velocity).powi(2))
         .max(0.)
         .sqrt();
         time_windows.mapv(|time| {
@@ -3191,7 +3190,7 @@ pub mod tests {
         let at_zero = gpr.twtt_crop_uniform_ns().unwrap();
         assert!(at_zero > 0.);
         assert_eq!(
-            gpr.twtt_t0_uniform_ns().unwrap(),
+            gpr.twtt_time_zero_uniform_ns().unwrap(),
             at_zero,
             "the crop landed on time zero, so they agree"
         );
@@ -3203,13 +3202,13 @@ pub mod tests {
             "the crop grew"
         );
         assert_eq!(
-            cropped.twtt_t0_uniform_ns().unwrap(),
+            cropped.twtt_time_zero_uniform_ns().unwrap(),
             at_zero,
             "time zero did not move: the pulse left when it left"
         );
 
         let anchor_t0 =
-            cropped.twtt_crop_uniform_ns().unwrap() - cropped.twtt_t0_uniform_ns().unwrap();
+            cropped.twtt_crop_uniform_ns().unwrap() - cropped.twtt_time_zero_uniform_ns().unwrap();
         assert!(
             (anchor_t0 - 40.0 * step).abs() < 1e-3,
             "sample 0 is now 40 samples past time zero, got {anchor_t0}"
@@ -3223,11 +3222,11 @@ pub mod tests {
         // the anchor `t0` that falls out -- crop minus zero -- is the crop,
         // which is right for exactly that reason.
         let gpr = make_gpr_with_first_break(16, 512);
-        assert_eq!(gpr.twtt_t0_uniform_ns().unwrap(), 0.);
+        assert_eq!(gpr.twtt_time_zero_uniform_ns().unwrap(), 0.);
         assert_eq!(gpr.twtt_crop_uniform_ns().unwrap(), 0.);
 
         let cropped = gpr.subset(None, None, Some(40), None).unwrap();
-        assert_eq!(cropped.twtt_t0_uniform_ns().unwrap(), 0.);
+        assert_eq!(cropped.twtt_time_zero_uniform_ns().unwrap(), 0.);
         assert!(cropped.twtt_crop_uniform_ns().unwrap() > 0.);
     }
 
@@ -3315,7 +3314,7 @@ pub mod tests {
         // misattribution rather than a panic.
         for gpr in [&cropped, &averaged, &thinned] {
             assert_eq!(
-                gpr.twtt_t0_ns().len(),
+                gpr.twtt_time_zero_ns().len(),
                 gpr.width(),
                 "time zero must stay one per trace too"
             );
@@ -3354,7 +3353,7 @@ pub mod tests {
         wandering.export(&wandering_path).unwrap();
 
         let file = netcdf::open(&uniform_path).unwrap();
-        for name in ["twtt_crop", "twtt_t0"] {
+        for name in ["twtt_crop", "twtt_time_zero"] {
             let var = file
                 .variable(name)
                 .unwrap_or_else(|| panic!("{name} should be written as a variable"));
@@ -3377,7 +3376,7 @@ pub mod tests {
         drop(file);
 
         let file = netcdf::open(&wandering_path).unwrap();
-        for name in ["twtt_crop", "twtt_t0"] {
+        for name in ["twtt_crop", "twtt_time_zero"] {
             let var = file.variable(name).unwrap();
             // `(x)` says "these differ per trace"; a scalar would say one
             // number is true of all of them.
