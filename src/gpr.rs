@@ -731,6 +731,14 @@ impl GPR {
             crs: self.location.crs.clone(),
         };
 
+        // Cropping leading samples moves the origin of the travel-time
+        // axis just as a zero correction does, so it adds to the same
+        // offset. Measured against the pre-subset window and height, which
+        // are what `min_sample_` indexes into; `metadata.time_window` is
+        // rescaled a few lines below.
+        let removed_ns =
+            min_sample_ as f32 * self.metadata.time_window / self.height().max(1) as f32;
+
         let mut metadata = self.metadata.clone();
 
         metadata.last_trace = max_trace_;
@@ -747,7 +755,7 @@ impl GPR {
             steps: self.steps.clone(),
             topo_data: self.topo_data.clone(),
             antenna_separation_effective: self.antenna_separation_effective,
-            zero_point_ns: self.zero_point_ns,
+            zero_point_ns: self.zero_point_ns + removed_ns,
             user_metadata: self.user_metadata.clone(),
             identity: self.identity.clone(),
         };
@@ -2987,6 +2995,42 @@ pub mod tests {
             (total - (first + second)).abs() < 1e-4,
             "expected {first} + {second}, got {total}"
         );
+    }
+
+    #[test]
+    fn subsetting_away_leading_samples_moves_the_time_zero_offset() {
+        // `subset(0 -1 <n> -1)` crops the front of every trace exactly as a
+        // zero correction does, so it has to report the same way. Reporting
+        // zero here would describe the file as starting at the original
+        // time zero when it starts `n` samples later -- the silently
+        // shifted origin SPEC §7.5.1 exists to prevent, reached by a
+        // pipeline that never ran a zero correction at all.
+        let gpr = make_gpr_with_first_break(16, 512);
+        let step = gpr.metadata.time_window / gpr.height() as f32;
+        assert_eq!(gpr.twtt_t0_ns(), 0.);
+
+        let cropped = gpr.subset(None, None, Some(40), None).unwrap();
+        let expected = 40.0 * step;
+        assert!(
+            (cropped.twtt_t0_ns() - expected).abs() < 1e-4,
+            "expected {expected}, got {}",
+            cropped.twtt_t0_ns()
+        );
+
+        // And it accumulates with everything else, so two crops in one
+        // pipeline still describe one origin.
+        let twice = cropped.subset(None, None, Some(10), None).unwrap();
+        let second_step = cropped.metadata.time_window / cropped.height() as f32;
+        let total = expected + 10.0 * second_step;
+        assert!(
+            (twice.twtt_t0_ns() - total).abs() < 1e-4,
+            "expected {total}, got {}",
+            twice.twtt_t0_ns()
+        );
+
+        // Trimming the tail changes the window, not the origin.
+        let tail = gpr.subset(None, None, None, Some(100)).unwrap();
+        assert_eq!(tail.twtt_t0_ns(), 0.);
     }
 
     #[test]
