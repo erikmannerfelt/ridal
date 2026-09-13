@@ -14,11 +14,22 @@ AGENTS.md
 # work but is not something the repository should carry.
 PR1_WEB_GUI_LOG.md
 PHASE1_LOG.md
-# PR_WEB_GUI.md is PR #125's description text, meant to live on GitHub
-# once the PR is opened/updated, not as a permanent tracked file that
-# would survive a squash merge into main.
-PR_WEB_GUI.md
+# PR and issue drafts: text meant to live on GitHub once the PR or issue
+# is opened, not as a permanent tracked file that would survive a squash
+# merge into main. Globs rather than one line per draft, because the list
+# only ever grows and a missed entry is how one gets committed by accident.
+PR_*.md
+ISSUE_*.md
 
 # Local gprinterp path override (see .cargo/config.toml)
 .cargo/
 gprinterp/
+
+# Scratch space for trying things on real data: old datasets kept around
+# for comparison, and whatever the last command happened to write. These
+# run to hundreds of megabytes, which GitHub refuses outright -- so until
+# now the only thing stopping them being committed was noticing, and twice
+# that was not enough.
+tmp/
+old/
+/out.nc
