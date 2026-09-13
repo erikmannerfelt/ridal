@@ -972,7 +972,12 @@ impl GPR {
             i += 1;
         }
 
-        self.zero_point_ns = self.metadata.time_window * (positive_peaks.mean().unwrap() as f32)
+        // Accumulated, not assigned: `twtt_t0` is the total time removed
+        // from the start of the record, and a pipeline may crop more than
+        // once. Computed before `update_data`, so `time_window` and
+        // `height()` still describe the record this crop was measured
+        // against and the terms are in consistent units.
+        self.zero_point_ns += self.metadata.time_window * (positive_peaks.mean().unwrap() as f32)
             / self.height() as f32;
         self.update_data(new_data);
         self.log_event(
@@ -1171,7 +1176,8 @@ impl GPR {
             .mean()
             .unwrap();
 
-        self.zero_point_ns = self.metadata.time_window * (first_rise as f32) / self.height() as f32;
+        self.zero_point_ns +=
+            self.metadata.time_window * (first_rise as f32) / self.height() as f32;
         self.update_data(
             self.data
                 .slice_axis(Axis(0), Slice::new(first_rise, None, 1))
@@ -2877,6 +2883,29 @@ pub mod tests {
         gpr
     }
 
+    /// A radargram with a detectable first break, which `make_test_gpr`'s
+    /// linear ramp does not have: `zero_corr` looks for a jump larger than
+    /// half the mean trace's standard deviation, and every step of a ramp
+    /// is the same size, so it finds nothing and returns immediately.
+    ///
+    /// Silence, then the direct wave, then a weaker reflector further down
+    /// so a second correction also has something to crop.
+    fn make_gpr_with_first_break(width: usize, height: usize) -> super::GPR {
+        let mut gpr = make_exportable_gpr(width, height);
+        let direct = height / 10;
+        let reflector = height / 2;
+        gpr.data = ndarray::Array2::<f32>::from_shape_fn((height, width), |(row, _)| {
+            if row == direct {
+                100.
+            } else if row == reflector {
+                40.
+            } else {
+                0.
+            }
+        });
+        gpr
+    }
+
     fn f32_attr(ds: &crate::export::ExportDataset, name: &str) -> f32 {
         match ds.attrs.get(name) {
             Some(crate::export::ExportAttr::F32(v)) => *v,
@@ -2884,7 +2913,10 @@ pub mod tests {
         }
     }
 
-    fn str_attr(attrs: &std::collections::BTreeMap<String, crate::export::ExportAttr>, name: &str) -> String {
+    fn str_attr(
+        attrs: &std::collections::BTreeMap<String, crate::export::ExportAttr>,
+        name: &str,
+    ) -> String {
         match attrs.get(name) {
             Some(crate::export::ExportAttr::String(v)) => v.clone(),
             other => panic!("{name} should be a string attribute, got {other:?}"),
@@ -2902,7 +2934,10 @@ pub mod tests {
         let before = gpr.export_dataset().unwrap();
         assert_eq!(f32_attr(&before, "antenna_separation"), acquired);
         assert_eq!(f32_attr(&before, "antenna_separation_effective"), acquired);
-        assert_eq!(str_attr(&before.coords["twtt"].attrs, "anchor_name"), "twtt");
+        assert_eq!(
+            str_attr(&before.coords["twtt"].attrs, "anchor_name"),
+            "twtt"
+        );
 
         gpr.correct_antenna_separation();
         let after = gpr.export_dataset().unwrap();
@@ -2923,6 +2958,67 @@ pub mod tests {
             "twtt_normal_incidence",
             "twtt now refers to a coincident antenna, not the pair"
         );
+    }
+
+    #[test]
+    fn successive_crops_accumulate_into_one_time_zero_offset() {
+        let mut accumulating = make_gpr_with_first_break(64, 512);
+        accumulating.zero_corr(None);
+        let first = accumulating.twtt_t0_ns();
+        assert!(first > 0., "the fixture must have a first break to find");
+
+        // The same second crop, measured on a radargram that arrives at
+        // the same data carrying no history.
+        let mut in_isolation = make_gpr_with_first_break(64, 512);
+        in_isolation.zero_corr(None);
+        in_isolation.zero_point_ns = 0.;
+        in_isolation.zero_corr_max_peak();
+        let second = in_isolation.twtt_t0_ns();
+        assert!(second > 0., "the second crop must remove something too");
+
+        accumulating.zero_corr_max_peak();
+
+        // Assigning instead of accumulating would report `second` alone and
+        // describe the file as starting at the later offset — the same
+        // silently shifted origin SPEC §7.5.1 exists to prevent, arrived at
+        // from inside one pipeline rather than between two.
+        let total = accumulating.twtt_t0_ns();
+        assert!(
+            (total - (first + second)).abs() < 1e-4,
+            "expected {first} + {second}, got {total}"
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn the_time_zero_offset_survives_a_netcdf_round_trip() {
+        // Written and read back as a real NetCDF, because a dimensionless
+        // scalar is a shape the writer had no path for until now: the
+        // `data_vars` loop ignored everything that was not 2D or a `u8`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("line.nc");
+
+        let mut gpr = make_gpr_with_first_break(48, 512);
+        gpr.zero_corr(None);
+        let expected = gpr.twtt_t0_ns();
+        assert!(expected > 0., "an offset of zero would prove nothing");
+        gpr.export(&path).unwrap();
+
+        let file = netcdf::open(&path).unwrap();
+        let var = file
+            .variable("twtt_t0")
+            .expect("twtt_t0 should be written as a variable");
+        assert_eq!(var.dimensions().len(), 0, "a scalar, not a length-1 array");
+        let found = var.get_value::<f64, _>(()).unwrap();
+        assert!(
+            (found - expected as f64).abs() < 1e-6,
+            "{found} != {expected}"
+        );
+        assert!(matches!(
+            var.attribute("units").unwrap().value().unwrap(),
+            netcdf::AttributeValue::Str(u) if u == "ns"
+        ));
     }
 
     #[test]

@@ -931,6 +931,15 @@ pub fn export_netcdf(
                     Some(&var.attrs),
                 )?;
             }
+            crate::export::ExportArray::F64Scalar(v) => {
+                add_nc_variable::<f64>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &[*v],
+                    Some(&var.attrs),
+                )?;
+            }
             crate::export::ExportArray::F32Borrowed2D(_) => {
                 // coords are expected to be 1D; ignore
                 continue;
@@ -962,6 +971,24 @@ pub fn export_netcdf(
                     name,
                     &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     &[*v],
+                    Some(&var.attrs),
+                )?;
+            }
+            crate::export::ExportArray::F64Scalar(v) => {
+                add_nc_variable::<f64>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    &[*v],
+                    Some(&var.attrs),
+                )?;
+            }
+            crate::export::ExportArray::F64Owned1D(v) => {
+                add_nc_variable::<f64>(
+                    &mut file,
+                    name,
+                    &var.dims.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                    v,
                     Some(&var.attrs),
                 )?;
             }

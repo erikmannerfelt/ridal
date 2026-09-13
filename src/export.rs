@@ -73,6 +73,10 @@ pub enum ExportArray<'a> {
     F64Owned1D(Vec<f64>),
     U32Owned1D(Vec<u32>),
     U8Scalar(u8), // For grid_mapping
+    /// A dimensionless scalar. Distinct from a length-1 array: a reader
+    /// checking `ndim` can tell "one value for the whole file" from "one
+    /// value per trace, and there is one trace".
+    F64Scalar(f64),
 }
 
 #[derive(Clone, Debug)]
@@ -159,6 +163,10 @@ fn export_var_to_py<'py>(py: Python<'py>, var: &ExportVariable<'_>) -> PyResult<
             dict.set_item("data", py_arr)?;
         }
         ExportArray::U8Scalar(v) => {
+            let py_arr = PyArray1::from_slice(py, &[v.to_owned()]).get_item(0)?;
+            dict.set_item("data", py_arr)?;
+        }
+        ExportArray::F64Scalar(v) => {
             let py_arr = PyArray1::from_slice(py, &[v.to_owned()]).get_item(0)?;
             dict.set_item("data", py_arr)?;
         }
@@ -575,6 +583,39 @@ impl GPR {
 
         // ---------- Data variables ----------
         let mut data_vars: BTreeMap<String, ExportVariable<'_>> = BTreeMap::new();
+
+        // The time cropped off the start of every trace, which gprinterp
+        // SPEC §7.5.1 needs as the `t0` of the `twtt` axis. Without it, two
+        // revisions that cropped differently both describe themselves as
+        // starting at zero and re-anchor silently wrong.
+        //
+        // Scalar because that is what Ridal's zero corrections produce. A
+        // per-trace first-break correction would write this same variable
+        // dimensioned `(x)`, which is why it is a variable and not another
+        // global attribute -- attributes cannot carry a dimension.
+        data_vars.insert(
+            "twtt_t0".into(),
+            ExportVariable {
+                dims: Vec::new(),
+                data: ExportArray::F64Scalar(self.twtt_t0_ns() as f64),
+                attrs: [
+                    ("units".into(), "ns".into()),
+                    (
+                        "long_name".into(),
+                        "two-way travel time at the first sample".into(),
+                    ),
+                    (
+                        "comment".into(),
+                        "Time removed from the start of each trace by zero correction. \
+                         The twtt axis is measured from the original time zero, so \
+                         twtt[i] = twtt_t0 + i * dt."
+                            .into(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
 
         let grid_mapping =
             crate::coords::build_grid_mapping_from_crs(&self.location.crs)?.ok_or(format!(
