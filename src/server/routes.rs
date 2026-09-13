@@ -1432,11 +1432,16 @@ pub async fn dataset_download(
 /// spirit of #122's "one bad candidate does not abort discovery."
 pub async fn group_tracks(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     Path(group): Path<String>,
 ) -> impl IntoResponse {
     let mut out = serde_json::Map::new();
     let catalog = state.catalog();
-    for entry in catalog.entries_in_group(&group) {
+    // Filtered like the listing it draws. A track on the group map is a
+    // listing by another means: without this, a group with one unlisted
+    // member and one listed one would draw both for a `picker`, which is
+    // the one thing unlisting does claim to prevent.
+    for entry in listable(catalog.entries_in_group(&group).into_iter(), &caller) {
         let Ok(path) = state.absolute_path(entry) else {
             continue;
         };

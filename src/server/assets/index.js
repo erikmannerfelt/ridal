@@ -243,7 +243,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       : '';
     nameFromFile.textContent = properties.from_file.display_name
       ? `Without this, it would be called "${properties.from_file.display_name}".`
-      : `Without this, it would be called "${id}" -- the file gives no name.`;
+      : `Without this, it would be called "${id}" — the file gives no name.`;
 
     if (!properties.overridden.group) {
       grouping.value = 'inherit';

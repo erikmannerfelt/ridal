@@ -131,6 +131,13 @@ impl GroupMembership {
 
 /// What a project says about a group.
 ///
+/// Outlives its members. Reverting the last radargram out of a group leaves
+/// the group's name here, inert -- a group nobody is in gets no heading
+/// (see the catalog's `resolve_group_names`) -- and a radargram that later
+/// joins that id picks the name back up. That is the behaviour the
+/// one-name-in-one-place design wants: the name belongs to the group, not
+/// to whoever happened to be in it.
+///
 /// An object rather than a bare string deliberately: it is the obvious home
 /// for the next group-scoped thing (an ordering key, a description, a
 /// default render profile), and widening a string to an object later is a
@@ -360,6 +367,51 @@ mod tests {
         assert!(text.contains("display_name"), "{text}");
         assert!(!text.contains("\"group\":"), "{text}");
         assert!(!text.contains("unlisted"), "{text}");
+    }
+
+    #[test]
+    fn a_group_keeps_its_name_after_its_last_member_leaves() {
+        // Deliberate. The name belongs to the group rather than to whoever
+        // was in it, so a radargram that joins that id later picks it back
+        // up -- which is the point of keeping the name in one place. A
+        // group nobody is in renders no heading, so the leftover is inert;
+        // the catalog test `a_group_override_for_a_group_nothing_is_in_...`
+        // is the other half of this.
+        let (_dir, store) = store();
+        update(&store, |o| {
+            o.radargrams.insert(
+                radargram("line-01"),
+                RadargramOverride {
+                    group: Some(GroupMembership::Group(group("dronbreen-2022"))),
+                    ..Default::default()
+                },
+            );
+            o.groups.insert(
+                group("dronbreen-2022"),
+                GroupOverride {
+                    name: GroupName::from_input("Drønbreen 2022"),
+                },
+            );
+            Ok(())
+        })
+        .unwrap();
+
+        update(&store, |o| {
+            o.radargrams.remove(&radargram("line-01"));
+            Ok(())
+        })
+        .unwrap();
+
+        let (read_back, _) = read(&store).unwrap();
+        assert!(read_back.radargrams.is_empty(), "the radargram reverted");
+        assert_eq!(
+            read_back.groups[&group("dronbreen-2022")]
+                .name
+                .as_ref()
+                .map(|n| n.as_str()),
+            Some("Drønbreen 2022"),
+            "the group's name is still the project's decision"
+        );
     }
 
     #[test]

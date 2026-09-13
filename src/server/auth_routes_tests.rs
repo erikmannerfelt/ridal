@@ -1645,8 +1645,16 @@ fn app_with_an_unlisted_radargram(set: UserSet) -> (tempfile::TempDir, Router) {
 
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), "line-01");
-    write_test_nc(&dir.path().join("radargrams").join("line-02.nc"), "line-02");
+    // With coordinate axes, so the group map has tracks to draw: whether an
+    // unlisted radargram reaches that map is one of the things this fixture
+    // is for.
+    for id in ["line-01", "line-02"] {
+        super::interp_routes_tests::write_test_nc_with_axes(
+            &dir.path().join("radargrams").join(format!("{id}.nc")),
+            id,
+            None,
+        );
+    }
     let project = Project::discover(dir.path()).unwrap().unwrap();
     users::write(project.documents(), &set, &Expectation::Any).unwrap();
     overrides::update(project.documents(), |o| {
@@ -1837,6 +1845,62 @@ async fn moving_a_radargram_into_a_named_group_takes_effect_at_once() {
     // offer meaningful rather than a leap of faith.
     assert_eq!(properties.body["from_file"]["group_id"], "radargrams");
     assert_eq!(properties.body["overridden"]["group"], true);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_unlisted_radargram_is_off_the_group_map_too() {
+    // A track on the group map is a listing by another means. A group with
+    // one listed member and one unlisted one still renders for a `picker`,
+    // so without filtering the map endpoint their track would be drawn --
+    // the one thing unlisting does claim to prevent.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![
+            activated("student", Role::Picker, DownloadScope::All, &hash),
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+    let _ = dir;
+    let erik = sign_in(&app, "erik").await;
+
+    // Put both in one group, so the group survives the filter.
+    for id in ["line-01", "line-02"] {
+        let response = put(
+            &app,
+            &format!("/api/v1/datasets/{id}/properties"),
+            &json!({
+                "grouping": "group",
+                "group_name": "Shared",
+                "unlisted": id == "line-02",
+            }),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::NO_CONTENT, "{}", response.text);
+    }
+
+    let named = |body: &Value| -> Vec<String> {
+        body.as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+
+    let student = sign_in(&app, "student").await;
+    let seen = get(&app, "/api/v1/groups/shared/tracks", Some(&student)).await;
+    assert_eq!(
+        named(&seen.body),
+        vec!["line-01"],
+        "the unlisted member must not be drawn: {}",
+        seen.text
+    );
+
+    // The operator, who can change it, still sees it.
+    let seen = get(&app, "/api/v1/groups/shared/tracks", Some(&erik)).await;
+    let mut ids = named(&seen.body);
+    ids.sort();
+    assert_eq!(ids, vec!["line-01", "line-02"]);
 }
 
 #[tokio::test]
