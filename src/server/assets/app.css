@@ -816,6 +816,60 @@ dialog th {
   font: inherit;
 }
 
+/* Stacked rather than the wrapping row `.add-layer-fields` uses: each
+ * control here is followed by a line saying what the field would be
+ * without it, and that line has to sit under its own control rather than
+ * wherever the wrap put it. */
+.properties-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+  min-width: min(28rem, 80vw);
+}
+
+.properties-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.properties-fields label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.properties-fields input[type="text"],
+.properties-fields select {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+/* The "without this it would be..." lines. Tight under their control and
+ * quieter than it, so the form still reads as three questions. */
+.properties-fields .hint {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+
+/* The edit button sits at the foot of a card, quieter than the card's own
+ * link: the card is for opening a radargram, and this is housekeeping. */
+.card-actions {
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-3);
+}
+
+.card-edit {
+  font-size: var(--text-sm);
+}
 button.danger {
   border-color: var(--color-warning-border);
   color: var(--color-warning-text);

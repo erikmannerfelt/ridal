@@ -152,3 +152,175 @@ document.querySelectorAll('.group-map').forEach((el) => {
     );
   });
 })();
+
+/* --- Edit properties -----------------------------------------------------
+ *
+ * One dialog for every card, filled from the API when it opens rather than
+ * from the card's own markup. The card only knows the *resolved* values;
+ * the dialog also has to show what each field would be without its
+ * override, so that reverting can be labelled with the value it goes back
+ * to. Rendering that into every card would put the whole override document
+ * on the page for the sake of the one card somebody edits.
+ *
+ * A save reloads the page. The change moves cards between groups, renames
+ * headings, adds and removes group sections and can make a card disappear
+ * into a disclosure -- so patching the DOM would mean reimplementing the
+ * index template in JavaScript to stay honest about it.
+ */
+(function setupPropertiesDialog() {
+  const dialog = document.getElementById('properties-dialog');
+  const buttons = [...document.querySelectorAll('button[data-edit-properties]')];
+  if (!dialog || buttons.length === 0) return;
+
+  const title = document.getElementById('properties-title');
+  const errorBox = document.getElementById('properties-error');
+  const nameInput = document.getElementById('properties-display-name');
+  const nameFromFile = document.getElementById('properties-display-name-file');
+  const grouping = document.getElementById('properties-grouping');
+  const groupRow = document.getElementById('properties-group-row');
+  const groupInput = document.getElementById('properties-group-name');
+  const groupList = document.getElementById('properties-group-list');
+  const groupFromFile = document.getElementById('properties-group-file');
+  const unlisted = document.getElementById('properties-unlisted');
+  const save = document.getElementById('properties-save');
+
+  let radargramId = null;
+  /* The id of the group the name box was last known to mean. Sent back
+   * alongside the name so that editing only the *name* of an existing
+   * group renames it in place instead of forking a new slug off the
+   * changed text. */
+  let chosenGroupId = null;
+
+  const showError = (message) => {
+    errorBox.textContent = message;
+    errorBox.hidden = !message;
+  };
+
+  /* "Choose or name one" is the only mode with a group to name. */
+  const syncGroupRow = () => {
+    groupRow.hidden = grouping.value !== 'group';
+  };
+  grouping.addEventListener('change', () => {
+    // Typing a different name means a different group unless the user
+    // picked one from the list, which `input` below re-establishes.
+    if (grouping.value !== 'group') chosenGroupId = null;
+    syncGroupRow();
+  });
+  groupInput.addEventListener('input', () => {
+    const match = [...groupList.options].find((o) => o.value === groupInput.value);
+    chosenGroupId = match ? match.dataset.groupId : null;
+  });
+
+  const open = async (id, label) => {
+    radargramId = id;
+    title.textContent = `Edit properties - ${label}`;
+    showError('');
+    let properties;
+    try {
+      properties = await RIDAL.fetchJson(
+        RIDAL.apiPath('datasets', id, 'properties'),
+      );
+    } catch (error) {
+      RIDAL.reportProblem('download-error', `Could not read properties: ${error.message}`);
+      return;
+    }
+
+    groupList.replaceChildren(
+      ...properties.groups.map((group) => {
+        const option = document.createElement('option');
+        option.value = group.name;
+        option.dataset.groupId = group.id;
+        return option;
+      }),
+    );
+
+    // Only the overridden fields are prefilled with the project's values.
+    // An inherited field shows empty with the file's value named beneath
+    // it, so "this is inherited" and "this happens to match" look
+    // different -- which is the distinction the whole document is about.
+    nameInput.value = properties.overridden.display_name
+      ? properties.effective.display_name || ''
+      : '';
+    nameFromFile.textContent = properties.from_file.display_name
+      ? `Without this, it would be called "${properties.from_file.display_name}".`
+      : `Without this, it would be called "${id}" -- the file gives no name.`;
+
+    if (!properties.overridden.group) {
+      grouping.value = 'inherit';
+      groupInput.value = '';
+      chosenGroupId = null;
+    } else if (properties.effective.group_id) {
+      grouping.value = 'group';
+      groupInput.value = properties.effective.group_name || '';
+      chosenGroupId = properties.effective.group_id;
+    } else {
+      grouping.value = 'ungrouped';
+      groupInput.value = '';
+      chosenGroupId = null;
+    }
+    groupFromFile.textContent = properties.from_file.group_name
+      ? `Without this, it would be in "${properties.from_file.group_name}".`
+      : 'Without this, it would be in no group.';
+
+    unlisted.checked = properties.effective.unlisted;
+    syncGroupRow();
+    dialog.showModal();
+  };
+
+  for (const button of buttons) {
+    button.addEventListener('click', () =>
+      open(button.dataset.editProperties, button.dataset.editLabel || ''),
+    );
+  }
+
+  document
+    .getElementById('properties-close')
+    .addEventListener('click', () => dialog.close());
+
+  save.addEventListener('click', async () => {
+    if (!radargramId) return;
+    const body = {
+      display_name: nameInput.value.trim() || null,
+      grouping: grouping.value,
+      unlisted: unlisted.checked,
+    };
+    if (grouping.value === 'group') {
+      const name = groupInput.value.trim();
+      if (!name) {
+        showError('Give the group a name, or choose "No group".');
+        return;
+      }
+      body.group_name = name;
+      // Present only when the name still refers to the group it was read
+      // as: otherwise the server derives a fresh id from the text, which
+      // is what makes "type a new name" create a new group.
+      if (chosenGroupId) body.group_id = chosenGroupId;
+    }
+
+    save.disabled = true;
+    try {
+      const response = await fetch(
+        RIDAL.apiPath('datasets', radargramId, 'properties'),
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!response.ok) {
+        const envelope = await response.json().catch(() => null);
+        showError(
+          envelope?.error?.message || `Could not save properties (${response.status}).`,
+        );
+        return;
+      }
+    } catch (error) {
+      showError(`Could not save properties (${error.message}).`);
+      return;
+    } finally {
+      save.disabled = false;
+    }
+    dialog.close();
+    window.location.reload();
+  });
+})();

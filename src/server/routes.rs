@@ -895,6 +895,12 @@ pub async fn index_page(
             profiles => profiles,
             active_profile => active_profile,
             project => state.project.is_some(),
+            // Whether to offer the Edit properties button at all. Nothing
+            // below `operator` can save one, and a control that answers a
+            // click with a refusal is a worse way to learn about a
+            // permission than never having been offered it.
+            can_edit_project => state.project.is_some()
+                && caller.may(crate::project::users::Role::Operator),
             ..caller_context(&caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;

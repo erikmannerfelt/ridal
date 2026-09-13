@@ -22,6 +22,15 @@
         drops unlisted entries for everyone else, so this badge cannot leak
         the fact that a radargram exists. -#}
     {% if e.unlisted %}<p class="card-badge">Unlisted</p>{% endif %}
+    {#- Inside the card rather than in a page-level menu: the thing being
+        edited is this radargram, and a menu would need to ask which. -#}
+    {% if can_edit_project %}
+    <p class="card-actions">
+      <button type="button" class="card-edit"
+              data-edit-properties="{{ e.radargram_id }}"
+              data-edit-label="{{ e.effective_label }}">Edit properties</button>
+    </p>
+    {% endif %}
     {#- Interpretation progress takes the front row and the shape moves
         behind the toggle: the shape is the same on every card of a survey
         and answers no question anyone is asking of a catalog, while "has
@@ -162,6 +171,55 @@
     {% endif %}
   </section>
   {% endfor %}
+
+  {% if can_edit_project %}
+  {#- One dialog for every card, filled in from the API when it opens: the
+      values it shows include what each field would be *without* its
+      override, which the card does not know and which is what makes
+      "revert to the file" honest rather than a leap of faith. -#}
+  <dialog id="properties-dialog">
+    <h2 id="properties-title">Edit properties</h2>
+    <p class="hint">
+      These are the project's own labels. They sit over what the radargram
+      file says and never change the file, so reprocessing it does not lose
+      them -- and reverting a field puts the file's own value back.
+    </p>
+    <p id="properties-error" class="warning" hidden></p>
+    <div class="properties-fields">
+      <label>Name
+        <input type="text" id="properties-display-name" autocomplete="off">
+      </label>
+      <p class="hint" id="properties-display-name-file"></p>
+
+      <label>Group
+        <select id="properties-grouping">
+          <option value="inherit">Use the radargram's own</option>
+          <option value="ungrouped">No group</option>
+          <option value="group">Choose or name one</option>
+        </select>
+      </label>
+      <label id="properties-group-row">Group name
+        <input type="text" id="properties-group-name" list="properties-group-list"
+               autocomplete="off">
+        <datalist id="properties-group-list"></datalist>
+      </label>
+      <p class="hint" id="properties-group-file"></p>
+
+      <label class="checkbox">
+        <input type="checkbox" id="properties-unlisted">
+        Unlisted
+      </label>
+      <p class="hint">
+        Leaves this radargram out of listings and out of merged downloads.
+        It is not private: anyone who knows the address can still open it.
+      </p>
+    </div>
+    <p>
+      <button type="button" id="properties-save">Save</button>
+      <button type="button" id="properties-close">Close</button>
+    </p>
+  </dialog>
+  {% endif %}
 
   <dialog id="group-download-dialog">
     <h2 id="group-download-title">Download layer points</h2>
