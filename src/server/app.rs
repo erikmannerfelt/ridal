@@ -156,7 +156,14 @@ impl AppState {
             .map_err(|e| format!("Invalid catalog root {}: {e}", root.display()))?;
         let root_is_file = root.is_file();
         let root = root.as_path();
-        let catalog = Catalog::discover(root);
+        // What the project says over what the files say (#145). Read
+        // leniently: a hand-broken overrides document should cost the
+        // project its labels, not every page it serves.
+        let overrides = project
+            .as_ref()
+            .map(|p| crate::project::overrides::read_lenient(p.documents()))
+            .unwrap_or_default();
+        let catalog = Catalog::discover_with_overrides(root, &overrides);
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
