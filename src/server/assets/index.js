@@ -328,3 +328,94 @@ document.querySelectorAll('.group-map').forEach((el) => {
     window.location.reload();
   });
 })();
+
+/* --- Edit a group --------------------------------------------------------
+ *
+ * The same shape as the radargram dialog above, one field shorter. Kept
+ * separate rather than generalised: they share a pattern, not a form, and
+ * the moment either grows a second field the shared version would be a
+ * switch on which one it is.
+ *
+ * A group's name lives with the group rather than with its members (see
+ * `project::overrides`), which is what makes this one save rather than one
+ * per radargram.
+ */
+(function setupGroupPropertiesDialog() {
+  const dialog = document.getElementById('group-properties-dialog');
+  const buttons = [...document.querySelectorAll('button[data-edit-group]')];
+  if (!dialog || buttons.length === 0) return;
+
+  const title = document.getElementById('group-properties-title');
+  const errorBox = document.getElementById('group-properties-error');
+  const nameInput = document.getElementById('group-properties-name');
+  const fromFile = document.getElementById('group-properties-file');
+  const save = document.getElementById('group-properties-save');
+
+  let groupId = null;
+
+  const showError = (message) => {
+    errorBox.textContent = message;
+    errorBox.hidden = !message;
+  };
+
+  const open = async (id, label) => {
+    groupId = id;
+    title.textContent = `Edit group - ${label}`;
+    showError('');
+    let properties;
+    try {
+      properties = await RIDAL.fetchJson(RIDAL.apiPath('groups', id, 'properties'));
+    } catch (error) {
+      RIDAL.reportProblem('download-error', `Could not read the group: ${error.message}`);
+      return;
+    }
+
+    // Empty when inherited, so "this is the project's name" and "this
+    // happens to be what the files say" do not look alike.
+    nameInput.value = properties.overridden ? properties.name || '' : '';
+    const members =
+      properties.member_count === 1 ? '1 radargram' : `${properties.member_count} radargrams`;
+    fromFile.textContent = properties.from_file
+      ? `Without this, it would be called "${properties.from_file}" — the name its ${members} carry. `
+      : `Without this, it would be called "${id}" — its ${members} give no name of their own. `;
+    dialog.showModal();
+  };
+
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const menu = button.closest('details.site-menu');
+      if (menu) menu.open = false;
+      open(button.dataset.editGroup, button.dataset.editGroupLabel || '');
+    });
+  }
+
+  document
+    .getElementById('group-properties-close')
+    .addEventListener('click', () => dialog.close());
+
+  save.addEventListener('click', async () => {
+    if (!groupId) return;
+    save.disabled = true;
+    try {
+      const response = await fetch(RIDAL.apiPath('groups', groupId, 'properties'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: nameInput.value.trim() || null }),
+      });
+      if (!response.ok) {
+        const envelope = await response.json().catch(() => null);
+        showError(envelope?.error?.message || `Could not save the group (${response.status}).`);
+        return;
+      }
+    } catch (error) {
+      showError(`Could not save the group (${error.message}).`);
+      return;
+    } finally {
+      save.disabled = false;
+    }
+    dialog.close();
+    // Same reason the radargram dialog reloads: a rename changes a heading,
+    // every card's group and the download menu labels under it.
+    window.location.reload();
+  });
+})();

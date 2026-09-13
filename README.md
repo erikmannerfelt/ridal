@@ -175,6 +175,7 @@ The file is never touched.
 The project keeps its own labels over what the file says, per field, so setting a name leaves the grouping alone — and the dialog shows what each field would be without the override, so reverting one puts the file's own value back.
 
 A group's name lives with the group rather than with its members, so renaming it is one edit and twenty radargrams cannot come to disagree about what their group is called.
+Each group heading has its own **Edit** for that.
 
 The radargram id is deliberately not editable.
 It is the join key for the interpretations stored against it, for the level 2 `radargram_id` column and for every URL, so renaming it would orphan picks.

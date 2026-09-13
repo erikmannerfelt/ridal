@@ -1942,3 +1942,134 @@ async fn unlisting_takes_a_radargram_out_of_a_pickers_listing_at_once() {
         "the operator still sees both"
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_operator_can_rename_a_group_in_one_place() {
+    // The point of keeping a group's name with the group: one save, and
+    // every member reports the new name. Renaming it through a member would
+    // work too, but it reads as though the name belonged to that radargram.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![
+            activated("student", Role::Picker, DownloadScope::All, &hash),
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+
+    for id in ["line-01", "line-02"] {
+        put(
+            &app,
+            &format!("/api/v1/datasets/{id}/properties"),
+            &json!({"grouping": "group", "group_name": "Kroppbreen", "unlisted": false}),
+            Some(&erik),
+        )
+        .await;
+    }
+
+    let before = get(&app, "/api/v1/groups/kroppbreen/properties", Some(&erik)).await;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.text);
+    assert_eq!(before.body["name"], "Kroppbreen");
+    assert_eq!(before.body["member_count"], 2);
+    assert_eq!(before.body["overridden"], true);
+
+    let saved = put(
+        &app,
+        "/api/v1/groups/kroppbreen/properties",
+        &json!({"display_name": "Kroppbreen, spring 2022"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{}", saved.text);
+
+    // Both members, from one save, without a restart.
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    for entry in listing.body["entries"].as_array().unwrap() {
+        assert_eq!(
+            entry["group_name"], "Kroppbreen, spring 2022",
+            "{}",
+            entry["radargram_id"]
+        );
+    }
+
+    // And reverting puts back what the member files say -- which here is
+    // the directory they sit in, since neither carries a group name.
+    let reverted = put(
+        &app,
+        "/api/v1/groups/kroppbreen/properties",
+        &json!({"display_name": null}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(reverted.status, StatusCode::NO_CONTENT, "{}", reverted.text);
+    let after = get(&app, "/api/v1/groups/kroppbreen/properties", Some(&erik)).await;
+    assert_eq!(after.body["overridden"], false);
+    assert_ne!(after.body["name"], "Kroppbreen, spring 2022");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn ungrouped_is_not_a_group_to_rename() {
+    // `_none` is the absence of a group, not one that lost its name, and
+    // saying so is more use than "not found".
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+
+    let response = put(
+        &app,
+        "/api/v1/groups/_none/properties",
+        &json!({"display_name": "Everything else"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert_eq!(response.body["error"]["code"], "not_a_group");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_picker_cannot_rename_a_group() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![
+            activated("student", Role::Picker, DownloadScope::All, &hash),
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+    put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"grouping": "group", "group_name": "Kroppbreen", "unlisted": false}),
+        Some(&erik),
+    )
+    .await;
+
+    let student = sign_in(&app, "student").await;
+    let response = put(
+        &app,
+        "/api/v1/groups/kroppbreen/properties",
+        &json!({"display_name": "Mine now"}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN, "{}", response.text);
+    assert_eq!(
+        get(&app, "/api/v1/groups/kroppbreen/properties", Some(&student))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+}

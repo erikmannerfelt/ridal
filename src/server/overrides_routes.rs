@@ -1,11 +1,19 @@
 //! Editing the catalog metadata a project keeps over its files (#145).
 //!
-//! Two routes, both `operator` and above:
+//! Four routes, all `operator` and above:
 //!
 //! ```text
 //! GET  /api/v1/datasets/{id}/properties
 //! PUT  /api/v1/datasets/{id}/properties
+//! GET  /api/v1/groups/{id}/properties
+//! PUT  /api/v1/groups/{id}/properties
 //! ```
+//!
+//! A group is editable in its own right, not only through whichever member
+//! happens to be at hand. Renaming one by editing a radargram works, but it
+//! asks the operator to find a member first and then reads as though the
+//! name belonged to that radargram — which is the thing this document's
+//! shape is built to deny.
 //!
 //! The `GET` answers a question the catalog alone cannot: **what would this
 //! field be without its override?** Without that, an override silently
@@ -303,4 +311,136 @@ fn refresh_catalog(state: &AppState) -> Result<(), ApiError> {
     let snapshot = state.catalog();
     state.replace_catalog(snapshot.reresolved(&stored), snapshot.open_radargrams());
     Ok(())
+}
+
+/// What the group dialog needs to render itself.
+#[derive(Debug, Serialize)]
+pub struct GroupProperties {
+    group_id: String,
+    /// The name the catalog currently shows.
+    name: Option<String>,
+    /// What it would show without the override: the name resolved from the
+    /// members' own files, or nothing when the group exists only because
+    /// somebody put radargrams in it.
+    from_file: Option<String>,
+    overridden: bool,
+    /// How many radargrams are in it, so the dialog can say what a rename
+    /// affects rather than leaving it to be guessed.
+    member_count: usize,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct GroupPropertiesBody {
+    /// `null` or empty reverts to whatever the member files say.
+    #[serde(default)]
+    display_name: Option<String>,
+}
+
+/// Resolve and validate a group id from the path.
+///
+/// The ungrouped pseudo-group is refused rather than 404ing: `_none` is not
+/// a group that lost its name, it is the absence of one, and saying so is
+/// more use than "not found".
+fn group_for(raw: &str) -> Result<GroupId, ApiError> {
+    if raw == super::app::NO_GROUP_ID {
+        return Err(ApiError::bad_request(
+            "not_a_group",
+            "\"Ungrouped\" is not a group, it is the radargrams that are in none. \
+             Put them in a group to give them one.",
+        ));
+    }
+    GroupId::new(raw).map_err(|e| ApiError::bad_request("invalid_group", e.to_string()))
+}
+
+pub async fn get_group_properties(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(group_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = project_for(&state, &caller, "read a group's properties")?;
+    let id = group_for(&group_id)?;
+    let catalog = state.catalog();
+
+    let member_count = catalog
+        .entries
+        .iter()
+        .filter(|e| e.group_id.as_ref() == Some(&id))
+        .count();
+    if member_count == 0 {
+        return Err(ApiError::not_found(
+            "group_not_found",
+            format!("No group with id '{group_id}'"),
+        ));
+    }
+
+    // What the files alone would call it. Asked by re-resolving against no
+    // overrides at all, rather than by reimplementing the rule: a group
+    // whose members are only in it because of an override correctly has no
+    // name of its own here.
+    let from_file = catalog
+        .reresolved(&CatalogOverrides::default())
+        .group_names
+        .get(&id)
+        .map(|name| name.as_str().to_string());
+
+    let (stored, _) = overrides::read(project.documents())
+        .map_err(|e| ApiError::internal("overrides_read_failed", e.to_string()))?;
+
+    Ok(Json(GroupProperties {
+        group_id: id.as_str().to_string(),
+        name: catalog
+            .group_names
+            .get(&id)
+            .map(|name| name.as_str().to_string()),
+        from_file,
+        overridden: stored
+            .groups
+            .get(&id)
+            .and_then(|group| group.name.as_ref())
+            .is_some(),
+        member_count,
+    }))
+}
+
+pub async fn put_group_properties(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(group_id): Path<String>,
+    Json(body): Json<GroupPropertiesBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = project_for(&state, &caller, "change a group's properties")?;
+    let id = group_for(&group_id)?;
+
+    let name = match body.display_name.as_deref() {
+        None | Some("") => None,
+        Some(value) => Some(GroupName::from_input(value).ok_or_else(|| {
+            ApiError::bad_request("invalid_group_name", "A name cannot be only spaces.")
+        })?),
+    };
+
+    overrides::update(project.documents(), |stored| {
+        match &name {
+            Some(name) => {
+                stored
+                    .groups
+                    .entry(id.clone())
+                    .or_default()
+                    .name
+                    .replace(name.clone());
+            }
+            // Reverting clears just the name, leaving any other group
+            // setting alone; `prune` drops the entry if nothing is left.
+            None => {
+                if let Some(group) = stored.groups.get_mut(&id) {
+                    group.name = None;
+                }
+            }
+        }
+        Ok(())
+    })
+    .map_err(|e| ApiError::internal("overrides_write_failed", e.to_string()))?;
+
+    refresh_catalog(&state)?;
+
+    Ok(StatusCode::NO_CONTENT)
 }

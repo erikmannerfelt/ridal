@@ -654,6 +654,11 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::routes::group_tracks),
         )
         .route(
+            "/api/v1/groups/{group}/properties",
+            get(super::overrides_routes::get_group_properties)
+                .put(super::overrides_routes::put_group_properties),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/views/{view}/overview",
             get(super::routes::overview_image),
         )

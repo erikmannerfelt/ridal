@@ -1554,6 +1554,7 @@ button.danger:hover {
  * their own, and identical to each other because there is no reason for a
  * reader to have to notice which one they are looking at. */
 .card-menu > summary,
+.group-menu > summary,
 .download-menu > summary {
   font-size: var(--text-sm);
   padding: var(--space-1) var(--space-2);
@@ -1587,6 +1588,19 @@ button.danger:hover {
    * it labels -- leaving the button sitting on the map. Put it back on the
    * row instead, where wrapping cannot lose it. */
   margin-bottom: var(--space-2);
+}
+
+/* Pushed to the right edge, so a group reads the same way a card does:
+ * what it is on the left, what can be done to it on the right. */
+.group-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.group-menu {
+  flex: none;
 }
 
 .group-heading h2 {

@@ -155,12 +155,30 @@
         a page has several. -#}
     <div class="group-heading">
       <h2>{{ group.label }}</h2>
-      {{ download_menu(
-           "group-" ~ loop.index,
-           "/api/v1/groups/" ~ group.id,
-           group.label,
-           "Download",
-           project) }}
+      {#- Controls to the right of the name, the same way a card puts its
+          menu opposite its title. -#}
+      <div class="group-actions">
+        {{ download_menu(
+             "group-" ~ loop.index,
+             "/api/v1/groups/" ~ group.id,
+             group.label,
+             "Download",
+             project) }}
+        {#- "Ungrouped" is not a group, it is the radargrams in none, so
+            there is nothing about it to edit. -#}
+        {% if can_edit_project and group.id != "_none" %}
+        <details class="site-menu group-menu">
+          <summary>Edit</summary>
+          <ul>
+            <li>
+              <button type="button"
+                      data-edit-group="{{ group.id }}"
+                      data-edit-group-label="{{ group.label }}">Edit properties</button>
+            </li>
+          </ul>
+        </details>
+        {% endif %}
+      </div>
     </div>
     <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
     <ul class="card-grid">
@@ -233,6 +251,30 @@
     <p>
       <button type="button" id="properties-save">Save</button>
       <button type="button" id="properties-close">Close</button>
+    </p>
+  </dialog>
+  {% endif %}
+
+  {% if can_edit_project %}
+  {#- A group's own dialog. One field today; the group override is an object
+      precisely so the next group-scoped setting is a row here rather than a
+      migration. -#}
+  <dialog id="group-properties-dialog">
+    <h2 id="group-properties-title">Edit group</h2>
+    <p class="hint">
+      The group's name lives with the group, not with its members, so this
+      renames it everywhere at once and the radargram files are not touched.
+    </p>
+    <p id="group-properties-error" class="warning" hidden></p>
+    <div class="properties-fields">
+      <label>Name
+        <input type="text" id="group-properties-name" autocomplete="off">
+      </label>
+      <p class="hint" id="group-properties-file"></p>
+    </div>
+    <p>
+      <button type="button" id="group-properties-save">Save</button>
+      <button type="button" id="group-properties-close">Close</button>
     </p>
   </dialog>
   {% endif %}
