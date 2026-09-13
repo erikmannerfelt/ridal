@@ -308,6 +308,18 @@ impl GPR {
             "antenna_separation_unit".into(),
             ExportAttr::String("m".into()),
         );
+        // Acquisition provenance, above, next to processing state, here.
+        // `antenna_separation` alone cannot distinguish "acquired at 2 m,
+        // already corrected for" from "2 m, still to correct for", and a
+        // reader using it for geometry would double-correct the second.
+        attrs.insert(
+            "antenna_separation_effective".into(),
+            ExportAttr::F32(self.antenna_separation_effective()),
+        );
+        attrs.insert(
+            "antenna_separation_effective_unit".into(),
+            ExportAttr::String("m".into()),
+        );
         attrs.insert(
             "frequency_steps".into(),
             ExportAttr::I64(self.metadata.frequency_steps as i64),
@@ -465,6 +477,13 @@ impl GPR {
                 attrs: [
                     ("units".into(), "ns".into()),
                     ("long_name".into(), "two-way travel time".into()),
+                    // Which physical quantity this axis is, declared on the
+                    // variable alongside `units` because it is the same kind
+                    // of fact. See `GPR::twtt_anchor_name`.
+                    (
+                        "anchor_name".into(),
+                        self.twtt_anchor_name().to_string().into(),
+                    ),
                 ]
                 .into_iter()
                 .collect(),

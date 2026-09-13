@@ -767,6 +767,59 @@ impl GPR {
         Ok(new_gpr)
     }
 
+    /// The antenna separation the data has **not** yet been corrected for,
+    /// in metres.
+    ///
+    /// Equal to `metadata.antenna_separation` until
+    /// [`GPR::correct_antenna_separation`] runs, and zero afterwards. This
+    /// is the one that says what `twtt` currently refers to; the metadata
+    /// field is acquisition provenance and never changes.
+    pub fn antenna_separation_effective(&self) -> f32 {
+        self.antenna_separation_effective
+    }
+
+    /// Time removed from the start of every trace so far, in nanoseconds.
+    ///
+    /// gprinterp SPEC §7.5.1 models a regular axis as `value = t0 + index *
+    /// dt` and requires a producer that crops leading samples to report the
+    /// resulting offset. Without it, two revisions that cropped differently
+    /// both claim `t0: 0` against shifted origins and re-anchor *silently
+    /// wrong* rather than being refused.
+    ///
+    /// `zero_corr_max_peak` crops per trace and this is the mean of those
+    /// crops, which is the best single number available; per-trace offsets
+    /// would need a `(x)`-dimensioned variable and a gprinterp axis form
+    /// that does not exist yet.
+    pub fn twtt_t0_ns(&self) -> f32 {
+        self.zero_point_ns
+    }
+
+    /// Which gprinterp `y` anchor axis (SPEC §8.2) the `twtt` coordinate is.
+    ///
+    /// After an antenna-separation correction, `twtt` is no longer travel
+    /// time between the antenna pair but travel time to and from a
+    /// theoretical coincident antenna. Both are linear in sample index and
+    /// both hold plausible nanosecond values, so a consumer cannot tell
+    /// them apart from the numbers -- and re-anchoring one onto the other
+    /// is wrong by the antenna geometry while looking entirely reasonable.
+    ///
+    /// Inferred here rather than tracked as a flag because Ridal owns both
+    /// numbers and the inference is exact: the correction is the only thing
+    /// that zeroes the effective separation, and it refuses to run when the
+    /// acquisition separation is already zero. A radargram acquired at zero
+    /// separation is reported as `twtt`, which is both true -- nothing was
+    /// corrected -- and the conservative direction, since a corrected file
+    /// is never mistaken for an uncorrected one.
+    pub fn twtt_anchor_name(&self) -> &'static str {
+        let corrected =
+            self.antenna_separation_effective == 0. && self.metadata.antenna_separation > 0.;
+        if corrected {
+            "twtt_normal_incidence"
+        } else {
+            "twtt"
+        }
+    }
+
     pub fn vertical_resolution_ns(&self) -> f32 {
         self.metadata.time_window / self.metadata.samples as f32
     }
@@ -2814,6 +2867,79 @@ pub mod tests {
             gpr.data[[gpr.data.shape()[0] - 1, 0]],
             (gpr.data.shape()[0] - 1) as f32
         );
+    }
+
+    /// `make_test_gpr` plus the identity that `export_dataset` insists on,
+    /// which `build_processed_gpr` would normally have resolved by now.
+    fn make_exportable_gpr(width: usize, height: usize) -> super::GPR {
+        let mut gpr = make_test_gpr(Some(width), Some(height));
+        gpr.identity.radargram_id = Some(crate::identity::RadargramId::new("test_line").unwrap());
+        gpr
+    }
+
+    fn f32_attr(ds: &crate::export::ExportDataset, name: &str) -> f32 {
+        match ds.attrs.get(name) {
+            Some(crate::export::ExportAttr::F32(v)) => *v,
+            other => panic!("{name} should be an F32 attribute, got {other:?}"),
+        }
+    }
+
+    fn str_attr(attrs: &std::collections::BTreeMap<String, crate::export::ExportAttr>, name: &str) -> String {
+        match attrs.get(name) {
+            Some(crate::export::ExportAttr::String(v)) => v.clone(),
+            other => panic!("{name} should be a string attribute, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_export_distinguishes_acquired_separation_from_remaining_separation() {
+        // Before the correction the two agree, and `twtt` is what the
+        // antenna pair recorded.
+        let mut gpr = make_exportable_gpr(64, 256);
+        let acquired = gpr.metadata.antenna_separation;
+        assert!(acquired > 0., "the fixture needs a real separation");
+
+        let before = gpr.export_dataset().unwrap();
+        assert_eq!(f32_attr(&before, "antenna_separation"), acquired);
+        assert_eq!(f32_attr(&before, "antenna_separation_effective"), acquired);
+        assert_eq!(str_attr(&before.coords["twtt"].attrs, "anchor_name"), "twtt");
+
+        gpr.correct_antenna_separation();
+        let after = gpr.export_dataset().unwrap();
+
+        // The acquisition fact survives -- it is still true that the survey
+        // was flown with the antennas that far apart.
+        assert_eq!(
+            f32_attr(&after, "antenna_separation"),
+            acquired,
+            "acquisition provenance must not be rewritten by processing"
+        );
+        // What changed is how much of it the data still carries. Exporting
+        // the acquisition value here is what would make a reader
+        // double-correct.
+        assert_eq!(f32_attr(&after, "antenna_separation_effective"), 0.);
+        assert_eq!(
+            str_attr(&after.coords["twtt"].attrs, "anchor_name"),
+            "twtt_normal_incidence",
+            "twtt now refers to a coincident antenna, not the pair"
+        );
+    }
+
+    #[test]
+    fn a_radargram_acquired_at_zero_separation_still_declares_plain_twtt() {
+        // Nothing was corrected -- `correct_antenna_separation` refuses to
+        // run at all here -- so the axis is the recorded one. The two
+        // quantities happen to coincide, but claiming the corrected name
+        // would let an uncorrected file be re-anchored onto a corrected
+        // one, and this is the direction that must fail closed.
+        let mut gpr = make_exportable_gpr(32, 128);
+        gpr.metadata.antenna_separation = 0.;
+        gpr.antenna_separation_effective = 0.;
+
+        gpr.correct_antenna_separation();
+        let ds = gpr.export_dataset().unwrap();
+        assert_eq!(str_attr(&ds.coords["twtt"].attrs, "anchor_name"), "twtt");
+        assert_eq!(f32_attr(&ds, "antenna_separation_effective"), 0.);
     }
 
     #[test]
