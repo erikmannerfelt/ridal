@@ -150,6 +150,19 @@ Those are read-only: Ridal never writes outside the project, so an archive can b
 Where the same radargram id exists in both, the project's copy wins — whatever the processing dates say.
 That is what makes the project an overlay rather than another directory in the pile: a reprocessed file appearing in the archive cannot quietly replace a decision made in the project.
 
+**Add radargram** on the catalog page uploads a processed `.nc` into the project, and each card's **Edit** menu can take one out again.
+Both are for `operator` and above.
+
+Removing a radargram in the project deletes the file; removing one in an external root only stops serving it, since Ridal does not write there.
+The buttons say which, because the difference matters.
+
+Picks are never deleted with a radargram — they are archived under `interpretations/_archived/`.
+The reason is not thrift: if a different file later arrived under the same id, orphaned picks would silently reattach to data nobody drew them on.
+
+A project has a maximum size, `max_bytes` under `[radargrams]`, defaulting to 50 GB.
+It is a cap on the project rather than a check against free space on the host, which Ridal does not own.
+Who added or removed what is recorded in `audit.json`.
+
 ### Sharing a project with other people
 
 A project with no accounts behaves as it always has: everyone using it is the user `default`, and `ridal gui` needs no login step.

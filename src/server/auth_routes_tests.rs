@@ -2280,3 +2280,360 @@ async fn a_radargram_from_an_external_root_says_it_is_not_in_the_project() {
         "the archive's is served and never written to"
     );
 }
+
+/// A writable project with one radargram in it and one in an external
+/// archive, plus the given accounts. Returns both directories so a test can
+/// check what actually happened on disk.
+fn lifecycle_app(users: Vec<User>) -> (tempfile::TempDir, tempfile::TempDir, Router) {
+    lifecycle_app_with_cap(users, None)
+}
+
+/// `max_bytes` has to be in `ridal.toml` before the project is opened: the
+/// config is read once and cached, so a test that edits the file afterwards
+/// is testing the default.
+fn lifecycle_app_with_cap(
+    users: Vec<User>,
+    max_bytes: Option<u64>,
+) -> (tempfile::TempDir, tempfile::TempDir, Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    super::interp_routes_tests::write_test_nc_with_axes(
+        &dir.path().join("radargrams").join("ours.nc"),
+        "ours",
+        None,
+    );
+    super::interp_routes_tests::write_test_nc_with_axes(
+        &archive.path().join("theirs.nc"),
+        "theirs",
+        None,
+    );
+    std::fs::write(
+        dir.path().join("ridal.toml"),
+        format!(
+            "[project]\nname = \"test\"\n\n[radargrams]\nroots = [\"radargrams\", \"{}\"]\n{}",
+            archive.path().display(),
+            max_bytes
+                .map(|n| format!("max_bytes = {n}\n"))
+                .unwrap_or_default(),
+        ),
+    )
+    .unwrap();
+
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users,
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    (dir, archive, build_router(state))
+}
+
+async fn post_bytes(app: &Router, uri: &str, body: Vec<u8>, session: Option<&str>) -> Response {
+    send(
+        app,
+        request("POST", uri, session)
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_uploaded_radargram_appears_without_a_restart() {
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    // A real processed radargram, built the way every other fixture is.
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("new.nc");
+    super::interp_routes_tests::write_test_nc_with_axes(&source, "arrived", None);
+    let bytes = std::fs::read(&source).unwrap();
+
+    let response = post_bytes(&app, "/api/v1/datasets?filename=new.nc", bytes, Some(&erik)).await;
+    assert_eq!(response.status, StatusCode::CREATED, "{}", response.text);
+    assert_eq!(response.body["radargram_id"], "arrived");
+
+    // In the catalog immediately, and on disk under its id rather than the
+    // name the client happened to use.
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let ids: Vec<&str> = listing.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["radargram_id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"arrived"), "{ids:?}");
+    assert!(dir.path().join("radargrams/arrived.nc").exists());
+    assert!(!dir.path().join("radargrams/new.nc").exists());
+
+    // And it is recorded.
+    let log: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("audit.json")).unwrap())
+            .unwrap();
+    let entries = log["entries"].as_array().unwrap();
+    assert_eq!(entries.last().unwrap()["action"], "added");
+    assert_eq!(entries.last().unwrap()["user"], "erik");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_upload_that_is_not_a_ridal_radargram_leaves_nothing_behind() {
+    // Every refusal happens after the file exists, so the one thing that
+    // must always hold is that nothing is left in the radargram directory.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let response = post_bytes(
+        &app,
+        "/api/v1/datasets?filename=notes.txt",
+        b"this is not a NetCDF file".to_vec(),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert_eq!(response.body["error"]["code"], "not_a_radargram");
+
+    let left: Vec<String> = std::fs::read_dir(dir.path().join("radargrams"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(left, vec!["ours.nc"], "no temporary file survived");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_upload_colliding_with_an_existing_id_is_refused() {
+    // Refused while the operator is standing there and can rename it,
+    // rather than left to become a duplicate-id warning later.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("again.nc");
+    super::interp_routes_tests::write_test_nc_with_axes(&source, "ours", None);
+    let bytes = std::fs::read(&source).unwrap();
+
+    let response = post_bytes(&app, "/api/v1/datasets", bytes, Some(&erik)).await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text);
+    assert_eq!(response.body["error"]["code"], "radargram_exists");
+
+    let left: Vec<String> = std::fs::read_dir(dir.path().join("radargrams"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(left, vec!["ours.nc"], "the existing one is untouched");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn removing_a_project_radargram_deletes_the_file_and_keeps_the_picks() {
+    // The hazard is not wasted space: it is a different file arriving later
+    // under the same id and orphaned picks reattaching to data they were
+    // never drawn on.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let picks = dir.path().join("interpretations/ours");
+    std::fs::create_dir_all(&picks).unwrap();
+    std::fs::write(
+        picks.join("erik.gprinterp.json"),
+        r#"{"schema":"gprinterp","key":"ours","features":[]}"#,
+    )
+    .unwrap();
+
+    let response = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    assert_eq!(response.body["outcome"], "removed");
+    assert_eq!(response.body["archived"], 1);
+
+    assert!(!dir.path().join("radargrams/ours.nc").exists());
+    assert!(
+        !picks.join("erik.gprinterp.json").exists(),
+        "nothing is left to reattach"
+    );
+    let archived = dir.path().join("interpretations/_archived/ours");
+    assert!(archived.exists(), "and nothing authored was destroyed");
+
+    // Gone from the catalog without a restart.
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let ids: Vec<&str> = listing.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["radargram_id"].as_str().unwrap())
+        .collect();
+    assert!(!ids.contains(&"ours"), "{ids:?}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn removing_an_external_radargram_ignores_it_and_leaves_the_file_alone() {
+    // Ridal never writes outside the project. The most "remove" can mean
+    // there is "stop serving it", and the response says so rather than
+    // implying the file is gone.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let response = delete(&app, "/api/v1/datasets/theirs", Some(&erik)).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    assert_eq!(response.body["outcome"], "ignored");
+    assert!(
+        archive.path().join("theirs.nc").exists(),
+        "the archive is not Ridal's to change"
+    );
+
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let ids: Vec<&str> = listing.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["radargram_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["ours"]);
+
+    // Listed as ignored rather than simply absent, and restorable.
+    let ignored = get(&app, "/api/v1/catalog/ignored", Some(&erik)).await;
+    assert_eq!(ignored.body["ignored"][0]["radargram_id"], "theirs");
+    assert!(ignored.body["vestigial"].as_array().unwrap().is_empty());
+
+    let restored = post(
+        &app,
+        "/api/v1/datasets/theirs/restore",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(restored.status, StatusCode::NO_CONTENT, "{}", restored.text);
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    assert_eq!(listing.body["entries"].as_array().unwrap().len(), 2);
+
+    let _ = dir;
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_upload_past_the_project_cap_is_refused_before_it_is_written() {
+    let hash = users::hash_password(password()).unwrap();
+    // A cap the project has already passed, so there is no room at all.
+    let (dir, _archive, app) = lifecycle_app_with_cap(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        Some(1024),
+    );
+    let erik = sign_in(&app, "erik").await;
+
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("big.nc");
+    super::interp_routes_tests::write_test_nc_with_axes(&source, "big", None);
+    let bytes = std::fs::read(&source).unwrap();
+
+    let response = post_bytes(&app, "/api/v1/datasets", bytes, Some(&erik)).await;
+    assert_eq!(
+        response.status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "{}",
+        response.text
+    );
+    assert_eq!(response.body["error"]["code"], "project_full");
+    assert!(
+        response.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("max_bytes"),
+        "the message says how to fix it: {}",
+        response.body["error"]["message"]
+    );
+    assert!(!dir.path().join("radargrams/big.nc").exists());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_picker_can_neither_add_nor_remove() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "student",
+        Role::Picker,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let student = sign_in(&app, "student").await;
+
+    assert_eq!(
+        post_bytes(
+            &app,
+            "/api/v1/datasets",
+            b"anything".to_vec(),
+            Some(&student)
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        delete(&app, "/api/v1/datasets/ours", Some(&student))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(
+            &app,
+            "/api/v1/datasets/ours/restore",
+            &json!({}),
+            Some(&student)
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+}

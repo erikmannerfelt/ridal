@@ -422,3 +422,132 @@ document.querySelectorAll('.group-map').forEach((el) => {
     window.location.reload();
   });
 })();
+
+/* --- Add a radargram -----------------------------------------------------
+ *
+ * The raw file as the request body rather than a multipart form. A NetCDF
+ * upload is one file and no fields, so multipart would wrap it in a
+ * boundary for nothing and cost the server a parser; this streams straight
+ * through on both ends.
+ *
+ * The filename travels as a query parameter and is a display hint only --
+ * the server names the installed file from the radargram id inside it, so
+ * nothing a client sends is ever used to build a path.
+ */
+(function setupAddRadargram() {
+  const button = document.getElementById('add-radargram');
+  const picker = document.getElementById('add-radargram-file');
+  const status = document.getElementById('add-radargram-status');
+  if (!button || !picker) return;
+
+  const say = (message, tone) => {
+    status.replaceChildren();
+    if (!message) return;
+    const box = document.createElement('p');
+    box.className = tone === 'problem' ? 'warning' : 'hint';
+    box.textContent = message;
+    status.appendChild(box);
+  };
+
+  button.addEventListener('click', () => picker.click());
+
+  picker.addEventListener('change', async () => {
+    const file = picker.files && picker.files[0];
+    // Reset immediately: without this, picking the same file twice in a row
+    // fires no `change` event the second time, and a failed upload cannot
+    // be retried without choosing something else first.
+    picker.value = '';
+    if (!file) return;
+
+    button.disabled = true;
+    say(`Uploading ${file.name}…`);
+    try {
+      const response = await fetch(
+        `${RIDAL.apiPath('datasets')}?filename=${encodeURIComponent(file.name)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file },
+      );
+      if (!response.ok) {
+        const envelope = await response.json().catch(() => null);
+        say(envelope?.error?.message || `Could not add it (${response.status}).`, 'problem');
+        return;
+      }
+    } catch (error) {
+      say(`Could not add it (${error.message}).`, 'problem');
+      return;
+    } finally {
+      button.disabled = false;
+    }
+    // Reloaded rather than patched: a new radargram may create a group
+    // section, which is most of the page.
+    window.location.reload();
+  });
+})();
+
+/* --- Remove a radargram --------------------------------------------------
+ *
+ * Asks first, and says what it will actually do. The two cases genuinely
+ * differ -- a file in the project is deleted, one in an external root is
+ * only dropped from the catalog -- and a confirmation that did not
+ * distinguish them would be worse than none, because it would imply the
+ * archive had been changed.
+ */
+(function setupRemoveRadargram() {
+  const dialog = document.getElementById('remove-dialog');
+  const buttons = [...document.querySelectorAll('button[data-remove-radargram]')];
+  if (!dialog || buttons.length === 0) return;
+
+  const title = document.getElementById('remove-title');
+  const explain = document.getElementById('remove-explain');
+  const errorBox = document.getElementById('remove-error');
+  const confirm = document.getElementById('remove-confirm');
+
+  let radargramId = null;
+
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const menu = button.closest('details.site-menu');
+      if (menu) menu.open = false;
+      radargramId = button.dataset.removeRadargram;
+      const label = button.dataset.removeLabel || radargramId;
+      const inProject = button.dataset.removeInProject === '1';
+
+      title.textContent = inProject ? `Remove ${label}?` : `Stop serving ${label}?`;
+      explain.textContent = inProject
+        ? 'The file is deleted from the project. Any picks made on it are kept, ' +
+          'archived under the interpretations directory, so nothing anyone drew is lost.'
+        : 'This radargram lives outside the project, which Ridal never writes to. ' +
+          'The file stays exactly where it is; it is only left out of the catalog, ' +
+          'and you can put it back later.';
+      confirm.textContent = inProject ? 'Remove' : 'Stop serving';
+      errorBox.hidden = true;
+      dialog.showModal();
+    });
+  }
+
+  document.getElementById('remove-close').addEventListener('click', () => dialog.close());
+
+  confirm.addEventListener('click', async () => {
+    if (!radargramId) return;
+    confirm.disabled = true;
+    try {
+      const response = await fetch(RIDAL.apiPath('datasets', radargramId), {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        const envelope = await response.json().catch(() => null);
+        errorBox.textContent =
+          envelope?.error?.message || `Could not remove it (${response.status}).`;
+        errorBox.hidden = false;
+        return;
+      }
+    } catch (error) {
+      errorBox.textContent = `Could not remove it (${error.message}).`;
+      errorBox.hidden = false;
+      return;
+    } finally {
+      confirm.disabled = false;
+    }
+    dialog.close();
+    window.location.reload();
+  });
+})();

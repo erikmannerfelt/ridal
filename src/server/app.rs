@@ -58,6 +58,9 @@ impl Default for AccessOptions {
 }
 
 pub struct AppState {
+    /// How render services are configured, kept so [`Self::rediscover`]
+    /// can open one for a radargram that arrives after startup.
+    render_config: RenderServiceConfig,
     /// Every place radargrams are found, the served tree first (#147).
     ///
     /// A list rather than one path because a project may point at archives
@@ -231,6 +234,7 @@ impl AppState {
 
         Ok(Self {
             roots,
+            render_config: *config,
             snapshot: RwLock::new(Arc::new(CatalogSnapshot {
                 catalog,
                 radargrams,
@@ -297,6 +301,70 @@ impl AppState {
             .get(entry.root)
             .ok_or_else(|| format!("entry names root {}, which is not served", entry.root))?;
         Self::resolve_absolute_path(root, entry)
+    }
+
+    /// Re-read the roots and rebuild the catalog and its render services.
+    ///
+    /// What add and remove need, and what an override edit does *not*:
+    /// re-resolution answers "what does the project say about these files",
+    /// and this answers "which files are there". One re-reads a document,
+    /// the other walks the disk.
+    ///
+    /// Render services are carried over for every radargram whose revision
+    /// is unchanged. Reopening all of them because one was added would
+    /// throw away every warm cache in the project, and the revision
+    /// fingerprint is exactly the question "is this the same file" — a
+    /// radargram that was replaced gets a new one and is reopened.
+    pub fn rediscover(&self) -> Result<(), String> {
+        let config = &self.render_config;
+        let overrides = self
+            .project
+            .as_ref()
+            .map(|p| crate::project::overrides::read_lenient(p.documents()))
+            .unwrap_or_default();
+        let catalog = Catalog::discover_roots(&self.roots, &overrides);
+
+        let existing = self.catalog();
+        let mut radargrams = HashMap::new();
+        for entry in &catalog.entries {
+            let key = entry.radargram_id.as_str().to_string();
+            let unchanged = existing
+                .find_entry(&key)
+                .is_some_and(|old| old.revision_id == entry.revision_id);
+            if unchanged {
+                if let Some(open) = existing.radargram(&key) {
+                    radargrams.insert(key, open);
+                    continue;
+                }
+            }
+            let Some(root) = self.roots.get(entry.root) else {
+                continue;
+            };
+            let Ok(path) = Self::resolve_absolute_path(root, entry) else {
+                continue;
+            };
+            let Ok(reader) = SourceReader::open(&path) else {
+                // Skipped rather than fatal, exactly as at startup: one
+                // unreadable file must not cost the whole catalog.
+                eprintln!(
+                    "Warning: could not open {} for rendering",
+                    entry.relative_path
+                );
+                continue;
+            };
+            let shape = reader.shape();
+            let service = RenderService::new(reader, entry.revision_id.clone(), config);
+            radargrams.insert(
+                key,
+                Arc::new(OpenRadargram {
+                    service: Mutex::new(service),
+                    shape,
+                }),
+            );
+        }
+
+        self.replace_catalog(catalog, radargrams);
+        Ok(())
     }
 
     /// Whether Ridal may write to the root this entry came from.
@@ -670,7 +738,18 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
                 .delete(super::interp_routes::delete_interpretation),
         )
         .route("/api/v1/profiles", get(super::routes::list_profiles))
-        .route("/api/v1/datasets", get(super::routes::list_datasets))
+        .route(
+            "/api/v1/datasets",
+            get(super::routes::list_datasets).post(super::lifecycle_routes::upload_dataset),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/restore",
+            axum::routing::post(super::lifecycle_routes::restore_dataset),
+        )
+        .route(
+            "/api/v1/catalog/ignored",
+            get(super::lifecycle_routes::list_ignored),
+        )
         .route(
             "/api/v1/datasets/{radargram_id}/properties",
             get(super::overrides_routes::get_properties)
@@ -678,7 +757,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         )
         .route(
             "/api/v1/datasets/{radargram_id}",
-            get(super::routes::dataset_detail),
+            get(super::routes::dataset_detail).delete(super::lifecycle_routes::remove_dataset),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/track",

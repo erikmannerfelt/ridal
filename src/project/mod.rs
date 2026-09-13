@@ -58,6 +58,7 @@
 //! [`layers`]. The document store knows nothing about schemas, so nothing in
 //! `store.rs` needs to change.
 
+pub mod audit;
 pub mod interpretations;
 pub mod layers;
 pub mod overrides;
@@ -82,8 +83,54 @@ pub const LAYERS_DIR: &str = "layers";
 pub const PREFERENCES_DIR: &str = "preferences";
 /// Default location for derived data.
 pub const DEFAULT_CACHE_DIR: &str = "cache";
+
+/// How large a project may grow before uploads are refused, unless the
+/// project says otherwise.
+///
+/// 50 GB: roomy enough that a survey season does not hit it by accident,
+/// small enough that a runaway client cannot quietly fill a shared disk
+/// before anyone notices. The number matters less than there being one --
+/// an unbounded upload endpoint is the kind of thing that is fine until it
+/// is not.
+pub const DEFAULT_MAX_PROJECT_BYTES: u64 = 50 * 1024 * 1024 * 1024;
 /// Default directory scanned for radargrams when the config says nothing.
 pub const DEFAULT_RADARGRAM_DIR: &str = "radargrams";
+
+/// Total size of every regular file under `root`, in bytes.
+///
+/// Iterative and `std`-only. `walkdir` would be shorter and is already a
+/// dependency, but only under the `server` feature, and a project's size is
+/// not a server-shaped question -- a CLI-only build should be able to ask
+/// it.
+///
+/// Symlinks are not followed and their targets are not counted: a link into
+/// somebody else's archive is not space this project is using, and
+/// following one could count the same bytes twice or walk forever.
+/// Unreadable entries are skipped rather than failing the measurement --
+/// a file Ridal cannot stat is not one it is about to grow, and refusing
+/// every upload over one bad permission is a worse answer than a slightly
+/// low total.
+fn directory_size(root: &Path) -> u64 {
+    let mut total = 0u64;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            // `symlink_metadata`, so a link is measured as the link.
+            let Ok(meta) = entry.path().symlink_metadata() else {
+                continue;
+            };
+            if meta.is_dir() {
+                pending.push(entry.path());
+            } else if meta.is_file() {
+                total += meta.len();
+            }
+        }
+    }
+    total
+}
 
 /// Contents of `ridal.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -112,6 +159,23 @@ pub struct RadargramsSection {
     /// project can index an archive it does not contain.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
+    /// The most the project may grow to, in bytes (#147). Unset means
+    /// [`DEFAULT_MAX_PROJECT_BYTES`].
+    ///
+    /// A cap on the *project*, deliberately, rather than a check against
+    /// free space on the host. Ridal does not own the host's disk, and
+    /// asking it about free space would mean a `statvfs` dependency,
+    /// platform-specific code, and a check-then-write race that can never
+    /// be closed -- something else can fill the disk between the two. The
+    /// project's own size is a quantity Ridal alone changes, so checking it
+    /// under the store lock is a guarantee rather than a hope.
+    ///
+    /// An admin who owns the host can set this below what the disk has. If
+    /// the disk fills anyway the write fails, the temporary file is cleaned
+    /// up, and nothing is installed, because nothing is installed until the
+    /// rename.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -312,6 +376,9 @@ impl Project {
             },
             radargrams: RadargramsSection {
                 roots: vec![DEFAULT_RADARGRAM_DIR.to_string()],
+                // Left unset so a project that never chose one follows the
+                // default, and changing the default reaches it.
+                max_bytes: None,
             },
             cache: CacheSection::default(),
             render: RenderSection::default(),
@@ -511,6 +578,30 @@ impl Project {
             .collect()
     }
 
+    /// How large this project may grow, in bytes.
+    pub fn max_bytes(&self) -> u64 {
+        self.read_config()
+            .radargrams
+            .max_bytes
+            .unwrap_or(DEFAULT_MAX_PROJECT_BYTES)
+    }
+
+    /// How large the project is now, by walking it.
+    ///
+    /// Walked rather than maintained as a running total, which cannot
+    /// drift: a total is wrong the moment anything writes to the project
+    /// without going through the counter, and it is wrong silently. A few
+    /// hundred `stat` calls on an upload is not a cost worth being clever
+    /// about.
+    ///
+    /// Unreadable entries are skipped rather than failing the whole
+    /// measurement. A file Ridal cannot stat is not one it is about to
+    /// grow, and refusing every upload because of one bad permission would
+    /// be a worse answer than a slightly low total.
+    pub fn size_bytes(&self) -> u64 {
+        directory_size(&self.root)
+    }
+
     /// Where derived data belongs.
     ///
     /// Reserved now and created on demand: the on-disk render cache does not
@@ -650,6 +741,54 @@ mod tests {
             project.radargram_roots(),
             vec![dir.path().join("inside"), PathBuf::from(absolute)]
         );
+    }
+
+    #[test]
+    fn project_size_counts_files_at_every_depth() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        let before = project.size_bytes();
+
+        std::fs::create_dir_all(dir.path().join("radargrams/deep")).unwrap();
+        std::fs::write(dir.path().join("radargrams/a.nc"), vec![0u8; 1000]).unwrap();
+        std::fs::write(dir.path().join("radargrams/deep/b.nc"), vec![0u8; 2000]).unwrap();
+
+        assert_eq!(project.size_bytes(), before + 3000);
+    }
+
+    #[test]
+    fn a_symlinked_archive_is_not_counted_as_the_projects_own_space() {
+        // A link into somebody else's archive is not space this project is
+        // using, and following one could count the same bytes twice or walk
+        // forever.
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
+            let project = Project::init(dir.path(), None).unwrap();
+            std::fs::write(elsewhere.path().join("big.nc"), vec![0u8; 100_000]).unwrap();
+            let before = project.size_bytes();
+
+            std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("archive")).unwrap();
+
+            assert_eq!(
+                project.size_bytes(),
+                before,
+                "the link's target is not ours"
+            );
+        }
+    }
+
+    #[test]
+    fn the_size_cap_defaults_until_a_project_sets_one() {
+        // Unset rather than written at init, so changing the default
+        // reaches every project that never chose.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        assert_eq!(project.max_bytes(), DEFAULT_MAX_PROJECT_BYTES);
+        assert!(!std::fs::read_to_string(dir.path().join(MARKER))
+            .unwrap()
+            .contains("max_bytes"));
     }
 
     #[test]

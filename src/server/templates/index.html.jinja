@@ -39,6 +39,18 @@
                     data-edit-properties="{{ e.radargram_id }}"
                     data-edit-label="{{ e.effective_label }}">Edit properties</button>
           </li>
+          {#- Two different words for two different things. A radargram in
+              the project is a file Ridal can delete; one in an external
+              root is not, and calling both "Remove" would promise
+              something about the archive that is not true. -#}
+          <li>
+            <button type="button" class="danger"
+                    data-remove-radargram="{{ e.radargram_id }}"
+                    data-remove-label="{{ e.effective_label }}"
+                    data-remove-in-project="{% if e.in_project %}1{% else %}0{% endif %}">
+              {%- if e.in_project %}Remove&hellip;{% else %}Stop serving&hellip;{% endif -%}
+            </button>
+          </li>
         </ul>
       </details>
       {% endif %}
@@ -143,7 +155,16 @@
     </label>
     {{ download_menu("catalog", "/api/v1/catalog", "all radargrams",
                      "Download all", project) }}
+    {#- A plain button rather than a menu: one action, and hiding a single
+        item behind a disclosure is a click for nothing. -#}
+    {% if can_edit_project %}
+    <button type="button" id="add-radargram">Add radargram&hellip;</button>
+    <input type="file" id="add-radargram-file" accept=".nc" hidden>
+    {% endif %}
   </div>
+  {% if can_edit_project %}
+  <div id="add-radargram-status"></div>
+  {% endif %}
 
   {#- "Ungrouped" is just another entry in `groups` (see routes.rs's
       index_page), not a special case: same map, same heading treatment,
@@ -279,6 +300,20 @@
     <p>
       <button type="button" id="group-properties-save">Save</button>
       <button type="button" id="group-properties-close">Close</button>
+    </p>
+  </dialog>
+  {% endif %}
+
+  {% if can_edit_project %}
+  {#- Removal asks first, and says what it will do, because the two cases
+      differ and the difference is not obvious from the button alone. -#}
+  <dialog id="remove-dialog">
+    <h2 id="remove-title">Remove radargram</h2>
+    <p id="remove-explain" class="hint"></p>
+    <p id="remove-error" class="warning" hidden></p>
+    <p>
+      <button type="button" id="remove-confirm" class="danger">Remove</button>
+      <button type="button" id="remove-close">Cancel</button>
     </p>
   </dialog>
   {% endif %}
