@@ -156,7 +156,14 @@ impl AppState {
             .map_err(|e| format!("Invalid catalog root {}: {e}", root.display()))?;
         let root_is_file = root.is_file();
         let root = root.as_path();
-        let catalog = Catalog::discover(root);
+        // What the project says over what the files say (#145). Read
+        // leniently: a hand-broken overrides document should cost the
+        // project its labels, not every page it serves.
+        let overrides = project
+            .as_ref()
+            .map(|p| crate::project::overrides::read_lenient(p.documents()))
+            .unwrap_or_default();
+        let catalog = Catalog::discover_with_overrides(root, &overrides);
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
@@ -369,14 +376,10 @@ impl CatalogSnapshot {
 
     /// Every open render service, for carrying across a swap that does not
     /// change any file's contents.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "the caller arrives with catalog overrides (#145), where \
-                      a relabelled radargram keeps its warm caches"
-        )
-    )]
+    ///
+    /// The caller is the catalog-overrides refresh (#145): an override
+    /// changes labels and grouping, never a file's contents, so reopening
+    /// every radargram would throw away every warm cache for nothing.
     pub fn open_radargrams(&self) -> HashMap<String, Arc<OpenRadargram>> {
         self.radargrams.clone()
     }
@@ -426,6 +429,23 @@ impl MergeScope {
             Self::Catalog => catalog.entries.iter().collect(),
             Self::Group(id) => catalog.entries_in_group(id),
         }
+    }
+
+    /// What a merged download covers, and how many members it leaves out.
+    ///
+    /// "Everything in this project" quietly including a radargram somebody
+    /// unlisted is a surprise, so they are left out -- and counted, because
+    /// a merged file that silently omits members looks complete. The caller
+    /// puts the count in the `Warning` header beside the other caveats.
+    pub fn listed_entries<'a>(
+        &self,
+        catalog: &'a Catalog,
+    ) -> (Vec<&'a super::catalog::CatalogEntry>, usize) {
+        let all = self.entries(catalog);
+        let total = all.len();
+        let listed: Vec<_> = all.into_iter().filter(|e| !e.unlisted).collect();
+        let omitted = total - listed.len();
+        (listed, omitted)
     }
 
     /// Leading component of the download's filename. A slug in both cases:
@@ -609,6 +629,11 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/api/v1/profiles", get(super::routes::list_profiles))
         .route("/api/v1/datasets", get(super::routes::list_datasets))
         .route(
+            "/api/v1/datasets/{radargram_id}/properties",
+            get(super::overrides_routes::get_properties)
+                .put(super::overrides_routes::put_properties),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}",
             get(super::routes::dataset_detail),
         )
@@ -627,6 +652,11 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route(
             "/api/v1/groups/{group}/tracks",
             get(super::routes::group_tracks),
+        )
+        .route(
+            "/api/v1/groups/{group}/properties",
+            get(super::overrides_routes::get_group_properties)
+                .put(super::overrides_routes::put_group_properties),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/views/{view}/overview",

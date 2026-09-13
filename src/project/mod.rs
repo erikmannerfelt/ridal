@@ -60,6 +60,7 @@
 
 pub mod interpretations;
 pub mod layers;
+pub mod overrides;
 pub mod preferences;
 pub mod store;
 pub mod users;

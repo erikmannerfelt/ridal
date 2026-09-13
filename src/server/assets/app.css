@@ -274,9 +274,14 @@ section.group {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  overflow: hidden;
   scroll-margin-top: var(--space-5);
 }
+
+/* Deliberately not `overflow: hidden`. It used to be, to keep the
+ * thumbnail's square corners inside the card's rounded ones -- but a card
+ * now holds a menu, and a menu that cannot overhang its container is a
+ * menu with one item visible. The rounding moved to the thumbnail, which
+ * is the only thing that ever needed it. */
 
 /* Two distinct highlight states, previously the identical accent ring --
  * which made hovering a card's track from the group map look like it did
@@ -311,6 +316,8 @@ section.group {
   background: var(--color-surface-sunken);
   border-bottom: 1px solid var(--color-border);
   overflow: hidden;
+  /* Inside the card's own border, hence the 1px. */
+  border-radius: calc(var(--radius-md) - 1px) calc(var(--radius-md) - 1px) 0 0;
 }
 
 /* `contain`, not `cover`. OverviewSpec scales by width only and never
@@ -337,15 +344,63 @@ section.group {
   font-size: var(--text-sm);
 }
 
-.card-title {
-  display: block;
+/* The name and the card's own menu on one line, directly under the
+ * picture. Baseline-aligned so the smaller button sits on the name's line
+ * rather than floating beside it. */
+.card-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
   padding: var(--space-3) var(--space-3) 0;
-  font-weight: 600;
-  color: var(--color-accent);
 }
 
-.card-link:hover .card-title {
+.card-title {
+  font-weight: 600;
+  color: var(--color-accent);
+  text-decoration: none;
+  /* The name is what should shrink: the menu is a fixed-width control and
+   * a long name would otherwise push it off the row. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.card-title:hover,
+.card-link:hover + .card-heading .card-title {
   color: var(--color-accent-hover);
+}
+
+/* Its own width rather than a share of the row: the name is the part that
+ * should shrink. The menu's own look is a `.site-menu` variant and is set
+ * with the others, below -- an override here would sit earlier in the file
+ * than `.site-menu > summary` and, at equal specificity, quietly lose. */
+.card-menu {
+  flex: none;
+}
+
+/* Marks an unlisted card inside the disclosure that already says what
+ * unlisted means, so the badge can be a plain label rather than a warning:
+ * nothing is wrong, somebody chose this. */
+.card-badge {
+  margin: 0;
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Unlisted members hang below their group's grid rather than inside it, so
+ * the grid still reads as "what this group is" at a glance. */
+.unlisted-group {
+  margin-top: var(--space-4);
+}
+
+.unlisted-group > summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-weight: 600;
 }
 
 .card-meta {
@@ -791,6 +846,50 @@ dialog th {
   font: inherit;
 }
 
+/* Stacked rather than the wrapping row `.add-layer-fields` uses: each
+ * control here is followed by a line saying what the field would be
+ * without it, and that line has to sit under its own control rather than
+ * wherever the wrap put it. */
+.properties-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+  min-width: min(28rem, 80vw);
+}
+
+.properties-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.properties-fields label.checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.properties-fields input[type="text"],
+.properties-fields select {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+/* The "without this it would be..." lines. Tight under their control and
+ * quieter than it, so the form still reads as three questions. */
+.properties-fields .hint {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+
 button.danger {
   border-color: var(--color-warning-border);
   color: var(--color-warning-text);
@@ -1173,6 +1272,37 @@ button.danger:hover {
   background: var(--color-surface-sunken);
 }
 
+/* The items are buttons, not links: some of them open a dialog rather than
+ * navigating, and a link that does not navigate is a lie to anyone
+ * middle-clicking it.
+ *
+ * On `.site-menu` rather than `.download-menu`, which is where it started:
+ * the reasoning above is about menu items in general, and the second menu
+ * to use buttons (a card's Edit) should not have to restate it to look the
+ * same. Matches `.site-menu > ul a` above, so a menu of links and a menu
+ * of buttons are indistinguishable to look at -- which is the point, since
+ * the difference is about what the item does, not what it is. */
+.site-menu > ul button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.site-menu > ul button:hover,
+.site-menu > ul button:focus-visible {
+  background: var(--color-surface-sunken);
+}
+
 /* The account block at the foot of the menu.
  *
  * Its first row is a caption rather than a link, which is the one thing in
@@ -1419,6 +1549,12 @@ button.danger:hover {
   max-width: 100%;
 }
 
+/* The compact variants: a card's Edit menu and the download menus. Smaller
+ * than the header's because they sit inside content rather than in a bar of
+ * their own, and identical to each other because there is no reason for a
+ * reader to have to notice which one they are looking at. */
+.card-menu > summary,
+.group-menu > summary,
 .download-menu > summary {
   font-size: var(--text-sm);
   padding: var(--space-1) var(--space-2);
@@ -1426,30 +1562,6 @@ button.danger:hover {
 
 .download-menu > summary::before {
   content: "\2193"; /* downwards arrow, in place of the header's bars */
-}
-
-/* The items are buttons, not links: three of them open a dialog rather than
- * navigating, and a link that does not navigate is a lie to anyone
- * middle-clicking it. */
-.download-menu > ul button {
-  display: block;
-  width: 100%;
-  text-align: left;
-  padding: var(--space-2) var(--space-3);
-  border: none;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--color-accent);
-  font: inherit;
-  font-size: var(--text-sm);
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.download-menu > ul button:hover,
-.download-menu > ul button:focus-visible {
-  background: var(--color-surface-sunken);
 }
 
 #image-dialog {
@@ -1476,6 +1588,19 @@ button.danger:hover {
    * it labels -- leaving the button sitting on the map. Put it back on the
    * row instead, where wrapping cannot lose it. */
   margin-bottom: var(--space-2);
+}
+
+/* Pushed to the right edge, so a group reads the same way a card does:
+ * what it is on the left, what can be done to it on the right. */
+.group-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.group-menu {
+  flex: none;
 }
 
 .group-heading h2 {

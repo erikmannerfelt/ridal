@@ -152,3 +152,273 @@ document.querySelectorAll('.group-map').forEach((el) => {
     );
   });
 })();
+
+/* --- Edit properties -----------------------------------------------------
+ *
+ * One dialog for every card, filled from the API when it opens rather than
+ * from the card's own markup. The card knows only the resolved values; the
+ * dialog also has to show what each field would be *without* its override,
+ * so that reverting can be labelled with the value it goes back to.
+ * Rendering that into every card would put the whole override document on
+ * the page for the sake of the one card somebody edits.
+ *
+ * A save reloads the page. The change moves cards between groups, renames
+ * headings, adds and removes group sections and can make a card disappear
+ * into a disclosure -- so patching the DOM would mean reimplementing the
+ * index template in JavaScript to stay honest about it.
+ */
+(function setupPropertiesDialog() {
+  const dialog = document.getElementById('properties-dialog');
+  const buttons = [...document.querySelectorAll('button[data-edit-properties]')];
+  if (!dialog || buttons.length === 0) return;
+
+  const title = document.getElementById('properties-title');
+  const errorBox = document.getElementById('properties-error');
+  const nameInput = document.getElementById('properties-display-name');
+  const nameFromFile = document.getElementById('properties-display-name-file');
+  const groupChoice = document.getElementById('properties-group-choice');
+  const groupRow = document.getElementById('properties-group-row');
+  const groupInput = document.getElementById('properties-group-name');
+  const groupFromFile = document.getElementById('properties-group-file');
+  const unlisted = document.getElementById('properties-unlisted');
+  const save = document.getElementById('properties-save');
+
+  /* The three fixed choices. Anything else in the list is a group id, which
+   * is why they are words rather than something a slug could collide with:
+   * `GroupId` rejects them, so no real group can be spelled this way. */
+  const INHERIT = 'inherit';
+  const UNGROUPED = 'ungrouped';
+  const NEW = 'new';
+
+  let radargramId = null;
+
+  const showError = (message) => {
+    errorBox.textContent = message;
+    errorBox.hidden = !message;
+  };
+
+  const syncGroupRow = () => {
+    groupRow.hidden = groupChoice.value !== NEW;
+  };
+  groupChoice.addEventListener('change', syncGroupRow);
+
+  /* Rebuild the list: the three fixed choices, then one option per group
+   * the catalog knows about. Named by name and valued by id, so nobody has
+   * to know slugs exist and picking a group cannot mistype its id. */
+  const fillGroups = (groups, selected) => {
+    const fixed = [...groupChoice.options].filter((o) =>
+      [INHERIT, UNGROUPED, NEW].includes(o.value),
+    );
+    groupChoice.replaceChildren(...fixed);
+    const newOption = groupChoice.querySelector(`option[value="${NEW}"]`);
+    for (const group of groups) {
+      const option = document.createElement('option');
+      option.value = group.id;
+      option.textContent = group.name;
+      groupChoice.insertBefore(option, newOption);
+    }
+    groupChoice.value = selected;
+    // A group that no longer exists cannot be preselected; fall back to
+    // inherit rather than leaving the select showing nothing.
+    if (!groupChoice.value) groupChoice.value = INHERIT;
+  };
+
+  const open = async (id, label) => {
+    radargramId = id;
+    title.textContent = `Edit properties - ${label}`;
+    showError('');
+    groupInput.value = '';
+    let properties;
+    try {
+      properties = await RIDAL.fetchJson(RIDAL.apiPath('datasets', id, 'properties'));
+    } catch (error) {
+      RIDAL.reportProblem('download-error', `Could not read properties: ${error.message}`);
+      return;
+    }
+
+    // Only the overridden fields are prefilled with the project's values.
+    // An inherited field shows empty with the file's value named beneath
+    // it, so "this is inherited" and "this happens to match" look
+    // different -- which is the distinction the whole document is about.
+    nameInput.value = properties.overridden.display_name
+      ? properties.effective.display_name || ''
+      : '';
+    nameFromFile.textContent = properties.from_file.display_name
+      ? `Without this, it would be called "${properties.from_file.display_name}".`
+      : `Without this, it would be called "${id}" — the file gives no name.`;
+
+    let selected = INHERIT;
+    if (properties.overridden.group) {
+      selected = properties.effective.group_id || UNGROUPED;
+    }
+    fillGroups(properties.groups, selected);
+    groupFromFile.textContent = properties.from_file.group_name
+      ? `Without this, it would be in "${properties.from_file.group_name}".`
+      : 'Without this, it would be in no group.';
+
+    unlisted.checked = properties.effective.unlisted;
+    syncGroupRow();
+    dialog.showModal();
+  };
+
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      // Close the menu it came out of, the way the download menus do:
+      // leaving it open behind a modal is a second thing to dismiss.
+      const menu = button.closest('details.site-menu');
+      if (menu) menu.open = false;
+      open(button.dataset.editProperties, button.dataset.editLabel || '');
+    });
+  }
+
+  document
+    .getElementById('properties-close')
+    .addEventListener('click', () => dialog.close());
+
+  save.addEventListener('click', async () => {
+    if (!radargramId) return;
+    const body = {
+      display_name: nameInput.value.trim() || null,
+      unlisted: unlisted.checked,
+    };
+    const choice = groupChoice.value;
+    if (choice === INHERIT) {
+      body.grouping = 'inherit';
+    } else if (choice === UNGROUPED) {
+      body.grouping = 'ungrouped';
+    } else if (choice === NEW) {
+      const name = groupInput.value.trim();
+      if (!name) {
+        showError('Give the new group a name, or pick an existing one.');
+        return;
+      }
+      // No id: the server derives the slug exactly as processing does, so
+      // a name matching an existing group joins it rather than forking.
+      body.grouping = 'group';
+      body.group_name = name;
+    } else {
+      // An existing group, named by id. Deliberately no `group_name`:
+      // joining a group must not be able to rename it, which is what the
+      // group's own dialog is for.
+      body.grouping = 'group';
+      body.group_id = choice;
+    }
+
+    save.disabled = true;
+    try {
+      const response = await fetch(
+        RIDAL.apiPath('datasets', radargramId, 'properties'),
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!response.ok) {
+        const envelope = await response.json().catch(() => null);
+        showError(
+          envelope?.error?.message || `Could not save properties (${response.status}).`,
+        );
+        return;
+      }
+    } catch (error) {
+      showError(`Could not save properties (${error.message}).`);
+      return;
+    } finally {
+      save.disabled = false;
+    }
+    dialog.close();
+    window.location.reload();
+  });
+})();
+
+/* --- Edit a group --------------------------------------------------------
+ *
+ * The same shape as the radargram dialog above, one field shorter. Kept
+ * separate rather than generalised: they share a pattern, not a form, and
+ * the moment either grows a second field the shared version would be a
+ * switch on which one it is.
+ *
+ * A group's name lives with the group rather than with its members (see
+ * `project::overrides`), which is what makes this one save rather than one
+ * per radargram.
+ */
+(function setupGroupPropertiesDialog() {
+  const dialog = document.getElementById('group-properties-dialog');
+  const buttons = [...document.querySelectorAll('button[data-edit-group]')];
+  if (!dialog || buttons.length === 0) return;
+
+  const title = document.getElementById('group-properties-title');
+  const errorBox = document.getElementById('group-properties-error');
+  const nameInput = document.getElementById('group-properties-name');
+  const fromFile = document.getElementById('group-properties-file');
+  const save = document.getElementById('group-properties-save');
+
+  let groupId = null;
+
+  const showError = (message) => {
+    errorBox.textContent = message;
+    errorBox.hidden = !message;
+  };
+
+  const open = async (id, label) => {
+    groupId = id;
+    title.textContent = `Edit group - ${label}`;
+    showError('');
+    let properties;
+    try {
+      properties = await RIDAL.fetchJson(RIDAL.apiPath('groups', id, 'properties'));
+    } catch (error) {
+      RIDAL.reportProblem('download-error', `Could not read the group: ${error.message}`);
+      return;
+    }
+
+    // Empty when inherited, so "this is the project's name" and "this
+    // happens to be what the files say" do not look alike.
+    nameInput.value = properties.overridden ? properties.name || '' : '';
+    const members =
+      properties.member_count === 1 ? '1 radargram' : `${properties.member_count} radargrams`;
+    fromFile.textContent = properties.from_file
+      ? `Without this, it would be called "${properties.from_file}" — the name its ${members} carry. `
+      : `Without this, it would be called "${id}" — its ${members} give no name of their own. `;
+    dialog.showModal();
+  };
+
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const menu = button.closest('details.site-menu');
+      if (menu) menu.open = false;
+      open(button.dataset.editGroup, button.dataset.editGroupLabel || '');
+    });
+  }
+
+  document
+    .getElementById('group-properties-close')
+    .addEventListener('click', () => dialog.close());
+
+  save.addEventListener('click', async () => {
+    if (!groupId) return;
+    save.disabled = true;
+    try {
+      const response = await fetch(RIDAL.apiPath('groups', groupId, 'properties'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ display_name: nameInput.value.trim() || null }),
+      });
+      if (!response.ok) {
+        const envelope = await response.json().catch(() => null);
+        showError(envelope?.error?.message || `Could not save the group (${response.status}).`);
+        return;
+      }
+    } catch (error) {
+      showError(`Could not save the group (${error.message}).`);
+      return;
+    } finally {
+      save.disabled = false;
+    }
+    dialog.close();
+    // Same reason the radargram dialog reloads: a rename changes a heading,
+    // every card's group and the download menu labels under it.
+    window.location.reload();
+  });
+})();
