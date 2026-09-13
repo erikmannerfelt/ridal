@@ -374,6 +374,29 @@ fn listable<'a>(
     entries.filter(|e| curates || !e.unlisted).collect()
 }
 
+/// The warnings this caller may read, given what they may see.
+///
+/// A warning quotes ids and paths -- "duplicate radargram ID 'x': here and
+/// here" -- so showing one about a radargram the listing just dropped would
+/// put it straight back. Same leak as drawing its track on the group map,
+/// one paragraph further down the page.
+///
+/// Dropped rather than redacted: a warning with a hole in it tells an
+/// operator nothing they can act on and tells a picker that something is
+/// being kept from them, which is worse than silence for a message they
+/// could not have acted on anyway.
+fn readable_warnings(
+    catalog: &super::catalog::Catalog,
+    visible: &[&super::catalog::CatalogEntry],
+) -> Vec<String> {
+    catalog
+        .warnings
+        .iter()
+        .filter(|warning| warning.is_visible_to(visible.iter().map(|e| &e.radargram_id)))
+        .map(|warning| warning.message.clone())
+        .collect()
+}
+
 pub async fn list_datasets(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -381,8 +404,10 @@ pub async fn list_datasets(
     // Counted here too, so `line_count` means the same thing in the API as
     // it does on a card rather than being null for a project.
     let catalog = state.catalog();
-    let entries: Vec<DatasetSummary> = listable(catalog.entries.iter(), &caller)
-        .into_iter()
+    let visible = listable(catalog.entries.iter(), &caller);
+    let entries: Vec<DatasetSummary> = visible
+        .iter()
+        .copied()
         .map(|entry| {
             summarize(
                 entry,
@@ -393,7 +418,7 @@ pub async fn list_datasets(
             )
         })
         .collect();
-    let warnings: Vec<String> = catalog.warnings.iter().map(|w| w.message.clone()).collect();
+    let warnings = readable_warnings(&catalog, &visible);
     Json(serde_json::json!({ "entries": entries, "warnings": warnings }))
 }
 
@@ -815,7 +840,7 @@ pub async fn index_page(
     // heading cannot survive its only member being unlisted.
     let visible = listable(catalog.entries.iter(), &caller);
     let entries: Vec<DatasetSummary> = visible.iter().copied().map(&summarize_entry).collect();
-    let warnings: Vec<String> = catalog.warnings.iter().map(|w| w.message.clone()).collect();
+    let warnings = readable_warnings(&catalog, &visible);
 
     // Every entry gets one map on the index page (#121): named groups,
     // and "Ungrouped" for entries with none, presented identically

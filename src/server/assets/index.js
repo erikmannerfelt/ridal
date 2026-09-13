@@ -156,11 +156,11 @@ document.querySelectorAll('.group-map').forEach((el) => {
 /* --- Edit properties -----------------------------------------------------
  *
  * One dialog for every card, filled from the API when it opens rather than
- * from the card's own markup. The card only knows the *resolved* values;
- * the dialog also has to show what each field would be without its
- * override, so that reverting can be labelled with the value it goes back
- * to. Rendering that into every card would put the whole override document
- * on the page for the sake of the one card somebody edits.
+ * from the card's own markup. The card knows only the resolved values; the
+ * dialog also has to show what each field would be *without* its override,
+ * so that reverting can be labelled with the value it goes back to.
+ * Rendering that into every card would put the whole override document on
+ * the page for the sake of the one card somebody edits.
  *
  * A save reloads the page. The change moves cards between groups, renames
  * headings, adds and removes group sections and can make a card disappear
@@ -176,63 +176,65 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const errorBox = document.getElementById('properties-error');
   const nameInput = document.getElementById('properties-display-name');
   const nameFromFile = document.getElementById('properties-display-name-file');
-  const grouping = document.getElementById('properties-grouping');
+  const groupChoice = document.getElementById('properties-group-choice');
   const groupRow = document.getElementById('properties-group-row');
   const groupInput = document.getElementById('properties-group-name');
-  const groupList = document.getElementById('properties-group-list');
   const groupFromFile = document.getElementById('properties-group-file');
   const unlisted = document.getElementById('properties-unlisted');
   const save = document.getElementById('properties-save');
 
+  /* The three fixed choices. Anything else in the list is a group id, which
+   * is why they are words rather than something a slug could collide with:
+   * `GroupId` rejects them, so no real group can be spelled this way. */
+  const INHERIT = 'inherit';
+  const UNGROUPED = 'ungrouped';
+  const NEW = 'new';
+
   let radargramId = null;
-  /* The id of the group the name box was last known to mean. Sent back
-   * alongside the name so that editing only the *name* of an existing
-   * group renames it in place instead of forking a new slug off the
-   * changed text. */
-  let chosenGroupId = null;
 
   const showError = (message) => {
     errorBox.textContent = message;
     errorBox.hidden = !message;
   };
 
-  /* "Choose or name one" is the only mode with a group to name. */
   const syncGroupRow = () => {
-    groupRow.hidden = grouping.value !== 'group';
+    groupRow.hidden = groupChoice.value !== NEW;
   };
-  grouping.addEventListener('change', () => {
-    // Typing a different name means a different group unless the user
-    // picked one from the list, which `input` below re-establishes.
-    if (grouping.value !== 'group') chosenGroupId = null;
-    syncGroupRow();
-  });
-  groupInput.addEventListener('input', () => {
-    const match = [...groupList.options].find((o) => o.value === groupInput.value);
-    chosenGroupId = match ? match.dataset.groupId : null;
-  });
+  groupChoice.addEventListener('change', syncGroupRow);
+
+  /* Rebuild the list: the three fixed choices, then one option per group
+   * the catalog knows about. Named by name and valued by id, so nobody has
+   * to know slugs exist and picking a group cannot mistype its id. */
+  const fillGroups = (groups, selected) => {
+    const fixed = [...groupChoice.options].filter((o) =>
+      [INHERIT, UNGROUPED, NEW].includes(o.value),
+    );
+    groupChoice.replaceChildren(...fixed);
+    const newOption = groupChoice.querySelector(`option[value="${NEW}"]`);
+    for (const group of groups) {
+      const option = document.createElement('option');
+      option.value = group.id;
+      option.textContent = group.name;
+      groupChoice.insertBefore(option, newOption);
+    }
+    groupChoice.value = selected;
+    // A group that no longer exists cannot be preselected; fall back to
+    // inherit rather than leaving the select showing nothing.
+    if (!groupChoice.value) groupChoice.value = INHERIT;
+  };
 
   const open = async (id, label) => {
     radargramId = id;
     title.textContent = `Edit properties - ${label}`;
     showError('');
+    groupInput.value = '';
     let properties;
     try {
-      properties = await RIDAL.fetchJson(
-        RIDAL.apiPath('datasets', id, 'properties'),
-      );
+      properties = await RIDAL.fetchJson(RIDAL.apiPath('datasets', id, 'properties'));
     } catch (error) {
       RIDAL.reportProblem('download-error', `Could not read properties: ${error.message}`);
       return;
     }
-
-    groupList.replaceChildren(
-      ...properties.groups.map((group) => {
-        const option = document.createElement('option');
-        option.value = group.name;
-        option.dataset.groupId = group.id;
-        return option;
-      }),
-    );
 
     // Only the overridden fields are prefilled with the project's values.
     // An inherited field shows empty with the file's value named beneath
@@ -245,19 +247,11 @@ document.querySelectorAll('.group-map').forEach((el) => {
       ? `Without this, it would be called "${properties.from_file.display_name}".`
       : `Without this, it would be called "${id}" — the file gives no name.`;
 
-    if (!properties.overridden.group) {
-      grouping.value = 'inherit';
-      groupInput.value = '';
-      chosenGroupId = null;
-    } else if (properties.effective.group_id) {
-      grouping.value = 'group';
-      groupInput.value = properties.effective.group_name || '';
-      chosenGroupId = properties.effective.group_id;
-    } else {
-      grouping.value = 'ungrouped';
-      groupInput.value = '';
-      chosenGroupId = null;
+    let selected = INHERIT;
+    if (properties.overridden.group) {
+      selected = properties.effective.group_id || UNGROUPED;
     }
+    fillGroups(properties.groups, selected);
     groupFromFile.textContent = properties.from_file.group_name
       ? `Without this, it would be in "${properties.from_file.group_name}".`
       : 'Without this, it would be in no group.';
@@ -285,20 +279,29 @@ document.querySelectorAll('.group-map').forEach((el) => {
     if (!radargramId) return;
     const body = {
       display_name: nameInput.value.trim() || null,
-      grouping: grouping.value,
       unlisted: unlisted.checked,
     };
-    if (grouping.value === 'group') {
+    const choice = groupChoice.value;
+    if (choice === INHERIT) {
+      body.grouping = 'inherit';
+    } else if (choice === UNGROUPED) {
+      body.grouping = 'ungrouped';
+    } else if (choice === NEW) {
       const name = groupInput.value.trim();
       if (!name) {
-        showError('Give the group a name, or choose "No group".');
+        showError('Give the new group a name, or pick an existing one.');
         return;
       }
+      // No id: the server derives the slug exactly as processing does, so
+      // a name matching an existing group joins it rather than forking.
+      body.grouping = 'group';
       body.group_name = name;
-      // Present only when the name still refers to the group it was read
-      // as: otherwise the server derives a fresh id from the text, which
-      // is what makes "type a new name" create a new group.
-      if (chosenGroupId) body.group_id = chosenGroupId;
+    } else {
+      // An existing group, named by id. Deliberately no `group_name`:
+      // joining a group must not be able to rename it, which is what the
+      // group's own dialog is for.
+      body.grouping = 'group';
+      body.group_id = choice;
     }
 
     save.disabled = true;

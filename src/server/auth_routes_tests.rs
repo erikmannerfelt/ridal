@@ -2073,3 +2073,137 @@ async fn a_picker_cannot_rename_a_group() {
         StatusCode::FORBIDDEN
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn merged_downloads_leave_unlisted_members_out_and_say_how_many() {
+    // "Everything in this project" quietly including a radargram somebody
+    // unlisted is a surprise, and a merged file that silently omits members
+    // looks complete. Counted rather than named in the header: the omission
+    // is the point, and listing the ids would undo it for whoever
+    // downloaded the file.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+
+    let tracks = get(&app, "/api/v1/catalog/track.geojson", Some(&erik)).await;
+    assert_eq!(tracks.status, StatusCode::OK, "{}", tracks.text);
+    assert!(
+        tracks.text.contains("line-01") && !tracks.text.contains("line-02"),
+        "the unlisted member must not be in the file"
+    );
+
+    // Interpret the listed one so the level 2 download has something to
+    // produce, then check the same rule holds there.
+    let doc = serde_json::json!({
+        "key": "line-01",
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[2.0, 2.0], [30.0, 3.0]]},
+            "properties": {"id": "f-1", "label": "bed"}
+        }]
+    });
+    let stored = dir.path().join("interpretations/line-01");
+    std::fs::create_dir_all(&stored).unwrap();
+    std::fs::write(
+        stored.join("erik.gprinterp.json"),
+        serde_json::to_string(&doc).unwrap(),
+    )
+    .unwrap();
+
+    let points = get(
+        &app,
+        "/api/v1/catalog/level2?format=csv&spacing=10&user=erik",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(points.status, StatusCode::OK, "{}", points.text);
+    assert!(!points.text.contains("line-02"), "unlisted member omitted");
+    assert!(
+        points.text.contains("line-01"),
+        "the listed one is still there"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_warning_naming_an_unlisted_radargram_is_not_shown_to_a_picker() {
+    // The warnings quote ids and paths, so showing one about a radargram
+    // the listing just dropped would put it straight back.
+    use crate::project::overrides::{self, RadargramOverride};
+
+    let hash = users::hash_password(password()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    // Two radargrams, plus a third carrying the same id as the second --
+    // which is what makes the catalog warn about that id by name. Written
+    // before the state is built, since discovery happens once.
+    for (file, id) in [
+        ("line-01.nc", "line-01"),
+        ("line-02.nc", "line-02"),
+        ("duplicate.nc", "line-02"),
+    ] {
+        super::interp_routes_tests::write_test_nc_with_axes(
+            &dir.path().join("radargrams").join(file),
+            id,
+            None,
+        );
+    }
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users: vec![
+                activated("student", Role::Picker, DownloadScope::All, &hash),
+                activated("erik", Role::Operator, DownloadScope::All, &hash),
+            ],
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+    overrides::update(project.documents(), |o| {
+        o.radargrams.insert(
+            crate::identity::RadargramId::new("line-02").unwrap(),
+            RadargramOverride {
+                unlisted: true,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+
+    let erik = sign_in(&app, "erik").await;
+    let seen = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let warnings = seen.body["warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("line-02")),
+        "the operator is told: {warnings:?}"
+    );
+
+    let student = sign_in(&app, "student").await;
+    let seen = get(&app, "/api/v1/datasets", Some(&student)).await;
+    let warnings = seen.body["warnings"].as_array().unwrap();
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("line-02")),
+        "the picker must not learn it exists: {warnings:?}"
+    );
+}

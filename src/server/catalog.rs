@@ -68,6 +68,29 @@ impl CatalogEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CatalogWarning {
     pub message: String,
+    /// Radargrams the message names, so a listing can drop a warning it is
+    /// not allowed to show.
+    ///
+    /// These messages quote ids and paths. An unlisted radargram is meant
+    /// to be absent from a `picker`'s listing, and a warning saying "there
+    /// are two of `dronbreen-0237`, here and here" would put it back --
+    /// which is the same leak as drawing its track on the group map, one
+    /// paragraph further down the page.
+    ///
+    /// Empty means the message names no radargram in the catalog, which is
+    /// the unreadable-candidate case: a file that failed inspection is not
+    /// an entry, so it cannot be one somebody unlisted.
+    pub about: Vec<RadargramId>,
+}
+
+impl CatalogWarning {
+    /// Whether this warning can be shown to someone who sees only
+    /// `visible`.
+    pub fn is_visible_to<'a>(&self, mut visible: impl Iterator<Item = &'a RadargramId>) -> bool {
+        self.about
+            .iter()
+            .all(|named| visible.any(|shown| shown == named))
+    }
 }
 
 /// The result of discovering radargrams under one root (a file or a
@@ -216,6 +239,7 @@ impl Catalog {
                 Err(e) => {
                     warnings.push(CatalogWarning {
                         message: format!("{}: {e}", candidate.relative_path),
+                        about: Vec::new(),
                     });
                     continue;
                 }
@@ -281,6 +305,7 @@ impl Catalog {
                         && candidate.relative_path < *existing_path;
 
                     warnings.push(CatalogWarning {
+                        about: vec![entry.radargram_id.clone()],
                         message: format!(
                             "Duplicate radargram ID '{id_key}': '{existing_path}' and \
                              '{}'. Selected the entry with the most recent processing \
@@ -354,15 +379,19 @@ fn resolve(
 
     let (group_names, group_warnings) = resolve_group_names(&entries, overrides);
 
-    // A radargram moved into another group has no name of its own for it,
-    // since the one in its file describes the group it was processed into.
-    // Fill that from the resolved name so the API and the index cannot
-    // disagree about what group a card is in.
+    // Every member takes the group's resolved name, not just the ones that
+    // arrived without one.
+    //
+    // Filling only the gaps left two ways for a card to disagree with the
+    // heading above it: a project that renames a group whose members carry
+    // the old name in their files, and a group whose members disagree among
+    // themselves, where the heading shows the winner and each card shows
+    // its own. `group_name` is the name of the group this entry is in, and
+    // there is one of those; what the file called it is kept in
+    // `from_file` for anyone who wants the provenance.
     for entry in &mut entries {
-        if entry.group_name.is_none() {
-            if let Some(id) = &entry.group_id {
-                entry.group_name = group_names.get(id).cloned();
-            }
+        if let Some(id) = &entry.group_id {
+            entry.group_name = group_names.get(id).cloned();
         }
     }
 
@@ -410,8 +439,13 @@ fn resolve_group_names(
     Vec<CatalogWarning>,
 ) {
     let mut warnings = Vec::new();
-    let mut group_name_state: std::collections::BTreeMap<GroupId, (GroupName, String, String)> =
-        std::collections::BTreeMap::new();
+    // (name, processing datetime, path, radargram) -- the last so a
+    // disagreement warning can say which two entries it is about, and be
+    // withheld from someone who may not see one of them.
+    let mut group_name_state: std::collections::BTreeMap<
+        GroupId,
+        (GroupName, String, String, RadargramId),
+    > = std::collections::BTreeMap::new();
     for entry in entries {
         let (Some(id), Some(name)) = (&entry.group_id, &entry.group_name) else {
             continue;
@@ -437,16 +471,18 @@ fn resolve_group_names(
                         name.clone(),
                         entry.processing_datetime.clone(),
                         entry.relative_path.clone(),
+                        entry.radargram_id.clone(),
                     ),
                 );
             }
-            Some((existing_name, existing_dt, existing_path)) => {
+            Some((existing_name, existing_dt, existing_path, existing_id)) => {
                 if existing_name != name {
                     let new_is_newer = entry.processing_datetime > *existing_dt;
                     let tie_new_wins = entry.processing_datetime == *existing_dt
                         && entry.relative_path < *existing_path;
 
                     warnings.push(CatalogWarning {
+                        about: vec![entry.radargram_id.clone(), existing_id.clone()],
                         message: format!(
                             "Group '{id}' has disagreeing names: '{existing_name}' \
                              ('{existing_path}') and '{name}' ('{}'). Using the name from \
@@ -467,6 +503,7 @@ fn resolve_group_names(
                                 name.clone(),
                                 entry.processing_datetime.clone(),
                                 entry.relative_path.clone(),
+                                entry.radargram_id.clone(),
                             ),
                         );
                     }
@@ -477,7 +514,7 @@ fn resolve_group_names(
 
     let mut group_names: std::collections::BTreeMap<GroupId, GroupName> = group_name_state
         .into_iter()
-        .map(|(id, (name, _, _))| (id, name))
+        .map(|(id, (name, _, _, _))| (id, name))
         .collect();
 
     // The project's name wins, for groups that have members. A stale
@@ -941,6 +978,57 @@ mod tests {
         // Still discovered -- unlisted is about listings, not existence.
         assert_eq!(catalog.entries.len(), 1);
         assert!(catalog.entries[0].unlisted);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn renaming_a_group_renames_it_on_every_member_that_was_already_in_it() {
+        // The case an earlier version got wrong, and the one my own group
+        // test missed: those radargrams were in the group *because* of an
+        // override, so their file name had already been cleared and the
+        // gap-filling happened to cover them. A radargram whose file puts
+        // it in the group keeps its own name unless every member is
+        // assigned the resolved one.
+        let dir = tempfile::tempdir().unwrap();
+        process_to_with_group_id(
+            ASSET_2022,
+            &dir.path().join("a.nc"),
+            Some("line-01"),
+            "Kroppbreen",
+            "kroppbreen",
+        );
+
+        let plain = Catalog::discover(dir.path());
+        assert_eq!(
+            plain.entries[0].group_name.as_ref().map(|g| g.as_str()),
+            Some("Kroppbreen"),
+            "the file's own name, with no overrides"
+        );
+
+        let mut overrides = CatalogOverrides::default();
+        overrides.groups.insert(
+            group("kroppbreen"),
+            crate::project::overrides::GroupOverride {
+                name: GroupName::from_input("Kroppbreen, spring 2022"),
+            },
+        );
+
+        let renamed = Catalog::discover_with_overrides(dir.path(), &overrides);
+        assert_eq!(
+            renamed.entries[0].group_name.as_ref().map(|g| g.as_str()),
+            Some("Kroppbreen, spring 2022"),
+            "the card must not disagree with the heading above it"
+        );
+        // And the provenance is still there for anyone who wants it.
+        assert_eq!(
+            renamed.entries[0]
+                .from_file
+                .group_name
+                .as_ref()
+                .map(|g| g.as_str()),
+            Some("Kroppbreen")
+        );
     }
 
     #[test]
