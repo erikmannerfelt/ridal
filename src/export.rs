@@ -584,10 +584,17 @@ impl GPR {
         // ---------- Data variables ----------
         let mut data_vars: BTreeMap<String, ExportVariable<'_>> = BTreeMap::new();
 
-        // The time cropped off the start of each trace, which gprinterp
-        // SPEC §7.5.1 needs as the `t0` of the `twtt` axis. Without it, two
-        // revisions that cropped differently both describe themselves as
-        // starting at zero and re-anchor silently wrong.
+        // Where sample 0 sits on the original recording's clock, which
+        // gprinterp SPEC §7.5.1 needs as the `t0` of the `twtt` anchor
+        // axis. Without it, two revisions that cropped differently both
+        // describe themselves as starting at zero and re-anchor silently
+        // wrong.
+        //
+        // A *position*, not an amount removed. The two are numerically the
+        // same today, because a zero correction crops exactly to the first
+        // break -- but they are different quantities, and saying which one
+        // this is now is what keeps padding (#152) from redefining it
+        // later.
         //
         // A scalar where one number is true of every trace, and `(x)` where
         // it is not -- which is the `zero_corr_max_peak` case, since
@@ -611,14 +618,16 @@ impl GPR {
                     ("units".into(), "ns".into()),
                     (
                         "long_name".into(),
-                        "two-way travel time at the first sample".into(),
+                        "position of the first sample on the recording clock".into(),
                     ),
                     (
                         "comment".into(),
-                        "Time removed from the start of each trace by zero correction. \
-                         The twtt axis is measured from the original time zero, so \
-                         twtt[i] = twtt_t0 + i * dt. A scalar where every trace was \
-                         cropped by the same amount, and dimensioned (x) where they \
+                        "Where sample 0 sits on the original recording's clock, so \
+                         recording_time[i] = twtt_t0 + twtt[i]. The twtt axis itself \
+                         is measured from the corrected time zero and starts at 0; \
+                         this is what relates two differently cropped versions of the \
+                         same radargram to each other. A scalar where every trace \
+                         starts at the same place, and dimensioned (x) where they \
                          differ."
                             .into(),
                     ),

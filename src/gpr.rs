@@ -410,8 +410,13 @@ pub struct GPR {
     /// quantities: one is what the instrument did, this is processing
     /// state, and only this one says what `twtt` currently refers to.
     antenna_separation_effective: f32,
-    /// Time removed from the start of each trace so far, in nanoseconds,
-    /// one value per trace.
+    /// Where each trace's first sample sits on the original recording's
+    /// clock, in nanoseconds, one value per trace.
+    ///
+    /// A position, not an amount removed. The two are numerically the same
+    /// while a zero correction crops exactly to the first break, and they
+    /// part company as soon as it does not -- so the distinction is worth
+    /// holding now rather than discovering later (#152).
     ///
     /// Per trace rather than one number because `zero_corr_max_peak` crops
     /// per trace -- it aligns each trace's first break -- and a single
@@ -801,12 +806,14 @@ impl GPR {
         self.antenna_separation_effective
     }
 
-    /// Time removed from the start of every trace so far, in nanoseconds.
+    /// Where each trace's first sample sits on the original recording's
+    /// clock, in nanoseconds.
     ///
     /// gprinterp SPEC §7.5.1 models a regular axis as `value = t0 + index *
-    /// dt` and requires a producer that crops leading samples to report the
-    /// resulting offset. Without it, two revisions that cropped differently
-    /// both claim `t0: 0` against shifted origins and re-anchor *silently
+    /// dt`, and this is that `t0`: the exported `twtt` axis is measured
+    /// from the corrected zero and starts at 0, so this is what relates two
+    /// differently cropped versions of one radargram. Without it both claim
+    /// to start at zero against shifted origins and re-anchor *silently
     /// wrong* rather than being refused.
     ///
     /// One value per trace, because `zero_corr_max_peak` crops per trace.
