@@ -584,31 +584,63 @@ impl GPR {
         // ---------- Data variables ----------
         let mut data_vars: BTreeMap<String, ExportVariable<'_>> = BTreeMap::new();
 
-        // Where sample 0 sits on the original recording's clock, which
-        // gprinterp SPEC §7.5.1 needs as the `t0` of the `twtt` anchor
-        // axis. Without it, two revisions that cropped differently both
-        // describe themselves as starting at zero and re-anchor silently
-        // wrong.
+        // Two facts about the travel-time axis that a radargram knows and
+        // could not previously say.
         //
-        // A *position*, not an amount removed. The two are numerically the
-        // same today, because a zero correction crops exactly to the first
-        // break -- but they are different quantities, and saying which one
-        // this is now is what keeps padding (#152) from redefining it
-        // later.
+        // `twtt_crop` is how much of the front of the record was discarded;
+        // `twtt_t0` is where time zero -- the moment the pulse left the
+        // antenna -- sits on the same recording clock. They are equal
+        // immediately after a zero correction, which is why one number
+        // seemed to be enough, and they part company the moment anything
+        // else crops the record.
         //
-        // A scalar where one number is true of every trace, and `(x)` where
-        // it is not -- which is the `zero_corr_max_peak` case, since
-        // aligning each trace's first break crops them by different
-        // amounts. Writing the mean there would be a number true of no
-        // trace. This is why it is a variable rather than another global
-        // attribute: attributes cannot carry a dimension.
-        let (t0_dims, t0_data) = match self.twtt_t0_uniform_ns() {
-            Some(offset) => (Vec::new(), ExportArray::F64Scalar(offset as f64)),
+        // Note that the gprinterp SPEC §7.5.1 anchor `t0` is *neither*: it
+        // is `twtt_crop - twtt_t0`, the travel-time value of sample 0.
+        // Zero for an ordinarily zero-corrected radargram, positive for one
+        // cropped further without re-zeroing, negative once padding keeps
+        // samples from before time zero.
+        //
+        // Each is a scalar where one number is true of every trace, and
+        // `(x)` where it is not -- which is the `zero_corr_max_peak` case,
+        // since aligning each trace's first break crops them by different
+        // amounts. Writing a mean there would be a number true of no trace.
+        // This is why they are variables rather than global attributes:
+        // attributes cannot carry a dimension.
+        let per_trace = |uniform: Option<f32>, values: &[f32]| match uniform {
+            Some(value) => (Vec::new(), ExportArray::F64Scalar(value as f64)),
             None => (
                 vec!["x".to_string()],
-                ExportArray::F64Owned1D(self.twtt_t0_ns().iter().map(|v| *v as f64).collect()),
+                ExportArray::F64Owned1D(values.iter().map(|v| *v as f64).collect()),
             ),
         };
+
+        let (crop_dims, crop_data) = per_trace(self.twtt_crop_uniform_ns(), self.twtt_crop_ns());
+        data_vars.insert(
+            "twtt_crop".into(),
+            ExportVariable {
+                dims: crop_dims,
+                data: crop_data,
+                attrs: [
+                    ("units".into(), "ns".into()),
+                    (
+                        "long_name".into(),
+                        "recording time discarded before the first sample".into(),
+                    ),
+                    (
+                        "comment".into(),
+                        "Where sample 0 sits on the original recording's clock: how \
+                         much of the front of the record was cropped away, by a zero \
+                         correction or by subsetting. Provenance about what was \
+                         discarded. See twtt_t0 for where time zero is."
+                            .into(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            },
+        );
+
+        let (t0_dims, t0_data) = per_trace(self.twtt_t0_uniform_ns(), self.twtt_t0_ns());
         data_vars.insert(
             "twtt_t0".into(),
             ExportVariable {
@@ -618,17 +650,16 @@ impl GPR {
                     ("units".into(), "ns".into()),
                     (
                         "long_name".into(),
-                        "position of the first sample on the recording clock".into(),
+                        "time zero on the recording clock".into(),
                     ),
                     (
                         "comment".into(),
-                        "Where sample 0 sits on the original recording's clock, so \
-                         recording_time[i] = twtt_t0 + twtt[i]. The twtt axis itself \
-                         is measured from the corrected time zero and starts at 0; \
-                         this is what relates two differently cropped versions of the \
-                         same radargram to each other. A scalar where every trace \
-                         starts at the same place, and dimensioned (x) where they \
-                         differ."
+                        "Where the transmitted pulse left the antenna, on the original \
+                         recording's clock. Zero means it has never been located, \
+                         which is the case for a radargram no zero correction has run \
+                         on: its travel times are measured from whenever the \
+                         instrument started sampling. The travel time of sample i is \
+                         twtt[i] + twtt_crop - twtt_t0."
                             .into(),
                     ),
                 ]
