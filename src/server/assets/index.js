@@ -268,9 +268,13 @@ document.querySelectorAll('.group-map').forEach((el) => {
   };
 
   for (const button of buttons) {
-    button.addEventListener('click', () =>
-      open(button.dataset.editProperties, button.dataset.editLabel || ''),
-    );
+    button.addEventListener('click', () => {
+      // Close the menu it came out of, the way the download menus do:
+      // leaving it open behind a modal is a second thing to dismiss.
+      const menu = button.closest('details.site-menu');
+      if (menu) menu.open = false;
+      open(button.dataset.editProperties, button.dataset.editLabel || '');
+    });
   }
 
   document

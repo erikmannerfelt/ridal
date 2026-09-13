@@ -16,21 +16,37 @@
         <img src="/api/v1/datasets/{{ e.radargram_id }}/views/standard/overview?profile={{ profile }}"
              alt="" loading="lazy" decoding="async" fetchpriority="low">
       </span>
-      <span class="card-title">{{ e.effective_label }}</span>
     </a>
+    {#- The name and what can be done to it on one line, under the picture.
+        Two anchors to the same place rather than one wrapping both, because
+        the menu is a button and a button inside a link is neither reliably
+        clickable nor announced correctly. -#}
+    <div class="card-heading">
+      <a class="card-title" href="/view/{{ e.radargram_id }}?profile={{ profile }}">
+        {{- e.effective_label -}}
+      </a>
+      {#- One menu per card, because what it acts on is this radargram: a
+          page-level menu would have to ask which. `site-menu` is the whole
+          behaviour -- app.js closes every one of them on an outside click
+          or Escape -- so replace and remove (#147) are new <li>s here and
+          nothing else. -#}
+      {% if can_edit_project %}
+      <details class="site-menu card-menu">
+        <summary>Edit</summary>
+        <ul>
+          <li>
+            <button type="button"
+                    data-edit-properties="{{ e.radargram_id }}"
+                    data-edit-label="{{ e.effective_label }}">Edit properties</button>
+          </li>
+        </ul>
+      </details>
+      {% endif %}
+    </div>
     {#- Only ever rendered for someone who can change it: the listing filter
         drops unlisted entries for everyone else, so this badge cannot leak
         the fact that a radargram exists. -#}
     {% if e.unlisted %}<p class="card-badge">Unlisted</p>{% endif %}
-    {#- Inside the card rather than in a page-level menu: the thing being
-        edited is this radargram, and a menu would need to ask which. -#}
-    {% if can_edit_project %}
-    <p class="card-actions">
-      <button type="button" class="card-edit"
-              data-edit-properties="{{ e.radargram_id }}"
-              data-edit-label="{{ e.effective_label }}">Edit properties</button>
-    </p>
-    {% endif %}
     {#- Interpretation progress takes the front row and the shape moves
         behind the toggle: the shape is the same on every card of a survey
         and answers no question anyone is asking of a catalog, while "has
