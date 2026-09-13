@@ -106,6 +106,20 @@ fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group: Option<&st
     file.add_attribute("ridal_radargram_id", radargram_id)
         .unwrap();
     file.add_attribute("crs", "EPSG:32633").unwrap();
+
+    // What #144 added, so this fixture is a radargram processed by a
+    // current Ridal: the anchor name on the axis, and where sample 0 and
+    // time zero sit on the recording clock. Without these the radargram
+    // cannot describe its own axes and #146 emits nothing, which is the
+    // case `write_test_nc` covers.
+    {
+        let mut twtt = file.variable_mut("twtt").unwrap();
+        twtt.put_attribute("anchor_name", "twtt").unwrap();
+    }
+    let mut crop = file.add_variable::<f64>("twtt_crop", &[]).unwrap();
+    crop.put_value(4.0, ()).unwrap();
+    let mut zero = file.add_variable::<f64>("twtt_time_zero", &[]).unwrap();
+    zero.put_value(4.0, ()).unwrap();
     // Written while the file is being created. Both attributes are needed:
     // `resolve_group` treats a bare id as no group at all, since the id only
     // exists to give the name a URL-safe form.
@@ -1607,4 +1621,81 @@ async fn unknown_fields_survive_a_save_and_reload_over_http() {
         body["from_a_future_version"],
         serde_json::json!({"nested": [1, 2]})
     );
+}
+
+/// The `axes:` entry of `window.RIDAL_VIEWER`, as one string.
+///
+/// Not by line: the jinja comment above it ends `-#}`, which eats the
+/// newline, so the entry does not start a line of its own.
+fn axes_line(html: &str) -> Option<String> {
+    let start = html.find("axes: ")?;
+    let rest = &html[start..];
+    Some(rest[..rest.find('\n')?].trim_end().to_string())
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_viewer_hands_the_picker_the_axes_to_save() {
+    // The picker writes the document, but only the server has read the
+    // radargram. This is where the axes cross over, and without them every
+    // document saved is stuck on the revision it was drawn on forever.
+    let (_dir, app) = project_app_with_axes();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+
+    let axes = axes_line(&html).expect("the viewer must hand the picker an axes block");
+    assert!(axes.contains("trace_time"), "{axes}");
+    assert!(axes.contains("tiepoints"), "{axes}");
+    assert!(axes.contains("\"twtt\""), "{axes}");
+    assert!(axes.contains("regular"), "{axes}");
+    // The fixture's crop landed on time zero, so sample 0 is travel time 0.
+    assert!(axes.contains("\"t0\":0.0"), "{axes}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_radargram_that_cannot_describe_its_axes_offers_none() {
+    // Processed before #144, so it has no anchor name and no time-zero
+    // variables. Half an axis block would invite a consumer to believe it
+    // had a mapping, so the viewer offers null and the picker leaves
+    // `coordinates` out entirely -- which is where every interpretation
+    // already was, not a regression.
+    let (_dir, app) = project_app(true);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+
+    let axes = axes_line(&html).expect("the key is always present, even when empty");
+    assert_eq!(axes, "axes: null,", "{axes}");
 }

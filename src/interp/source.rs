@@ -83,6 +83,57 @@ fn read_str_attr_of(var: &netcdf::Variable, name: &str) -> Option<String> {
     }
 }
 
+/// Everything needed to describe a radargram's axes to a gprinterp
+/// document, read from the file it was processed into.
+///
+/// Separate from [`RadargramGeometry`] because they answer different
+/// questions: that one is "where is this pick, in metres and nanoseconds",
+/// this one is "what would let somebody put this pick on a different
+/// version of the same radargram". A level 2 export needs the first; a save
+/// needs the second.
+#[derive(Debug, Clone, Default)]
+pub struct AxisDeclarations {
+    /// Per-trace acquisition time, epoch seconds.
+    pub time: Vec<f64>,
+    /// Which gprinterp `y` anchor the travel-time axis is (#144). `None`
+    /// for a radargram processed before that landed.
+    pub twtt_anchor: Option<String>,
+    /// Recording-clock position of sample 0, and of time zero. Scalar in
+    /// the file reads as one value; per-trace as one each.
+    pub twtt_crop: Vec<f64>,
+    pub twtt_time_zero: Vec<f64>,
+    /// Sample interval, nanoseconds.
+    pub dt_ns: f64,
+}
+
+/// Read the axis declarations, or as much of them as the file carries.
+///
+/// Lenient throughout, unlike [`read_geometry`]: this describes what a
+/// radargram can offer, and a radargram that can offer nothing is a fact to
+/// record rather than an error to raise. Its picks are still perfectly good
+/// picks — they simply cannot be carried across a reprocess, which is the
+/// state every interpretation was in before #146.
+pub fn read_axis_declarations(path: &Path) -> AxisDeclarations {
+    let Ok(file) = netcdf::open(path) else {
+        return AxisDeclarations::default();
+    };
+    let twtt = read_f64_variable(&file, "twtt").unwrap_or_default();
+    AxisDeclarations {
+        time: read_f64_variable(&file, "time").unwrap_or_default(),
+        twtt_anchor: file
+            .variable("twtt")
+            .and_then(|var| read_str_attr_of(&var, "anchor_name")),
+        twtt_crop: read_f64_variable(&file, "twtt_crop").unwrap_or_default(),
+        twtt_time_zero: read_f64_variable(&file, "twtt_time_zero").unwrap_or_default(),
+        // From the axis itself rather than from the metadata, so it is the
+        // spacing the file actually has after whatever resampling ran.
+        dt_ns: match twtt.as_slice() {
+            [first, second, ..] => second - first,
+            _ => 0.0,
+        },
+    }
+}
+
 /// Read a numeric variable, widening to `f64`.
 ///
 /// `twtt` and `depth` are stored as `f32` and the positional variables as

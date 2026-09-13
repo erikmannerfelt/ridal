@@ -247,6 +247,10 @@
     nCols: {{ n_cols }},
     nRows: {{ n_rows }},
     revisionId: "{{ revision_id }}",
+    {#- The gprinterp anchor axes for this revision, or null when the
+        radargram cannot describe them. Already JSON, built server-side,
+        so it is emitted raw rather than re-escaped. -#}
+    axes: {{ axes_json | safe }},
     viewerWidth: {{ viewer_width }},
     viewerHeight: {{ viewer_height }},
     sourceWidth: {{ shape_width }},

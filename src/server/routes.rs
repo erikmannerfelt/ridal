@@ -875,6 +875,41 @@ pub async fn viewer_page(
         .map(|p| p.name)
         .collect();
 
+    // What the picker writes into `coordinates.axes` when it saves (#146),
+    // built here because the values live in the radargram and the document
+    // is written in the browser. Serialized to a JSON string for the
+    // template rather than passed as a structure: it goes into a `<script>`
+    // verbatim, and one `tojson` is easier to audit than a nest of them.
+    //
+    // A radargram that cannot describe its axes yields an empty block, and
+    // the picker omits `coordinates` entirely rather than writing half of
+    // one. That is the state every interpretation was in before this, so it
+    // is a step not taken rather than a regression.
+    let axes = match state.absolute_path(entry) {
+        Ok(path) => {
+            let declared = crate::interp::source::read_axis_declarations(&path);
+            crate::interp::anchors::Axes {
+                x: crate::interp::anchors::trace_time_axis(&declared.time)
+                    .into_iter()
+                    .collect(),
+                y: crate::interp::anchors::twtt_axis(
+                    declared.twtt_anchor.as_deref(),
+                    &declared.twtt_crop,
+                    &declared.twtt_time_zero,
+                    declared.dt_ns,
+                )
+                .into_iter()
+                .collect(),
+            }
+        }
+        Err(_) => crate::interp::anchors::Axes::default(),
+    };
+    let axes_json = axes
+        .is_usable()
+        .then(|| serde_json::to_string(&axes).ok())
+        .flatten()
+        .unwrap_or_else(|| "null".to_string());
+
     let env = templates::environment();
     let tmpl = env
         .get_template("viewer.html.jinja")
@@ -886,6 +921,7 @@ pub async fn viewer_page(
             group_name => entry.group_name.as_ref().map(|g| g.to_string()),
             group_id => entry.group_id.as_ref().map(|g| g.to_string()),
             revision_id => entry.revision_id.to_string(),
+            axes_json => axes_json,
             // First 7 hex characters, `git`-style, for the collapsed
             // banner row -- the full ID moves to the metadata dialog.
             revision_short => entry.revision_id.to_string().chars().take(7).collect::<String>(),

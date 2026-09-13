@@ -985,6 +985,23 @@
           n_traces: CFG.sourceWidth,
           n_samples: CFG.sourceHeight,
         },
+        // What lets these picks be carried onto a differently processed
+        // version of the same radargram (gprinterp SPEC 8.1). Without it a
+        // consumer has a coordinate and no mapping to evaluate it through,
+        // and 8.1 forbids falling back to the raw index -- so a document
+        // with no axes is stuck on the one revision forever.
+        //
+        // Built by the server, which is the only thing that has read the
+        // radargram. Null when it cannot describe its axes, and then the
+        // key is left out entirely: half an axis block would invite a
+        // consumer to believe it had a mapping.
+        // `undefined` rather than omitting the key, because the spread
+        // above carried through whatever the loaded document had. Those
+        // axes describe the revision it was drawn on, and `source` two
+        // lines up now names this one -- keeping them would pair one
+        // revision's mapping with another's id, which is a worse lie than
+        // having no mapping at all. JSON.stringify drops the key.
+        coordinates: CFG.axes ? { axes: CFG.axes } : undefined,
         features,
       };
       const headers = { "Content-Type": "application/json" };
