@@ -125,13 +125,13 @@ impl AxisSnapshot {
     pub fn checksum(&self) -> String {
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.y_anchor.as_deref().unwrap_or("").as_bytes());
-        // Only when present. A snapshot written before this field existed
-        // must still hash to what the ledger recorded for it, or every
-        // one of them reads as a revision that changed underneath us.
-        if let Some(alternate) = &self.y_alternate {
-            hasher.update(alternate.name.as_bytes());
-            hasher.update(&alternate.offset.to_le_bytes());
-        }
+        // `y_alternate` is deliberately *not* hashed. It is derived from
+        // the same declarations as `y_values` -- the same axis read from a
+        // second origin -- so it carries no information the values and the
+        // anchor name do not already fix. Hashing it would only mean that
+        // adding the field changed every checksum, and every ledger
+        // written before it would then read as a revision that had
+        // changed underneath us.
         hasher.update(&(self.y_values.len() as u64).to_le_bytes());
         hasher.update(&(self.x_values.len() as u64).to_le_bytes());
         for value in self.y_values.iter().chain(self.x_values.iter()) {
@@ -369,17 +369,39 @@ pub fn put(
     // permitting it here would be answering the question and ignoring the
     // answer.
     //
-    // Byte-identical content is accepted, because that is a re-run rather
-    // than a collision: `to_bytes` is deterministic, so the same mapping
-    // encodes the same way.
-    if let Some((existing, _)) = store.read_bytes(&relative)? {
+    // Compared as a *mapping*, not as bytes.
+    //
+    // Byte equality was the first thing here and it was wrong: it
+    // conflates "these two files describe different axes" with "the way
+    // we serialize axes has changed since this was written". Adding a
+    // field to the stored header made every existing snapshot stop
+    // matching the bytes this build produces for the very same file, and
+    // the code then accused the operator of having two files that share a
+    // processing datetime -- which was not true, and which they could do
+    // nothing about.
+    //
+    // So a re-snapshot of an unchanged revision is recognised by what it
+    // says, and the collision that matters -- genuinely different axes
+    // under one revision id -- still refuses.
+    if let Some((existing, version)) = store.read_bytes(&relative)? {
         if existing == bytes {
             return Ok(());
         }
-        return Err(SnapshotError::Collision {
-            radargram_id: radargram.to_string(),
-            revision_id: snapshot.revision_id.clone(),
-        });
+        let stored = from_bytes(&existing, store.root().join(&relative))?;
+        if !describes_same_mapping(&stored, snapshot) {
+            return Err(SnapshotError::Collision {
+                radargram_id: radargram.to_string(),
+                revision_id: snapshot.revision_id.clone(),
+            });
+        }
+        // The same mapping, written by an older build. Upgraded in place
+        // when this one has something to add -- the alternate anchor is
+        // what lets a corrected revision relate to an uncorrected one, and
+        // a snapshot that predates it would otherwise never gain it.
+        if snapshot.y_alternate.is_some() && stored.y_alternate.is_none() {
+            store.write_bytes(&relative, &bytes, &Expectation::Version(version))?;
+        }
+        return Ok(());
     }
 
     // `Absent` rather than `Any`, so the check above is not merely advisory:
@@ -387,6 +409,24 @@ pub fn put(
     // overwritten.
     store.write_bytes(&relative, &bytes, &Expectation::Absent)?;
     Ok(())
+}
+
+/// Whether two snapshots describe the same axes.
+///
+/// Not derived `PartialEq`: the question is whether the *mapping* is the
+/// same, so a snapshot that has since gained a second anchor still matches
+/// the one that only had the first. The values are compared with a
+/// tolerance because they are round-tripped through a delta encoding,
+/// where a sum of differences need not reproduce the original bit for bit.
+fn describes_same_mapping(a: &AxisSnapshot, b: &AxisSnapshot) -> bool {
+    fn close(a: &[f64], b: &[f64]) -> bool {
+        a.len() == b.len()
+            && a.iter().zip(b).all(|(x, y)| {
+                let scale = x.abs().max(y.abs()).max(1.0);
+                (x - y).abs() <= f64::EPSILON * scale * 16.0
+            })
+    }
+    a.y_anchor == b.y_anchor && close(&a.y_values, &b.y_values) && close(&a.x_values, &b.x_values)
 }
 
 /// Read a revision's axes, or `None` if none were kept.
@@ -499,6 +539,77 @@ mod tests {
         // And the first one is untouched, which is the point.
         let kept = get(&store, &id, "rev-a").unwrap().unwrap();
         assert_eq!(kept, snapshot("rev-a"));
+    }
+
+    #[test]
+    fn a_snapshot_written_by_an_older_build_is_not_a_collision() {
+        // Reported: switching a radargram back and forth between two
+        // revisions eventually refused with "two files are sharing one
+        // revision id", naming a datetime clash the operator had not
+        // created and could not fix.
+        //
+        // The check compared serialized bytes, so adding a field to the
+        // stored header made every snapshot written before it stop
+        // matching the bytes this build produces for the *same file*. The
+        // question is whether the mapping differs, not whether the
+        // encoding has.
+        let (_dir, store) = store();
+        let id = RadargramId::new("line-01").unwrap();
+
+        // What an older build wrote: the same axes, no alternate anchor.
+        let old = snapshot("rev-a");
+        put(&store, &id, &old).unwrap();
+
+        // What this build produces from the same radargram.
+        let mut now = snapshot("rev-a");
+        now.y_alternate = Some(AlternateAnchor {
+            name: "recording_time".to_string(),
+            offset: 50.757_175,
+        });
+        put(&store, &id, &now).expect("the same mapping, said more fully");
+
+        // And it is upgraded in place, so the alternate is not lost --
+        // that anchor is what lets a corrected revision relate to an
+        // uncorrected one.
+        let stored = get(&store, &id, "rev-a").unwrap().unwrap();
+        assert_eq!(
+            stored.y_alternate.as_ref().map(|a| a.name.as_str()),
+            Some("recording_time")
+        );
+
+        // Genuinely different axes under one revision id still refuse.
+        let mut different = now.clone();
+        different.y_values = different.y_values.iter().map(|v| v + 3.0).collect();
+        assert!(matches!(
+            put(&store, &id, &different),
+            Err(SnapshotError::Collision { .. })
+        ));
+    }
+
+    #[test]
+    fn the_checksum_does_not_move_when_a_snapshot_gains_an_alternate() {
+        // The ledger records a checksum when a revision is superseded, and
+        // `axes_for_revision_checked` compares against it. If adding the
+        // alternate changed the checksum, every project with a ledger
+        // written before it would report that its radargrams had been
+        // rewritten behind its back.
+        //
+        // It does not, because the alternate is derived from the same
+        // declarations as the values: it is the same axis read from a
+        // second origin, and fixes nothing the values and anchor name do
+        // not already fix.
+        let plain = snapshot("rev-a");
+        let mut richer = snapshot("rev-a");
+        richer.y_alternate = Some(AlternateAnchor {
+            name: "recording_time".to_string(),
+            offset: 50.757_175,
+        });
+        assert_eq!(plain.checksum(), richer.checksum());
+
+        // What the checksum *is* for still moves it.
+        let mut changed = plain.clone();
+        changed.y_values = changed.y_values.iter().map(|v| v + 1.0).collect();
+        assert_ne!(plain.checksum(), changed.checksum());
     }
 
     #[test]
