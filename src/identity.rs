@@ -209,6 +209,32 @@ slug_newtype!(UserId, "user");
 /// saved under and the `user` column it exports as are the same identity.
 pub const DEFAULT_USER: &str = "default";
 
+/// JSON round-tripping for the two free-form label types.
+///
+/// Deserializing goes through `from_input` for the same reason the slug
+/// newtypes validate on the way in: a stored document must not be able to
+/// hold a value the constructor would have refused. Here that means an
+/// empty or whitespace-only label, which both types define as *absent* --
+/// so it is rejected rather than accepted as a label that renders as
+/// nothing.
+macro_rules! serialize_as_string {
+    ($name:ident, $kind:expr) => {
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(&self.0)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = String::deserialize(deserializer)?;
+                Self::from_input(&value)
+                    .ok_or_else(|| serde::de::Error::custom(format!("{} must not be empty", $kind)))
+            }
+        }
+    };
+}
+
 /// An optional human-facing label with no identity semantics. An empty or
 /// whitespace-only value is treated as absent by [`DisplayName::from_input`]
 /// rather than as a valid (empty) display name.
@@ -241,6 +267,8 @@ impl fmt::Display for DisplayName {
         f.write_str(&self.0)
     }
 }
+
+serialize_as_string!(DisplayName, "display name");
 
 /// Resolve the effective radargram ID for a new or reprocessed output,
 /// following the precedence from #116:
@@ -320,6 +348,8 @@ impl fmt::Display for GroupName {
         f.write_str(&self.0)
     }
 }
+
+serialize_as_string!(GroupName, "group name");
 
 /// Resolve the effective group name, following the same precedence shape
 /// as display name: explicit > inherited > absent. An explicit empty

@@ -16,8 +16,37 @@
         <img src="/api/v1/datasets/{{ e.radargram_id }}/views/standard/overview?profile={{ profile }}"
              alt="" loading="lazy" decoding="async" fetchpriority="low">
       </span>
-      <span class="card-title">{{ e.effective_label }}</span>
     </a>
+    {#- The name and what can be done to it on one line, under the picture.
+        Two anchors to the same place rather than one wrapping both, because
+        the menu is a button and a button inside a link is neither reliably
+        clickable nor announced correctly. -#}
+    <div class="card-heading">
+      <a class="card-title" href="/view/{{ e.radargram_id }}?profile={{ profile }}">
+        {{- e.effective_label -}}
+      </a>
+      {#- One menu per card, because what it acts on is this radargram: a
+          page-level menu would have to ask which. `site-menu` is the whole
+          behaviour -- app.js closes every one of them on an outside click
+          or Escape -- so replace and remove (#147) are new <li>s here and
+          nothing else. -#}
+      {% if can_edit_project %}
+      <details class="site-menu card-menu">
+        <summary>Edit</summary>
+        <ul>
+          <li>
+            <button type="button"
+                    data-edit-properties="{{ e.radargram_id }}"
+                    data-edit-label="{{ e.effective_label }}">Edit properties</button>
+          </li>
+        </ul>
+      </details>
+      {% endif %}
+    </div>
+    {#- Only ever rendered for someone who can change it: the listing filter
+        drops unlisted entries for everyone else, so this badge cannot leak
+        the fact that a radargram exists. -#}
+    {% if e.unlisted %}<p class="card-badge">Unlisted</p>{% endif %}
     {#- Interpretation progress takes the front row and the shape moves
         behind the toggle: the shape is the same on every card of a survey
         and answers no question anyone is asking of a catalog, while "has
@@ -126,19 +155,133 @@
         a page has several. -#}
     <div class="group-heading">
       <h2>{{ group.label }}</h2>
-      {{ download_menu(
-           "group-" ~ loop.index,
-           "/api/v1/groups/" ~ group.id,
-           group.label,
-           "Download",
-           project) }}
+      {#- Controls to the right of the name, the same way a card puts its
+          menu opposite its title. -#}
+      <div class="group-actions">
+        {{ download_menu(
+             "group-" ~ loop.index,
+             "/api/v1/groups/" ~ group.id,
+             group.label,
+             "Download",
+             project) }}
+        {#- "Ungrouped" is not a group, it is the radargrams in none, so
+            there is nothing about it to edit. -#}
+        {% if can_edit_project and group.id != "_none" %}
+        <details class="site-menu group-menu">
+          <summary>Edit</summary>
+          <ul>
+            <li>
+              <button type="button"
+                      data-edit-group="{{ group.id }}"
+                      data-edit-group-label="{{ group.label }}">Edit properties</button>
+            </li>
+          </ul>
+        </details>
+        {% endif %}
+      </div>
     </div>
     <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
     <ul class="card-grid">
       {% for e in group.entries %}{{ entry_card(e, active_profile) }}{% endfor %}
     </ul>
+    {#- Collapsed rather than filtered away: whoever can unlist a radargram
+        is the one who needs to find it again. `unlisted_entries` is only
+        ever non-empty for `operator` and above (see routes.rs). -#}
+    {% if group.unlisted_entries %}
+    <details class="unlisted-group">
+      <summary>
+        {{ group.unlisted_entries | length }}
+        unlisted radargram{% if group.unlisted_entries | length != 1 %}s{% endif %}
+      </summary>
+      <p class="hint">
+        Unlisted radargrams are left out of listings and out of merged
+        downloads. They are not private: anyone who knows the address can
+        still open one.
+      </p>
+      <ul class="card-grid">
+        {% for e in group.unlisted_entries %}{{ entry_card(e, active_profile) }}{% endfor %}
+      </ul>
+    </details>
+    {% endif %}
   </section>
   {% endfor %}
+
+  {% if can_edit_project %}
+  {#- One dialog for every card, filled in from the API when it opens: the
+      values it shows include what each field would be *without* its
+      override, which the card does not know and which is what makes
+      "revert to the file" honest rather than a leap of faith. -#}
+  <dialog id="properties-dialog">
+    <h2 id="properties-title">Edit properties</h2>
+    <p class="hint">
+      These are the project's own labels. They sit over what the radargram
+      file says and never change the file, so reprocessing it does not lose
+      them — and reverting a field puts the file's own value back.
+    </p>
+    <p id="properties-error" class="warning" hidden></p>
+    <div class="properties-fields">
+      <label>Name
+        <input type="text" id="properties-display-name" autocomplete="off">
+      </label>
+      <p class="hint" id="properties-display-name-file"></p>
+
+      {#- Membership, and only membership. Picking an existing group joins
+          it; renaming one is the group's own dialog, reached from its
+          heading. The first version of this was a text box with a datalist,
+          where typing over a chosen name silently forked a new group
+          instead of renaming the old one -- two operations that looked
+          identical and were not. -#}
+      <label>Group
+        <select id="properties-group-choice">
+          <option value="inherit">Use the radargram's own</option>
+          <option value="ungrouped">No group</option>
+          <option value="new">New group&hellip;</option>
+        </select>
+      </label>
+      <label id="properties-group-row">New group's name
+        <input type="text" id="properties-group-name" autocomplete="off">
+      </label>
+      <p class="hint" id="properties-group-file"></p>
+
+      <label class="checkbox">
+        <input type="checkbox" id="properties-unlisted">
+        Unlisted
+      </label>
+      <p class="hint">
+        Leaves this radargram out of listings and out of merged downloads.
+        It is not private: anyone who knows the address can still open it.
+      </p>
+    </div>
+    <p>
+      <button type="button" id="properties-save">Save</button>
+      <button type="button" id="properties-close">Close</button>
+    </p>
+  </dialog>
+  {% endif %}
+
+  {% if can_edit_project %}
+  {#- A group's own dialog. One field today; the group override is an object
+      precisely so the next group-scoped setting is a row here rather than a
+      migration. -#}
+  <dialog id="group-properties-dialog">
+    <h2 id="group-properties-title">Edit group</h2>
+    <p class="hint">
+      The group's name lives with the group, not with its members, so this
+      renames it everywhere at once and the radargram files are not touched.
+    </p>
+    <p id="group-properties-error" class="warning" hidden></p>
+    <div class="properties-fields">
+      <label>Name
+        <input type="text" id="group-properties-name" autocomplete="off">
+      </label>
+      <p class="hint" id="group-properties-file"></p>
+    </div>
+    <p>
+      <button type="button" id="group-properties-save">Save</button>
+      <button type="button" id="group-properties-close">Close</button>
+    </p>
+  </dialog>
+  {% endif %}
 
   <dialog id="group-download-dialog">
     <h2 id="group-download-title">Download layer points</h2>

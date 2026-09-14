@@ -49,7 +49,7 @@ fn write_test_nc(path: &StdPath, radargram_id: &str) {
 /// recognises; deriving level 2 additionally needs distance, travel time,
 /// depth and positions, so those are written here rather than bloating the
 /// fixture every other test uses.
-fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group: Option<&str>) {
+pub(super) fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group: Option<&str>) {
     let (n_samples, n_traces) = (8usize, 40usize);
     let mut file = netcdf::create(path).unwrap();
     file.add_dimension("y", n_samples).unwrap();

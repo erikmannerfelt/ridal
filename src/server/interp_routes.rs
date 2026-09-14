@@ -719,7 +719,7 @@ fn merged_level2(
     caller.require_download(DownloadScope::Derived, "level 2 points")?;
     let project = readable_project(state)?;
     let catalog = state.catalog();
-    let entries = scope.entries(&catalog);
+    let (entries, unlisted) = scope.listed_entries(&catalog);
     if entries.is_empty() {
         return Err(ApiError::not_found(
             scope.empty_code(),
@@ -854,6 +854,9 @@ fn merged_level2(
             skipped.join(", ")
         ));
     }
+    if let Some(note) = super::routes::unlisted_note(unlisted) {
+        notes.push(note);
+    }
     if !stale.is_empty() {
         notes.push(format!(
             "Some of these picks were drawn on an earlier version of their \
@@ -892,6 +895,10 @@ pub async fn layer_usage(
     let mut undefined: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
 
+    // Every entry, unlisted ones included. These counts exist to answer
+    // "what would deleting this layer orphan", and an unlisted radargram's
+    // picks are still picks -- an undercount here would let someone delete
+    // a layer believing nothing used it.
     let catalog = state.catalog();
     for entry in &catalog.entries {
         let radargram = &entry.radargram_id;

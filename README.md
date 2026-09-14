@@ -144,6 +144,12 @@ Each point carries its layer, trace and sample, distance along the profile, two-
 It also carries what its travel time is measured against, since an antenna separation correction changes that: the separation still to be corrected for, and whether the time is between the antenna pair or from a coincident antenna.
 
 
+Radargrams can also be served from directories outside the project, listed under `[radargrams] roots` in `ridal.toml`.
+Those are read-only: Ridal never writes outside the project, so an archive can be served without any question of what a wrong click would do there.
+
+Where the same radargram id exists in both, the project's copy wins — whatever the processing dates say.
+That is what makes the project an overlay rather than another directory in the pile: a reprocessed file appearing in the archive cannot quietly replace a decision made in the project.
+
 ### Sharing a project with other people
 
 A project with no accounts behaves as it always has: everyone using it is the user `default`, and `ridal gui` needs no login step.
@@ -165,6 +171,24 @@ Two independent things are set per person. **Role** is what they may do, as a la
 **Download scope** (`none`, `picks`, `derived`, `all`) is what they may take away, and is deliberately not folded into the role: a picker who may not export the underlying data and a viewer who may export everything are both reasonable. `derived` — the level 2 point product — is usually the line a project is actually deciding about.
 
 Interpretations are strictly per person. One user cannot modify another's picks, and **not even an admin can** — that is a property of the data model rather than a permission. Removing an account keeps the picks it authored, since those are attributed scientific data.
+
+### Renaming and grouping without reprocessing
+
+The display name and the grouping in a processed file were decided when it was processed, and fine-tuning them used to mean reprocessing a radargram for a label.
+**Edit properties** on each card changes them instead, for `operator` and above.
+
+The file is never touched.
+The project keeps its own labels over what the file says, per field, so setting a name leaves the grouping alone — and the dialog shows what each field would be without the override, so reverting one puts the file's own value back.
+
+A group's name lives with the group rather than with its members, so renaming it is one edit and twenty radargrams cannot come to disagree about what their group is called.
+Each group heading has its own **Edit** for that.
+
+The radargram id is deliberately not editable.
+It is the join key for the interpretations stored against it, for the level 2 `radargram_id` column and for every URL, so renaming it would orphan picks.
+
+**Unlisted** takes a radargram out of the catalog listing, off the group maps, and out of merged downloads.
+
+> **Unlisted is curation, not access control.** Anyone who knows the id can still open `/view/<id>` or the API. It says "this is not part of what we are showing", not "this is private". If the data must not leave, do not grant read access to it.
 
 Serving this beyond localhost:
 ```bash

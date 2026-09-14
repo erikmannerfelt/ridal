@@ -170,6 +170,21 @@ struct DatasetSummary {
     processing_datetime_display: String,
     revision_id: String,
     shape: (usize, usize),
+    /// Whether this radargram sits in the project rather than an external
+    /// root (#147).
+    ///
+    /// What the difference means to a user: a radargram in the project can
+    /// be removed, and one in an archive can only be ignored, because Ridal
+    /// never writes outside the project. The UI needs to offer different
+    /// words for those two, and this is what it asks.
+    in_project: bool,
+    /// Left out of listings by a project override (#145).
+    ///
+    /// Only ever reaches a caller who can change it, since listings for
+    /// everyone else drop the entry entirely -- so the flag is what the
+    /// catalog page collapses behind a disclosure rather than something a
+    /// `picker` could read off the API.
+    unlisted: bool,
     /// Picked lines stored for this radargram, across every user.
     ///
     /// `None` when the catalog is not a project, which is different from
@@ -324,8 +339,8 @@ fn script_safe_json(json: &str) -> String {
         .replace('&', "\\u0026")
 }
 
-fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
-    summarize(entry, None)
+fn to_summary(state: &AppState, entry: &super::catalog::CatalogEntry) -> DatasetSummary {
+    summarize(state, entry, None)
 }
 
 /// Count the picked lines stored for `radargram`, across all users.
@@ -352,9 +367,14 @@ fn count_lines(project: &crate::project::Project, radargram: &RadargramId) -> Op
     Some(total)
 }
 
-fn summarize(entry: &super::catalog::CatalogEntry, line_count: Option<usize>) -> DatasetSummary {
+fn summarize(
+    state: &AppState,
+    entry: &super::catalog::CatalogEntry,
+    line_count: Option<usize>,
+) -> DatasetSummary {
     DatasetSummary {
         line_count,
+        in_project: state.is_writable(entry),
         radargram_id: entry.radargram_id.to_string(),
         effective_label: entry.effective_label(),
         display_name: entry.display_name.as_ref().map(|d| d.to_string()),
@@ -365,18 +385,67 @@ fn summarize(entry: &super::catalog::CatalogEntry, line_count: Option<usize>) ->
         processing_datetime_display: format_datetime_for_display(&entry.processing_datetime),
         revision_id: entry.revision_id.to_string(),
         shape: entry.shape,
+        unlisted: entry.unlisted,
     }
 }
 
-pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// Which catalog entries a caller sees in a listing.
+///
+/// Unlisted is **curation, not access control**. It removes a radargram
+/// from listings for `picker` and below; `operator` and above still see it,
+/// collapsed, because they are the people who can change it. Nothing stops
+/// anyone who knows the id from opening `/view/<id>` or the API, and that
+/// is deliberate: making it enforced would be per-radargram permissions,
+/// which #131 put out of scope, and a half-enforced version would promise
+/// a boundary it does not keep.
+fn listable<'a>(
+    entries: impl Iterator<Item = &'a super::catalog::CatalogEntry>,
+    caller: &Caller,
+) -> Vec<&'a super::catalog::CatalogEntry> {
+    let curates = caller.may(crate::project::users::Role::Operator);
+    entries.filter(|e| curates || !e.unlisted).collect()
+}
+
+/// The warnings this caller may read, given what they may see.
+///
+/// A warning quotes ids and paths -- "duplicate radargram ID 'x': here and
+/// here" -- so showing one about a radargram the listing just dropped would
+/// put it straight back. Same leak as drawing its track on the group map,
+/// one paragraph further down the page.
+///
+/// Dropped rather than redacted: a warning with a hole in it tells an
+/// operator nothing they can act on and tells a picker that something is
+/// being kept from them, which is worse than silence for a message they
+/// could not have acted on anyway.
+fn readable_warnings(
+    catalog: &super::catalog::Catalog,
+    visible: &[&super::catalog::CatalogEntry],
+    caller: &Caller,
+) -> Vec<String> {
+    let curates = caller.may(crate::project::users::Role::Operator);
+    catalog
+        .warnings
+        .iter()
+        .filter(|warning| curates || !warning.operator_only)
+        .filter(|warning| warning.is_visible_to(visible.iter().map(|e| &e.radargram_id)))
+        .map(|warning| warning.message.clone())
+        .collect()
+}
+
+pub async fn list_datasets(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+) -> impl IntoResponse {
     // Counted here too, so `line_count` means the same thing in the API as
     // it does on a card rather than being null for a project.
     let catalog = state.catalog();
-    let entries: Vec<DatasetSummary> = catalog
-        .entries
+    let visible = listable(catalog.entries.iter(), &caller);
+    let entries: Vec<DatasetSummary> = visible
         .iter()
+        .copied()
         .map(|entry| {
             summarize(
+                &state,
                 entry,
                 state
                     .project
@@ -385,7 +454,7 @@ pub async fn list_datasets(State(state): State<Arc<AppState>>) -> impl IntoRespo
             )
         })
         .collect();
-    let warnings: Vec<String> = catalog.warnings.iter().map(|w| w.message.clone()).collect();
+    let warnings = readable_warnings(&catalog, &visible, &caller);
     Json(serde_json::json!({ "entries": entries, "warnings": warnings }))
 }
 
@@ -415,7 +484,7 @@ pub async fn dataset_detail(
 ) -> Result<impl IntoResponse, ApiError> {
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
-    Ok(Json(to_summary(entry)))
+    Ok(Json(to_summary(&state, entry)))
 }
 
 fn lookup_view(view: &str) -> Result<DatasetView, ApiError> {
@@ -643,6 +712,11 @@ struct GroupSummary {
     id: String,
     label: String,
     entries: Vec<DatasetSummary>,
+    /// Members this caller can see but that are unlisted, partitioned here
+    /// rather than in the template so the grid and the disclosure cannot
+    /// disagree about which is which. Always empty below `operator`, since
+    /// the filter has already dropped them.
+    unlisted_entries: Vec<DatasetSummary>,
 }
 
 /// The settings page.
@@ -790,6 +864,7 @@ pub async fn index_page(
     };
     let summarize_entry = |entry: &super::catalog::CatalogEntry| {
         summarize(
+            &state,
             entry,
             line_counts
                 .get(entry.radargram_id.as_str())
@@ -798,15 +873,17 @@ pub async fn index_page(
         )
     };
 
-    let entries: Vec<DatasetSummary> = catalog.entries.iter().map(&summarize_entry).collect();
-    let warnings: Vec<String> = catalog.warnings.iter().map(|w| w.message.clone()).collect();
+    // One filter, applied before anything is grouped or counted, so a
+    // heading cannot survive its only member being unlisted.
+    let visible = listable(catalog.entries.iter(), &caller);
+    let entries: Vec<DatasetSummary> = visible.iter().copied().map(&summarize_entry).collect();
+    let warnings = readable_warnings(&catalog, &visible, &caller);
 
     // Every entry gets one map on the index page (#121): named groups,
     // and "Ungrouped" for entries with none, presented identically
     // rather than as a special case -- entries_in_group(NO_GROUP_ID)
     // already matches group_id.is_none() for exactly this reason.
-    let mut group_ids: Vec<&str> = catalog
-        .entries
+    let mut group_ids: Vec<&str> = visible
         .iter()
         .filter_map(|e| e.group_id.as_ref().map(|g| g.as_str()))
         .collect();
@@ -815,6 +892,11 @@ pub async fn index_page(
     let mut groups: Vec<GroupSummary> = group_ids
         .into_iter()
         .map(|id| {
+            let members: Vec<_> = visible
+                .iter()
+                .copied()
+                .filter(|e| e.group_id.as_ref().is_some_and(|g| g.as_str() == id))
+                .collect();
             let label = catalog
                 .group_names
                 .iter()
@@ -824,25 +906,42 @@ pub async fn index_page(
             GroupSummary {
                 id: id.to_string(),
                 label,
-                entries: catalog
-                    .entries_in_group(id)
-                    .into_iter()
+                entries: members
+                    .iter()
+                    .copied()
+                    .filter(|e| !e.unlisted)
+                    .map(&summarize_entry)
+                    .collect(),
+                unlisted_entries: members
+                    .iter()
+                    .copied()
+                    .filter(|e| e.unlisted)
                     .map(&summarize_entry)
                     .collect(),
             }
         })
         .collect();
-    let ungrouped_entries: Vec<DatasetSummary> = catalog
-        .entries
+    let ungrouped: Vec<_> = visible
         .iter()
+        .copied()
         .filter(|e| e.group_id.is_none())
-        .map(&summarize_entry)
         .collect();
-    if !ungrouped_entries.is_empty() {
+    if !ungrouped.is_empty() {
         groups.push(GroupSummary {
             id: NO_GROUP_ID.to_string(),
             label: "Ungrouped".to_string(),
-            entries: ungrouped_entries,
+            entries: ungrouped
+                .iter()
+                .copied()
+                .filter(|e| !e.unlisted)
+                .map(&summarize_entry)
+                .collect(),
+            unlisted_entries: ungrouped
+                .iter()
+                .copied()
+                .filter(|e| e.unlisted)
+                .map(&summarize_entry)
+                .collect(),
         });
     }
 
@@ -858,6 +957,12 @@ pub async fn index_page(
             profiles => profiles,
             active_profile => active_profile,
             project => state.project.is_some(),
+            // Whether to offer the Edit properties button at all. Nothing
+            // below `operator` can save one, and a control that answers a
+            // click with a refusal is a worse way to learn about a
+            // permission than never having been offered it.
+            can_edit_project => state.project.is_some()
+                && caller.may(crate::project::users::Role::Operator),
             ..caller_context(&caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
@@ -1305,7 +1410,7 @@ fn merged_track_geojson(
 ) -> Result<Response, ApiError> {
     caller.require_download(crate::project::users::DownloadScope::All, "tracks")?;
     let catalog = state.catalog();
-    let entries = scope.entries(&catalog);
+    let (entries, unlisted) = scope.listed_entries(&catalog);
     if entries.is_empty() {
         return Err(ApiError::not_found(
             scope.empty_code(),
@@ -1330,14 +1435,36 @@ fn merged_track_geojson(
     }))
     .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
 
-    Ok((
+    let mut response = (
         [
             (header::CONTENT_TYPE, "application/geo+json".to_string()),
             attachment(&format!("{}-tracks.geojson", scope.slug())),
         ],
         body,
     )
-        .into_response())
+        .into_response();
+    if let Some(note) = unlisted_note(unlisted) {
+        if let Ok(value) = format!("199 ridal \"{note}\"").parse() {
+            response.headers_mut().insert(header::WARNING, value);
+        }
+    }
+    Ok(response)
+}
+
+/// How a merged download reports the members it left out.
+///
+/// Counted rather than named: the omission is the point of unlisting, and
+/// listing the ids in a header anyone can read would undo it for the
+/// `picker` who downloaded the file. `None` when nothing was omitted, so
+/// the ordinary case carries no header at all.
+pub(super) fn unlisted_note(omitted: usize) -> Option<String> {
+    match omitted {
+        0 => None,
+        1 => Some("1 radargram here is unlisted and is not in this file.".to_string()),
+        n => Some(format!(
+            "{n} radargrams here are unlisted and are not in this file."
+        )),
+    }
 }
 
 /// One GeoJSON Feature per track segment.
@@ -1428,11 +1555,16 @@ pub async fn dataset_download(
 /// spirit of #122's "one bad candidate does not abort discovery."
 pub async fn group_tracks(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     Path(group): Path<String>,
 ) -> impl IntoResponse {
     let mut out = serde_json::Map::new();
     let catalog = state.catalog();
-    for entry in catalog.entries_in_group(&group) {
+    // Filtered like the listing it draws. A track on the group map is a
+    // listing by another means: without this, a group with one unlisted
+    // member and one listed one would draw both for a `picker`, which is
+    // the one thing unlisting does claim to prevent.
+    for entry in listable(catalog.entries_in_group(&group).into_iter(), &caller) {
         let Ok(path) = state.absolute_path(entry) else {
             continue;
         };
