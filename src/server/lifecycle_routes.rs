@@ -65,7 +65,7 @@ pub struct Added {
     bytes: u64,
     /// How many interpretations sit in the archive under this id, from an
     /// earlier removal. Almost always zero. When it is not, the operator has
-    /// just re-used an id that someone drew picks on, and only they know
+    /// just reused an id that someone drew picks on, and only they know
     /// whether this is the same line coming back or a different one taking
     /// its name.
     archived_interpretations: usize,
@@ -557,8 +557,23 @@ pub async fn list_ignored(
 /// somewhere else resolves and is caught. Without this, `create_dir_all`
 /// and `rename` follow the link and the upload lands outside the project —
 /// the one thing #147 says never happens.
+///
+/// The root is canonicalized *before* anything is joined onto it, so every
+/// path here descends from a resolved one. The order is not only tidiness:
+/// the project root traces back to the `ridal gui <PATH>` argument, and
+/// CodeQL reads a `create_dir_all` on a path joined onto an unresolved
+/// value as a path-injection sink however the root got there. The same
+/// join-then-canonicalize sequence, in the same function as the sink, is
+/// what it recognises as validated — see `AppState::resolve_absolute_path`,
+/// which documents the same thing for the same reason.
 fn writable_destination(project: &crate::project::Project) -> Result<std::path::PathBuf, ApiError> {
-    let destination = project.root().join(crate::project::DEFAULT_RADARGRAM_DIR);
+    let root = project.root().canonicalize().map_err(|e| {
+        ApiError::internal(
+            "upload_failed",
+            format!("Could not resolve the project root: {e}"),
+        )
+    })?;
+    let destination = root.join(crate::project::DEFAULT_RADARGRAM_DIR);
     std::fs::create_dir_all(&destination).map_err(|e| {
         ApiError::internal(
             "upload_failed",
@@ -569,12 +584,6 @@ fn writable_destination(project: &crate::project::Project) -> Result<std::path::
         ApiError::internal(
             "upload_failed",
             format!("Could not resolve {}: {e}", destination.display()),
-        )
-    })?;
-    let root = project.root().canonicalize().map_err(|e| {
-        ApiError::internal(
-            "upload_failed",
-            format!("Could not resolve the project root: {e}"),
         )
     })?;
     if !resolved.starts_with(&root) {
