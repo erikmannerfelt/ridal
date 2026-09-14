@@ -477,6 +477,34 @@ impl DocumentStore {
         stems.sort();
         Ok(stems)
     }
+
+    /// Names of the directories directly inside `relative`, sorted.
+    ///
+    /// A missing directory lists as empty, for the same reason
+    /// [`list_stems`](Self::list_stems) does. Symlinked entries are not
+    /// followed: `symlink_metadata` reports the link itself, so a link
+    /// pointing out of the project is listed as the non-directory it is
+    /// rather than read through.
+    pub fn list_subdirectories(&self, relative: &Path) -> Result<Vec<String>, StoreError> {
+        let path = self.path_of(relative)?;
+        let entries = match std::fs::read_dir(&path) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => return Err(StoreError::Io { path, source }),
+        };
+
+        let mut names = Vec::new();
+        for entry in entries.flatten() {
+            if !std::fs::symlink_metadata(entry.path()).is_ok_and(|m| m.is_dir()) {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
 }
 
 /// Write `text` to a new file, created with `mode` if one is given.

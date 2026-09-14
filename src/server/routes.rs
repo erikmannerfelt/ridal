@@ -61,6 +61,13 @@ impl ApiError {
     /// The request is well-formed but the server is not in a state that can
     /// serve it -- no project, or started read-only. Distinct from a 400:
     /// nothing about the request needs fixing.
+    /// 413. For an upload that would take the project over its cap
+    /// (#147): the request is well formed and the server is working, there
+    /// is simply no room.
+    pub(super) fn payload_too_large(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::PAYLOAD_TOO_LARGE, code, message)
+    }
+
     pub(super) fn conflict(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, code, message)
     }

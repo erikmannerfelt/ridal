@@ -163,6 +163,21 @@ pub struct CatalogRoot {
     pub is_file: bool,
     /// Whether Ridal may write here.
     pub writable: bool,
+    /// Directories under `path` whose own name is structure rather than
+    /// grouping: the project's declared `[radargrams] roots`.
+    ///
+    /// The group fallback reads the parent directory as a group name,
+    /// which is right for an archive laid out as `Drønbreen/2022/` and
+    /// wrong for the project's own `radargrams/`. Serving a project root
+    /// put every file in it one level down, so a radargram with no group
+    /// metadata of any kind came out in a group called "radargrams" — a
+    /// name nobody chose, from a directory that only exists because a
+    /// project has to keep its files somewhere.
+    ///
+    /// Group hints are taken relative to the deepest of these that
+    /// contains the file, so `radargrams/Drønbreen/2022/line.nc` still
+    /// groups by "Drønbreen/2022" and `radargrams/line.nc` is ungrouped.
+    pub group_bases: Vec<std::path::PathBuf>,
 }
 
 impl CatalogRoot {
@@ -175,6 +190,7 @@ impl CatalogRoot {
             path,
             is_file,
             writable: true,
+            group_bases: Vec::new(),
         }
     }
 }
@@ -200,6 +216,7 @@ struct Candidate {
 
 fn discover_candidates(root: &CatalogRoot, index: usize) -> Vec<Candidate> {
     let is_file = root.is_file;
+    let group_bases = root.group_bases.clone();
     let root = root.path.as_path();
     if is_file {
         let name = root
@@ -258,7 +275,20 @@ fn discover_candidates(root: &CatalogRoot, index: usize) -> Vec<Candidate> {
             .map(|c| c.as_os_str().to_string_lossy().to_string())
             .collect::<Vec<_>>()
             .join("/");
-        let group_hint = relative
+        // Relative to the deepest declared radargram directory containing
+        // this file, where there is one, rather than to the served root.
+        // The deepest, because a project may declare both a directory and
+        // something inside it, and the innermost is the one whose name is
+        // structure.
+        let hint_base = group_bases
+            .iter()
+            .filter(|base| entry.path().starts_with(base))
+            .max_by_key(|base| base.components().count());
+        let for_hint = match hint_base {
+            Some(base) => entry.path().strip_prefix(base).unwrap_or(&relative),
+            None => relative.as_path(),
+        };
+        let group_hint = for_hint
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .map(|p| {
@@ -1209,6 +1239,7 @@ mod tests {
             path: path.to_path_buf(),
             is_file: false,
             writable: true,
+            group_bases: Vec::new(),
         }
     }
 
@@ -1217,6 +1248,7 @@ mod tests {
             path: path.to_path_buf(),
             is_file: false,
             writable: false,
+            group_bases: Vec::new(),
         }
     }
 
@@ -1658,6 +1690,63 @@ mod tests {
         assert_eq!(
             catalog.entries[0].group_name.as_ref().map(|g| g.as_str()),
             Some("dronbreen/2022")
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_projects_own_radargram_directory_is_not_a_group() {
+        // Serving a project root puts every file in `radargrams/` one level
+        // down, so the parent-directory fallback made a group called
+        // "radargrams" -- a name nobody chose, from a directory that only
+        // exists because a project has to keep its files somewhere. Adding
+        // a radargram through the GUI is how you meet this: it lands there
+        // by definition.
+        let dir = tempfile::tempdir().unwrap();
+        let radargrams = dir.path().join("radargrams");
+        std::fs::create_dir_all(radargrams.join("dronbreen/2022")).unwrap();
+        process_to(
+            ASSET_2022,
+            &radargrams.join("flat.nc"),
+            Some("flat-in-the-project"),
+            None,
+        );
+        process_to(
+            ASSET_2022,
+            &radargrams.join("dronbreen/2022/nested.nc"),
+            Some("nested-in-the-project"),
+            None,
+        );
+
+        let root = CatalogRoot {
+            path: dir.path().to_path_buf(),
+            is_file: false,
+            writable: true,
+            group_bases: vec![radargrams.clone()],
+        };
+        let catalog = Catalog::discover_roots(&[root], &CatalogOverrides::default());
+
+        let group_of = |id: &str| {
+            catalog
+                .entries
+                .iter()
+                .find(|e| e.radargram_id.as_str() == id)
+                .unwrap_or_else(|| panic!("{id} is not in the catalog"))
+                .group_id
+                .as_ref()
+                .map(|g| g.as_str().to_string())
+        };
+        assert_eq!(
+            group_of("flat-in-the-project"),
+            None,
+            "structure, not a group"
+        );
+        // And the fallback still does its job below that: an archive laid
+        // out by survey and year is exactly what it is for.
+        assert_eq!(
+            group_of("nested-in-the-project"),
+            Some("dronbreen-2022".to_string())
         );
     }
 

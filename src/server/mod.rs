@@ -65,6 +65,7 @@ pub mod interp_routes;
 #[cfg(test)]
 mod interp_routes_tests;
 pub mod launch;
+pub mod lifecycle_routes;
 pub mod overrides_routes;
 pub mod render_service;
 pub mod routes;

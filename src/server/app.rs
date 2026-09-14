@@ -58,6 +58,28 @@ impl Default for AccessOptions {
 }
 
 pub struct AppState {
+    /// How render services are configured, kept so [`Self::rediscover`]
+    /// can open one for a radargram that arrives after startup.
+    render_config: RenderServiceConfig,
+    /// Held for the whole of any operation that changes which radargrams
+    /// exist (#147).
+    ///
+    /// Add and remove are each a sequence — measure the project, write,
+    /// check for a collision, install, rediscover — and every step of it
+    /// reads state the other steps change. Run two at once and each
+    /// individually correct sequence produces a wrong result together: two
+    /// uploads both see room for one file, both see no id collision and
+    /// the second rename replaces the first, and two rediscoveries
+    /// complete out of order so the newer catalog is replaced by one built
+    /// from an older disk.
+    ///
+    /// One lock rather than a check at each step, because the steps are not
+    /// individually fixable: what each needs is that nothing else changed
+    /// in between, which is what a lock says and a check cannot.
+    ///
+    /// A `std` mutex held across `.await` would not do — this is
+    /// `tokio::sync` so an upload can be awaited while holding it.
+    lifecycle: tokio::sync::Mutex<()>,
     /// Every place radargrams are found, the served tree first (#147).
     ///
     /// A list rather than one path because a project may point at archives
@@ -174,10 +196,32 @@ impl AppState {
                 .is_some_and(|inside| path.starts_with(inside))
         };
 
+        // The project's own radargram directories, canonicalized. A file
+        // sitting directly in one of these is ungrouped: `radargrams/` is
+        // where a project keeps its files, not a group anyone chose. See
+        // `CatalogRoot::group_bases`.
+        let declared: Vec<PathBuf> = project
+            .as_ref()
+            .map(|p| {
+                p.radargram_roots()
+                    .into_iter()
+                    .filter_map(|d| d.canonicalize().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let bases_under = |root: &StdPath| -> Vec<PathBuf> {
+            declared
+                .iter()
+                .filter(|d| d.starts_with(root))
+                .cloned()
+                .collect()
+        };
+
         let mut roots = vec![CatalogRoot {
             path: root.to_path_buf(),
             is_file: root_is_file,
             writable: owned(root),
+            group_bases: bases_under(root),
         }];
         if let Some(project) = &project {
             for extra in project.radargram_roots() {
@@ -198,10 +242,16 @@ impl AppState {
                 }
                 let is_file = extra.is_file();
                 let writable = owned(&extra);
+                // The root *is* a declared directory, so its own name is
+                // structure too: an external archive listed under
+                // `[radargrams] roots` groups by what is inside it, not by
+                // what the directory happens to be called.
+                let group_bases = bases_under(&extra);
                 roots.push(CatalogRoot {
                     path: extra,
                     is_file,
                     writable,
+                    group_bases,
                 });
             }
         }
@@ -247,6 +297,8 @@ impl AppState {
 
         Ok(Self {
             roots,
+            render_config: *config,
+            lifecycle: tokio::sync::Mutex::new(()),
             snapshot: RwLock::new(Arc::new(CatalogSnapshot {
                 catalog,
                 radargrams,
@@ -320,6 +372,97 @@ impl AppState {
             .get(entry.root)
             .ok_or_else(|| format!("entry names root {}, which is not served", entry.root))?;
         Self::resolve_absolute_path(root, entry)
+    }
+
+    /// Exclusive access for an operation that changes which radargrams
+    /// exist. See [`AppState::lifecycle`].
+    pub async fn lifecycle_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.lifecycle.lock().await
+    }
+
+    /// Drop the render service for one radargram, so its file can be
+    /// deleted.
+    ///
+    /// Windows refuses to unlink a file that is still open, and a served
+    /// radargram's `RenderService` holds a NetCDF handle on it — so
+    /// removing a perfectly ordinary radargram would fail there and
+    /// nowhere else. Unix would have allowed the unlink and quietly kept
+    /// the handle alive, which is not better, only quieter.
+    ///
+    /// Returns once no snapshot references the service. A render already in
+    /// flight holds its own `Arc` and finishes against the file it started
+    /// on, which is the same rule every other reader here follows; the
+    /// delete can fail on Windows in that window, and reporting that is
+    /// honest — the file really is in use.
+    pub fn close_radargram(&self, radargram_id: &str) {
+        let existing = self.catalog();
+        let mut radargrams = existing.open_radargrams();
+        radargrams.remove(radargram_id);
+        self.replace_catalog(Catalog::clone(&existing), radargrams);
+    }
+
+    /// Re-read the roots and rebuild the catalog and its render services.
+    ///
+    /// What add and remove need, and what an override edit does *not*:
+    /// re-resolution answers "what does the project say about these files",
+    /// and this answers "which files are there". One re-reads a document,
+    /// the other walks the disk.
+    ///
+    /// Render services are carried over for every radargram whose revision
+    /// is unchanged. Reopening all of them because one was added would
+    /// throw away every warm cache in the project, and the revision
+    /// fingerprint is exactly the question "is this the same file" — a
+    /// radargram that was replaced gets a new one and is reopened.
+    pub fn rediscover(&self) -> Result<(), String> {
+        let config = &self.render_config;
+        let overrides = self
+            .project
+            .as_ref()
+            .map(|p| crate::project::overrides::read_lenient(p.documents()))
+            .unwrap_or_default();
+        let catalog = Catalog::discover_roots(&self.roots, &overrides);
+
+        let existing = self.catalog();
+        let mut radargrams = HashMap::new();
+        for entry in &catalog.entries {
+            let key = entry.radargram_id.as_str().to_string();
+            let unchanged = existing
+                .find_entry(&key)
+                .is_some_and(|old| old.revision_id == entry.revision_id);
+            if unchanged {
+                if let Some(open) = existing.radargram(&key) {
+                    radargrams.insert(key, open);
+                    continue;
+                }
+            }
+            let Some(root) = self.roots.get(entry.root) else {
+                continue;
+            };
+            let Ok(path) = Self::resolve_absolute_path(root, entry) else {
+                continue;
+            };
+            let Ok(reader) = SourceReader::open(&path) else {
+                // Skipped rather than fatal, exactly as at startup: one
+                // unreadable file must not cost the whole catalog.
+                eprintln!(
+                    "Warning: could not open {} for rendering",
+                    entry.relative_path
+                );
+                continue;
+            };
+            let shape = reader.shape();
+            let service = RenderService::new(reader, entry.revision_id.clone(), config);
+            radargrams.insert(
+                key,
+                Arc::new(OpenRadargram {
+                    service: Mutex::new(service),
+                    shape,
+                }),
+            );
+        }
+
+        self.replace_catalog(catalog, radargrams);
+        Ok(())
     }
 
     /// Whether Ridal may write to the root this entry came from.
@@ -693,7 +836,18 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
                 .delete(super::interp_routes::delete_interpretation),
         )
         .route("/api/v1/profiles", get(super::routes::list_profiles))
-        .route("/api/v1/datasets", get(super::routes::list_datasets))
+        .route(
+            "/api/v1/datasets",
+            get(super::routes::list_datasets).post(super::lifecycle_routes::upload_dataset),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/restore",
+            axum::routing::post(super::lifecycle_routes::restore_dataset),
+        )
+        .route(
+            "/api/v1/catalog/ignored",
+            get(super::lifecycle_routes::list_ignored),
+        )
         .route(
             "/api/v1/datasets/{radargram_id}/properties",
             get(super::overrides_routes::get_properties)
@@ -701,7 +855,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         )
         .route(
             "/api/v1/datasets/{radargram_id}",
-            get(super::routes::dataset_detail),
+            get(super::routes::dataset_detail).delete(super::lifecycle_routes::remove_dataset),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/track",

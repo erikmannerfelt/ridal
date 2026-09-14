@@ -1882,3 +1882,67 @@ async fn axes_are_withheld_when_the_file_changed_under_the_catalog() {
         "no mapping is better than one belonging to a different revision: {axes}"
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_save_waits_while_a_radargram_is_being_removed() {
+    // Removing a radargram archives its interpretations and then deletes the
+    // file, and those two steps are not one instant. A save arriving between
+    // them passes the catalog check -- the entry is still there -- and then
+    // writes a document into the directory the archive has just emptied.
+    // What is left is picks for a radargram that no longer exists, outside
+    // the archive, in exactly the place a later radargram taking that id
+    // would find them.
+    //
+    // Rather than race the two and hope, this holds the lifecycle lock the
+    // way a removal in progress does, and checks that the save does not
+    // proceed until it is released.
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(Arc::clone(&state));
+
+    let removal = state.lifecycle_lock().await;
+
+    let saving = tokio::spawn(async move {
+        let request = Request::builder()
+            .method("PUT")
+            .uri(URI)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(document(RADARGRAM).to_string()))
+            .unwrap();
+        app.oneshot(request).await.unwrap().status()
+    });
+
+    // Long enough that a save which ignored the lock would have finished:
+    // once the lock is free the same request completes immediately, as the
+    // second timeout below shows with the same budget.
+    let mut saving = saving;
+    let budget = std::time::Duration::from_millis(250);
+    assert!(
+        tokio::time::timeout(budget, &mut saving).await.is_err(),
+        "the save went through while a removal held the lifecycle lock"
+    );
+    assert!(
+        !dir.path().join("interpretations/line-01").exists(),
+        "and it wrote nothing in the meantime"
+    );
+
+    drop(removal);
+
+    let status = tokio::time::timeout(budget, saving)
+        .await
+        .expect("the save should proceed once the removal is done")
+        .unwrap();
+    assert_eq!(status, StatusCode::CREATED);
+}

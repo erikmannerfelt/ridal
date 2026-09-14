@@ -230,6 +230,24 @@ pub async fn put_interpretation(
     let radargram = parse_radargram(&radargram_id)?;
     let user = writing_as(&caller, &user)?;
 
+    // Held from the catalog check to the write, because the two are one
+    // decision. A removal archives this radargram's interpretations and then
+    // deletes its file; a save landing between those two steps passes the
+    // check against a catalog that still lists it and recreates the document
+    // the archive just emptied -- picks left behind for a radargram that is
+    // gone, outside the archive, waiting to reattach to whatever takes the
+    // id next. Saves are manual and removals are rare, so the contention
+    // this adds is not measurable.
+    // Held from the catalog check to the write, because the two are one
+    // decision. A removal archives this radargram's interpretations and then
+    // deletes its file; a save landing between those two steps passes the
+    // check against a catalog that still lists it and recreates the document
+    // the archive just emptied -- picks left behind for a radargram that is
+    // gone, outside the archive, waiting to reattach to whatever takes the
+    // id next. Saves are manual and removals are rare, so the contention
+    // this adds is not measurable.
+    let _lifecycle = state.lifecycle_lock().await;
+
     // The dataset must be in this catalog. Otherwise a typo in the URL
     // silently creates an interpretation directory for a radargram that does
     // not exist, which nothing would ever read.
