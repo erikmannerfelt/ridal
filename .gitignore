@@ -33,3 +33,11 @@ gprinterp/
 tmp/
 old/
 /out.nc
+
+# Processed radargrams dropped in the repo root while trying something on
+# real data. These are tens of megabytes each and belong in tmp/ or
+# outside the repo; two of them reached a remote branch because a
+# `git add -A` swept up what a `git status` had shown as untracked.
+# Ignoring the shape rather than the names, since the next one will be
+# called something else.
+/*.nc
