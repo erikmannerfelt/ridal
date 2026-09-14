@@ -107,6 +107,8 @@ struct Response {
     cookie: Option<String>,
     body: Value,
     text: String,
+    /// The version the document is now at, for the routes that offer one.
+    etag: Option<String>,
 }
 
 async fn send(app: &Router, request: Request<Body>) -> Response {
@@ -115,6 +117,11 @@ async fn send(app: &Router, request: Request<Body>) -> Response {
     let cookie = response
         .headers()
         .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let etag = response
+        .headers()
+        .get(header::ETAG)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -126,6 +133,7 @@ async fn send(app: &Router, request: Request<Body>) -> Response {
         cookie,
         body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         text,
+        etag,
     }
 }
 
@@ -146,6 +154,25 @@ async fn get(app: &Router, uri: &str, session: Option<&str>) -> Response {
     send(
         app,
         request("GET", uri, session).body(Body::empty()).unwrap(),
+    )
+    .await
+}
+
+/// A POST carrying `If-Match`, for the routes that take a precondition.
+async fn post_with_if_match(
+    app: &Router,
+    uri: &str,
+    body: &Value,
+    etag: &str,
+    session: Option<&str>,
+) -> Response {
+    send(
+        app,
+        request("POST", uri, session)
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::IF_MATCH, etag)
+            .body(Body::from(body.to_string()))
+            .unwrap(),
     )
     .await
 }
@@ -3853,4 +3880,97 @@ async fn a_report_measured_against_a_superseded_revision_is_not_committed() {
     let now = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     assert_eq!(now.body["revision_id"], landed.body["to_revision"]);
     assert!(dir.path().join("radargrams/ours.nc").exists());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn adopting_from_a_page_that_missed_a_save_is_refused() {
+    // Adopting writes over a document. From a page that loaded before
+    // another tab saved, it used to overwrite the newer version --
+    // archived, but replaced without anybody being told, where an ordinary
+    // save in the same position is refused with 412.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let before = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    let from_revision = before.body["revision_id"].as_str().unwrap().to_string();
+    let page = get(&app, "/view/ours", Some(&erik)).await;
+    let line = super::interp_routes_tests::axes_line(&page.text).expect("axes");
+    let axes: serde_json::Value =
+        serde_json::from_str(line.trim_start_matches("axes: ").trim_end_matches(',')).unwrap();
+    let document = |points: serde_json::Value| {
+        json!({
+            "key": "ours",
+            "source": {"radargram_id": "ours", "revision_id": from_revision},
+            "coordinates": {"space": "index", "axes": axes},
+            "features": [{
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": points},
+                "properties": {"id": "f-0001", "label": "bed"}
+            }]
+        })
+    };
+
+    let saved = put(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik",
+        &document(json!([[5.0, 2.0], [30.0, 3.0]])),
+        Some(&erik),
+    )
+    .await;
+    // The ETag this page would have been holding.
+    let stale_etag = saved.etag.expect("an etag");
+
+    // Another tab saves in the meantime.
+    put(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik",
+        &document(json!([[6.0, 2.0], [31.0, 3.0]])),
+        Some(&erik),
+    )
+    .await;
+
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    let replaced = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    let to_revision = replaced.body["to_revision"].as_str().unwrap().to_string();
+
+    let refused = post_with_if_match(
+        &app,
+        &format!("/api/v1/datasets/ours/interpretations/erik/promote?onto={to_revision}"),
+        &document(json!([[5.0, 2.0], [30.0, 3.0]])),
+        &stale_etag,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        refused.text
+    );
+
+    // And nothing was archived, because nothing was replaced.
+    assert!(
+        !dir.path().join("interpretations/_archived/ours").exists(),
+        "a refused adoption leaves no stray archived copy"
+    );
 }

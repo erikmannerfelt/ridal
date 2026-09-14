@@ -770,3 +770,66 @@ pub async fn discard_replacement(
     let _ = std::fs::remove_file(staged_note_path(&dir, &token)?);
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn consequence(severities: &[Severity]) -> ConsequenceReport {
+        let documents = severities
+            .iter()
+            .enumerate()
+            .map(|(i, severity)| DocumentConsequence {
+                user: format!("user-{i}"),
+                carry: CarryReport {
+                    severity: *severity,
+                    from_revision: Some("rev-a".to_string()),
+                    to_revision: "rev-b".to_string(),
+                    x_anchor: None,
+                    y_anchor: None,
+                    kept: 0,
+                    dropped: Vec::new(),
+                    moved: None,
+                    refusal: None,
+                    headline: String::new(),
+                },
+            })
+            .collect();
+        ConsequenceReport {
+            radargram_id: "line-01".to_string(),
+            from_revision: "rev-a".to_string(),
+            to_revision: "rev-b".to_string(),
+            revision_id_collision: false,
+            shape: None,
+            outgoing_axes_kept: true,
+            documents,
+            worst: Severity::Refused,
+            headline: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_headline_counts_only_the_sets_that_cannot_be_shown() {
+        // It reported `documents.len()`, so one refused set among four
+        // said all four were affected -- on the line the dialog leads
+        // with, about the most serious thing that would happen.
+        let report = consequence(&[
+            Severity::Refused,
+            Severity::Carried,
+            Severity::Approximate,
+            Severity::Partial,
+        ]);
+        let refused = report
+            .documents
+            .iter()
+            .filter(|d| d.carry.severity == Severity::Refused)
+            .count();
+        assert_eq!(refused, 1);
+        assert_eq!(plural(refused, "set", "sets"), "1 set");
+        assert_eq!(
+            plural(report.documents.len(), "set", "sets"),
+            "4 sets",
+            "which is what it used to say"
+        );
+    }
+}
