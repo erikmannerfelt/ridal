@@ -62,6 +62,12 @@ pub struct Added {
     display_name: Option<String>,
     group_name: Option<String>,
     bytes: u64,
+    /// How many interpretations sit in the archive under this id, from an
+    /// earlier removal. Almost always zero. When it is not, the operator has
+    /// just re-used an id that someone drew picks on, and only they know
+    /// whether this is the same line coming back or a different one taking
+    /// its name.
+    archived_interpretations: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -210,6 +216,15 @@ pub async fn upload_dataset(
         ));
     }
 
+    // Read before the install, so a failure here refuses the add rather than
+    // leaving it installed with the report missing. Not a reason to refuse
+    // the id: picks in the archive are not attached to anything and nothing
+    // reattaches them on its own. It is a reason to say so, which the
+    // response and the log both do.
+    let archived_interpretations =
+        interpretations::count_archived(project.documents(), &meta.radargram_id)
+            .map_err(|e| ApiError::internal("archive_read_failed", e.to_string()))?;
+
     let installed = destination.join(format!("{}.nc", meta.radargram_id));
     std::fs::rename(&temporary, &installed).map_err(|e| {
         ApiError::internal(
@@ -237,7 +252,15 @@ pub async fn upload_dataset(
                 )
                 .to_string(),
             ),
-            note: query.filename.clone(),
+            note: match (&query.filename, archived_interpretations) {
+                (name, 0) => name.clone(),
+                (Some(name), n) => Some(format!(
+                    "{name}; {n} archived interpretation(s) already under this id"
+                )),
+                (None, n) => Some(format!(
+                    "{n} archived interpretation(s) already under this id"
+                )),
+            },
         },
     );
 
@@ -253,6 +276,7 @@ pub async fn upload_dataset(
             display_name: meta.display_name.map(|n| n.to_string()),
             group_name: meta.group_name.map(|n| n.to_string()),
             bytes,
+            archived_interpretations,
         }),
     ))
 }

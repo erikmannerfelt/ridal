@@ -449,6 +449,16 @@ document.querySelectorAll('.group-map').forEach((el) => {
     status.appendChild(box);
   };
 
+  // A notice that has to outlive the reload the add itself triggers. The
+  // only thing worth carrying across is the archived-picks warning, which
+  // is precisely the case where the reload would otherwise swallow it.
+  const CARRIED = 'ridal.add-notice';
+  const carried = sessionStorage.getItem(CARRIED);
+  if (carried) {
+    sessionStorage.removeItem(CARRIED);
+    say(carried, 'problem');
+  }
+
   button.addEventListener('click', () => picker.click());
 
   picker.addEventListener('change', async () => {
@@ -470,6 +480,22 @@ document.querySelectorAll('.group-map').forEach((el) => {
         const envelope = await response.json().catch(() => null);
         say(envelope?.error?.message || `Could not add it (${response.status}).`, 'problem');
         return;
+      }
+      const added = await response.json().catch(() => null);
+      const archived = added?.archived_interpretations || 0;
+      if (archived > 0) {
+        // Said, not asked. The picks are in the archive and nothing attaches
+        // them to this file; the add is legitimate either way. What the
+        // operator cannot know without being told is that the id carries a
+        // history, and whether this is the same line returning is a question
+        // only they can answer.
+        sessionStorage.setItem(
+          CARRIED,
+          `Added ${added.radargram_id}. Note that ${archived} interpretation(s) ` +
+            'were archived under this id when it was last removed. They are not ' +
+            'attached to this file, and stay in the archive until someone ' +
+            'restores them deliberately.',
+        );
       }
     } catch (error) {
       say(`Could not add it (${error.message}).`, 'problem');

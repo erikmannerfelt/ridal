@@ -205,6 +205,30 @@ fn free_archive_directory(
     }))
 }
 
+/// How many interpretations this id has in the archive, across every
+/// removal.
+///
+/// Read when a radargram is added, so that adding one whose id was removed
+/// before says so. Re-adding an id is a legitimate thing to do — a
+/// reprocessed line arrives under the id it always had — and refusing it
+/// would be wrong. What would also be wrong is doing it in silence: the
+/// picks in the archive were drawn on whatever held this id last, which may
+/// or may not be what is arriving now, and the operator is the only one who
+/// knows which. This is what lets the add report it.
+pub fn count_archived(
+    store: &DocumentStore,
+    radargram: &RadargramId,
+) -> Result<usize, InterpretationError> {
+    let base = PathBuf::from(crate::project::INTERPRETATIONS_DIR)
+        .join("_archived")
+        .join(radargram.as_str());
+    let mut total = 0;
+    for removal in store.list_subdirectories(&base)? {
+        total += store.list_stems(&base.join(&removal), SUFFIX)?.len();
+    }
+    Ok(total)
+}
+
 /// Move every interpretation of `radargram` into the archive, returning how
 /// many moved.
 ///
@@ -589,6 +613,44 @@ mod archive_tests {
             .collect();
         stamps.sort();
         assert_eq!(stamps, vec!["2026-09-13T12-00-00Z", "2026-09-14T12-00-00Z"]);
+    }
+
+    #[test]
+    fn the_archive_count_spans_every_removal_of_an_id() {
+        // What an add reads to decide whether the id it is taking carries a
+        // history. Counting only the most recent removal would under-report
+        // exactly the case the count exists for: an id that has been reused
+        // before.
+        let (_dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+
+        assert_eq!(count_archived(store, &id).unwrap(), 0, "a fresh id");
+
+        write_picks(store, &id, "erik");
+        archive_all(store, &id, "2026-09-13T12:00:00Z").unwrap();
+        assert_eq!(count_archived(store, &id).unwrap(), 1);
+
+        write_picks(store, &id, "erik");
+        write_picks(store, &id, "student");
+        archive_all(store, &id, "2026-09-14T12:00:00Z").unwrap();
+        assert_eq!(count_archived(store, &id).unwrap(), 3, "both removals");
+
+        // And it is per id, not per project.
+        assert_eq!(count_archived(store, &radargram("line-02")).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_live_interpretation_is_not_counted_as_an_archived_one() {
+        // The count answers "was this id removed with picks on it", so picks
+        // that are still attached must not read as history. Sharing a parent
+        // directory with `_archived` makes this easy to get wrong.
+        let (_dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+
+        write_picks(store, &id, "erik");
+        assert_eq!(count_archived(store, &id).unwrap(), 0);
     }
 
     #[test]
