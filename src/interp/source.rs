@@ -104,6 +104,12 @@ pub struct AxisDeclarations {
     pub twtt_time_zero: Vec<f64>,
     /// Sample interval, nanoseconds.
     pub dt_ns: f64,
+    /// The file's own `ridal_processing_datetime`, so a caller can check
+    /// that these axes belong to the revision it believes it is
+    /// describing. The catalog's snapshot and this read happen at
+    /// different moments, and a file reprocessed in place between them
+    /// would otherwise pair one revision's mapping with another's id.
+    pub processing_datetime: Option<String>,
 }
 
 /// Read the axis declarations, or as much of them as the file carries.
@@ -120,6 +126,7 @@ pub fn read_axis_declarations(path: &Path) -> AxisDeclarations {
     let twtt = read_f64_variable(&file, "twtt").unwrap_or_default();
     AxisDeclarations {
         time: read_f64_variable(&file, "time").unwrap_or_default(),
+        processing_datetime: read_str_attr(&file, "ridal_processing_datetime"),
         twtt_anchor: file
             .variable("twtt")
             .and_then(|var| read_str_attr_of(&var, "anchor_name")),

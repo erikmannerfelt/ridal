@@ -965,6 +965,30 @@
       finishLine();
       clearError();
 
+      // A document drawn on a different revision is not saved.
+      //
+      // The coordinates in it are indices into the revision it was
+      // authored against, and nothing here re-anchors them. Saving would
+      // stamp `source.revision_id` with the current revision and attach
+      // the current axes, so old indices would be labelled as current --
+      // producing exactly the cross-revision mistake the axes exist to
+      // prevent, with this editor as the source of it.
+      //
+      // Refused rather than silently relabelled. Carrying them across is a
+      // real operation with a real answer (gprinterp SPEC 8, and #148),
+      // and it needs to show what it would move before it moves anything.
+      // Until that exists, the honest thing is not to pretend.
+      const drawnOn = loaded && loaded.source && loaded.source.revision_id;
+      if (drawnOn && drawnOn !== CFG.revisionId) {
+        showError(
+          "These picks were drawn on an earlier version of this radargram, " +
+            "so saving would record them against the current one without " +
+            "moving them. Ridal cannot carry picks across versions yet. " +
+            "Download them before making changes.",
+        );
+        return;
+      }
+
       const body = {
         // Spread first, so anything this editor does not model is carried
         // through, then override only the fields it owns.

@@ -907,6 +907,29 @@ pub async fn viewer_page(
     let axes = match state.absolute_path(entry) {
         Ok(path) => {
             let declared = crate::interp::source::read_axis_declarations(&path);
+            // The revision id beside these axes came from the catalog
+            // snapshot; the axes come from the file as it is right now. If
+            // something reprocessed it in place since, the page would
+            // otherwise hand the picker one revision's mapping labelled
+            // with another's id -- which is the exact cross-revision
+            // mistake this whole feature exists to prevent, produced by the
+            // feature itself.
+            let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
+                crate::identity::RevisionId::fingerprint_v1(&entry.radargram_id, when)
+                    == entry.revision_id
+            });
+            if !same_revision {
+                eprintln!(
+                    "Warning: {} changed on disk since it was catalogued; serving it \
+                     without anchor axes until the catalog is rebuilt.",
+                    entry.radargram_id
+                );
+            }
+            let declared = if same_revision {
+                declared
+            } else {
+                crate::interp::source::AxisDeclarations::default()
+            };
             let wrap = |anchor: Option<crate::interp::anchors::AnchorAxis>| {
                 anchor.map(|anchor| crate::interp::anchors::Axis {
                     anchor: vec![anchor],

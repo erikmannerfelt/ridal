@@ -1827,3 +1827,58 @@ async fn a_document_carrying_the_axes_the_viewer_offered_can_be_saved() {
     assert_eq!(axes["x"]["anchor"][0]["name"], "trace_time", "{stored}");
     assert_eq!(axes["y"]["anchor"][0]["name"], "twtt", "{stored}");
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn axes_are_withheld_when_the_file_changed_under_the_catalog() {
+    // The revision id beside the axes comes from the catalog snapshot; the
+    // axes come from the file as it is now. Reprocess it in place between
+    // the two and the page would hand the picker one revision's mapping
+    // labelled with another's id -- the exact cross-revision mistake the
+    // axes exist to prevent, produced by the feature itself.
+    let (dir, app) = project_app_with_axes();
+
+    // The catalog is built. Now put a different file at the same path, the
+    // way reprocessing in place does -- written elsewhere and renamed over,
+    // rather than reopened, because the render service still holds the
+    // original and HDF5 will not open it for writing twice.
+    {
+        let staging = tempfile::tempdir().unwrap();
+        let replacement = staging.path().join("newer.nc");
+        write_test_nc_with_axes(&replacement, RADARGRAM, None);
+        {
+            let mut file = netcdf::append(&replacement).unwrap();
+            file.add_attribute("ridal_processing_datetime", "2099-01-01T00:00:00Z")
+                .unwrap();
+        }
+        std::fs::rename(
+            &replacement,
+            dir.path().join("radargrams").join("line-01.nc"),
+        )
+        .unwrap();
+    }
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "the page still renders");
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+
+    let axes = axes_line(&html).expect("the key is always present");
+    assert_eq!(
+        axes, "axes: null,",
+        "no mapping is better than one belonging to a different revision: {axes}"
+    );
+}
