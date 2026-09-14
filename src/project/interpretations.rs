@@ -229,6 +229,37 @@ pub fn count_archived(
     Ok(total)
 }
 
+/// Copy one user's interpretation into the archive, leaving the original
+/// in place.
+///
+/// A *copy*, unlike [`archive_all`]: this is taken before a document is
+/// overwritten rather than before it disappears, so the thing being
+/// preserved is the version about to be replaced while the live document
+/// carries on existing.
+///
+/// What it preserves is the coordinates as somebody actually drew them.
+/// Promoting a carried interpretation writes approximate coordinates over
+/// exact ones — that is what promoting *is* — and #148's objection to
+/// migration is that doing so is irreversible. This is what makes it
+/// reversible, so the objection stops applying.
+///
+/// Returns the archive path, or `None` when there was nothing to archive.
+pub fn archive_one(
+    store: &DocumentStore,
+    radargram: &RadargramId,
+    user: &UserId,
+    at: &str,
+) -> Result<Option<PathBuf>, InterpretationError> {
+    let source = path_of(radargram, user);
+    let Some(stored) = store.read(&source)? else {
+        return Ok(None);
+    };
+    let destination =
+        free_archive_directory(store, radargram, at)?.join(format!("{}{SUFFIX}", user.as_str()));
+    store.write(&destination, &stored.text, &Expectation::Any)?;
+    Ok(Some(destination))
+}
+
 /// Move every interpretation of `radargram` into the archive, returning how
 /// many moved.
 ///

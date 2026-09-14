@@ -31,7 +31,7 @@ use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
 use crate::project::store::{Expectation, StoreError, Version};
 use crate::project::users::{DownloadScope, Role};
-use crate::project::{interpretations, layers, Project};
+use crate::project::{audit, interpretations, layers, Project};
 
 /// The project, if this server has one and `caller` may do `action` in it.
 ///
@@ -295,6 +295,182 @@ pub async fn get_interpretation_carried(
         Json(serde_json::json!({
             "report": carried.report,
             "document": carried.document,
+        })),
+    ))
+}
+
+/// `POST /api/v1/datasets/{id}/interpretations/{user}/promote`
+///
+/// Adopt the carried view as the interpretation: "I have looked at these
+/// on the current revision, they are in the right place, and they are now
+/// my picks on it."
+///
+/// # Why this is a route and not just a save
+///
+/// #148 argues at length against *migrating* interpretations, and every
+/// word of it holds: re-anchoring is approximate, writing it back would
+/// launder an approximation into ground truth, it compounds across
+/// successive replaces, and it cannot be undone. That argument is about
+/// something happening **automatically**, to everybody's picks, as a side
+/// effect of a replace.
+///
+/// This is the opposite: one person, one document, having looked at it.
+/// The three objections are answered rather than ignored —
+///
+/// - *approximate*: the document records that it was carried, in
+///   `meta.ridal_carried_from`, so the artefact itself says its
+///   coordinates were derived rather than drawn;
+/// - *compounds*: it records what it was carried **from**, so a chain is
+///   visible rather than invisible;
+/// - *irreversible*: the version as drawn is archived first.
+///
+/// # The coordinates come from here, not from the browser
+///
+/// The carry is recomputed server-side and written, rather than accepting
+/// whatever the page happens to be displaying. The browser is showing a
+/// derived view, and a derived view arriving back as an authored document
+/// is exactly the kind of round trip that should not be trusted: a stale
+/// tab, an edited payload or a second client would each write coordinates
+/// nobody validated. What the operator confirmed is *the carry*, so the
+/// carry is what gets stored.
+pub async fn promote_interpretation(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, user)): Path<(String, String)>,
+    caller: Caller,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = project_for(&state, &caller, Role::Picker, "adopt carried picks")?;
+    let radargram = parse_radargram(&radargram_id)?;
+    // Same rule as writing: interpretations belong to whoever drew them,
+    // and not even an admin may adopt on someone else's behalf.
+    let user = writing_as(&caller, &user)?;
+
+    let _lifecycle = state.lifecycle_lock().await;
+
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, radargram.as_str())?;
+    let revision = entry.revision_id.clone();
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    drop(catalog);
+
+    let stored = interpretations::read(project.documents(), &radargram, &user)
+        .map_err(interpretation_error)?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "interpretation_not_found",
+                format!(
+                    "'{}' has no interpretation of '{}'",
+                    user.as_str(),
+                    radargram.as_str()
+                ),
+            )
+        })?;
+
+    let from_revision = stored
+        .document
+        .source
+        .as_ref()
+        .and_then(|s| s.revision_id.clone());
+    if from_revision.as_deref() == Some(revision.as_str()) {
+        return Err(ApiError::conflict(
+            "already_current",
+            "These picks were drawn on the revision you are looking at, so there is \
+             nothing to adopt.",
+        ));
+    }
+
+    let axes = crate::interp::anchors::axes_for_revision(&path, &radargram, &revision);
+    let carried = crate::interp::carry::carry(&stored.document, &axes, revision.as_str());
+    let Some(mut document) = carried.document else {
+        return Err(ApiError::conflict(
+            "cannot_be_carried",
+            format!(
+                "These picks cannot be placed on this revision, so there is nothing to \
+                 adopt: {}",
+                carried
+                    .report
+                    .refusal
+                    .unwrap_or_else(|| "no shared anchor axis".to_string())
+            ),
+        ));
+    };
+
+    let at = chrono::Utc::now().to_rfc3339();
+
+    // Before anything is overwritten. This is what makes adopting
+    // reversible, which is what makes it defensible at all.
+    let archived = interpretations::archive_one(project.documents(), &radargram, &user, &at)
+        .map_err(interpretation_error)?;
+
+    // The document now belongs to this revision, and says how it got here.
+    document
+        .source
+        .get_or_insert_with(Default::default)
+        .revision_id = Some(revision.to_string());
+    document
+        .coordinates
+        .get_or_insert_with(Default::default)
+        .axes = serde_json::to_value(&axes)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok());
+    document.date_modified = Some(at.clone());
+    let provenance = serde_json::json!({
+        "from_revision": from_revision,
+        "to_revision": revision.to_string(),
+        "at": at,
+        "by": user.as_str(),
+        "x_anchor": carried.report.x_anchor,
+        "y_anchor": carried.report.y_anchor,
+        "severity": carried.report.severity,
+        "dropped": carried.report.dropped.len(),
+        "note": "Coordinates were carried from an earlier revision and adopted here, \
+                 not drawn on this one. gprinterp SPEC 8.3: a carried travel time is \
+                 never exact.",
+    });
+    document
+        .meta
+        .get_or_insert_with(Default::default)
+        .insert("ridal_carried_from".to_string(), provenance);
+
+    let version = interpretations::write(
+        project.documents(),
+        &radargram,
+        &user,
+        &document,
+        &Expectation::Any,
+    )
+    .map_err(interpretation_error)?;
+
+    audit::record(
+        project.documents(),
+        audit::Entry {
+            at,
+            user: caller.display_name().to_string(),
+            action: audit::Action::Adopted,
+            radargram_id: radargram.to_string(),
+            revision_id: Some(revision.to_string()),
+            note: Some(format!(
+                "{} adopted picks carried from {}{}",
+                user.as_str(),
+                from_revision.as_deref().unwrap_or("an unnamed revision"),
+                match carried.report.dropped.len() {
+                    0 => String::new(),
+                    n => format!(", leaving out {n} that did not fit"),
+                }
+            )),
+        },
+    );
+
+    Ok((
+        [(header::ETAG, format!("\"{version}\""))],
+        Json(serde_json::json!({
+            "radargram_id": radargram.as_str(),
+            "user": user.as_str(),
+            "from_revision": from_revision,
+            "to_revision": revision.to_string(),
+            "dropped": carried.report.dropped,
+            "archived": archived.map(|p| p.display().to_string()),
         })),
     ))
 }

@@ -1670,7 +1670,7 @@ async fn unknown_fields_survive_a_save_and_reload_over_http() {
 ///
 /// Not by line: the jinja comment above it ends `-#}`, which eats the
 /// newline, so the entry does not start a line of its own.
-fn axes_line(html: &str) -> Option<String> {
+pub(super) fn axes_line(html: &str) -> Option<String> {
     let start = html.find("axes: ")?;
     let rest = &html[start..];
     Some(rest[..rest.find('\n')?].trim_end().to_string())

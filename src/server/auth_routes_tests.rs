@@ -3453,3 +3453,157 @@ async fn an_uncorrected_revision_can_be_replaced() {
         history.text
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn carried_picks_can_be_adopted_onto_the_current_revision() {
+    // "I have looked at these on the current version, they are in the right
+    // place, and they are now my picks on it." #148 argues against
+    // *migrating* interpretations and every word holds -- but that argument
+    // is about something happening automatically to everybody's picks. This
+    // is one person, one document, having looked.
+    //
+    // The three objections are answered rather than ignored: the document
+    // records that it was carried, records what from, and the version as
+    // drawn is archived first.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let before = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    let from_revision = before.body["revision_id"].as_str().unwrap().to_string();
+
+    // The axes the viewer hands the picker, taken from the page rather
+    // than rebuilt here: without them a document cannot be carried at all,
+    // which is the whole subject of this test.
+    let page = get(&app, "/view/ours", Some(&erik)).await;
+    let line = super::interp_routes_tests::axes_line(&page.text).expect("the page offers axes");
+    let axes: serde_json::Value =
+        serde_json::from_str(line.trim_start_matches("axes: ").trim_end_matches(','))
+            .expect("valid JSON");
+
+    let document = json!({
+        "key": "ours",
+        "source": {"radargram_id": "ours", "revision_id": from_revision},
+        "coordinates": {"space": "index", "axes": axes},
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[5.0, 2.0], [30.0, 3.0]]},
+            "properties": {"id": "f-0001", "label": "bed"}
+        }]
+    });
+    let saved = put(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik",
+        &document,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::CREATED, "{}", saved.text);
+
+    // Replace it, so the picks are now on a superseded revision.
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    let replaced = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.text);
+    let to_revision = replaced.body["to_revision"].as_str().unwrap().to_string();
+
+    let adopted = post(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik/promote",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(adopted.status, StatusCode::OK, "{}", adopted.text);
+
+    // The stored document now belongs to this revision, and says how.
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("interpretations/ours/erik.gprinterp.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["source"]["revision_id"], to_revision);
+    let carried = &stored["meta"]["ridal_carried_from"];
+    assert_eq!(
+        carried["from_revision"], replaced.body["from_revision"],
+        "the artefact says what it was carried from, so a chain is visible: {stored}"
+    );
+    assert!(
+        carried["note"].as_str().unwrap().contains("never exact"),
+        "and that the coordinates were derived rather than drawn"
+    );
+
+    // And the version as drawn is archived, which is what makes this
+    // reversible and therefore defensible at all.
+    let archived = dir.path().join("interpretations/_archived/ours");
+    let mut found = Vec::new();
+    for removal in std::fs::read_dir(&archived).unwrap() {
+        for file in std::fs::read_dir(removal.unwrap().path()).unwrap() {
+            found.push(file.unwrap().path());
+        }
+    }
+    assert_eq!(found.len(), 1, "{found:?}");
+    let original: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&found[0]).unwrap()).unwrap();
+    assert_eq!(
+        original["source"]["revision_id"], replaced.body["from_revision"],
+        "the archived copy is the one as drawn"
+    );
+    assert_eq!(
+        original["features"][0]["geometry"]["coordinates"],
+        json!([[5.0, 2.0], [30.0, 3.0]])
+    );
+
+    // Adopting twice is refused: there is nothing left to adopt.
+    let again = post(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik/promote",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.text);
+    assert_eq!(again.body["error"]["code"], "already_current");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn nobody_may_adopt_someone_elses_picks() {
+    // Interpretations belong to whoever drew them, and adopting writes to
+    // one. Not even an admin, which is the same rule `writing_as` enforces
+    // for saving -- a property of the data model rather than a permission.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Admin, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+
+    let response = post(
+        &app,
+        "/api/v1/datasets/ours/interpretations/student/promote",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN, "{}", response.text);
+    assert_eq!(response.body["error"]["code"], "not_your_interpretation");
+}
