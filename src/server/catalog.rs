@@ -88,6 +88,15 @@ pub struct CatalogWarning {
     /// the unreadable-candidate case: a file that failed inspection is not
     /// an entry, so it cannot be one somebody unlisted.
     pub about: Vec<RadargramId>,
+    /// Shown only to `operator` and above.
+    ///
+    /// For messages about radargrams the catalog deliberately does not
+    /// serve. `about` cannot express that: it drops a warning when the
+    /// caller cannot see the radargrams it names, and an ignored radargram
+    /// is in *nobody's* listing -- so a warning naming one would be
+    /// invisible to the very person who made the decision. The role gate is
+    /// the separate question of who is entitled to hear about it at all.
+    pub operator_only: bool,
 }
 
 impl CatalogWarning {
@@ -317,6 +326,9 @@ impl Catalog {
         overrides: &CatalogOverrides,
     ) -> Catalog {
         let mut warnings = Vec::new();
+        // (is the layer writable, id) -> every (datetime, path) found there.
+        let mut by_layer: std::collections::BTreeMap<(bool, RadargramId), Vec<(String, String)>> =
+            std::collections::BTreeMap::new();
         let mut by_id: std::collections::BTreeMap<String, (CatalogEntry, String)> =
             std::collections::BTreeMap::new();
 
@@ -327,6 +339,7 @@ impl Catalog {
                     warnings.push(CatalogWarning {
                         message: format!("{}: {e}", candidate.relative_path),
                         about: Vec::new(),
+                        operator_only: false,
                     });
                     continue;
                 }
@@ -376,62 +389,78 @@ impl Catalog {
                 },
             };
 
+            let writable = roots.get(entry.root).is_some_and(|root| root.writable);
+            // Every occurrence, per layer, kept apart from the question of
+            // which one wins. Reporting from the winner meant that with one
+            // project copy and two external ones, both externals compared
+            // against the project entry, both took the overlay branch, and
+            // the duplicate *between them* -- a real problem with no
+            // decision behind it -- went unreported entirely.
+            by_layer
+                .entry((writable, entry.radargram_id.clone()))
+                .or_default()
+                .push((
+                    entry.processing_datetime.clone(),
+                    candidate.relative_path.clone(),
+                ));
+
             let id_key = meta.radargram_id.as_str().to_string();
-            match by_id.get(&id_key) {
-                None => {
-                    by_id.insert(id_key, (entry, candidate.relative_path));
-                }
+            let new_wins = match by_id.get(&id_key) {
+                None => true,
                 Some((existing, existing_path)) => {
-                    let writable =
-                        |e: &CatalogEntry| roots.get(e.root).is_some_and(|root| root.writable);
-                    let (new_wins, why) = if writable(&entry) != writable(existing) {
+                    let existing_writable =
+                        roots.get(existing.root).is_some_and(|root| root.writable);
+                    if writable != existing_writable {
                         // The overlay beats the datetime (#147). Without
                         // this, an external file reprocessed later would
                         // silently override a deliberate in-project
                         // decision, and the project would not be an overlay
-                        // at all.
-                        //
-                        // Not a warning: this is the arrangement working,
-                        // not a problem to report. A duplicate id across
-                        // two *external* roots still is one.
-                        (writable(&entry), None)
+                        // at all. Not a warning: the arrangement working is
+                        // not a problem to report.
+                        writable
                     } else {
-                        // Within one layer, resolve deterministically
-                        // (#122): most recent ridal_processing_datetime
-                        // wins; ties break by relative path sorting first.
-                        // Exact copies still produce a warning even though
-                        // the selected entry is unambiguous, so the user is
-                        // nudged toward assigning unique IDs.
-                        let newer = entry.processing_datetime > existing.processing_datetime;
-                        let tie = entry.processing_datetime == existing.processing_datetime
-                            && candidate.relative_path < *existing_path;
-                        (
-                            newer || tie,
-                            Some(format!(
-                                "Duplicate radargram ID '{id_key}': '{existing_path}' and \
-                                 '{}'. Selected the entry with the most recent processing \
-                                 datetime{}.",
-                                candidate.relative_path,
-                                if entry.processing_datetime == existing.processing_datetime {
-                                    " (datetimes equal; broke the tie by path order)"
-                                } else {
-                                    ""
-                                }
-                            )),
-                        )
-                    };
-
-                    if let Some(message) = why {
-                        warnings.push(CatalogWarning {
-                            about: vec![entry.radargram_id.clone()],
-                            message,
-                        });
-                    }
-                    if new_wins {
-                        by_id.insert(id_key, (entry, candidate.relative_path));
+                        // Within one layer, deterministically (#122): most
+                        // recent ridal_processing_datetime wins, ties break
+                        // by relative path.
+                        entry.processing_datetime > existing.processing_datetime
+                            || (entry.processing_datetime == existing.processing_datetime
+                                && candidate.relative_path < *existing_path)
                     }
                 }
+            };
+            if new_wins {
+                by_id.insert(id_key, (entry, candidate.relative_path));
             }
+        }
+
+        // One warning per layer that holds an id twice. Exact copies are
+        // reported too, even though the selected entry is unambiguous, so
+        // the user is nudged toward assigning unique ids.
+        for ((_, id), mut found) in by_layer {
+            if found.len() < 2 {
+                continue;
+            }
+            found.sort();
+            let tied = found.windows(2).any(|w| w[0].0 == w[1].0);
+            let paths: Vec<&str> = found.iter().map(|(_, path)| path.as_str()).collect();
+            warnings.push(CatalogWarning {
+                about: vec![id.clone()],
+                operator_only: false,
+                message: format!(
+                    "Duplicate radargram ID '{id}': {}. Selected the entry with the most \
+                     recent processing datetime{}.",
+                    paths
+                        .iter()
+                        .map(|path| format!("'{path}'"))
+                        .collect::<Vec<_>>()
+                        .join(" and "),
+                    if tied {
+                        " (datetimes equal; broke the tie by path order)"
+                    } else {
+                        ""
+                    }
+                ),
+            });
         }
 
         let mut entries: Vec<CatalogEntry> = by_id.into_values().map(|(e, _)| e).collect();
@@ -503,9 +532,28 @@ fn resolve(
     // back without re-reading the disk. An ignored radargram is not an
     // entry that happens to be hidden; it is one the project has said it
     // does not serve.
+    let mut ignored_changed = Vec::new();
     let mut entries: Vec<CatalogEntry> = unresolved
         .iter()
-        .filter(|entry| !overrides.ignored.contains_key(&entry.radargram_id))
+        .filter(|entry| {
+            let Some(decision) = overrides.ignored.get(&entry.radargram_id) else {
+                return true;
+            };
+            // Still ignored -- the decision is on the id, not the file, so
+            // replacing the file does not un-ignore it. But it is worth
+            // saying: something deliberately not shown becoming a different
+            // thing deliberately not shown is exactly the case where
+            // whoever made the decision would want to look again.
+            //
+            // Without this the recorded revision was inert: stored on the
+            // way in and never compared to anything.
+            if let Some(was) = &decision.revision_id {
+                if was != entry.revision_id.as_str() {
+                    ignored_changed.push((entry.radargram_id.clone(), was.clone()));
+                }
+            }
+            false
+        })
         .cloned()
         .collect();
 
@@ -545,6 +593,20 @@ fn resolve(
         .cloned()
         .collect();
     warnings.extend(group_warnings);
+
+    for (id, was) in ignored_changed {
+        warnings.push(CatalogWarning {
+            // Not in `about`: the radargram is in nobody's entries, so
+            // naming it there would hide this from everyone.
+            about: Vec::new(),
+            operator_only: true,
+            message: format!(
+                "'{id}' is ignored, and the file behind it has changed since that \
+                 decision was made (it was revision {was}). It is still not being \
+                 served; restore it if the new content should be."
+            ),
+        });
+    }
 
     let vestigial_ignores = overrides
         .ignored
@@ -644,6 +706,7 @@ fn resolve_group_names(
 
                     warnings.push(CatalogWarning {
                         about: vec![entry.radargram_id.clone(), existing_id.clone()],
+                        operator_only: false,
                         message: format!(
                             "Group '{id}' has disagreeing names: '{existing_name}' \
                              ('{existing_path}') and '{name}' ('{}'). Using the name from \
@@ -1274,6 +1337,116 @@ mod tests {
         // which is what putting the filter in resolution buys.
         let lifted = catalog.reresolved(&CatalogOverrides::default());
         assert_eq!(lifted.entries.len(), 2);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn two_external_copies_still_warn_even_when_the_project_wins() {
+        // The overlay branch answers "which one is served". It must not
+        // also swallow the collision *between* the two that lost: there is
+        // no deliberate decision behind that one, and it is what the
+        // warning is for.
+        let project = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for (dir, name) in [
+            (project.path(), "ours.nc"),
+            (first.path(), "a.nc"),
+            (second.path(), "b.nc"),
+        ] {
+            process_to(ASSET_2022, &dir.join(name), Some("shared"), None);
+        }
+
+        let roots = [
+            writable(project.path()),
+            read_only(first.path()),
+            read_only(second.path()),
+        ];
+        let catalog = Catalog::discover_roots(&roots, &CatalogOverrides::default());
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.entries[0].root, 0, "the project's copy is served");
+        assert_eq!(
+            catalog.warnings.len(),
+            1,
+            "the two externals collide and that is worth saying: {:?}",
+            catalog.warnings
+        );
+        let message = &catalog.warnings[0].message;
+        assert!(message.contains("Duplicate radargram ID"), "{message}");
+        assert!(
+            message.contains("a.nc") && message.contains("b.nc"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("ours.nc"),
+            "the project's copy is not part of that collision: {message}"
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn an_ignored_radargram_whose_file_changed_says_so_without_un_ignoring_it() {
+        // The decision is on the id, so a replaced file stays ignored. But
+        // something deliberately not shown becoming a *different* thing
+        // deliberately not shown is exactly when whoever decided would want
+        // to look again -- and the recorded revision was otherwise inert,
+        // stored on the way in and never compared to anything.
+        let archive = tempfile::tempdir().unwrap();
+        process_to(
+            ASSET_2022,
+            &archive.path().join("a.nc"),
+            Some("line-01"),
+            None,
+        );
+
+        let mut overrides = CatalogOverrides::default();
+        overrides.ignored.insert(
+            radargram("line-01"),
+            crate::project::overrides::IgnoredRadargram {
+                since: Some("2026-09-13T00:00:00Z".to_string()),
+                revision_id: Some("a-different-revision".to_string()),
+            },
+        );
+
+        let catalog = Catalog::discover_roots(&[read_only(archive.path())], &overrides);
+        assert!(catalog.entries.is_empty(), "still not served");
+        let changed: Vec<_> = catalog
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("has changed since"))
+            .collect();
+        assert_eq!(changed.len(), 1, "{:?}", catalog.warnings);
+        assert!(changed[0].operator_only, "only the person who decided");
+        assert!(
+            changed[0].about.is_empty(),
+            "naming it would hide the warning from everyone, since an \
+             ignored radargram is in nobody's listing"
+        );
+
+        // And when it has not changed, nothing is said.
+        let current = catalog.entries.first().map(|e| e.revision_id.to_string());
+        let _ = current;
+        let mut matching = CatalogOverrides::default();
+        let plain = Catalog::discover_roots(&[read_only(archive.path())], &matching);
+        let revision = plain.entries[0].revision_id.to_string();
+        matching.ignored.insert(
+            radargram("line-01"),
+            crate::project::overrides::IgnoredRadargram {
+                since: Some("2026-09-13T00:00:00Z".to_string()),
+                revision_id: Some(revision),
+            },
+        );
+        let quiet = Catalog::discover_roots(&[read_only(archive.path())], &matching);
+        assert!(
+            !quiet
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("has changed since")),
+            "{:?}",
+            quiet.warnings
+        );
     }
 
     #[test]

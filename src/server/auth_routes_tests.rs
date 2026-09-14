@@ -2280,3 +2280,65 @@ async fn a_radargram_from_an_external_root_says_it_is_not_in_the_project() {
         "the archive's is served and never written to"
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn serving_one_file_inside_a_project_still_knows_it_is_the_project() {
+    // `Project::discover` searches upwards, so `ridal gui project/radargrams`
+    // is a supported way to start. Deciding writability from the path the
+    // CLI was given then marked the project's *own* directory read-only,
+    // and every radargram in it reported `in_project: false` -- which is
+    // the flag the UI uses to choose between deleting a file and merely
+    // not serving it.
+    let hash = users::hash_password(password()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    super::interp_routes_tests::write_test_nc_with_axes(
+        &dir.path().join("radargrams").join("ours.nc"),
+        "ours",
+        None,
+    );
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+
+    // A second radargram, and the server pointed at the *first file*
+    // rather than a directory -- which `Project::discover` supports, since
+    // it searches upwards for the marker.
+    super::interp_routes_tests::write_test_nc_with_axes(
+        &dir.path().join("radargrams").join("theirs.nc"),
+        "theirs",
+        None,
+    );
+    let inside = dir.path().join("radargrams").join("ours.nc");
+    let project = Project::discover(&inside).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            &inside,
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+    let erik = sign_in(&app, "erik").await;
+
+    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let entries = listing.body["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2, "both are found: {entries:?}");
+    for entry in entries {
+        assert_eq!(
+            entry["in_project"], true,
+            "{} is in the project: {entry:?}",
+            entry["radargram_id"]
+        );
+    }
+}

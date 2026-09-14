@@ -401,10 +401,13 @@ fn listable<'a>(
 fn readable_warnings(
     catalog: &super::catalog::Catalog,
     visible: &[&super::catalog::CatalogEntry],
+    caller: &Caller,
 ) -> Vec<String> {
+    let curates = caller.may(crate::project::users::Role::Operator);
     catalog
         .warnings
         .iter()
+        .filter(|warning| curates || !warning.operator_only)
         .filter(|warning| warning.is_visible_to(visible.iter().map(|e| &e.radargram_id)))
         .map(|warning| warning.message.clone())
         .collect()
@@ -432,7 +435,7 @@ pub async fn list_datasets(
             )
         })
         .collect();
-    let warnings = readable_warnings(&catalog, &visible);
+    let warnings = readable_warnings(&catalog, &visible, &caller);
     Json(serde_json::json!({ "entries": entries, "warnings": warnings }))
 }
 
@@ -855,7 +858,7 @@ pub async fn index_page(
     // heading cannot survive its only member being unlisted.
     let visible = listable(catalog.entries.iter(), &caller);
     let entries: Vec<DatasetSummary> = visible.iter().copied().map(&summarize_entry).collect();
-    let warnings = readable_warnings(&catalog, &visible);
+    let warnings = readable_warnings(&catalog, &visible, &caller);
 
     // Every entry gets one map on the index page (#121): named groups,
     // and "Ungrouped" for entries with none, presented identically

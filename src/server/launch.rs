@@ -90,21 +90,23 @@ async fn serve(
                     crate::identity::DEFAULT_USER
                 );
             }
-            // Roots outside the project are scanned now (#147), read-only.
-            // Reported rather than warned about: an archive being served
-            // is the arrangement working, and what an operator needs to
-            // know is which of their directories Ridal will not write to.
-            for root in state.roots.iter().skip(1) {
-                println!(
-                    "  {} (read-only; Ridal never writes outside the project)",
-                    root.path.display()
-                );
-            }
         }
         (Some(project), false) => {
             println!("Project {} (read-only)", project.root().display())
         }
         (None, _) => println!("No project here; interpretations cannot be saved."),
+    }
+
+    // Every root Ridal will not write to, whatever made it read-only: a
+    // directory outside the project, or `--read-only` making all of them
+    // so. Outside the match above, because the previous version sat in the
+    // writable-project arm and a read-only server said nothing about the
+    // archives it was serving.
+    for root in state.roots.iter().filter(|root| !root.writable) {
+        println!(
+            "  {} (read-only; Ridal never writes outside the project)",
+            root.path.display()
+        );
     }
 
     let router = super::app::build_router(state);

@@ -158,17 +158,30 @@ impl AppState {
             .unwrap_or_default();
 
         // The served tree first, then anything `[radargrams] roots` points
-        // at outside it (#147). The first is the writable upper layer and
-        // the rest are read-only lower ones; order matters only for
-        // reporting, since `writable` is what decides an overlap.
+        // at (#147). What makes a root writable is being *inside the
+        // project*, not being the path the CLI was given: `ridal gui
+        // project/radargrams/line.nc` discovers the project upwards, and
+        // `project/radargrams` does not start with that file — so keying
+        // off the served path marked the project's own directory read-only
+        // and every radargram in it as not in the project.
+        let project_root = project
+            .as_ref()
+            .map(|p| p.root().to_path_buf())
+            .and_then(|p| p.canonicalize().ok());
+        let owned = |path: &StdPath| {
+            project_root
+                .as_ref()
+                .is_some_and(|inside| path.starts_with(inside))
+        };
+
         let mut roots = vec![CatalogRoot {
             path: root.to_path_buf(),
             is_file: root_is_file,
-            writable: project.is_some(),
+            writable: owned(root),
         }];
         if let Some(project) = &project {
             for extra in project.radargram_roots() {
-                // Canonicalized here, next to the containment check it
+                // Canonicalized here, next to the containment checks it
                 // feeds, so a symlinked root cannot look external and then
                 // resolve back inside -- or the reverse.
                 let Ok(extra) = extra.canonicalize() else {
@@ -178,14 +191,17 @@ impl AppState {
                     );
                     continue;
                 };
+                // Already covered by the served tree. Scanning it twice
+                // would make every radargram in it its own duplicate.
                 if extra.starts_with(root) {
                     continue;
                 }
                 let is_file = extra.is_file();
+                let writable = owned(&extra);
                 roots.push(CatalogRoot {
                     path: extra,
                     is_file,
-                    writable: false,
+                    writable,
                 });
             }
         }
@@ -248,10 +264,17 @@ impl AppState {
     /// Resolves a catalog entry beneath the canonical catalog root.
     ///
     /// Rejects absolute paths, parent-directory components, and paths whose
-    /// canonical form escapes the catalog root, including through symlinks.
-    /// `root_is_file` is `root.is_file()`, decided once in [`Self::build`]
-    /// against the freshly canonicalized root rather than re-stated here --
-    /// see the field doc on [`AppState::root_is_file`].
+    /// canonical form escapes the root, including through symlinks.
+    ///
+    /// `CatalogRoot::is_file` was decided once against a freshly
+    /// canonicalized path rather than being re-stated here: this function
+    /// then only ever touches the filesystem through the
+    /// join-then-canonicalize sequence applied to `candidate`, which is the
+    /// pattern CodeQL's path-injection analysis recognises as validated. A
+    /// raw `is_file()` inside kept getting re-flagged even against a
+    /// canonicalized root, because the canonicalization happened in a
+    /// different function from the sink and CodeQL does not credit a
+    /// barrier it cannot see next to the check it guards.
     fn resolve_absolute_path(
         root: &CatalogRoot,
         entry: &super::catalog::CatalogEntry,
