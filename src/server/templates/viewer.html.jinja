@@ -123,6 +123,19 @@
     {% endif %}
   </div>
 
+  {#- What carrying these picks onto this revision cost (#148).
+      A banner rather than the toast: the toast is for something that just
+      happened and goes away, and this is a standing condition of what is
+      on screen. It stays until the picks shown are the picks as drawn. -#}
+  <div class="carry-banner" id="carry-banner" role="status" aria-live="polite" hidden>
+    <strong id="carry-tier"></strong>
+    <span id="carry-headline"></span>
+    <details id="carry-detail" hidden>
+      <summary>What moved</summary>
+      <div id="carry-detail-body"></div>
+    </details>
+  </div>
+
   {#- Appears when a stored line is clicked. A sibling of the toolbar rather
       than a child: it acts on one existing line rather than on the drawing
       session, and showing it only when relevant is what makes "click a line

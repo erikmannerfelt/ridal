@@ -218,6 +218,87 @@ pub async fn get_interpretation(
     ))
 }
 
+/// `GET /api/v1/datasets/{id}/interpretations/{user}/carried`
+///
+/// The stored interpretation as it should be *drawn* on the revision this
+/// catalog is serving, with a report of what carrying it cost (#148).
+///
+/// A separate route rather than a flag on the read above, so the authored
+/// document is never quietly swapped for a derived one. Whoever asks for
+/// the interpretation gets the interpretation; whoever asks for the view
+/// gets the view and is told which it is.
+pub async fn get_interpretation_carried(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, user)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = readable_project(&state)?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let user = parse_user(&user)?;
+
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, radargram.as_str())?;
+    let revision = entry.revision_id.clone();
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    drop(catalog);
+
+    let stored = interpretations::read(project.documents(), &radargram, &user)
+        .map_err(interpretation_error)?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "interpretation_not_found",
+                format!(
+                    "'{}' has no interpretation of '{}'",
+                    user.as_str(),
+                    radargram.as_str()
+                ),
+            )
+        })?;
+
+    // Checked against the checksum the ledger recorded for this revision,
+    // which is the only thing that can see a file edited in place and
+    // given back its old processing date.
+    let baseline = crate::project::revisions::ledger::read(project.documents())
+        .ok()
+        .and_then(|(l, _)| {
+            l.current(radargram.as_str())
+                .and_then(|r| r.axis_checksum.clone())
+        });
+    let axes = crate::interp::anchors::axes_for_revision_checked(
+        &path,
+        &radargram,
+        &revision,
+        baseline.as_deref(),
+    );
+
+    // A document that carries no axes of its own is not necessarily
+    // unplaceable: #148 keeps the superseded revision's mapping precisely
+    // so picks drawn before the picker emitted axes can still be carried.
+    // Without this the snapshot was written, kept, listed — and never
+    // read by the one thing it was for.
+    let source = stored
+        .document
+        .source
+        .as_ref()
+        .and_then(|s| s.revision_id.as_deref())
+        .and_then(|from| {
+            crate::project::revisions::get(project.documents(), &radargram, from).ok()?
+        })
+        .map(|snapshot| crate::interp::carry::with_snapshot_axes(&stored.document, &snapshot))
+        .unwrap_or_else(|| stored.document.clone());
+
+    let carried = crate::interp::carry::carry(&source, &axes, revision.as_str());
+
+    Ok((
+        [(header::ETAG, format!("\"{}\"", stored.version))],
+        Json(serde_json::json!({
+            "report": carried.report,
+            "document": carried.document,
+        })),
+    ))
+}
+
 /// `PUT /api/v1/datasets/{id}/interpretations/{user}`
 pub async fn put_interpretation(
     State(state): State<Arc<AppState>>,
