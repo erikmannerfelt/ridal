@@ -320,6 +320,25 @@ fn resolve_profile(state: &AppState, caller: &Caller, requested: Option<String>)
     )
 }
 
+/// Escape the characters that let JSON break out of a `<script>` block.
+///
+/// `serde_json` escapes what JSON requires and `<` is not on that list, so
+/// a string containing `</script><script>…` closes the block and whatever
+/// follows executes. The anchor name reaching this template is read
+/// straight from a NetCDF attribute, and #147 lets an operator upload the
+/// file it comes from — so this is a stored-XSS path rather than a
+/// theoretical one.
+///
+/// The escapes sit inside JSON string literals and parse back to the same
+/// characters, so what the browser ends up with is unchanged. `&` goes too:
+/// it is not an escape on its own, but it is half of every entity, and
+/// leaving it makes this a rule with an exception nobody will remember.
+fn script_safe_json(json: &str) -> String {
+    json.replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+}
+
 fn to_summary(state: &AppState, entry: &super::catalog::CatalogEntry) -> DatasetSummary {
     summarize(state, entry, None)
 }
@@ -980,6 +999,66 @@ pub async fn viewer_page(
         .map(|p| p.name)
         .collect();
 
+    // What the picker writes into `coordinates.axes` when it saves (#146),
+    // built here because the values live in the radargram and the document
+    // is written in the browser. Serialized to a JSON string for the
+    // template rather than passed as a structure: it goes into a `<script>`
+    // verbatim, and one `tojson` is easier to audit than a nest of them.
+    //
+    // A radargram that cannot describe its axes yields an empty block, and
+    // the picker omits `coordinates` entirely rather than writing half of
+    // one. That is the state every interpretation was in before this, so it
+    // is a step not taken rather than a regression.
+    let axes = match state.absolute_path(entry) {
+        Ok(path) => {
+            let declared = crate::interp::source::read_axis_declarations(&path);
+            // The revision id beside these axes came from the catalog
+            // snapshot; the axes come from the file as it is right now. If
+            // something reprocessed it in place since, the page would
+            // otherwise hand the picker one revision's mapping labelled
+            // with another's id -- which is the exact cross-revision
+            // mistake this whole feature exists to prevent, produced by the
+            // feature itself.
+            let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
+                crate::identity::RevisionId::fingerprint_v1(&entry.radargram_id, when)
+                    == entry.revision_id
+            });
+            if !same_revision {
+                eprintln!(
+                    "Warning: {} changed on disk since it was catalogued; serving it \
+                     without anchor axes until the catalog is rebuilt.",
+                    entry.radargram_id
+                );
+            }
+            let declared = if same_revision {
+                declared
+            } else {
+                crate::interp::source::AxisDeclarations::default()
+            };
+            let wrap = |anchor: Option<crate::interp::anchors::AnchorAxis>| {
+                anchor.map(|anchor| crate::interp::anchors::Axis {
+                    anchor: vec![anchor],
+                })
+            };
+            crate::interp::anchors::Axes {
+                x: wrap(crate::interp::anchors::trace_time_axis(&declared.time)),
+                y: wrap(crate::interp::anchors::twtt_axis(
+                    declared.twtt_anchor.as_deref(),
+                    &declared.twtt_crop,
+                    &declared.twtt_time_zero,
+                    declared.dt_ns,
+                )),
+            }
+        }
+        Err(_) => crate::interp::anchors::Axes::default(),
+    };
+    let axes_json = axes
+        .is_usable()
+        .then(|| serde_json::to_string(&axes).ok())
+        .flatten()
+        .map(|json| script_safe_json(&json))
+        .unwrap_or_else(|| "null".to_string());
+
     let env = templates::environment();
     let tmpl = env
         .get_template("viewer.html.jinja")
@@ -991,6 +1070,7 @@ pub async fn viewer_page(
             group_name => entry.group_name.as_ref().map(|g| g.to_string()),
             group_id => entry.group_id.as_ref().map(|g| g.to_string()),
             revision_id => entry.revision_id.to_string(),
+            axes_json => axes_json,
             // First 7 hex characters, `git`-style, for the collapsed
             // banner row -- the full ID moves to the metadata dialog.
             revision_short => entry.revision_id.to_string().chars().take(7).collect::<String>(),

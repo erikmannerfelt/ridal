@@ -106,6 +106,20 @@ pub(super) fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group:
     file.add_attribute("ridal_radargram_id", radargram_id)
         .unwrap();
     file.add_attribute("crs", "EPSG:32633").unwrap();
+
+    // What #144 added, so this fixture is a radargram processed by a
+    // current Ridal: the anchor name on the axis, and where sample 0 and
+    // time zero sit on the recording clock. Without these the radargram
+    // cannot describe its own axes and #146 emits nothing, which is the
+    // case `write_test_nc` covers.
+    {
+        let mut twtt = file.variable_mut("twtt").unwrap();
+        twtt.put_attribute("anchor_name", "twtt").unwrap();
+    }
+    let mut crop = file.add_variable::<f64>("twtt_crop", &[]).unwrap();
+    crop.put_value(4.0, ()).unwrap();
+    let mut zero = file.add_variable::<f64>("twtt_time_zero", &[]).unwrap();
+    zero.put_value(4.0, ()).unwrap();
     // Written while the file is being created. Both attributes are needed:
     // `resolve_group` treats a bare id as no group at all, since the id only
     // exists to give the name a URL-safe form.
@@ -1606,5 +1620,265 @@ async fn unknown_fields_survive_a_save_and_reload_over_http() {
     assert_eq!(
         body["from_a_future_version"],
         serde_json::json!({"nested": [1, 2]})
+    );
+}
+
+/// The `axes:` entry of `window.RIDAL_VIEWER`, as one string.
+///
+/// Not by line: the jinja comment above it ends `-#}`, which eats the
+/// newline, so the entry does not start a line of its own.
+fn axes_line(html: &str) -> Option<String> {
+    let start = html.find("axes: ")?;
+    let rest = &html[start..];
+    Some(rest[..rest.find('\n')?].trim_end().to_string())
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_viewer_hands_the_picker_the_axes_to_save() {
+    // The picker writes the document, but only the server has read the
+    // radargram. This is where the axes cross over, and without them every
+    // document saved is stuck on the revision it was drawn on forever.
+    let (_dir, app) = project_app_with_axes();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+
+    let axes = axes_line(&html).expect("the viewer must hand the picker an axes block");
+    assert!(axes.contains("trace_time"), "{axes}");
+    assert!(axes.contains("tiepoints"), "{axes}");
+    assert!(axes.contains("\"twtt\""), "{axes}");
+    assert!(axes.contains("regular"), "{axes}");
+    // The fixture's crop landed on time zero, so sample 0 is travel time 0.
+    assert!(axes.contains("\"t0\":0.0"), "{axes}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_radargram_that_cannot_describe_its_axes_offers_none() {
+    // Processed before #144, so it has no anchor name and no time-zero
+    // variables. Half an axis block would invite a consumer to believe it
+    // had a mapping, so the viewer offers null and the picker leaves
+    // `coordinates` out entirely -- which is where every interpretation
+    // already was, not a regression.
+    let (_dir, app) = project_app(true);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+
+    let axes = axes_line(&html).expect("the key is always present, even when empty");
+    assert_eq!(axes, "axes: null,", "{axes}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_anchor_name_cannot_break_out_of_the_script_block() {
+    // The anchor name is read straight from a NetCDF attribute, and #147
+    // lets an operator upload the file it comes from -- so this is a
+    // stored-XSS path. `serde_json` escapes what JSON requires and `<` is
+    // not on that list, so without escaping, a name containing
+    // `</script><script>` closes the block and what follows executes when
+    // anyone opens the viewer.
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    let path = dir.path().join("radargrams").join("nasty.nc");
+    write_test_nc_with_axes(&path, "nasty", None);
+    {
+        let mut file = netcdf::append(&path).unwrap();
+        let mut twtt = file.variable_mut("twtt").unwrap();
+        twtt.put_attribute("anchor_name", "twtt</script><script>alert(1)</script>")
+            .unwrap();
+    }
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/view/nasty")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+
+    let axes = axes_line(&html).expect("the radargram declares an anchor, so there are axes");
+    assert!(
+        !axes.contains("</script>"),
+        "the block can be closed from inside: {axes}"
+    );
+    assert!(
+        axes.contains("\\u003c/script"),
+        "expected the escaped form: {axes}"
+    );
+    // The *page* must have exactly the script tags it was written with --
+    // no extra opening tag smuggled in through the data.
+    assert_eq!(
+        html.matches("<script").count(),
+        html.matches("</script>").count(),
+        "unbalanced script tags"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_document_carrying_the_axes_the_viewer_offered_can_be_saved() {
+    // The test that was missing, and whose absence let #157 ship a shape
+    // gprinterp rejects outright -- so every save of a radargram that
+    // *could* describe its axes returned 400, on exactly the radargrams
+    // the feature existed for.
+    //
+    // Everything else checked that the server offered the right numbers.
+    // Nothing checked that a document containing them could be stored.
+    let (_dir, app) = project_app_with_axes();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    let line = axes_line(&html).expect("axes");
+    let json = line
+        .trim_start_matches("axes: ")
+        .trim_end_matches(',')
+        .to_string();
+    let axes: Value = serde_json::from_str(&json).expect("the page carries valid JSON");
+
+    // Exactly what picker.js assembles around it.
+    let mut doc = document(RADARGRAM);
+    doc["coordinates"] = serde_json::json!({ "axes": axes });
+
+    let (status, _, body) = put(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/interpretations/default"),
+        &doc,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // And it comes back with the anchors intact, rather than having been
+    // accepted and quietly emptied.
+    let (status, _, stored) = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/interpretations/default"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{stored}");
+    let axes = &stored["coordinates"]["axes"];
+    assert_eq!(axes["x"]["anchor"][0]["name"], "trace_time", "{stored}");
+    assert_eq!(axes["y"]["anchor"][0]["name"], "twtt", "{stored}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn axes_are_withheld_when_the_file_changed_under_the_catalog() {
+    // The revision id beside the axes comes from the catalog snapshot; the
+    // axes come from the file as it is now. Reprocess it in place between
+    // the two and the page would hand the picker one revision's mapping
+    // labelled with another's id -- the exact cross-revision mistake the
+    // axes exist to prevent, produced by the feature itself.
+    let (dir, app) = project_app_with_axes();
+
+    // The catalog is built. Now put a different file at the same path, the
+    // way reprocessing in place does -- written elsewhere and renamed over,
+    // rather than reopened, because the render service still holds the
+    // original and HDF5 will not open it for writing twice.
+    {
+        let staging = tempfile::tempdir().unwrap();
+        let replacement = staging.path().join("newer.nc");
+        write_test_nc_with_axes(&replacement, RADARGRAM, None);
+        {
+            let mut file = netcdf::append(&replacement).unwrap();
+            file.add_attribute("ridal_processing_datetime", "2099-01-01T00:00:00Z")
+                .unwrap();
+        }
+        std::fs::rename(
+            &replacement,
+            dir.path().join("radargrams").join("line-01.nc"),
+        )
+        .unwrap();
+    }
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "the page still renders");
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+
+    let axes = axes_line(&html).expect("the key is always present");
+    assert_eq!(
+        axes, "axes: null,",
+        "no mapping is better than one belonging to a different revision: {axes}"
     );
 }

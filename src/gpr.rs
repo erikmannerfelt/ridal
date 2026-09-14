@@ -3396,6 +3396,55 @@ pub mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
+    fn a_processed_radargram_can_describe_its_own_anchor_axes() {
+        // The whole point of #144 read back by #146: an exported radargram
+        // carries enough to build the `coordinates.axes` block that lets
+        // picks drawn on it be carried onto a later revision.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("line.nc");
+
+        let mut gpr = make_gpr_with_first_break(64, 512);
+        gpr.zero_corr(None);
+        gpr.export(&path).unwrap();
+
+        let declared = crate::interp::source::read_axis_declarations(&path);
+        assert!(
+            declared.dt_ns > 0.0,
+            "a sample interval from the axis itself"
+        );
+        assert_eq!(declared.twtt_anchor.as_deref(), Some("twtt"));
+
+        let y = crate::interp::anchors::twtt_axis(
+            declared.twtt_anchor.as_deref(),
+            &declared.twtt_crop,
+            &declared.twtt_time_zero,
+            declared.dt_ns,
+        )
+        .expect("a zero-corrected radargram can say where its axis starts");
+        // The crop landed on time zero, so sample 0 is travel time 0.
+        assert_eq!(y.t0, Some(0.0));
+
+        let x = crate::interp::anchors::trace_time_axis(&declared.time)
+            .expect("the fixture's acquisition times advance");
+        let points = x.points.as_ref().unwrap();
+        assert!(!points.is_empty());
+        assert_eq!(points[0].trace, 0.0);
+        assert_eq!(
+            points.last().unwrap().trace,
+            (gpr.width() - 1) as f64,
+            "the last trace is always a tiepoint, so nothing extrapolates"
+        );
+
+        assert!(crate::interp::anchors::Axes {
+            x: Some(crate::interp::anchors::Axis { anchor: vec![x] }),
+            y: Some(crate::interp::anchors::Axis { anchor: vec![y] })
+        }
+        .is_usable());
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
     fn a_level_2_export_reads_back_what_the_radargram_declared() {
         // The writer and the reader, across a real file. Level 2 puts these
         // on every row so a point stays self-describing once several

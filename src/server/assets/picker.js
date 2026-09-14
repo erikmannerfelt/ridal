@@ -965,6 +965,30 @@
       finishLine();
       clearError();
 
+      // A document drawn on a different revision is not saved.
+      //
+      // The coordinates in it are indices into the revision it was
+      // authored against, and nothing here re-anchors them. Saving would
+      // stamp `source.revision_id` with the current revision and attach
+      // the current axes, so old indices would be labelled as current --
+      // producing exactly the cross-revision mistake the axes exist to
+      // prevent, with this editor as the source of it.
+      //
+      // Refused rather than silently relabelled. Carrying them across is a
+      // real operation with a real answer (gprinterp SPEC 8, and #148),
+      // and it needs to show what it would move before it moves anything.
+      // Until that exists, the honest thing is not to pretend.
+      const drawnOn = loaded && loaded.source && loaded.source.revision_id;
+      if (drawnOn && drawnOn !== CFG.revisionId) {
+        showError(
+          "These picks were drawn on an earlier version of this radargram, " +
+            "so saving would record them against the current one without " +
+            "moving them. Ridal cannot carry picks across versions yet. " +
+            "Download them before making changes.",
+        );
+        return;
+      }
+
       const body = {
         // Spread first, so anything this editor does not model is carried
         // through, then override only the fields it owns.
@@ -985,6 +1009,31 @@
           n_traces: CFG.sourceWidth,
           n_samples: CFG.sourceHeight,
         },
+        // What lets these picks be carried onto a differently processed
+        // version of the same radargram (gprinterp SPEC 8.1). Without it a
+        // consumer has a coordinate and no mapping to evaluate it through,
+        // and 8.1 forbids falling back to the raw index -- so a document
+        // with no axes is stuck on the one revision forever.
+        //
+        // Built by the server, which is the only thing that has read the
+        // radargram. Null when it cannot describe its axes, and then the
+        // key is left out entirely: half an axis block would invite a
+        // consumer to believe it had a mapping.
+        // The *axes* are replaced and the rest of `coordinates` is kept.
+        // gprinterp puts `space` and `convention` in the same object, and
+        // the editor's contract is to carry through what it does not model
+        // -- overwriting the whole thing would drop a producer's
+        // conventions on the first save made here.
+        //
+        // `undefined` when there are no axes, rather than omitting the key,
+        // because the spread above carried through whatever the loaded
+        // document had. Those axes describe the revision it was drawn on
+        // and `source` two lines up now names this one, so keeping them
+        // would pair one revision's mapping with another's id -- a worse
+        // lie than having no mapping. JSON.stringify drops the key.
+        coordinates: CFG.axes
+          ? { ...((loaded && loaded.coordinates) || {}), axes: CFG.axes }
+          : undefined,
         features,
       };
       const headers = { "Content-Type": "application/json" };
