@@ -150,6 +150,107 @@ pub fn write(
     Ok(store.write(&path_of(radargram, user), &text, expected)?)
 }
 
+/// Where a removed radargram's interpretations are kept.
+///
+/// ```text
+/// interpretations/_archived/<radargram>/<removed-at>/<user>.gprinterp.json
+/// ```
+///
+/// `_archived` cannot collide with a radargram directory: a `RadargramId`
+/// is a validated slug and the leading underscore is not one a slug can
+/// start with. The timestamp layer means removing, re-adding and removing
+/// again keeps both sets rather than the second quietly replacing the
+/// first.
+fn archive_directory(radargram: &RadargramId, at: &str) -> PathBuf {
+    PathBuf::from(crate::project::INTERPRETATIONS_DIR)
+        .join("_archived")
+        .join(radargram.as_str())
+        // ':' is not a filename character on Windows, and an RFC 3339
+        // timestamp is full of them.
+        .join(at.replace(':', "-"))
+}
+
+/// The first archive directory for this removal that does not already
+/// exist.
+///
+/// A timestamp is not a uniqueness guarantee. Remove, re-add and remove
+/// again inside one second -- a script, or two operators -- and both
+/// removals name the same directory, and the second write would land on top
+/// of the first. The set that would be lost is the older one, which is
+/// exactly the one nobody is watching.
+fn free_archive_directory(
+    store: &DocumentStore,
+    radargram: &RadargramId,
+    at: &str,
+) -> Result<PathBuf, InterpretationError> {
+    let base = archive_directory(radargram, at);
+    if store.list_stems(&base, SUFFIX)?.is_empty() {
+        return Ok(base);
+    }
+    for n in 2..100 {
+        let candidate = base.with_file_name(format!(
+            "{}-{n}",
+            base.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        if store.list_stems(&candidate, SUFFIX)?.is_empty() {
+            return Ok(candidate);
+        }
+    }
+    Err(InterpretationError::Store(StoreError::Io {
+        path: base,
+        source: std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "a hundred archives of this radargram share one timestamp",
+        ),
+    }))
+}
+
+/// Move every interpretation of `radargram` into the archive, returning how
+/// many moved.
+///
+/// Archived rather than deleted, and not only to be careful with data. The
+/// hazard is that someone removes a radargram, someone else later adds a
+/// *different* file under the same id, and the orphaned picks silently
+/// reattach to data they were never drawn on. `check_identity` would catch
+/// the revision mismatch, but only when something asks for a level 2
+/// export — the viewer would simply draw them.
+///
+/// Nothing authored is destroyed, which is the same rule #131 settled for a
+/// departed user's picks: those are attributed scientific data and the
+/// account going away must not take them.
+pub fn archive_all(
+    store: &DocumentStore,
+    radargram: &RadargramId,
+    at: &str,
+) -> Result<usize, InterpretationError> {
+    let users = list_users(store, radargram)?;
+    if users.is_empty() {
+        return Ok(0);
+    }
+    let destination = free_archive_directory(store, radargram, at)?;
+    let mut moved = 0;
+    for user in users {
+        let Ok(user_id) = UserId::new(user.as_str()) else {
+            continue;
+        };
+        let source = path_of(radargram, &user_id);
+        let Some(stored) = store.read(&source)? else {
+            continue;
+        };
+        // Written before the original is removed, so a failure between the
+        // two leaves a copy rather than nothing. A duplicate is recoverable
+        // and an absence is not.
+        store.write(
+            &destination.join(format!("{}{SUFFIX}", user_id.as_str())),
+            &stored.text,
+            &Expectation::Any,
+        )?;
+        store.remove(&source, &Expectation::Any)?;
+        moved += 1;
+    }
+    Ok(moved)
+}
+
 /// Delete one user's interpretation. Returns whether it existed.
 pub fn remove(
     store: &DocumentStore,
@@ -395,5 +496,143 @@ mod tests {
             format!("{error}").contains("default.gprinterp.json"),
             "{error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod archive_tests {
+    use super::*;
+    use crate::project::Project;
+
+    fn project() -> (tempfile::TempDir, Project) {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        (dir, project)
+    }
+
+    fn radargram(name: &str) -> RadargramId {
+        RadargramId::new(name).unwrap()
+    }
+
+    fn user(name: &str) -> UserId {
+        UserId::new(name).unwrap()
+    }
+
+    fn write_picks(store: &DocumentStore, id: &RadargramId, who: &str) {
+        let text = format!(
+            r#"{{"schema":"gprinterp","key":"{}","features":[],"note":"{who}"}}"#,
+            id.as_str()
+        );
+        store
+            .write(&path_of(id, &user(who)), &text, &Expectation::Any)
+            .unwrap();
+    }
+
+    #[test]
+    fn archiving_moves_every_users_picks_and_leaves_none_behind() {
+        // The hazard removal has to avoid: a different file arrives later
+        // under the same id and orphaned picks silently reattach to data
+        // they were never drawn on.
+        let (dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+        write_picks(store, &id, "erik");
+        write_picks(store, &id, "student");
+
+        let moved = archive_all(store, &id, "2026-09-13T12:00:00Z").unwrap();
+        assert_eq!(moved, 2);
+        assert!(
+            list_users(store, &id).unwrap().is_empty(),
+            "nothing is left to reattach"
+        );
+
+        let archived = dir
+            .path()
+            .join("interpretations/_archived/line-01/2026-09-13T12-00-00Z");
+        let mut names: Vec<String> = std::fs::read_dir(&archived)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["erik.gprinterp.json", "student.gprinterp.json"],
+            "nothing authored is destroyed"
+        );
+        // And the content is the picks, not an empty placeholder.
+        assert!(
+            std::fs::read_to_string(archived.join("erik.gprinterp.json"))
+                .unwrap()
+                .contains("\"note\":\"erik\"")
+        );
+    }
+
+    #[test]
+    fn removing_twice_keeps_both_sets_rather_than_the_second_replacing_the_first() {
+        // Remove, re-add, remove again. Without the timestamp layer the
+        // second archive would overwrite the first, and the picks from
+        // before the re-add would be the ones lost -- the older and more
+        // easily forgotten of the two.
+        let (dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+
+        write_picks(store, &id, "erik");
+        archive_all(store, &id, "2026-09-13T12:00:00Z").unwrap();
+        write_picks(store, &id, "erik");
+        archive_all(store, &id, "2026-09-14T12:00:00Z").unwrap();
+
+        let archived = dir.path().join("interpretations/_archived/line-01");
+        let mut stamps: Vec<String> = std::fs::read_dir(&archived)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        stamps.sort();
+        assert_eq!(stamps, vec!["2026-09-13T12-00-00Z", "2026-09-14T12-00-00Z"]);
+    }
+
+    #[test]
+    fn two_removals_in_the_same_second_do_not_overwrite_each_other() {
+        // A timestamp is not a uniqueness guarantee. Remove, re-add and
+        // remove again inside one second -- a script, or two operators --
+        // and both removals name the same directory. The set that would be
+        // lost is the older one, which is exactly the one nobody is
+        // watching.
+        let (dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+        let at = "2026-09-13T12:00:00Z";
+
+        write_picks(store, &id, "erik");
+        assert_eq!(archive_all(store, &id, at).unwrap(), 1);
+        write_picks(store, &id, "student");
+        assert_eq!(archive_all(store, &id, at).unwrap(), 1);
+
+        let archived = dir.path().join("interpretations/_archived/line-01");
+        let mut dirs: Vec<String> = std::fs::read_dir(&archived)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        dirs.sort();
+        assert_eq!(dirs.len(), 2, "both survived: {dirs:?}");
+        // And each holds the picks it was given, rather than one holding
+        // both or the later overwriting the earlier.
+        assert!(archived.join(&dirs[0]).join("erik.gprinterp.json").exists());
+        assert!(archived
+            .join(&dirs[1])
+            .join("student.gprinterp.json")
+            .exists());
+    }
+
+    #[test]
+    fn archiving_a_radargram_nobody_picked_is_not_an_error() {
+        let (_dir, project) = project();
+        let moved = archive_all(
+            project.documents(),
+            &radargram("untouched"),
+            "2026-09-13T12:00:00Z",
+        )
+        .unwrap();
+        assert_eq!(moved, 0);
     }
 }

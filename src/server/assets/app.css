@@ -846,6 +846,29 @@ dialog th {
   font: inherit;
 }
 
+/* The page-level actions that are plain buttons rather than menus. Sized
+ * like the menus beside them so the row reads as one set of controls. */
+.controls button {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.controls button:hover:not(:disabled) {
+  border-color: var(--color-accent);
+}
+
+.controls button:disabled {
+  color: var(--color-text-muted);
+  cursor: default;
+}
+
 /* Stacked rather than the wrapping row `.add-layer-fields` uses: each
  * control here is followed by a line saying what the field would be
  * without it, and that line has to sit under its own control rather than
@@ -1301,6 +1324,14 @@ button.danger:hover {
 .site-menu > ul button:hover,
 .site-menu > ul button:focus-visible {
   background: var(--color-surface-sunken);
+}
+
+/* A destructive item keeps the menu's shape and changes only its colour.
+ * The full warning treatment belongs on the button that actually does the
+ * thing -- this one opens a confirmation, and dressing it as the deed
+ * itself would cry wolf. */
+.site-menu > ul button.danger {
+  color: var(--color-warning-text);
 }
 
 /* The account block at the foot of the menu.
