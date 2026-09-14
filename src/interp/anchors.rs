@@ -396,6 +396,52 @@ pub fn twtt_axis(
     })
 }
 
+/// The original recording's clock, as a `y` anchor (SPEC §8.5).
+///
+/// `t0 = crop`, with no reference to time zero at all. This is where the
+/// first sample sits on the clock the instrument was writing, and it is
+/// the one axis a radargram always has: cropping is recorded whether or
+/// not a zero correction has ever run.
+///
+/// Emitted *alongside* `twtt` rather than instead of it. The two answer
+/// different questions, and gprinterp prefers travel time where both
+/// revisions have it — this is what relates the pair that has no shared
+/// travel time, which is every corrected-versus-uncorrected reprocess.
+/// Without it, picks drawn before a zero correction and picks drawn after
+/// one could never be shown on each other's revision.
+///
+/// `None` when the crop differs per trace, for the same reason
+/// [`twtt_axis`] refuses a per-trace offset: a `regular` axis has one
+/// `t0`, and a mean would be a position no trace actually has.
+pub fn recording_time_axis(crop_ns: &[f64], dt_ns: f64) -> Option<AnchorAxis> {
+    if !dt_ns.is_finite() || dt_ns <= 0.0 {
+        return None;
+    }
+    let first = *crop_ns.first()?;
+    if !first.is_finite() {
+        return None;
+    }
+    // Scaled to the axis and the source precision, exactly as the
+    // travel-time offset is: these come from `f32` and are widened.
+    let scale = crop_ns.iter().fold(dt_ns.abs(), |m, v| m.max(v.abs()));
+    let tolerance = f64::from(f32::EPSILON) * scale * 8.0;
+    if crop_ns
+        .iter()
+        .any(|crop| !crop.is_finite() || (crop - first).abs() > tolerance)
+    {
+        return None;
+    }
+    Some(AnchorAxis {
+        name: "recording_time".to_string(),
+        unit: "ns".to_string(),
+        type_: "regular",
+        t0: Some(first),
+        dt: Some(dt_ns),
+        points: None,
+        interpolation: None,
+    })
+}
+
 /// The anchor axes a radargram currently offers, as SPEC §7.4 shapes them.
 ///
 /// The revision id is checked against the file rather than trusted. The id
@@ -477,14 +523,26 @@ pub fn axes_from_declarations(declared: &crate::interp::source::AxisDeclarations
             anchor: vec![anchor],
         })
     };
-    Axes {
-        x: wrap(trace_time_axis(&declared.time)),
-        y: wrap(twtt_axis(
+    // Travel time first, the recording clock second, which is the order
+    // SPEC §8.2 prefers them in. A radargram whose time zero has never been
+    // located has only the second, and that is exactly what it is for: it
+    // relates a corrected revision to an uncorrected one, which share no
+    // travel-time axis and would otherwise be unrelatable.
+    let y: Vec<AnchorAxis> = [
+        twtt_axis(
             declared.twtt_anchor.as_deref(),
             &declared.twtt_crop,
             &declared.twtt_time_zero,
             declared.dt_ns,
-        )),
+        ),
+        recording_time_axis(&declared.twtt_crop, declared.dt_ns),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    Axes {
+        x: wrap(trace_time_axis(&declared.time)),
+        y: (!y.is_empty()).then_some(Axis { anchor: y }),
     }
 }
 
@@ -848,6 +906,16 @@ mod tests {
              offered under a name that says it is"
         );
 
+        // It is not left with nothing, though: it still knows where its
+        // first sample sits on the recording clock, and that is what
+        // relates it to the corrected revision. See SPEC §8.5.
+        let uncorrected = recording_time_axis(&[0.0], 1.5862).expect("the clock is always known");
+        assert_eq!(uncorrected.name, "recording_time");
+        assert_eq!(uncorrected.t0, Some(0.0));
+        let corrected_clock =
+            recording_time_axis(&[61.86], 1.5862).expect("the clock is always known");
+        assert_eq!(corrected_clock.t0, Some(61.86));
+
         // A subset of an uncorrected radargram is no better: the crop is
         // real, but it is still measured from an unknown origin.
         assert!(twtt_axis(Some("twtt"), &[58.7], &[0.0], 1.5862).is_none());
@@ -862,6 +930,72 @@ mod tests {
             "{:?}",
             subsetted.t0
         );
+    }
+
+    #[test]
+    fn a_corrected_and_an_uncorrected_revision_share_the_recording_clock() {
+        // Reported from real data, twice. `fimbulisen-20220430-DAT_0084_B1`
+        // with and without `zero_corr_max_peak`: the corrected revision
+        // crops 50.7572 ns and locates time zero there; the uncorrected one
+        // crops nothing and has never located it.
+        //
+        // They share no travel-time axis, and refusing on that ground was
+        // correct and useless — both know exactly where their first sample
+        // sits on the original recording's clock, so they are relatable
+        // through it, exactly. 50.7572 / 1.586162 = 32 samples, which is
+        // also the difference in sample count between the two files.
+        let dt = 1.586_161_7;
+        let corrected = axes_from_declarations(&crate::interp::source::AxisDeclarations {
+            time: vec![0.0, 1.0, 2.0],
+            twtt_anchor: Some("twtt".to_string()),
+            twtt_crop: vec![50.757_175],
+            twtt_time_zero: vec![50.757_175],
+            dt_ns: dt,
+            n_samples: 1992,
+            processing_datetime: None,
+        });
+        let uncorrected = axes_from_declarations(&crate::interp::source::AxisDeclarations {
+            time: vec![0.0, 1.0, 2.0],
+            twtt_anchor: Some("twtt".to_string()),
+            twtt_crop: vec![0.0],
+            twtt_time_zero: vec![0.0],
+            dt_ns: dt,
+            n_samples: 2024,
+            processing_datetime: None,
+        });
+
+        let names = |axes: &Axes| -> Vec<String> {
+            axes.y
+                .as_ref()
+                .map(|a| a.anchor.iter().map(|x| x.name.clone()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            names(&corrected),
+            vec!["twtt", "recording_time"],
+            "travel time first, as SPEC §8.2 prefers"
+        );
+        assert_eq!(
+            names(&uncorrected),
+            vec!["recording_time"],
+            "no travel time to offer, but the clock is still known"
+        );
+        assert!(
+            corrected.is_usable() && uncorrected.is_usable(),
+            "both sides have something to re-anchor through"
+        );
+    }
+
+    #[test]
+    fn a_per_trace_crop_gets_no_recording_clock_either() {
+        // `zero_corr_max_peak` crops each trace by its own amount, so there
+        // is no single position for sample 0 on the clock. A `regular` axis
+        // has one `t0`, and a mean would be a place no trace actually is —
+        // the same rule the travel-time offset follows.
+        assert!(recording_time_axis(&[40.0, 41.2, 39.6], 0.4).is_none());
+        // Per-trace values that agree to within f32 rounding are one value.
+        let steady: Vec<f64> = (0..64).map(|_| f64::from(50.757_175_f32)).collect();
+        assert!(recording_time_axis(&steady, 1.5862).is_some());
     }
 
     #[test]
