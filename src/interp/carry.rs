@@ -181,7 +181,7 @@ fn source_revision(document: &gprinterp::Document) -> Option<String> {
 /// ridal's type exists to *serialize* to it, so the JSON is the shared
 /// definition; a hand-written conversion would be a second, silently
 /// diverging copy of a shape the SPEC already fixes.
-fn target_axes(axes: &Axes) -> Option<gprinterp::RevisionAxes> {
+fn target_axes(axes: &Axes) -> Result<gprinterp::RevisionAxes, &'static str> {
     let pull = |axis: &Option<crate::interp::anchors::Axis>| -> Vec<gprinterp::AnchorAxis> {
         axis.as_ref()
             .map(|axis| {
@@ -198,10 +198,21 @@ fn target_axes(axes: &Axes) -> Option<gprinterp::RevisionAxes> {
     };
     let x = pull(&axes.x);
     let y = pull(&axes.y);
-    if x.is_empty() || y.is_empty() {
-        return None;
+    // Named separately, because the two are missing for different reasons
+    // and only one of them is common. A `y` axis is absent when time zero
+    // has never been located — no zero correction has run — and "this
+    // radargram does not describe its axes" would send someone looking for
+    // a problem in the wrong place.
+    match (x.is_empty(), y.is_empty()) {
+        (false, false) => Ok(gprinterp::RevisionAxes { x, y }),
+        (true, true) => Err("this revision describes neither of its axes"),
+        (true, false) => Err("this revision does not describe its trace axis"),
+        (false, true) => Err(
+            "this revision has no anchored travel-time axis: time zero has never been \
+             located on it, so its samples are counted from whenever the instrument \
+             started recording rather than from the transmitted pulse",
+        ),
     }
-    Some(gprinterp::RevisionAxes { x, y })
 }
 
 /// Give a document the axes a snapshot preserved, when it carries none.
@@ -387,14 +398,17 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
         };
     }
 
-    let Some(target) = target_axes(axes) else {
-        return refuse(
-            "this revision does not describe its anchor axes".to_string(),
-            "This radargram does not say what its axes mean, so picks drawn on an \
-             earlier revision cannot be placed on it. They are shown on the revision \
-             they were drawn on, or not at all."
-                .to_string(),
-        );
+    let target = match target_axes(axes) {
+        Ok(target) => target,
+        Err(why) => {
+            return refuse(
+                why.to_string(),
+                format!(
+                    "These picks were drawn on an earlier version and cannot be placed \
+                     on this one, because {why}. They are kept exactly as drawn."
+                ),
+            )
+        }
     };
 
     let outcome = match gprinterp::reanchor(document, &target) {

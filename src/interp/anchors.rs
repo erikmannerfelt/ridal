@@ -295,10 +295,11 @@ pub fn trace_time_axis(times: &[f64]) -> Option<AnchorAxis> {
 /// twtt_time_zero` — neither of those variables on its own. See
 /// `GPR::twtt_time_zero_ns`.
 ///
-/// `None` when the radargram does not say what its axis means, or when the
-/// offset differs per trace. A `regular` axis has one `t0`, and a mean
-/// would be an offset no trace actually has — the exact error #144 removed
-/// from the export. Better no anchor than a plausible wrong one.
+/// `None` when the radargram does not say what its axis means, when the
+/// offset differs per trace, or when **time zero has never been located**.
+/// A `regular` axis has one `t0`, and a mean would be an offset no trace
+/// actually has — the exact error #144 removed from the export. Better no
+/// anchor than a plausible wrong one.
 pub fn twtt_axis(
     anchor_name: Option<&str>,
     crop_ns: &[f64],
@@ -317,6 +318,29 @@ pub fn twtt_axis(
     // path would persist as a mapping and report as `has_axes: true`,
     // while every coordinate evaluated through it is NaN.
     if crop_ns.iter().chain(time_zero_ns).any(|v| !v.is_finite()) {
+        return None;
+    }
+
+    // Time zero not located: there is no anchored travel-time axis here.
+    //
+    // A zero of `twtt_time_zero` is the sentinel for "never found", which
+    // is what the variable's own comment in every exported file says: a
+    // radargram no zero correction has run on measures its times "from
+    // whenever the instrument started sampling". That is a real quantity
+    // and it is *not* `twtt`, which gprinterp defines as travel time from
+    // time zero.
+    //
+    // Emitting it as `twtt` anyway made an uncorrected revision look
+    // exactly like a corrected one: both offer `t0 = crop - 0 = 0`, so the
+    // mapping between them is the identity, and carrying picks across a
+    // zero correction reported that nothing moved while the data had
+    // shifted by the whole correction. That is the cross-revision error
+    // this module exists to prevent, produced by this module.
+    //
+    // What an uncorrected revision offers instead is `recording_time`:
+    // the original recording's clock, which relates it to any other
+    // revision of the same recording exactly. See `recording_time_axis`.
+    if time_zero_ns.iter().all(|&zero| zero == 0.0) {
         return None;
     }
 
@@ -750,7 +774,9 @@ mod tests {
         // anything a zero correction would actually produce. A thousandth
         // of a sample is already six orders above an f32 ulp here.
         let crop: Vec<f64> = (0..64).map(|i| 62.034 + f64::from(i) * 0.001).collect();
-        let zero = vec![0.0; 64];
+        // A *located* time zero, so this rejects for the reason it claims
+        // to rather than because the axis is unanchored.
+        let zero = vec![37.22; 64];
         assert!(twtt_axis(Some("twtt"), &crop, &zero, 1.2407).is_none());
     }
 
@@ -799,6 +825,46 @@ mod tests {
     }
 
     #[test]
+    fn a_radargram_whose_time_zero_was_never_found_offers_no_travel_time_anchor() {
+        // Reported from real data: `fimbulisen-20220430-DAT_0084_B1`
+        // processed with and without `zero_corr_max_peak`. The corrected
+        // revision has 1987 samples with time zero at 61.86 ns; the
+        // uncorrected one has 2024 samples and `twtt_time_zero = 0`, which
+        // every exported file's own comment defines as "never located".
+        //
+        // Both used to yield `t0 = crop - 0 = 0`, so the mapping between
+        // them was the *identity*: carrying picks across the zero
+        // correction reported "none of them visibly moved" while the data
+        // had shifted by the entire 37-sample correction. A carried view
+        // that is confidently wrong is worse than one that refuses.
+        let corrected = twtt_axis(Some("twtt"), &[61.86], &[61.86], 1.5862)
+            .expect("time zero located at 61.86 ns");
+        assert_eq!(corrected.t0, Some(0.0), "sample 0 is time zero");
+
+        assert!(
+            twtt_axis(Some("twtt"), &[0.0], &[0.0], 1.5862).is_none(),
+            "an uncorrected radargram measures from whenever the instrument \
+             started sampling, which is not travel time and must not be \
+             offered under a name that says it is"
+        );
+
+        // A subset of an uncorrected radargram is no better: the crop is
+        // real, but it is still measured from an unknown origin.
+        assert!(twtt_axis(Some("twtt"), &[58.7], &[0.0], 1.5862).is_none());
+
+        // And a subset of a *corrected* one still anchors, which is the
+        // case this must not break: time zero is known, and sample 0 now
+        // sits a known distance after it.
+        let subsetted = twtt_axis(Some("twtt"), &[99.254], &[37.22], 1.2407)
+            .expect("time zero is still located");
+        assert!(
+            (subsetted.t0.unwrap() - 62.034).abs() < 1e-9,
+            "{:?}",
+            subsetted.t0
+        );
+    }
+
+    #[test]
     fn an_offset_that_differs_per_trace_gets_no_anchor() {
         // A `regular` axis has one `t0`. A mean would be an offset no trace
         // actually has, which is the error #144 took out of the export;
@@ -822,7 +888,7 @@ mod tests {
     fn half_an_axis_block_is_not_usable() {
         // §8.1 needs both. Half of one invites a consumer to believe it has
         // a mapping.
-        let axis = twtt_axis(Some("twtt"), &[0.0], &[0.0], 0.4).unwrap();
+        let axis = twtt_axis(Some("twtt"), &[37.22], &[37.22], 0.4).unwrap();
         assert!(!Axes {
             x: None,
             y: Some(Axis {
