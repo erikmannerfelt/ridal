@@ -3356,3 +3356,100 @@ async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
     assert_eq!(still.status, StatusCode::OK);
     assert!(dir.path().join("radargrams/ours.nc").exists());
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_uncorrected_revision_can_be_replaced() {
+    // Reported: going from a zero-corrected revision to an uncorrected one
+    // worked, and going back did not. Replacing the uncorrected one was
+    // refused outright -- "its mapping cannot be kept, every pick drawn on
+    // it would be impossible to place on anything ever again" -- because
+    // the snapshot only ever looked for a travel-time axis, and an
+    // uncorrected revision has none.
+    //
+    // It has a mapping: the original recording's clock. The snapshot keeps
+    // whichever anchor the revision offers, and names it, because a
+    // corrected and an uncorrected revision can carry numerically similar
+    // values meaning entirely different things.
+    let hash = users::hash_password(password()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    // The radargram being replaced has never had a zero correction.
+    super::interp_routes_tests::write_test_nc_uncorrected(
+        &dir.path().join("radargrams").join("ours.nc"),
+        "ours",
+        "2026-01-01T00:00:00Z",
+    );
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+    let erik = sign_in(&app, "erik").await;
+
+    // A corrected revision replacing it: the two share no travel-time
+    // axis, and relate through the recording clock.
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("corrected.nc");
+    super::interp_routes_tests::write_test_nc_with_axes_at(
+        &source,
+        "ours",
+        None,
+        "2026-06-01T00:00:00Z",
+    );
+
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        std::fs::read(&source).unwrap(),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(staged.status, StatusCode::OK, "{}", staged.text);
+    assert_eq!(
+        staged.body["report"]["outgoing_axes_kept"], true,
+        "the recording clock is a mapping: {}",
+        staged.text
+    );
+
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    let done = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.text);
+
+    // And the outgoing revision's mapping really was kept, under the name
+    // that says what it is.
+    let history = get(&app, "/api/v1/datasets/ours/revisions", Some(&erik)).await;
+    let old = history.body["revisions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["revision_id"] == done.body["from_revision"])
+        .expect("the superseded revision");
+    assert_eq!(old["has_axes"], true, "{}", history.text);
+    assert_eq!(
+        old["y_anchor"], "recording_time",
+        "named, so it cannot be mistaken for a travel time: {}",
+        history.text
+    );
+}

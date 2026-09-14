@@ -548,24 +548,34 @@ pub fn axes_from_declarations(declared: &crate::interp::source::AxisDeclarations
 
 /// The axis values an #148 snapshot keeps, on the anchor's scale.
 ///
-/// The `y` values are travel time from time zero — the stored `twtt` plus
-/// the anchor offset, not the array as the file holds it, which starts at
-/// zero whether or not sample zero is time zero (#153). Taking the offset
-/// out here means a later fix to that array changes nothing about what a
-/// snapshot means.
+/// The `y` values are on the scale of whichever anchor this revision
+/// offers, named alongside them — travel time from time zero where that is
+/// known, and the original recording's clock where it is not. Not the
+/// `twtt` array as the file holds it, which starts at zero whether or not
+/// sample zero is time zero (#153). Taking the offset out here means a
+/// later fix to that array changes nothing about what a snapshot means.
 ///
-/// `None` when the revision cannot describe its axes, which is the same
-/// condition that stops a document carrying them. A snapshot with no
+/// **The anchor with it is what keeps two snapshots apart.** A corrected
+/// and an uncorrected revision can carry numerically similar values
+/// meaning entirely different things, and the name is the only thing that
+/// says which — so it is stored, not inferred.
+///
+/// Whichever anchor is *preferred* rather than only `twtt`. Taking the
+/// travel time alone meant an uncorrected revision had no mapping to keep,
+/// so replacing one was refused outright on the grounds that every pick
+/// drawn on it would become unplaceable — when it has a perfectly good
+/// mapping through the recording clock, which is exactly what
+/// [`recording_time_axis`] exists to provide.
+///
+/// `None` when the revision cannot describe its axes at all, which is the
+/// same condition that stops a document carrying them. A snapshot with no
 /// mapping in it is a file that says nothing.
 pub fn snapshot_values(
     declared: &crate::interp::source::AxisDeclarations,
 ) -> Option<(Option<String>, Vec<f64>, Vec<f64>)> {
-    let y = twtt_axis(
-        declared.twtt_anchor.as_deref(),
-        &declared.twtt_crop,
-        &declared.twtt_time_zero,
-        declared.dt_ns,
-    )?;
+    let y = axes_from_declarations(declared)
+        .y
+        .and_then(|axis| axis.anchor.into_iter().next())?;
     let t0 = y.t0?;
     let dt = y.dt?;
     if declared.n_samples == 0 {
@@ -984,6 +994,46 @@ mod tests {
             corrected.is_usable() && uncorrected.is_usable(),
             "both sides have something to re-anchor through"
         );
+    }
+
+    #[test]
+    fn an_uncorrected_revision_still_has_a_mapping_worth_keeping() {
+        // Reported: replacing an uncorrected revision was refused outright,
+        // on the grounds that its mapping could not be kept and every pick
+        // drawn on it would become unplaceable. It has a mapping -- the
+        // recording clock -- and the snapshot was only ever looking for a
+        // travel time.
+        let dt = 1.586_161_7;
+        let declared = |crop: f64, zero: f64, n: usize| crate::interp::source::AxisDeclarations {
+            time: vec![0.0, 1.0, 2.0],
+            twtt_anchor: Some("twtt".to_string()),
+            twtt_crop: vec![crop],
+            twtt_time_zero: vec![zero],
+            dt_ns: dt,
+            n_samples: n,
+            processing_datetime: None,
+        };
+
+        let (anchor, y, x) =
+            snapshot_values(&declared(0.0, 0.0, 2024)).expect("the clock is a mapping");
+        assert_eq!(anchor.as_deref(), Some("recording_time"));
+        assert_eq!(y.len(), 2024);
+        assert_eq!(x.len(), 3);
+        assert!(
+            (y[0] - 0.0).abs() < 1e-9,
+            "sample 0 is the start of the record"
+        );
+
+        // A corrected revision still keeps the travel time, which is the
+        // preferred one and the one that means more.
+        let (anchor, y, _) =
+            snapshot_values(&declared(50.757_175, 50.757_175, 1992)).expect("twtt");
+        assert_eq!(anchor.as_deref(), Some("twtt"));
+        assert!((y[0] - 0.0).abs() < 1e-9, "sample 0 is time zero");
+
+        // Both start at zero and mean entirely different things, which is
+        // why the name is stored beside the values rather than inferred
+        // from them.
     }
 
     #[test]
