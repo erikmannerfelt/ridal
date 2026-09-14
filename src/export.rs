@@ -633,7 +633,9 @@ impl GPR {
                         "Where sample 0 sits on the original recording's clock: how \
                          much of the front of the record was cropped away, by a zero \
                          correction or by subsetting. Provenance about what was \
-                         discarded. See twtt_time_zero for where time zero is."
+                         discarded. After a zero correction this equals \
+                         twtt_time_zero, because sample 0 is then the transmitted \
+                         pulse. See twtt_time_zero for where time zero is."
                             .into(),
                     ),
                 ]
@@ -658,11 +660,18 @@ impl GPR {
                     (
                         "comment".into(),
                         "Where the transmitted pulse left the antenna, on the original \
-                         recording's clock. Zero means it has never been located, \
-                         which is the case for a radargram no zero correction has run \
-                         on: its travel times are measured from whenever the \
-                         instrument started sampling. The travel time of sample i is \
-                         twtt[i] + twtt_crop - twtt_time_zero."
+                         recording's clock -- the SAME clock as twtt_crop, not an \
+                         offset from sample 0. A zero correction therefore sets this \
+                         EQUAL to twtt_crop rather than to zero: sample 0 becomes the \
+                         pulse, so the travel time of sample 0 is zero. The travel \
+                         time of sample i is twtt[i] + twtt_crop - twtt_time_zero. \
+                         A value of exactly zero means time zero has NEVER BEEN \
+                         LOCATED, which is the case for a radargram no zero correction \
+                         has run on: its times are counted from whenever the instrument \
+                         started sampling, which is not travel time. Such a radargram \
+                         has no anchored travel-time axis, so Ridal will not carry \
+                         interpretations onto or off it (gprinterp SPEC 8.1 forbids \
+                         falling back to the raw index)."
                             .into(),
                     ),
                 ]
