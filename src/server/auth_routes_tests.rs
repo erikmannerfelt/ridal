@@ -1840,10 +1840,14 @@ async fn moving_a_radargram_into_a_named_group_takes_effect_at_once() {
     let properties = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
     assert_eq!(properties.body["effective"]["group_name"], "Drønbreen 2022");
     assert_eq!(properties.body["effective"]["group_id"], "dronbreen-2022");
-    // The file put it in a group of its own -- here from its directory --
-    // and the dialog still reports that, which is what makes the revert
-    // offer meaningful rather than a leap of faith.
-    assert_eq!(properties.body["from_file"]["group_id"], "radargrams");
+    // The dialog still reports what the field would be without the
+    // override, which is what makes the revert offer meaningful rather
+    // than a leap of faith. Here that is *ungrouped*: the file declares no
+    // group, and the only directory above it is the project's own
+    // `radargrams/`, which is where a project keeps its files rather than
+    // a group anyone chose. This assertion used to read "radargrams" and
+    // was writing the fallback bug down as though it were the design.
+    assert!(properties.body["from_file"]["group_id"].is_null());
     assert_eq!(properties.body["overridden"]["group"], true);
 }
 

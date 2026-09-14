@@ -196,10 +196,32 @@ impl AppState {
                 .is_some_and(|inside| path.starts_with(inside))
         };
 
+        // The project's own radargram directories, canonicalized. A file
+        // sitting directly in one of these is ungrouped: `radargrams/` is
+        // where a project keeps its files, not a group anyone chose. See
+        // `CatalogRoot::group_bases`.
+        let declared: Vec<PathBuf> = project
+            .as_ref()
+            .map(|p| {
+                p.radargram_roots()
+                    .into_iter()
+                    .filter_map(|d| d.canonicalize().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let bases_under = |root: &StdPath| -> Vec<PathBuf> {
+            declared
+                .iter()
+                .filter(|d| d.starts_with(root))
+                .cloned()
+                .collect()
+        };
+
         let mut roots = vec![CatalogRoot {
             path: root.to_path_buf(),
             is_file: root_is_file,
             writable: owned(root),
+            group_bases: bases_under(root),
         }];
         if let Some(project) = &project {
             for extra in project.radargram_roots() {
@@ -220,10 +242,16 @@ impl AppState {
                 }
                 let is_file = extra.is_file();
                 let writable = owned(&extra);
+                // The root *is* a declared directory, so its own name is
+                // structure too: an external archive listed under
+                // `[radargrams] roots` groups by what is inside it, not by
+                // what the directory happens to be called.
+                let group_bases = bases_under(&extra);
                 roots.push(CatalogRoot {
                     path: extra,
                     is_file,
                     writable,
+                    group_bases,
                 });
             }
         }
