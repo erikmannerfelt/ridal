@@ -2828,10 +2828,12 @@ async fn removing_a_radargram_keeps_its_axes_so_the_picks_stay_carryable() {
     let before = get(&app, "/api/v1/datasets/ours/revisions", Some(&erik)).await;
     assert_eq!(before.status, StatusCode::OK, "{}", before.text);
     let revisions = before.body["revisions"].as_array().unwrap();
-    assert!(
-        revisions.is_empty(),
-        "nothing has superseded anything yet: {revisions:?}"
-    );
+    // Discovery registers the current revision, so there is a record --
+    // but nothing has superseded anything, and there are no axes kept yet.
+    assert_eq!(revisions.len(), 1, "{revisions:?}");
+    assert_eq!(revisions[0]["current"], true);
+    assert!(revisions[0]["superseded_at"].is_null());
+    assert_eq!(revisions[0]["has_axes"], false);
 
     let removed = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
@@ -2890,4 +2892,127 @@ async fn a_viewer_can_read_the_history_but_not_change_it() {
             .status,
         StatusCode::FORBIDDEN
     );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_radargram_that_has_never_been_removed_still_has_a_current_revision() {
+    // The ledger used to learn about a radargram only when one was
+    // removed, so `/revisions` had nothing to say about a radargram that
+    // had simply always been there -- and a later supersession had no
+    // earlier record to compare its checksum against.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let listed = get(&app, "/api/v1/datasets/ours/revisions", Some(&erik)).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let revisions = listed.body["revisions"].as_array().unwrap();
+    assert_eq!(
+        revisions.len(),
+        1,
+        "discovery registered it: {}",
+        listed.text
+    );
+    assert_eq!(revisions[0]["current"], true);
+    assert!(revisions[0]["superseded_at"].is_null());
+    assert_eq!(
+        revisions[0]["has_axes"], false,
+        "no snapshot yet: nothing has superseded it"
+    );
+    assert!(dir.path().join("revisions.json").exists());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn restoring_an_ignored_radargram_stops_its_history_saying_it_is_gone() {
+    // An ignore supersedes the revision. Lifting it makes that revision
+    // current again, and a record still marked superseded would have the
+    // history contradict the catalog that is serving it.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let removed = delete(&app, "/api/v1/datasets/theirs", Some(&erik)).await;
+    assert_eq!(removed.body["outcome"], "ignored");
+
+    let gone = get(&app, "/api/v1/datasets/theirs/revisions", Some(&erik)).await;
+    let while_ignored = gone.body["revisions"].as_array().unwrap();
+    assert_eq!(while_ignored.len(), 1, "{}", gone.text);
+    assert_eq!(while_ignored[0]["current"], false, "{}", gone.text);
+    assert!(while_ignored[0]["superseded_at"].is_string());
+
+    let restored = post(
+        &app,
+        "/api/v1/datasets/theirs/restore",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(restored.status, StatusCode::NO_CONTENT, "{}", restored.text);
+
+    let back = get(&app, "/api/v1/datasets/theirs/revisions", Some(&erik)).await;
+    let after = back.body["revisions"].as_array().unwrap();
+    assert_eq!(after.len(), 1, "{}", back.text);
+    assert_eq!(after[0]["current"], true, "current again: {}", back.text);
+    assert!(
+        after[0]["superseded_at"].is_null(),
+        "and no longer says it is gone: {}",
+        back.text
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_removal_is_refused_when_the_axes_it_declares_cannot_be_kept() {
+    // The snapshot is not a *record* of the removal, the way the audit log
+    // is. It is the only copy of the mapping once the file is gone, and
+    // without it no document drawn on this revision can be carried onto a
+    // later one. A full disk or an unwritable `revisions/` therefore has to
+    // stop the deletion rather than warn past it.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    // Standing in for the write failing. A file where the radargram's
+    // snapshot directory belongs makes creating it fail with `ENOTDIR`,
+    // which -- unlike a permission bit -- also holds when the tests run as
+    // root, as they do in the container.
+    let revisions = dir.path().join("revisions");
+    std::fs::create_dir_all(&revisions).unwrap();
+    std::fs::write(revisions.join("ours"), b"not a directory").unwrap();
+
+    let refused = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    assert_eq!(
+        refused.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        refused.text
+    );
+    assert_eq!(refused.body["error"]["code"], "snapshot_failed");
+    assert!(
+        dir.path().join("radargrams/ours.nc").exists(),
+        "the file is still there, which is the whole point"
+    );
+
+    // And once it can be written, the same removal goes through.
+    std::fs::remove_file(revisions.join("ours")).unwrap();
+    let removed = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
+    assert!(!dir.path().join("radargrams/ours.nc").exists());
 }
