@@ -256,8 +256,39 @@ pub async fn get_interpretation_carried(
             )
         })?;
 
-    let axes = crate::interp::anchors::axes_for_revision(&path, &radargram, &revision);
-    let carried = crate::interp::carry::carry(&stored.document, &axes, revision.as_str());
+    // Checked against the checksum the ledger recorded for this revision,
+    // which is the only thing that can see a file edited in place and
+    // given back its old processing date.
+    let baseline = crate::project::revisions::ledger::read(project.documents())
+        .ok()
+        .and_then(|(l, _)| {
+            l.current(radargram.as_str())
+                .and_then(|r| r.axis_checksum.clone())
+        });
+    let axes = crate::interp::anchors::axes_for_revision_checked(
+        &path,
+        &radargram,
+        &revision,
+        baseline.as_deref(),
+    );
+
+    // A document that carries no axes of its own is not necessarily
+    // unplaceable: #148 keeps the superseded revision's mapping precisely
+    // so picks drawn before the picker emitted axes can still be carried.
+    // Without this the snapshot was written, kept, listed — and never
+    // read by the one thing it was for.
+    let source = stored
+        .document
+        .source
+        .as_ref()
+        .and_then(|s| s.revision_id.as_deref())
+        .and_then(|from| {
+            crate::project::revisions::get(project.documents(), &radargram, from).ok()?
+        })
+        .map(|snapshot| crate::interp::carry::with_snapshot_axes(&stored.document, &snapshot))
+        .unwrap_or_else(|| stored.document.clone());
+
+    let carried = crate::interp::carry::carry(&source, &axes, revision.as_str());
 
     Ok((
         [(header::ETAG, format!("\"{}\"", stored.version))],

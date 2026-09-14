@@ -386,6 +386,30 @@ pub fn axes_for_revision(
     radargram_id: &crate::identity::RadargramId,
     revision_id: &crate::identity::RevisionId,
 ) -> Axes {
+    axes_for_revision_checked(path, radargram_id, revision_id, None)
+}
+
+/// The same, additionally checked against a mapping recorded earlier.
+///
+/// The datetime check above cannot see the one change it most needs to:
+/// `RevisionId` is `hash(radargram_id + processing_datetime)` and says
+/// nothing about contents, so a file edited in another tool and given back
+/// its old datetime fingerprints to the *same* revision. The check passes,
+/// the changed axes are handed out as that revision's, and every
+/// coordinate carried through them lands somewhere nobody chose.
+///
+/// The ledger's `axis_checksum` is the answer to exactly that question —
+/// it is a fingerprint of the axes themselves, taken when the revision was
+/// recorded — and it was being written without ever being compared.
+/// `baseline` is what it recorded; a mismatch means this file is not the
+/// revision it claims to be, whatever its datetime says, and it offers
+/// nothing rather than something wrong.
+pub fn axes_for_revision_checked(
+    path: &std::path::Path,
+    radargram_id: &crate::identity::RadargramId,
+    revision_id: &crate::identity::RevisionId,
+    baseline: Option<&str>,
+) -> Axes {
     let declared = crate::interp::source::read_axis_declarations(path);
     let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
         &crate::identity::RevisionId::fingerprint_v1(radargram_id, when) == revision_id
@@ -397,6 +421,28 @@ pub fn axes_for_revision(
         );
         return Axes::default();
     }
+
+    if let Some(baseline) = baseline {
+        let now = snapshot_values(&declared).map(|(y_anchor, y_values, x_values)| {
+            crate::project::revisions::AxisSnapshot {
+                radargram_id: radargram_id.to_string(),
+                revision_id: revision_id.to_string(),
+                y_anchor,
+                y_values,
+                x_values,
+            }
+            .checksum()
+        });
+        if now.as_deref() != Some(baseline) {
+            eprintln!(
+                "Warning: the axes of {radargram_id} no longer match what was recorded \
+                 for revision {revision_id}, so something rewrote the file without \
+                 changing its processing date. Serving it without anchor axes."
+            );
+            return Axes::default();
+        }
+    }
+
     axes_from_declarations(&declared)
 }
 

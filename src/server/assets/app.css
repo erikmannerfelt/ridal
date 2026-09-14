@@ -25,6 +25,12 @@
   --color-warning-bg: #fdf0d5;
   --color-warning-border: #e0b23c;
   --color-warning-text: #5a4310;
+  /* Distinct from warning, and deliberately so: warning means "look at
+   * this", danger means "this did not happen". The carry banner uses the
+   * two for exactly that difference. */
+  --color-danger-bg: #fbe4e1;
+  --color-danger-border: #c2452f;
+  --color-danger-text: #6d1f14;
 
   /* Map-popup background. PFA_website's style.css:632-637 uses
    * rgba(255,255,255,0.3) + backdrop-filter blur, ported faithfully in
@@ -93,6 +99,9 @@
     --color-warning-bg: #3a2f14;
     --color-warning-border: #8a6a20;
     --color-warning-text: #f2dfae;
+    --color-danger-bg: #3d1a14;
+    --color-danger-border: #b04a34;
+    --color-danger-text: #f5cfc7;
     --color-popup-bg: rgb(30 32 36 / 92%);
   }
 }
@@ -1693,9 +1702,19 @@ button.danger:hover {
   margin-right: var(--space-2);
 }
 
+/* Refusal is not a caveat: nothing is being drawn.
+ *
+ * It used to fall back to the warning colours through `var(..., ..)`
+ * defaults for tokens that were never declared, so the state that means
+ * "these picks are not on screen at all" looked identical to the one that
+ * means "they moved". The left border carries it as well as the colour,
+ * so the distinction survives a monochrome display or a viewer who cannot
+ * separate the two hues. */
 .carry-banner.is-refused {
-  border-color: var(--color-danger-border, var(--color-warning-border));
-  background: var(--color-danger-bg, var(--color-warning-bg));
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border-left-width: 4px;
 }
 
 .carry-banner details {

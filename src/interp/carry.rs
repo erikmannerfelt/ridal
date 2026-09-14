@@ -204,6 +204,78 @@ fn target_axes(axes: &Axes) -> Option<gprinterp::RevisionAxes> {
     Some(gprinterp::RevisionAxes { x, y })
 }
 
+/// Give a document the axes a snapshot preserved, when it carries none.
+///
+/// The case this exists for: interpretations saved before the picker
+/// emitted `coordinates.axes` at all. They record which revision they were
+/// drawn on and nothing about what its indices meant, so §8.1 has nothing
+/// to evaluate them through and refuses — permanently, for picks that are
+/// otherwise perfectly good.
+///
+/// #148's snapshots are exactly the missing half. A superseded revision's
+/// mapping is kept precisely so a document drawn on it can still be
+/// placed, and rescuing documents that never carried their own axes is
+/// named there as one of the reasons for keeping them.
+///
+/// An `explicit` mapping, one value per index, because that is what a
+/// snapshot is: the axis as it stood, not a summary of it. A document that
+/// already carries its own axes is returned untouched — what it says about
+/// itself beats what was inferred about it.
+pub fn with_snapshot_axes(
+    document: &gprinterp::Document,
+    snapshot: &crate::project::revisions::AxisSnapshot,
+) -> gprinterp::Document {
+    let already = document
+        .coordinates
+        .as_ref()
+        .and_then(|c| c.axes.as_ref())
+        .is_some_and(|axes| {
+            !axes
+                .x
+                .as_ref()
+                .map(|a| a.anchors())
+                .unwrap_or(&[])
+                .is_empty()
+                && !axes
+                    .y
+                    .as_ref()
+                    .map(|a| a.anchors())
+                    .unwrap_or(&[])
+                    .is_empty()
+        });
+    if already {
+        return document.clone();
+    }
+    let Some(y_anchor) = snapshot.y_anchor.as_deref() else {
+        // A snapshot that never recorded which anchor its values are is
+        // not a mapping anything may be carried through: the numbers alone
+        // cannot say whether they are travel time or a recording clock,
+        // and guessing is the mistake §8.3 is about.
+        return document.clone();
+    };
+    if snapshot.x_values.len() < 2 || snapshot.y_values.len() < 2 {
+        return document.clone();
+    }
+
+    let explicit = |name: &str, values: &[f64], unit: &str| {
+        serde_json::json!({
+            "name": name,
+            "unit": unit,
+            "type": "explicit",
+            "values": values,
+        })
+    };
+    let axes = serde_json::json!({
+        "x": {"anchor": [explicit("trace_time", &snapshot.x_values, "s")]},
+        "y": {"anchor": [explicit(y_anchor, &snapshot.y_values, "ns")]},
+    });
+
+    let mut out = document.clone();
+    let coordinates = out.coordinates.get_or_insert_with(Default::default);
+    coordinates.axes = serde_json::from_value(axes).ok();
+    out
+}
+
 /// Every `(x, y)` vertex of every feature, in order.
 fn vertices(document: &gprinterp::Document) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
@@ -222,7 +294,15 @@ fn median(mut values: Vec<f64>) -> f64 {
         return 0.0;
     }
     values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    values[values.len() / 2]
+    let middle = values.len() / 2;
+    if values.len() % 2 == 1 {
+        return values[middle];
+    }
+    // The mean of the two middle values, not the upper one. A two-vertex
+    // line displaced by 0 and 10 has a typical movement of 5, and
+    // reporting 10 overstates it — on the number the banner offers as the
+    // ordinary case rather than the worst.
+    (values[middle - 1] + values[middle]) / 2.0
 }
 
 /// How far the kept vertices moved.
@@ -493,6 +573,80 @@ mod tests {
             }]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn the_typical_movement_is_the_middle_of_an_even_count_too() {
+        // The banner offers this as the ordinary case next to the worst.
+        // Taking the upper middle value reported a two-vertex line
+        // displaced by 0 and 10 as typically moving 10, which is the worst
+        // case wearing the label of the ordinary one.
+        assert_eq!(median(vec![0.0, 10.0]), 5.0);
+        assert_eq!(median(vec![10.0, 0.0]), 5.0, "order does not matter");
+        assert_eq!(median(vec![1.0, 2.0, 3.0]), 2.0, "odd counts unchanged");
+        assert_eq!(median(vec![7.0]), 7.0);
+        assert_eq!(median(Vec::new()), 0.0);
+    }
+
+    #[test]
+    fn a_document_with_no_axes_of_its_own_can_borrow_a_snapshot() {
+        // Interpretations saved before the picker emitted
+        // `coordinates.axes` record which revision they were drawn on and
+        // nothing about what its indices meant, so §8.1 refuses them
+        // permanently. #148 keeps the superseded revision's mapping for
+        // exactly this, and the snapshot was being written, kept and
+        // listed without ever being read by the one thing it was for.
+        let drawn_on = axes(0.0, 0.0, "twtt");
+        let mut doc = document("rev-a", &drawn_on, &[(2.0, 3.0)]);
+        doc.coordinates = None;
+
+        let now = axes(0.0, 0.0, "twtt");
+        let bare = carry(&doc, &now, "rev-b");
+        assert_eq!(
+            bare.report.severity,
+            Severity::Refused,
+            "nothing to evaluate it through"
+        );
+
+        // The mapping the old revision had, kept when it was superseded.
+        let snapshot = crate::project::revisions::AxisSnapshot {
+            radargram_id: "line-01".to_string(),
+            revision_id: "rev-a".to_string(),
+            y_anchor: Some("twtt".to_string()),
+            y_values: (0..64).map(|i| f64::from(i)).collect(),
+            x_values: (0..64).map(|i| 1_000.0 + f64::from(i)).collect(),
+        };
+        let rescued = with_snapshot_axes(&doc, &snapshot);
+        let carried = carry(&rescued, &now, "rev-b");
+        assert_ne!(
+            carried.report.severity,
+            Severity::Refused,
+            "{}",
+            carried.report.headline
+        );
+        assert!(carried.document.is_some());
+
+        // And a document that already has axes keeps its own: what it says
+        // about itself beats what was inferred about it.
+        let with_own = document("rev-a", &drawn_on, &[(2.0, 3.0)]);
+        assert_eq!(with_snapshot_axes(&with_own, &snapshot), with_own);
+    }
+
+    #[test]
+    fn a_snapshot_that_never_named_its_anchor_lends_nothing() {
+        // Numbers alone cannot say whether they are travel time or a
+        // recording clock, and guessing is the mistake §8.3 is about.
+        let drawn_on = axes(0.0, 0.0, "twtt");
+        let mut doc = document("rev-a", &drawn_on, &[(2.0, 3.0)]);
+        doc.coordinates = None;
+        let snapshot = crate::project::revisions::AxisSnapshot {
+            radargram_id: "line-01".to_string(),
+            revision_id: "rev-a".to_string(),
+            y_anchor: None,
+            y_values: (0..64).map(f64::from).collect(),
+            x_values: (0..64).map(|i| 1_000.0 + f64::from(i)).collect(),
+        };
+        assert_eq!(with_snapshot_axes(&doc, &snapshot), doc);
     }
 
     #[test]

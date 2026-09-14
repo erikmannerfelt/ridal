@@ -981,8 +981,13 @@
       // not here. Promoting one to the other is a deliberate step with a
       // consequence report in front of it, which is the next piece of #148
       // rather than this one.
-      const drawnOn = loaded && loaded.source && loaded.source.revision_id;
-      if (drawnOn && drawnOn !== CFG.revisionId) {
+      // An *absent* revision is not a current one. A document that never
+      // said what it was drawn on -- written before the picker recorded
+      // it, or produced by another tool -- would otherwise be saved with
+      // this revision's id stamped onto coordinates from an unknown one,
+      // which is the relabelling this guard exists to prevent.
+      const drawnOn = (loaded && loaded.source && loaded.source.revision_id) || null;
+      if (loaded && drawnOn !== CFG.revisionId) {
         showError(
           "These picks were drawn on an earlier version of this radargram. " +
             "What you are looking at has been carried onto the current one " +
@@ -1214,9 +1219,14 @@
         // Nothing is written either way: the carried view is a view, and
         // the save guard below refuses a document whose revision is not
         // the one on screen. The banner says which is being shown.
-        const drawnOn = body.source && body.source.revision_id;
+        // Same rule as the save guard: an absent revision is not a
+        // current one. The server only calls a document `current` on an
+        // exact match, so anything else -- including nothing at all --
+        // goes through the carry rather than being drawn straight against
+        // this grid, which is the raw-index fallback §8.1 forbids.
+        const drawnOn = (body.source && body.source.revision_id) || null;
         let shown = body;
-        if (drawnOn && drawnOn !== CFG.revisionId) {
+        if (drawnOn !== CFG.revisionId) {
           const carried = await loadCarried();
           if (!carried) return;
           shown = carried;
