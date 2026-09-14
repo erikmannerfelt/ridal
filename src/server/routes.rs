@@ -305,6 +305,25 @@ fn resolve_profile(state: &AppState, caller: &Caller, requested: Option<String>)
     )
 }
 
+/// Escape the characters that let JSON break out of a `<script>` block.
+///
+/// `serde_json` escapes what JSON requires and `<` is not on that list, so
+/// a string containing `</script><script>…` closes the block and whatever
+/// follows executes. The anchor name reaching this template is read
+/// straight from a NetCDF attribute, and #147 lets an operator upload the
+/// file it comes from — so this is a stored-XSS path rather than a
+/// theoretical one.
+///
+/// The escapes sit inside JSON string literals and parse back to the same
+/// characters, so what the browser ends up with is unchanged. `&` goes too:
+/// it is not an escape on its own, but it is half of every entity, and
+/// leaving it makes this a rule with an exception nobody will remember.
+fn script_safe_json(json: &str) -> String {
+    json.replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+}
+
 fn to_summary(entry: &super::catalog::CatalogEntry) -> DatasetSummary {
     summarize(entry, None)
 }
@@ -888,18 +907,19 @@ pub async fn viewer_page(
     let axes = match state.absolute_path(entry) {
         Ok(path) => {
             let declared = crate::interp::source::read_axis_declarations(&path);
+            let wrap = |anchor: Option<crate::interp::anchors::AnchorAxis>| {
+                anchor.map(|anchor| crate::interp::anchors::Axis {
+                    anchor: vec![anchor],
+                })
+            };
             crate::interp::anchors::Axes {
-                x: crate::interp::anchors::trace_time_axis(&declared.time)
-                    .into_iter()
-                    .collect(),
-                y: crate::interp::anchors::twtt_axis(
+                x: wrap(crate::interp::anchors::trace_time_axis(&declared.time)),
+                y: wrap(crate::interp::anchors::twtt_axis(
                     declared.twtt_anchor.as_deref(),
                     &declared.twtt_crop,
                     &declared.twtt_time_zero,
                     declared.dt_ns,
-                )
-                .into_iter()
-                .collect(),
+                )),
             }
         }
         Err(_) => crate::interp::anchors::Axes::default(),
@@ -908,6 +928,7 @@ pub async fn viewer_page(
         .is_usable()
         .then(|| serde_json::to_string(&axes).ok())
         .flatten()
+        .map(|json| script_safe_json(&json))
         .unwrap_or_else(|| "null".to_string());
 
     let env = templates::environment();

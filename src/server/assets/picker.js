@@ -995,13 +995,21 @@
         // radargram. Null when it cannot describe its axes, and then the
         // key is left out entirely: half an axis block would invite a
         // consumer to believe it had a mapping.
-        // `undefined` rather than omitting the key, because the spread
-        // above carried through whatever the loaded document had. Those
-        // axes describe the revision it was drawn on, and `source` two
-        // lines up now names this one -- keeping them would pair one
-        // revision's mapping with another's id, which is a worse lie than
-        // having no mapping at all. JSON.stringify drops the key.
-        coordinates: CFG.axes ? { axes: CFG.axes } : undefined,
+        // The *axes* are replaced and the rest of `coordinates` is kept.
+        // gprinterp puts `space` and `convention` in the same object, and
+        // the editor's contract is to carry through what it does not model
+        // -- overwriting the whole thing would drop a producer's
+        // conventions on the first save made here.
+        //
+        // `undefined` when there are no axes, rather than omitting the key,
+        // because the spread above carried through whatever the loaded
+        // document had. Those axes describe the revision it was drawn on
+        // and `source` two lines up now names this one, so keeping them
+        // would pair one revision's mapping with another's id -- a worse
+        // lie than having no mapping. JSON.stringify drops the key.
+        coordinates: CFG.axes
+          ? { ...((loaded && loaded.coordinates) || {}), axes: CFG.axes }
+          : undefined,
         features,
       };
       const headers = { "Content-Type": "application/json" };

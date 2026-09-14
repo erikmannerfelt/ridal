@@ -1699,3 +1699,131 @@ async fn a_radargram_that_cannot_describe_its_axes_offers_none() {
     let axes = axes_line(&html).expect("the key is always present, even when empty");
     assert_eq!(axes, "axes: null,", "{axes}");
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_anchor_name_cannot_break_out_of_the_script_block() {
+    // The anchor name is read straight from a NetCDF attribute, and #147
+    // lets an operator upload the file it comes from -- so this is a
+    // stored-XSS path. `serde_json` escapes what JSON requires and `<` is
+    // not on that list, so without escaping, a name containing
+    // `</script><script>` closes the block and what follows executes when
+    // anyone opens the viewer.
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    let path = dir.path().join("radargrams").join("nasty.nc");
+    write_test_nc_with_axes(&path, "nasty", None);
+    {
+        let mut file = netcdf::append(&path).unwrap();
+        let mut twtt = file.variable_mut("twtt").unwrap();
+        twtt.put_attribute("anchor_name", "twtt</script><script>alert(1)</script>")
+            .unwrap();
+    }
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/view/nasty")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+
+    let axes = axes_line(&html).expect("the radargram declares an anchor, so there are axes");
+    assert!(
+        !axes.contains("</script>"),
+        "the block can be closed from inside: {axes}"
+    );
+    assert!(
+        axes.contains("\\u003c/script"),
+        "expected the escaped form: {axes}"
+    );
+    // The *page* must have exactly the script tags it was written with --
+    // no extra opening tag smuggled in through the data.
+    assert_eq!(
+        html.matches("<script").count(),
+        html.matches("</script>").count(),
+        "unbalanced script tags"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_document_carrying_the_axes_the_viewer_offered_can_be_saved() {
+    // The test that was missing, and whose absence let #157 ship a shape
+    // gprinterp rejects outright -- so every save of a radargram that
+    // *could* describe its axes returned 400, on exactly the radargrams
+    // the feature existed for.
+    //
+    // Everything else checked that the server offered the right numbers.
+    // Nothing checked that a document containing them could be stored.
+    let (_dir, app) = project_app_with_axes();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    let line = axes_line(&html).expect("axes");
+    let json = line
+        .trim_start_matches("axes: ")
+        .trim_end_matches(',')
+        .to_string();
+    let axes: Value = serde_json::from_str(&json).expect("the page carries valid JSON");
+
+    // Exactly what picker.js assembles around it.
+    let mut doc = document(RADARGRAM);
+    doc["coordinates"] = serde_json::json!({ "axes": axes });
+
+    let (status, _, body) = put(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/interpretations/default"),
+        &doc,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // And it comes back with the anchors intact, rather than having been
+    // accepted and quietly emptied.
+    let (status, _, stored) = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/interpretations/default"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{stored}");
+    let axes = &stored["coordinates"]["axes"];
+    assert_eq!(axes["x"]["anchor"][0]["name"], "trace_time", "{stored}");
+    assert_eq!(axes["y"]["anchor"][0]["name"], "twtt", "{stored}");
+}

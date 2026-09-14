@@ -42,12 +42,30 @@ pub struct Tiepoint {
     pub x: f64,
 }
 
+/// One axis of `coordinates.axes`, as SPEC §7.4 shapes it.
+///
+/// An object with the anchor mappings under `anchor`, **not** a bare array
+/// of them. The first version of this emitted the array, which gprinterp
+/// rejects outright with `invalid type: sequence, expected struct Axis` --
+/// so every save of a radargram that could describe its axes returned 400,
+/// and the feature was broken in exactly the case it existed for.
+///
+/// The tests missed it because they checked that the server *offered* the
+/// axes and never that a document carrying them could be *saved*. The
+/// round-trip test below is the one that was missing.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Axis {
+    /// Anchor mappings, in the producer's preference order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub anchor: Vec<AnchorAxis>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Axes {
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub x: Vec<AnchorAxis>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub y: Vec<AnchorAxis>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<Axis>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<Axis>,
 }
 
 impl Axes {
@@ -56,7 +74,8 @@ impl Axes {
     /// An axis block with one side empty is worse than useless: §8.1 needs
     /// both, and half of one invites a consumer to believe it has a mapping.
     pub fn is_usable(&self) -> bool {
-        !self.x.is_empty() && !self.y.is_empty()
+        let filled = |axis: &Option<Axis>| axis.as_ref().is_some_and(|a| !a.anchor.is_empty());
+        filled(&self.x) && filled(&self.y)
     }
 }
 
@@ -77,7 +96,14 @@ impl Axes {
 pub const MAX_TIEPOINTS: usize = 1024;
 
 /// Reduce `values` to the tiepoints needed to reproduce it by linear
-/// interpolation to within `tolerance`.
+/// interpolation to within `tolerance[i]` at each point.
+///
+/// Per point, not one figure for the series. The tolerance is expressed in
+/// seconds and the thing being bounded is an error in *traces*, and the two
+/// are only interchangeable where the rate is constant. A profile that
+/// mostly moves at a second per trace and has a stretch at a millisecond
+/// per trace would, under half the global median, allow half a second of
+/// error inside that stretch -- five hundred traces.
 ///
 /// Douglas–Peucker, which is exact about the thing that matters: the
 /// guarantee is on the *worst* point, not the average, so a single paused
@@ -87,7 +113,7 @@ pub const MAX_TIEPOINTS: usize = 1024;
 /// wrong trace while looking entirely reasonable.
 ///
 /// Returns indices into `values`, always including the first and last.
-fn reduce_tiepoints(values: &[f64], tolerance: f64) -> Vec<usize> {
+fn reduce_tiepoints(values: &[f64], tolerance: &[f64]) -> Vec<usize> {
     if values.len() <= 2 {
         return (0..values.len()).collect();
     }
@@ -105,17 +131,21 @@ fn reduce_tiepoints(values: &[f64], tolerance: f64) -> Vec<usize> {
         }
         let span = (last - first) as f64;
         let rise = values[last] - values[first];
+        // Ranked by how far past its *own* tolerance each point is, not by
+        // absolute error. A point in a fast stretch may be off by less in
+        // seconds and far more in traces, and traces are the unit that
+        // matters.
         let mut worst = 0.0;
         let mut worst_at = first;
         for i in (first + 1)..last {
             let straight = values[first] + rise * ((i - first) as f64 / span);
-            let error = (values[i] - straight).abs();
-            if error > worst {
-                worst = error;
+            let excess = (values[i] - straight).abs() / tolerance[i];
+            if excess > worst {
+                worst = excess;
                 worst_at = i;
             }
         }
-        if worst > tolerance {
+        if worst > 1.0 {
             keep[worst_at] = true;
             pending.push((first, worst_at));
             pending.push((worst_at, last));
@@ -193,19 +223,49 @@ fn strictly_increasing(points: Vec<Tiepoint>) -> Vec<Tiepoint> {
 /// trace, which is inside the half-trace tolerance the points are chosen
 /// to anyway. Ties are resolved when the points are picked.
 pub fn trace_time_axis(times: &[f64]) -> Option<AnchorAxis> {
+    // Non-finite first. `w[1] < w[0]` is *false* for a NaN pair, so a NaN
+    // sails past the monotonicity check and reaches the `partial_cmp`
+    // below, where it panics -- taking down the page render of a lenient
+    // reader whose whole promise is to fall back to no anchor.
+    if times.iter().any(|t| !t.is_finite()) {
+        return None;
+    }
     if times.len() < 2 || times.windows(2).any(|w| w[1] < w[0]) {
         return None;
     }
 
-    // Half a median trace interval: the tightest tolerance that still
-    // means something, since a coordinate resolved to better than half a
-    // trace lands on the same trace either way.
-    let mut gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
-    gaps.sort_by(|a, b| a.partial_cmp(b).expect("no NaN: checked increasing"));
-    let tolerance = gaps[gaps.len() / 2] / 2.0;
+    // Half a trace, locally: a coordinate resolved to better than half a
+    // trace lands on the same trace either way, and "a trace" is however
+    // long one took *there* rather than on average.
+    let gaps: Vec<f64> = times.windows(2).map(|w| w[1] - w[0]).collect();
+    let mut sorted: Vec<f64> = gaps.iter().copied().filter(|g| *g > 0.0).collect();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN: rejected above"));
+    // Where every gap is zero the series does not advance at all, and the
+    // strictness filter below will reject it; any positive number keeps the
+    // arithmetic well behaved until then.
+    let typical = sorted.get(sorted.len() / 2).copied().unwrap_or(1.0);
+    let tolerance: Vec<f64> = (0..times.len())
+        .map(|i| {
+            // The shorter of the two intervals this point sits between,
+            // ignoring ties -- two traces sharing a timestamp say nothing
+            // about how fast the profile was moving.
+            let before = i.checked_sub(1).and_then(|j| gaps.get(j)).copied();
+            let after = gaps.get(i).copied();
+            let local = [before, after]
+                .into_iter()
+                .flatten()
+                .filter(|g| *g > 0.0)
+                .fold(f64::INFINITY, f64::min);
+            if local.is_finite() {
+                local / 2.0
+            } else {
+                typical / 2.0
+            }
+        })
+        .collect();
 
     let points = strictly_increasing(
-        thin(reduce_tiepoints(times, tolerance))
+        thin(reduce_tiepoints(times, &tolerance))
             .into_iter()
             .map(|i| Tiepoint {
                 trace: i as f64,
@@ -337,6 +397,57 @@ mod tests {
     }
 
     #[test]
+    fn a_fast_curving_stretch_is_resolved_in_traces_rather_than_in_seconds() {
+        // A long slow section sets the median, then a fast section whose
+        // rate *ramps*. The curvature there is a fraction of a second --
+        // comfortably inside half the median gap, so a single global
+        // tolerance places no point in it -- while being tens of traces at
+        // the rate it is actually moving.
+        //
+        // Measured: the global tolerance leaves 40.5 traces of error here,
+        // the local one 0.5. A sharp rate *change* would not show it, since
+        // the kink is a huge deviation in seconds and gets a tiepoint on
+        // its own; it takes a smooth one to slip past.
+        let mut times = Vec::new();
+        let mut clock = 1_700_000_000.0;
+        let mut gaps = Vec::new();
+        gaps.extend(std::iter::repeat_n(1.0, 800));
+        gaps.extend((0..300).map(|i| 0.001 + (0.02 - 0.001) * i as f64 / 299.0));
+        gaps.extend(std::iter::repeat_n(1.0, 400));
+        times.push(clock);
+        for gap in &gaps {
+            clock += gap;
+            times.push(clock);
+        }
+
+        let axis = trace_time_axis(&times).unwrap();
+        let points = axis.points.unwrap();
+
+        let mut worst = 0.0f64;
+        for (i, actual) in times.iter().enumerate() {
+            let after = points
+                .iter()
+                .position(|p| p.trace >= i as f64)
+                .unwrap_or(points.len() - 1)
+                .max(1);
+            let (a, b) = (&points[after - 1], &points[after]);
+            let estimate = a.x + (b.x - a.x) * (i as f64 - a.trace) / (b.trace - a.trace);
+            // In traces, at the rate this part of the profile was moving.
+            let local = gaps
+                .get(i.saturating_sub(1))
+                .copied()
+                .unwrap_or(1.0)
+                .min(gaps.get(i).copied().unwrap_or(1.0));
+            worst = worst.max((estimate - actual).abs() / local);
+        }
+        assert!(
+            worst <= 1.0,
+            "worst error was {worst:.1} traces, with {} points",
+            points.len()
+        );
+    }
+
+    #[test]
     fn pathological_timing_is_capped_rather_than_written_out_in_full() {
         // A survey stopped and restarted every few traces cannot be
         // described within the tolerance by any small set of points. The
@@ -374,6 +485,22 @@ mod tests {
                 .all(|w| w[1].x > w[0].x && w[1].trace > w[0].trace),
             "{points:?}"
         );
+    }
+
+    #[test]
+    fn a_time_series_with_no_number_in_it_gets_no_axis_rather_than_a_panic() {
+        // `w[1] < w[0]` is false for a NaN pair, so a NaN used to sail past
+        // the monotonicity check and reach `partial_cmp`, which panics --
+        // and it did so while rendering the viewer page, for a reader whose
+        // entire promise is to fall back to no anchor.
+        let mut times: Vec<f64> = (0..64).map(|i| 1_700_000_000.0 + i as f64).collect();
+        times[10] = f64::NAN;
+        assert!(trace_time_axis(&times).is_none());
+
+        times[10] = f64::INFINITY;
+        assert!(trace_time_axis(&times).is_none());
+
+        assert!(trace_time_axis(&[f64::NAN, f64::NAN]).is_none());
     }
 
     #[test]
@@ -443,10 +570,58 @@ mod tests {
         // a mapping.
         let axis = twtt_axis(Some("twtt"), &[0.0], &[0.0], 0.4).unwrap();
         assert!(!Axes {
-            x: Vec::new(),
-            y: vec![axis.clone()],
+            x: None,
+            y: Some(Axis {
+                anchor: vec![axis.clone()]
+            }),
         }
         .is_usable());
         assert!(!Axes::default().is_usable());
+        // An axis that exists but names no anchor is the same nothing.
+        assert!(!Axes {
+            x: Some(Axis::default()),
+            y: Some(Axis { anchor: vec![axis] }),
+        }
+        .is_usable());
+    }
+
+    #[test]
+    fn what_we_emit_is_what_gprinterp_accepts() {
+        // The test that was missing. Everything else here checked that the
+        // right *numbers* were produced; nothing checked that a document
+        // carrying them could be read back by the crate that has to read
+        // it. The first version emitted `axes.x` as a bare array and
+        // gprinterp rejected it with "invalid type: sequence, expected
+        // struct Axis" -- so every save returned 400, on exactly the
+        // radargrams the feature was for.
+        let axes = Axes {
+            x: Some(Axis {
+                anchor: vec![
+                    trace_time_axis(&[1_700_000_000.0, 1_700_000_001.0, 1_700_000_002.0]).unwrap(),
+                ],
+            }),
+            y: Some(Axis {
+                anchor: vec![twtt_axis(Some("twtt"), &[40.0], &[40.0], 0.4).unwrap()],
+            }),
+        };
+        let document = serde_json::json!({
+            "schema": "gprinterp",
+            "schema_version": "0.1",
+            "key": "line-01",
+            "features": [],
+            "coordinates": { "axes": axes },
+        });
+
+        let parsed: gprinterp::Document = serde_json::from_value(document)
+            .expect("the document Ridal writes must be one gprinterp can read");
+        let report = gprinterp::validate(&parsed);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+        // And the anchors survive the round trip, rather than parsing into
+        // an empty shell that happens to be valid.
+        let coordinates = parsed.coordinates.expect("coordinates");
+        let axes = coordinates.axes.expect("axes");
+        assert_eq!(axes.x.expect("x").anchors()[0].name, "trace_time");
+        assert_eq!(axes.y.expect("y").anchors()[0].name, "twtt");
     }
 }

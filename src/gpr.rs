@@ -3436,8 +3436,8 @@ pub mod tests {
         );
 
         assert!(crate::interp::anchors::Axes {
-            x: vec![x],
-            y: vec![y]
+            x: Some(crate::interp::anchors::Axis { anchor: vec![x] }),
+            y: Some(crate::interp::anchors::Axis { anchor: vec![y] })
         }
         .is_usable());
     }
