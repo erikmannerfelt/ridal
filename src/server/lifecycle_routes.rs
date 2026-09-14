@@ -393,15 +393,6 @@ pub async fn remove_dataset(
     let archived = interpretations::archive_all(project.documents(), &id, &at)
         .map_err(|e| ApiError::internal("archive_failed", e.to_string()))?;
 
-    if let Err(e) = ledger::update(project.documents(), |l| {
-        ledger::supersede(l, id.as_str(), &revision, None, &at);
-    }) {
-        // Not fatal, for the same reason the audit log is not: the removal
-        // is about to happen either way, and a failure to write the history
-        // is not a reason to refuse to do the thing.
-        eprintln!("Warning: could not record the supersession: {e}");
-    }
-
     let outcome = if in_project {
         // Let go of the file before unlinking it. Windows refuses to
         // delete a file that is still open, and the served radargram's
@@ -431,6 +422,20 @@ pub async fn remove_dataset(
         .map_err(|e| ApiError::internal("overrides_write_failed", e.to_string()))?;
         "ignored"
     };
+
+    // Recorded only now, because until this point the removal could still
+    // fail. `remove_file` and the ignore-list write each return an error
+    // that leaves the radargram served -- and a supersession written
+    // before them would have `/revisions` reporting, permanently, that a
+    // radargram everyone can still see has no current revision.
+    if let Err(e) = ledger::update(project.documents(), |l| {
+        ledger::supersede(l, id.as_str(), &revision, None, &at);
+    }) {
+        // Not fatal, for the same reason the audit log is not: the removal
+        // has happened, and a failure to write the history is not a reason
+        // to report that it did not.
+        eprintln!("Warning: could not record the supersession: {e}");
+    }
 
     state
         .rediscover()
@@ -622,6 +627,29 @@ fn snapshot_axes(
     revision: &str,
 ) -> Result<(), String> {
     let declared = crate::interp::source::read_axis_declarations(path);
+
+    // The axes have to belong to the revision they are about to be filed
+    // under. `revision` came from the catalog snapshot and these values
+    // come from the file as it is right now; if something rewrote it in
+    // place since discovery, storing them would pair one revision's
+    // mapping with another's id -- which is the exact cross-revision
+    // mistake snapshots exist to prevent, committed by the snapshot.
+    //
+    // The reader is lenient by design, so a file that cannot be opened at
+    // all returns defaults and would otherwise look like a radargram that
+    // simply declares nothing. Requiring the datetime to match tells those
+    // two apart: no datetime means the file did not read.
+    let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
+        crate::identity::RevisionId::fingerprint_v1(id, when).as_str() == revision
+    });
+    if !same_revision {
+        return Err(format!(
+            "'{id}' on disk is not the revision the catalog has ({revision}); it was \
+             changed or became unreadable since it was discovered, so its axes cannot \
+             be kept under that id"
+        ));
+    }
+
     let Some((y_anchor, y_values, x_values)) = crate::interp::anchors::snapshot_values(&declared)
     else {
         eprintln!(
