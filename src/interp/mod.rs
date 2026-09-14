@@ -21,6 +21,7 @@
 //! [gprinterp]: https://github.com/erikmannerfelt/gprinterp
 
 pub mod anchors;
+pub mod carry;
 pub mod checks;
 pub mod level2;
 pub mod source;

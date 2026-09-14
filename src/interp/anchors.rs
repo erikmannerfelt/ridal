@@ -362,6 +362,52 @@ pub fn twtt_axis(
     })
 }
 
+/// The anchor axes a radargram currently offers, as SPEC §7.4 shapes them.
+///
+/// The revision id is checked against the file rather than trusted. The id
+/// beside these axes comes from the catalog snapshot; the axes come from
+/// the file as it is right now. If something reprocessed it in place since,
+/// returning them anyway would hand out one revision's mapping labelled
+/// with another's id — the exact cross-revision mistake this whole feature
+/// exists to prevent, produced by the feature itself. A file that has
+/// moved on offers nothing until the catalog is rebuilt.
+pub fn axes_for_revision(
+    path: &std::path::Path,
+    radargram_id: &crate::identity::RadargramId,
+    revision_id: &crate::identity::RevisionId,
+) -> Axes {
+    let declared = crate::interp::source::read_axis_declarations(path);
+    let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
+        &crate::identity::RevisionId::fingerprint_v1(radargram_id, when) == revision_id
+    });
+    if !same_revision {
+        eprintln!(
+            "Warning: {radargram_id} changed on disk since it was catalogued; serving it \
+             without anchor axes until the catalog is rebuilt."
+        );
+        return Axes::default();
+    }
+    axes_from_declarations(&declared)
+}
+
+/// The same, for declarations already read and already trusted.
+pub fn axes_from_declarations(declared: &crate::interp::source::AxisDeclarations) -> Axes {
+    let wrap = |anchor: Option<AnchorAxis>| {
+        anchor.map(|anchor| Axis {
+            anchor: vec![anchor],
+        })
+    };
+    Axes {
+        x: wrap(trace_time_axis(&declared.time)),
+        y: wrap(twtt_axis(
+            declared.twtt_anchor.as_deref(),
+            &declared.twtt_crop,
+            &declared.twtt_time_zero,
+            declared.dt_ns,
+        )),
+    }
+}
+
 /// The axis values an #148 snapshot keeps, on the anchor's scale.
 ///
 /// The `y` values are travel time from time zero — the stored `twtt` plus

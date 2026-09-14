@@ -1017,46 +1017,11 @@ pub async fn viewer_page(
     // one. That is the state every interpretation was in before this, so it
     // is a step not taken rather than a regression.
     let axes = match state.absolute_path(entry) {
-        Ok(path) => {
-            let declared = crate::interp::source::read_axis_declarations(&path);
-            // The revision id beside these axes came from the catalog
-            // snapshot; the axes come from the file as it is right now. If
-            // something reprocessed it in place since, the page would
-            // otherwise hand the picker one revision's mapping labelled
-            // with another's id -- which is the exact cross-revision
-            // mistake this whole feature exists to prevent, produced by the
-            // feature itself.
-            let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
-                crate::identity::RevisionId::fingerprint_v1(&entry.radargram_id, when)
-                    == entry.revision_id
-            });
-            if !same_revision {
-                eprintln!(
-                    "Warning: {} changed on disk since it was catalogued; serving it \
-                     without anchor axes until the catalog is rebuilt.",
-                    entry.radargram_id
-                );
-            }
-            let declared = if same_revision {
-                declared
-            } else {
-                crate::interp::source::AxisDeclarations::default()
-            };
-            let wrap = |anchor: Option<crate::interp::anchors::AnchorAxis>| {
-                anchor.map(|anchor| crate::interp::anchors::Axis {
-                    anchor: vec![anchor],
-                })
-            };
-            crate::interp::anchors::Axes {
-                x: wrap(crate::interp::anchors::trace_time_axis(&declared.time)),
-                y: wrap(crate::interp::anchors::twtt_axis(
-                    declared.twtt_anchor.as_deref(),
-                    &declared.twtt_crop,
-                    &declared.twtt_time_zero,
-                    declared.dt_ns,
-                )),
-            }
-        }
+        Ok(path) => crate::interp::anchors::axes_for_revision(
+            &path,
+            &entry.radargram_id,
+            &entry.revision_id,
+        ),
         Err(_) => crate::interp::anchors::Axes::default(),
     };
     let axes_json = axes

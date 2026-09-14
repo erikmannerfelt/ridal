@@ -974,17 +974,21 @@
       // producing exactly the cross-revision mistake the axes exist to
       // prevent, with this editor as the source of it.
       //
-      // Refused rather than silently relabelled. Carrying them across is a
-      // real operation with a real answer (gprinterp SPEC 8, and #148),
-      // and it needs to show what it would move before it moves anything.
-      // Until that exists, the honest thing is not to pretend.
+      // Refused rather than silently relabelled. What is on screen *is*
+      // carried across -- the banner says so, and says what it cost -- but
+      // showing and storing are different acts. A view can be wrong and
+      // disbelieved; a stored document is wrong later, to someone who was
+      // not here. Promoting one to the other is a deliberate step with a
+      // consequence report in front of it, which is the next piece of #148
+      // rather than this one.
       const drawnOn = loaded && loaded.source && loaded.source.revision_id;
       if (drawnOn && drawnOn !== CFG.revisionId) {
         showError(
-          "These picks were drawn on an earlier version of this radargram, " +
-            "so saving would record them against the current one without " +
-            "moving them. Ridal cannot carry picks across versions yet. " +
-            "Download them before making changes.",
+          "These picks were drawn on an earlier version of this radargram. " +
+            "What you are looking at has been carried onto the current one " +
+            "for display, but saving it would record the carried positions " +
+            "as though they had been drawn here. Download them, or wait for " +
+            "the replace flow that can do this deliberately.",
         );
         return;
       }
@@ -1079,6 +1083,107 @@
      * Runs on page load, unconditionally: opening a radargram shows the
      * picks that exist for it, rather than an empty canvas that would
      * invite redoing work someone has already done. */
+    /* --- The carry banner (#148) ------------------------------------------
+     *
+     * Standing, not transient. It describes what is on screen right now,
+     * and it stays for as long as that is true.
+     */
+    const carryBanner = document.getElementById("carry-banner");
+    const carryTier = document.getElementById("carry-tier");
+    const carryHeadline = document.getElementById("carry-headline");
+    const carryDetail = document.getElementById("carry-detail");
+    const carryDetailBody = document.getElementById("carry-detail-body");
+
+    const TIER_LABEL = {
+      carried: "Carried from an earlier version",
+      approximate: "Approximate",
+      partial: "Incomplete",
+      refused: "Cannot be shown here",
+    };
+
+    function hideCarryBanner() {
+      if (carryBanner) carryBanner.hidden = true;
+    }
+
+    function showCarryBanner(report) {
+      if (!carryBanner) return;
+      carryBanner.hidden = false;
+      carryBanner.classList.toggle("is-refused", report.severity === "refused");
+      carryTier.textContent = TIER_LABEL[report.severity] || "Carried";
+      carryHeadline.textContent = report.headline || "";
+
+      // The numbers behind the sentence, for whoever wants them. Folded
+      // away by default: the headline is what most people need, and a
+      // banner that opens with a table of statistics is a banner people
+      // learn to skip.
+      const rows = [];
+      if (report.from_revision) {
+        rows.push(["Drawn on", report.from_revision]);
+      }
+      rows.push(["Showing on", report.to_revision]);
+      if (report.x_anchor && report.y_anchor) {
+        rows.push(["Carried through", `${report.x_anchor} and ${report.y_anchor}`]);
+      }
+      if (report.moved) {
+        const m = report.moved;
+        rows.push([
+          "Moved (median)",
+          `${m.median_traces.toFixed(2)} traces, ${m.median_samples.toFixed(2)} samples`,
+        ]);
+        rows.push([
+          "Moved (worst)",
+          `${m.worst_traces.toFixed(2)} traces, ${m.worst_samples.toFixed(2)} samples`,
+        ]);
+      }
+      if (report.dropped && report.dropped.length > 0) {
+        rows.push([
+          "Left out",
+          report.dropped
+            .map((d) => d.label || d.id || `line ${d.index + 1}`)
+            .join(", "),
+        ]);
+      }
+      if (report.refusal) rows.push(["Reason", report.refusal]);
+
+      const dl = document.createElement("dl");
+      for (const [term, value] of rows) {
+        const dt = document.createElement("dt");
+        dt.textContent = term;
+        const dd = document.createElement("dd");
+        dd.textContent = value;
+        dl.append(dt, dd);
+      }
+      carryDetailBody.replaceChildren(dl);
+      carryDetail.hidden = rows.length === 0;
+    }
+
+    /** The stored picks as they should be drawn on this revision.
+     *
+     * Returns the document to draw, or `null` when there is nothing to
+     * draw -- in which case the banner already says why, and the caller
+     * should stop rather than fall back to the stored coordinates. Falling
+     * back is precisely the raw-index mistake §8.1 forbids. */
+    async function loadCarried() {
+      try {
+        const response = await fetch(`${documentUrl}/carried`);
+        if (!response.ok) {
+          showError(`Could not check this against the current version (${response.status}).`);
+          return null;
+        }
+        const body = await response.json();
+        showCarryBanner(body.report);
+        if (!body.document) {
+          features = [];
+          redraw();
+          return null;
+        }
+        return body.document;
+      } catch (error) {
+        showError(`Could not check this against the current version: ${error.message}`);
+        return null;
+      }
+    }
+
     async function load() {
       try {
         const response = await fetch(documentUrl);
@@ -1099,7 +1204,27 @@
         etag = response.headers.get("ETag");
         const body = await response.json();
         loaded = body;
-        const all = body.features || [];
+
+        // Drawn on an earlier revision? Then what is stored indexes a grid
+        // this radargram no longer has, and drawing it here would put the
+        // picks wherever the two revisions happen to disagree -- the raw
+        // index fallback gprinterp SPEC §8.1 forbids. Ask the server to
+        // carry them across, and draw that instead.
+        //
+        // Nothing is written either way: the carried view is a view, and
+        // the save guard below refuses a document whose revision is not
+        // the one on screen. The banner says which is being shown.
+        const drawnOn = body.source && body.source.revision_id;
+        let shown = body;
+        if (drawnOn && drawnOn !== CFG.revisionId) {
+          const carried = await loadCarried();
+          if (!carried) return;
+          shown = carried;
+        } else {
+          hideCarryBanner();
+        }
+
+        const all = shown.features || [];
         features = all.filter(
           (f) => f.geometry && f.geometry.type === "LineString",
         );

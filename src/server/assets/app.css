@@ -1667,3 +1667,56 @@ button.danger:hover {
 #group-download-dialog select {
   padding: var(--space-1) var(--space-2);
 }
+
+/* What carrying picks onto this revision cost (#148).
+ *
+ * A banner rather than the `#pick-error` toast. The toast is `position:
+ * fixed` and transient, for something that just happened; this is a
+ * standing condition of everything on screen and has to keep saying so
+ * for as long as it is true. It takes layout accordingly.
+ *
+ * Warning-coloured by default, because the ordinary case for showing it
+ * at all is that the picks are not where they were drawn. `is-refused`
+ * is the one that is not a caveat but a failure — nothing is being
+ * shown — and it reads differently. */
+.carry-banner {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: var(--text-sm);
+}
+
+.carry-banner strong {
+  margin-right: var(--space-2);
+}
+
+.carry-banner.is-refused {
+  border-color: var(--color-danger-border, var(--color-warning-border));
+  background: var(--color-danger-bg, var(--color-warning-bg));
+}
+
+.carry-banner details {
+  margin-top: var(--space-2);
+}
+
+.carry-banner summary {
+  cursor: pointer;
+}
+
+.carry-banner dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+}
+
+.carry-banner dt {
+  font-weight: 600;
+}
+
+.carry-banner dd {
+  margin: 0;
+}

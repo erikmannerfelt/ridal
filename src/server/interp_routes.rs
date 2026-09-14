@@ -218,6 +218,56 @@ pub async fn get_interpretation(
     ))
 }
 
+/// `GET /api/v1/datasets/{id}/interpretations/{user}/carried`
+///
+/// The stored interpretation as it should be *drawn* on the revision this
+/// catalog is serving, with a report of what carrying it cost (#148).
+///
+/// A separate route rather than a flag on the read above, so the authored
+/// document is never quietly swapped for a derived one. Whoever asks for
+/// the interpretation gets the interpretation; whoever asks for the view
+/// gets the view and is told which it is.
+pub async fn get_interpretation_carried(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, user)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = readable_project(&state)?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let user = parse_user(&user)?;
+
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, radargram.as_str())?;
+    let revision = entry.revision_id.clone();
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    drop(catalog);
+
+    let stored = interpretations::read(project.documents(), &radargram, &user)
+        .map_err(interpretation_error)?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "interpretation_not_found",
+                format!(
+                    "'{}' has no interpretation of '{}'",
+                    user.as_str(),
+                    radargram.as_str()
+                ),
+            )
+        })?;
+
+    let axes = crate::interp::anchors::axes_for_revision(&path, &radargram, &revision);
+    let carried = crate::interp::carry::carry(&stored.document, &axes, revision.as_str());
+
+    Ok((
+        [(header::ETAG, format!("\"{}\"", stored.version))],
+        Json(serde_json::json!({
+            "report": carried.report,
+            "document": carried.document,
+        })),
+    ))
+}
+
 /// `PUT /api/v1/datasets/{id}/interpretations/{user}`
 pub async fn put_interpretation(
     State(state): State<Arc<AppState>>,
