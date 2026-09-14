@@ -3065,11 +3065,7 @@ async fn a_staged_replacement_is_not_served_as_a_radargram() {
 
     // On disk, and invisible to the catalog.
     let staging = dir.path().join(".staging");
-    assert_eq!(
-        std::fs::read_dir(&staging).unwrap().count(),
-        1,
-        "the upload is staged"
-    );
+    assert_eq!(staged_count(dir.path()), 1, "the upload is staged");
     let listed = get(&app, "/api/v1/datasets", Some(&erik)).await;
     let ids: Vec<&str> = listed.body["entries"]
         .as_array()
@@ -3169,12 +3165,7 @@ async fn replacing_a_radargram_leaves_every_pick_exactly_as_drawn() {
     assert_eq!(old["current"], false);
 
     // Nothing is left staged.
-    assert_eq!(
-        std::fs::read_dir(dir.path().join(".staging"))
-            .unwrap()
-            .count(),
-        0
-    );
+    assert_eq!(staged_count(dir.path()), 0);
 }
 
 #[tokio::test]
@@ -3202,9 +3193,7 @@ async fn a_replacement_for_a_different_radargram_is_refused() {
     assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text);
     assert_eq!(response.body["error"]["code"], "wrong_radargram");
     assert_eq!(
-        std::fs::read_dir(dir.path().join(".staging"))
-            .unwrap()
-            .count(),
+        staged_count(dir.path()),
         0,
         "a refused upload leaves nothing behind"
     );
@@ -3257,12 +3246,7 @@ async fn a_discarded_replacement_is_given_back() {
     )
     .await;
     let token = staged.body["token"].as_str().unwrap().to_string();
-    assert_eq!(
-        std::fs::read_dir(dir.path().join(".staging"))
-            .unwrap()
-            .count(),
-        1
-    );
+    assert_eq!(staged_count(dir.path()), 1);
 
     let discarded = delete(
         &app,
@@ -3271,12 +3255,7 @@ async fn a_discarded_replacement_is_given_back() {
     )
     .await;
     assert_eq!(discarded.status, StatusCode::NO_CONTENT);
-    assert_eq!(
-        std::fs::read_dir(dir.path().join(".staging"))
-            .unwrap()
-            .count(),
-        0
-    );
+    assert_eq!(staged_count(dir.path()), 0);
 
     // And the radargram is still the one it was.
     let listed = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
@@ -3790,4 +3769,88 @@ async fn adopting_from_a_page_left_open_across_a_replace_is_refused() {
     .await;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
     assert_eq!(refused.body["error"]["code"], "stale_revision");
+}
+
+/// How many replacements are staged, ignoring the note beside each one.
+fn staged_count(dir: &StdPath) -> usize {
+    std::fs::read_dir(dir.join(".staging"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().extension().is_some_and(|x| x == "nc"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_report_measured_against_a_superseded_revision_is_not_committed() {
+    // A consequence report describes a transition: from the revision on
+    // disk when it was made, to the one in the staged file. Committing
+    // without checking the first half lets another replace landing in
+    // between turn an approved A -> C into an unapproved B -> C, and the
+    // operator read what would happen to picks drawn on A.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    // Stage one replacement and read its report, but do not commit.
+    let first = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    let stale_token = first.body["token"].as_str().unwrap().to_string();
+
+    // Somebody else replaces the radargram in the meantime.
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("other.nc");
+    super::interp_routes_tests::write_test_nc_with_axes_at(
+        &source,
+        "ours",
+        None,
+        "2026-07-01T00:00:00Z",
+    );
+    let second = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        std::fs::read(&source).unwrap(),
+        Some(&erik),
+    )
+    .await;
+    let token = second.body["token"].as_str().unwrap().to_string();
+    let landed = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(landed.status, StatusCode::OK, "{}", landed.text);
+
+    // The first report now describes a change that is no longer the one
+    // that would happen.
+    let refused = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{stale_token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "report_is_stale");
+
+    // And what is served is still what the second replace installed.
+    let now = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    assert_eq!(now.body["revision_id"], landed.body["to_revision"]);
+    assert!(dir.path().join("radargrams/ours.nc").exists());
 }

@@ -493,13 +493,14 @@ pub fn axes_for_revision_checked(
     }
 
     if let Some(baseline) = baseline {
-        let now = snapshot_values(&declared).map(|(y_anchor, y_values, x_values)| {
+        let now = snapshot_values(&declared).map(|values| {
             crate::project::revisions::AxisSnapshot {
                 radargram_id: radargram_id.to_string(),
                 revision_id: revision_id.to_string(),
-                y_anchor,
-                y_values,
-                x_values,
+                y_anchor: values.y_anchor,
+                y_values: values.y_values,
+                x_values: values.x_values,
+                y_alternate: values.y_alternate,
             }
             .checksum()
         });
@@ -570,12 +571,32 @@ pub fn axes_from_declarations(declared: &crate::interp::source::AxisDeclarations
 /// `None` when the revision cannot describe its axes at all, which is the
 /// same condition that stops a document carrying them. A snapshot with no
 /// mapping in it is a file that says nothing.
+/// What [`snapshot_values`] found: the pieces an [`AxisSnapshot`] needs
+/// that only the radargram can supply.
+///
+/// [`AxisSnapshot`]: crate::project::revisions::AxisSnapshot
+pub struct SnapshotValues {
+    /// Which `y` anchor the values are on, or `None` if the revision
+    /// never said — in which case they can be read and not carried
+    /// through, which SPEC §8.3 makes the correct outcome.
+    pub y_anchor: Option<String>,
+    /// The `y` anchor's value per sample.
+    pub y_values: Vec<f64>,
+    /// Acquisition time per trace.
+    pub x_values: Vec<f64>,
+    /// The revision's other `y` anchor, as a constant offset.
+    pub y_alternate: Option<crate::project::revisions::AlternateAnchor>,
+}
+
 pub fn snapshot_values(
     declared: &crate::interp::source::AxisDeclarations,
-) -> Option<(Option<String>, Vec<f64>, Vec<f64>)> {
-    let y = axes_from_declarations(declared)
+) -> Option<SnapshotValues> {
+    let mut anchors = axes_from_declarations(declared)
         .y
-        .and_then(|axis| axis.anchor.into_iter().next())?;
+        .map(|axis| axis.anchor)
+        .unwrap_or_default()
+        .into_iter();
+    let y = anchors.next()?;
     let t0 = y.t0?;
     let dt = y.dt?;
     if declared.n_samples == 0 {
@@ -589,13 +610,33 @@ pub fn snapshot_values(
     // raw series, because tiepoint reduction is a lossy summary and a
     // snapshot is the thing later revisions are related through.
     trace_time_axis(&declared.time)?;
-    Some((
-        Some(y.name),
-        (0..declared.n_samples)
+
+    // The revision's other `y` anchor, as the constant it is. Both are
+    // regular axes over the same samples with the same step, so they
+    // differ only in where they start -- and keeping the second one costs
+    // a name and a number rather than another array of travel times.
+    let alternate = anchors.next().and_then(|other| {
+        let other_t0 = other.t0?;
+        let same_step = other.dt.is_some_and(|other_dt| {
+            (other_dt - dt).abs() <= f64::EPSILON * dt.abs().max(1.0) * 8.0
+        });
+        if !same_step {
+            return None;
+        }
+        Some(crate::project::revisions::AlternateAnchor {
+            name: other.name,
+            offset: other_t0 - t0,
+        })
+    });
+
+    Some(SnapshotValues {
+        y_anchor: Some(y.name),
+        y_values: (0..declared.n_samples)
             .map(|i| t0 + i as f64 * dt)
             .collect(),
-        declared.time.clone(),
-    ))
+        x_values: declared.time.clone(),
+        y_alternate: alternate,
+    })
 }
 
 #[cfg(test)]
@@ -1014,22 +1055,35 @@ mod tests {
             processing_datetime: None,
         };
 
-        let (anchor, y, x) =
-            snapshot_values(&declared(0.0, 0.0, 2024)).expect("the clock is a mapping");
-        assert_eq!(anchor.as_deref(), Some("recording_time"));
-        assert_eq!(y.len(), 2024);
-        assert_eq!(x.len(), 3);
+        let clock = snapshot_values(&declared(0.0, 0.0, 2024)).expect("the clock is a mapping");
+        assert_eq!(clock.y_anchor.as_deref(), Some("recording_time"));
+        assert_eq!(clock.y_values.len(), 2024);
+        assert_eq!(clock.x_values.len(), 3);
         assert!(
-            (y[0] - 0.0).abs() < 1e-9,
+            (clock.y_values[0] - 0.0).abs() < 1e-9,
             "sample 0 is the start of the record"
+        );
+        assert!(
+            clock.y_alternate.is_none(),
+            "an unlocated time zero has only the one anchor"
         );
 
         // A corrected revision still keeps the travel time, which is the
-        // preferred one and the one that means more.
-        let (anchor, y, _) =
-            snapshot_values(&declared(50.757_175, 50.757_175, 1992)).expect("twtt");
-        assert_eq!(anchor.as_deref(), Some("twtt"));
-        assert!((y[0] - 0.0).abs() < 1e-9, "sample 0 is time zero");
+        // preferred one and the one that means more -- and keeps the clock
+        // alongside it, so it can still relate to an uncorrected revision.
+        let corrected = snapshot_values(&declared(50.757_175, 50.757_175, 1992)).expect("twtt");
+        assert_eq!(corrected.y_anchor.as_deref(), Some("twtt"));
+        assert!(
+            (corrected.y_values[0] - 0.0).abs() < 1e-9,
+            "sample 0 is time zero"
+        );
+        let alternate = corrected.y_alternate.expect("the recording clock too");
+        assert_eq!(alternate.name, "recording_time");
+        assert!(
+            (alternate.offset - 50.757_175).abs() < 1e-4,
+            "time zero sits that far into the recording: {}",
+            alternate.offset
+        );
 
         // Both start at zero and mean entirely different things, which is
         // why the name is stored beside the values rather than inferred

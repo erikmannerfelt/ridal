@@ -225,6 +225,27 @@ fn sweep_staging(dir: &std::path::Path) {
     }
 }
 
+/// What the operator was shown, kept beside the staged file.
+///
+/// A consequence report describes a *transition*: from the revision on
+/// disk when the report was made, to the one in the staged file. Committing
+/// without checking the first half means another replace landing in between
+/// turns an approved A → C into an unapproved B → C — the operator read
+/// what would happen to picks drawn on A, and B's picks get it instead.
+///
+/// Written next to the staged `.nc` rather than held in memory, so it
+/// survives a restart exactly as the staged file does, and is swept with
+/// it.
+#[derive(Debug, Serialize, Deserialize)]
+struct StagedFor {
+    /// The revision the report was made against.
+    from_revision: String,
+}
+
+fn staged_note_path(dir: &std::path::Path, token: &str) -> Result<std::path::PathBuf, ApiError> {
+    Ok(staged_path(dir, token)?.with_extension("from"))
+}
+
 /// A staging token, validated as a bare slug so it can name a file.
 ///
 /// Tokens are minted here and handed back to the browser, so this only
@@ -340,7 +361,17 @@ fn consequences(
                 "{} of picks cannot be shown on the new revision at all — there is no \
                  anchor axis both revisions share. They are kept exactly as drawn, but \
                  nothing will draw them.",
-                plural(documents.len(), "set", "sets"),
+                // Only the refused ones. `documents.len()` said every set
+                // was affected whenever any one of them was, which
+                // overstates the damage on the line the dialog leads with.
+                plural(
+                    documents
+                        .iter()
+                        .filter(|d| d.carry.severity == Severity::Refused)
+                        .count(),
+                    "set",
+                    "sets"
+                ),
             ),
             Severity::Partial => "Some picks fall outside the new revision and will not be shown. \
                  Nothing is deleted: they stay as drawn, against the revision they \
@@ -479,6 +510,19 @@ pub async fn stage_replacement(
         &to_revision,
     )?;
 
+    // Which revision this report describes, so the commit can refuse if
+    // the radargram has moved on since.
+    let note = serde_json::to_string(&StagedFor {
+        from_revision: from_revision.to_string(),
+    })
+    .map_err(|e| ApiError::internal("replace_failed", e.to_string()))?;
+    std::fs::write(staged_note_path(&dir, &token)?, note).map_err(|e| {
+        ApiError::internal(
+            "replace_failed",
+            format!("Could not record what this replacement was measured against: {e}"),
+        )
+    })?;
+
     // Kept for the commit, so the guard must not remove it.
     cleanup.installed();
 
@@ -527,6 +571,36 @@ pub async fn commit_replacement(
     }
     let cleanup = super::lifecycle_routes::TempFile(staged.clone());
 
+    // The report the operator read described a transition *from* a
+    // particular revision. If another replace has landed since, this is a
+    // different transition and they have not seen what it would do.
+    let note_path = staged_note_path(&dir, &token)?;
+    let measured_against: Option<StagedFor> = std::fs::read_to_string(&note_path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok());
+    match measured_against {
+        Some(note) if note.from_revision == from_revision.to_string() => {}
+        Some(note) => {
+            return Err(ApiError::conflict(
+                "report_is_stale",
+                format!(
+                    "'{radargram}' was measured against revision {} and is now on {}, so \
+                     something replaced it while this one was staged. What you were shown \
+                     describes a change that is no longer the one that would happen. \
+                     Upload it again to see the current answer.",
+                    note.from_revision, from_revision
+                ),
+            ))
+        }
+        None => {
+            return Err(ApiError::conflict(
+                "report_is_stale",
+                "There is no record of what this staged replacement was measured \
+                 against, so it cannot be committed. Upload it again.",
+            ))
+        }
+    }
+
     let RidalNetcdfKind::Supported(meta) = crate::io::inspect_ridal_netcdf(&staged)
         .map_err(|e| ApiError::internal("staging_unreadable", e.to_string()))?
     else {
@@ -571,15 +645,14 @@ pub async fn commit_replacement(
     // axes has no mapping to lose and proceeds; one that declares them and
     // cannot have them written does not.
     let from_declared = crate::interp::source::read_axis_declarations(&from_path);
-    if let Some((y_anchor, y_values, x_values)) =
-        crate::interp::anchors::snapshot_values(&from_declared)
-    {
+    if let Some(values) = crate::interp::anchors::snapshot_values(&from_declared) {
         let snapshot = revisions::AxisSnapshot {
             radargram_id: radargram.to_string(),
             revision_id: from_revision.to_string(),
-            y_anchor,
-            y_values,
-            x_values,
+            y_anchor: values.y_anchor,
+            y_values: values.y_values,
+            x_values: values.x_values,
+            y_alternate: values.y_alternate,
         };
         let checksum = snapshot.checksum();
         revisions::put(project.documents(), &radargram, &snapshot).map_err(|e| {
@@ -637,6 +710,7 @@ pub async fn commit_replacement(
         )
     })?;
     cleanup.installed();
+    let _ = std::fs::remove_file(&note_path);
 
     // The interpretations are deliberately untouched. #148: a document
     // stays as drawn, against the revision it was drawn on, and is carried
@@ -684,8 +758,15 @@ pub async fn discard_replacement(
     Path((_radargram_id, token)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "replace a radargram")?;
+    // The same lock staging and committing take. Without it a discard can
+    // remove the staged path after the commit has validated it and before
+    // the rename, turning a commit that was going to work into
+    // `install_failed` -- and the browser sends a discard on `pagehide`,
+    // so the two really can interleave.
+    let _lifecycle = state.lifecycle_lock().await;
     let dir = staging_dir(project)?;
     let staged = staged_path(&dir, &token)?;
     let _ = std::fs::remove_file(&staged);
+    let _ = std::fs::remove_file(staged_note_path(&dir, &token)?);
     Ok(StatusCode::NO_CONTENT)
 }

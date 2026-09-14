@@ -669,9 +669,12 @@ impl GPR {
                          LOCATED, which is the case for a radargram no zero correction \
                          has run on: its times are counted from whenever the instrument \
                          started sampling, which is not travel time. Such a radargram \
-                         has no anchored travel-time axis, so Ridal will not carry \
-                         interpretations onto or off it (gprinterp SPEC 8.1 forbids \
-                         falling back to the raw index)."
+                         has no anchored travel-time axis and therefore emits no twtt \
+                         anchor -- but it still emits recording_time, the original \
+                         recording's clock, so interpretations can still be carried \
+                         between it and any other revision of the same recording \
+                         (gprinterp SPEC 8.5). What it cannot do is share an axis with \
+                         a revision that only describes travel time."
                             .into(),
                     ),
                 ]

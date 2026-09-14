@@ -267,13 +267,14 @@ pub async fn upload_dataset(
     let baseline = crate::interp::anchors::snapshot_values(
         &crate::interp::source::read_axis_declarations(&installed),
     )
-    .map(|(y_anchor, y_values, x_values)| {
+    .map(|values| {
         revisions::AxisSnapshot {
             radargram_id: meta.radargram_id.to_string(),
             revision_id: revision_id.clone(),
-            y_anchor,
-            y_values,
-            x_values,
+            y_anchor: values.y_anchor,
+            y_values: values.y_values,
+            x_values: values.x_values,
+            y_alternate: values.y_alternate,
         }
         .checksum()
     });
@@ -650,8 +651,7 @@ fn snapshot_axes(
         ));
     }
 
-    let Some((y_anchor, y_values, x_values)) = crate::interp::anchors::snapshot_values(&declared)
-    else {
+    let Some(values) = crate::interp::anchors::snapshot_values(&declared) else {
         eprintln!(
             "Note: '{id}' does not declare its axes, so no snapshot was kept. \
              Interpretations drawn on it cannot be carried onto a later revision."
@@ -661,9 +661,10 @@ fn snapshot_axes(
     let snapshot = revisions::AxisSnapshot {
         radargram_id: id.to_string(),
         revision_id: revision.to_string(),
-        y_anchor,
-        y_values,
-        x_values,
+        y_anchor: values.y_anchor,
+        y_values: values.y_values,
+        x_values: values.x_values,
+        y_alternate: values.y_alternate,
     };
     let checksum = snapshot.checksum();
     revisions::put(project.documents(), id, &snapshot)

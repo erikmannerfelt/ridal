@@ -80,6 +80,29 @@ pub struct AxisSnapshot {
     pub y_values: Vec<f64>,
     /// Acquisition time per trace, epoch seconds.
     pub x_values: Vec<f64>,
+    /// The revision's *other* `y` anchor, as a constant offset from
+    /// `y_values`.
+    ///
+    /// A revision that has located its time zero offers two: `twtt`, and
+    /// `recording_time` on the original recording's clock. They are the
+    /// same axis read from two origins, so they differ by exactly the
+    /// position of time zero — one number, not a second array.
+    ///
+    /// Keeping only the preferred one made a corrected revision's
+    /// snapshot unable to relate to an *uncorrected* revision, which
+    /// offers only `recording_time`: no shared anchor, even though both
+    /// files have the recording clock and the mapping is exact. `None`
+    /// for a revision with one anchor, and for every snapshot written
+    /// before this field existed.
+    pub y_alternate: Option<AlternateAnchor>,
+}
+
+/// A second `y` anchor for the same samples, a fixed distance away.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AlternateAnchor {
+    pub name: String,
+    /// Added to each of `y_values` to get this anchor's value.
+    pub offset: f64,
 }
 
 impl AxisSnapshot {
@@ -102,6 +125,13 @@ impl AxisSnapshot {
     pub fn checksum(&self) -> String {
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.y_anchor.as_deref().unwrap_or("").as_bytes());
+        // Only when present. A snapshot written before this field existed
+        // must still hash to what the ledger recorded for it, or every
+        // one of them reads as a revision that changed underneath us.
+        if let Some(alternate) = &self.y_alternate {
+            hasher.update(alternate.name.as_bytes());
+            hasher.update(&alternate.offset.to_le_bytes());
+        }
         hasher.update(&(self.y_values.len() as u64).to_le_bytes());
         hasher.update(&(self.x_values.len() as u64).to_le_bytes());
         for value in self.y_values.iter().chain(self.x_values.iter()) {
@@ -124,6 +154,11 @@ struct Header {
     y_anchor: Option<String>,
     n_samples: usize,
     n_traces: usize,
+    /// Absent in every snapshot written before it existed, which is what
+    /// `default` is carrying: those are readable unchanged and simply
+    /// offer one anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    y_alternate: Option<AlternateAnchor>,
 }
 
 #[derive(Debug)]
@@ -233,6 +268,7 @@ fn to_bytes(snapshot: &AxisSnapshot) -> Result<Vec<u8>, SnapshotError> {
         y_anchor: snapshot.y_anchor.clone(),
         n_samples: snapshot.n_samples(),
         n_traces: snapshot.n_traces(),
+        y_alternate: snapshot.y_alternate.clone(),
     };
     let header = serde_json::to_vec(&header).map_err(|e| SnapshotError::Malformed {
         path: PathBuf::from(DIR),
@@ -306,6 +342,7 @@ fn from_bytes(bytes: &[u8], path: PathBuf) -> Result<AxisSnapshot, SnapshotError
         y_anchor: header.y_anchor,
         y_values,
         x_values,
+        y_alternate: header.y_alternate,
     })
 }
 
@@ -398,6 +435,7 @@ mod tests {
             x_values: (0..2529)
                 .map(|i| 1_648_557_660.0 + i as f64 / 3.0)
                 .collect(),
+            y_alternate: None,
         }
     }
 

@@ -798,7 +798,13 @@
       // adopting it onto this revision is the whole action, and the button
       // says so rather than sitting greyed out next to a banner explaining
       // that the picks are from an earlier version.
-      const adoptable = carriedReport && carriedReport.severity !== "current";
+      // `refused` has no carried document to adopt, so offering the
+      // button there could only ever produce `cannot_be_carried`. A
+      // control that can only fail is worse than an absent one.
+      const adoptable =
+        carriedReport &&
+        carriedReport.severity !== "current" &&
+        carriedReport.severity !== "refused";
       saveButton.disabled = !dirty && !adoptable;
       saveButton.textContent = adoptable && !dirty ? "Adopt to this version…" : "Save";
       undoButton.disabled = !draft || draft.length === 0;
@@ -999,14 +1005,23 @@
         // which revision this page believes it is looking at, so a tab
         // left open across a replace fails loudly instead of writing
         // coordinates nobody validated against the file now on disk.
+        // Conditional, exactly as a save is. Without it, adopting from a
+        // page that loaded before another tab saved would overwrite the
+        // newer document -- archived, but silently replaced -- where a
+        // save in the same position returns 412 and says so.
+        const headers = { "Content-Type": "application/json" };
+        if (etag) headers["If-Match"] = etag;
         const response = await fetch(
           `${documentUrl}/promote?onto=${encodeURIComponent(CFG.revisionId)}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(buildBody()),
-          },
+          { method: "POST", headers, body: JSON.stringify(buildBody()) },
         );
+        if (response.status === 412) {
+          showError(
+            "These picks were changed somewhere else while this page was open. " +
+              "Reload to see the saved version -- nothing here is lost until you do.",
+          );
+          return;
+        }
         if (!response.ok) {
           const failure = await response.json().catch(() => null);
           showError(

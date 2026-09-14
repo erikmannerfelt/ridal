@@ -356,6 +356,7 @@ pub async fn promote_interpretation(
     Path((radargram_id, user)): Path<(String, String)>,
     Query(query): Query<PromoteQuery>,
     caller: Caller,
+    headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, Role::Picker, "adopt carried picks")?;
@@ -464,6 +465,20 @@ pub async fn promote_interpretation(
     // second.
     let edited = document.features != derived.features;
 
+    // Checked before the archive, not only at the write. The store makes
+    // the write itself atomic, but by then a copy has already been filed
+    // away -- so a conflict would leave a stray archived version of a
+    // document that was never replaced.
+    let expectation = expectation_from(&headers);
+    if let Expectation::Version(expected) = &expectation {
+        if expected != &stored.version {
+            return Err(ApiError::precondition_failed(
+                "version_conflict",
+                "These picks were changed somewhere else while this page was open.",
+            ));
+        }
+    }
+
     let at = chrono::Utc::now().to_rfc3339();
 
     // Before anything is overwritten. This is what makes adopting
@@ -502,12 +517,16 @@ pub async fn promote_interpretation(
         .get_or_insert_with(Default::default)
         .insert("ridal_carried_from".to_string(), provenance);
 
+    // The same precondition a save carries. `Any` meant adopting from a
+    // page that loaded before another tab saved overwrote the newer
+    // document -- archived, but replaced without anybody being told, where
+    // an ordinary save in the same position is refused with 412.
     let version = interpretations::write(
         project.documents(),
         &radargram,
         &user,
         &document,
-        &Expectation::Any,
+        &expectation,
     )
     .map_err(interpretation_error)?;
 

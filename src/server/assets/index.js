@@ -741,6 +741,11 @@ document.querySelectorAll('.group-map').forEach((el) => {
     picker.value = '';
     if (!file || !radargramId) return;
 
+    // Hand back whatever is already staged before forgetting its token.
+    // `reset()` cleared the token without sending a DELETE, so choosing a
+    // second file left the first upload -- a whole radargram -- sitting in
+    // `.staging` against the project's quota until the six-hour sweep.
+    discard();
     reset();
     setBusy(true);
     // "Uploading and checking" rather than "Checking": the radargram has
