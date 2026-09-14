@@ -310,6 +310,16 @@ pub fn twtt_axis(
         return None;
     }
 
+    // Non-finite first, and before the tolerance is computed from them.
+    // A single NaN is the dangerous shape: with one trace, `offsets.next()`
+    // takes it and `offsets.all(...)` is then vacuously true over an empty
+    // rest, so the axis came back with `t0 = NaN` -- which the snapshot
+    // path would persist as a mapping and report as `has_axes: true`,
+    // while every coordinate evaluated through it is NaN.
+    if crop_ns.iter().chain(time_zero_ns).any(|v| !v.is_finite()) {
+        return None;
+    }
+
     // A scalar for one and a vector for the other cannot be compared
     // element-wise, and a length mismatch means exactly that. Checked
     // before the zip, which would otherwise truncate to the shorter and
@@ -384,9 +394,17 @@ pub fn snapshot_values(
     )?;
     let t0 = y.t0?;
     let dt = y.dt?;
-    if declared.n_samples == 0 || declared.time.len() < 2 {
+    if declared.n_samples == 0 {
         return None;
     }
+    // Validated through the same function that builds the live axis, not
+    // merely counted. A count says two timestamps arrived; it does not say
+    // they advance, are finite, or can be inverted -- and a snapshot of
+    // times that cannot be inverted is a mapping that reports
+    // `has_axes: true` and relates nothing. What is *stored* is still the
+    // raw series, because tiepoint reduction is a lossy summary and a
+    // snapshot is the thing later revisions are related through.
+    trace_time_axis(&declared.time)?;
     Some((
         Some(y.name),
         (0..declared.n_samples)
@@ -642,6 +660,50 @@ mod tests {
         let crop: Vec<f64> = (0..64).map(|i| 62.034 + f64::from(i) * 0.001).collect();
         let zero = vec![0.0; 64];
         assert!(twtt_axis(Some("twtt"), &crop, &zero, 1.2407).is_none());
+    }
+
+    #[test]
+    fn a_single_non_finite_trace_does_not_become_a_nan_anchor() {
+        // The dangerous shape is one trace, not many. `offsets.next()`
+        // consumed the sole NaN and `offsets.all(...)` was then vacuously
+        // true over an empty rest, so the axis came back with `t0 = NaN` --
+        // persisted by the snapshot path as a mapping, reported as
+        // `has_axes: true`, and evaluating every coordinate to NaN.
+        assert!(twtt_axis(Some("twtt"), &[f64::NAN], &[4.0], 0.4).is_none());
+        assert!(twtt_axis(Some("twtt"), &[4.0], &[f64::NAN], 0.4).is_none());
+        assert!(twtt_axis(Some("twtt"), &[f64::INFINITY], &[4.0], 0.4).is_none());
+        // And in a longer series, where it was already caught.
+        assert!(twtt_axis(Some("twtt"), &[4.0, f64::NAN], &[1.0, 1.0], 0.4).is_none());
+    }
+
+    #[test]
+    fn a_snapshot_needs_times_that_can_actually_be_inverted() {
+        // Counting the timestamps says two arrived. It does not say they
+        // advance, are finite, or can be inverted -- and a snapshot of
+        // times that cannot be inverted is a mapping that relates nothing
+        // while reporting `has_axes: true`.
+        let declared = |time: Vec<f64>| crate::interp::source::AxisDeclarations {
+            time,
+            twtt_anchor: Some("twtt".to_string()),
+            twtt_crop: vec![4.0],
+            twtt_time_zero: vec![4.0],
+            dt_ns: 0.4,
+            n_samples: 16,
+            processing_datetime: None,
+        };
+        assert!(snapshot_values(&declared(vec![0.0, 1.0, 2.0])).is_some());
+        assert!(
+            snapshot_values(&declared(vec![2.0, 1.0, 0.0])).is_none(),
+            "time running backwards cannot be inverted"
+        );
+        assert!(snapshot_values(&declared(vec![0.0, f64::NAN])).is_none());
+        assert!(
+            snapshot_values(&declared(vec![5.0, 5.0, 5.0])).is_none(),
+            "every trace at one instant relates nothing to anything"
+        );
+        // A repeated timestamp inside an advancing series is ordinary --
+        // two traces can share a GPS second -- and stays usable.
+        assert!(snapshot_values(&declared(vec![0.0, 1.0, 1.0, 2.0])).is_some());
     }
 
     #[test]

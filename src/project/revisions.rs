@@ -201,13 +201,25 @@ fn encode(values: &[f64]) -> Vec<u8> {
 }
 
 fn decode(bytes: &[u8], count: usize) -> Option<Vec<f64>> {
-    if bytes.len() != count * 8 {
+    // Checked, because `count` comes out of a header on disk. A crafted
+    // one large enough to wrap `usize` would otherwise make this length
+    // check pass on a short payload, and `with_capacity` ask for the
+    // wrapped size -- a panic or a failed allocation where the answer is
+    // "this file is malformed".
+    if count.checked_mul(8) != Some(bytes.len()) {
         return None;
     }
     let mut out = Vec::with_capacity(count);
     let mut running = 0.0;
-    for chunk in bytes.chunks_exact(8) {
-        running += f64::from_le_bytes(chunk.try_into().ok()?);
+    // `as_chunks` rather than `chunks_exact(8)`: the width is a constant,
+    // so the compiler can have it, and each chunk arrives as `[u8; 8]`
+    // without a fallible conversion that cannot actually fail.
+    let (chunks, remainder) = bytes.as_chunks::<8>();
+    if !remainder.is_empty() {
+        return None;
+    }
+    for chunk in chunks {
+        running += f64::from_le_bytes(*chunk);
         out.push(running);
     }
     Some(out)
@@ -268,8 +280,21 @@ fn from_bytes(bytes: &[u8], path: PathBuf) -> Result<AxisSnapshot, SnapshotError
         .read_to_end(&mut payload)
         .map_err(|e| bad(&format!("the axes could not be decompressed: {e}")))?;
 
-    let split = header.n_samples * 8;
-    if payload.len() != split + header.n_traces * 8 {
+    // Checked all the way, for the same reason: every one of these
+    // lengths is a number this process read from a file rather than one
+    // it computed.
+    let split = header
+        .n_samples
+        .checked_mul(8)
+        .ok_or_else(|| bad("bad y axis"))?;
+    let x_bytes = header
+        .n_traces
+        .checked_mul(8)
+        .ok_or_else(|| bad("bad x axis"))?;
+    let total = split
+        .checked_add(x_bytes)
+        .ok_or_else(|| bad("bad axis lengths"))?;
+    if payload.len() != total {
         return Err(bad("the axes are not the length the header claims"));
     }
     let y_values = decode(&payload[..split], header.n_samples).ok_or_else(|| bad("bad y axis"))?;
@@ -374,6 +399,43 @@ mod tests {
                 .map(|i| 1_648_557_660.0 + i as f64 / 3.0)
                 .collect(),
         }
+    }
+
+    #[test]
+    fn a_header_claiming_an_impossible_size_is_malformed_rather_than_a_panic() {
+        // The counts come out of a file, so they are input. A crafted one
+        // large enough to wrap `usize` made the length check pass on a
+        // short payload and `with_capacity` ask for the wrapped size --
+        // an abort where the answer is "this file is malformed".
+        let (_dir, store) = store();
+        let id = RadargramId::new("line-01").unwrap();
+        put(&store, &id, &snapshot("rev-a")).unwrap();
+
+        let relative = path_of(&id, "rev-a");
+        let (bytes, _) = store.read_bytes(&relative).unwrap().unwrap();
+
+        // Rewrite the header with counts whose byte lengths overflow.
+        let header_len = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
+        let mut header: serde_json::Value =
+            serde_json::from_slice(&bytes[12..12 + header_len]).unwrap();
+        header["n_samples"] = serde_json::json!(usize::MAX / 4);
+        header["n_traces"] = serde_json::json!(usize::MAX / 4);
+        let header = serde_json::to_vec(&header).unwrap();
+
+        let mut crafted = Vec::new();
+        crafted.extend_from_slice(MAGIC);
+        crafted.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        crafted.extend_from_slice(&header);
+        crafted.extend_from_slice(&bytes[12 + header_len..]);
+        store
+            .write_bytes(&relative, &crafted, &Expectation::Any)
+            .unwrap();
+
+        let read = get(&store, &id, "rev-a");
+        assert!(
+            matches!(read, Err(SnapshotError::Malformed { .. })),
+            "{read:?}"
+        );
     }
 
     #[test]
