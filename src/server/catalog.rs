@@ -30,6 +30,13 @@ pub struct CatalogEntry {
     /// disambiguation only -- not part of the persistent identity or
     /// revision fingerprint (#122).
     pub relative_path: String,
+    /// Which of the catalog's roots this was found under, as an index into
+    /// the list discovery was given.
+    ///
+    /// An index rather than a path because the path is the server's
+    /// business and #122 keeps those internal; `relative_path` is what the
+    /// UI shows and it only means something paired with its root.
+    pub root: usize,
     /// Set by a project override (#145). Curation, not access control: an
     /// unlisted radargram is left out of listings and still reachable by
     /// anyone who knows its id.
@@ -81,6 +88,15 @@ pub struct CatalogWarning {
     /// the unreadable-candidate case: a file that failed inspection is not
     /// an entry, so it cannot be one somebody unlisted.
     pub about: Vec<RadargramId>,
+    /// Shown only to `operator` and above.
+    ///
+    /// For messages about radargrams the catalog deliberately does not
+    /// serve. `about` cannot express that: it drops a warning when the
+    /// caller cannot see the radargrams it names, and an ignored radargram
+    /// is in *nobody's* listing -- so a warning naming one would be
+    /// invisible to the very person who made the decision. The role gate is
+    /// the separate question of who is entitled to hear about it at all.
+    pub operator_only: bool,
 }
 
 impl CatalogWarning {
@@ -97,7 +113,21 @@ impl CatalogWarning {
 /// directory).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Catalog {
+    /// Everything the project serves, with the ignored left out.
     pub entries: Vec<CatalogEntry>,
+    /// Everything discovery found, before any override was applied.
+    ///
+    /// Kept so re-resolution starts where discovery did. Re-resolving from
+    /// `entries` could only ever *narrow* the catalog: an ignored radargram
+    /// is not in them, so lifting the ignore could never bring it back, and
+    /// a project that un-ignores something would have to be restarted to
+    /// see it.
+    ///
+    /// It is also what makes re-resolution honest about the rest. These
+    /// entries carry the files' own values, so the resolved ones are built
+    /// from the same starting point every time rather than being un-applied
+    /// and re-applied.
+    unresolved: Vec<CatalogEntry>,
     /// Everything worth telling the operator: problems with the files
     /// themselves, and groups whose members disagree about the name.
     pub warnings: Vec<CatalogWarning>,
@@ -113,6 +143,40 @@ pub struct Catalog {
     /// `radargram_id` (#122): most recent `processing_datetime` wins, ties
     /// broken by path order, with a `CatalogWarning` either way.
     pub group_names: std::collections::BTreeMap<GroupId, GroupName>,
+    /// Ignore decisions with nothing to act on (#147).
+    vestigial_ignores: Vec<VestigialIgnore>,
+}
+
+/// One place radargrams are found, and what Ridal may do there.
+///
+/// The project's own radargram directory is the writable upper layer;
+/// anything `[radargrams] roots` points at outside it is a read-only lower
+/// one (#147). Ridal never writes below the project — not "unless an admin
+/// unlocks it", never — so an external archive can be served without any
+/// question of what a wrong click there would do.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatalogRoot {
+    /// Canonicalized once, by the caller, and the single point every later
+    /// filesystem operation on it flows from. See [`Catalog::discover`].
+    pub path: std::path::PathBuf,
+    /// Whether `path` names one `.nc` file rather than a directory.
+    pub is_file: bool,
+    /// Whether Ridal may write here.
+    pub writable: bool,
+}
+
+impl CatalogRoot {
+    /// A single root, for the callers that have one: a bare directory, a
+    /// single file, or a test.
+    pub fn single(path: impl Into<std::path::PathBuf>) -> Self {
+        let path = path.into();
+        let is_file = path.is_file();
+        Self {
+            path,
+            is_file,
+            writable: true,
+        }
+    }
 }
 
 /// Directory names that recursive discovery does not descend into,
@@ -130,10 +194,14 @@ struct Candidate {
     path: std::path::PathBuf,
     relative_path: String,
     group_hint: Option<String>,
+    /// Index of the root this was found under.
+    root: usize,
 }
 
-fn discover_candidates(root: &Path) -> Vec<Candidate> {
-    if root.is_file() {
+fn discover_candidates(root: &CatalogRoot, index: usize) -> Vec<Candidate> {
+    let is_file = root.is_file;
+    let root = root.path.as_path();
+    if is_file {
         let name = root
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -142,6 +210,7 @@ fn discover_candidates(root: &Path) -> Vec<Candidate> {
             path: root.to_path_buf(),
             relative_path: name,
             group_hint: None,
+            root: index,
         }];
     }
 
@@ -203,6 +272,7 @@ fn discover_candidates(root: &Path) -> Vec<Candidate> {
             path: entry.into_path(),
             relative_path,
             group_hint,
+            root: index,
         });
     }
 
@@ -218,6 +288,25 @@ impl Catalog {
         Self::discover_with_overrides(root, &CatalogOverrides::default())
     }
 
+    /// Discover radargrams across several roots, the project's own first
+    /// (#147).
+    ///
+    /// The project is the writable upper layer and external roots the
+    /// read-only lower ones, and the upper layer wins: where two roots hold
+    /// the same radargram id, the writable one is selected **regardless of
+    /// processing datetime**. That is a real change from the single-root
+    /// rule, and it is the point — otherwise an external file reprocessed
+    /// later would silently override a deliberate in-project decision, and
+    /// the project would not be an overlay at all.
+    pub fn discover_roots(roots: &[CatalogRoot], overrides: &CatalogOverrides) -> Catalog {
+        let candidates: Vec<Candidate> = roots
+            .iter()
+            .enumerate()
+            .flat_map(|(index, root)| discover_candidates(root, index))
+            .collect();
+        Self::from_candidates(candidates, roots, overrides)
+    }
+
     /// Discover radargrams under `root`, which may be a single processed
     /// `.nc` file or a directory to scan recursively, and apply what the
     /// project says over them (#145).
@@ -228,8 +317,18 @@ impl Catalog {
     /// not produce the disagreement warning, and a radargram moved into
     /// another group must not bring its old group's name along.
     pub fn discover_with_overrides(root: &Path, overrides: &CatalogOverrides) -> Catalog {
-        let candidates = discover_candidates(root);
+        Self::discover_roots(&[CatalogRoot::single(root)], overrides)
+    }
+
+    fn from_candidates(
+        candidates: Vec<Candidate>,
+        roots: &[CatalogRoot],
+        overrides: &CatalogOverrides,
+    ) -> Catalog {
         let mut warnings = Vec::new();
+        // (is the layer writable, id) -> every (datetime, path) found there.
+        let mut by_layer: std::collections::BTreeMap<(bool, RadargramId), Vec<(String, String)>> =
+            std::collections::BTreeMap::new();
         let mut by_id: std::collections::BTreeMap<String, (CatalogEntry, String)> =
             std::collections::BTreeMap::new();
 
@@ -240,6 +339,7 @@ impl Catalog {
                     warnings.push(CatalogWarning {
                         message: format!("{}: {e}", candidate.relative_path),
                         about: Vec::new(),
+                        operator_only: false,
                     });
                     continue;
                 }
@@ -281,6 +381,7 @@ impl Catalog {
                 shape: meta.shape,
                 relative_path: candidate.relative_path.clone(),
                 unlisted: false,
+                root: candidate.root,
                 from_file: FileMetadata {
                     display_name: display_name.clone(),
                     group_name: group_name.clone(),
@@ -288,42 +389,78 @@ impl Catalog {
                 },
             };
 
+            let writable = roots.get(entry.root).is_some_and(|root| root.writable);
+            // Every occurrence, per layer, kept apart from the question of
+            // which one wins. Reporting from the winner meant that with one
+            // project copy and two external ones, both externals compared
+            // against the project entry, both took the overlay branch, and
+            // the duplicate *between them* -- a real problem with no
+            // decision behind it -- went unreported entirely.
+            by_layer
+                .entry((writable, entry.radargram_id.clone()))
+                .or_default()
+                .push((
+                    entry.processing_datetime.clone(),
+                    candidate.relative_path.clone(),
+                ));
+
             let id_key = meta.radargram_id.as_str().to_string();
-            match by_id.get(&id_key) {
-                None => {
-                    by_id.insert(id_key, (entry, candidate.relative_path));
-                }
+            let new_wins = match by_id.get(&id_key) {
+                None => true,
                 Some((existing, existing_path)) => {
-                    // Resolve deterministically (#122): most recent
-                    // ridal_processing_datetime wins; ties break by
-                    // relative path sorting first. Exact copies (identical
-                    // datetime and content) still produce a warning even
-                    // though the "selected" entry is unambiguous, so the
-                    // user is nudged toward assigning unique IDs.
-                    let new_is_newer = entry.processing_datetime > existing.processing_datetime;
-                    let tie_new_wins = entry.processing_datetime == existing.processing_datetime
-                        && candidate.relative_path < *existing_path;
-
-                    warnings.push(CatalogWarning {
-                        about: vec![entry.radargram_id.clone()],
-                        message: format!(
-                            "Duplicate radargram ID '{id_key}': '{existing_path}' and \
-                             '{}'. Selected the entry with the most recent processing \
-                             datetime{}.",
-                            candidate.relative_path,
-                            if entry.processing_datetime == existing.processing_datetime {
-                                " (datetimes equal; broke the tie by path order)"
-                            } else {
-                                ""
-                            }
-                        ),
-                    });
-
-                    if new_is_newer || tie_new_wins {
-                        by_id.insert(id_key, (entry, candidate.relative_path));
+                    let existing_writable =
+                        roots.get(existing.root).is_some_and(|root| root.writable);
+                    if writable != existing_writable {
+                        // The overlay beats the datetime (#147). Without
+                        // this, an external file reprocessed later would
+                        // silently override a deliberate in-project
+                        // decision, and the project would not be an overlay
+                        // at all. Not a warning: the arrangement working is
+                        // not a problem to report.
+                        writable
+                    } else {
+                        // Within one layer, deterministically (#122): most
+                        // recent ridal_processing_datetime wins, ties break
+                        // by relative path.
+                        entry.processing_datetime > existing.processing_datetime
+                            || (entry.processing_datetime == existing.processing_datetime
+                                && candidate.relative_path < *existing_path)
                     }
                 }
+            };
+            if new_wins {
+                by_id.insert(id_key, (entry, candidate.relative_path));
             }
+        }
+
+        // One warning per layer that holds an id twice. Exact copies are
+        // reported too, even though the selected entry is unambiguous, so
+        // the user is nudged toward assigning unique ids.
+        for ((_, id), mut found) in by_layer {
+            if found.len() < 2 {
+                continue;
+            }
+            found.sort();
+            let tied = found.windows(2).any(|w| w[0].0 == w[1].0);
+            let paths: Vec<&str> = found.iter().map(|(_, path)| path.as_str()).collect();
+            warnings.push(CatalogWarning {
+                about: vec![id.clone()],
+                operator_only: false,
+                message: format!(
+                    "Duplicate radargram ID '{id}': {}. Selected the entry with the most \
+                     recent processing datetime{}.",
+                    paths
+                        .iter()
+                        .map(|path| format!("'{path}'"))
+                        .collect::<Vec<_>>()
+                        .join(" and "),
+                    if tied {
+                        " (datetimes equal; broke the tie by path order)"
+                    } else {
+                        ""
+                    }
+                ),
+            });
         }
 
         let mut entries: Vec<CatalogEntry> = by_id.into_values().map(|(e, _)| e).collect();
@@ -350,18 +487,35 @@ impl Catalog {
     /// override changes what the catalog *says*, never what is in it;
     /// noticing a new file is #147's job.
     pub fn reresolved(&self, overrides: &CatalogOverrides) -> Catalog {
-        let entries = self
-            .entries
-            .iter()
-            .map(|entry| CatalogEntry {
-                display_name: entry.from_file.display_name.clone(),
-                group_name: entry.from_file.group_name.clone(),
-                group_id: entry.from_file.group_id.clone(),
-                unlisted: false,
-                ..entry.clone()
-            })
-            .collect();
-        resolve(entries, self.file_warnings.clone(), overrides)
+        resolve(
+            self.unresolved.clone(),
+            self.file_warnings.clone(),
+            overrides,
+        )
+    }
+}
+
+/// An ignore decision whose radargram is no longer anywhere Ridal looks.
+///
+/// Not an error and not automatically cleared. An external root can be
+/// unmounted for a week and come back, and forgetting the decision because
+/// the disk was busy would quietly start serving something somebody chose
+/// not to serve. But a decision nothing can act on should be *visible*
+/// rather than accumulating silently, which is what this is for.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VestigialIgnore {
+    pub radargram_id: RadargramId,
+    pub since: Option<String>,
+}
+
+impl Catalog {
+    /// Ignore decisions about radargrams that are not currently found.
+    ///
+    /// Needs the raw discovery rather than `entries`, since an ignored
+    /// radargram is deliberately absent from those -- so this is computed
+    /// during discovery and kept.
+    pub fn vestigial_ignores(&self) -> &[VestigialIgnore] {
+        &self.vestigial_ignores
     }
 }
 
@@ -369,10 +523,40 @@ impl Catalog {
 /// names. The one place resolution happens, so discovery and re-resolution
 /// cannot disagree.
 fn resolve(
-    mut entries: Vec<CatalogEntry>,
+    unresolved: Vec<CatalogEntry>,
     file_warnings: Vec<CatalogWarning>,
     overrides: &CatalogOverrides,
 ) -> Catalog {
+    // Dropped here rather than during discovery, so both paths make the
+    // decision in the same place and lifting an ignore brings the radargram
+    // back without re-reading the disk. An ignored radargram is not an
+    // entry that happens to be hidden; it is one the project has said it
+    // does not serve.
+    let mut ignored_changed = Vec::new();
+    let mut entries: Vec<CatalogEntry> = unresolved
+        .iter()
+        .filter(|entry| {
+            let Some(decision) = overrides.ignored.get(&entry.radargram_id) else {
+                return true;
+            };
+            // Still ignored -- the decision is on the id, not the file, so
+            // replacing the file does not un-ignore it. But it is worth
+            // saying: something deliberately not shown becoming a different
+            // thing deliberately not shown is exactly the case where
+            // whoever made the decision would want to look again.
+            //
+            // Without this the recorded revision was inert: stored on the
+            // way in and never compared to anything.
+            if let Some(was) = &decision.revision_id {
+                if was != entry.revision_id.as_str() {
+                    ignored_changed.push((entry.radargram_id.clone(), was.clone()));
+                }
+            }
+            false
+        })
+        .cloned()
+        .collect();
+
     for entry in &mut entries {
         apply_override(entry, overrides);
     }
@@ -395,13 +579,52 @@ fn resolve(
         }
     }
 
-    let mut warnings = file_warnings.clone();
+    // A warning about a radargram the project does not serve is a report
+    // on a decision rather than a problem: two copies of an ignored id are
+    // two copies of something nobody sees.
+    let mut warnings: Vec<CatalogWarning> = file_warnings
+        .iter()
+        .filter(|warning| {
+            !warning
+                .about
+                .iter()
+                .any(|id| overrides.ignored.contains_key(id))
+        })
+        .cloned()
+        .collect();
     warnings.extend(group_warnings);
+
+    for (id, was) in ignored_changed {
+        warnings.push(CatalogWarning {
+            // Not in `about`: the radargram is in nobody's entries, so
+            // naming it there would hide this from everyone.
+            about: Vec::new(),
+            operator_only: true,
+            message: format!(
+                "'{id}' is ignored, and the file behind it has changed since that \
+                 decision was made (it was revision {was}). It is still not being \
+                 served; restore it if the new content should be."
+            ),
+        });
+    }
+
+    let vestigial_ignores = overrides
+        .ignored
+        .iter()
+        .filter(|(id, _)| !unresolved.iter().any(|e| &e.radargram_id == *id))
+        .map(|(id, ignored)| VestigialIgnore {
+            radargram_id: id.clone(),
+            since: ignored.since.clone(),
+        })
+        .collect();
+
     Catalog {
         entries,
+        unresolved,
         warnings,
         file_warnings,
         group_names,
+        vestigial_ignores,
     }
 }
 
@@ -483,6 +706,7 @@ fn resolve_group_names(
 
                     warnings.push(CatalogWarning {
                         about: vec![entry.radargram_id.clone(), existing_id.clone()],
+                        operator_only: false,
                         message: format!(
                             "Group '{id}' has disagreeing names: '{existing_name}' \
                              ('{existing_path}') and '{name}' ('{}'). Using the name from \
@@ -980,6 +1204,285 @@ mod tests {
         assert!(catalog.entries[0].unlisted);
     }
 
+    fn writable(path: &std::path::Path) -> CatalogRoot {
+        CatalogRoot {
+            path: path.to_path_buf(),
+            is_file: false,
+            writable: true,
+        }
+    }
+
+    fn read_only(path: &std::path::Path) -> CatalogRoot {
+        CatalogRoot {
+            path: path.to_path_buf(),
+            is_file: false,
+            writable: false,
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn the_project_wins_over_an_external_root_however_new_the_external_file_is() {
+        // The rule the overlay rests on, and a real change from the
+        // single-root behaviour. Without it an external file reprocessed
+        // later would silently override a deliberate in-project decision,
+        // and the project would not be an overlay at all -- it would just
+        // be another directory in the pile.
+        let project = tempfile::tempdir().unwrap();
+        let archive = tempfile::tempdir().unwrap();
+        process_to(
+            ASSET_2022,
+            &project.path().join("ours.nc"),
+            Some("shared"),
+            None,
+        );
+        process_to(
+            ASSET_2022,
+            &archive.path().join("theirs.nc"),
+            Some("shared"),
+            None,
+        );
+
+        // Make the external one unambiguously newer, which under the
+        // datetime rule alone would win.
+        {
+            let mut f = netcdf::append(archive.path().join("theirs.nc")).unwrap();
+            f.add_attribute("ridal_processing_datetime", "2099-01-01T00:00:00Z")
+                .unwrap();
+        }
+
+        let roots = [writable(project.path()), read_only(archive.path())];
+        let catalog = Catalog::discover_roots(&roots, &CatalogOverrides::default());
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.entries[0].root, 0, "the project's copy is served");
+        assert_eq!(catalog.entries[0].relative_path, "ours.nc");
+        // And it is not reported as a problem: the overlay winning is the
+        // arrangement working.
+        assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn two_external_roots_holding_one_id_is_still_a_duplicate() {
+        // The overlay rule is about layers, not about silencing duplicates.
+        // Two archives disagreeing is exactly what the warning is for, and
+        // there is no deliberate decision behind it to respect.
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        process_to(ASSET_2022, &first.path().join("a.nc"), Some("shared"), None);
+        process_to(
+            ASSET_2022,
+            &second.path().join("b.nc"),
+            Some("shared"),
+            None,
+        );
+
+        let roots = [read_only(first.path()), read_only(second.path())];
+        let catalog = Catalog::discover_roots(&roots, &CatalogOverrides::default());
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
+        assert!(catalog.warnings[0]
+            .message
+            .contains("Duplicate radargram ID"));
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn an_ignored_radargram_is_not_served_and_comes_back_when_the_decision_is_lifted() {
+        // Ignoring is how a radargram in a read-only archive is "removed":
+        // Ridal never writes below the project, so the only thing it can
+        // change is whether it serves the file.
+        let archive = tempfile::tempdir().unwrap();
+        process_to(
+            ASSET_2022,
+            &archive.path().join("a.nc"),
+            Some("line-01"),
+            None,
+        );
+        process_to(
+            ASSET_2022,
+            &archive.path().join("b.nc"),
+            Some("line-02"),
+            None,
+        );
+        let roots = [read_only(archive.path())];
+
+        let mut overrides = CatalogOverrides::default();
+        overrides.ignored.insert(
+            radargram("line-02"),
+            crate::project::overrides::IgnoredRadargram {
+                since: Some("2026-09-13T00:00:00Z".to_string()),
+                revision_id: None,
+            },
+        );
+
+        let catalog = Catalog::discover_roots(&roots, &overrides);
+        assert_eq!(
+            catalog
+                .entries
+                .iter()
+                .map(|e| e.radargram_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["line-01"]
+        );
+        assert!(
+            catalog.vestigial_ignores().is_empty(),
+            "the file is right there"
+        );
+
+        // Lifting the decision brings it back without re-reading the disk,
+        // which is what putting the filter in resolution buys.
+        let lifted = catalog.reresolved(&CatalogOverrides::default());
+        assert_eq!(lifted.entries.len(), 2);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn two_external_copies_still_warn_even_when_the_project_wins() {
+        // The overlay branch answers "which one is served". It must not
+        // also swallow the collision *between* the two that lost: there is
+        // no deliberate decision behind that one, and it is what the
+        // warning is for.
+        let project = tempfile::tempdir().unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for (dir, name) in [
+            (project.path(), "ours.nc"),
+            (first.path(), "a.nc"),
+            (second.path(), "b.nc"),
+        ] {
+            process_to(ASSET_2022, &dir.join(name), Some("shared"), None);
+        }
+
+        let roots = [
+            writable(project.path()),
+            read_only(first.path()),
+            read_only(second.path()),
+        ];
+        let catalog = Catalog::discover_roots(&roots, &CatalogOverrides::default());
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.entries[0].root, 0, "the project's copy is served");
+        assert_eq!(
+            catalog.warnings.len(),
+            1,
+            "the two externals collide and that is worth saying: {:?}",
+            catalog.warnings
+        );
+        let message = &catalog.warnings[0].message;
+        assert!(message.contains("Duplicate radargram ID"), "{message}");
+        assert!(
+            message.contains("a.nc") && message.contains("b.nc"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("ours.nc"),
+            "the project's copy is not part of that collision: {message}"
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn an_ignored_radargram_whose_file_changed_says_so_without_un_ignoring_it() {
+        // The decision is on the id, so a replaced file stays ignored. But
+        // something deliberately not shown becoming a *different* thing
+        // deliberately not shown is exactly when whoever decided would want
+        // to look again -- and the recorded revision was otherwise inert,
+        // stored on the way in and never compared to anything.
+        let archive = tempfile::tempdir().unwrap();
+        process_to(
+            ASSET_2022,
+            &archive.path().join("a.nc"),
+            Some("line-01"),
+            None,
+        );
+
+        let mut overrides = CatalogOverrides::default();
+        overrides.ignored.insert(
+            radargram("line-01"),
+            crate::project::overrides::IgnoredRadargram {
+                since: Some("2026-09-13T00:00:00Z".to_string()),
+                revision_id: Some("a-different-revision".to_string()),
+            },
+        );
+
+        let catalog = Catalog::discover_roots(&[read_only(archive.path())], &overrides);
+        assert!(catalog.entries.is_empty(), "still not served");
+        let changed: Vec<_> = catalog
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("has changed since"))
+            .collect();
+        assert_eq!(changed.len(), 1, "{:?}", catalog.warnings);
+        assert!(changed[0].operator_only, "only the person who decided");
+        assert!(
+            changed[0].about.is_empty(),
+            "naming it would hide the warning from everyone, since an \
+             ignored radargram is in nobody's listing"
+        );
+
+        // And when it has not changed, nothing is said.
+        let current = catalog.entries.first().map(|e| e.revision_id.to_string());
+        let _ = current;
+        let mut matching = CatalogOverrides::default();
+        let plain = Catalog::discover_roots(&[read_only(archive.path())], &matching);
+        let revision = plain.entries[0].revision_id.to_string();
+        matching.ignored.insert(
+            radargram("line-01"),
+            crate::project::overrides::IgnoredRadargram {
+                since: Some("2026-09-13T00:00:00Z".to_string()),
+                revision_id: Some(revision),
+            },
+        );
+        let quiet = Catalog::discover_roots(&[read_only(archive.path())], &matching);
+        assert!(
+            !quiet
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("has changed since")),
+            "{:?}",
+            quiet.warnings
+        );
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn an_ignore_with_nothing_to_act_on_is_listed_rather_than_forgotten() {
+        // An external root can be unmounted for a week and come back.
+        // Clearing the decision because the disk was busy would quietly
+        // start serving something somebody chose not to serve -- so it is
+        // kept, and made visible instead of accumulating silently.
+        let archive = tempfile::tempdir().unwrap();
+        process_to(
+            ASSET_2022,
+            &archive.path().join("a.nc"),
+            Some("line-01"),
+            None,
+        );
+
+        let mut overrides = CatalogOverrides::default();
+        overrides.ignored.insert(
+            radargram("long-gone"),
+            crate::project::overrides::IgnoredRadargram {
+                since: Some("2026-01-01T00:00:00Z".to_string()),
+                revision_id: None,
+            },
+        );
+
+        let catalog = Catalog::discover_roots(&[read_only(archive.path())], &overrides);
+        let vestigial = catalog.vestigial_ignores();
+        assert_eq!(vestigial.len(), 1);
+        assert_eq!(vestigial[0].radargram_id.as_str(), "long-gone");
+        assert_eq!(vestigial[0].since.as_deref(), Some("2026-01-01T00:00:00Z"));
+        // Still ignored, not quietly dropped.
+        assert_eq!(catalog.entries.len(), 1);
+    }
+
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
@@ -1107,6 +1610,7 @@ mod tests {
             processing_datetime: "2020-01-01T00:00:00Z".to_string(),
             shape: (10, 10),
             relative_path: "a.nc".to_string(),
+            root: 0,
             unlisted: false,
             from_file: FileMetadata::default(),
         };

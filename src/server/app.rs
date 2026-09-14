@@ -12,7 +12,7 @@ use axum::routing::get;
 use axum::Router;
 use tokio::sync::Semaphore;
 
-use super::catalog::{Catalog, RevisionId};
+use super::catalog::{Catalog, CatalogRoot, RevisionId};
 use crate::identity::RadargramId;
 use crate::server::render_service::{RenderService, RenderServiceConfig};
 use crate::source::{AmplitudeSource, SourceReader};
@@ -58,19 +58,12 @@ impl Default for AccessOptions {
 }
 
 pub struct AppState {
-    pub root: PathBuf,
-    /// Whether `root` itself names a single NetCDF file rather than a
-    /// catalog directory, decided once here from the freshly canonicalized
-    /// `root` so `resolve_absolute_path` never has to stat `root` itself --
-    /// it only ever touches the filesystem via the join-then-canonicalize
-    /// sequence applied to `candidate`, which is the pattern CodeQL's
-    /// path-injection analysis already recognises as validated. A raw
-    /// `root.is_file()` inside `resolve_absolute_path` kept getting
-    /// re-flagged even after `root` was canonicalized, because that
-    /// canonicalization happened in a different function than the sink --
-    /// CodeQL doesn't credit a barrier it can't see next to the check it
-    /// guards.
-    root_is_file: bool,
+    /// Every place radargrams are found, the served tree first (#147).
+    ///
+    /// A list rather than one path because a project may point at archives
+    /// outside itself. The first is the writable upper layer; the rest are
+    /// read-only lower ones, and the upper layer wins where they overlap.
+    pub roots: Vec<CatalogRoot>,
     /// The catalog and its render services, swappable at runtime (#147).
     ///
     /// One lock over both, not one each. Two locks taken in a fixed order
@@ -163,11 +156,64 @@ impl AppState {
             .as_ref()
             .map(|p| crate::project::overrides::read_lenient(p.documents()))
             .unwrap_or_default();
-        let catalog = Catalog::discover_with_overrides(root, &overrides);
+
+        // The served tree first, then anything `[radargrams] roots` points
+        // at (#147). What makes a root writable is being *inside the
+        // project*, not being the path the CLI was given: `ridal gui
+        // project/radargrams/line.nc` discovers the project upwards, and
+        // `project/radargrams` does not start with that file — so keying
+        // off the served path marked the project's own directory read-only
+        // and every radargram in it as not in the project.
+        let project_root = project
+            .as_ref()
+            .map(|p| p.root().to_path_buf())
+            .and_then(|p| p.canonicalize().ok());
+        let owned = |path: &StdPath| {
+            project_root
+                .as_ref()
+                .is_some_and(|inside| path.starts_with(inside))
+        };
+
+        let mut roots = vec![CatalogRoot {
+            path: root.to_path_buf(),
+            is_file: root_is_file,
+            writable: owned(root),
+        }];
+        if let Some(project) = &project {
+            for extra in project.radargram_roots() {
+                // Canonicalized here, next to the containment checks it
+                // feeds, so a symlinked root cannot look external and then
+                // resolve back inside -- or the reverse.
+                let Ok(extra) = extra.canonicalize() else {
+                    eprintln!(
+                        "Warning: radargram root {} does not exist and was skipped.",
+                        extra.display()
+                    );
+                    continue;
+                };
+                // Already covered by the served tree. Scanning it twice
+                // would make every radargram in it its own duplicate.
+                if extra.starts_with(root) {
+                    continue;
+                }
+                let is_file = extra.is_file();
+                let writable = owned(&extra);
+                roots.push(CatalogRoot {
+                    path: extra,
+                    is_file,
+                    writable,
+                });
+            }
+        }
+
+        let catalog = Catalog::discover_roots(&roots, &overrides);
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
-            let absolute_path = match Self::resolve_absolute_path(root, root_is_file, entry) {
+            let Some(entry_root) = roots.get(entry.root) else {
+                continue;
+            };
+            let absolute_path = match Self::resolve_absolute_path(entry_root, entry) {
                 Ok(path) => path,
                 Err(e) => {
                     eprintln!(
@@ -200,8 +246,7 @@ impl AppState {
         }
 
         Ok(Self {
-            root: root.to_path_buf(),
-            root_is_file,
+            roots,
             snapshot: RwLock::new(Arc::new(CatalogSnapshot {
                 catalog,
                 radargrams,
@@ -219,18 +264,25 @@ impl AppState {
     /// Resolves a catalog entry beneath the canonical catalog root.
     ///
     /// Rejects absolute paths, parent-directory components, and paths whose
-    /// canonical form escapes the catalog root, including through symlinks.
-    /// `root_is_file` is `root.is_file()`, decided once in [`Self::build`]
-    /// against the freshly canonicalized root rather than re-stated here --
-    /// see the field doc on [`AppState::root_is_file`].
+    /// canonical form escapes the root, including through symlinks.
+    ///
+    /// `CatalogRoot::is_file` was decided once against a freshly
+    /// canonicalized path rather than being re-stated here: this function
+    /// then only ever touches the filesystem through the
+    /// join-then-canonicalize sequence applied to `candidate`, which is the
+    /// pattern CodeQL's path-injection analysis recognises as validated. A
+    /// raw `is_file()` inside kept getting re-flagged even against a
+    /// canonicalized root, because the canonicalization happened in a
+    /// different function from the sink and CodeQL does not credit a
+    /// barrier it cannot see next to the check it guards.
     fn resolve_absolute_path(
-        root: &StdPath,
-        root_is_file: bool,
+        root: &CatalogRoot,
         entry: &super::catalog::CatalogEntry,
     ) -> Result<PathBuf, String> {
-        if root_is_file {
-            return Ok(root.to_path_buf());
+        if root.is_file {
+            return Ok(root.path.clone());
         }
+        let root = root.path.as_path();
 
         let mut candidate = root.to_path_buf();
         for component in StdPath::new(&entry.relative_path).components() {
@@ -263,7 +315,21 @@ impl AppState {
     /// HTTP clients directly (#122: "keep filesystem paths internal") --
     /// only used server-side, e.g. to re-open a file for track reading.
     pub fn absolute_path(&self, entry: &super::catalog::CatalogEntry) -> Result<PathBuf, String> {
-        Self::resolve_absolute_path(&self.root, self.root_is_file, entry)
+        let root = self
+            .roots
+            .get(entry.root)
+            .ok_or_else(|| format!("entry names root {}, which is not served", entry.root))?;
+        Self::resolve_absolute_path(root, entry)
+    }
+
+    /// Whether Ridal may write to the root this entry came from.
+    ///
+    /// False for every external root, always. The project is the writable
+    /// upper layer and an external archive is a read-only lower one -- not
+    /// "unless an admin unlocks it", never -- so the same UI can be offered
+    /// over both without a wrong click there meaning something different.
+    pub fn is_writable(&self, entry: &super::catalog::CatalogEntry) -> bool {
+        self.roots.get(entry.root).is_some_and(|root| root.writable)
     }
 
     /// The key that signs this project's session cookies, creating it on
@@ -1157,7 +1223,7 @@ mod tests {
             // A second radargram appears on disk after startup, which today
             // would need a restart to notice.
             write_test_nc(&dir.path().join("b.nc"), "second");
-            let catalog = crate::server::catalog::Catalog::discover(&state.root);
+            let catalog = crate::server::catalog::Catalog::discover(&state.roots[0].path);
             assert_eq!(catalog.entries.len(), 2, "the rediscovery found both");
             let services = state.catalog().open_radargrams();
             state.replace_catalog(catalog, services);

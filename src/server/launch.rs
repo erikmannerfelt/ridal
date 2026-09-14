@@ -90,23 +90,23 @@ async fn serve(
                     crate::identity::DEFAULT_USER
                 );
             }
-            // Any configured radargram root outside the served tree is not
-            // scanned yet. Saying so is better than a config key that looks
-            // honoured and is not.
-            for extra in project.radargram_roots() {
-                if !extra.starts_with(project.root()) {
-                    eprintln!(
-                        "Warning: radargram root {} is outside the project and is not \
-                         scanned yet; only the project tree is indexed.",
-                        extra.display()
-                    );
-                }
-            }
         }
         (Some(project), false) => {
             println!("Project {} (read-only)", project.root().display())
         }
         (None, _) => println!("No project here; interpretations cannot be saved."),
+    }
+
+    // Every root Ridal will not write to, whatever made it read-only: a
+    // directory outside the project, or `--read-only` making all of them
+    // so. Outside the match above, because the previous version sat in the
+    // writable-project arm and a read-only server said nothing about the
+    // archives it was serving.
+    for root in state.roots.iter().filter(|root| !root.writable) {
+        println!(
+            "  {} (read-only; Ridal never writes outside the project)",
+            root.path.display()
+        );
     }
 
     let router = super::app::build_router(state);
