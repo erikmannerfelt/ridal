@@ -856,6 +856,20 @@ impl GPR {
     /// of an uncorrected file: its travel times are measured from whenever
     /// the instrument started sampling.
     ///
+    /// On the **same clock as the crop**, not an offset from sample 0. A
+    /// zero correction therefore sets this *equal to* `crop_ns` rather
+    /// than to zero — sample 0 becomes the pulse, so the travel time of
+    /// sample 0 is zero. Expecting `0` here after a correction is the
+    /// natural reading and the wrong one, and it matters: under that
+    /// reading a corrected and an uncorrected radargram would be
+    /// indistinguishable, and carrying picks between them would report no
+    /// movement while the data had shifted by the whole correction. That
+    /// bug was reported against real data before this paragraph existed.
+    ///
+    /// The zero sentinel is what
+    /// [`crate::interp::anchors::twtt_axis`] reads to decide that a
+    /// radargram has no anchored travel-time axis at all.
+    ///
     /// Named `time_zero` rather than `t0` on purpose. gprinterp's `t0` for
     /// the `twtt` axis is **neither this nor the crop** -- it is their
     /// difference, `crop - time_zero`, the travel-time value of sample 0 --

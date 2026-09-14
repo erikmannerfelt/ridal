@@ -181,7 +181,7 @@ fn source_revision(document: &gprinterp::Document) -> Option<String> {
 /// ridal's type exists to *serialize* to it, so the JSON is the shared
 /// definition; a hand-written conversion would be a second, silently
 /// diverging copy of a shape the SPEC already fixes.
-fn target_axes(axes: &Axes) -> Option<gprinterp::RevisionAxes> {
+fn target_axes(axes: &Axes) -> Result<gprinterp::RevisionAxes, &'static str> {
     let pull = |axis: &Option<crate::interp::anchors::Axis>| -> Vec<gprinterp::AnchorAxis> {
         axis.as_ref()
             .map(|axis| {
@@ -198,10 +198,26 @@ fn target_axes(axes: &Axes) -> Option<gprinterp::RevisionAxes> {
     };
     let x = pull(&axes.x);
     let y = pull(&axes.y);
-    if x.is_empty() || y.is_empty() {
-        return None;
+    // Named separately, because the two are missing for different reasons
+    // and only one of them is common. A `y` axis is absent when time zero
+    // has never been located — no zero correction has run — and "this
+    // radargram does not describe its axes" would send someone looking for
+    // a problem in the wrong place.
+    match (x.is_empty(), y.is_empty()) {
+        (false, false) => Ok(gprinterp::RevisionAxes { x, y }),
+        (true, true) => Err("this revision describes neither of its axes"),
+        (true, false) => Err("this revision does not describe its trace axis"),
+        // Deliberately not "time zero was never located". That was the
+        // only way to have no `y` axis when this message was written; an
+        // uncorrected revision now offers `recording_time`, so reaching
+        // here means something else -- a per-trace crop, an unusable
+        // sample interval -- and naming the wrong cause sends the reader
+        // looking in the wrong place.
+        (false, true) => Err(
+            "this revision offers no usable sample axis: neither a travel time nor \
+             the recording clock could be described for it",
+        ),
     }
-    Some(gprinterp::RevisionAxes { x, y })
 }
 
 /// Give a document the axes a snapshot preserved, when it carries none.
@@ -265,9 +281,23 @@ pub fn with_snapshot_axes(
             "values": values,
         })
     };
+    // Both of the revision's `y` anchors where it had two. Offering only
+    // the preferred one left a corrected revision's snapshot unable to
+    // relate to an uncorrected revision, which has only the recording
+    // clock -- no shared anchor, though both files have that mapping and
+    // it is exact.
+    let mut y = vec![explicit(y_anchor, &snapshot.y_values, "ns")];
+    if let Some(alternate) = &snapshot.y_alternate {
+        let shifted: Vec<f64> = snapshot
+            .y_values
+            .iter()
+            .map(|v| v + alternate.offset)
+            .collect();
+        y.push(explicit(&alternate.name, &shifted, "ns"));
+    }
     let axes = serde_json::json!({
         "x": {"anchor": [explicit("trace_time", &snapshot.x_values, "s")]},
-        "y": {"anchor": [explicit(y_anchor, &snapshot.y_values, "ns")]},
+        "y": {"anchor": y},
     });
 
     let mut out = document.clone();
@@ -387,14 +417,17 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
         };
     }
 
-    let Some(target) = target_axes(axes) else {
-        return refuse(
-            "this revision does not describe its anchor axes".to_string(),
-            "This radargram does not say what its axes mean, so picks drawn on an \
-             earlier revision cannot be placed on it. They are shown on the revision \
-             they were drawn on, or not at all."
-                .to_string(),
-        );
+    let target = match target_axes(axes) {
+        Ok(target) => target,
+        Err(why) => {
+            return refuse(
+                why.to_string(),
+                format!(
+                    "These picks were drawn on an earlier version and cannot be placed \
+                     on this one, because {why}. They are kept exactly as drawn."
+                ),
+            )
+        }
     };
 
     let outcome = match gprinterp::reanchor(document, &target) {
@@ -615,6 +648,7 @@ mod tests {
             y_anchor: Some("twtt".to_string()),
             y_values: (0..64).map(|i| f64::from(i)).collect(),
             x_values: (0..64).map(|i| 1_000.0 + f64::from(i)).collect(),
+            y_alternate: None,
         };
         let rescued = with_snapshot_axes(&doc, &snapshot);
         let carried = carry(&rescued, &now, "rev-b");
@@ -633,6 +667,61 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_lends_both_of_its_anchors() {
+        // A corrected revision prefers `twtt`, so its snapshot stored only
+        // that -- and a document rescued from it could then not be shown
+        // on an *uncorrected* revision, which offers only the recording
+        // clock. No shared anchor, though both files have that mapping and
+        // it is exact.
+        let drawn_on = axes(0.0, 0.0, "twtt");
+        let mut doc = document("rev-a", &drawn_on, &[(2.0, 3.0)]);
+        doc.coordinates = None;
+
+        let snapshot = crate::project::revisions::AxisSnapshot {
+            radargram_id: "line-01".to_string(),
+            revision_id: "rev-a".to_string(),
+            y_anchor: Some("twtt".to_string()),
+            y_values: (0..64).map(f64::from).collect(),
+            x_values: (0..64).map(|i| 1_000.0 + f64::from(i)).collect(),
+            // Time zero sat 50 ns into the recording.
+            y_alternate: Some(crate::project::revisions::AlternateAnchor {
+                name: "recording_time".to_string(),
+                offset: 50.0,
+            }),
+        };
+        let rescued = with_snapshot_axes(&doc, &snapshot);
+        let names: Vec<String> = rescued
+            .coordinates
+            .as_ref()
+            .unwrap()
+            .axes
+            .as_ref()
+            .unwrap()
+            .y
+            .as_ref()
+            .unwrap()
+            .anchors()
+            .iter()
+            .map(|a| a.name.clone())
+            .collect();
+        assert_eq!(names, vec!["twtt", "recording_time"]);
+
+        // And it carries onto a revision that has only the clock.
+        let uncorrected = Axes {
+            x: Some(regular("trace_time", "s", 1_000.0, 1.0)),
+            y: Some(regular("recording_time", "ns", 0.0, 1.0)),
+        };
+        let carried = carry(&rescued, &uncorrected, "rev-b");
+        assert_ne!(
+            carried.report.severity,
+            Severity::Refused,
+            "{}",
+            carried.report.headline
+        );
+        assert_eq!(carried.report.y_anchor.as_deref(), Some("recording_time"));
+    }
+
+    #[test]
     fn a_snapshot_that_never_named_its_anchor_lends_nothing() {
         // Numbers alone cannot say whether they are travel time or a
         // recording clock, and guessing is the mistake §8.3 is about.
@@ -645,6 +734,7 @@ mod tests {
             y_anchor: None,
             y_values: (0..64).map(f64::from).collect(),
             x_values: (0..64).map(|i| 1_000.0 + f64::from(i)).collect(),
+            y_alternate: None,
         };
         assert_eq!(with_snapshot_axes(&doc, &snapshot), doc);
     }

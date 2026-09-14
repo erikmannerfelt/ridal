@@ -39,6 +39,17 @@
                     data-edit-properties="{{ e.radargram_id }}"
                     data-edit-label="{{ e.effective_label }}">Edit properties</button>
           </li>
+          {#- Only for a radargram the project owns. Replacing one in an
+              external root would mean writing outside the project, which
+              Ridal never does -- so the item is absent rather than
+              present and refusing. -#}
+          {% if e.in_project %}
+          <li>
+            <button type="button"
+                    data-replace-radargram="{{ e.radargram_id }}"
+                    data-replace-label="{{ e.effective_label }}">Replace with a new version&hellip;</button>
+          </li>
+          {% endif %}
           {#- Two different words for two different things. A radargram in
               the project is a file Ridal can delete; one in an external
               root is not, and calling both "Remove" would promise
@@ -307,6 +318,32 @@
   {% if can_edit_project %}
   {#- Removal asks first, and says what it will do, because the two cases
       differ and the difference is not obvious from the button alone. -#}
+  {#- What replacing this radargram would do, before it does any of it.
+      The upload happens first -- what it costs cannot be known until the
+      new file has been read -- and this is where the operator decides
+      whether to keep it. Closing without confirming discards it. -#}
+  <dialog id="replace-dialog">
+    <h2 id="replace-title">Replace radargram</h2>
+    <p id="replace-status" class="hint"></p>
+    {#- An explicit control rather than only the automatic one that opens
+        with the dialog. Cancelling the operating system's file chooser
+        fires no `change` event, so without this the dialog sat there with
+        nothing chosen and no way back to the chooser except closing and
+        reopening it. -#}
+    <p>
+      <button type="button" id="replace-choose">Choose file&hellip;</button>
+    </p>
+    <p id="replace-headline"></p>
+    <div id="replace-detail"></div>
+    <p id="replace-error" class="warning" hidden></p>
+    <p>
+      <button type="button" id="replace-confirm" class="danger" disabled>Replace</button>
+      <button type="button" id="replace-close">Cancel</button>
+    </p>
+  </dialog>
+
+  <input type="file" id="replace-radargram-file" accept=".nc" hidden>
+
   <dialog id="remove-dialog">
     <h2 id="remove-title">Remove radargram</h2>
     <p id="remove-explain" class="hint"></p>
