@@ -601,9 +601,12 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const detail = document.getElementById('replace-detail');
   const errorBox = document.getElementById('replace-error');
   const confirm = document.getElementById('replace-confirm');
+  const choose = document.getElementById('replace-choose');
 
   let radargramId = null;
   let token = null;
+  let busy = false;
+  let committing = false;
 
   const TIER_WORDS = {
     current: 'unchanged',
@@ -625,6 +628,18 @@ document.querySelectorAll('.group-map').forEach((el) => {
     headline.textContent = '';
     detail.replaceChildren();
     status.textContent = '';
+  }
+
+  /** Nothing may be started while something is in flight.
+   *
+   * Both the upload and the commit take as long as a radargram takes to
+   * move, and during that time every control here would start a second
+   * one. The confirm button was already disabled while uploading, but
+   * nothing said so on screen — see the `:disabled` rule in app.css. */
+  function setBusy(value) {
+    busy = value;
+    choose.disabled = value;
+    if (value) confirm.disabled = true;
   }
 
   /** Give back a staged file nobody is going to commit.
@@ -715,6 +730,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       status.textContent =
         'Choose the processed .nc file to put behind this radargram. Nothing ' +
         'changes until you confirm.';
+      setBusy(false);
       dialog.showModal();
       picker.click();
     });
@@ -726,7 +742,12 @@ document.querySelectorAll('.group-map').forEach((el) => {
     if (!file || !radargramId) return;
 
     reset();
-    status.textContent = `Checking ${file.name}…`;
+    setBusy(true);
+    // "Uploading and checking" rather than "Checking": the radargram has
+    // to cross the network before anything can be read from it, and on a
+    // file of this size that is nearly all of the wait. Saying only
+    // "Checking" made a transfer look like a hang.
+    status.textContent = `Uploading and checking ${file.name}…`;
     try {
       const response = await fetch(
         `${RIDAL.apiPath('datasets', radargramId, 'replace')}` +
@@ -735,7 +756,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       );
       const body = await response.json().catch(() => null);
       if (!response.ok) {
-        status.textContent = '';
+        status.textContent = 'Choose another file, or cancel.';
         fail(body?.error?.message || `Could not read it (${response.status}).`);
         return;
       }
@@ -743,14 +764,33 @@ document.querySelectorAll('.group-map').forEach((el) => {
       status.textContent = `${file.name} is ready. This is what replacing would do:`;
       render(body.report);
     } catch (error) {
-      status.textContent = '';
+      status.textContent = 'Choose another file, or cancel.';
       fail(`Could not upload it (${error.message}).`);
+    } finally {
+      setBusy(false);
     }
   });
 
+  choose.addEventListener('click', () => {
+    if (busy) return;
+    picker.click();
+  });
+
+  // Cancelling the operating system's file chooser fires this rather than
+  // `change`, so without it the dialog said "Uploading and checking…" for
+  // a file that was never chosen — or, before that message existed, sat
+  // silently offering Replace and Cancel with nothing to replace.
+  picker.addEventListener('cancel', () => {
+    if (token) return;
+    status.textContent =
+      'No file chosen. Choose one to see what replacing would do, or cancel ' +
+      'to leave this radargram as it is.';
+  });
+
   confirm.addEventListener('click', async () => {
-    if (!token || !radargramId) return;
-    confirm.disabled = true;
+    if (!token || !radargramId || busy) return;
+    setBusy(true);
+    committing = true;
     status.textContent = 'Replacing…';
     try {
       const response = await fetch(
@@ -761,12 +801,16 @@ document.querySelectorAll('.group-map').forEach((el) => {
         const body = await response.json().catch(() => null);
         status.textContent = '';
         fail(body?.error?.message || `Could not replace it (${response.status}).`);
+        committing = false;
+        setBusy(false);
         confirm.disabled = false;
         return;
       }
     } catch (error) {
       status.textContent = '';
       fail(`Could not replace it (${error.message}).`);
+      committing = false;
+      setBusy(false);
       confirm.disabled = false;
       return;
     }
@@ -776,11 +820,22 @@ document.querySelectorAll('.group-map').forEach((el) => {
   });
 
   document.getElementById('replace-close').addEventListener('click', () => {
+    // Cancelling during the *upload* is fine, and has to be: a radargram
+    // takes as long as it takes, and nobody should be held in a modal
+    // waiting for one. Cancelling during the commit is not — discarding
+    // then would delete the staged file out from under the request that
+    // is installing it.
+    if (committing) return;
     discard();
     dialog.close();
   });
   // Escape, or any other way out. A staged file that nobody committed is
-  // occupying the project's disk for no reason.
-  dialog.addEventListener('close', discard);
+  // occupying the project's disk for no reason -- unless a commit is
+  // using it, which is the one case where letting go would break the
+  // thing it is trying to finish.
+  dialog.addEventListener('close', () => {
+    if (committing) return;
+    discard();
+  });
   window.addEventListener('pagehide', discard);
 })();

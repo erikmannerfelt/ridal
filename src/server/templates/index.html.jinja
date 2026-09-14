@@ -325,6 +325,14 @@
   <dialog id="replace-dialog">
     <h2 id="replace-title">Replace radargram</h2>
     <p id="replace-status" class="hint"></p>
+    {#- An explicit control rather than only the automatic one that opens
+        with the dialog. Cancelling the operating system's file chooser
+        fires no `change` event, so without this the dialog sat there with
+        nothing chosen and no way back to the chooser except closing and
+        reopening it. -#}
+    <p>
+      <button type="button" id="replace-choose">Choose file&hellip;</button>
+    </p>
     <p id="replace-headline"></p>
     <div id="replace-detail"></div>
     <p id="replace-error" class="warning" hidden></p>
