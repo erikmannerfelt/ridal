@@ -901,6 +901,15 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::lifecycle_routes::list_revisions),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/replace",
+            axum::routing::post(super::replace_routes::stage_replacement),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/replace/{token}",
+            axum::routing::post(super::replace_routes::commit_replacement)
+                .delete(super::replace_routes::discard_replacement),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/restore",
             axum::routing::post(super::lifecycle_routes::restore_dataset),
         )

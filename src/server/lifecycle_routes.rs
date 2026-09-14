@@ -679,7 +679,7 @@ fn snapshot_axes(
     Ok(())
 }
 
-fn too_large(needed: u64, room: u64, cap: u64) -> ApiError {
+pub(super) fn too_large(needed: u64, room: u64, cap: u64) -> ApiError {
     ApiError::payload_too_large(
         "project_full",
         format!(
@@ -718,10 +718,10 @@ fn human(bytes: u64) -> String {
 /// unreadable, not a Ridal radargram, colliding id — and each one used to
 /// need its own cleanup. Tying it to the scope means a new refusal cannot
 /// forget.
-struct TempFile(std::path::PathBuf);
+pub(super) struct TempFile(pub(super) std::path::PathBuf);
 
 impl TempFile {
-    fn installed(mut self) {
+    pub(super) fn installed(mut self) {
         self.0.clear();
     }
 }
@@ -735,7 +735,7 @@ impl Drop for TempFile {
     }
 }
 
-fn uuid() -> String {
+pub(super) fn uuid() -> String {
     // Enough to not collide between two concurrent uploads, which is all
     // this needs: the file is renamed to its real name within the request.
     format!(
@@ -754,7 +754,7 @@ fn uuid() -> String {
 /// checked first because refusing before writing anything is better, but it
 /// is a claim: a client can under-report it or omit it entirely, and a
 /// chunked upload has none at all.
-async fn stream_to_file(
+pub(super) async fn stream_to_file(
     body: axum::body::Body,
     path: &std::path::Path,
     room: u64,

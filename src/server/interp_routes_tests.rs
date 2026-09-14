@@ -50,6 +50,20 @@ fn write_test_nc(path: &StdPath, radargram_id: &str) {
 /// depth and positions, so those are written here rather than bloating the
 /// fixture every other test uses.
 pub(super) fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group: Option<&str>) {
+    write_test_nc_with_axes_at(path, radargram_id, group, "2020-01-01T00:00:00Z")
+}
+
+/// The same, with the processing datetime chosen.
+///
+/// The revision id is `hash(radargram_id + processing_datetime)`, so this
+/// is what makes two fixtures two *revisions* of one radargram rather than
+/// two files that collide on one id.
+pub(super) fn write_test_nc_with_axes_at(
+    path: &StdPath,
+    radargram_id: &str,
+    group: Option<&str>,
+    processing_datetime: &str,
+) {
     let (n_samples, n_traces) = (8usize, 40usize);
     let mut file = netcdf::create(path).unwrap();
     file.add_dimension("y", n_samples).unwrap();
@@ -99,7 +113,7 @@ pub(super) fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group:
         )
         .unwrap();
 
-    file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+    file.add_attribute("ridal_processing_datetime", processing_datetime)
         .unwrap();
     file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
         .unwrap();

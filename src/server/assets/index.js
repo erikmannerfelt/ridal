@@ -577,3 +577,210 @@ document.querySelectorAll('.group-map').forEach((el) => {
     window.location.reload();
   });
 })();
+
+/* --- Replace a radargram with a new version (#148) ------------------------
+ *
+ * Two requests, because what a replace costs cannot be known until the new
+ * file has been read. The upload stages it and comes back with a report;
+ * this dialog shows the report and the operator commits or discards it.
+ *
+ * Committing is the destructive step -- the old file goes -- so the button
+ * stays disabled until there is a staged replacement to commit, and
+ * closing the dialog any other way discards what was staged rather than
+ * leaving it in the project.
+ */
+(function setupReplaceRadargram() {
+  const dialog = document.getElementById('replace-dialog');
+  const picker = document.getElementById('replace-radargram-file');
+  const buttons = [...document.querySelectorAll('button[data-replace-radargram]')];
+  if (!dialog || !picker || buttons.length === 0) return;
+
+  const title = document.getElementById('replace-title');
+  const status = document.getElementById('replace-status');
+  const headline = document.getElementById('replace-headline');
+  const detail = document.getElementById('replace-detail');
+  const errorBox = document.getElementById('replace-error');
+  const confirm = document.getElementById('replace-confirm');
+
+  let radargramId = null;
+  let token = null;
+
+  const TIER_WORDS = {
+    current: 'unchanged',
+    carried: 'carries cleanly',
+    approximate: 'moves',
+    partial: 'partly outside the new version',
+    refused: 'cannot be shown',
+  };
+
+  const fail = (message) => {
+    errorBox.textContent = message;
+    errorBox.hidden = false;
+  };
+
+  function reset() {
+    token = null;
+    confirm.disabled = true;
+    errorBox.hidden = true;
+    headline.textContent = '';
+    detail.replaceChildren();
+    status.textContent = '';
+  }
+
+  /** Give back a staged file nobody is going to commit.
+   *
+   * Best effort: the sweep catches it either way, and an operator who has
+   * closed the dialog should not be shown a failure about cleanup. */
+  function discard() {
+    if (!token || !radargramId) return;
+    const url = `${RIDAL.apiPath('datasets', radargramId, 'replace')}/${token}`;
+    // `keepalive` so it still goes if the page is on its way out.
+    fetch(url, { method: 'DELETE', keepalive: true }).catch(() => {});
+    token = null;
+  }
+
+  function render(report) {
+    headline.textContent = report.headline || '';
+
+    const rows = [];
+    if (report.shape) {
+      const s = report.shape;
+      rows.push([
+        'Size',
+        s.changed
+          ? `${s.from_traces} × ${s.from_samples} → ${s.to_traces} × ${s.to_samples}`
+          : `${s.to_traces} × ${s.to_samples} (unchanged)`,
+      ]);
+    }
+    rows.push(['New version', report.to_revision]);
+    if (!report.outgoing_axes_kept) {
+      rows.push([
+        'Current version',
+        'does not describe its axes, so its mapping cannot be kept',
+      ]);
+    }
+    if (report.documents.length === 0) {
+      rows.push(['Picks', 'none']);
+    }
+    for (const d of report.documents) {
+      const moved = d.moved
+        ? ` (up to ${d.moved.worst_traces.toFixed(1)} traces, ` +
+          `${d.moved.worst_samples.toFixed(1)} samples)`
+        : '';
+      const left = d.dropped && d.dropped.length > 0
+        ? ` — ${d.dropped.length} left out`
+        : '';
+      rows.push([
+        `Picks by ${d.user}`,
+        `${TIER_WORDS[d.severity] || d.severity}${moved}${left}`,
+      ]);
+    }
+
+    const dl = document.createElement('dl');
+    dl.className = 'replace-detail';
+    for (const [term, value] of rows) {
+      const dt = document.createElement('dt');
+      dt.textContent = term;
+      const dd = document.createElement('dd');
+      dd.textContent = value;
+      dl.append(dt, dd);
+    }
+    detail.replaceChildren(dl);
+
+    // The one case that is not a caveat but a refusal. Committing would
+    // leave every pick drawn on the current version impossible to place on
+    // anything, ever, because the mapping that relates them is about to be
+    // deleted along with the file.
+    const stopped =
+      report.revision_id_collision ||
+      (!report.outgoing_axes_kept && report.documents.length > 0);
+    confirm.disabled = stopped;
+    if (stopped) {
+      fail(
+        report.revision_id_collision
+          ? 'Reprocess the new file so it gets its own processing date, then try again.'
+          : 'This replace is refused because the current version has no mapping to keep.',
+      );
+    }
+  }
+
+  for (const button of buttons) {
+    button.addEventListener('click', () => {
+      const menu = button.closest('details.site-menu');
+      if (menu) menu.open = false;
+      discard();
+      reset();
+      radargramId = button.dataset.replaceRadargram;
+      title.textContent = `Replace ${button.dataset.replaceLabel || radargramId}?`;
+      status.textContent =
+        'Choose the processed .nc file to put behind this radargram. Nothing ' +
+        'changes until you confirm.';
+      dialog.showModal();
+      picker.click();
+    });
+  }
+
+  picker.addEventListener('change', async () => {
+    const file = picker.files && picker.files[0];
+    picker.value = '';
+    if (!file || !radargramId) return;
+
+    reset();
+    status.textContent = `Checking ${file.name}…`;
+    try {
+      const response = await fetch(
+        `${RIDAL.apiPath('datasets', radargramId, 'replace')}` +
+          `?filename=${encodeURIComponent(file.name)}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file },
+      );
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        status.textContent = '';
+        fail(body?.error?.message || `Could not read it (${response.status}).`);
+        return;
+      }
+      token = body.token;
+      status.textContent = `${file.name} is ready. This is what replacing would do:`;
+      render(body.report);
+    } catch (error) {
+      status.textContent = '';
+      fail(`Could not upload it (${error.message}).`);
+    }
+  });
+
+  confirm.addEventListener('click', async () => {
+    if (!token || !radargramId) return;
+    confirm.disabled = true;
+    status.textContent = 'Replacing…';
+    try {
+      const response = await fetch(
+        `${RIDAL.apiPath('datasets', radargramId, 'replace')}/${token}`,
+        { method: 'POST' },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        status.textContent = '';
+        fail(body?.error?.message || `Could not replace it (${response.status}).`);
+        confirm.disabled = false;
+        return;
+      }
+    } catch (error) {
+      status.textContent = '';
+      fail(`Could not replace it (${error.message}).`);
+      confirm.disabled = false;
+      return;
+    }
+    // Committed, so there is nothing staged left to give back.
+    token = null;
+    window.location.reload();
+  });
+
+  document.getElementById('replace-close').addEventListener('click', () => {
+    discard();
+    dialog.close();
+  });
+  // Escape, or any other way out. A staged file that nobody committed is
+  // occupying the project's disk for no reason.
+  dialog.addEventListener('close', discard);
+  window.addEventListener('pagehide', discard);
+})();

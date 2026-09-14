@@ -1739,3 +1739,28 @@ button.danger:hover {
 .carry-banner dd {
   margin: 0;
 }
+
+/* The consequence report inside the replace dialog (#148).
+ *
+ * Two columns so the question and its answer line up down the page: an
+ * operator reads this to find the one row that is not "carries cleanly",
+ * and a paragraph would hide it. */
+.replace-detail {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+}
+
+.replace-detail dt {
+  font-weight: 600;
+}
+
+.replace-detail dd {
+  margin: 0;
+}
+
+#replace-dialog {
+  max-width: 40rem;
+}

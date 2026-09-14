@@ -3016,3 +3016,343 @@ async fn a_removal_is_refused_when_the_axes_it_declares_cannot_be_kept() {
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
     assert!(!dir.path().join("radargrams/ours.nc").exists());
 }
+
+/// The bytes of a radargram processed with the given id, for an upload.
+///
+/// A later processing datetime than the fixtures `lifecycle_app` installs,
+/// so this really is a *new revision* of that radargram: the revision id is
+/// `hash(radargram_id + processing_datetime)`, and reusing the datetime
+/// would make it the same revision wearing different bytes.
+fn staged_bytes(id: &str) -> Vec<u8> {
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("new.nc");
+    super::interp_routes_tests::write_test_nc_with_axes_at(
+        &source,
+        id,
+        None,
+        "2026-06-01T00:00:00Z",
+    );
+    std::fs::read(&source).unwrap()
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_staged_replacement_is_not_served_as_a_radargram() {
+    // A staged file is a `.nc` carrying the *same* radargram id as the one
+    // it would replace, sitting inside the project. Discovery walks the
+    // whole project tree, so without the dot-prefixed staging directory it
+    // would be catalogued immediately as a duplicate of its own target --
+    // and the operator would be told their id already exists, by the file
+    // they just uploaded.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let response = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    assert!(response.body["token"].as_str().is_some());
+
+    // On disk, and invisible to the catalog.
+    let staging = dir.path().join(".staging");
+    assert_eq!(
+        std::fs::read_dir(&staging).unwrap().count(),
+        1,
+        "the upload is staged"
+    );
+    let listed = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let ids: Vec<&str> = listed.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["radargram_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["ours", "theirs"], "no duplicate: {}", listed.text);
+    assert!(
+        listed.body["warnings"].as_array().unwrap().is_empty(),
+        "and no duplicate-id warning either: {}",
+        listed.text
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn replacing_a_radargram_leaves_every_pick_exactly_as_drawn() {
+    // #148's central rule. Re-anchoring is approximate, so writing it back
+    // would launder an approximation into ground truth; it compounds on the
+    // next replace; and it cannot be undone. The file changes and the
+    // documents do not.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let before = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    let from_revision = before.body["revision_id"].as_str().unwrap().to_string();
+
+    let document = json!({
+        "key": "ours",
+        "source": {"radargram_id": "ours", "revision_id": from_revision},
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[5.0, 2.0], [30.0, 3.0]]},
+            "properties": {"id": "f-0001", "label": "bed"}
+        }]
+    });
+    let saved = put(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik",
+        &document,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::CREATED, "{}", saved.text);
+
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(staged.status, StatusCode::OK, "{}", staged.text);
+    let token = staged.body["token"].as_str().unwrap().to_string();
+
+    let done = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(done.status, StatusCode::OK, "{}", done.text);
+
+    // The document on disk is untouched, down to the coordinates and the
+    // revision it declares.
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("interpretations/ours/erik.gprinterp.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["source"]["revision_id"], done.body["from_revision"]);
+    assert_eq!(
+        stored["features"][0]["geometry"]["coordinates"],
+        json!([[5.0, 2.0], [30.0, 3.0]]),
+        "not rewritten"
+    );
+
+    // And the history says what happened, with the old mapping kept so the
+    // picks can still be placed.
+    let history = get(&app, "/api/v1/datasets/ours/revisions", Some(&erik)).await;
+    let revisions = history.body["revisions"].as_array().unwrap();
+    assert_eq!(revisions.len(), 2, "{}", history.text);
+    let old = revisions
+        .iter()
+        .find(|r| r["revision_id"] == done.body["from_revision"])
+        .unwrap();
+    assert_eq!(old["superseded_by"], done.body["to_revision"]);
+    assert_eq!(old["has_axes"], true, "the mapping outlived the file");
+    assert_eq!(old["current"], false);
+
+    // Nothing is left staged.
+    assert_eq!(
+        std::fs::read_dir(dir.path().join(".staging"))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_replacement_for_a_different_radargram_is_refused() {
+    // Without this, replacing `ours` with a file whose id is something else
+    // installs it at `ours.nc`, and the catalog then disagrees with the
+    // file about what it is.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let response = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("somewhere-else"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text);
+    assert_eq!(response.body["error"]["code"], "wrong_radargram");
+    assert_eq!(
+        std::fs::read_dir(dir.path().join(".staging"))
+            .unwrap()
+            .count(),
+        0,
+        "a refused upload leaves nothing behind"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_radargram_outside_the_project_cannot_be_replaced() {
+    // Ridal never writes outside the project, so the honest answer is a
+    // refusal rather than a replace that lands somewhere else.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let response = post_bytes(
+        &app,
+        "/api/v1/datasets/theirs/replace",
+        staged_bytes("theirs"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text);
+    assert_eq!(response.body["error"]["code"], "not_in_project");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_discarded_replacement_is_given_back() {
+    // An abandoned dialog should not leave a radargram-sized file in the
+    // project. The sweep catches it eventually; this is the immediate path.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    assert_eq!(
+        std::fs::read_dir(dir.path().join(".staging"))
+            .unwrap()
+            .count(),
+        1
+    );
+
+    let discarded = delete(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(discarded.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        std::fs::read_dir(dir.path().join(".staging"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    // And the radargram is still the one it was.
+    let listed = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn only_an_operator_may_replace_a_radargram() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+    ]);
+    let student = sign_in(&app, "student").await;
+
+    let response = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN, "{}", response.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
+    // `RevisionId` is hash(radargram_id + processing_datetime) and says
+    // nothing about contents, so a file edited in another tool can carry
+    // the same datetime and land on the same id. Every cache and staleness
+    // check would then believe nothing changed.
+    //
+    // The dialog disables its button for this, but a disabled button is a
+    // courtesy and committing deletes the old file. Refused here too.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    // The same processing datetime as the installed fixture.
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("same-date.nc");
+    super::interp_routes_tests::write_test_nc_with_axes_at(
+        &source,
+        "ours",
+        None,
+        "2020-01-01T00:00:00Z",
+    );
+    let bytes = std::fs::read(&source).unwrap();
+
+    // Staging says so rather than refusing: the operator is entitled to see
+    // the report, and this is the row that explains the refusal.
+    let staged = post_bytes(&app, "/api/v1/datasets/ours/replace", bytes, Some(&erik)).await;
+    assert_eq!(staged.status, StatusCode::OK, "{}", staged.text);
+    assert_eq!(staged.body["report"]["revision_id_collision"], true);
+    let token = staged.body["token"].as_str().unwrap().to_string();
+
+    // Committing does not.
+    let refused = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "revision_id_collision");
+
+    // And the radargram is untouched: same revision, same file.
+    let still = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    assert_eq!(still.status, StatusCode::OK);
+    assert!(dir.path().join("radargrams/ours.nc").exists());
+}

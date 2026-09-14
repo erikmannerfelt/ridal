@@ -68,6 +68,7 @@ pub mod launch;
 pub mod lifecycle_routes;
 pub mod overrides_routes;
 pub mod render_service;
+pub mod replace_routes;
 pub mod routes;
 pub mod templates;
 pub mod track;
