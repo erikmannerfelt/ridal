@@ -919,7 +919,16 @@ button.danger {
   background: var(--color-warning-bg);
 }
 
+/* Every dialog's actions, and the ones that share their shape.
+ *
+ * `dialog > p > button` is the row of actions each dialog ends with. Only
+ * `.danger` was styled before, so the removal dialog put a styled Remove
+ * next to a browser-default Cancel — two controls of visibly different
+ * shape offering one choice, which reads as one of them being an
+ * afterthought. The other dialogs were consistent only because neither of
+ * their buttons was styled at all. */
 .add-layer button,
+dialog > p > button,
 button.danger {
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-strong);
@@ -931,6 +940,7 @@ button.danger {
 }
 
 .add-layer button:hover,
+dialog > p > button:hover,
 button.danger:hover {
   border-color: var(--color-accent);
 }
