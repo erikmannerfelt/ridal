@@ -110,6 +110,10 @@ pub struct AxisDeclarations {
     /// different moments, and a file reprocessed in place between them
     /// would otherwise pair one revision's mapping with another's id.
     pub processing_datetime: Option<String>,
+    /// How many samples the revision has. Read from the travel-time axis
+    /// rather than a dimension, so it is the length of the thing an
+    /// interpretation's `sample` coordinate actually indexes.
+    pub n_samples: usize,
 }
 
 /// Read the axis declarations, or as much of them as the file carries.
@@ -138,6 +142,7 @@ pub fn read_axis_declarations(path: &Path) -> AxisDeclarations {
             [first, second, ..] => second - first,
             _ => 0.0,
         },
+        n_samples: twtt.len(),
     }
 }
 

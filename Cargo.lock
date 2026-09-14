@@ -1889,6 +1889,7 @@ dependencies = [
  "chrono",
  "clap",
  "enterpolation",
+ "flate2",
  "futures-util",
  "geomorph",
  "getrandom 0.4.2",

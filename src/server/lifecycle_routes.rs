@@ -36,6 +36,7 @@ use super::auth::Caller;
 use super::routes::ApiError;
 use crate::identity::RadargramId;
 use crate::io::RidalNetcdfKind;
+use crate::project::revisions::{self, ledger};
 use crate::project::users::Role;
 use crate::project::{audit, interpretations, overrides};
 
@@ -250,6 +251,49 @@ pub async fn upload_dataset(
     })?;
     cleanup.installed();
 
+    // The id now has a current revision, and the ledger has to say so. Two
+    // things depend on it: `/revisions` can only report what is current if
+    // something records it, and the axis checksum has to be on file
+    // *before* a second file with the same processing datetime arrives, or
+    // the collision it exists to detect has nothing to be detected against.
+    //
+    // `note_current_again` rather than `note_current`, because this id may
+    // have been removed before. Re-uploading the same revision makes it
+    // current once more, and a record still marked superseded would
+    // contradict the catalog that is serving it.
+    let revision_id =
+        crate::identity::RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime)
+            .to_string();
+    let baseline = crate::interp::anchors::snapshot_values(
+        &crate::interp::source::read_axis_declarations(&installed),
+    )
+    .map(|(y_anchor, y_values, x_values)| {
+        revisions::AxisSnapshot {
+            radargram_id: meta.radargram_id.to_string(),
+            revision_id: revision_id.clone(),
+            y_anchor,
+            y_values,
+            x_values,
+        }
+        .checksum()
+    });
+    if let Err(e) = ledger::update(project.documents(), |l| {
+        ledger::note_current_again(
+            l,
+            meta.radargram_id.as_str(),
+            &revision_id,
+            baseline.clone(),
+        );
+    }) {
+        // The file is installed. Refusing now would report a failure that
+        // did not happen, the same reason the audit log does not fail its
+        // own operation.
+        eprintln!(
+            "Warning: could not record the revision of '{}': {e}",
+            meta.radargram_id
+        );
+    }
+
     state
         .rediscover()
         .map_err(|e| ApiError::internal("rediscover_failed", e))?;
@@ -316,6 +360,33 @@ pub async fn remove_dataset(
     drop(catalog);
 
     let at = now();
+
+    // The axes go first, while the file is still there to read them from.
+    //
+    // A removal is a supersession with nothing on the other side (#148), and
+    // the same rule applies: take the snapshot unconditionally. Nothing
+    // needs to reference this revision *yet* for the snapshot to matter --
+    // someone with the viewer open has not saved, and their `PUT` arrives
+    // after the file is gone.
+    //
+    // Fatal only when the file is about to be deleted. An ignore leaves it
+    // where it is and can be lifted, so there is nothing irreversible to
+    // protect and refusing would be refusing for no gain.
+    match snapshot_axes(project, &id, &path, &revision) {
+        Ok(()) => {}
+        Err(problem) if in_project => {
+            return Err(ApiError::internal(
+                "snapshot_failed",
+                format!(
+                    "{problem}. The removal was refused, because deleting the file \
+                     now would lose the only copy of the mapping that carries its \
+                     interpretations forward."
+                ),
+            ))
+        }
+        Err(problem) => eprintln!("Warning: {problem}"),
+    }
+
     // Archived before the file goes. If the deletion fails afterwards the
     // catalog still has the radargram and the picks are one directory over,
     // which is recoverable; the other order could lose them outright.
@@ -351,6 +422,20 @@ pub async fn remove_dataset(
         .map_err(|e| ApiError::internal("overrides_write_failed", e.to_string()))?;
         "ignored"
     };
+
+    // Recorded only now, because until this point the removal could still
+    // fail. `remove_file` and the ignore-list write each return an error
+    // that leaves the radargram served -- and a supersession written
+    // before them would have `/revisions` reporting, permanently, that a
+    // radargram everyone can still see has no current revision.
+    if let Err(e) = ledger::update(project.documents(), |l| {
+        ledger::supersede(l, id.as_str(), &revision, None, &at);
+    }) {
+        // Not fatal, for the same reason the audit log is not: the removal
+        // has happened, and a failure to write the history is not a reason
+        // to report that it did not.
+        eprintln!("Warning: could not record the supersession: {e}");
+    }
 
     state
         .rediscover()
@@ -409,6 +494,22 @@ pub async fn restore_dataset(
     state
         .rediscover()
         .map_err(|e| ApiError::internal("rediscover_failed", e))?;
+
+    // Whatever is back is current again. The ignore marked its revision
+    // superseded, and leaving that standing would have the history say a
+    // radargram is gone while the catalog serves it. Read from the
+    // rebuilt catalog rather than the ignore record, because the file may
+    // have been reprocessed while it was out of sight -- in which case what
+    // came back is a *different* revision, and marking the old one current
+    // would be the wrong correction.
+    if let Some(entry) = state.catalog().find_entry(id.as_str()) {
+        let revision = entry.revision_id.to_string();
+        if let Err(e) = ledger::update(project.documents(), |l| {
+            ledger::note_current_again(l, id.as_str(), &revision, None);
+        }) {
+            eprintln!("Warning: could not record the restoration of '{id}': {e}");
+        }
+    }
 
     audit::record(
         project.documents(),
@@ -502,6 +603,80 @@ fn writable_destination(project: &crate::project::Project) -> Result<std::path::
         ));
     }
     Ok(resolved)
+}
+
+/// Keep this revision's axes before its file becomes unreachable.
+///
+/// # Why a failure here can refuse the removal
+///
+/// Two outcomes look alike and are not. A radargram that **does not declare
+/// its axes** has no mapping to keep: there is nothing to lose, the removal
+/// proceeds, and the note says so. A radargram that declares them and
+/// cannot have them **written** — a full disk, a read-only
+/// `revisions/` — is about to have the only copy of that mapping deleted,
+/// and with it the ability to carry any document drawn on it onto a later
+/// revision. That is not a record of the thing; it is part of the thing.
+///
+/// So this reports which happened, and the caller decides. A removal that
+/// deletes the file aborts; an ignore, which leaves the file where it is
+/// and can be lifted again, does not.
+fn snapshot_axes(
+    project: &crate::project::Project,
+    id: &RadargramId,
+    path: &std::path::Path,
+    revision: &str,
+) -> Result<(), String> {
+    let declared = crate::interp::source::read_axis_declarations(path);
+
+    // The axes have to belong to the revision they are about to be filed
+    // under. `revision` came from the catalog snapshot and these values
+    // come from the file as it is right now; if something rewrote it in
+    // place since discovery, storing them would pair one revision's
+    // mapping with another's id -- which is the exact cross-revision
+    // mistake snapshots exist to prevent, committed by the snapshot.
+    //
+    // The reader is lenient by design, so a file that cannot be opened at
+    // all returns defaults and would otherwise look like a radargram that
+    // simply declares nothing. Requiring the datetime to match tells those
+    // two apart: no datetime means the file did not read.
+    let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
+        crate::identity::RevisionId::fingerprint_v1(id, when).as_str() == revision
+    });
+    if !same_revision {
+        return Err(format!(
+            "'{id}' on disk is not the revision the catalog has ({revision}); it was \
+             changed or became unreadable since it was discovered, so its axes cannot \
+             be kept under that id"
+        ));
+    }
+
+    let Some((y_anchor, y_values, x_values)) = crate::interp::anchors::snapshot_values(&declared)
+    else {
+        eprintln!(
+            "Note: '{id}' does not declare its axes, so no snapshot was kept. \
+             Interpretations drawn on it cannot be carried onto a later revision."
+        );
+        return Ok(());
+    };
+    let snapshot = revisions::AxisSnapshot {
+        radargram_id: id.to_string(),
+        revision_id: revision.to_string(),
+        y_anchor,
+        y_values,
+        x_values,
+    };
+    let checksum = snapshot.checksum();
+    revisions::put(project.documents(), id, &snapshot)
+        .map_err(|e| format!("'{id}' declares axes but they could not be kept: {e}"))?;
+    // The ledger is a record *of* the snapshot, which is now safely on
+    // disk, so a failure here is the audit log's kind of failure rather
+    // than the snapshot's: worth saying, not worth refusing over.
+    if let Err(e) = ledger::update(project.documents(), |l| {
+        ledger::note_current(l, id.as_str(), revision, Some(checksum.clone()));
+    }) {
+        eprintln!("Warning: could not record the axis checksum of '{id}': {e}");
+    }
+    Ok(())
 }
 
 fn too_large(needed: u64, room: u64, cap: u64) -> ApiError {
@@ -651,4 +826,81 @@ mod tests {
         TempFile(path.clone()).installed();
         assert!(path.exists(), "an installed one stays");
     }
+}
+
+/// One revision a radargram has been through.
+#[derive(Debug, Serialize)]
+pub struct RevisionSummary {
+    revision_id: String,
+    /// Whether it is the one currently behind the id.
+    current: bool,
+    superseded_at: Option<String>,
+    superseded_by: Option<String>,
+    /// Whether this revision's axes were kept, which is what decides
+    /// whether picks drawn on it can be carried onto a later one.
+    has_axes: bool,
+    /// Sizes from the snapshot, so the history says what changed between
+    /// revisions without opening anything.
+    n_traces: Option<usize>,
+    n_samples: Option<usize>,
+    y_anchor: Option<String>,
+}
+
+/// `GET /api/v1/datasets/{id}/revisions` — what this id has been.
+///
+/// Reads the ledger rather than the files: the whole point of #148 is that
+/// a superseded revision's file may be gone while its mapping is not.
+///
+/// `viewer` and above. Which revisions a radargram has had is the same kind
+/// of fact as its processing date -- provenance about data people are
+/// already being shown, not an operator's working notes.
+pub async fn list_revisions(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(radargram_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require(Role::Viewer, "read a radargram's history")?;
+    let project = state.project.as_ref().ok_or_else(|| {
+        ApiError::not_found(
+            "not_a_project",
+            "This catalog is not a Ridal project, so it keeps no revision history.",
+        )
+    })?;
+    let id = RadargramId::new(&radargram_id)
+        .map_err(|e| ApiError::bad_request("invalid_radargram_id", e))?;
+
+    let (history, _) = ledger::read(project.documents())
+        .map_err(|e| ApiError::internal("ledger_read_failed", e.to_string()))?;
+    let current = history.current(id.as_str()).map(|r| r.revision_id.clone());
+    let records = history
+        .radargrams
+        .get(id.as_str())
+        .cloned()
+        .unwrap_or_default();
+
+    let summaries = records
+        .into_iter()
+        .map(|record| {
+            // Opened per revision rather than listed once: the header is a
+            // few hundred bytes and a history is a handful of revisions, so
+            // the simpler shape costs nothing worth saving.
+            let snapshot = revisions::get(project.documents(), &id, &record.revision_id)
+                .ok()
+                .flatten();
+            RevisionSummary {
+                // From the ledger's own definition rather than re-derived
+                // here, so there is one answer to "which is current".
+                current: current.as_deref() == Some(record.revision_id.as_str()),
+                superseded_at: record.superseded_at,
+                superseded_by: record.superseded_by,
+                has_axes: snapshot.is_some(),
+                n_traces: snapshot.as_ref().map(|s| s.n_traces()),
+                n_samples: snapshot.as_ref().map(|s| s.n_samples()),
+                y_anchor: snapshot.and_then(|s| s.y_anchor),
+                revision_id: record.revision_id,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(serde_json::json!({ "revisions": summaries })))
 }
