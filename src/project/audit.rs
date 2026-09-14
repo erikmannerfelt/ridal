@@ -60,6 +60,11 @@ pub enum Action {
     Ignored,
     /// An ignore was lifted.
     Unignored,
+    /// A different revision was put behind an existing radargram id.
+    Replaced,
+    /// Picks carried from an earlier revision were adopted as drawn on the
+    /// current one.
+    Adopted,
 }
 
 /// One thing that happened.

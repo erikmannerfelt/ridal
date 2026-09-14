@@ -794,7 +794,19 @@
       statusEl.textContent = parts.join(" · ");
       statusEl.classList.toggle("dirty", dirty);
 
-      saveButton.disabled = !dirty;
+      // A carried document has something to save even with nothing edited:
+      // adopting it onto this revision is the whole action, and the button
+      // says so rather than sitting greyed out next to a banner explaining
+      // that the picks are from an earlier version.
+      // `refused` has no carried document to adopt, so offering the
+      // button there could only ever produce `cannot_be_carried`. A
+      // control that can only fail is worse than an absent one.
+      const adoptable =
+        carriedReport &&
+        carriedReport.severity !== "current" &&
+        carriedReport.severity !== "refused";
+      saveButton.disabled = !dirty && !adoptable;
+      saveButton.textContent = adoptable && !dirty ? "Adopt to this version…" : "Save";
       undoButton.disabled = !draft || draft.length === 0;
       finishButton.disabled = !draft || draft.length < 2;
       // Read by the download menu in viewer.js, which owns downloading now:
@@ -960,91 +972,160 @@
       CFG.user,
     );
 
+    /** Adopt the carried view as this user's interpretation on this revision.
+     *
+     * Confirmed first, and once: it overwrites coordinates somebody drew
+     * with coordinates derived from them. The archive makes that
+     * reversible, and the confirmation is what makes it deliberate -- the
+     * whole point is that a person looked and agreed, so the moment of
+     * agreeing should be visible rather than implied by a Save click. */
+    async function adopt() {
+      const dropped =
+        (carriedReport && carriedReport.dropped && carriedReport.dropped.length) || 0;
+      const lost =
+        dropped > 0
+          ? `\n\n${dropped} line(s) fall outside this version and will not be ` +
+            "included. They stay in the archived copy."
+          : "";
+      const edited = dirty ? "\n\nYour edits are included." : "";
+      const agreed = window.confirm(
+        "Adopt these picks onto the current version?\n\n" +
+          "They were drawn on an earlier version and carried here for display. " +
+          "Adopting records them as yours on this version, and notes in the file " +
+          "that they were carried rather than drawn.\n\n" +
+          "The version as drawn is archived first, so this can be undone." +
+          edited +
+          lost,
+      );
+      if (!agreed) return;
+
+      try {
+        // What is on screen, edits and all -- an edit made over a carried
+        // view is already in this revision's index space. `onto` says
+        // which revision this page believes it is looking at, so a tab
+        // left open across a replace fails loudly instead of writing
+        // coordinates nobody validated against the file now on disk.
+        // Conditional, exactly as a save is. Without it, adopting from a
+        // page that loaded before another tab saved would overwrite the
+        // newer document -- archived, but silently replaced -- where a
+        // save in the same position returns 412 and says so.
+        const headers = { "Content-Type": "application/json" };
+        if (etag) headers["If-Match"] = etag;
+        const response = await fetch(
+          `${documentUrl}/promote?onto=${encodeURIComponent(CFG.revisionId)}`,
+          { method: "POST", headers, body: JSON.stringify(buildBody()) },
+        );
+        if (response.status === 412) {
+          showError(
+            "These picks were changed somewhere else while this page was open. " +
+              "Reload to see the saved version -- nothing here is lost until you do.",
+          );
+          return;
+        }
+        if (!response.ok) {
+          const failure = await response.json().catch(() => null);
+          showError(
+            failure?.error?.message || `Could not adopt these picks (${response.status}).`,
+          );
+          return;
+        }
+      } catch (error) {
+        showError(`Could not adopt these picks: ${error.message}`);
+        return;
+      }
+      // Reloaded rather than patched: the document now belongs to this
+      // revision, so the banner, the etag and the save guard all change.
+      dirty = false;
+      window.location.reload();
+    }
+
+    /** The document as this page would store it: what is on screen.
+     *
+     * Shared by saving and adopting. Adopting used to rebuild the carried
+     * coordinates on the server and ignore this, which threw away any edit
+     * made on top of the carried view -- and an edit made on top is
+     * already in *this* revision's index space, because it was made by
+     * dragging a vertex over this revision. There is nothing to carry
+     * about it. The person looked at the carried picks, adjusted them, and
+     * both halves of that are what they meant.
+     */
+    function buildBody() {
+      return {
+          // Spread first, so anything this editor does not model is carried
+          // through, then override only the fields it owns.
+          ...(loaded || {}),
+          schema: "gprinterp",
+          schema_version: "0.1",
+          key: CFG.radargramId,
+          date_modified: new Date().toISOString(),
+          source: {
+            ...((loaded && loaded.source) || {}),
+            id: CFG.radargramId,
+            // The revision the picks were drawn against. Without it a
+            // document authored here can never trigger the reprocessing
+            // warning gprinterp SPEC 6.3 exists for: equal trace and sample
+            // counts are explicitly not evidence that two revisions agree on
+            // what an index means.
+            revision_id: CFG.revisionId,
+            n_traces: CFG.sourceWidth,
+            n_samples: CFG.sourceHeight,
+          },
+          // What lets these picks be carried onto a differently processed
+          // version of the same radargram (gprinterp SPEC 8.1). Without it a
+          // consumer has a coordinate and no mapping to evaluate it through,
+          // and 8.1 forbids falling back to the raw index -- so a document
+          // with no axes is stuck on the one revision forever.
+          //
+          // Built by the server, which is the only thing that has read the
+          // radargram. Null when it cannot describe its axes, and then the
+          // key is left out entirely: half an axis block would invite a
+          // consumer to believe it had a mapping.
+          // The *axes* are replaced and the rest of `coordinates` is kept.
+          // gprinterp puts `space` and `convention` in the same object, and
+          // the editor's contract is to carry through what it does not model
+          // -- overwriting the whole thing would drop a producer's
+          // conventions on the first save made here.
+          //
+          // `undefined` when there are no axes, rather than omitting the key,
+          // because the spread above carried through whatever the loaded
+          // document had. Those axes describe the revision it was drawn on
+          // and `source` two lines up now names this one, so keeping them
+          // would pair one revision's mapping with another's id -- a worse
+          // lie than having no mapping. JSON.stringify drops the key.
+          coordinates: CFG.axes
+            ? { ...((loaded && loaded.coordinates) || {}), axes: CFG.axes }
+            : undefined,
+          features,
+      };
+    }
+
     async function save() {
-      if (!dirty) return;
       finishLine();
       clearError();
 
-      // A document drawn on a different revision is not saved.
+      // Adopting comes first, and not only because a carried document
+      // cannot be saved: with nothing edited there is no `dirty` to gate
+      // on, and this is exactly the case where the button is offered.
       //
-      // The coordinates in it are indices into the revision it was
-      // authored against, and nothing here re-anchors them. Saving would
-      // stamp `source.revision_id` with the current revision and attach
-      // the current axes, so old indices would be labelled as current --
-      // producing exactly the cross-revision mistake the axes exist to
-      // prevent, with this editor as the source of it.
-      //
-      // Refused rather than silently relabelled. What is on screen *is*
-      // carried across -- the banner says so, and says what it cost -- but
-      // showing and storing are different acts. A view can be wrong and
-      // disbelieved; a stored document is wrong later, to someone who was
-      // not here. Promoting one to the other is a deliberate step with a
-      // consequence report in front of it, which is the next piece of #148
-      // rather than this one.
-      // An *absent* revision is not a current one. A document that never
-      // said what it was drawn on -- written before the picker recorded
-      // it, or produced by another tool -- would otherwise be saved with
-      // this revision's id stamped onto coordinates from an unknown one,
-      // which is the relabelling this guard exists to prevent.
-      const drawnOn = (loaded && loaded.source && loaded.source.revision_id) || null;
-      if (loaded && drawnOn !== CFG.revisionId) {
-        showError(
-          "These picks were drawn on an earlier version of this radargram. " +
-            "What you are looking at has been carried onto the current one " +
-            "for display, but saving it would record the carried positions " +
-            "as though they had been drawn here. Download them, or wait for " +
-            "the replace flow that can do this deliberately.",
-        );
+      // An *absent* revision is not a current one either. A document that
+      // never said what it was drawn on -- written before the picker
+      // recorded it, or produced by another tool -- must not be silently
+      // relabelled with this one.
+      const drawnOnRevision =
+        (loaded && loaded.source && loaded.source.revision_id) || null;
+      if (loaded && drawnOnRevision !== CFG.revisionId) {
+        await adopt();
         return;
       }
+      if (!dirty) return;
 
-      const body = {
-        // Spread first, so anything this editor does not model is carried
-        // through, then override only the fields it owns.
-        ...(loaded || {}),
-        schema: "gprinterp",
-        schema_version: "0.1",
-        key: CFG.radargramId,
-        date_modified: new Date().toISOString(),
-        source: {
-          ...((loaded && loaded.source) || {}),
-          id: CFG.radargramId,
-          // The revision the picks were drawn against. Without it a
-          // document authored here can never trigger the reprocessing
-          // warning gprinterp SPEC 6.3 exists for: equal trace and sample
-          // counts are explicitly not evidence that two revisions agree on
-          // what an index means.
-          revision_id: CFG.revisionId,
-          n_traces: CFG.sourceWidth,
-          n_samples: CFG.sourceHeight,
-        },
-        // What lets these picks be carried onto a differently processed
-        // version of the same radargram (gprinterp SPEC 8.1). Without it a
-        // consumer has a coordinate and no mapping to evaluate it through,
-        // and 8.1 forbids falling back to the raw index -- so a document
-        // with no axes is stuck on the one revision forever.
-        //
-        // Built by the server, which is the only thing that has read the
-        // radargram. Null when it cannot describe its axes, and then the
-        // key is left out entirely: half an axis block would invite a
-        // consumer to believe it had a mapping.
-        // The *axes* are replaced and the rest of `coordinates` is kept.
-        // gprinterp puts `space` and `convention` in the same object, and
-        // the editor's contract is to carry through what it does not model
-        // -- overwriting the whole thing would drop a producer's
-        // conventions on the first save made here.
-        //
-        // `undefined` when there are no axes, rather than omitting the key,
-        // because the spread above carried through whatever the loaded
-        // document had. Those axes describe the revision it was drawn on
-        // and `source` two lines up now names this one, so keeping them
-        // would pair one revision's mapping with another's id -- a worse
-        // lie than having no mapping. JSON.stringify drops the key.
-        coordinates: CFG.axes
-          ? { ...((loaded && loaded.coordinates) || {}), axes: CFG.axes }
-          : undefined,
-        features,
-      };
+      // Past here the document belongs to the revision on screen, because
+      // the branch above sends every other case to `adopt()`. That branch
+      // is load-bearing: writing these coordinates under the current
+      // revision's id without re-anchoring them is precisely the
+      // cross-revision mistake the axes exist to prevent, and this editor
+      // would be the source of it.
+      const body = buildBody();
       const headers = { "Content-Type": "application/json" };
       // Conditional either way. Without the absent case, two tabs that both
       // loaded a document which did not exist yet would both save, and the
@@ -1093,6 +1174,9 @@
      * Standing, not transient. It describes what is on screen right now,
      * and it stays for as long as that is true.
      */
+    /** The last carry report, so adopting can say what it would leave out. */
+    let carriedReport = null;
+
     const carryBanner = document.getElementById("carry-banner");
     const carryTier = document.getElementById("carry-tier");
     const carryHeadline = document.getElementById("carry-headline");
@@ -1176,6 +1260,7 @@
           return null;
         }
         const body = await response.json();
+        carriedReport = body.report;
         showCarryBanner(body.report);
         if (!body.document) {
           features = [];
@@ -1231,6 +1316,7 @@
           if (!carried) return;
           shown = carried;
         } else {
+          carriedReport = null;
           hideCarryBanner();
         }
 

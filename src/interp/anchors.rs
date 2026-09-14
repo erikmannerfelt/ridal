@@ -295,10 +295,11 @@ pub fn trace_time_axis(times: &[f64]) -> Option<AnchorAxis> {
 /// twtt_time_zero` — neither of those variables on its own. See
 /// `GPR::twtt_time_zero_ns`.
 ///
-/// `None` when the radargram does not say what its axis means, or when the
-/// offset differs per trace. A `regular` axis has one `t0`, and a mean
-/// would be an offset no trace actually has — the exact error #144 removed
-/// from the export. Better no anchor than a plausible wrong one.
+/// `None` when the radargram does not say what its axis means, when the
+/// offset differs per trace, or when **time zero has never been located**.
+/// A `regular` axis has one `t0`, and a mean would be an offset no trace
+/// actually has — the exact error #144 removed from the export. Better no
+/// anchor than a plausible wrong one.
 pub fn twtt_axis(
     anchor_name: Option<&str>,
     crop_ns: &[f64],
@@ -317,6 +318,29 @@ pub fn twtt_axis(
     // path would persist as a mapping and report as `has_axes: true`,
     // while every coordinate evaluated through it is NaN.
     if crop_ns.iter().chain(time_zero_ns).any(|v| !v.is_finite()) {
+        return None;
+    }
+
+    // Time zero not located: there is no anchored travel-time axis here.
+    //
+    // A zero of `twtt_time_zero` is the sentinel for "never found", which
+    // is what the variable's own comment in every exported file says: a
+    // radargram no zero correction has run on measures its times "from
+    // whenever the instrument started sampling". That is a real quantity
+    // and it is *not* `twtt`, which gprinterp defines as travel time from
+    // time zero.
+    //
+    // Emitting it as `twtt` anyway made an uncorrected revision look
+    // exactly like a corrected one: both offer `t0 = crop - 0 = 0`, so the
+    // mapping between them is the identity, and carrying picks across a
+    // zero correction reported that nothing moved while the data had
+    // shifted by the whole correction. That is the cross-revision error
+    // this module exists to prevent, produced by this module.
+    //
+    // What an uncorrected revision offers instead is `recording_time`:
+    // the original recording's clock, which relates it to any other
+    // revision of the same recording exactly. See `recording_time_axis`.
+    if time_zero_ns.iter().all(|&zero| zero == 0.0) {
         return None;
     }
 
@@ -363,6 +387,52 @@ pub fn twtt_axis(
 
     Some(AnchorAxis {
         name: name.to_string(),
+        unit: "ns".to_string(),
+        type_: "regular",
+        t0: Some(first),
+        dt: Some(dt_ns),
+        points: None,
+        interpolation: None,
+    })
+}
+
+/// The original recording's clock, as a `y` anchor (SPEC §8.5).
+///
+/// `t0 = crop`, with no reference to time zero at all. This is where the
+/// first sample sits on the clock the instrument was writing, and it is
+/// the one axis a radargram always has: cropping is recorded whether or
+/// not a zero correction has ever run.
+///
+/// Emitted *alongside* `twtt` rather than instead of it. The two answer
+/// different questions, and gprinterp prefers travel time where both
+/// revisions have it — this is what relates the pair that has no shared
+/// travel time, which is every corrected-versus-uncorrected reprocess.
+/// Without it, picks drawn before a zero correction and picks drawn after
+/// one could never be shown on each other's revision.
+///
+/// `None` when the crop differs per trace, for the same reason
+/// [`twtt_axis`] refuses a per-trace offset: a `regular` axis has one
+/// `t0`, and a mean would be a position no trace actually has.
+pub fn recording_time_axis(crop_ns: &[f64], dt_ns: f64) -> Option<AnchorAxis> {
+    if !dt_ns.is_finite() || dt_ns <= 0.0 {
+        return None;
+    }
+    let first = *crop_ns.first()?;
+    if !first.is_finite() {
+        return None;
+    }
+    // Scaled to the axis and the source precision, exactly as the
+    // travel-time offset is: these come from `f32` and are widened.
+    let scale = crop_ns.iter().fold(dt_ns.abs(), |m, v| m.max(v.abs()));
+    let tolerance = f64::from(f32::EPSILON) * scale * 8.0;
+    if crop_ns
+        .iter()
+        .any(|crop| !crop.is_finite() || (crop - first).abs() > tolerance)
+    {
+        return None;
+    }
+    Some(AnchorAxis {
+        name: "recording_time".to_string(),
         unit: "ns".to_string(),
         type_: "regular",
         t0: Some(first),
@@ -423,13 +493,14 @@ pub fn axes_for_revision_checked(
     }
 
     if let Some(baseline) = baseline {
-        let now = snapshot_values(&declared).map(|(y_anchor, y_values, x_values)| {
+        let now = snapshot_values(&declared).map(|values| {
             crate::project::revisions::AxisSnapshot {
                 radargram_id: radargram_id.to_string(),
                 revision_id: revision_id.to_string(),
-                y_anchor,
-                y_values,
-                x_values,
+                y_anchor: values.y_anchor,
+                y_values: values.y_values,
+                x_values: values.x_values,
+                y_alternate: values.y_alternate,
             }
             .checksum()
         });
@@ -453,37 +524,79 @@ pub fn axes_from_declarations(declared: &crate::interp::source::AxisDeclarations
             anchor: vec![anchor],
         })
     };
-    Axes {
-        x: wrap(trace_time_axis(&declared.time)),
-        y: wrap(twtt_axis(
+    // Travel time first, the recording clock second, which is the order
+    // SPEC §8.2 prefers them in. A radargram whose time zero has never been
+    // located has only the second, and that is exactly what it is for: it
+    // relates a corrected revision to an uncorrected one, which share no
+    // travel-time axis and would otherwise be unrelatable.
+    let y: Vec<AnchorAxis> = [
+        twtt_axis(
             declared.twtt_anchor.as_deref(),
             &declared.twtt_crop,
             &declared.twtt_time_zero,
             declared.dt_ns,
-        )),
+        ),
+        recording_time_axis(&declared.twtt_crop, declared.dt_ns),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    Axes {
+        x: wrap(trace_time_axis(&declared.time)),
+        y: (!y.is_empty()).then_some(Axis { anchor: y }),
     }
 }
 
 /// The axis values an #148 snapshot keeps, on the anchor's scale.
 ///
-/// The `y` values are travel time from time zero — the stored `twtt` plus
-/// the anchor offset, not the array as the file holds it, which starts at
-/// zero whether or not sample zero is time zero (#153). Taking the offset
-/// out here means a later fix to that array changes nothing about what a
-/// snapshot means.
+/// The `y` values are on the scale of whichever anchor this revision
+/// offers, named alongside them — travel time from time zero where that is
+/// known, and the original recording's clock where it is not. Not the
+/// `twtt` array as the file holds it, which starts at zero whether or not
+/// sample zero is time zero (#153). Taking the offset out here means a
+/// later fix to that array changes nothing about what a snapshot means.
 ///
-/// `None` when the revision cannot describe its axes, which is the same
-/// condition that stops a document carrying them. A snapshot with no
+/// **The anchor with it is what keeps two snapshots apart.** A corrected
+/// and an uncorrected revision can carry numerically similar values
+/// meaning entirely different things, and the name is the only thing that
+/// says which — so it is stored, not inferred.
+///
+/// Whichever anchor is *preferred* rather than only `twtt`. Taking the
+/// travel time alone meant an uncorrected revision had no mapping to keep,
+/// so replacing one was refused outright on the grounds that every pick
+/// drawn on it would become unplaceable — when it has a perfectly good
+/// mapping through the recording clock, which is exactly what
+/// [`recording_time_axis`] exists to provide.
+///
+/// `None` when the revision cannot describe its axes at all, which is the
+/// same condition that stops a document carrying them. A snapshot with no
 /// mapping in it is a file that says nothing.
+/// What [`snapshot_values`] found: the pieces an [`AxisSnapshot`] needs
+/// that only the radargram can supply.
+///
+/// [`AxisSnapshot`]: crate::project::revisions::AxisSnapshot
+pub struct SnapshotValues {
+    /// Which `y` anchor the values are on, or `None` if the revision
+    /// never said — in which case they can be read and not carried
+    /// through, which SPEC §8.3 makes the correct outcome.
+    pub y_anchor: Option<String>,
+    /// The `y` anchor's value per sample.
+    pub y_values: Vec<f64>,
+    /// Acquisition time per trace.
+    pub x_values: Vec<f64>,
+    /// The revision's other `y` anchor, as a constant offset.
+    pub y_alternate: Option<crate::project::revisions::AlternateAnchor>,
+}
+
 pub fn snapshot_values(
     declared: &crate::interp::source::AxisDeclarations,
-) -> Option<(Option<String>, Vec<f64>, Vec<f64>)> {
-    let y = twtt_axis(
-        declared.twtt_anchor.as_deref(),
-        &declared.twtt_crop,
-        &declared.twtt_time_zero,
-        declared.dt_ns,
-    )?;
+) -> Option<SnapshotValues> {
+    let mut anchors = axes_from_declarations(declared)
+        .y
+        .map(|axis| axis.anchor)
+        .unwrap_or_default()
+        .into_iter();
+    let y = anchors.next()?;
     let t0 = y.t0?;
     let dt = y.dt?;
     if declared.n_samples == 0 {
@@ -497,13 +610,33 @@ pub fn snapshot_values(
     // raw series, because tiepoint reduction is a lossy summary and a
     // snapshot is the thing later revisions are related through.
     trace_time_axis(&declared.time)?;
-    Some((
-        Some(y.name),
-        (0..declared.n_samples)
+
+    // The revision's other `y` anchor, as the constant it is. Both are
+    // regular axes over the same samples with the same step, so they
+    // differ only in where they start -- and keeping the second one costs
+    // a name and a number rather than another array of travel times.
+    let alternate = anchors.next().and_then(|other| {
+        let other_t0 = other.t0?;
+        let same_step = other.dt.is_some_and(|other_dt| {
+            (other_dt - dt).abs() <= f64::EPSILON * dt.abs().max(1.0) * 8.0
+        });
+        if !same_step {
+            return None;
+        }
+        Some(crate::project::revisions::AlternateAnchor {
+            name: other.name,
+            offset: other_t0 - t0,
+        })
+    });
+
+    Some(SnapshotValues {
+        y_anchor: Some(y.name),
+        y_values: (0..declared.n_samples)
             .map(|i| t0 + i as f64 * dt)
             .collect(),
-        declared.time.clone(),
-    ))
+        x_values: declared.time.clone(),
+        y_alternate: alternate,
+    })
 }
 
 #[cfg(test)]
@@ -750,7 +883,9 @@ mod tests {
         // anything a zero correction would actually produce. A thousandth
         // of a sample is already six orders above an f32 ulp here.
         let crop: Vec<f64> = (0..64).map(|i| 62.034 + f64::from(i) * 0.001).collect();
-        let zero = vec![0.0; 64];
+        // A *located* time zero, so this rejects for the reason it claims
+        // to rather than because the axis is unanchored.
+        let zero = vec![37.22; 64];
         assert!(twtt_axis(Some("twtt"), &crop, &zero, 1.2407).is_none());
     }
 
@@ -799,6 +934,175 @@ mod tests {
     }
 
     #[test]
+    fn a_radargram_whose_time_zero_was_never_found_offers_no_travel_time_anchor() {
+        // Reported from real data: `fimbulisen-20220430-DAT_0084_B1`
+        // processed with and without `zero_corr_max_peak`. The corrected
+        // revision has 1987 samples with time zero at 61.86 ns; the
+        // uncorrected one has 2024 samples and `twtt_time_zero = 0`, which
+        // every exported file's own comment defines as "never located".
+        //
+        // Both used to yield `t0 = crop - 0 = 0`, so the mapping between
+        // them was the *identity*: carrying picks across the zero
+        // correction reported "none of them visibly moved" while the data
+        // had shifted by the entire 37-sample correction. A carried view
+        // that is confidently wrong is worse than one that refuses.
+        let corrected = twtt_axis(Some("twtt"), &[61.86], &[61.86], 1.5862)
+            .expect("time zero located at 61.86 ns");
+        assert_eq!(corrected.t0, Some(0.0), "sample 0 is time zero");
+
+        assert!(
+            twtt_axis(Some("twtt"), &[0.0], &[0.0], 1.5862).is_none(),
+            "an uncorrected radargram measures from whenever the instrument \
+             started sampling, which is not travel time and must not be \
+             offered under a name that says it is"
+        );
+
+        // It is not left with nothing, though: it still knows where its
+        // first sample sits on the recording clock, and that is what
+        // relates it to the corrected revision. See SPEC §8.5.
+        let uncorrected = recording_time_axis(&[0.0], 1.5862).expect("the clock is always known");
+        assert_eq!(uncorrected.name, "recording_time");
+        assert_eq!(uncorrected.t0, Some(0.0));
+        let corrected_clock =
+            recording_time_axis(&[61.86], 1.5862).expect("the clock is always known");
+        assert_eq!(corrected_clock.t0, Some(61.86));
+
+        // A subset of an uncorrected radargram is no better: the crop is
+        // real, but it is still measured from an unknown origin.
+        assert!(twtt_axis(Some("twtt"), &[58.7], &[0.0], 1.5862).is_none());
+
+        // And a subset of a *corrected* one still anchors, which is the
+        // case this must not break: time zero is known, and sample 0 now
+        // sits a known distance after it.
+        let subsetted = twtt_axis(Some("twtt"), &[99.254], &[37.22], 1.2407)
+            .expect("time zero is still located");
+        assert!(
+            (subsetted.t0.unwrap() - 62.034).abs() < 1e-9,
+            "{:?}",
+            subsetted.t0
+        );
+    }
+
+    #[test]
+    fn a_corrected_and_an_uncorrected_revision_share_the_recording_clock() {
+        // Reported from real data, twice. `fimbulisen-20220430-DAT_0084_B1`
+        // with and without `zero_corr_max_peak`: the corrected revision
+        // crops 50.7572 ns and locates time zero there; the uncorrected one
+        // crops nothing and has never located it.
+        //
+        // They share no travel-time axis, and refusing on that ground was
+        // correct and useless — both know exactly where their first sample
+        // sits on the original recording's clock, so they are relatable
+        // through it, exactly. 50.7572 / 1.586162 = 32 samples, which is
+        // also the difference in sample count between the two files.
+        let dt = 1.586_161_7;
+        let corrected = axes_from_declarations(&crate::interp::source::AxisDeclarations {
+            time: vec![0.0, 1.0, 2.0],
+            twtt_anchor: Some("twtt".to_string()),
+            twtt_crop: vec![50.757_175],
+            twtt_time_zero: vec![50.757_175],
+            dt_ns: dt,
+            n_samples: 1992,
+            processing_datetime: None,
+        });
+        let uncorrected = axes_from_declarations(&crate::interp::source::AxisDeclarations {
+            time: vec![0.0, 1.0, 2.0],
+            twtt_anchor: Some("twtt".to_string()),
+            twtt_crop: vec![0.0],
+            twtt_time_zero: vec![0.0],
+            dt_ns: dt,
+            n_samples: 2024,
+            processing_datetime: None,
+        });
+
+        let names = |axes: &Axes| -> Vec<String> {
+            axes.y
+                .as_ref()
+                .map(|a| a.anchor.iter().map(|x| x.name.clone()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(
+            names(&corrected),
+            vec!["twtt", "recording_time"],
+            "travel time first, as SPEC §8.2 prefers"
+        );
+        assert_eq!(
+            names(&uncorrected),
+            vec!["recording_time"],
+            "no travel time to offer, but the clock is still known"
+        );
+        assert!(
+            corrected.is_usable() && uncorrected.is_usable(),
+            "both sides have something to re-anchor through"
+        );
+    }
+
+    #[test]
+    fn an_uncorrected_revision_still_has_a_mapping_worth_keeping() {
+        // Reported: replacing an uncorrected revision was refused outright,
+        // on the grounds that its mapping could not be kept and every pick
+        // drawn on it would become unplaceable. It has a mapping -- the
+        // recording clock -- and the snapshot was only ever looking for a
+        // travel time.
+        let dt = 1.586_161_7;
+        let declared = |crop: f64, zero: f64, n: usize| crate::interp::source::AxisDeclarations {
+            time: vec![0.0, 1.0, 2.0],
+            twtt_anchor: Some("twtt".to_string()),
+            twtt_crop: vec![crop],
+            twtt_time_zero: vec![zero],
+            dt_ns: dt,
+            n_samples: n,
+            processing_datetime: None,
+        };
+
+        let clock = snapshot_values(&declared(0.0, 0.0, 2024)).expect("the clock is a mapping");
+        assert_eq!(clock.y_anchor.as_deref(), Some("recording_time"));
+        assert_eq!(clock.y_values.len(), 2024);
+        assert_eq!(clock.x_values.len(), 3);
+        assert!(
+            (clock.y_values[0] - 0.0).abs() < 1e-9,
+            "sample 0 is the start of the record"
+        );
+        assert!(
+            clock.y_alternate.is_none(),
+            "an unlocated time zero has only the one anchor"
+        );
+
+        // A corrected revision still keeps the travel time, which is the
+        // preferred one and the one that means more -- and keeps the clock
+        // alongside it, so it can still relate to an uncorrected revision.
+        let corrected = snapshot_values(&declared(50.757_175, 50.757_175, 1992)).expect("twtt");
+        assert_eq!(corrected.y_anchor.as_deref(), Some("twtt"));
+        assert!(
+            (corrected.y_values[0] - 0.0).abs() < 1e-9,
+            "sample 0 is time zero"
+        );
+        let alternate = corrected.y_alternate.expect("the recording clock too");
+        assert_eq!(alternate.name, "recording_time");
+        assert!(
+            (alternate.offset - 50.757_175).abs() < 1e-4,
+            "time zero sits that far into the recording: {}",
+            alternate.offset
+        );
+
+        // Both start at zero and mean entirely different things, which is
+        // why the name is stored beside the values rather than inferred
+        // from them.
+    }
+
+    #[test]
+    fn a_per_trace_crop_gets_no_recording_clock_either() {
+        // `zero_corr_max_peak` crops each trace by its own amount, so there
+        // is no single position for sample 0 on the clock. A `regular` axis
+        // has one `t0`, and a mean would be a place no trace actually is —
+        // the same rule the travel-time offset follows.
+        assert!(recording_time_axis(&[40.0, 41.2, 39.6], 0.4).is_none());
+        // Per-trace values that agree to within f32 rounding are one value.
+        let steady: Vec<f64> = (0..64).map(|_| f64::from(50.757_175_f32)).collect();
+        assert!(recording_time_axis(&steady, 1.5862).is_some());
+    }
+
+    #[test]
     fn an_offset_that_differs_per_trace_gets_no_anchor() {
         // A `regular` axis has one `t0`. A mean would be an offset no trace
         // actually has, which is the error #144 took out of the export;
@@ -822,7 +1126,7 @@ mod tests {
     fn half_an_axis_block_is_not_usable() {
         // §8.1 needs both. Half of one invites a consumer to believe it has
         // a mapping.
-        let axis = twtt_axis(Some("twtt"), &[0.0], &[0.0], 0.4).unwrap();
+        let axis = twtt_axis(Some("twtt"), &[37.22], &[37.22], 0.4).unwrap();
         assert!(!Axes {
             x: None,
             y: Some(Axis {

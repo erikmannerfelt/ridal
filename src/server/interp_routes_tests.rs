@@ -50,6 +50,45 @@ fn write_test_nc(path: &StdPath, radargram_id: &str) {
 /// depth and positions, so those are written here rather than bloating the
 /// fixture every other test uses.
 pub(super) fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group: Option<&str>) {
+    write_test_nc_with_axes_at(path, radargram_id, group, "2020-01-01T00:00:00Z")
+}
+
+/// The same, with the processing datetime chosen.
+///
+/// The revision id is `hash(radargram_id + processing_datetime)`, so this
+/// is what makes two fixtures two *revisions* of one radargram rather than
+/// two files that collide on one id.
+pub(super) fn write_test_nc_with_axes_at(
+    path: &StdPath,
+    radargram_id: &str,
+    group: Option<&str>,
+    processing_datetime: &str,
+) {
+    write_test_nc_full(path, radargram_id, group, processing_datetime, 4.0, 4.0)
+}
+
+/// A revision on which no zero correction has ever run.
+///
+/// `twtt_time_zero` of zero is the sentinel for "never located", so this
+/// has no travel-time anchor at all — only the recording clock. It is the
+/// ordinary state of a radargram between acquisition and the first
+/// correction, and the case where replacing one used to be refused.
+pub(super) fn write_test_nc_uncorrected(
+    path: &StdPath,
+    radargram_id: &str,
+    processing_datetime: &str,
+) {
+    write_test_nc_full(path, radargram_id, None, processing_datetime, 0.0, 0.0)
+}
+
+fn write_test_nc_full(
+    path: &StdPath,
+    radargram_id: &str,
+    group: Option<&str>,
+    processing_datetime: &str,
+    crop_ns: f64,
+    time_zero_ns: f64,
+) {
     let (n_samples, n_traces) = (8usize, 40usize);
     let mut file = netcdf::create(path).unwrap();
     file.add_dimension("y", n_samples).unwrap();
@@ -99,7 +138,7 @@ pub(super) fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group:
         )
         .unwrap();
 
-    file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+    file.add_attribute("ridal_processing_datetime", processing_datetime)
         .unwrap();
     file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
         .unwrap();
@@ -116,10 +155,14 @@ pub(super) fn write_test_nc_with_axes(path: &StdPath, radargram_id: &str, group:
         let mut twtt = file.variable_mut("twtt").unwrap();
         twtt.put_attribute("anchor_name", "twtt").unwrap();
     }
+    // Equal, which is what a zero correction leaves: sample 0 *is* time
+    // zero, so its travel time is zero. `time_zero_ns` of `0.0` would
+    // instead mean time zero was never located -- see
+    // `write_test_nc_uncorrected`.
     let mut crop = file.add_variable::<f64>("twtt_crop", &[]).unwrap();
-    crop.put_value(4.0, ()).unwrap();
+    crop.put_value(crop_ns, ()).unwrap();
     let mut zero = file.add_variable::<f64>("twtt_time_zero", &[]).unwrap();
-    zero.put_value(4.0, ()).unwrap();
+    zero.put_value(time_zero_ns, ()).unwrap();
     // Written while the file is being created. Both attributes are needed:
     // `resolve_group` treats a bare id as no group at all, since the id only
     // exists to give the name a URL-safe form.
@@ -1627,7 +1670,7 @@ async fn unknown_fields_survive_a_save_and_reload_over_http() {
 ///
 /// Not by line: the jinja comment above it ends `-#}`, which eats the
 /// newline, so the entry does not start a line of its own.
-fn axes_line(html: &str) -> Option<String> {
+pub(super) fn axes_line(html: &str) -> Option<String> {
     let start = html.find("axes: ")?;
     let rest = &html[start..];
     Some(rest[..rest.find('\n')?].trim_end().to_string())

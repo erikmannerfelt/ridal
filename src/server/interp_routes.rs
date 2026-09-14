@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -31,7 +31,7 @@ use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
 use crate::project::store::{Expectation, StoreError, Version};
 use crate::project::users::{DownloadScope, Role};
-use crate::project::{interpretations, layers, Project};
+use crate::project::{audit, interpretations, layers, Project};
 
 /// The project, if this server has one and `caller` may do `action` in it.
 ///
@@ -295,6 +295,270 @@ pub async fn get_interpretation_carried(
         Json(serde_json::json!({
             "report": carried.report,
             "document": carried.document,
+        })),
+    ))
+}
+
+/// Which revision the page believed it was adopting onto.
+#[derive(Debug, serde::Deserialize)]
+pub struct PromoteQuery {
+    #[serde(default)]
+    onto: Option<String>,
+}
+
+/// `POST /api/v1/datasets/{id}/interpretations/{user}/promote`
+///
+/// Adopt the carried view as the interpretation: "I have looked at these
+/// on the current revision, they are in the right place, and they are now
+/// my picks on it."
+///
+/// # Why this is a route and not just a save
+///
+/// #148 argues at length against *migrating* interpretations, and every
+/// word of it holds: re-anchoring is approximate, writing it back would
+/// launder an approximation into ground truth, it compounds across
+/// successive replaces, and it cannot be undone. That argument is about
+/// something happening **automatically**, to everybody's picks, as a side
+/// effect of a replace.
+///
+/// This is the opposite: one person, one document, having looked at it.
+/// The three objections are answered rather than ignored —
+///
+/// - *approximate*: the document records that it was carried, in
+///   `meta.ridal_carried_from`, so the artefact itself says its
+///   coordinates were derived rather than drawn;
+/// - *compounds*: it records what it was carried **from**, so a chain is
+///   visible rather than invisible;
+/// - *irreversible*: the version as drawn is archived first.
+///
+/// # What gets stored is what was on screen
+///
+/// Including any edit made on top of the carried view. An earlier version
+/// of this recomputed the carry here and ignored the request body, on the
+/// grounds that a derived view arriving back as an authored document
+/// should not be trusted — which threw away exactly the edits somebody had
+/// just made. The reasoning was wrong: an edit made over a carried view is
+/// made by dragging a vertex across *this* revision, so it is already in
+/// this revision's index space and there is nothing to carry about it. The
+/// browser is the authority on coordinates for every ordinary save, and
+/// this is no different.
+///
+/// What the body cannot be trusted about is *which revision* it was
+/// looking at, so it says: `?onto=` must name the revision this catalog is
+/// currently serving. A tab left open across a replace then fails loudly
+/// rather than writing coordinates validated against a file that is gone.
+///
+/// The server still recomputes the carry, but only to compare — so the
+/// provenance can record whether what arrived is the carry as derived or
+/// the carry as adjusted.
+pub async fn promote_interpretation(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, user)): Path<(String, String)>,
+    Query(query): Query<PromoteQuery>,
+    caller: Caller,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = project_for(&state, &caller, Role::Picker, "adopt carried picks")?;
+    let radargram = parse_radargram(&radargram_id)?;
+    // Same rule as writing: interpretations belong to whoever drew them,
+    // and not even an admin may adopt on someone else's behalf.
+    let user = writing_as(&caller, &user)?;
+
+    let _lifecycle = state.lifecycle_lock().await;
+
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, radargram.as_str())?;
+    let revision = entry.revision_id.clone();
+    let path = state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    drop(catalog);
+
+    let stored = interpretations::read(project.documents(), &radargram, &user)
+        .map_err(interpretation_error)?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "interpretation_not_found",
+                format!(
+                    "'{}' has no interpretation of '{}'",
+                    user.as_str(),
+                    radargram.as_str()
+                ),
+            )
+        })?;
+
+    // The page has to say which revision it was looking at. Without this a
+    // tab left open across a replace would adopt coordinates validated
+    // against a file that is no longer there, and the provenance would
+    // record it as deliberate.
+    match query.onto.as_deref() {
+        Some(onto) if onto == revision.as_str() => {}
+        Some(_) => {
+            return Err(ApiError::conflict(
+                "stale_revision",
+                "This radargram was replaced while the page was open, so what you are \
+                 looking at is not the current version. Reload, check the picks again, \
+                 and adopt them then.",
+            ))
+        }
+        None => {
+            return Err(ApiError::bad_request(
+                "onto_required",
+                "Adopting has to say which revision it is adopting onto.",
+            ))
+        }
+    }
+
+    let from_revision = stored
+        .document
+        .source
+        .as_ref()
+        .and_then(|s| s.revision_id.clone());
+    if from_revision.as_deref() == Some(revision.as_str()) {
+        return Err(ApiError::conflict(
+            "already_current",
+            "These picks were drawn on the revision you are looking at, so there is \
+             nothing to adopt.",
+        ));
+    }
+
+    let axes = crate::interp::anchors::axes_for_revision(&path, &radargram, &revision);
+    let carried = crate::interp::carry::carry(&stored.document, &axes, revision.as_str());
+    let Some(derived) = carried.document else {
+        return Err(ApiError::conflict(
+            "cannot_be_carried",
+            format!(
+                "These picks cannot be placed on this revision, so there is nothing to \
+                 adopt: {}",
+                carried
+                    .report
+                    .refusal
+                    .unwrap_or_else(|| "no shared anchor axis".to_string())
+            ),
+        ));
+    };
+
+    // The document the page is showing, which is the carry plus whatever
+    // was adjusted on top of it. Validated exactly as a save is: reaching
+    // this route is not a way around the rules that govern writing picks.
+    let mut document: gprinterp::Document = serde_json::from_value(body)
+        .map_err(|e| ApiError::bad_request("invalid_interpretation", e.to_string()))?;
+    let report = gprinterp::validate(&document);
+    if !report.errors.is_empty() {
+        let joined: Vec<String> = report.errors.iter().map(|e| e.to_string()).collect();
+        return Err(ApiError::bad_request(
+            "invalid_interpretation",
+            joined.join("; "),
+        ));
+    }
+    let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
+    let violations = checks::check(&document, &|label| layer_set.allows_overhangs(label));
+    if !violations.is_empty() {
+        let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
+        return Err(ApiError::bad_request("overhang", joined.join("; ")));
+    }
+
+    // Whether what arrived is the carry as derived, or the carry as
+    // adjusted by hand. Both are legitimate and they are different things,
+    // and the provenance should not claim the first when it was the
+    // second.
+    let edited = document.features != derived.features;
+
+    // Checked before the archive, not only at the write. The store makes
+    // the write itself atomic, but by then a copy has already been filed
+    // away -- so a conflict would leave a stray archived version of a
+    // document that was never replaced.
+    let expectation = expectation_from(&headers);
+    if let Expectation::Version(expected) = &expectation {
+        if expected != &stored.version {
+            return Err(ApiError::precondition_failed(
+                "version_conflict",
+                "These picks were changed somewhere else while this page was open.",
+            ));
+        }
+    }
+
+    let at = chrono::Utc::now().to_rfc3339();
+
+    // Before anything is overwritten. This is what makes adopting
+    // reversible, which is what makes it defensible at all.
+    let archived = interpretations::archive_one(project.documents(), &radargram, &user, &at)
+        .map_err(interpretation_error)?;
+
+    // The document now belongs to this revision, and says how it got here.
+    document
+        .source
+        .get_or_insert_with(Default::default)
+        .revision_id = Some(revision.to_string());
+    document
+        .coordinates
+        .get_or_insert_with(Default::default)
+        .axes = serde_json::to_value(&axes)
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok());
+    document.date_modified = Some(at.clone());
+    let provenance = serde_json::json!({
+        "from_revision": from_revision,
+        "to_revision": revision.to_string(),
+        "at": at,
+        "by": user.as_str(),
+        "x_anchor": carried.report.x_anchor,
+        "y_anchor": carried.report.y_anchor,
+        "severity": carried.report.severity,
+        "dropped": carried.report.dropped.len(),
+        "edited_after_carry": edited,
+        "note": "Coordinates were carried from an earlier revision and adopted here, \
+                 not drawn on this one. gprinterp SPEC 8.3: a carried travel time is \
+                 never exact.",
+    });
+    document
+        .meta
+        .get_or_insert_with(Default::default)
+        .insert("ridal_carried_from".to_string(), provenance);
+
+    // The same precondition a save carries. `Any` meant adopting from a
+    // page that loaded before another tab saved overwrote the newer
+    // document -- archived, but replaced without anybody being told, where
+    // an ordinary save in the same position is refused with 412.
+    let version = interpretations::write(
+        project.documents(),
+        &radargram,
+        &user,
+        &document,
+        &expectation,
+    )
+    .map_err(interpretation_error)?;
+
+    audit::record(
+        project.documents(),
+        audit::Entry {
+            at,
+            user: caller.display_name().to_string(),
+            action: audit::Action::Adopted,
+            radargram_id: radargram.to_string(),
+            revision_id: Some(revision.to_string()),
+            note: Some(format!(
+                "{} adopted picks carried from {}{}",
+                user.as_str(),
+                from_revision.as_deref().unwrap_or("an unnamed revision"),
+                match carried.report.dropped.len() {
+                    0 => String::new(),
+                    n => format!(", leaving out {n} that did not fit"),
+                }
+            )),
+        },
+    );
+
+    Ok((
+        [(header::ETAG, format!("\"{version}\""))],
+        Json(serde_json::json!({
+            "radargram_id": radargram.as_str(),
+            "user": user.as_str(),
+            "from_revision": from_revision,
+            "to_revision": revision.to_string(),
+            "dropped": carried.report.dropped,
+            "archived": archived.map(|p| p.display().to_string()),
         })),
     ))
 }

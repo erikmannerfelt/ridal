@@ -43,7 +43,7 @@ serde_json = "1"
 
 # The level 1 interpretation format (`ridal interp`). Developed alongside
 # ridal in its own repository; see github.com/erikmannerfelt/gprinterp.
-gprinterp = "0.1"
+gprinterp = "0.3"
 
 # Web server and browser GUI (feature "server"). See tracking issue #115.
 axum = { version = "0.8", optional = true }

@@ -267,13 +267,14 @@ pub async fn upload_dataset(
     let baseline = crate::interp::anchors::snapshot_values(
         &crate::interp::source::read_axis_declarations(&installed),
     )
-    .map(|(y_anchor, y_values, x_values)| {
+    .map(|values| {
         revisions::AxisSnapshot {
             radargram_id: meta.radargram_id.to_string(),
             revision_id: revision_id.clone(),
-            y_anchor,
-            y_values,
-            x_values,
+            y_anchor: values.y_anchor,
+            y_values: values.y_values,
+            x_values: values.x_values,
+            y_alternate: values.y_alternate,
         }
         .checksum()
     });
@@ -650,8 +651,7 @@ fn snapshot_axes(
         ));
     }
 
-    let Some((y_anchor, y_values, x_values)) = crate::interp::anchors::snapshot_values(&declared)
-    else {
+    let Some(values) = crate::interp::anchors::snapshot_values(&declared) else {
         eprintln!(
             "Note: '{id}' does not declare its axes, so no snapshot was kept. \
              Interpretations drawn on it cannot be carried onto a later revision."
@@ -661,9 +661,10 @@ fn snapshot_axes(
     let snapshot = revisions::AxisSnapshot {
         radargram_id: id.to_string(),
         revision_id: revision.to_string(),
-        y_anchor,
-        y_values,
-        x_values,
+        y_anchor: values.y_anchor,
+        y_values: values.y_values,
+        x_values: values.x_values,
+        y_alternate: values.y_alternate,
     };
     let checksum = snapshot.checksum();
     revisions::put(project.documents(), id, &snapshot)
@@ -679,7 +680,7 @@ fn snapshot_axes(
     Ok(())
 }
 
-fn too_large(needed: u64, room: u64, cap: u64) -> ApiError {
+pub(super) fn too_large(needed: u64, room: u64, cap: u64) -> ApiError {
     ApiError::payload_too_large(
         "project_full",
         format!(
@@ -718,10 +719,10 @@ fn human(bytes: u64) -> String {
 /// unreadable, not a Ridal radargram, colliding id — and each one used to
 /// need its own cleanup. Tying it to the scope means a new refusal cannot
 /// forget.
-struct TempFile(std::path::PathBuf);
+pub(super) struct TempFile(pub(super) std::path::PathBuf);
 
 impl TempFile {
-    fn installed(mut self) {
+    pub(super) fn installed(mut self) {
         self.0.clear();
     }
 }
@@ -735,7 +736,7 @@ impl Drop for TempFile {
     }
 }
 
-fn uuid() -> String {
+pub(super) fn uuid() -> String {
     // Enough to not collide between two concurrent uploads, which is all
     // this needs: the file is renamed to its real name within the request.
     format!(
@@ -754,7 +755,7 @@ fn uuid() -> String {
 /// checked first because refusing before writing anything is better, but it
 /// is a claim: a client can under-report it or omit it entirely, and a
 /// chunked upload has none at all.
-async fn stream_to_file(
+pub(super) async fn stream_to_file(
     body: axum::body::Body,
     path: &std::path::Path,
     room: u64,

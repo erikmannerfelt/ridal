@@ -948,10 +948,28 @@ button.danger {
   cursor: pointer;
 }
 
-.add-layer button:hover,
-dialog > p > button:hover,
-button.danger:hover {
+.add-layer button:hover:not(:disabled),
+dialog > p > button:hover:not(:disabled),
+button.danger:hover:not(:disabled) {
   border-color: var(--color-accent);
+}
+
+/* A disabled dialog action has to *look* disabled.
+ *
+ * The replace dialog's confirm button was already disabled while an
+ * upload was in flight and while a refusal stood, but nothing styled
+ * `:disabled` for these buttons -- so it was indistinguishable from a
+ * live one, and the only way to find out was to click it and have
+ * nothing happen. `.controls button` had this rule all along; the dialog
+ * actions did not. */
+.add-layer button:disabled,
+dialog > p > button:disabled,
+dialog button:disabled,
+button.danger:disabled {
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  background: var(--color-surface-muted, var(--color-surface));
+  cursor: not-allowed;
 }
 
 /* Actions inside a table row.
@@ -1738,4 +1756,29 @@ button.danger:hover {
 
 .carry-banner dd {
   margin: 0;
+}
+
+/* The consequence report inside the replace dialog (#148).
+ *
+ * Two columns so the question and its answer line up down the page: an
+ * operator reads this to find the one row that is not "carries cleanly",
+ * and a paragraph would hide it. */
+.replace-detail {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+}
+
+.replace-detail dt {
+  font-weight: 600;
+}
+
+.replace-detail dd {
+  margin: 0;
+}
+
+#replace-dialog {
+  max-width: 40rem;
 }
