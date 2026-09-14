@@ -225,7 +225,23 @@ pub async fn upload_dataset(
         interpretations::count_archived(project.documents(), &meta.radargram_id)
             .map_err(|e| ApiError::internal("archive_read_failed", e.to_string()))?;
 
+    // The name comes out of the uploaded file, so this is the one place a
+    // path is built from something the client controls. `RadargramId` is a
+    // validated slug -- lowercase ASCII, digits, '-' and '_', and nothing
+    // else -- so it cannot hold a separator or a '.', and traversal is not
+    // reachable. Checked again anyway, because "safe because of a type
+    // defined in another module" is not a property you want a path sink to
+    // depend on, and CodeQL cannot see through the newtype to agree.
     let installed = destination.join(format!("{}.nc", meta.radargram_id));
+    if installed.parent() != Some(destination.as_path()) {
+        return Err(ApiError::bad_request(
+            "invalid_radargram_id",
+            format!(
+                "'{}' does not name a file inside the radargram directory.",
+                meta.radargram_id
+            ),
+        ));
+    }
     std::fs::rename(&temporary, &installed).map_err(|e| {
         ApiError::internal(
             "install_failed",
