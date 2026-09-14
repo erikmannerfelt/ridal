@@ -893,6 +893,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::routes::list_datasets).post(super::lifecycle_routes::upload_dataset),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/interpretations/{user}/carried",
+            get(super::interp_routes::get_interpretation_carried),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/revisions",
             get(super::lifecycle_routes::list_revisions),
         )

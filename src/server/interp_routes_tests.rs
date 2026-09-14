@@ -1946,3 +1946,142 @@ async fn a_save_waits_while_a_radargram_is_being_removed() {
         .unwrap();
     assert_eq!(status, StatusCode::CREATED);
 }
+
+/// The anchor axes the viewer page hands the picker, parsed back out of it.
+///
+/// Through the page rather than rebuilt here, so these tests exercise the
+/// same values a browser would actually save.
+async fn offered_axes(app: &Router) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/view/{RADARGRAM}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let html = String::from_utf8_lossy(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .to_string();
+    let line = axes_line(&html).expect("the page offers axes");
+    let json = line.trim_start_matches("axes: ").trim_end_matches(',');
+    serde_json::from_str(json).expect("the page carries valid JSON")
+}
+
+/// The revision the catalog is currently serving.
+async fn revision_of(app: &Router) -> String {
+    let (_, _, body) = send(
+        app,
+        Request::builder()
+            .uri(format!("/api/v1/datasets/{RADARGRAM}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    body["revision_id"]
+        .as_str()
+        .expect("a revision id")
+        .to_string()
+}
+
+/// A document with one line, authored against `revision`.
+fn document_with_axes(axes: &Value, points: &[[f64; 2]], revision: impl Into<String>) -> Value {
+    serde_json::json!({
+        "key": RADARGRAM,
+        "source": {"radargram_id": RADARGRAM, "revision_id": revision.into()},
+        "coordinates": {"space": "index", "axes": axes},
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": points},
+            "properties": {"id": "f-0001", "label": "bed"}
+        }]
+    })
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_document_from_this_revision_is_shown_as_drawn() {
+    // The ordinary case, and the one that has to stay quiet: a banner that
+    // announced a migration every time anyone opened a radargram would be
+    // ignored by the time it mattered.
+    let (_dir, app) = project_app_with_axes();
+    let uri = "/api/v1/datasets/line-01/interpretations/default";
+
+    let axes = offered_axes(&app).await;
+    let document = document_with_axes(&axes, &[[5.0, 2.0], [30.0, 3.0]], revision_of(&app).await);
+    let (status, _, _) = put(&app, uri, &document, None).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _, body) = send(
+        &app,
+        Request::builder()
+            .uri(format!("{uri}/carried"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["report"]["severity"], "current");
+    assert!(body["report"]["moved"].is_null(), "nothing was carried");
+    // And what comes back is what was stored, vertex for vertex.
+    assert_eq!(
+        body["document"]["features"][0]["geometry"]["coordinates"],
+        serde_json::json!([[5.0, 2.0], [30.0, 3.0]])
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_document_from_another_revision_is_carried_and_the_stored_one_is_untouched() {
+    // The whole safety property of #148's read half: the view moves, the
+    // document does not. What is on disk is still what somebody drew, and
+    // the carried coordinates exist only in the response.
+    let (dir, app) = project_app_with_axes();
+    let uri = "/api/v1/datasets/line-01/interpretations/default";
+
+    let axes = offered_axes(&app).await;
+    // Authored against a revision this radargram has never had.
+    let document = document_with_axes(&axes, &[[5.0, 2.0], [30.0, 3.0]], "rev-from-elsewhere");
+    let (status, _, body) = put(&app, uri, &document, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, _, body) = send(
+        &app,
+        Request::builder()
+            .uri(format!("{uri}/carried"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_ne!(
+        body["report"]["severity"], "current",
+        "a different revision is not the current one: {body}"
+    );
+    assert_eq!(body["report"]["from_revision"], "rev-from-elsewhere");
+    assert!(
+        body["report"]["headline"].as_str().unwrap().len() > 20,
+        "the banner has something to say: {body}"
+    );
+
+    // The file on disk still says what it said.
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            dir.path()
+                .join("interpretations/line-01/default.gprinterp.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["source"]["revision_id"], "rev-from-elsewhere");
+    assert_eq!(
+        stored["features"][0]["geometry"]["coordinates"],
+        serde_json::json!([[5.0, 2.0], [30.0, 3.0]]),
+        "the authored coordinates were not rewritten"
+    );
+}

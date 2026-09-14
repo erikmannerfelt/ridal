@@ -25,6 +25,12 @@
   --color-warning-bg: #fdf0d5;
   --color-warning-border: #e0b23c;
   --color-warning-text: #5a4310;
+  /* Distinct from warning, and deliberately so: warning means "look at
+   * this", danger means "this did not happen". The carry banner uses the
+   * two for exactly that difference. */
+  --color-danger-bg: #fbe4e1;
+  --color-danger-border: #c2452f;
+  --color-danger-text: #6d1f14;
 
   /* Map-popup background. PFA_website's style.css:632-637 uses
    * rgba(255,255,255,0.3) + backdrop-filter blur, ported faithfully in
@@ -93,6 +99,9 @@
     --color-warning-bg: #3a2f14;
     --color-warning-border: #8a6a20;
     --color-warning-text: #f2dfae;
+    --color-danger-bg: #3d1a14;
+    --color-danger-border: #b04a34;
+    --color-danger-text: #f5cfc7;
     --color-popup-bg: rgb(30 32 36 / 92%);
   }
 }
@@ -1666,4 +1675,67 @@ button.danger:hover {
 
 #group-download-dialog select {
   padding: var(--space-1) var(--space-2);
+}
+
+/* What carrying picks onto this revision cost (#148).
+ *
+ * A banner rather than the `#pick-error` toast. The toast is `position:
+ * fixed` and transient, for something that just happened; this is a
+ * standing condition of everything on screen and has to keep saying so
+ * for as long as it is true. It takes layout accordingly.
+ *
+ * Warning-coloured by default, because the ordinary case for showing it
+ * at all is that the picks are not where they were drawn. `is-refused`
+ * is the one that is not a caveat but a failure — nothing is being
+ * shown — and it reads differently. */
+.carry-banner {
+  margin: 0 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: var(--text-sm);
+}
+
+.carry-banner strong {
+  margin-right: var(--space-2);
+}
+
+/* Refusal is not a caveat: nothing is being drawn.
+ *
+ * It used to fall back to the warning colours through `var(..., ..)`
+ * defaults for tokens that were never declared, so the state that means
+ * "these picks are not on screen at all" looked identical to the one that
+ * means "they moved". The left border carries it as well as the colour,
+ * so the distinction survives a monochrome display or a viewer who cannot
+ * separate the two hues. */
+.carry-banner.is-refused {
+  border-color: var(--color-danger-border);
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border-left-width: 4px;
+}
+
+.carry-banner details {
+  margin-top: var(--space-2);
+}
+
+.carry-banner summary {
+  cursor: pointer;
+}
+
+.carry-banner dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: var(--space-2) 0 0;
+}
+
+.carry-banner dt {
+  font-weight: 600;
+}
+
+.carry-banner dd {
+  margin: 0;
 }
