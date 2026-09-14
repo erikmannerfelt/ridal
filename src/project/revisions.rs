@@ -129,7 +129,16 @@ struct Header {
 #[derive(Debug)]
 pub enum SnapshotError {
     Store(StoreError),
-    Malformed { path: PathBuf, message: String },
+    Malformed {
+        path: PathBuf,
+        message: String,
+    },
+    /// A snapshot already exists for this revision id and says something
+    /// else. See [`put`] for why this is refused rather than resolved.
+    Collision {
+        radargram_id: String,
+        revision_id: String,
+    },
 }
 
 impl std::fmt::Display for SnapshotError {
@@ -141,6 +150,18 @@ impl std::fmt::Display for SnapshotError {
                     f,
                     "{} is not a usable axis snapshot: {message}",
                     path.display()
+                )
+            }
+            SnapshotError::Collision {
+                radargram_id,
+                revision_id,
+            } => {
+                write!(
+                    f,
+                    "'{radargram_id}' already has axes kept for revision {revision_id}, \
+                     and they describe a different mapping. Two files are sharing one \
+                     revision id, which means they share a processing datetime: \
+                     reprocess one of them so it gets its own."
                 )
             }
         }
@@ -275,11 +296,34 @@ pub fn put(
     snapshot: &AxisSnapshot,
 ) -> Result<(), SnapshotError> {
     let bytes = to_bytes(snapshot)?;
-    store.write_bytes(
-        &path_of(radargram, &snapshot.revision_id),
-        &bytes,
-        &Expectation::Any,
-    )?;
+    let relative = path_of(radargram, &snapshot.revision_id);
+
+    // A revision id is `hash(radargram_id + processing_datetime)` and says
+    // nothing about contents, so two different files carrying the same
+    // datetime -- which Ridal cannot produce but another tool can -- land
+    // here under one name. Overwriting would re-anchor documents drawn on
+    // the first through the second's axes, silently, which is the precise
+    // failure the ledger's checksum exists to catch: catching it there and
+    // permitting it here would be answering the question and ignoring the
+    // answer.
+    //
+    // Byte-identical content is accepted, because that is a re-run rather
+    // than a collision: `to_bytes` is deterministic, so the same mapping
+    // encodes the same way.
+    if let Some((existing, _)) = store.read_bytes(&relative)? {
+        if existing == bytes {
+            return Ok(());
+        }
+        return Err(SnapshotError::Collision {
+            radargram_id: radargram.to_string(),
+            revision_id: snapshot.revision_id.clone(),
+        });
+    }
+
+    // `Absent` rather than `Any`, so the check above is not merely advisory:
+    // a second writer between the read and this write is refused instead of
+    // overwritten.
+    store.write_bytes(&relative, &bytes, &Expectation::Absent)?;
     Ok(())
 }
 
@@ -330,6 +374,42 @@ mod tests {
                 .map(|i| 1_648_557_660.0 + i as f64 / 3.0)
                 .collect(),
         }
+    }
+
+    #[test]
+    fn a_second_file_claiming_one_revision_id_is_refused_rather_than_overwriting() {
+        // `RevisionId` is hash(radargram_id + processing_datetime) and says
+        // nothing about contents, so two different files carrying the same
+        // datetime land under one name. Overwriting would re-anchor
+        // documents drawn on the first through the second's axes -- the
+        // precise failure the ledger's checksum exists to catch.
+        let (_dir, store) = store();
+        let id = RadargramId::new("line-01").unwrap();
+
+        put(&store, &id, &snapshot("rev-a")).unwrap();
+
+        let mut different = snapshot("rev-a");
+        different.y_values = different.y_values.iter().map(|v| v + 3.0).collect();
+        let refused = put(&store, &id, &different).unwrap_err();
+        assert!(
+            matches!(refused, SnapshotError::Collision { .. }),
+            "{refused}"
+        );
+
+        // And the first one is untouched, which is the point.
+        let kept = get(&store, &id, "rev-a").unwrap().unwrap();
+        assert_eq!(kept, snapshot("rev-a"));
+    }
+
+    #[test]
+    fn writing_the_same_snapshot_twice_is_not_a_collision() {
+        // A re-run, not two files. `to_bytes` is deterministic, so the same
+        // mapping encodes the same way, and refusing it would turn an
+        // idempotent operation into an error.
+        let (_dir, store) = store();
+        let id = RadargramId::new("line-01").unwrap();
+        put(&store, &id, &snapshot("rev-a")).unwrap();
+        put(&store, &id, &snapshot("rev-a")).expect("the same mapping again");
     }
 
     #[test]
@@ -635,6 +715,33 @@ pub mod ledger {
             note_current(ledger, radargram, by, None);
         }
     }
+
+    /// Record that `revision` is the id's current one, undoing a
+    /// supersession if it had been marked as one.
+    ///
+    /// [`note_current`] alone is not enough here. A radargram can come back:
+    /// an ignore is lifted, or a file is removed and the same revision
+    /// re-uploaded. `note_current` leaves an existing record untouched, so
+    /// the radargram would go on being served while its own history says it
+    /// was superseded — a report that contradicts what the catalog is
+    /// showing, which is worse than no report.
+    ///
+    /// Only the named revision is cleared. Genuinely older revisions of the
+    /// same id stay superseded, because they are.
+    pub fn note_current_again(
+        ledger: &mut Ledger,
+        radargram: &str,
+        revision: &str,
+        checksum: Option<String>,
+    ) {
+        note_current(ledger, radargram, revision, checksum);
+        if let Some(records) = ledger.radargrams.get_mut(radargram) {
+            if let Some(existing) = records.iter_mut().find(|r| r.revision_id == revision) {
+                existing.superseded_at = None;
+                existing.superseded_by = None;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -646,6 +753,67 @@ mod ledger_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = DocumentStore::new(dir.path().to_path_buf());
         (dir, store)
+    }
+
+    #[test]
+    fn a_revision_that_becomes_current_again_stops_being_superseded() {
+        // A radargram can come back: an ignore is lifted, or a removed id
+        // is re-uploaded. `note_current` leaves an existing record alone,
+        // so without this the catalog would serve a radargram whose own
+        // history says it was superseded.
+        let (_dir, store) = store();
+        update(&store, |l| {
+            note_current(l, "line-01", "rev-a", Some("abc123".into()));
+            supersede(l, "line-01", "rev-a", None, "2026-09-13T12:00:00Z");
+        })
+        .unwrap();
+
+        let (ledger, _) = read(&store).unwrap();
+        assert!(ledger.current("line-01").is_none(), "removed");
+
+        update(&store, |l| {
+            note_current_again(l, "line-01", "rev-a", None);
+        })
+        .unwrap();
+
+        let (ledger, _) = read(&store).unwrap();
+        let current = ledger.current("line-01").expect("current again");
+        assert_eq!(current.revision_id, "rev-a");
+        assert!(current.superseded_at.is_none());
+        assert!(current.superseded_by.is_none());
+        assert_eq!(
+            current.axis_checksum.as_deref(),
+            Some("abc123"),
+            "and the baseline it came back with is still the one to compare against"
+        );
+    }
+
+    #[test]
+    fn coming_back_does_not_revive_the_revisions_that_really_were_superseded() {
+        // Only the named revision. An older one is superseded because it
+        // is, and un-superseding it would say two revisions are current.
+        let (_dir, store) = store();
+        update(&store, |l| {
+            note_current(l, "line-01", "rev-a", None);
+            supersede(l, "line-01", "rev-a", Some("rev-b"), "2026-09-13T12:00:00Z");
+            supersede(l, "line-01", "rev-b", None, "2026-09-14T12:00:00Z");
+        })
+        .unwrap();
+
+        update(&store, |l| {
+            note_current_again(l, "line-01", "rev-b", None);
+        })
+        .unwrap();
+
+        let (ledger, _) = read(&store).unwrap();
+        assert_eq!(ledger.current("line-01").unwrap().revision_id, "rev-b");
+        let records = &ledger.radargrams["line-01"];
+        let older = records.iter().find(|r| r.revision_id == "rev-a").unwrap();
+        assert_eq!(
+            older.superseded_by.as_deref(),
+            Some("rev-b"),
+            "the one that really was superseded stayed that way"
+        );
     }
 
     #[test]

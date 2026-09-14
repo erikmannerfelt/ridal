@@ -267,7 +267,7 @@ impl AppState {
             );
         }
 
-        Ok(Self {
+        let state = Self {
             roots,
             render_config: *config,
             lifecycle: tokio::sync::Mutex::new(()),
@@ -282,7 +282,12 @@ impl AppState {
             // render forever. The CLI rejects `--n-workers 0` with a
             // clear message, so this only guards programmatic callers.
             render_permits: Arc::new(Semaphore::new(config.n_workers.max(1))),
-        })
+        };
+        // At startup too, not only on rediscovery. Most projects never
+        // add or remove anything through the GUI, and those are exactly
+        // the ones whose history would otherwise stay empty forever.
+        state.register_current_revisions(&state.catalog());
+        Ok(state)
     }
 
     /// Resolves a catalog entry beneath the canonical catalog root.
@@ -433,8 +438,55 @@ impl AppState {
             );
         }
 
+        self.register_current_revisions(&catalog);
         self.replace_catalog(catalog, radargrams);
         Ok(())
+    }
+
+    /// Give every catalogued radargram a current revision in the ledger.
+    ///
+    /// Without this, `revisions.json` only ever learned about a radargram
+    /// at the moment one was *removed*: a radargram that had never been
+    /// removed was simply absent, so `/revisions` could not say what it is
+    /// on now, and there was no record for a later supersession to compare
+    /// against.
+    ///
+    /// The revision id alone, with no checksum. The id is already in the
+    /// catalog entry and costs nothing; a checksum means reading the axes
+    /// out of the file, and doing that for every radargram on every
+    /// rediscovery would put a full pass over the catalog behind every add
+    /// and every removal. The baseline is taken where one file is already
+    /// open and the cost is one file's worth — when it is added, and when
+    /// it is superseded.
+    ///
+    /// Best effort. A read-only project, or one with no project at all,
+    /// still serves its catalog; failing discovery because the history
+    /// could not be written would take the whole server down for a record
+    /// nothing has asked for yet.
+    fn register_current_revisions(&self, catalog: &Catalog) {
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        if catalog.entries.is_empty() {
+            return;
+        }
+        let known: Vec<(String, String)> = catalog
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.radargram_id.as_str().to_string(),
+                    entry.revision_id.to_string(),
+                )
+            })
+            .collect();
+        if let Err(e) = crate::project::revisions::ledger::update(project.documents(), |l| {
+            for (id, revision) in &known {
+                crate::project::revisions::ledger::note_current(l, id, revision, None);
+            }
+        }) {
+            eprintln!("Warning: could not record the catalog's current revisions: {e}");
+        }
     }
 
     /// Whether Ridal may write to the root this entry came from.

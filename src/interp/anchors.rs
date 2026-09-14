@@ -310,6 +310,36 @@ pub fn twtt_axis(
         return None;
     }
 
+    // A scalar for one and a vector for the other cannot be compared
+    // element-wise, and a length mismatch means exactly that. Checked
+    // before the zip, which would otherwise truncate to the shorter and
+    // compare a prefix.
+    if crop_ns.len() != time_zero_ns.len() {
+        return None;
+    }
+
+    // Both variables are stored as `f32` and widened on the way in, so two
+    // mathematically identical offsets can differ by an ulp of the *f32*
+    // they came from -- around 1e-5 ns at a hundred nanoseconds, which is
+    // 1e11 times `f64::EPSILON`. Comparing at f64 precision rejected axes
+    // that are uniform in every sense that matters and left those
+    // radargrams with no anchor at all, which is the one outcome #148
+    // cannot work with.
+    //
+    // Scaled to the axis rather than fixed, because "a difference too small
+    // to be real" depends on how large the numbers are. `dt_ns` floors the
+    // scale so a radargram whose offsets are all near zero still gets a
+    // usable tolerance, and the few ulps of headroom cover the rounding
+    // accumulated across store, widen and subtract. Real per-trace
+    // structure -- a zero correction that actually moves between traces --
+    // differs by a visible fraction of a sample and is still rejected, by
+    // a margin of some six orders of magnitude.
+    let scale = crop_ns
+        .iter()
+        .chain(time_zero_ns.iter())
+        .fold(dt_ns.abs(), |m, v| m.max(v.abs()));
+    let tolerance = f64::from(f32::EPSILON) * scale * 8.0;
+
     // Scalars in the file read back as a single value; per-trace ones as
     // one each. Either way the offset has to be the same everywhere.
     let mut offsets = crop_ns
@@ -317,12 +347,7 @@ pub fn twtt_axis(
         .zip(time_zero_ns.iter())
         .map(|(crop, zero)| crop - zero);
     let first = offsets.next()?;
-    if !offsets.all(|offset| (offset - first).abs() < f64::EPSILON) {
-        return None;
-    }
-    // A scalar for one and a vector for the other cannot be compared
-    // element-wise, and a length mismatch means exactly that.
-    if crop_ns.len() != time_zero_ns.len() {
+    if !offsets.all(|offset| (offset - first).abs() <= tolerance) {
         return None;
     }
 
@@ -576,6 +601,47 @@ mod tests {
         let crop = vec![40.0, 41.2, 39.6, 42.8];
         let axis = twtt_axis(Some("twtt"), &crop, &crop, 0.4).unwrap();
         assert_eq!(axis.t0, Some(0.0));
+    }
+
+    #[test]
+    fn an_f32_rounding_difference_is_not_a_per_trace_offset() {
+        // Both variables are stored as `f32` and widened on the way in, so
+        // two mathematically identical offsets differ by an ulp of the f32
+        // they came from. At `f64::EPSILON` those radargrams got no anchor
+        // at all -- and a radargram with no anchor is the one case #148
+        // cannot carry forward.
+        let exact = 62.034_f64;
+        let crop: Vec<f64> = (0..64)
+            .map(|i| f64::from((exact + f64::from(i) * 1.2407) as f32))
+            .collect();
+        let zero: Vec<f64> = (0..64)
+            .map(|i| f64::from((f64::from(i) * 1.2407) as f32))
+            .collect();
+
+        // The differences are real at f64 precision -- this is not a test
+        // that happens to compare equal numbers.
+        let offsets: Vec<f64> = crop.iter().zip(&zero).map(|(c, z)| c - z).collect();
+        let spread = offsets
+            .iter()
+            .fold(0.0_f64, |m, o| m.max((o - offsets[0]).abs()));
+        assert!(spread > f64::EPSILON, "spread was {spread:e}");
+
+        let axis = twtt_axis(Some("twtt"), &crop, &zero, 1.2407).expect("a uniform offset");
+        assert!(
+            (axis.t0.unwrap() - exact).abs() < 1e-4,
+            "t0 was {:?}",
+            axis.t0
+        );
+    }
+
+    #[test]
+    fn a_real_per_trace_offset_is_still_rejected_at_the_wider_tolerance() {
+        // The tolerance is scaled to the axis, so it has to stay far below
+        // anything a zero correction would actually produce. A thousandth
+        // of a sample is already six orders above an f32 ulp here.
+        let crop: Vec<f64> = (0..64).map(|i| 62.034 + f64::from(i) * 0.001).collect();
+        let zero = vec![0.0; 64];
+        assert!(twtt_axis(Some("twtt"), &crop, &zero, 1.2407).is_none());
     }
 
     #[test]
