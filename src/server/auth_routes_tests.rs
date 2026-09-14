@@ -3525,10 +3525,18 @@ async fn carried_picks_can_be_adopted_onto_the_current_revision() {
     assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.text);
     let to_revision = replaced.body["to_revision"].as_str().unwrap().to_string();
 
+    // What the page is showing: the carry, unedited.
+    let carried = get(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik/carried",
+        Some(&erik),
+    )
+    .await;
+    let shown = carried.body["document"].clone();
     let adopted = post(
         &app,
-        "/api/v1/datasets/ours/interpretations/erik/promote",
-        &json!({}),
+        &format!("/api/v1/datasets/ours/interpretations/erik/promote?onto={to_revision}"),
+        &shown,
         Some(&erik),
     )
     .await;
@@ -3572,11 +3580,17 @@ async fn carried_picks_can_be_adopted_onto_the_current_revision() {
         json!([[5.0, 2.0], [30.0, 3.0]])
     );
 
+    assert_eq!(
+        carried_meta_edited(&stored),
+        false,
+        "nothing was adjusted on top: {stored}"
+    );
+
     // Adopting twice is refused: there is nothing left to adopt.
     let again = post(
         &app,
-        "/api/v1/datasets/ours/interpretations/erik/promote",
-        &json!({}),
+        &format!("/api/v1/datasets/ours/interpretations/erik/promote?onto={to_revision}"),
+        &shown,
         Some(&erik),
     )
     .await;
@@ -3599,11 +3613,181 @@ async fn nobody_may_adopt_someone_elses_picks() {
 
     let response = post(
         &app,
-        "/api/v1/datasets/ours/interpretations/student/promote",
+        "/api/v1/datasets/ours/interpretations/student/promote?onto=whatever",
         &json!({}),
         Some(&erik),
     )
     .await;
     assert_eq!(response.status, StatusCode::FORBIDDEN, "{}", response.text);
     assert_eq!(response.body["error"]["code"], "not_your_interpretation");
+}
+
+/// Whether an adopted document records that it was adjusted after carrying.
+fn carried_meta_edited(stored: &serde_json::Value) -> bool {
+    stored["meta"]["ridal_carried_from"]["edited_after_carry"]
+        .as_bool()
+        .unwrap_or(false)
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_edit_made_over_a_carried_view_survives_adopting() {
+    // Reported: carry the picks, drag a vertex, press Adopt, and the edit
+    // is gone. Adopting used to recompute the carry server-side and ignore
+    // what the page sent, which threw away exactly the adjustment somebody
+    // had just made.
+    //
+    // An edit made over a carried view is made by dragging a vertex across
+    // *this* revision, so it is already in this revision's index space and
+    // there is nothing to carry about it.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let before = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    let from_revision = before.body["revision_id"].as_str().unwrap().to_string();
+    let page = get(&app, "/view/ours", Some(&erik)).await;
+    let line = super::interp_routes_tests::axes_line(&page.text).expect("axes");
+    let axes: serde_json::Value =
+        serde_json::from_str(line.trim_start_matches("axes: ").trim_end_matches(',')).unwrap();
+
+    let document = json!({
+        "key": "ours",
+        "source": {"radargram_id": "ours", "revision_id": from_revision},
+        "coordinates": {"space": "index", "axes": axes},
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[5.0, 2.0], [30.0, 3.0]]},
+            "properties": {"id": "f-0001", "label": "bed"}
+        }]
+    });
+    let saved = put(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik",
+        &document,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::CREATED, "{}", saved.text);
+
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    let replaced = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    let to_revision = replaced.body["to_revision"].as_str().unwrap().to_string();
+
+    // What the page shows, then a vertex dragged: the second point moves.
+    let carried = get(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik/carried",
+        Some(&erik),
+    )
+    .await;
+    let mut edited = carried.body["document"].clone();
+    edited["features"][0]["geometry"]["coordinates"][1] = json!([31.0, 6.0]);
+
+    let adopted = post(
+        &app,
+        &format!("/api/v1/datasets/ours/interpretations/erik/promote?onto={to_revision}"),
+        &edited,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(adopted.status, StatusCode::OK, "{}", adopted.text);
+
+    let stored: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("interpretations/ours/erik.gprinterp.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stored["features"][0]["geometry"]["coordinates"][1],
+        json!([31.0, 6.0]),
+        "the edit survived: {stored}"
+    );
+    assert_eq!(stored["source"]["revision_id"], to_revision);
+    assert!(
+        carried_meta_edited(&stored),
+        "and the provenance says it was adjusted rather than carried straight: {stored}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn adopting_from_a_page_left_open_across_a_replace_is_refused() {
+    // The one thing the page cannot be trusted about is which revision it
+    // was looking at. A tab open across a replace would otherwise adopt
+    // coordinates validated against a file that is no longer there, and
+    // the provenance would record it as deliberate.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let before = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    let stale = before.body["revision_id"].as_str().unwrap().to_string();
+
+    let document = json!({
+        "key": "ours",
+        "source": {"radargram_id": "ours", "revision_id": stale},
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[5.0, 2.0], [30.0, 3.0]]},
+            "properties": {"id": "f-0001", "label": "bed"}
+        }]
+    });
+    put(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik",
+        &document,
+        Some(&erik),
+    )
+    .await;
+
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+
+    // The page still believes it is looking at the revision it loaded.
+    let refused = post(
+        &app,
+        &format!("/api/v1/datasets/ours/interpretations/erik/promote?onto={stale}"),
+        &document,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "stale_revision");
 }

@@ -981,18 +981,32 @@
           ? `\n\n${dropped} line(s) fall outside this version and will not be ` +
             "included. They stay in the archived copy."
           : "";
+      const edited = dirty ? "\n\nYour edits are included." : "";
       const agreed = window.confirm(
         "Adopt these picks onto the current version?\n\n" +
           "They were drawn on an earlier version and carried here for display. " +
           "Adopting records them as yours on this version, and notes in the file " +
           "that they were carried rather than drawn.\n\n" +
           "The version as drawn is archived first, so this can be undone." +
+          edited +
           lost,
       );
       if (!agreed) return;
 
       try {
-        const response = await fetch(`${documentUrl}/promote`, { method: "POST" });
+        // What is on screen, edits and all -- an edit made over a carried
+        // view is already in this revision's index space. `onto` says
+        // which revision this page believes it is looking at, so a tab
+        // left open across a replace fails loudly instead of writing
+        // coordinates nobody validated against the file now on disk.
+        const response = await fetch(
+          `${documentUrl}/promote?onto=${encodeURIComponent(CFG.revisionId)}`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(buildBody()),
+          },
+        );
         if (!response.ok) {
           const failure = await response.json().catch(() => null);
           showError(
@@ -1008,6 +1022,66 @@
       // revision, so the banner, the etag and the save guard all change.
       dirty = false;
       window.location.reload();
+    }
+
+    /** The document as this page would store it: what is on screen.
+     *
+     * Shared by saving and adopting. Adopting used to rebuild the carried
+     * coordinates on the server and ignore this, which threw away any edit
+     * made on top of the carried view -- and an edit made on top is
+     * already in *this* revision's index space, because it was made by
+     * dragging a vertex over this revision. There is nothing to carry
+     * about it. The person looked at the carried picks, adjusted them, and
+     * both halves of that are what they meant.
+     */
+    function buildBody() {
+      return {
+          // Spread first, so anything this editor does not model is carried
+          // through, then override only the fields it owns.
+          ...(loaded || {}),
+          schema: "gprinterp",
+          schema_version: "0.1",
+          key: CFG.radargramId,
+          date_modified: new Date().toISOString(),
+          source: {
+            ...((loaded && loaded.source) || {}),
+            id: CFG.radargramId,
+            // The revision the picks were drawn against. Without it a
+            // document authored here can never trigger the reprocessing
+            // warning gprinterp SPEC 6.3 exists for: equal trace and sample
+            // counts are explicitly not evidence that two revisions agree on
+            // what an index means.
+            revision_id: CFG.revisionId,
+            n_traces: CFG.sourceWidth,
+            n_samples: CFG.sourceHeight,
+          },
+          // What lets these picks be carried onto a differently processed
+          // version of the same radargram (gprinterp SPEC 8.1). Without it a
+          // consumer has a coordinate and no mapping to evaluate it through,
+          // and 8.1 forbids falling back to the raw index -- so a document
+          // with no axes is stuck on the one revision forever.
+          //
+          // Built by the server, which is the only thing that has read the
+          // radargram. Null when it cannot describe its axes, and then the
+          // key is left out entirely: half an axis block would invite a
+          // consumer to believe it had a mapping.
+          // The *axes* are replaced and the rest of `coordinates` is kept.
+          // gprinterp puts `space` and `convention` in the same object, and
+          // the editor's contract is to carry through what it does not model
+          // -- overwriting the whole thing would drop a producer's
+          // conventions on the first save made here.
+          //
+          // `undefined` when there are no axes, rather than omitting the key,
+          // because the spread above carried through whatever the loaded
+          // document had. Those axes describe the revision it was drawn on
+          // and `source` two lines up now names this one, so keeping them
+          // would pair one revision's mapping with another's id -- a worse
+          // lie than having no mapping. JSON.stringify drops the key.
+          coordinates: CFG.axes
+            ? { ...((loaded && loaded.coordinates) || {}), axes: CFG.axes }
+            : undefined,
+          features,
+      };
     }
 
     async function save() {
@@ -1036,53 +1110,7 @@
       // revision's id without re-anchoring them is precisely the
       // cross-revision mistake the axes exist to prevent, and this editor
       // would be the source of it.
-      const body = {
-        // Spread first, so anything this editor does not model is carried
-        // through, then override only the fields it owns.
-        ...(loaded || {}),
-        schema: "gprinterp",
-        schema_version: "0.1",
-        key: CFG.radargramId,
-        date_modified: new Date().toISOString(),
-        source: {
-          ...((loaded && loaded.source) || {}),
-          id: CFG.radargramId,
-          // The revision the picks were drawn against. Without it a
-          // document authored here can never trigger the reprocessing
-          // warning gprinterp SPEC 6.3 exists for: equal trace and sample
-          // counts are explicitly not evidence that two revisions agree on
-          // what an index means.
-          revision_id: CFG.revisionId,
-          n_traces: CFG.sourceWidth,
-          n_samples: CFG.sourceHeight,
-        },
-        // What lets these picks be carried onto a differently processed
-        // version of the same radargram (gprinterp SPEC 8.1). Without it a
-        // consumer has a coordinate and no mapping to evaluate it through,
-        // and 8.1 forbids falling back to the raw index -- so a document
-        // with no axes is stuck on the one revision forever.
-        //
-        // Built by the server, which is the only thing that has read the
-        // radargram. Null when it cannot describe its axes, and then the
-        // key is left out entirely: half an axis block would invite a
-        // consumer to believe it had a mapping.
-        // The *axes* are replaced and the rest of `coordinates` is kept.
-        // gprinterp puts `space` and `convention` in the same object, and
-        // the editor's contract is to carry through what it does not model
-        // -- overwriting the whole thing would drop a producer's
-        // conventions on the first save made here.
-        //
-        // `undefined` when there are no axes, rather than omitting the key,
-        // because the spread above carried through whatever the loaded
-        // document had. Those axes describe the revision it was drawn on
-        // and `source` two lines up now names this one, so keeping them
-        // would pair one revision's mapping with another's id -- a worse
-        // lie than having no mapping. JSON.stringify drops the key.
-        coordinates: CFG.axes
-          ? { ...((loaded && loaded.coordinates) || {}), axes: CFG.axes }
-          : undefined,
-        features,
-      };
+      const body = buildBody();
       const headers = { "Content-Type": "application/json" };
       // Conditional either way. Without the absent case, two tabs that both
       // loaded a document which did not exist yet would both save, and the

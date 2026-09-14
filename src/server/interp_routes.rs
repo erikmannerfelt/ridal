@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -299,6 +299,13 @@ pub async fn get_interpretation_carried(
     ))
 }
 
+/// Which revision the page believed it was adopting onto.
+#[derive(Debug, serde::Deserialize)]
+pub struct PromoteQuery {
+    #[serde(default)]
+    onto: Option<String>,
+}
+
 /// `POST /api/v1/datasets/{id}/interpretations/{user}/promote`
 ///
 /// Adopt the carried view as the interpretation: "I have looked at these
@@ -324,19 +331,32 @@ pub async fn get_interpretation_carried(
 ///   visible rather than invisible;
 /// - *irreversible*: the version as drawn is archived first.
 ///
-/// # The coordinates come from here, not from the browser
+/// # What gets stored is what was on screen
 ///
-/// The carry is recomputed server-side and written, rather than accepting
-/// whatever the page happens to be displaying. The browser is showing a
-/// derived view, and a derived view arriving back as an authored document
-/// is exactly the kind of round trip that should not be trusted: a stale
-/// tab, an edited payload or a second client would each write coordinates
-/// nobody validated. What the operator confirmed is *the carry*, so the
-/// carry is what gets stored.
+/// Including any edit made on top of the carried view. An earlier version
+/// of this recomputed the carry here and ignored the request body, on the
+/// grounds that a derived view arriving back as an authored document
+/// should not be trusted — which threw away exactly the edits somebody had
+/// just made. The reasoning was wrong: an edit made over a carried view is
+/// made by dragging a vertex across *this* revision, so it is already in
+/// this revision's index space and there is nothing to carry about it. The
+/// browser is the authority on coordinates for every ordinary save, and
+/// this is no different.
+///
+/// What the body cannot be trusted about is *which revision* it was
+/// looking at, so it says: `?onto=` must name the revision this catalog is
+/// currently serving. A tab left open across a replace then fails loudly
+/// rather than writing coordinates validated against a file that is gone.
+///
+/// The server still recomputes the carry, but only to compare — so the
+/// provenance can record whether what arrived is the carry as derived or
+/// the carry as adjusted.
 pub async fn promote_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
+    Query(query): Query<PromoteQuery>,
     caller: Caller,
+    Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, Role::Picker, "adopt carried picks")?;
     let radargram = parse_radargram(&radargram_id)?;
@@ -367,6 +387,28 @@ pub async fn promote_interpretation(
             )
         })?;
 
+    // The page has to say which revision it was looking at. Without this a
+    // tab left open across a replace would adopt coordinates validated
+    // against a file that is no longer there, and the provenance would
+    // record it as deliberate.
+    match query.onto.as_deref() {
+        Some(onto) if onto == revision.as_str() => {}
+        Some(_) => {
+            return Err(ApiError::conflict(
+                "stale_revision",
+                "This radargram was replaced while the page was open, so what you are \
+                 looking at is not the current version. Reload, check the picks again, \
+                 and adopt them then.",
+            ))
+        }
+        None => {
+            return Err(ApiError::bad_request(
+                "onto_required",
+                "Adopting has to say which revision it is adopting onto.",
+            ))
+        }
+    }
+
     let from_revision = stored
         .document
         .source
@@ -382,7 +424,7 @@ pub async fn promote_interpretation(
 
     let axes = crate::interp::anchors::axes_for_revision(&path, &radargram, &revision);
     let carried = crate::interp::carry::carry(&stored.document, &axes, revision.as_str());
-    let Some(mut document) = carried.document else {
+    let Some(derived) = carried.document else {
         return Err(ApiError::conflict(
             "cannot_be_carried",
             format!(
@@ -395,6 +437,32 @@ pub async fn promote_interpretation(
             ),
         ));
     };
+
+    // The document the page is showing, which is the carry plus whatever
+    // was adjusted on top of it. Validated exactly as a save is: reaching
+    // this route is not a way around the rules that govern writing picks.
+    let mut document: gprinterp::Document = serde_json::from_value(body)
+        .map_err(|e| ApiError::bad_request("invalid_interpretation", e.to_string()))?;
+    let report = gprinterp::validate(&document);
+    if !report.errors.is_empty() {
+        let joined: Vec<String> = report.errors.iter().map(|e| e.to_string()).collect();
+        return Err(ApiError::bad_request(
+            "invalid_interpretation",
+            joined.join("; "),
+        ));
+    }
+    let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
+    let violations = checks::check(&document, &|label| layer_set.allows_overhangs(label));
+    if !violations.is_empty() {
+        let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
+        return Err(ApiError::bad_request("overhang", joined.join("; ")));
+    }
+
+    // Whether what arrived is the carry as derived, or the carry as
+    // adjusted by hand. Both are legitimate and they are different things,
+    // and the provenance should not claim the first when it was the
+    // second.
+    let edited = document.features != derived.features;
 
     let at = chrono::Utc::now().to_rfc3339();
 
@@ -424,6 +492,7 @@ pub async fn promote_interpretation(
         "y_anchor": carried.report.y_anchor,
         "severity": carried.report.severity,
         "dropped": carried.report.dropped.len(),
+        "edited_after_carry": edited,
         "note": "Coordinates were carried from an earlier revision and adopted here, \
                  not drawn on this one. gprinterp SPEC 8.3: a carried travel time is \
                  never exact.",
