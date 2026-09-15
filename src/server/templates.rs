@@ -116,6 +116,58 @@ mod tests {
         assert!(out.contains("&lt;script&gt;"), "{out}");
     }
 
+    /// The basemaps reach the browser as a body attribute, so the value is
+    /// escaped as an attribute rather than trusted as script.
+    ///
+    /// This is what makes a free-text basemap name safe: it comes from
+    /// `ridal.toml`, which an `operator` may write through the settings
+    /// page, and the same JSON inside a `<script>` block would end the
+    /// block at the first `</script>` in it.
+    #[test]
+    fn the_basemaps_are_delivered_as_an_escaped_attribute() {
+        let env = environment();
+        let hostile = serde_json::json!([{
+            "id": "x",
+            "name": "</script><img src=x onerror=alert(1)>",
+            "url": "https://tile.example.org/{z}/{x}/{y}.png",
+        }])
+        .to_string();
+        let out = env
+            .get_template("layers.html.jinja")
+            .unwrap()
+            .render(minijinja::context! {
+                project => true,
+                basemaps_json => hostile,
+                active_basemap => "x",
+            })
+            .unwrap();
+
+        assert!(out.contains("data-basemaps=\""), "{out}");
+        assert!(!out.contains("</script><img"), "{out}");
+        // The payload's characters stay, inert: minijinja escapes `<`, `>`,
+        // `"` and even `/`, so what reaches the attribute is
+        // `&lt;&#x2f;script&gt;`.
+        assert!(out.contains("&lt;") && out.contains("&gt;"), "{out}");
+        // Specific: the page has a real <img> of its own, the wordmark.
+        assert!(!out.contains("<img src=x"), "{out}");
+        // And the quotes cannot close the attribute they sit in.
+        assert!(!out.contains("data-basemaps=\"[{\"id\""), "{out}");
+    }
+
+    /// A page with no map carries no attribute at all, rather than an empty
+    /// one that `JSON.parse` would choke on.
+    #[test]
+    fn a_page_without_basemaps_gets_no_attribute() {
+        let env = environment();
+        let out = env
+            .get_template("layers.html.jinja")
+            .unwrap()
+            .render(minijinja::context! { project => true })
+            .unwrap();
+        assert!(out.contains("<body>"), "{out}");
+        assert!(!out.contains("data-basemaps"), "{out}");
+    }
+
     #[test]
     fn error_template_renders_with_expected_context() {
         let env = environment();

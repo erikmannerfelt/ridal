@@ -969,6 +969,35 @@ pub async fn get_settings(
         "formats": crate::server::routes::format_options(),
         "default_spacing": project.and_then(|p| p.default_spacing()),
         "default_format": project.and_then(|p| p.default_format()),
+        // Two lists, deliberately. `basemaps` is what may be *chosen* --
+        // the project's entries plus the built-in, with unusable ones
+        // dropped -- and fills the two dropdowns. `project_basemaps` is
+        // what may be *edited*: the file's own entries, unresolved, so the
+        // table saves back what it was given rather than the built-in's
+        // defaults written out as though someone had chosen them.
+        "basemaps": crate::server::routes::basemap_options(&state)
+            .iter()
+            .map(|map| map.to_browser_json())
+            .collect::<Vec<_>>(),
+        "project_basemaps": project.map(|p| p.basemaps()).unwrap_or_default(),
+        "default_basemap": project.and_then(|p| p.map_section().default_basemap),
+        "built_in_basemap": project
+            .map(|p| p.map_section().offers_built_in())
+            .unwrap_or(true),
+        // What the file defines but cannot be drawn. Reported rather than
+        // left as an absence: a hand-edited typo otherwise shows up only as
+        // a basemap missing from a menu.
+        "basemap_problems": project
+            .map(|p| crate::project::basemaps::problems(&p.basemaps()))
+            .unwrap_or_default(),
+        // The overlays are a plain list rather than two (#177): there is no
+        // built-in to add, so what may be edited and what may be drawn are
+        // the same records -- minus the ones that cannot be used.
+        "overlays": project.map(|p| p.overlays()).unwrap_or_default(),
+        "overlay_problems": project
+            .map(|p| crate::project::overlays::problems(&p.overlays()))
+            .unwrap_or_default(),
+        "my_basemap": mine.basemap,
         "require_auth_to_read": access.as_ref().map(|set| set.require_auth_to_read),
         "anonymous_download": access
             .as_ref()
@@ -978,20 +1007,56 @@ pub async fn get_settings(
 
 #[derive(serde::Deserialize)]
 pub struct SettingsUpdate {
-    /// The profile to use when a request names none. `null` (or absent)
-    /// clears it, restoring the built-in default.
+    /// The profile to use when a request names none. `null` clears it,
+    /// restoring the built-in default; absent leaves it alone.
+    #[serde(default, deserialize_with = "present")]
+    default_profile: Option<Option<String>>,
+    /// Horizontal stretch to open radargrams at. `null` clears it,
+    /// restoring 1x; absent leaves it alone.
+    #[serde(default, deserialize_with = "present")]
+    default_xscale: Option<Option<f64>>,
+    /// The project's own basemaps, in the order the layer control should
+    /// list them (#177). Absent leaves them alone; an empty array removes
+    /// them all, which is a thing someone can mean.
     #[serde(default)]
-    default_profile: Option<String>,
-    /// Horizontal stretch to open radargrams at. `null` (or absent) clears
-    /// it, restoring 1x.
+    basemaps: Option<Vec<crate::project::basemaps::Basemap>>,
+    /// Which basemap someone who has not chosen sees. `null` clears it,
+    /// which means the first offered; absent leaves it alone.
+    #[serde(default, deserialize_with = "present")]
+    default_basemap: Option<Option<String>>,
+    /// Whether Ridal's built-in basemap is offered. Absent leaves it alone.
     #[serde(default)]
-    default_xscale: Option<f64>,
-    /// What the layer-point download dialogs open on (#166). `null` (or
-    /// absent) clears them, restoring automatic spacing and WGS84 GeoJSON.
+    built_in_basemap: Option<bool>,
+    /// What the layer-point download dialogs open on (#166). `null` clears
+    /// them, restoring automatic spacing and WGS84 GeoJSON; absent leaves
+    /// them alone.
+    #[serde(default, deserialize_with = "present")]
+    default_spacing: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    default_format: Option<Option<String>>,
+    /// The project's vector overlays (#177). Absent leaves them alone; an
+    /// empty array removes them all.
     #[serde(default)]
-    default_spacing: Option<String>,
-    #[serde(default)]
-    default_format: Option<String>,
+    overlays: Option<Vec<crate::project::overlays::Overlay>>,
+}
+
+/// Tell an absent key from one sent as `null`.
+///
+/// The settings page has grown three forms, and each saves a different part
+/// of this document: the project form sends no basemap keys, the basemap
+/// form sends no render keys, the overlay form sends neither. Without this
+/// distinction a plain `Option` reads absent as "clear it", so saving a
+/// basemap would silently drop the project's default profile.
+///
+/// The same distinction the preferences endpoint makes, for the same
+/// reason: "the page always sends everything" is a property of one caller
+/// rather than of an API.
+fn present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 /// `PUT /api/v1/project/settings`
@@ -1007,95 +1072,181 @@ pub async fn put_settings(
         "change the project's settings",
     )?;
 
-    // Validated here rather than in `Project`: which profiles exist is a
-    // server concept, and a CLI-only build has no way to check it. Storing
-    // a name nothing renders would leave every page 400ing with no obvious
-    // cause.
-    let profile = match update.default_profile.as_deref() {
-        None | Some("") => None,
-        Some(name) => {
-            if crate::render::profile::RenderProfile::by_name(name).is_none() {
-                return Err(ApiError::bad_request(
-                    "unknown_profile",
-                    format!("There is no render profile called '{name}'."),
-                ));
+    // Each half is written only if the request said something about it, so
+    // the two forms on the settings page cannot undo each other -- and a
+    // save that touches neither does not rewrite the file at all.
+    if update.default_profile.is_some()
+        || update.default_xscale.is_some()
+        || update.default_spacing.is_some()
+        || update.default_format.is_some()
+    {
+        // Validated here rather than in `Project`: which profiles exist is a
+        // server concept, and a CLI-only build has no way to check it. Storing
+        // a name nothing renders would leave every page 400ing with no obvious
+        // cause.
+        // Not sent keeps what is stored; `null` clears it. Reading the
+        // current value is what lets one form save its own keys without the
+        // others going with them.
+        let profile = match update.default_profile.clone() {
+            None => project.default_profile(),
+            Some(None) => None,
+            Some(Some(name)) if name.is_empty() => None,
+            Some(Some(name)) => {
+                if crate::render::profile::RenderProfile::by_name(&name).is_none() {
+                    return Err(ApiError::bad_request(
+                        "unknown_profile",
+                        format!("There is no render profile called '{name}'."),
+                    ));
+                }
+                Some(name)
             }
-            Some(name)
-        }
-    };
+        };
 
-    // Same reasoning as the profile above: which factors the viewer offers
-    // is a server concept. Storing one it does not offer would open every
-    // radargram at a stretch with no dropdown entry to change it back.
-    let xscale = match update.default_xscale {
-        None => None,
-        Some(scale) => {
-            if !crate::server::routes::is_offered_x_scale(scale) {
-                return Err(ApiError::bad_request(
-                    "unknown_xscale",
-                    format!("The viewer does not offer a horizontal scale of {scale}."),
-                ));
+        // Same reasoning as the profile above: which factors the viewer offers
+        // is a server concept. Storing one it does not offer would open every
+        // radargram at a stretch with no dropdown entry to change it back.
+        let xscale = match update.default_xscale {
+            None => project.default_xscale(),
+            Some(None) => None,
+            Some(Some(scale)) => {
+                if !crate::server::routes::is_offered_x_scale(scale) {
+                    return Err(ApiError::bad_request(
+                        "unknown_xscale",
+                        format!("The viewer does not offer a horizontal scale of {scale}."),
+                    ));
+                }
+                // 1x is the neutral value, so choosing it means "no preference"
+                // and leaves the key out of the file entirely.
+                if (scale - crate::server::routes::DEFAULT_X_SCALE).abs() < 1e-9 {
+                    None
+                } else {
+                    Some(scale)
+                }
             }
-            // 1x is the neutral value, so choosing it means "no preference"
-            // and leaves the key out of the file entirely.
-            if (scale - crate::server::routes::DEFAULT_X_SCALE).abs() < 1e-9 {
-                None
-            } else {
-                Some(scale)
-            }
-        }
-    };
+        };
 
-    // Same reasoning again, for the two download defaults (#166): which
-    // spacings and formats the dialogs offer is a server concept, and a
-    // stored value they do not offer would open every download on a choice
-    // with no entry to change it back.
-    let spacing = match update.default_spacing.as_deref() {
-        None | Some("") => None,
-        Some(value) => {
-            if !crate::server::routes::is_offered_spacing(value) {
-                return Err(ApiError::bad_request(
-                    "unknown_spacing",
-                    format!("The download dialogs do not offer a spacing of '{value}'."),
-                ));
+        // Same reasoning again for the two download defaults (#166): which
+        // spacings and formats the dialogs offer is a server concept, and a
+        // stored value they do not offer would open every download on a
+        // choice with no entry to change it back.
+        let spacing = match update.default_spacing.clone() {
+            None => project.default_spacing(),
+            Some(None) => None,
+            Some(Some(value)) if value.is_empty() => None,
+            Some(Some(value)) => {
+                if !crate::server::routes::is_offered_spacing(&value) {
+                    return Err(ApiError::bad_request(
+                        "unknown_spacing",
+                        format!("The download dialogs do not offer a spacing of '{value}'."),
+                    ));
+                }
+                // Automatic is the neutral answer at *this* layer -- under
+                // it is Ridal's own -- so choosing it stores nothing, the
+                // rule 1x already follows above.
+                (value != crate::server::routes::DEFAULT_LEVEL2_SPACING).then_some(value)
             }
-            // Automatic is the neutral answer, so choosing it stores
-            // nothing -- the rule 1x already follows above.
-            (value != crate::server::routes::DEFAULT_LEVEL2_SPACING).then(|| value.to_string())
-        }
-    };
-    let format = match update.default_format.as_deref() {
-        None | Some("") => None,
-        Some(value) => {
-            if !crate::server::routes::is_offered_format(value) {
-                return Err(ApiError::bad_request(
-                    "unknown_format",
-                    format!("The download dialogs do not offer a format of '{value}'."),
-                ));
+        };
+        let format = match update.default_format.clone() {
+            None => project.default_format(),
+            Some(None) => None,
+            Some(Some(value)) if value.is_empty() => None,
+            Some(Some(value)) => {
+                if !crate::server::routes::is_offered_format(&value) {
+                    return Err(ApiError::bad_request(
+                        "unknown_format",
+                        format!("The download dialogs do not offer a format of '{value}'."),
+                    ));
+                }
+                (value != crate::server::routes::DEFAULT_LEVEL2_FORMAT).then_some(value)
             }
-            (value != crate::server::routes::DEFAULT_LEVEL2_FORMAT).then(|| value.to_string())
-        }
-    };
+        };
 
-    // One write, not two. Everything the form submits lands together or not
-    // at all: two conditional writes could leave the file holding the render
-    // half of a save that then failed, and two saves arriving at once could
-    // interleave their halves.
-    project
-        .set_defaults(
-            &crate::project::RenderDefaults {
-                profile: profile.map(str::to_string),
-                xscale,
-            },
-            &crate::project::ExportDefaults { spacing, format },
-        )
-        .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+        // One write, not two. Everything this half submits lands together
+        // or not at all: two conditional writes could leave the file
+        // holding a save that then failed, and two arriving at once could
+        // interleave their halves.
+        project
+            .set_defaults(
+                &crate::project::RenderDefaults { profile, xscale },
+                &crate::project::ExportDefaults { spacing, format },
+            )
+            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+    }
 
+    if update.basemaps.is_some()
+        || update.default_basemap.is_some()
+        || update.built_in_basemap.is_some()
+    {
+        let current = project.map_section();
+        let entries = match &update.basemaps {
+            Some(sent) => sent.clone(),
+            None => project.basemaps(),
+        };
+        crate::project::basemaps::validate_set(&entries)
+            .map_err(|e| ApiError::bad_request("invalid_basemap", e.to_string()))?;
+
+        let built_in = update
+            .built_in_basemap
+            .unwrap_or_else(|| current.offers_built_in());
+        // Checked against what the project *will* offer once this save lands,
+        // not against what it offers now: naming a basemap being added in the
+        // same request is the ordinary case, and refusing it would make the
+        // page save twice to do one thing.
+        let offered = crate::project::basemaps::offered(&entries, built_in);
+        let default_basemap = match update.default_basemap.clone() {
+            // Sent: a name nothing offers is a mistake worth refusing, since
+            // the person naming it is looking at the list.
+            Some(Some(id)) if !id.is_empty() => {
+                if !offered.iter().any(|map| map.id == id) {
+                    return Err(ApiError::bad_request(
+                        "unknown_basemap",
+                        format!(
+                            "There is no basemap called '{id}' to make the default. \
+                             Add it first, or pick one that is offered."
+                        ),
+                    ));
+                }
+                Some(id)
+            }
+            Some(_) => None,
+            // Not sent: kept, unless this very save removed the basemap it
+            // named. Dropping it then is not a refusal to remove a basemap
+            // -- an unset default means the first offered, which is where a
+            // dangling one would land anyway.
+            None => current
+                .default_basemap
+                .filter(|id| offered.iter().any(|map| &map.id == id)),
+        };
+
+        project
+            .set_basemaps(
+                &entries,
+                &crate::project::basemaps::MapSection {
+                    default_basemap,
+                    built_in_basemap: Some(built_in),
+                },
+            )
+            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+    }
+
+    if let Some(entries) = &update.overlays {
+        crate::project::overlays::validate_set(entries)
+            .map_err(|e| ApiError::bad_request("invalid_overlay", e.to_string()))?;
+        project
+            .set_overlays(entries)
+            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+    }
+
+    let map = project.map_section();
     Ok(Json(serde_json::json!({
         "default_profile": project.default_profile(),
         "default_xscale": project.default_xscale(),
         "default_spacing": project.default_spacing(),
         "default_format": project.default_format(),
+        "project_basemaps": project.basemaps(),
+        "default_basemap": map.default_basemap,
+        "built_in_basemap": map.offers_built_in(),
+        "overlays": project.overlays(),
     })))
 }
 

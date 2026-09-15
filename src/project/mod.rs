@@ -59,8 +59,10 @@
 //! `store.rs` needs to change.
 
 pub mod audit;
+pub mod basemaps;
 pub mod interpretations;
 pub mod layers;
+pub mod overlays;
 pub mod overrides;
 pub mod preferences;
 pub mod revisions;
@@ -153,6 +155,16 @@ pub struct ProjectConfig {
     pub render: RenderSection,
     #[serde(default)]
     pub export: ExportSection,
+    /// Which basemap the GUI's maps draw on (#177). An array of tables --
+    /// `[[basemaps]]` -- rather than a section, since a project offers a
+    /// list and lets each reader pick from it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub basemaps: Vec<basemaps::Basemap>,
+    #[serde(default)]
+    pub map: basemaps::MapSection,
+    /// Vector overlays every map can draw, off by default (#177).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlays: Vec<overlays::Overlay>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -280,6 +292,130 @@ fn set_or_clear(
             {
                 existing.remove(key);
             }
+        }
+    }
+}
+
+/// Replace an array of tables -- `[[basemaps]]`, `[[overlays]]` -- with
+/// `entries`, or remove it when there are none.
+///
+/// Serialised through `toml` and re-parsed rather than assembled table by
+/// table: the entries are plain serde types, and hand-building
+/// `toml_edit::Table`s would mean a second, divergent description of the
+/// same struct -- including whatever `extra` carried over from a future
+/// version.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+fn set_table_array<T: Serialize>(
+    document: &mut toml_edit::DocumentMut,
+    key: &str,
+    entries: &[T],
+) -> Result<(), ProjectError> {
+    // Snapshotted before the array is replaced: this is the layout the file
+    // already had, and the one to write it back in.
+    let mut layout = top_level_layout(document);
+
+    if entries.is_empty() {
+        document.remove(key);
+        layout.retain(|existing| existing != key);
+        reposition(document, &layout);
+        return Ok(());
+    }
+
+    // A one-key map holding the slice, so the fragment parses as `[[key]]`
+    // rather than as a bare array of dicts.
+    //
+    // The entries are serialised straight from their own `Serialize` rather
+    // than converted to a `toml::Value` first: a `Value` table is sorted,
+    // which would write every record's keys alphabetically --
+    // `description_field` above `id` -- and this file is read by people.
+    let wrapper: std::collections::BTreeMap<&str, &[T]> = std::iter::once((key, entries)).collect();
+    let text = toml::to_string(&wrapper).map_err(|e| ProjectError::Config {
+        path: PathBuf::from(MARKER),
+        message: format!("the {key} could not be written as TOML: {e}"),
+    })?;
+    let rendered: toml_edit::DocumentMut =
+        text.parse()
+            .map_err(|e: toml_edit::TomlError| ProjectError::Config {
+                path: PathBuf::from(MARKER),
+                message: format!("the {key} could not be written as TOML: {e}"),
+            })?;
+    let mut array = rendered
+        .get(key)
+        .and_then(toml_edit::Item::as_array_of_tables)
+        .cloned()
+        .ok_or_else(|| ProjectError::Config {
+            path: PathBuf::from(MARKER),
+            message: format!("the {key} did not serialise as [[{key}]]"),
+        })?;
+    // A serialised fragment starts flush against whatever precedes it, which
+    // would glue the first `[[key]]` onto the line above.
+    if let Some(first) = array.iter_mut().next() {
+        first.decor_mut().set_prefix("\n");
+    }
+    document[key] = toml_edit::Item::ArrayOfTables(array);
+    if !layout.iter().any(|existing| existing == key) {
+        // New to this file: written at the end, below the commented example
+        // `ridal project init` leaves rather than above it. Anywhere else
+        // and the real entries would separate that note from the table it
+        // describes -- the comments belong to whatever table follows them.
+        layout.push(key.to_string());
+    }
+    reposition(document, &layout);
+    Ok(())
+}
+
+/// The document's top-level tables, in the order they are written.
+fn top_level_layout(document: &toml_edit::DocumentMut) -> Vec<String> {
+    /// Where an item currently sits, if it is written as its own table(s).
+    fn position_of(item: &toml_edit::Item) -> Option<usize> {
+        match item {
+            toml_edit::Item::Table(table) => table.position(),
+            toml_edit::Item::ArrayOfTables(array) => {
+                array.iter().filter_map(toml_edit::Table::position).min()
+            }
+            _ => None,
+        }
+    }
+
+    let mut order: Vec<(usize, String)> = document
+        .as_table()
+        .iter()
+        .filter_map(|(key, item)| position_of(item).map(|at| (at, key.to_string())))
+        .collect();
+    order.sort_by_key(|(at, _)| *at);
+    order.into_iter().map(|(_, key)| key).collect()
+}
+
+/// Renumber the document's top-level tables to `layout`, writing an array of
+/// tables as one contiguous block.
+///
+/// `toml_edit` renders top-level tables in *position* order, and the tables
+/// that come out of a freshly serialised fragment carry positions 0, 1, 2 of
+/// their own. Assigning such an array into a document therefore interleaves
+/// its entries with whatever the file already had: the first basemap before
+/// `[radargrams]`, the second between `[radargrams]` and `[render]`, and so
+/// on. That parses back correctly -- TOML does not care where an array's
+/// entries appear -- but `ridal.toml` is a file people are invited to edit,
+/// and a settings page that shreds it across the document is not a
+/// reasonable thing to do to them.
+///
+/// Positions are reassigned rather than nudged, so the result does not
+/// depend on which numbers the fragment happened to bring with it.
+fn reposition(document: &mut toml_edit::DocumentMut, layout: &[String]) {
+    let mut next = 0;
+    for key in layout {
+        match document.get_mut(key) {
+            Some(toml_edit::Item::Table(table)) => {
+                table.set_position(next);
+                next += 1;
+            }
+            Some(toml_edit::Item::ArrayOfTables(array)) => {
+                for table in array.iter_mut() {
+                    table.set_position(next);
+                    next += 1;
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -432,6 +568,11 @@ impl Project {
             cache: CacheSection::default(),
             render: RenderSection::default(),
             export: ExportSection::default(),
+            // No basemaps of its own: a new project draws on the built-in
+            // one, and adding to that is a deliberate act.
+            basemaps: Vec::new(),
+            map: basemaps::MapSection::default(),
+            overlays: Vec::new(),
         };
         // Written as a commented template rather than serialized, because
         // this file exists to be hand-edited: serde would emit a bare,
@@ -470,6 +611,19 @@ impl Project {
              # of appending a second [render] elsewhere in the file.\n\
              [render]\n\
              \n\
+             # Basemaps the GUI's maps can be drawn on, in addition to Ridal's\n\
+             # built-in ESRI World Imagery. Add them here or from Project\n\
+             # settings in the browser -- but note that saving there rewrites\n\
+             # this whole block, so comments inside it are not kept.\n\
+             #\n\
+             # [[basemaps]]\n\
+             # id = {}\n\
+             # name = {}\n\
+             # url = {}\n\
+             # attribution = {}\n\
+             # attribution_url = {}\n\
+             # max_zoom = 19\n\
+             \n\
              # What the layer-point download dialogs open on, so a survey\n\
              # that always exports the same way does not choose it every\n\
              # time. Set them from Project settings in the browser, or add\n\
@@ -478,12 +632,46 @@ impl Project {
              # spacing and GeoJSON in WGS84. A person can override both in\n\
              # their own settings, and either can still be changed in the\n\
              # dialog itself.\n\
-             [export]\n",
+             [export]\n\
+             \n\
+             # Vector overlays every map can draw, off until switched on in\n\
+             # its layer control. `name_field` and `description_field` name\n\
+             # the feature properties the popup shows; the description is\n\
+             # treated as HTML. The GeoJSON must be in WGS84, and the host\n\
+             # serving it must allow this site to fetch it (CORS).\n\
+             #\n\
+             # [[overlays]]\n\
+             # id = {}\n\
+             # name = {}\n\
+             # url = {}\n\
+             # name_field = {}\n\
+             # description_field = {}\n\
+             \n\
+             # Which basemap someone who has not chosen one is shown, and\n\
+             # whether the built-in is offered at all. Add lines below such as\n\
+             # `default_basemap = {}` or `built_in_basemap = false`. Unset\n\
+             # means the first in the list, which is the built-in.\n\
+             #\n\
+             # The examples are in this note rather than under the header\n\
+             # because a saved basemap list is appended below, and commented\n\
+             # keys left inside the table would end up beneath it.\n\
+             [map]\n",
             toml_string(DEFAULT_RADARGRAM_DIR),
             toml_string("/var/cache/ridal"),
             toml_string("default"),
             toml_string("10"),
             toml_string("geojson-native"),
+            toml_string("osm"),
+            toml_string("OpenStreetMap"),
+            toml_string("https://tile.openstreetmap.org/{z}/{x}/{y}.png"),
+            toml_string("© OpenStreetMap contributors"),
+            toml_string("https://www.openstreetmap.org/copyright"),
+            toml_string("stakes"),
+            toml_string("Mass balance stakes"),
+            toml_string("https://example.org/shapes/stakes.geojson"),
+            toml_string("Stake"),
+            toml_string("notes"),
+            toml_string("osm"),
         );
         let marker = root.join(MARKER);
         std::fs::write(&marker, text).map_err(|e| ProjectError::Io {
@@ -529,7 +717,7 @@ impl Project {
     /// The horizontal stretch to open radargrams at. `None` means 1x.
     ///
     /// Only the viewer reads it, so a CLI-only build has no caller -- the
-    /// same situation as `set_defaults` below.
+    /// same situation as `set_render_defaults` below.
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn default_xscale(&self) -> Option<f64> {
         self.read_config().render.default_xscale
@@ -594,6 +782,86 @@ impl Project {
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn default_format(&self) -> Option<String> {
         self.read_config().export.default_format.clone()
+    }
+
+    /// The basemaps this project defines, exactly as the file holds them.
+    ///
+    /// Callers that want the list to *draw* want
+    /// [`basemaps::offered`] instead, which adds the built-in and drops
+    /// entries it cannot use.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn basemaps(&self) -> Vec<basemaps::Basemap> {
+        self.read_config().basemaps.clone()
+    }
+
+    /// The `[map]` table: the default basemap, and whether the built-in is
+    /// offered.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn map_section(&self) -> basemaps::MapSection {
+        self.read_config().map.clone()
+    }
+
+    /// Replace the project's basemaps and the `[map]` table that selects
+    /// among them.
+    ///
+    /// Taken together for the same reason the render defaults are: the
+    /// settings page saves them in one go, and a default naming a basemap
+    /// that a half-applied change had not written yet would be a state the
+    /// file should never hold.
+    ///
+    /// The `[[basemaps]]` block is replaced wholesale rather than patched
+    /// entry by entry, so comments written *inside* it do not survive a save
+    /// from the browser. Comments everywhere else in the file do, which is
+    /// the trade `set_render_defaults` also makes -- and the settings page
+    /// says so where the button is.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn set_basemaps(
+        &self,
+        entries: &[basemaps::Basemap],
+        map: &basemaps::MapSection,
+    ) -> Result<(), ProjectError> {
+        self.edit_marker(|document| {
+            set_table_array(document, "basemaps", entries)?;
+            set_or_clear(
+                document,
+                "map",
+                "default_basemap",
+                map.default_basemap.as_deref().map(toml_edit::value),
+            );
+            set_or_clear(
+                document,
+                "map",
+                "built_in_basemap",
+                // Absent means "offered", so only the unusual answer is
+                // stored -- the rule every other setting here follows.
+                map.built_in_basemap
+                    .filter(|offered| !*offered)
+                    .map(toml_edit::value),
+            );
+            Ok(())
+        })
+    }
+
+    /// The vector overlays this project defines, exactly as the file holds
+    /// them (#177).
+    ///
+    /// Callers that want the list to *draw* want [`overlays::usable`]
+    /// instead, which drops entries it cannot use.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn overlays(&self) -> Vec<overlays::Overlay> {
+        self.read_config().overlays.clone()
+    }
+
+    /// Replace the project's vector overlays.
+    ///
+    /// A separate call from [`Project::set_basemaps`] because they are
+    /// separate lists that the settings page edits in separate sections --
+    /// but the same `[[...]]` rewrite, so the same caveat holds: comments
+    /// inside the `[[overlays]]` block do not survive a save from the
+    /// browser, and comments elsewhere in the file do.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn set_overlays(&self, entries: &[overlays::Overlay]) -> Result<(), ProjectError> {
+        self.edit_marker(|document| set_table_array(document, "overlays", entries))
     }
 
     /// Apply `edit` to `ridal.toml`, in the file and in memory.
@@ -995,6 +1263,313 @@ mod tests {
             .unwrap();
     }
 
+    fn a_basemap(id: &str) -> basemaps::Basemap {
+        basemaps::Basemap {
+            id: id.to_string(),
+            name: format!("Basemap {id}"),
+            url: format!("https://tile.example.org/{id}/{{z}}/{{x}}/{{y}}.png"),
+            attribution: Some("Example".to_string()),
+            attribution_url: None,
+            tile_size: None,
+            max_zoom: Some(19),
+            zoom_offset: None,
+            subdomains: None,
+            extra: serde_json::Map::new(),
+        }
+    }
+
+    #[test]
+    fn basemaps_round_trip_through_the_file_and_keep_the_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        assert!(project.basemaps().is_empty());
+
+        let before = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        let comment_lines = before
+            .lines()
+            .filter(|l| l.trim_start().starts_with('#'))
+            .count();
+
+        project
+            .set_basemaps(
+                &[a_basemap("osm"), a_basemap("topo")],
+                &basemaps::MapSection {
+                    default_basemap: Some("topo".to_string()),
+                    built_in_basemap: Some(true),
+                },
+            )
+            .unwrap();
+
+        // In memory straight away, and on disk for the next process.
+        assert_eq!(project.basemaps().len(), 2);
+        let reopened = Project::open(dir.path()).unwrap();
+        assert_eq!(
+            reopened.basemaps(),
+            vec![a_basemap("osm"), a_basemap("topo")]
+        );
+        assert_eq!(
+            reopened.map_section().default_basemap.as_deref(),
+            Some("topo")
+        );
+        assert!(reopened.map_section().offers_built_in());
+
+        let after = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        // The comments outside the basemap block survive, which is the whole
+        // reason this goes through toml_edit rather than a re-serialisation.
+        assert!(
+            after
+                .lines()
+                .filter(|l| l.trim_start().starts_with('#'))
+                .count()
+                >= comment_lines,
+            "editing must not strip the file's comments:\n{after}"
+        );
+        assert!(after.contains("[radargrams]"), "{after}");
+        // Unset optional keys stay out of the file, so a basemap that never
+        // chose a tile size follows Ridal's default if it ever changes.
+        assert!(!after.contains("tile_size"), "{after}");
+    }
+
+    #[test]
+    fn saved_basemaps_are_written_as_one_block_rather_than_scattered() {
+        // toml_edit writes top-level tables in position order, and a freshly
+        // serialised array brings positions 0, 1, 2 of its own -- so the
+        // entries landed *between* the file's existing tables: one before
+        // [radargrams], the next between [radargrams] and [render]. Valid
+        // TOML, unreadable file. Caught in a browser, pinned here.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        project
+            .set_basemaps(
+                &[a_basemap("osm"), a_basemap("topo"), a_basemap("aerial")],
+                &basemaps::MapSection {
+                    default_basemap: Some("osm".to_string()),
+                    built_in_basemap: None,
+                },
+            )
+            .unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        let headings: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('[') && !line.starts_with("[["))
+            .chain(text.lines().map(str::trim).filter(|l| l.starts_with("[[")))
+            .collect();
+        assert!(!headings.is_empty(), "{text}");
+
+        // The three entries are consecutive, and `[map]` -- which names one
+        // of them -- comes after the list rather than inside it.
+        let order: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('['))
+            .collect();
+        let first = order.iter().position(|l| *l == "[[basemaps]]").unwrap();
+        assert_eq!(
+            &order[first..first + 3],
+            &["[[basemaps]]", "[[basemaps]]", "[[basemaps]]"],
+            "the basemaps must be written together:\n{text}"
+        );
+        // Below the commented example the template leaves, not above it: a
+        // comment block belongs to the table that follows it, so entries
+        // inserted higher up would orphan the note that explains them.
+        assert!(
+            order.iter().position(|l| *l == "[map]").unwrap() < first,
+            "the saved list goes after the tables that were already there:\n{text}"
+        );
+        // And it still parses back to what was saved.
+        assert_eq!(Project::open(dir.path()).unwrap().basemaps().len(), 3);
+    }
+
+    #[test]
+    fn overlays_round_trip_and_sit_beside_the_basemaps() {
+        // Two arrays of tables in one file (#177). Each is rewritten whole
+        // and must leave the other -- and the rest of the file -- alone.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        assert!(project.overlays().is_empty());
+
+        let stakes = overlays::Overlay {
+            id: "stakes".to_string(),
+            name: "Mass balance stakes".to_string(),
+            url: "https://static.example.org/shapes/stakes.geojson".to_string(),
+            name_field: Some("Stake".to_string()),
+            description_field: Some("notes".to_string()),
+            color: None,
+            extra: serde_json::Map::new(),
+        };
+        project
+            .set_basemaps(&[a_basemap("osm")], &basemaps::MapSection::default())
+            .unwrap();
+        project.set_overlays(&[stakes.clone()]).unwrap();
+
+        let reopened = Project::open(dir.path()).unwrap();
+        assert_eq!(reopened.overlays(), vec![stakes]);
+        assert_eq!(reopened.basemaps().len(), 1, "the basemaps are untouched");
+
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        assert!(text.contains("[[overlays]]"), "{text}");
+        assert!(text.contains("name_field = \"Stake\""), "{text}");
+        // Written in the order the record declares, not alphabetically:
+        // serialising through `toml::Value` sorts the keys, which put
+        // `description_field` above `id` and made the file read as noise.
+        // Comments are dropped first -- the template's own commented
+        // example mentions the same keys in the same order this checks.
+        let live: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let id_at = live.find("id = \"stakes\"").unwrap();
+        let description_at = live.find("description_field").unwrap();
+        assert!(
+            id_at < description_at,
+            "keys must stay in record order:\n{live}"
+        );
+        // Unset optionals stay out of the file, as everywhere else here.
+        assert!(!text.contains("color"), "{text}");
+
+        // And removing them takes the block with it.
+        project.set_overlays(&[]).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        let live = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter(|l| l.contains("[[overlays]]"))
+            .count();
+        assert_eq!(live, 0, "{text}");
+        assert_eq!(
+            Project::open(dir.path()).unwrap().basemaps().len(),
+            1,
+            "removing the overlays must not remove the basemaps:\n{text}"
+        );
+    }
+
+    #[test]
+    fn the_built_in_is_only_written_when_it_is_switched_off() {
+        // Absence means "offered", the rule every other setting here follows,
+        // so the ordinary case leaves no key behind at all.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        project
+            .set_basemaps(
+                &[],
+                &basemaps::MapSection {
+                    default_basemap: None,
+                    built_in_basemap: Some(true),
+                },
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        let live = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter(|l| l.contains("built_in_basemap"))
+            .count();
+        assert_eq!(live, 0, "{text}");
+
+        project
+            .set_basemaps(
+                &[a_basemap("osm")],
+                &basemaps::MapSection {
+                    default_basemap: None,
+                    built_in_basemap: Some(false),
+                },
+            )
+            .unwrap();
+        assert!(!Project::open(dir.path())
+            .unwrap()
+            .map_section()
+            .offers_built_in());
+    }
+
+    #[test]
+    fn removing_every_basemap_removes_the_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        let section = basemaps::MapSection::default();
+        project.set_basemaps(&[a_basemap("osm")], &section).unwrap();
+        assert!(std::fs::read_to_string(dir.path().join(MARKER))
+            .unwrap()
+            .contains("[[basemaps]]"));
+
+        project.set_basemaps(&[], &section).unwrap();
+
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        let live = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter(|l| l.contains("[[basemaps]]"))
+            .count();
+        assert_eq!(live, 0, "{text}");
+        assert!(Project::open(dir.path()).unwrap().basemaps().is_empty());
+    }
+
+    #[test]
+    fn saving_basemaps_leaves_the_render_defaults_alone() {
+        // The two halves of the settings page write the same file. A save
+        // from one that quietly cleared the other's key would be the kind of
+        // bug nobody attributes to the right cause.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        project
+            .set_defaults(
+                &RenderDefaults {
+                    profile: Some("abslog".to_string()),
+                    xscale: Some(2.0),
+                },
+                &ExportDefaults::default(),
+            )
+            .unwrap();
+
+        project
+            .set_basemaps(&[a_basemap("osm")], &basemaps::MapSection::default())
+            .unwrap();
+
+        let reopened = Project::open(dir.path()).unwrap();
+        assert_eq!(reopened.default_profile().as_deref(), Some("abslog"));
+        assert_eq!(reopened.default_xscale(), Some(2.0));
+        assert_eq!(reopened.basemaps().len(), 1);
+    }
+
+    #[test]
+    fn a_hand_written_basemap_is_read_as_it_was_written() {
+        // `ridal.toml` is meant to be hand-edited, and the commented example
+        // `ridal project init` writes is in exactly this shape.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MARKER),
+            "[project]\n\
+             name = \"x\"\n\
+             \n\
+             [[basemaps]]\n\
+             id = \"osm\"\n\
+             name = \"OpenStreetMap\"\n\
+             url = \"https://tile.openstreetmap.org/{z}/{x}/{y}.png\"\n\
+             attribution = \"© OpenStreetMap contributors\"\n\
+             max_zoom = 19\n\
+             \n\
+             [map]\n\
+             default_basemap = \"osm\"\n\
+             built_in_basemap = false\n",
+        )
+        .unwrap();
+
+        let project = Project::open(dir.path()).unwrap();
+        let entries = project.basemaps();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "osm");
+        assert_eq!(entries[0].max_zoom(), 19);
+        assert_eq!(entries[0].tile_size(), basemaps::DEFAULT_TILE_SIZE);
+        entries[0].validate().unwrap();
+        assert!(!project.map_section().offers_built_in());
+        assert_eq!(
+            project.map_section().default_basemap.as_deref(),
+            Some("osm")
+        );
+    }
+
     #[test]
     fn a_settings_save_that_raced_another_is_refused_not_silently_applied() {
         // The store's lock serialises the writes but not the
@@ -1028,62 +1603,6 @@ mod tests {
         // the text that was actually on disk.
         let after = std::fs::read_to_string(&marker).unwrap();
         assert!(after.contains("someone else edited this"), "{after}");
-    }
-
-    #[test]
-    fn every_project_default_is_written_in_one_edit() {
-        // #166 plus the review of #184: the settings form submits four keys
-        // across two tables, and they land in a single version-conditional
-        // write. Two writes could leave the file holding half a save, and
-        // two of them arriving together could interleave their halves.
-        let dir = tempfile::tempdir().unwrap();
-        let project = Project::init(dir.path(), None).unwrap();
-        assert_eq!(project.default_spacing(), None);
-        assert_eq!(project.default_format(), None);
-
-        project
-            .set_defaults(
-                &RenderDefaults {
-                    profile: Some("abslog".to_string()),
-                    xscale: Some(2.0),
-                },
-                &ExportDefaults {
-                    spacing: Some("10".to_string()),
-                    format: Some("geojson-native".to_string()),
-                },
-            )
-            .unwrap();
-
-        // In memory straight away, and on disk for the next process.
-        assert_eq!(project.default_spacing().as_deref(), Some("10"));
-        let reopened = Project::open(dir.path()).unwrap();
-        assert_eq!(reopened.default_spacing().as_deref(), Some("10"));
-        assert_eq!(reopened.default_format().as_deref(), Some("geojson-native"));
-        assert_eq!(reopened.default_profile().as_deref(), Some("abslog"));
-        assert_eq!(reopened.default_xscale(), Some(2.0));
-
-        // Clearing leaves no key behind, so a later change to Ridal's own
-        // default still reaches a project that never chose.
-        project
-            .set_defaults(
-                &RenderDefaults {
-                    profile: Some("abslog".to_string()),
-                    xscale: Some(2.0),
-                },
-                &ExportDefaults::default(),
-            )
-            .unwrap();
-        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
-        let live = text
-            .lines()
-            .filter(|l| !l.trim_start().starts_with('#'))
-            .filter(|l| l.contains("default_spacing") || l.contains("default_format"))
-            .count();
-        assert_eq!(live, 0, "{text}");
-        assert!(
-            text.contains("[radargrams]"),
-            "the rest is untouched:\n{text}"
-        );
     }
 
     #[test]

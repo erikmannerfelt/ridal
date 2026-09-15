@@ -251,10 +251,20 @@ fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
     write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let app = app_for(dir.path(), writable);
+    (dir, app)
+}
+
+/// A router over a project directory that already exists.
+///
+/// Separate from `project_app` so a test can edit `ridal.toml` by hand and
+/// then open it, which is the only way to reach the config-reading paths:
+/// the API refuses to store what those have to survive.
+fn app_for(dir: &StdPath, writable: bool) -> Router {
+    let project = Project::discover(dir).unwrap().unwrap();
     let state = Arc::new(
         AppState::build_with_project(
-            dir.path(),
+            dir,
             &RenderServiceConfig::default(),
             Some(project),
             AccessOptions {
@@ -264,7 +274,7 @@ fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
         )
         .unwrap(),
     );
-    (dir, build_router(state))
+    build_router(state)
 }
 
 /// A bare directory of radargrams: the pre-existing read-only arrangement.
@@ -1504,6 +1514,375 @@ async fn settings_are_read_only_where_writes_are() {
     let (status, html) = page(&app, "/settings").await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("read-only"), "{html}");
+}
+
+/// One valid basemap, as the settings page would send it.
+fn a_basemap(id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": format!("Basemap {id}"),
+        "url": format!("https://tile.example.org/{id}/{{z}}/{{x}}/{{y}}.png"),
+    })
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn basemaps_round_trip_through_the_settings_api() {
+    let (dir, app) = project_app(true);
+
+    // A project that has defined none still offers the built-in, or every
+    // map in the GUI would draw nothing.
+    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["basemaps"].as_array().unwrap().len(), 1);
+    assert_eq!(body["basemaps"][0]["id"], "esri-world-imagery");
+    assert_eq!(body["project_basemaps"].as_array().unwrap().len(), 0);
+    assert_eq!(body["built_in_basemap"], true);
+
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({
+            "basemaps": [a_basemap("osm")],
+            "default_basemap": "osm",
+        }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    // Both lists: what may be chosen (with the built-in first) and what may
+    // be edited (the project's own).
+    let offered: Vec<&str> = body["basemaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|map| map["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered, vec!["esri-world-imagery", "osm"]);
+    assert_eq!(body["project_basemaps"].as_array().unwrap().len(), 1);
+    assert_eq!(body["default_basemap"], "osm");
+    // The browser needs every optional value resolved, so it keeps no
+    // defaults of its own.
+    assert_eq!(body["basemaps"][1]["tile_size"], 256);
+    assert_eq!(body["basemaps"][1]["max_zoom"], 18);
+
+    // And on disk, so it survives a restart.
+    let marker = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    assert!(marker.contains("[[basemaps]]"), "{marker}");
+    assert!(marker.contains("default_basemap = \"osm\""), "{marker}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_basemap_that_could_not_be_drawn_is_refused() {
+    let (_dir, app) = project_app(true);
+    for (entry, code) in [
+        (
+            serde_json::json!({"id": "bad", "name": "Bad", "url": "javascript:alert(1)"}),
+            "invalid_basemap",
+        ),
+        (
+            serde_json::json!({"id": "Bad Id", "name": "Bad", "url": "https://t.example.org/{z}/{x}/{y}.png"}),
+            "invalid_basemap",
+        ),
+        (
+            // The built-in's id is reserved: two answers to "the built-in"
+            // would depend on which was found first.
+            serde_json::json!({"id": "esri-world-imagery", "name": "Mine", "url": "https://t.example.org/{z}/{x}/{y}.png"}),
+            "invalid_basemap",
+        ),
+    ] {
+        let (status, _, body) = put(
+            &app,
+            "/api/v1/project/settings",
+            &serde_json::json!({"basemaps": [entry]}),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], code, "{body}");
+    }
+
+    // And nothing was stored on the way to refusing.
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(body["project_basemaps"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_default_basemap_nothing_offers_is_refused() {
+    let (_dir, app) = project_app(true);
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_basemap": "nope"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "unknown_basemap");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn each_half_of_the_settings_page_leaves_the_other_alone() {
+    // Two forms save this one document. Absent must mean "unchanged" rather
+    // than "clear it", or saving a basemap would quietly drop the project's
+    // default profile -- and nobody would connect the two.
+    let (_dir, app) = project_app(true);
+    let settings = "/api/v1/project/settings";
+
+    put(
+        &app,
+        settings,
+        &serde_json::json!({"default_profile": "abslog", "default_xscale": 2.0}),
+        None,
+    )
+    .await;
+    put(
+        &app,
+        settings,
+        &serde_json::json!({"basemaps": [a_basemap("osm")], "default_basemap": "osm"}),
+        None,
+    )
+    .await;
+
+    let (_, _, body) = get(&app, settings).await;
+    assert_eq!(body["default_profile"], "abslog", "{body}");
+    assert_eq!(body["default_xscale"], 2.0, "{body}");
+
+    // And the other way around: saving the render defaults must not remove
+    // the basemaps.
+    put(
+        &app,
+        settings,
+        &serde_json::json!({"default_profile": "positive", "default_xscale": null}),
+        None,
+    )
+    .await;
+    let (_, _, body) = get(&app, settings).await;
+    assert_eq!(
+        body["project_basemaps"].as_array().unwrap().len(),
+        1,
+        "{body}"
+    );
+    assert_eq!(body["default_basemap"], "osm", "{body}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn removing_a_basemap_that_was_the_default_does_not_fail() {
+    // An unset default means the first offered, which is where a dangling
+    // one would land anyway -- so this is a removal, not a conflict.
+    let (_dir, app) = project_app(true);
+    let settings = "/api/v1/project/settings";
+    put(
+        &app,
+        settings,
+        &serde_json::json!({"basemaps": [a_basemap("osm")], "default_basemap": "osm"}),
+        None,
+    )
+    .await;
+
+    let (status, _, body) = put(&app, settings, &serde_json::json!({"basemaps": []}), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["default_basemap"].is_null(), "{body}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_hand_broken_basemap_costs_that_basemap_and_not_the_page() {
+    // `ridal.toml` is meant to be hand-edited. One bad entry must not leave
+    // every map blank, and the settings page has to be able to say why the
+    // entry is missing.
+    let (dir, app) = project_app(true);
+    drop(app);
+    let marker = dir.path().join("ridal.toml");
+    let text = std::fs::read_to_string(&marker).unwrap();
+    std::fs::write(
+        &marker,
+        format!(
+            "{text}\n[[basemaps]]\nid = \"good\"\nname = \"Good\"\n\
+             url = \"https://tile.example.org/{{z}}/{{x}}/{{y}}.png\"\n\
+             \n[[basemaps]]\nid = \"bad\"\nname = \"Bad\"\nurl = \"nonsense\"\n"
+        ),
+    )
+    .unwrap();
+
+    // Reopened, because the config is read when the project is opened.
+    let app = app_for(dir.path(), true);
+
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let offered: Vec<&str> = body["basemaps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|map| map["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered, vec!["esri-world-imagery", "good"], "{body}");
+    let problems = body["basemap_problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{body}");
+    assert!(problems[0].as_str().unwrap().contains("'bad'"), "{body}");
+
+    // The catalog page still draws maps, on what is left.
+    let (status, html) = page(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("data-basemaps="), "{html}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn overlays_round_trip_and_reach_every_page_with_a_map() {
+    // #177's overlay half: a GeoJSON added in the settings becomes a layer
+    // the catalog and the viewer can switch on.
+    let (dir, app) = project_app(true);
+
+    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["overlays"].as_array().unwrap().len(), 0);
+
+    let stakes = serde_json::json!({
+        "id": "stakes",
+        "name": "Mass balance stakes",
+        "url": "https://static.example.org/shapes/stakes.geojson",
+        // The two popup dials: the property naming each feature -- the
+        // generalisation of the hardcoded `properties.Stake` this came from
+        // -- and the one describing it.
+        "name_field": "Stake",
+        "description_field": "notes",
+    });
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({ "overlays": [stakes] }),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["overlays"][0]["name_field"], "Stake");
+
+    // Delivered to both map-bearing pages, with the colour resolved so the
+    // browser keeps no defaults of its own.
+    for uri in ["/", "/view/line-01"] {
+        let (status, html) = page(&app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(html.contains("data-overlays="), "{uri} carries no overlays");
+        assert!(html.contains("Mass balance stakes"), "{uri}: {html}");
+        assert!(html.contains("3aa3e3"), "{uri} did not resolve the colour");
+    }
+
+    let marker = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    assert!(marker.contains("[[overlays]]"), "{marker}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_overlay_that_could_not_be_drawn_is_refused() {
+    let (_dir, app) = project_app(true);
+    for entry in [
+        // Not something a browser will fetch a document from.
+        serde_json::json!({"id": "bad", "name": "Bad", "url": "javascript:alert(1)"}),
+        // A colour that is not a colour reaches the map as a style.
+        serde_json::json!({
+            "id": "bad", "name": "Bad",
+            "url": "https://example.org/x.geojson",
+            "color": "url(http://tracker.example/x.png)"
+        }),
+        // A property called nothing would look like a popup that does not
+        // work, rather than like a mistake.
+        serde_json::json!({
+            "id": "bad", "name": "Bad",
+            "url": "https://example.org/x.geojson", "name_field": ""
+        }),
+    ] {
+        let (status, _, body) = put(
+            &app,
+            "/api/v1/project/settings",
+            &serde_json::json!({ "overlays": [entry] }),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["error"]["code"], "invalid_overlay", "{body}");
+    }
+
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(body["overlays"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn saving_overlays_leaves_the_basemaps_alone_and_the_other_way_round() {
+    // Three sections of one settings page write one file. Each sends only
+    // its own half, and must not clear the others'.
+    let (_dir, app) = project_app(true);
+    let settings = "/api/v1/project/settings";
+
+    put(
+        &app,
+        settings,
+        &serde_json::json!({"basemaps": [a_basemap("osm")], "default_basemap": "osm"}),
+        None,
+    )
+    .await;
+    put(
+        &app,
+        settings,
+        &serde_json::json!({"overlays": [{
+            "id": "stakes", "name": "Stakes",
+            "url": "https://static.example.org/shapes/stakes.geojson"
+        }]}),
+        None,
+    )
+    .await;
+
+    let (_, _, body) = get(&app, settings).await;
+    assert_eq!(
+        body["project_basemaps"].as_array().unwrap().len(),
+        1,
+        "{body}"
+    );
+    assert_eq!(body["default_basemap"], "osm", "{body}");
+    assert_eq!(body["overlays"].as_array().unwrap().len(), 1, "{body}");
+
+    // And a basemap save afterwards leaves the overlay in place.
+    put(&app, settings, &serde_json::json!({"basemaps": []}), None).await;
+    let (_, _, body) = get(&app, settings).await;
+    assert_eq!(body["overlays"].as_array().unwrap().len(), 1, "{body}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_hand_broken_overlay_costs_that_overlay_and_not_the_page() {
+    let (dir, app) = project_app(true);
+    drop(app);
+    let marker = dir.path().join("ridal.toml");
+    let text = std::fs::read_to_string(&marker).unwrap();
+    std::fs::write(
+        &marker,
+        format!(
+            "{text}\n[[overlays]]\nid = \"good\"\nname = \"Good\"\n\
+             url = \"https://static.example.org/good.geojson\"\n\
+             \n[[overlays]]\nid = \"bad\"\nname = \"Bad\"\nurl = \"nonsense\"\n"
+        ),
+    )
+    .unwrap();
+
+    let app = app_for(dir.path(), true);
+    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    // Both are listed for editing -- the broken one has to be reachable to
+    // be fixed -- while only the usable one is served to the maps.
+    assert_eq!(body["overlays"].as_array().unwrap().len(), 2, "{body}");
+    let problems = body["overlay_problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 1, "{body}");
+    assert!(problems[0].as_str().unwrap().contains("'bad'"), "{body}");
+
+    let (status, html) = page(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("Good"), "{html}");
+    assert!(!html.contains("nonsense"), "the broken one is not served");
 }
 
 #[tokio::test]

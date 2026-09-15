@@ -36,10 +36,67 @@ const RIDAL = Object.freeze({
   cursorColor: "#ff3b30",
   cursorRadius: 6,
 
-  tileUrl:
-    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-  tileAttribution: "Esri",
-  tileMaxZoom: 18,
+  /* The basemaps this page may draw on, as the server resolved them (#177):
+   * the project's own, with Ridal's built-in ESRI World Imagery first unless
+   * the project switched it off. Every optional value arrives resolved, so
+   * there are no defaults here to drift from the ones in basemaps.rs.
+   *
+   * Delivered as a body attribute rather than an inline script, so a name or
+   * URL containing `</script>` is inert -- minijinja escapes an attribute
+   * value, and the browser un-escapes it before JSON.parse sees it.
+   *
+   * The literal below is the fallback for a page with no attribute at all:
+   * the settings and layers pages have no map, and a page rendered by an
+   * older template would otherwise have no basemap whatsoever. It is the
+   * one place the built-in is written twice, which the Rust test
+   * `the_built_in_matches_the_fallback_in_app_js` pins. */
+  basemaps: (function readBasemaps() {
+    const BUILT_IN = [
+      {
+        id: "esri-world-imagery",
+        name: "ESRI World Imagery",
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attribution: "Esri",
+        attribution_url: null,
+        tile_size: 256,
+        max_zoom: 18,
+        zoom_offset: 0,
+        subdomains: null,
+      },
+    ];
+    const raw = document.body.dataset.basemaps;
+    if (!raw) return BUILT_IN;
+    try {
+      const parsed = JSON.parse(raw);
+      // An empty list would leave every map blank, which is a worse answer
+      // to a broken config than ignoring it.
+      return Array.isArray(parsed) && parsed.length > 0 ? parsed : BUILT_IN;
+    } catch {
+      return BUILT_IN;
+    }
+  })(),
+
+  /* Which of them a map opens with: the server's cascade of this person's
+   * preference, the project default and the first offered. Empty on a page
+   * that carries no basemaps, where `basemap()` falls back to the first. */
+  activeBasemap: document.body.dataset.basemap || "",
+
+  /* The vector overlays this project defines (#177), in the order the layer
+   * control should list them. Empty unless a project defined some, which is
+   * every project until someone does.
+   *
+   * Delivered the same way the basemaps are, and read the same way: a
+   * broken attribute costs the overlays rather than the page. */
+  overlays: (function readOverlays() {
+    const raw = document.body.dataset.overlays;
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  })(),
 
   /** Fetch JSON, turning a non-2xx response into a rejection carrying
    * the server's own message.
@@ -250,13 +307,396 @@ const RIDAL = Object.freeze({
     return text.charAt(0).toUpperCase() + text.slice(1);
   },
 
-  /** Add the shared basemap layer to `map` and return it. */
-  basemap(map) {
-    L.tileLayer(RIDAL.tileUrl, {
-      maxZoom: RIDAL.tileMaxZoom,
-      attribution: RIDAL.tileAttribution,
-    }).addTo(map);
+  /** Derive an id from a display name, the way Ridal derives one from a
+   * filename.
+   *
+   * The client-side twin of `sanitize_to_slug` in `src/identity.rs`, and
+   * deliberately the same rules: lowercase, Nordic letters transliterated
+   * (Drønbreen -> dronbreen, which matters in the places this tool is used),
+   * runs of anything else collapsed to `-`, separators trimmed off both
+   * ends. An all-punctuation name gives `""`, which the caller must treat as
+   * "no id could be derived" rather than as an id.
+   *
+   * Here rather than on the server because it is shown while typing: the
+   * settings page puts the derived id in the id box's placeholder, so what
+   * gets stored is what was on screen. `no_two_scripts_on_a_page_declare_
+   * the_same_global` in assets.rs keeps this from colliding with anything. */
+  slugify(name) {
+    const nordic = { "ø": "o", "æ": "ae", "å": "aa" };
+    let out = "";
+    let lastWasSeparator = false;
+    for (const character of String(name).toLowerCase()) {
+      if (nordic[character]) {
+        out += nordic[character];
+        lastWasSeparator = false;
+      } else if (/[a-z0-9_-]/.test(character)) {
+        out += character;
+        lastWasSeparator = character === "-" || character === "_";
+      } else if (!lastWasSeparator) {
+        out += "-";
+        lastWasSeparator = true;
+      }
+    }
+    return out.replace(/^[-_]+/, "").replace(/[-_]+$/, "");
+  },
+
+  /** Text as HTML, for the two places Leaflet insists on markup.
+   *
+   * Leaflet's attribution control writes its content with `innerHTML`, so a
+   * credit line is a scripting primitive unless it is escaped -- and a
+   * project's basemaps are editable by an `operator`, a role below `admin`.
+   * Escaping here rather than refusing angle brackets server-side keeps
+   * "Kartverket <kartverket.no>" a legal thing to write. */
+  escapeHtml(text) {
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  },
+
+  /** One basemap's attribution, as the markup Leaflet wants.
+   *
+   * A link when the provider's terms ask for one -- OpenStreetMap's do --
+   * built here from a scheme-checked URL rather than accepted as markup.
+   * New tab, so reading the terms does not take someone out of the viewer
+   * mid-pick. */
+  attributionHtml(entry) {
+    if (!entry.attribution) return "";
+    const text = RIDAL.escapeHtml(entry.attribution);
+    if (!entry.attribution_url) return text;
+    const href = RIDAL.escapeHtml(entry.attribution_url);
+    return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+  },
+
+  /** Add this page's basemaps to `map` and return it.
+   *
+   * Every offered basemap becomes a layer, but only the active one is added:
+   * the others exist so the control can switch to them, and adding them all
+   * would have every map fetching every provider's tiles at once.
+   *
+   * The control appears only when there is something to switch between. A
+   * project that never defined a basemap therefore looks exactly as it did
+   * before #177, rather than growing a menu with one item in it. */
+  basemap(map, hostId) {
+    // A null-prototype dictionary, not `{}`: these keys are free-text
+    // names, and a basemap called `__proto__` would hit the prototype
+    // setter instead of becoming an entry -- the layer would simply not be
+    // in the control, with nothing anywhere saying why.
+    const layers = Object.create(null);
+    const labels = new Set();
+    let active = null;
+
+    for (const entry of RIDAL.basemaps) {
+      const layer = L.tileLayer(entry.url, {
+        maxZoom: entry.max_zoom,
+        tileSize: entry.tile_size,
+        zoomOffset: entry.zoom_offset,
+        // Leaflet's own default, restated: passing null would make `{s}`
+        // resolve to nothing rather than to a host.
+        subdomains: entry.subdomains || "abc",
+        attribution: RIDAL.attributionHtml(entry),
+      });
+      const label = RIDAL.uniqueLabel(labels, entry);
+      layers[label] = layer;
+      if (active === null || entry.id === RIDAL.activeBasemap) active = layer;
+    }
+
+    if (active) active.addTo(map);
+
+    const overlays = RIDAL.overlayLayers(map, hostId);
+    // The control appears when there is something to choose: a second
+    // basemap, or any overlay. A project that defined neither looks exactly
+    // as it did before #177, rather than growing a menu with one item.
+    if (Object.keys(layers).length > 1 || Object.keys(overlays).length > 0) {
+      L.control.layers(layers, overlays, { collapsed: true }).addTo(map);
+    }
     return map;
+  },
+
+  /** This page's overlays, as layers keyed by the name to show in the
+   * control (#177).
+   *
+   * Empty and lazy: each one is an `L.layerGroup` with nothing in it until
+   * somebody switches it on, at which point the GeoJSON is fetched once and
+   * its features are added. An overlay nobody looks at therefore costs a
+   * page one empty object, which is what makes a project able to define
+   * several without making every map slow.
+   *
+   * None of them is added to the map here -- overlays start off, because the
+   * maps exist to show where the radargrams are and an overlay is context
+   * around that. */
+  overlayLayers(map, hostId) {
+    const layers = Object.create(null);
+    const labels = new Set();
+
+    for (const overlay of RIDAL.overlays) {
+      const group = L.layerGroup();
+      let state = "empty";
+
+      group.on("add", () => {
+        if (state !== "empty") return;
+        state = "loading";
+        RIDAL.loadOverlay(overlay)
+          .then((features) => {
+            state = "loaded";
+            features.addTo(group);
+          })
+          .catch((error) => {
+            // Back to empty, so switching the overlay off and on again is a
+            // retry rather than a silent no-op -- a CORS failure or a
+            // moved file is exactly the kind of thing someone fixes and
+            // tries again.
+            state = "empty";
+            RIDAL.reportError(
+              hostId || map.getContainer().id,
+              `Could not draw "${overlay.name}": ${error.message}`,
+            );
+          });
+      });
+
+      layers[RIDAL.uniqueLabel(labels, overlay)] = group;
+    }
+    return layers;
+  },
+
+  /** A layer-control label for `entry` that is escaped, unique, and taken.
+   *
+   * Two things at once, because both are about the same string:
+   *
+   * Leaflet writes a layer's name into the control with `innerHTML` (see
+   * `_addItem` in the vendored build), so a project naming a basemap
+   * `<img src=x onerror=...>` would run it on every map. The name is
+   * escaped for the same reason the attribution is.
+   *
+   * And the control is keyed by that label, so two entries sharing one
+   * would silently become one layer. Disambiguating with the id is not
+   * enough on its own -- `A`/`one`, `A`/`two` and a third entry actually
+   * named `A (two)` all collide -- so this keeps suffixing until the label
+   * is genuinely unused, and records what it took. */
+  uniqueLabel(taken, entry) {
+    const name = RIDAL.escapeHtml(entry.name);
+    let label = name;
+    if (taken.has(label)) label = `${name} (${RIDAL.escapeHtml(entry.id)})`;
+    let attempt = 2;
+    while (taken.has(label)) {
+      label = `${name} (${RIDAL.escapeHtml(entry.id)} ${attempt})`;
+      attempt += 1;
+    }
+    taken.add(label);
+    return label;
+  },
+
+  /** Fetch one overlay's GeoJSON and build its layer.
+   *
+   * Fetched by the browser rather than proxied by Ridal, which keeps an
+   * HTTP client out of the binary and keeps the server from making requests
+   * to addresses a project member typed. The cost is that a host which does
+   * not allow cross-origin reads cannot be used, and that is said plainly
+   * rather than left as an empty layer. */
+  async loadOverlay(overlay) {
+    let response;
+    try {
+      response = await fetch(overlay.url);
+    } catch (networkError) {
+      // A CORS refusal reaches script as an indistinguishable network
+      // error, so the message has to name both possibilities rather than
+      // guess. `${networkError.message}` is usually "Failed to fetch",
+      // which on its own tells nobody anything.
+      throw new Error(
+        "the file could not be fetched. Either it is unreachable, or the " +
+          "site hosting it does not allow this page to read it (CORS).",
+      );
+    }
+    if (!response.ok) {
+      throw new Error(`the file could not be fetched (HTTP ${response.status}).`);
+    }
+
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error("the file is not valid JSON, so it is not GeoJSON.");
+    }
+    if (!data || typeof data !== "object" || !data.type) {
+      throw new Error("the file is JSON but not GeoJSON: it has no `type`.");
+    }
+
+    const wrongCrs = RIDAL.nonWgs84Reason(data);
+    if (wrongCrs) throw new Error(wrongCrs);
+
+    return L.geoJSON(data, {
+      style: () => ({ color: overlay.color, weight: 3, fillOpacity: 0.15 }),
+      // Points as circle markers rather than Leaflet's default pin: the pin
+      // needs an image asset and points here are usually stakes or samples,
+      // which read better as small marks than as map pins.
+      pointToLayer: (_feature, latlng) =>
+        L.circleMarker(latlng, {
+          radius: 5,
+          color: overlay.color,
+          weight: 2,
+          fillColor: overlay.color,
+          fillOpacity: 0.6,
+        }),
+      onEachFeature: (feature, layer) => {
+        const content = RIDAL.overlayPopup(overlay, feature);
+        if (content) layer.bindPopup(content);
+      },
+    });
+  },
+
+  /** Why this GeoJSON cannot be drawn as it is, or `null` if it can.
+   *
+   * Leaflet reads GeoJSON as RFC 7946 does: longitude and latitude in
+   * WGS84. A projected file is not detected by Leaflet at all -- it draws
+   * eastings as degrees and puts Svalbard somewhere past the date line,
+   * with nothing on screen to say why. Ridal does not reproject (yet), so
+   * the least confusing thing it can do is refuse and say what is wrong.
+   *
+   * Two checks, because a file can be wrong in two ways: it may *declare* a
+   * CRS (the pre-2016 GeoJSON member, which RFC 7946 removed but exporters
+   * still write), or it may simply carry coordinates no degree can hold. */
+  nonWgs84Reason(data) {
+    const convert =
+      " Reproject it to WGS84 first, for example with " +
+      "`ogr2ogr -t_srs EPSG:4326 wgs84.geojson yours.geojson`.";
+
+    // Both forms the 2008 spec allowed: a named CRS, and a link to one.
+    // An exporter that writes only the `href` would otherwise walk past
+    // this check and be drawn as degrees.
+    const properties = (data.crs && data.crs.properties) || {};
+    const declared = properties.name || properties.href;
+    if (declared && !/(CRS84|EPSG:*0*4326)/i.test(String(declared))) {
+      return `the file declares the coordinate system ${declared}, and Ridal draws WGS84 only.${convert}`;
+    }
+
+    // Every coordinate, not just the first: a file can open with a
+    // plausible point and carry a projected one further in, and "Ridal
+    // draws WGS84 only" should be a property of the file rather than of
+    // its first vertex. Stops at the first bad one, so a good file costs
+    // one pass and a bad one usually much less.
+    const outlier = RIDAL.firstCoordinateOutsideDegrees(data);
+    if (outlier) {
+      return (
+        `it has coordinates that are not degrees -- ${outlier[0]}, ` +
+        `${outlier[1]} -- so the file is in a projected coordinate ` +
+        `system, and Ridal draws WGS84 only.${convert}`
+      );
+    }
+    return null;
+  },
+
+  /** The first `[x, y]` in a GeoJSON object that no degree can hold, or
+   * null if every coordinate could be WGS84.
+   *
+   * Walks the nested arrays a geometry can be rather than switching on
+   * every geometry type, so a GeometryCollection inside a Feature inside a
+   * FeatureCollection is handled without knowing those exist. */
+  firstCoordinateOutsideDegrees(data) {
+    const walk = (node) => {
+      if (!node || typeof node !== "object") return null;
+      if (Array.isArray(node)) {
+        if (typeof node[0] === "number" && typeof node[1] === "number") {
+          return Math.abs(node[0]) > 180 || Math.abs(node[1]) > 90
+            ? [node[0], node[1]]
+            : null;
+        }
+        for (const child of node) {
+          const found = walk(child);
+          if (found) return found;
+        }
+        return null;
+      }
+      for (const key of ["coordinates", "geometry", "geometries", "features"]) {
+        if (node[key]) {
+          const found = walk(node[key]);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return walk(data);
+  },
+
+  /** One overlay feature's popup, as DOM nodes, or null when there is
+   * nothing to say about it.
+   *
+   * `name_field` names the property holding the feature's name -- the
+   * generalisation of PFA_website's hardcoded `properties.Stake` -- and is
+   * inserted as text, so a name containing markup is shown rather than run.
+   *
+   * `description_field` is deliberately the opposite: it is documented as
+   * HTML, because a description that cannot carry a link or a table is not
+   * much of a description. It is scrubbed first (see `cleanHtml`). The
+   * scrub is defence in depth, not the guarantee -- the guarantee is that
+   * an operator chose the URL. */
+  overlayPopup(overlay, feature) {
+    const properties = (feature && feature.properties) || {};
+    const name = overlay.name_field ? properties[overlay.name_field] : null;
+    const description = overlay.description_field
+      ? properties[overlay.description_field]
+      : null;
+    if (
+      (name === undefined || name === null || name === "") &&
+      (description === undefined || description === null || description === "")
+    ) {
+      return null;
+    }
+
+    const box = document.createElement("div");
+    box.className = "overlay-popup";
+    if (name !== undefined && name !== null && name !== "") {
+      const heading = document.createElement("strong");
+      heading.textContent = String(name);
+      box.appendChild(heading);
+    }
+    if (description !== undefined && description !== null && description !== "") {
+      const body = document.createElement("div");
+      body.className = "overlay-popup-body";
+      body.append(...RIDAL.cleanHtml(String(description)));
+      box.appendChild(body);
+    }
+    return box;
+  },
+
+  /** Parse `html` and return its nodes with the obvious ways to run
+   * something removed.
+   *
+   * Parsed with `DOMParser` rather than assigned to `innerHTML`, so nothing
+   * is ever live in this document while it is being inspected: a
+   * `<img onerror>` in a detached parse does not fire. Then the elements
+   * that execute (`script`, `iframe`, and friends), every `on*` handler and
+   * every non-`http(s)` URL are dropped.
+   *
+   * An allowlist would be stricter, and a sanitiser library stricter still.
+   * This is the proportionate version: the HTML comes from a file whose
+   * address a project operator typed, which is a person who can already
+   * change the project's settings. */
+  cleanHtml(html) {
+    const parsed = new DOMParser().parseFromString(html, "text/html");
+    const forbidden = "script,style,iframe,object,embed,link,meta,base,form";
+    parsed.body.querySelectorAll(forbidden).forEach((node) => node.remove());
+    parsed.body.querySelectorAll("*").forEach((node) => {
+      for (const attribute of [...node.attributes]) {
+        const name = attribute.name.toLowerCase();
+        const value = attribute.value.trim().toLowerCase();
+        const isUrl = name === "href" || name === "src" || name === "xlink:href";
+        if (
+          name.startsWith("on") ||
+          (isUrl && !/^(https?:|mailto:|#|\/|\.)/.test(value))
+        ) {
+          node.removeAttribute(attribute.name);
+        }
+      }
+      if (node.tagName === "A") {
+        // A link out of a popup opens beside the viewer rather than
+        // replacing it, and does not hand the destination this page.
+        node.setAttribute("target", "_blank");
+        node.setAttribute("rel", "noopener noreferrer");
+      }
+    });
+    return [...parsed.body.childNodes];
   },
 
   /** Latitude/longitude pairs for every vertex, per track segment. */

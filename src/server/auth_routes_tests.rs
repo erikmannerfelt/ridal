@@ -1447,6 +1447,123 @@ async fn the_download_defaults_cascade_from_the_project_to_the_person() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_basemap_resolves_through_the_same_cascade() {
+    // #177 added a third preference, and the point of naming the cascade was
+    // that adding one is a call rather than a fourth chance to get the order
+    // wrong. This is that claim, checked against what a page carries.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let viewer_uri = format!("/view/{RADARGRAM}");
+    let opens_with = |text: &str, id: &str| text.contains(&format!("data-basemap=\"{id}\""));
+
+    // Nothing defined anywhere: the built-in, as before #177.
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(
+        opens_with(&page.text, "esri-world-imagery"),
+        "{}",
+        page.text
+    );
+
+    let two = json!([
+        {"id": "osm", "name": "OpenStreetMap",
+         "url": "https://tile.example.org/osm/{z}/{x}/{y}.png"},
+        {"id": "topo", "name": "Topographic",
+         "url": "https://tile.example.org/topo/{z}/{x}/{y}.png"},
+    ]);
+    let saved = put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"basemaps": two, "default_basemap": "topo"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+
+    // The project default reaches whoever has not chosen...
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(opens_with(&page.text, "topo"), "{}", page.text);
+    // ...and all three are offered, so the layer control can switch.
+    assert!(page.text.contains("OpenStreetMap"), "{}", page.text);
+    assert!(page.text.contains("ESRI World Imagery"), "{}", page.text);
+
+    // One person's own wins, for them alone.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"basemap": "osm"}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert!(opens_with(
+        &get(&app, &viewer_uri, Some(&student)).await.text,
+        "osm"
+    ));
+    assert!(opens_with(
+        &get(&app, &viewer_uri, Some(&erik)).await.text,
+        "topo"
+    ));
+
+    // The catalog page carries them too -- it has one map per group.
+    assert!(opens_with(
+        &get(&app, "/", Some(&student)).await.text,
+        "osm"
+    ));
+
+    // A preference for a basemap the project no longer offers falls back
+    // rather than leaving that person's maps blank.
+    put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"basemaps": [], "default_basemap": null}),
+        Some(&erik),
+    )
+    .await;
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(
+        opens_with(&page.text, "esri-world-imagery"),
+        "{}",
+        page.text
+    );
+    // The stored preference is untouched: the project may well offer it
+    // again, and forgetting it here would be a second, silent loss.
+    let mine = get(&app, "/api/v1/preferences", Some(&student)).await;
+    assert_eq!(mine.body["basemap"], "osm");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_basemap_preference_nothing_offers_is_refused() {
+    // The same rule as an unknown profile: the layer control only lists what
+    // is offered, so a stored id nothing matches would be unfixable from the
+    // page that set it.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let refused = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"basemap": "nope"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "unknown_basemap");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_admin_setting_the_project_default_does_not_overwrite_anyone() {
     // The alternative -- a project default that stamps over personal
     // choices -- would make the operator's save button destructive in a way

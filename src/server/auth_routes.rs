@@ -669,6 +669,7 @@ pub async fn get_preferences(
         "show_picks": preferences.show_picks,
         "level2_spacing": preferences.level2_spacing,
         "level2_format": preferences.level2_format,
+        "basemap": preferences.basemap,
     })))
 }
 
@@ -704,6 +705,9 @@ pub struct PreferencesBody {
     /// Whether the viewer opens with the interpretations drawn (#143).
     #[serde(default, deserialize_with = "present")]
     show_picks: Option<Option<bool>>,
+    /// Which basemap the maps draw on, by id (#177).
+    #[serde(default, deserialize_with = "present")]
+    basemap: Option<Option<String>>,
     /// What the layer-point download dialogs open on (#166).
     #[serde(default, deserialize_with = "present")]
     level2_spacing: Option<Option<String>>,
@@ -834,6 +838,24 @@ pub async fn put_preferences(
         stored.show_picks = sent.filter(|shown| !*shown);
     }
 
+    if let Some(sent) = body.basemap {
+        // Same rule again: a basemap id the project does not offer would
+        // leave this person with maps drawing nothing, and no control that
+        // could put it back -- the layer control only lists what is offered.
+        stored.basemap = match sent.as_deref() {
+            None | Some("") => None,
+            Some(id) => {
+                if !super::routes::offers_basemap(&state, id) {
+                    return Err(ApiError::bad_request(
+                        "unknown_basemap",
+                        format!("This project does not offer a basemap called '{id}'."),
+                    ));
+                }
+                Some(id.to_string())
+            }
+        };
+    }
+
     preferences::write(project.documents(), user, &stored, &Expectation::Any)
         .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
 
@@ -845,6 +867,7 @@ pub async fn put_preferences(
         "show_picks": stored.show_picks,
         "level2_spacing": stored.level2_spacing,
         "level2_format": stored.level2_format,
+        "basemap": stored.basemap,
     })))
 }
 
