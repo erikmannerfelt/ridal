@@ -16,12 +16,14 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::render::colormap;
 use crate::render::grid::{Chunk, OverviewSpec, CHUNK_SIZE};
 use crate::render::profile::{AmplitudeLimits, DatasetView, RenderProfile};
 use crate::render::renderer::Renderer;
 use crate::render::stats::sampled_amplitude_limits;
+use crate::render::topo::{self, ElevationRange, TopoGeometry, TopoSource, TopoUnavailable};
 use crate::server::catalog::RevisionId;
 use crate::source::SourceReader;
 
@@ -52,7 +54,41 @@ fn blake3_hex32(parts: &[&[u8]]) -> String {
 pub struct RenderVariantId(String);
 
 impl RenderVariantId {
-    pub fn compute(revision_id: &RevisionId, view: DatasetView, profile: &RenderProfile) -> Self {
+    /// `elevation_range` is folded in as explicit presence flags plus
+    /// `f64::to_bits()` values, not formatted decimals -- a decimal
+    /// formatting change must not silently make an old cache entry
+    /// unreachable, and `to_bits()` is exact where a decimal string could
+    /// round two distinct bounds to the same text.
+    ///
+    /// Meaningful only for [`DatasetView::Topographic`], and **normalised
+    /// away here** for [`DatasetView::Standard`] rather than left to
+    /// callers to pass [`ElevationRange::NONE`]. Asking callers was the
+    /// original design and it did not survive contact with the routes:
+    /// they hand the catalog entry's configured range to every render,
+    /// which is right for the corrected view and meaningless for the
+    /// standard one -- so editing a floor or cap silently re-keyed every
+    /// standard chunk and overview too, filling the bounded cache with
+    /// duplicates of pixels that had not changed. Normalising at the one
+    /// place the key is built makes that unrepresentable instead of
+    /// merely discouraged.
+    pub fn compute(
+        revision_id: &RevisionId,
+        view: DatasetView,
+        profile: &RenderProfile,
+        elevation_range: ElevationRange,
+    ) -> Self {
+        let elevation_range = match view {
+            DatasetView::Standard => ElevationRange::NONE,
+            DatasetView::Topographic => elevation_range,
+        };
+        let (has_min, min_bits) = match elevation_range.min {
+            Some(v) => (1u8, v.to_bits()),
+            None => (0u8, 0u64),
+        };
+        let (has_max, max_bits) = match elevation_range.max {
+            Some(v) => (1u8, v.to_bits()),
+            None => (0u8, 0u64),
+        };
         Self(blake3_hex32(&[
             b"ridal-render-variant-v1",
             revision_id.as_str().as_bytes(),
@@ -60,6 +96,10 @@ impl RenderVariantId {
             profile.cache_key_fragment().as_bytes(),
             &RESAMPLER_VERSION.to_le_bytes(),
             &RENDERER_VERSION.to_le_bytes(),
+            &[has_min],
+            &min_bits.to_le_bytes(),
+            &[has_max],
+            &max_bits.to_le_bytes(),
         ]))
     }
 
@@ -199,6 +239,17 @@ pub struct RenderService {
     revision_id: RevisionId,
     cache: ByteBoundedCache,
     limits_cache: HashMap<RenderVariantId, (f32, f32)>,
+    /// The topographic geometry resolved for the most recently requested
+    /// elevation range, memoized so a burst of chunk/overview requests for
+    /// the same range resolves it once. Constructed lazily -- never at
+    /// startup, and never for a radargram nobody views topographically --
+    /// on the first request for [`DatasetView::Topographic`], and
+    /// recomputed (replacing this entry) whenever the requested range
+    /// differs from the cached one, which is what makes an elevation-range
+    /// override edit take effect without restarting the server: the
+    /// override changes what range `routes.rs` asks for, and a changed
+    /// range simply misses this cache.
+    topo_geometry: Option<(ElevationRange, Arc<TopoGeometry>)>,
 }
 
 impl RenderService {
@@ -212,6 +263,7 @@ impl RenderService {
             revision_id,
             cache: ByteBoundedCache::new(config.cache_memory_mb * 1024 * 1024),
             limits_cache: HashMap::new(),
+            topo_geometry: None,
         }
     }
 
@@ -223,16 +275,28 @@ impl RenderService {
         self.cache.current_bytes()
     }
 
-    /// Resolve a variant's amplitude limits, computing and caching them on
+    /// Resolve a profile's amplitude limits, computing and caching them on
     /// first use. Never recomputed per chunk (#119) -- every chunk and the
-    /// overview for one variant share the same call's result via
-    /// `limits_cache`.
-    fn resolve_limits(
-        &mut self,
-        variant: &RenderVariantId,
-        profile: &RenderProfile,
-    ) -> Result<(f32, f32), String> {
-        if let Some(&limits) = self.limits_cache.get(variant) {
+    /// overview for one profile share the same call's result.
+    ///
+    /// Always sampled from the standard source, regardless of which view
+    /// was actually requested (#168): the amplitude *distribution* a
+    /// topographic shear relocates is unchanged by relocating it, so
+    /// resampling through [`TopoSource`] here would read its NaN wedges
+    /// into the percentile estimate -- shifting contrast every time the
+    /// topo checkbox is ticked -- and would populate a second, redundant
+    /// cache entry per profile for no reason. The cache key is therefore
+    /// always computed as if the view were [`DatasetView::Standard`] and
+    /// the elevation range [`ElevationRange::NONE`], so a toggle between
+    /// views (or an elevation-range edit) never invalidates it.
+    fn resolve_limits(&mut self, profile: &RenderProfile) -> Result<(f32, f32), String> {
+        let key = RenderVariantId::compute(
+            &self.revision_id,
+            DatasetView::Standard,
+            profile,
+            ElevationRange::NONE,
+        );
+        if let Some(&limits) = self.limits_cache.get(&key) {
             return Ok(limits);
         }
         let sampled = match profile.limits {
@@ -247,8 +311,60 @@ impl RenderService {
             AmplitudeLimits::Explicit { .. } => None,
         };
         let limits = colormap::resolve_limits(&profile.limits, sampled)?;
-        self.limits_cache.insert(variant.clone(), limits);
+        self.limits_cache.insert(key, limits);
         Ok(limits)
+    }
+
+    /// Resolve (and memoize) the topographic geometry for `range`. Reads
+    /// the `elevation`/`depth` axes through the same open handle
+    /// `self.reader` already holds -- no second NetCDF handle -- and
+    /// otherwise does no I/O the memo can already answer.
+    fn resolve_topo_geometry(
+        &mut self,
+        range: ElevationRange,
+    ) -> Result<Arc<TopoGeometry>, TopoUnavailable> {
+        if let Some((cached_range, geometry)) = &self.topo_geometry {
+            if *cached_range == range {
+                return Ok(Arc::clone(geometry));
+            }
+        }
+        let elevation = self.reader.read_axis_f64("elevation").ok();
+        let depth = self
+            .reader
+            .read_axis_f64("depth")
+            .ok()
+            .map(|values| values.into_iter().map(|v| v as f32).collect::<Vec<f32>>());
+        let (source_height, n_traces) = crate::source::AmplitudeSource::shape(&self.reader);
+        let geometry = Arc::new(topo::resolve_topo_geometry(
+            elevation.as_deref(),
+            depth.as_deref(),
+            n_traces,
+            source_height,
+            range,
+        )?);
+        self.topo_geometry = Some((range, Arc::clone(&geometry)));
+        Ok(geometry)
+    }
+
+    /// The topographically corrected raster's sample count for `range`,
+    /// resolving the geometry if needed. What routing (`routes.rs`) builds
+    /// its `ViewerRaster`/`ChunkGrid`/`OverviewSpec` from for the
+    /// corrected view, since those have to cover the *sheared* extent, not
+    /// the source one, or a corrected-view chunk below the source's own
+    /// row count would 404 before ever reaching the render service.
+    pub fn topo_raster_height(&mut self, range: ElevationRange) -> Result<usize, TopoUnavailable> {
+        Ok(self.resolve_topo_geometry(range)?.raster_height)
+    }
+
+    /// The resolved topographic geometry for `range`, for the geometry
+    /// HTTP endpoint (per-trace shifts, diagnostics) and for `routes.rs`'s
+    /// availability check (a corrected-view checkbox disabled with the
+    /// `Err` reason as its `title`).
+    pub fn topo_geometry(
+        &mut self,
+        range: ElevationRange,
+    ) -> Result<Arc<TopoGeometry>, TopoUnavailable> {
+        self.resolve_topo_geometry(range)
     }
 
     pub fn get_or_render_chunk(
@@ -256,8 +372,9 @@ impl RenderService {
         chunk: &Chunk,
         view: DatasetView,
         profile: &RenderProfile,
+        range: ElevationRange,
     ) -> Result<Vec<u8>, String> {
-        let variant = RenderVariantId::compute(&self.revision_id, view, profile);
+        let variant = RenderVariantId::compute(&self.revision_id, view, profile, range);
         let key = RenderObjectKey::compute(
             &variant,
             &RenderObjectDescriptor::Chunk {
@@ -269,8 +386,17 @@ impl RenderService {
         if let Some(bytes) = self.cache.get(&key) {
             return Ok(bytes);
         }
-        let limits = self.resolve_limits(&variant, profile)?;
-        let bytes = Renderer::new(&self.reader).render_chunk(chunk, profile, limits)?;
+        let limits = self.resolve_limits(profile)?;
+        let bytes = match view {
+            DatasetView::Standard => {
+                Renderer::new(&self.reader).render_chunk(chunk, profile, limits)?
+            }
+            DatasetView::Topographic => {
+                let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
+                let source = TopoSource::new(&self.reader, &geometry);
+                Renderer::new(&source).render_chunk(chunk, profile, limits)?
+            }
+        };
         self.cache.insert(key, bytes.clone());
         Ok(bytes)
     }
@@ -280,8 +406,9 @@ impl RenderService {
         spec: &OverviewSpec,
         view: DatasetView,
         profile: &RenderProfile,
+        range: ElevationRange,
     ) -> Result<Vec<u8>, String> {
-        let variant = RenderVariantId::compute(&self.revision_id, view, profile);
+        let variant = RenderVariantId::compute(&self.revision_id, view, profile, range);
         let key = RenderObjectKey::compute(
             &variant,
             &RenderObjectDescriptor::Overview {
@@ -292,8 +419,17 @@ impl RenderService {
         if let Some(bytes) = self.cache.get(&key) {
             return Ok(bytes);
         }
-        let limits = self.resolve_limits(&variant, profile)?;
-        let bytes = Renderer::new(&self.reader).render_overview(spec, profile, limits)?;
+        let limits = self.resolve_limits(profile)?;
+        let bytes = match view {
+            DatasetView::Standard => {
+                Renderer::new(&self.reader).render_overview(spec, profile, limits)?
+            }
+            DatasetView::Topographic => {
+                let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
+                let source = TopoSource::new(&self.reader, &geometry);
+                Renderer::new(&source).render_overview(spec, profile, limits)?
+            }
+        };
         self.cache.insert(key, bytes.clone());
         Ok(bytes)
     }
@@ -350,7 +486,12 @@ mod tests {
             );
             let spec = OverviewSpec::new(4096, 400, 300);
             let from_server = service
-                .get_or_render_overview(&spec, DatasetView::Standard, &profile)
+                .get_or_render_overview(
+                    &spec,
+                    DatasetView::Standard,
+                    &profile,
+                    ElevationRange::NONE,
+                )
                 .unwrap();
 
             // The command line's path: straight to a file.
@@ -466,16 +607,86 @@ mod tests {
             RevisionId::fingerprint_v1(&RadargramId::new("other").unwrap(), "2020-01-01T00:00:00Z");
         let profile = RenderProfile::default_profile();
 
-        let a1 = RenderVariantId::compute(&rev_a, DatasetView::Standard, &profile);
-        let a2 = RenderVariantId::compute(&rev_a, DatasetView::Standard, &profile);
+        let a1 = RenderVariantId::compute(
+            &rev_a,
+            DatasetView::Standard,
+            &profile,
+            ElevationRange::NONE,
+        );
+        let a2 = RenderVariantId::compute(
+            &rev_a,
+            DatasetView::Standard,
+            &profile,
+            ElevationRange::NONE,
+        );
         assert_eq!(a1, a2);
 
-        let b = RenderVariantId::compute(&rev_b, DatasetView::Standard, &profile);
+        let b = RenderVariantId::compute(
+            &rev_b,
+            DatasetView::Standard,
+            &profile,
+            ElevationRange::NONE,
+        );
         assert_ne!(a1, b, "different revision must produce a different variant");
 
         let other_profile = RenderProfile::abslog_profile();
-        let c = RenderVariantId::compute(&rev_a, DatasetView::Standard, &other_profile);
+        let c = RenderVariantId::compute(
+            &rev_a,
+            DatasetView::Standard,
+            &other_profile,
+            ElevationRange::NONE,
+        );
         assert_ne!(a1, c, "different profile must produce a different variant");
+    }
+
+    #[test]
+    fn the_elevation_window_keys_the_corrected_view_and_only_it() {
+        // #168 review: the routes hand the catalog entry's configured
+        // window to *every* render, since one entry has one window. That
+        // is right for the corrected view and meaningless for the standard
+        // one, so normalising it away here is what stops an elevation edit
+        // from re-keying -- and therefore duplicating, in a byte-bounded
+        // cache -- every standard chunk and overview whose pixels did not
+        // change.
+        let rev = test_revision_id();
+        let profile = RenderProfile::default_profile();
+        let window = ElevationRange {
+            min: Some(100.0),
+            max: Some(600.0),
+        };
+        let other_window = ElevationRange {
+            min: Some(150.0),
+            max: Some(600.0),
+        };
+
+        let standard_none =
+            RenderVariantId::compute(&rev, DatasetView::Standard, &profile, ElevationRange::NONE);
+        let standard_windowed =
+            RenderVariantId::compute(&rev, DatasetView::Standard, &profile, window);
+        assert_eq!(
+            standard_none, standard_windowed,
+            "a standard render must key identically however the window is set"
+        );
+
+        let topo_none = RenderVariantId::compute(
+            &rev,
+            DatasetView::Topographic,
+            &profile,
+            ElevationRange::NONE,
+        );
+        let topo_windowed =
+            RenderVariantId::compute(&rev, DatasetView::Topographic, &profile, window);
+        let topo_other =
+            RenderVariantId::compute(&rev, DatasetView::Topographic, &profile, other_window);
+        assert_ne!(
+            topo_none, topo_windowed,
+            "the corrected view's pixels depend on the window, so its key must too"
+        );
+        assert_ne!(
+            topo_windowed, topo_other,
+            "two different windows must not share a corrected-view key"
+        );
+        assert_ne!(standard_none, topo_none, "the views must not share a key");
     }
 
     #[test]
@@ -484,6 +695,7 @@ mod tests {
             &test_revision_id(),
             DatasetView::Standard,
             &RenderProfile::default_profile(),
+            ElevationRange::NONE,
         );
         let chunk_key = RenderObjectKey::compute(
             &variant,
@@ -561,12 +773,22 @@ mod tests {
 
         assert_eq!(service.cache_len(), 0);
         let first = service
-            .get_or_render_chunk(&chunk, DatasetView::Standard, &profile)
+            .get_or_render_chunk(
+                &chunk,
+                DatasetView::Standard,
+                &profile,
+                ElevationRange::NONE,
+            )
             .unwrap();
         assert_eq!(service.cache_len(), 1);
 
         let second = service
-            .get_or_render_chunk(&chunk, DatasetView::Standard, &profile)
+            .get_or_render_chunk(
+                &chunk,
+                DatasetView::Standard,
+                &profile,
+                ElevationRange::NONE,
+            )
             .unwrap();
         assert_eq!(
             service.cache_len(),
@@ -592,12 +814,22 @@ mod tests {
         let profile = RenderProfile::default_profile(); // percentile limits -> must be sampled
 
         service
-            .get_or_render_chunk(&grid.chunk(0, 0).unwrap(), DatasetView::Standard, &profile)
+            .get_or_render_chunk(
+                &grid.chunk(0, 0).unwrap(),
+                DatasetView::Standard,
+                &profile,
+                ElevationRange::NONE,
+            )
             .unwrap();
         assert_eq!(service.limits_cache.len(), 1);
 
         service
-            .get_or_render_chunk(&grid.chunk(1, 0).unwrap(), DatasetView::Standard, &profile)
+            .get_or_render_chunk(
+                &grid.chunk(1, 0).unwrap(),
+                DatasetView::Standard,
+                &profile,
+                ElevationRange::NONE,
+            )
             .unwrap();
         // A second chunk under the SAME variant must not add a second
         // limits entry -- it reuses the one computed for chunk (0,0).
@@ -624,6 +856,7 @@ mod tests {
                 &chunk,
                 DatasetView::Standard,
                 &RenderProfile::default_profile(),
+                ElevationRange::NONE,
             )
             .unwrap();
         service
@@ -631,6 +864,7 @@ mod tests {
                 &chunk,
                 DatasetView::Standard,
                 &RenderProfile::abslog_profile(),
+                ElevationRange::NONE,
             )
             .unwrap();
         assert_eq!(service.cache_len(), 2);

@@ -181,6 +181,8 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const groupInput = document.getElementById('properties-group-name');
   const groupFromFile = document.getElementById('properties-group-file');
   const unlisted = document.getElementById('properties-unlisted');
+  const elevationMin = document.getElementById('properties-elevation-min');
+  const elevationMax = document.getElementById('properties-elevation-max');
   const save = document.getElementById('properties-save');
 
   /* The three fixed choices. Anything else in the list is a group id, which
@@ -257,6 +259,14 @@ document.querySelectorAll('.group-map').forEach((el) => {
       : 'Without this, it would be in no group.';
 
     unlisted.checked = properties.effective.unlisted;
+
+    // Unlike name/group, elevation has no file-side counterpart to fall
+    // back to: `null` on either side just means "no bound", which is the
+    // same value whether it is inherited or explicitly cleared, so the
+    // field always shows the effective value rather than only-when-set.
+    elevationMin.value = properties.effective.elevation_min ?? '';
+    elevationMax.value = properties.effective.elevation_max ?? '';
+
     syncGroupRow();
     dialog.showModal();
   };
@@ -303,6 +313,27 @@ document.querySelectorAll('.group-map').forEach((el) => {
       body.grouping = 'group';
       body.group_id = choice;
     }
+
+    const parseElevation = (input) => {
+      const trimmed = input.value.trim();
+      return trimmed === '' ? null : Number(trimmed);
+    };
+    const minValue = parseElevation(elevationMin);
+    const maxValue = parseElevation(elevationMax);
+    if (minValue !== null && Number.isNaN(minValue)) {
+      showError('The topographic correction floor is not a number.');
+      return;
+    }
+    if (maxValue !== null && Number.isNaN(maxValue)) {
+      showError('The topographic correction surface cap is not a number.');
+      return;
+    }
+    if (minValue !== null && maxValue !== null && !(minValue < maxValue)) {
+      showError('The floor must be below the surface cap.');
+      return;
+    }
+    body.elevation_min = minValue;
+    body.elevation_max = maxValue;
 
     save.disabled = true;
     try {

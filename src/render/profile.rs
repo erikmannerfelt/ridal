@@ -117,12 +117,21 @@ pub enum AmplitudeLimits {
     Percentile { low: f32, high: f32 },
 }
 
-/// Dataset view: the standard (trace, sample) view is the only one
-/// implemented in v1. Topographic correction is an explicitly deferred
-/// future view (#118).
+/// Which vertical transform of the source `data` array a render draws
+/// from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatasetView {
     Standard,
+    /// A render-time-only vertical topographic correction (#168): traces
+    /// are sheared so a given output row is one elevation everywhere,
+    /// resolved from the `elevation`/`depth` axes into a
+    /// [`crate::render::topo::TopoGeometry`] and applied by
+    /// [`crate::render::topo::TopoSource`]. Never precomputed or stored,
+    /// and never the coordinate space an interpretation is saved in --
+    /// distinct from `gpr.rs::correct_topography`'s `data_topocorr`, which
+    /// writes a NetCDF product. The catalog's own index overviews stay
+    /// [`Standard`](Self::Standard); only the viewer offers this.
+    Topographic,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

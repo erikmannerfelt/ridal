@@ -283,6 +283,29 @@
         Leaves this radargram out of listings and out of merged downloads.
         It is not private: anyone who knows the address can still open it.
       </p>
+
+      {#- Bounds for the viewer's topographic correction. A property of the
+          survey's GPS track, not of whoever is looking at it, so it is
+          edited here rather than in the viewer -- which points back at
+          this dialog when a radargram's elevations look wrong. -#}
+      <fieldset class="field-group">
+        <legend>Topographic correction (m)</legend>
+        <div class="field-row">
+          <label>Floor
+            <input type="number" id="properties-elevation-min" step="any" autocomplete="off">
+          </label>
+          <label>Surface cap
+            <input type="number" id="properties-elevation-max" step="any" autocomplete="off">
+          </label>
+        </div>
+      </fieldset>
+      <p class="hint">
+        Bounds the corrected view in the viewer. <strong>Floor</strong> is the
+        lowest elevation it draws — anything below is cropped.
+        <strong>Surface cap</strong> is the highest a trace's surface may be;
+        higher ones are pulled down to it, so a GPS spike cannot stretch the
+        view. Leave blank for no bound.
+      </p>
     </div>
     <p>
       <button type="button" id="properties-save">Save</button>

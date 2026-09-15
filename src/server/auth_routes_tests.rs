@@ -1814,6 +1814,206 @@ async fn an_operator_can_rename_a_radargram_without_restarting_the_server() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn an_operator_can_set_and_revert_an_elevation_range() {
+    // #168: the elevation range lives on the same properties document as
+    // display_name/group, edited and reverted the same way.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+
+    let before = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.text);
+    assert!(before.body["effective"]["elevation_min"].is_null());
+    assert_eq!(before.body["overridden"]["elevation"], false);
+
+    // min >= max is refused rather than silently accepted and then
+    // excluding every trace once the corrected view tries to use it.
+    let invalid = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"unlisted": false, "elevation_min": 100.0, "elevation_max": 100.0}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(invalid.status, StatusCode::BAD_REQUEST, "{}", invalid.text);
+    assert_eq!(invalid.body["error"]["code"], "invalid_elevation_range");
+
+    let saved = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"unlisted": false, "elevation_min": 50.0, "elevation_max": 150.0}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{}", saved.text);
+
+    let after = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert_eq!(after.body["effective"]["elevation_min"], 50.0);
+    assert_eq!(after.body["effective"]["elevation_max"], 150.0);
+    assert_eq!(after.body["overridden"]["elevation"], true);
+
+    // Reverting (both bounds null) leaves no trace, exactly like
+    // display_name.
+    let reverted = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"unlisted": false, "elevation_min": null, "elevation_max": null}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(reverted.status, StatusCode::NO_CONTENT, "{}", reverted.text);
+    let after_revert = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert!(after_revert.body["effective"]["elevation_min"].is_null());
+    assert_eq!(after_revert.body["overridden"]["elevation"], false);
+
+    // This fixture has no `elevation` axis, so its refusal is the *file*
+    // cause however the window is set -- which is worth pinning on its
+    // own: a saved floor and cap must not turn an unsupported file into a
+    // reported bad window. The `topo_window_invalid` counterpart needs a
+    // fixture with real axes, and lives in `app.rs`.
+    let geometry = get(
+        &app,
+        "/api/v1/datasets/line-01/views/topo/geometry",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        geometry.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        geometry.text
+    );
+    assert_eq!(geometry.body["error"]["code"], "topo_unavailable");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_bad_elevation_window_is_reported_as_a_window_problem_not_an_unsupported_file() {
+    // The other half of the cause split (#168), on a fixture that *can*
+    // support the corrected view. Without real `elevation`/`depth` axes a
+    // radargram refuses for the file cause before the window is ever
+    // examined, so only a fixture like this can pin the HTTP mapping for
+    // `topo_window_invalid` -- which is the code the viewer keys its
+    // visible warning off.
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+
+    let path = dir.path().join("radargrams").join("topo-line.nc");
+    let (n_samples, n_traces) = (16usize, 32usize);
+    {
+        let mut file = netcdf::create(&path).unwrap();
+        file.add_dimension("y", n_samples).unwrap();
+        file.add_dimension("x", n_traces).unwrap();
+        let mut data = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+        // Varying, not constant: a flat array makes the percentile
+        // estimate degenerate (low == high) and every render fails for a
+        // reason that has nothing to do with what this test is about.
+        let values: Vec<f32> = (0..(n_samples * n_traces))
+            .map(|i| (i % 97) as f32)
+            .collect();
+        data.put_values(&values, ..).unwrap();
+        let mut elevation = file.add_variable::<f64>("elevation", &["x"]).unwrap();
+        elevation
+            .put_values(
+                &(0..n_traces)
+                    .map(|i| 100.0 + i as f64 * 0.1)
+                    .collect::<Vec<f64>>(),
+                ..,
+            )
+            .unwrap();
+        let mut depth = file.add_variable::<f64>("depth", &["y"]).unwrap();
+        depth
+            .put_values(
+                &(0..n_samples)
+                    .map(|i| i as f64 * 0.05)
+                    .collect::<Vec<f64>>(),
+                ..,
+            )
+            .unwrap();
+        file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+            .unwrap();
+        file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
+            .unwrap();
+        file.add_attribute("ridal_radargram_id", "topo-line")
+            .unwrap();
+    }
+
+    let hash = users::hash_password(password()).unwrap();
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    users::write(
+        project.documents(),
+        &UserSet {
+            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        &Expectation::Any,
+    )
+    .unwrap();
+
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state);
+    let erik = sign_in(&app, "erik").await;
+
+    // With no window configured the view resolves fine.
+    let ok = get(
+        &app,
+        "/api/v1/datasets/topo-line/views/topo/geometry",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.text);
+
+    // A floor above the highest surface leaves no rows to draw.
+    let saved = put(
+        &app,
+        "/api/v1/datasets/topo-line/properties",
+        &json!({"unlisted": false, "elevation_min": 9000.0}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{}", saved.text);
+
+    for path in [
+        "/api/v1/datasets/topo-line/views/topo/geometry",
+        "/api/v1/datasets/topo-line/views/topo/overview",
+        "/api/v1/datasets/topo-line/views/topo/chunks/default/0/0",
+    ] {
+        let refused = get(&app, path, Some(&erik)).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{path}: {}",
+            refused.text
+        );
+        assert_eq!(
+            refused.body["error"]["code"], "topo_window_invalid",
+            "{path} must blame the window, not the file"
+        );
+    }
+
+    // And the standard view is unaffected by a window it does not use.
+    let standard = get(
+        &app,
+        "/api/v1/datasets/topo-line/views/standard/overview",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(standard.status, StatusCode::OK, "{}", standard.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_picker_cannot_edit_properties() {
     let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
