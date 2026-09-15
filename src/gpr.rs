@@ -1176,7 +1176,9 @@ impl GPR {
         filters::siglog(&mut self.data, minval_log10);
         self.log_event(
             "siglog",
-            "Ran siglog (sign-corrected log10 of absolute values) (minval: 10e{minval_log10}))",
+            &format!(
+                "Ran siglog (sign-corrected log10 of absolute values) (minval: 10e{minval_log10}))"
+            ),
             start_time,
         );
     }
