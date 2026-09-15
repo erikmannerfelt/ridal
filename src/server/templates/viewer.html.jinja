@@ -35,6 +35,17 @@
         {% endfor %}
       </select>
     </label>
+    {#- Disabled until the on-load availability check resolves, with the
+        reason it cannot be offered (if any) as its title -- #168's rule
+        that unavailability must never be silent. -#}
+    <label class="checkbox" id="topo-toggle-row">
+      <input type="checkbox" id="topo-toggle" disabled title="Checking availability&hellip;">
+      Topographic correction
+    </label>
+    <button id="topo-recentre" type="button" hidden
+            title="Fit the view to the data over the traces currently on screen -- the way back if a pan has drifted into empty space above or below the corrected surface.">
+      Recentre
+    </button>
     <button id="metadata-button" type="button">Metadata</button>
     {#- A menu rather than a button: there are five things to download and
         they are not variations of one another. Lives in this row, not the

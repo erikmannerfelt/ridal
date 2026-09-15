@@ -88,6 +88,28 @@ pub fn render_to_file(
     output: &Path,
     request: &RenderRequest,
 ) -> Result<(usize, usize), String> {
+    render_to_file_with_stats_source(source, source, output, request)
+}
+
+/// [`render_to_file`], with the percentile estimate taken from a
+/// *different* source than the one being drawn.
+///
+/// The one caller that needs them apart is `ridal render --topo`
+/// (`cli.rs`): the topographic view is a vertical shear of the same
+/// amplitudes, so relocating them cannot change their distribution, but
+/// sampling *through* the shear would read its NaN wedges into the
+/// percentile estimate and shift the contrast. The server already keeps
+/// these apart for exactly this reason (`RenderService::resolve_limits`);
+/// having the CLI sample through the decorator meant `ridal render --topo`
+/// and the browser's own corrected download could disagree about contrast
+/// for the same file and profile -- the very promise this module exists to
+/// keep.
+pub fn render_to_file_with_stats_source(
+    source: &impl AmplitudeSource,
+    stats_source: &impl AmplitudeSource,
+    output: &Path,
+    request: &RenderRequest,
+) -> Result<(usize, usize), String> {
     let (source_height, source_width) = source.shape();
 
     let width = request
@@ -113,7 +135,7 @@ pub fn render_to_file(
     // entirely rather than estimating and discarding.
     let sampled = match request.profile.limits {
         AmplitudeLimits::Percentile { low, high } => Some(stats::sampled_amplitude_limits(
-            source,
+            stats_source,
             request.profile.transform,
             SAMPLE_SEED,
             low,

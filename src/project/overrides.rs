@@ -88,6 +88,30 @@ pub struct RadargramOverride {
     /// word is chosen so nothing half-promises that.
     #[serde(default, skip_serializing_if = "is_false")]
     pub unlisted: bool,
+    /// Bounds for the topographically corrected view (#168). The two do
+    /// **different** things -- see [`crate::render::topo::ElevationRange`],
+    /// which is what they are resolved into:
+    ///
+    /// - `elevation_min` is the *floor of the rendered raster*: the lowest
+    ///   elevation the corrected view draws. It crops the view and moves
+    ///   no trace.
+    /// - `elevation_max` is a cap on a trace's *surface elevation*: a
+    ///   surface above it is clamped down to it, so an upward GPS spike is
+    ///   flattened rather than stretching the whole view to reach it.
+    ///
+    /// `None` on either side means no bound there.
+    ///
+    /// A property of the *data* rather than of whoever is looking at it --
+    /// a GPS spike is a fact about the survey, not a viewing preference --
+    /// so it belongs here rather than to a per-session viewer setting, and
+    /// survives reprocessing (keyed on radargram id, like every other
+    /// override). Validated (finite, floor below cap) at the point it is
+    /// written (`overrides_routes.rs`), not here: this type only carries
+    /// what a project has already decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_max: Option<f64>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -351,6 +375,8 @@ mod tests {
                     display_name: DisplayName::from_input("Drønbreen centre line"),
                     group: Some(GroupMembership::Group(group("dronbreen-2022"))),
                     unlisted: false,
+                    elevation_min: None,
+                    elevation_max: None,
                 },
             );
             o.groups.insert(

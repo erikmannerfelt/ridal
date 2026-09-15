@@ -943,6 +943,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::routes::dataset_axes),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/views/topo/geometry",
+            get(super::routes::dataset_topo_geometry),
+        )
+        .route(
             "/api/v1/groups/{group}/tracks",
             get(super::routes::group_tracks),
         )
@@ -993,6 +997,37 @@ mod tests {
         let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
         let data: Vec<f32> = (0..(20 * 300)).map(|i| (i % 100) as f32).collect();
         var.put_values(&data, ..).unwrap();
+        file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
+            .unwrap();
+        file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
+            .unwrap();
+        file.add_attribute("ridal_radargram_id", radargram_id)
+            .unwrap();
+    }
+
+    /// Like `write_test_nc`, but with `elevation`/`depth` axes (#168) so
+    /// the topographically corrected view is available.
+    fn write_test_nc_with_topo_axes(path: &StdPath, radargram_id: &str) {
+        let (height, width) = (20, 300);
+        let mut file = netcdf::create(path).unwrap();
+        file.add_dimension("y", height).unwrap();
+        file.add_dimension("x", width).unwrap();
+        let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+        let data: Vec<f32> = (0..(height * width)).map(|i| (i % 100) as f32).collect();
+        var.put_values(&data, ..).unwrap();
+
+        // A gentle undulation, well within what the diagnostics consider
+        // healthy, so the geometry resolves without being flagged.
+        let mut elevation_var = file.add_variable::<f64>("elevation", &["x"]).unwrap();
+        let elevation: Vec<f64> = (0..width)
+            .map(|i| 100.0 + (i as f64 * 0.1).sin() * 2.0)
+            .collect();
+        elevation_var.put_values(&elevation, ..).unwrap();
+
+        let mut depth_var = file.add_variable::<f32>("depth", &["y"]).unwrap();
+        let depth: Vec<f32> = (0..height).map(|i| i as f32 * 0.1).collect();
+        depth_var.put_values(&depth, ..).unwrap();
+
         file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
             .unwrap();
         file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
@@ -1219,6 +1254,151 @@ mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
+    fn topo_view_routes_render_and_expose_geometry() {
+        // #168, end to end through HTTP: geometry, overview and chunk
+        // routes for a radargram that has usable `elevation`/`depth`
+        // axes, and the same routes refusing clearly (never falling back
+        // to a standard render) for one that does not.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc_with_topo_axes(&dir.path().join("a.nc"), "topo-a");
+            write_test_nc(&dir.path().join("b.nc"), "topo-b"); // no elevation/depth
+            let app = test_app(dir.path());
+
+            // The geometry endpoint resolves and reports a taller raster
+            // than the source, with one shift value per trace.
+            let (status, body) = get(&app, "/api/v1/datasets/topo-a/views/topo/geometry").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            let source_height = json["source_height"].as_u64().unwrap();
+            let raster_height = json["raster_height"].as_u64().unwrap();
+            assert_eq!(source_height, 20);
+            assert!(raster_height >= source_height, "{json}");
+            let shift = json["shift"].as_array().unwrap();
+            assert_eq!(shift.len(), 300, "one shift value per trace");
+            assert!(json["fingerprint"].as_str().unwrap().len() > 0);
+            assert_eq!(json["diagnostics"]["suspect"], false);
+
+            // A second call returns the same (memoized) geometry.
+            let (status2, body2) = get(&app, "/api/v1/datasets/topo-a/views/topo/geometry").await;
+            assert_eq!(status2, StatusCode::OK);
+            assert_eq!(body, body2);
+
+            // The overview covers the corrected (taller) raster, not the
+            // source shape: the source is narrower than the 512px overview
+            // cap, so it is never upscaled and the overview comes back at
+            // the corrected raster's exact height.
+            let (status, body) = get(&app, "/api/v1/datasets/topo-a/views/topo/overview").await;
+            assert_eq!(status, StatusCode::OK);
+            let decoded = image::load_from_memory(&body).unwrap();
+            assert_eq!(decoded.width(), 300);
+            assert_eq!(decoded.height() as u64, raster_height);
+
+            // A chunk at (0, 0) renders -- routing must have built its
+            // grid from the corrected raster height, not the source one.
+            let (status, body) = get(
+                &app,
+                "/api/v1/datasets/topo-a/views/topo/chunks/default/0/0",
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(image::load_from_memory(&body).is_ok());
+
+            // The standard view is unaffected.
+            let (status, _) = get(&app, "/api/v1/datasets/topo-a/views/standard/overview").await;
+            assert_eq!(status, StatusCode::OK);
+
+            // The cursor readout's elevation feedback: `/axes` carries the
+            // file's own per-trace elevation alongside depth, in every
+            // view, regardless of whether the topo checkbox is on.
+            let (status, body) = get(&app, "/api/v1/datasets/topo-a/axes").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            let elevation = json["elevation"].as_array().unwrap();
+            assert_eq!(elevation.len(), 300);
+            let depth = json["depth"].as_array().unwrap();
+            assert_eq!(depth.len(), 20);
+
+            // A radargram with no elevation/depth axes refuses clearly,
+            // on every topo route, rather than silently rendering
+            // standard content under the topo URL.
+            for path in [
+                "/api/v1/datasets/topo-b/views/topo/geometry",
+                "/api/v1/datasets/topo-b/views/topo/overview",
+                "/api/v1/datasets/topo-b/views/topo/chunks/default/0/0",
+            ] {
+                let (status, body) = get(&app, path).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{path}");
+                let json: Value = serde_json::from_slice(&body).unwrap();
+                assert_eq!(json["error"]["code"], "topo_unavailable", "{path}");
+            }
+
+            // An unknown view name is still a 400, not confused with topo.
+            let (status, _) = get(&app, "/api/v1/datasets/topo-a/views/bogus/overview").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+
+            // The window's two bounds do different things (#168), which the
+            // resolved geometry has to show: the cap clamps the top, the
+            // floor crops the bottom, and neither is the other. Resolved
+            // directly here rather than through an override edit, so this
+            // stays about the geometry rather than about the write path
+            // (which `auth_routes_tests` covers).
+            use crate::render::topo::{resolve_topo_geometry, ElevationRange};
+            let elevation: Vec<f64> = (0..300)
+                .map(|i| 100.0 + (i as f64 * 0.1).sin() * 2.0)
+                .collect();
+            let depth: Vec<f32> = (0..20).map(|i| i as f32 * 0.1).collect();
+
+            let plain = resolve_topo_geometry(
+                Some(&elevation),
+                Some(&depth),
+                300,
+                20,
+                ElevationRange::NONE,
+            )
+            .unwrap();
+
+            // A cap below every surface flattens them all: one elevation,
+            // so no shear at all and a raster exactly the source's height.
+            let capped = resolve_topo_geometry(
+                Some(&elevation),
+                Some(&depth),
+                300,
+                20,
+                ElevationRange {
+                    min: None,
+                    max: Some(97.0),
+                },
+            )
+            .unwrap();
+            assert_eq!(capped.elevation_top, 97.0);
+            assert_eq!(capped.raster_height, 20);
+            assert_eq!(capped.diagnostics.clamped_count, 300);
+
+            // A floor just under the top crops the raster without moving
+            // any trace off its position.
+            let floored = resolve_topo_geometry(
+                Some(&elevation),
+                Some(&depth),
+                300,
+                20,
+                ElevationRange {
+                    min: Some(plain.elevation_top - 1.0),
+                    max: None,
+                },
+            )
+            .unwrap();
+            assert!(floored.raster_height < plain.raster_height);
+            assert_eq!(floored.shift, plain.shift, "a floor moves no trace");
+            assert_eq!(floored.diagnostics.clamped_count, 0);
+            assert!(floored.diagnostics.cropped_rows > 0);
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
     fn index_page_renders_lazy_overview_thumbnails() {
         // #121 requires an ~512px overview per catalog entry, and names
         // loading="lazy" as the mechanism bounding initial render work.
@@ -1340,13 +1520,14 @@ mod tests {
             assert_eq!(json["original_filepaths"].as_array().unwrap().len(), 0);
 
             // The `/axes` route degrades each axis to null independently
-            // when the fixture never wrote distance/twtt/depth.
+            // when the fixture never wrote distance/twtt/depth/elevation.
             let (status, body) = get(&app, "/api/v1/datasets/track-a/axes").await;
             assert_eq!(status, StatusCode::OK);
             let json: Value = serde_json::from_slice(&body).unwrap();
             assert!(json["distance"].is_null());
             assert!(json["twtt"].is_null());
             assert!(json["depth"].is_null());
+            assert!(json["elevation"].is_null());
 
             // Group tracks: both group members present, the ungrouped one absent.
             let (status, body) = get(&app, "/api/v1/groups/shared-group/tracks").await;

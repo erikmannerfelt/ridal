@@ -130,6 +130,15 @@ encode.** Everything lives under `src/server/render/`.
   radargram regardless of how small the output is — banding this
   dropped peak memory on the largest file in the test corpus from
   268 MB to 159 MB with render time unchanged.
+
+  A band's read is wider than the band itself, and `overview_rows_per_band`
+  has to reserve for **both** of the things that widen it or the budget is
+  a number rather than a bound: `resample::halo`, which is what a Lanczos
+  kernel reaches beyond the band on each side (`3 × scale`, so ~144 rows at
+  a typical 24× overview), and `AmplitudeSource::vertical_read_overhead`,
+  which is the shear span for a topographically corrected source and zero
+  for every other. Reserving only the second let the two Lanczos profiles
+  read past the budget.
 - **Resampling** (`resample.rs`) offers four methods, each required to
   degrade gracefully to the exact raw sample at a true 1:1 footprint —
   the same behaviour a naive box filter has, and a real bug (see below)
@@ -317,7 +326,70 @@ above:
    `?min=…&max=…&contrast=…` on every chunk request would make each one
    a distinct, uncacheable render variant and let a client trivially
    thrash the cache.
-4. A topographically corrected `DatasetView` — `DatasetView` is already
-   an enum with one variant specifically so this can be added without
-   reshaping the API. A significant bonus, not a blocker for
-   digitization.
+
+## Topographic correction
+
+`DatasetView::Topographic` (#168) is a render-time-only vertical shear of
+the `data` array, applied by `render::topo::TopoSource` — a decorator
+over `AmplitudeSource`, exactly like every other stage of the [render
+pipeline](#render-pipeline): it reports a taller, sheared shape and
+assembles each output row from the appropriately shifted source row(s),
+so chunks, overview banding, `ridal render`, the GUI image download and
+even the amplitude-limits sampler (which deliberately does *not* read
+through it — see below) all work unchanged. Nothing is precomputed or
+stored, and no interpretation is ever saved in the corrected coordinate
+space — distinct from `gpr.rs::correct_topography`'s `data_topocorr`,
+which writes a NetCDF product on a slightly different (`height /
+max_depth`) vertical scale, by design (see `topo.rs`'s module docs).
+
+- **Geometry** (`TopoGeometry`, resolved by `topo::resolve_topo_geometry`
+  from the `elevation`/`depth` axes) is the one place the numbers are
+  computed: `dz` (median positive diff of `depth`), `E_top` (max
+  effective elevation) and a per-trace `shift`, memoized per
+  `RenderService` and re-resolved only when the requested elevation range
+  changes. `routes.rs` resolves it (via `RenderService::topo_raster_height`)
+  *before* building a chunk/overview's geometry — a corrected-view chunk
+  below the source's own row count is perfectly valid in the taller
+  raster, and routes built from the source shape the way every other view
+  is would 404 it forever.
+- **Amplitude limits are always sampled from the standard source**,
+  regardless of which view was requested: the distribution a shear
+  relocates is unchanged by relocating it, so resampling through
+  `TopoSource` would read its NaN wedges into the percentile estimate and
+  shift contrast every time the checkbox is toggled.
+- **Erroneous elevations** (GPS spikes) never silently inflate the
+  raster, and the two directions are guarded differently, because they
+  are different problems. `elevation_max` caps a trace's *surface*: a
+  surface above it is clamped down, so an upward spike is flattened to
+  the cap rather than lifting the whole raster's top to meet it.
+  `elevation_min` is the *floor of the rendered raster*: nothing below it
+  is drawn, which bounds the view from beneath without moving any trace
+  off its true position. Both live in `overrides.json` and are edited
+  from the catalog's properties dialog — a property of the survey, not of
+  whoever is viewing it. A *missing* elevation is the one case that is
+  interpolated from neighbours (a trace with no elevation has no vertical
+  position at all, so "leave it alone" is not available), and is counted
+  in the diagnostics. A spread that looks like spikes (full span far
+  exceeding the 1-99th percentile span) is flagged in the geometry
+  response and surfaced as a viewer warning, never auto-corrected.
+- **Unavailability says what can fix it.** `TopoUnavailableCause`
+  separates a file that cannot support the view (no `elevation`, no
+  `depth` — permanent, reported quietly as a disabled checkbox
+  explaining itself on hover) from a configured window that excludes its
+  own data (`topo_window_invalid` — somebody's edit, fixable, and given a
+  visible warning naming the reason). One code for both is what made a
+  bad window look like an unsupported file.
+- **The sub-sample shift is a windowed-sinc fractional delay**, not a
+  two-tap linear blend. Linear interpolation is a low-pass filter whose
+  strength depends on the fractional shift, scaling amplitude by
+  `sqrt((1-f)^2 + f^2)` — 1.00 at `f = 0`, 0.71 at `f = 0.5` — and since
+  `f` sweeps `[0, 1)` as the surface rises and falls, that 29% swing
+  lands across traces as vertical banding and its average as an overall
+  darkening. Measured at a 30% peak-to-peak contrast swing on a real
+  profile before the fix, 6-10% after. See
+  `topo::SHIFT_KERNEL_HALF_WIDTH`.
+- **The catalog's own index overviews stay `Standard`** — only the
+  viewer offers the corrected view, and its checkbox is disabled with the
+  unavailability reason as its `title` when a radargram lacks usable
+  axes, both from an on-load availability check and from
+  `ridal render --topo` failing the same way on the command line.
