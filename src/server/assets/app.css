@@ -862,6 +862,12 @@ dialog th {
 
 .add-layer {
   margin-top: var(--space-6);
+  /* Bounded like `.settings-form`, and spaced from whatever follows it.
+   * Unbounded, it was the only box on the settings page that grew with the
+   * window, so at a wide one it stretched while the forms above and below
+   * it stayed put. */
+  margin-bottom: var(--space-6);
+  max-width: 44rem;
   padding: var(--space-4);
   background: var(--color-surface-sunken);
   border-radius: var(--radius-md);
@@ -1595,6 +1601,36 @@ button.danger:disabled {
   font-size: var(--text-base);
 }
 
+/* A settings section holding edits the server has not seen (#177 review).
+ *
+ * Adding a basemap or an overlay puts a card on the page, which looks like
+ * it happened. The rule down the side and the badge beside the heading say
+ * that it has not yet; `beforeunload` in settings.js is what stops the page
+ * being closed on top of it.
+ *
+ * Warning colours rather than danger: nothing is broken, something is
+ * merely not finished. */
+.settings-section.is-unsaved {
+  border-left: 3px solid var(--color-warning-border);
+  padding-left: var(--space-4);
+  /* Pulled back by its own indent so the heading stays in line with the
+   * sections above and below rather than stepping right when it changes. */
+  margin-left: calc(-1 * var(--space-4) - 3px);
+}
+
+.settings-section.is-unsaved > h2::after {
+  content: "unsaved";
+  margin-left: var(--space-3);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-warning-bg);
+  color: var(--color-warning-text);
+  font-size: var(--text-sm);
+  font-weight: 400;
+  vertical-align: middle;
+}
+
 /* A checkbox reads as one line, not as a stacked label over a control. */
 .settings-field.checkbox {
   flex-direction: row;
@@ -1663,6 +1699,86 @@ button.danger:disabled {
 
 .settings-form button:hover {
   border-color: var(--color-accent);
+}
+
+/* One basemap's fields (#177). A card rather than a table row: there are
+ * eight fields, most of them optional, and a row of eight boxes is
+ * unreadable on a phone and barely better on a laptop. The fields inside
+ * reuse `.add-layer-fields`, which already wraps a labelled row. */
+.basemap-card {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  max-width: 44rem;
+}
+
+.basemap-card legend {
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.basemap-card input[type="text"],
+.basemap-card input[type="number"] {
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+
+/* Tile size, max zoom and zoom offset are two or three characters wide;
+ * left at the browser's default they take as much room as the address. */
+.basemap-card input.narrow-number {
+  width: 6rem;
+}
+
+/* Leaflet's layer control is a white panel with dark text of its own, in
+ * both themes -- it sits on imagery, which looks the same either way.
+ *
+ * Its radio buttons and checkboxes are native controls, so they follow the
+ * *document's* `color-scheme`, which is dark for a reader in dark mode.
+ * That left dark checkboxes in a bright panel: not what Leaflet looks like
+ * anywhere else, and the only part of the GUI where the two disagreed.
+ * Declaring the scheme on the control keeps the widgets matching the panel
+ * they are drawn in rather than the page around it. */
+.leaflet-control-layers {
+  color-scheme: light;
+}
+
+/* An overlay feature's popup (#177): a name, and a description that is
+ * whatever HTML the file carried. Bounded rather than trusted to be short
+ * -- the description comes from somebody else's data, and a long one would
+ * otherwise grow the popup past the map. */
+.overlay-popup {
+  max-width: 18rem;
+  max-height: 14rem;
+  overflow-y: auto;
+}
+
+.overlay-popup-body {
+  margin-top: var(--space-1);
+}
+
+/* Foreign HTML, so the elements it may contain are sized here rather than
+ * left to the browser's defaults, which assume a document rather than a
+ * popup. */
+.overlay-popup-body img {
+  max-width: 100%;
+  height: auto;
+}
+
+.overlay-popup-body table {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.overlay-popup-body :is(h1, h2, h3, h4, p) {
+  margin: var(--space-1) 0;
+  font-size: var(--text-base);
 }
 
 /* A layer swatch sitting beside a select rather than in a table cell.

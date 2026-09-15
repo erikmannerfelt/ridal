@@ -173,6 +173,37 @@ mod tests {
         }
     }
 
+    /// The built-in basemap is written twice -- in `basemaps.rs`, which
+    /// every page is served from, and in `app.js`, as the fallback for a
+    /// page carrying no basemap attribute at all.
+    ///
+    /// Only the second can go stale silently: a page would keep working,
+    /// drawing different imagery than the project believes it offers, with
+    /// nothing failing anywhere. Hence a test rather than a comment.
+    #[test]
+    fn the_built_in_matches_the_fallback_in_app_js() {
+        let js = include_str!("assets/app.js");
+        let built_in = crate::project::basemaps::built_in();
+        for expected in [
+            built_in.id.as_str(),
+            built_in.name.as_str(),
+            built_in.url.as_str(),
+            built_in.attribution.as_deref().unwrap(),
+        ] {
+            assert!(
+                js.contains(expected),
+                "app.js's built-in fallback has drifted from basemaps.rs: it does \
+                 not contain {expected:?}"
+            );
+        }
+        assert!(
+            js.contains(&format!("tile_size: {}", built_in.tile_size()))
+                && js.contains(&format!("max_zoom: {}", built_in.max_zoom())),
+            "app.js's built-in fallback must carry the same resolved tile size \
+             and zoom as basemaps.rs"
+        );
+    }
+
     #[tokio::test]
     async fn page_scripts_are_served_and_contain_no_template_syntax() {
         // These were extracted out of their jinja templates; the whole
@@ -243,6 +274,49 @@ mod tests {
             by_device, by_choice,
             "the dark palette must be identical whether the device asked for \
              it or the person did"
+        );
+    }
+
+    /// The settings page derives an id from a display name, and shows the
+    /// result while you type -- so the rule lives in `app.js` as a twin of
+    /// `sanitize_to_slug` in `identity.rs`.
+    ///
+    /// A twin can drift, and this one would drift quietly: the page would
+    /// keep working and simply store a different id than Ridal would derive
+    /// for the same name. Rust cannot run the JavaScript, so this pins both
+    /// halves of the contract it can reach -- the Rust rule by example, and
+    /// the table and charset the JavaScript uses by inspection.
+    #[test]
+    fn the_browsers_slug_rule_mirrors_the_servers() {
+        // The Rust side, by example. Nordic letters are transliterated
+        // rather than collapsed, which is the part most likely to be
+        // dropped by a reimplementation.
+        assert_eq!(
+            crate::identity::RadargramId::from_fallback("Drønbreen ortofoto 2024")
+                .unwrap()
+                .as_str(),
+            "dronbreen-ortofoto-2024"
+        );
+        assert_eq!(
+            crate::identity::RadargramId::from_fallback("Ålesund / Ærø")
+                .unwrap()
+                .as_str(),
+            "aalesund-aero"
+        );
+
+        // And the JavaScript side, by inspection.
+        let js = include_str!("assets/app.js");
+        assert!(js.contains("slugify"), "app.js must derive ids");
+        for entry in ["\"ø\": \"o\"", "\"æ\": \"ae\"", "\"å\": \"aa\""] {
+            assert!(
+                js.contains(entry),
+                "app.js's slug rule must transliterate as identity.rs does, \
+                 missing {entry}"
+            );
+        }
+        assert!(
+            js.contains("/[a-z0-9_-]/"),
+            "app.js's slug rule must keep the same charset as identity.rs"
         );
     }
 
@@ -329,6 +403,10 @@ mod tests {
             (
                 "layers",
                 vec![app, ("layers.js", include_str!("assets/layers.js"))],
+            ),
+            (
+                "settings",
+                vec![app, ("settings.js", include_str!("assets/settings.js"))],
             ),
         ]
     }

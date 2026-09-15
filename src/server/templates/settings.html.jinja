@@ -102,6 +102,15 @@
               GeoJSON in WGS84 is the portable choice and what RFC 7946
               requires; the native variant writes the radargram&rsquo;s own
               projected coordinates instead.
+          <label class="settings-field">
+            <span class="settings-label">Basemap</span>
+            <select id="my-basemap">
+              <option value="">Loading&hellip;</option>
+            </select>
+            <span class="hint">
+              What the maps in the catalog and the viewer draw on. Each map
+              also has a layer control for switching without coming here,
+              which lasts until the page is reloaded.
             </span>
           </label>
           <button type="submit">Save my settings</button>
@@ -201,6 +210,156 @@
         location above. Saving rewrites only the value being changed, so
         comments and anything you have edited by hand are kept.
       </p>
+    </section>
+
+    {#- Section two and a half: the basemaps every map draws on (#177). Its
+        own section rather than two more fields in the one above, because it
+        is a list rather than a value, and because the thing it configures is
+        visible on other pages rather than here. -#}
+    <section class="settings-section" id="basemaps-section">
+      <h2>Basemaps</h2>
+      <p class="hint">
+        What the maps in the catalog and the viewer draw on. Ridal has one
+        built in; add any XYZ tile service here and every map grows a control
+        for switching between them. Which one a person sees by default is
+        their own setting, falling back to the project default below.
+      </p>
+
+      {#- Said where the button is rather than left to be discovered: this is
+          the one part of the settings page that does not preserve
+          hand-written comments. -#}
+      {% if can_edit_project %}
+        <p class="hint">
+          Saving rewrites the whole <code>[[basemaps]]</code> block in
+          <code>ridal.toml</code>, so comments inside <em>it</em> are not
+          kept. The rest of the file is left alone.
+        </p>
+      {% endif %}
+
+      {#- What the file defines but Ridal cannot draw. Hidden until there is
+          something to say. -#}
+      <div id="basemap-problems" class="warning" role="status" hidden></div>
+
+      <div id="basemaps-list"></div>
+
+      {% if can_edit_project %}
+        <form id="add-basemap" class="add-layer" novalidate>
+          <h3>Add a basemap</h3>
+          <p class="hint">
+            The address is the tile template the provider documents, with
+            <code>{z}</code>, <code>{x}</code> and <code>{y}</code> left in
+            it. Anything Ridal cannot fill in &mdash; an API key, say &mdash;
+            has to be substituted before pasting it here.
+          </p>
+          {#- The name comes first because the id is derived from it: the id
+              box's placeholder shows what will be stored if it is left
+              alone, which is the answer almost everyone wants. -#}
+          <div class="add-layer-fields">
+            <label>Name
+              <input type="text" name="name" required placeholder="OpenStreetMap">
+            </label>
+            <label>Address
+              <input type="text" name="url" required size="42"
+                     placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+                     autocomplete="off" autocapitalize="none" spellcheck="false">
+            </label>
+            <label>Id <span class="hint">(from the name)</span>
+              <input type="text" name="id" pattern="[a-z0-9_\-]+"
+                     placeholder="osm" autocomplete="off"
+                     autocapitalize="none" spellcheck="false">
+            </label>
+          </div>
+          <button type="submit">Add</button>
+          <span class="hint">
+            Attribution and the tile details can be filled in once it is
+            listed.
+          </span>
+        </form>
+
+        <form id="basemap-form" class="settings-form" novalidate>
+          <label class="settings-field">
+            <span class="settings-label">Default basemap</span>
+            <select id="default-basemap"></select>
+            <span class="hint">
+              What someone who has not chosen sees. Setting it never
+              overwrites a person who has chosen.
+            </span>
+          </label>
+          <label class="settings-field checkbox">
+            <input type="checkbox" id="built-in-basemap">
+            Offer ESRI World Imagery
+            <span class="hint">
+              Switched off with no other basemap defined, it comes back
+              anyway rather than leaving the maps blank.
+            </span>
+          </label>
+          <button type="submit">Save basemaps</button>
+          <span id="basemap-status" class="pick-status"></span>
+        </form>
+
+      {% endif %}
+    </section>
+
+    {#- Section two and three quarters: vector overlays (#177). Its own
+        section rather than more rows in the basemap table, because a
+        basemap is what a map is drawn *on* and an overlay is something
+        drawn *over* it -- and because they are switched on differently:
+        one basemap at a time, any number of overlays, all of them off
+        until asked for. -#}
+    <section class="settings-section" id="overlays-section">
+      <h2>Overlays</h2>
+      <p class="hint">
+        Shapes drawn over every map: outlines, sample sites, an earlier
+        season&rsquo;s tracks. Each becomes an entry in the layer control on
+        the catalog and the viewer, off until switched on, and is fetched
+        only once somebody does.
+      </p>
+
+      <div id="overlay-problems" class="warning" role="status" hidden></div>
+
+      <div id="overlays-list"></div>
+
+      {% if can_edit_project %}
+        <form id="add-overlay" class="add-layer" novalidate>
+          <h3>Add an overlay</h3>
+          <p class="hint">
+            The address of a GeoJSON file in WGS84. It is fetched by each
+            reader&rsquo;s own browser, so it has to be reachable from
+            theirs &mdash; a file on a site that does not allow
+            cross-origin reads cannot be drawn, and will say so on the map.
+          </p>
+          <div class="add-layer-fields">
+            <label>Layer name
+              <input type="text" name="name" required
+                     placeholder="Catchment outlines">
+            </label>
+            <label>Address
+              <input type="text" name="url" required size="42"
+                     placeholder="https://example.org/shapes/catchments.geojson"
+                     autocomplete="off" autocapitalize="none" spellcheck="false">
+            </label>
+            <label>Id <span class="hint">(from the name)</span>
+              <input type="text" name="id" pattern="[a-z0-9_\-]+"
+                     placeholder="catchments" autocomplete="off"
+                     autocapitalize="none" spellcheck="false">
+            </label>
+          </div>
+          <button type="submit">Add</button>
+          <span class="hint">
+            The popup fields can be filled in once it is listed.
+          </span>
+        </form>
+
+        <form id="overlay-form" class="settings-form" novalidate>
+          <p class="hint">
+            Saving rewrites the whole <code>[[overlays]]</code> block in
+            <code>ridal.toml</code>, so comments inside <em>it</em> are not
+            kept. The rest of the file is left alone.
+          </p>
+          <button type="submit">Save overlays</button>
+          <span id="overlay-status" class="pick-status"></span>
+        </form>
+      {% endif %}
     </section>
 
     {#- Section three: who may do what. A distinct area rather than a few

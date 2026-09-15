@@ -32,7 +32,9 @@ document.getElementById('index-profile-select').addEventListener('change', (even
 // enough to load eagerly rather than needing an IntersectionObserver
 // lazy-init trick for per-card maps.
 document.querySelectorAll('.group-map').forEach((el) => {
-  const map = RIDAL.basemap(L.map(el.id));
+  // The element id is passed so a failing overlay can explain itself over
+  // this map rather than over whichever one Leaflet asked last.
+  const map = RIDAL.basemap(L.map(el.id), el.id);
 
   RIDAL.fetchJson(RIDAL.apiPath("groups", el.dataset.group, "tracks"))
     .then((members) => {

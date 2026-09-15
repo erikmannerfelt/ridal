@@ -121,6 +121,16 @@ pub struct Preferences {
     /// project's and then to GeoJSON in WGS84.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub level2_format: Option<String>,
+    /// Which basemap the maps draw on, by id (#177). `None` falls through
+    /// to the project's default and then to the first one offered.
+    ///
+    /// Squarely a preference by this module's own test: two people looking
+    /// at the same survey can reasonably want imagery and a topographic map
+    /// respectively, and neither needs permission for that. An id that the
+    /// project no longer offers falls back rather than failing, the same way
+    /// a retired render profile does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basemap: Option<String>,
 }
 
 #[derive(Debug)]
@@ -226,6 +236,7 @@ mod tests {
         assert!(preferences.x_scale.is_none());
         assert!(preferences.theme.is_none());
         assert!(preferences.show_picks.is_none());
+        assert!(preferences.basemap.is_none());
     }
 
     #[test]
@@ -241,6 +252,7 @@ mod tests {
                 show_picks: Some(false),
                 level2_spacing: Some("10".to_string()),
                 level2_format: Some("csv".to_string()),
+                basemap: Some("osm".to_string()),
             },
             &Expectation::Absent,
         )
@@ -253,6 +265,7 @@ mod tests {
         assert_eq!(erik.show_picks, Some(false));
         assert_eq!(erik.level2_spacing.as_deref(), Some("10"));
         assert_eq!(erik.level2_format.as_deref(), Some("csv"));
+        assert_eq!(erik.basemap.as_deref(), Some("osm"));
         // The point of the whole module: two people can disagree.
         assert_eq!(
             read(&store, &user("student")).unwrap(),
@@ -275,6 +288,7 @@ mod tests {
                 show_picks: None,
                 level2_spacing: None,
                 level2_format: None,
+                basemap: None,
             },
             &Expectation::Absent,
         )
@@ -288,6 +302,7 @@ mod tests {
         for absent in ["theme", "show_picks", "level2_spacing", "level2_format"] {
             assert!(!text.contains(absent), "{absent} should be absent:\n{text}");
         }
+        assert!(!text.contains("basemap"), "{text}");
     }
 
     #[test]
@@ -319,6 +334,7 @@ mod tests {
                 show_picks: None,
                 level2_spacing: None,
                 level2_format: None,
+                basemap: None,
             },
             &Expectation::Absent,
         )

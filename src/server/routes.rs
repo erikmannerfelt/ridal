@@ -444,6 +444,105 @@ fn resolve_show_picks(state: &AppState, caller: &Caller) -> bool {
     my_preferences(state, caller).show_picks.unwrap_or(true)
 }
 
+/// The basemaps this catalog offers, in the order the layer control lists
+/// them (#177).
+///
+/// A catalog that is not a project offers the built-in alone: there is no
+/// file to define others in, and a map with no tiles would be a poor way to
+/// learn that.
+pub fn basemap_options(state: &AppState) -> Vec<crate::project::basemaps::Basemap> {
+    match state.project.as_ref() {
+        Some(project) => {
+            let map = project.map_section();
+            crate::project::basemaps::offered(&project.basemaps(), map.offers_built_in())
+        }
+        None => vec![crate::project::basemaps::built_in()],
+    }
+}
+
+/// The vector overlays this catalog offers, in the order the layer control
+/// lists them (#177).
+///
+/// Empty for a catalog that is not a project: overlays are defined in
+/// `ridal.toml`, and there is nowhere else to put them.
+pub fn overlay_options(state: &AppState) -> Vec<crate::project::overlays::Overlay> {
+    match state.project.as_ref() {
+        Some(project) => crate::project::overlays::usable(&project.overlays()),
+        None => Vec::new(),
+    }
+}
+
+/// Whether `id` names a basemap this catalog actually offers.
+pub fn offers_basemap(state: &AppState, id: &str) -> bool {
+    basemap_options(state).iter().any(|map| map.id == id)
+}
+
+/// The basemap a page should open on.
+///
+/// An id that is no longer offered -- a basemap removed after someone chose
+/// it -- is skipped rather than honoured, at every layer, so one stale value
+/// cannot shadow a good one below it or leave a map drawing nothing. The
+/// same rule [`resolve_x_scale`] follows, and for the same reason.
+///
+/// There is deliberately no `?basemap=` request layer yet: unlike the
+/// profile, it would have to ride through every link the menu writes to mean
+/// anything, which is a change of its own.
+fn resolve_basemap(state: &AppState, caller: &Caller) -> String {
+    let offered = basemap_options(state);
+    let known = |id: Option<String>| id.filter(|id| offered.iter().any(|map| &map.id == id));
+    cascade(
+        None,
+        known(my_preferences(state, caller).basemap),
+        known(
+            state
+                .project
+                .as_ref()
+                .and_then(|p| p.map_section().default_basemap),
+        ),
+        // `basemap_options` never answers empty, so this is a fallback the
+        // type system wants rather than a state that happens.
+        offered
+            .first()
+            .map(|map| map.id.clone())
+            .unwrap_or_else(|| crate::project::basemaps::BUILT_IN_ID.to_string()),
+    )
+}
+
+/// What every page with a map needs, as template variables.
+///
+/// Delivered as `data-` attributes on the body rather than as an inline
+/// script (see `base.html.jinja`): minijinja escapes an attribute value, so
+/// a basemap named `</script>` is inert there and would not be inside a
+/// script block.
+/// [`caller_context`] and [`map_context`] as one value.
+///
+/// `minijinja::context!` accepts keys plus a *single* trailing merge, so a
+/// page that wants both needs them merged before it can spread them.
+fn map_page_context(state: &AppState, caller: &Caller) -> minijinja::Value {
+    minijinja::context! {
+        ..caller_context(state, caller),
+        ..map_context(state, caller),
+    }
+}
+
+fn map_context(state: &AppState, caller: &Caller) -> minijinja::Value {
+    let options: Vec<serde_json::Value> = basemap_options(state)
+        .iter()
+        .map(|map| map.to_browser_json())
+        .collect();
+    let overlays: Vec<serde_json::Value> = overlay_options(state)
+        .iter()
+        .map(|overlay| overlay.to_browser_json())
+        .collect();
+    minijinja::context! {
+        basemaps_json => serde_json::Value::Array(options).to_string(),
+        active_basemap => resolve_basemap(state, caller),
+        // Always present, even when empty: `app.js` reads one attribute
+        // rather than branching on whether the page carries overlays.
+        overlays_json => serde_json::Value::Array(overlays).to_string(),
+    }
+}
+
 /// Escape the characters that let JSON break out of a `<script>` block.
 ///
 /// `serde_json` escapes what JSON requires and `<` is not on that list, so
@@ -1195,7 +1294,7 @@ pub async fn index_page(
             formats => format_options(),
             active_spacing => export_defaults.0,
             active_format => export_defaults.1,
-            ..caller_context(&state, &caller),
+            ..map_page_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -1298,7 +1397,7 @@ pub async fn viewer_page(
             // Whether the picks are drawn when the viewer opens (#143). The
             // toggle in the toolbar changes it from there without saving.
             show_picks => resolve_show_picks(&state, &caller),
-            ..caller_context(&state, &caller),
+            ..map_page_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))

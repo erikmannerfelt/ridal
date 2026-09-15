@@ -23,7 +23,15 @@
   <link rel="stylesheet" href="/static/app.css">
   {% block extrahead %}{% endblock %}
 </head>
-<body>
+{#- The basemaps every map on this page may draw on, and which one it opens
+    with (#177). Attributes rather than an inline <script>: minijinja escapes
+    an attribute value, so a basemap named `</script>` is inert here in a way
+    it would not be inside a script block. app.js parses them once.
+
+    Only the pages that have a map set these; elsewhere they are undefined,
+    which minijinja renders as nothing, and app.js falls back to the
+    built-in. -#}
+<body{% if basemaps_json %} data-basemaps="{{ basemaps_json }}" data-basemap="{{ active_basemap }}" data-overlays="{{ overlays_json }}"{% endif %}>
   <header>
     {#- Same reasoning as the menu links below: the logo is another way home,
         and it should not be the one that quietly resets the profile. -#}

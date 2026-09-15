@@ -278,7 +278,7 @@ document.getElementById('xscale-select').addEventListener('change', (event) => {
 // --- Overview map: this radargram's track, plus sibling tracks in the
 // same group (clickable, navigating to that radargram), plus a marker
 // that follows the viewer cursor (#121's cursor-sync feature). ---
-const overviewMap = RIDAL.basemap(L.map('overview-map'));
+const overviewMap = RIDAL.basemap(L.map('overview-map'), 'overview-map');
 
 // --- Resizable split between the radargram and overview map. Only
 // meaningful when the two are actually laid out side by side --
