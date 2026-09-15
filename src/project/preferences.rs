@@ -65,6 +65,37 @@ pub struct Preferences {
     /// which falls through to the project's and then to 1x.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub x_scale: Option<f64>,
+    /// Light or dark, overriding what the browser asks for (#141).
+    ///
+    /// `None` is not a third colour: it means "whatever this device says",
+    /// which is what the pages did before there was a setting at all. Only
+    /// an actual override is stored, so someone who has not chosen still
+    /// follows their system when it switches at dusk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// Whether the viewer draws the interpretations over the radargram
+    /// (#143).
+    ///
+    /// `None` means shown, which is what the viewer did before the toggle
+    /// existed. Stored only when someone has turned it off, so "I have not
+    /// chosen" and "I chose the default" stay distinguishable.
+    ///
+    /// This is a *starting* state, not a lock: the viewer's own toggle
+    /// changes what is on screen without saving, and beginning to pick
+    /// brings the picks back regardless -- editing what you cannot see is
+    /// not a thing to allow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_picks: Option<bool>,
+    /// Point spacing the layer-point download dialogs open on (#166).
+    ///
+    /// `None` falls through to the project's and then to `auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level2_spacing: Option<String>,
+    /// File format -- and with it the coordinates -- the layer-point
+    /// download dialogs open on (#166). `None` falls through to the
+    /// project's and then to GeoJSON in WGS84.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level2_format: Option<String>,
 }
 
 #[derive(Debug)]
@@ -168,6 +199,8 @@ mod tests {
         assert_eq!(preferences, Preferences::default());
         assert!(preferences.render_profile.is_none());
         assert!(preferences.x_scale.is_none());
+        assert!(preferences.theme.is_none());
+        assert!(preferences.show_picks.is_none());
     }
 
     #[test]
@@ -179,6 +212,10 @@ mod tests {
             &Preferences {
                 render_profile: Some("abslog".to_string()),
                 x_scale: Some(2.0),
+                theme: Some("dark".to_string()),
+                show_picks: Some(false),
+                level2_spacing: Some("10".to_string()),
+                level2_format: Some("csv".to_string()),
             },
             &Expectation::Absent,
         )
@@ -187,6 +224,10 @@ mod tests {
         let erik = read(&store, &user("erik")).unwrap();
         assert_eq!(erik.render_profile.as_deref(), Some("abslog"));
         assert_eq!(erik.x_scale, Some(2.0));
+        assert_eq!(erik.theme.as_deref(), Some("dark"));
+        assert_eq!(erik.show_picks, Some(false));
+        assert_eq!(erik.level2_spacing.as_deref(), Some("10"));
+        assert_eq!(erik.level2_format.as_deref(), Some("csv"));
         // The point of the whole module: two people can disagree.
         assert_eq!(
             read(&store, &user("student")).unwrap(),
@@ -205,6 +246,10 @@ mod tests {
             &Preferences {
                 render_profile: Some("abslog".to_string()),
                 x_scale: None,
+                theme: None,
+                show_picks: None,
+                level2_spacing: None,
+                level2_format: None,
             },
             &Expectation::Absent,
         )
@@ -213,6 +258,11 @@ mod tests {
         let text = std::fs::read_to_string(dir.path().join("preferences/erik.json")).unwrap();
         assert!(text.contains("render_profile"), "{text}");
         assert!(!text.contains("x_scale"), "{text}");
+        // The same rule for every optional one: unset stays out of the file,
+        // so a later project default still reaches this person.
+        for absent in ["theme", "show_picks", "level2_spacing", "level2_format"] {
+            assert!(!text.contains(absent), "{absent} should be absent:\n{text}");
+        }
     }
 
     #[test]
@@ -240,6 +290,10 @@ mod tests {
             &Preferences {
                 render_profile: Some("positive".to_string()),
                 x_scale: None,
+                theme: None,
+                show_picks: None,
+                level2_spacing: None,
+                level2_format: None,
             },
             &Expectation::Absent,
         )

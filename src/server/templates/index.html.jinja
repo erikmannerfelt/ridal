@@ -386,23 +386,23 @@
       names the radargram it came from, so the merge is reversible.
       Radargrams nobody has interpreted yet are left out.
     </p>
+    {#- The same two lists, and the same resolved defaults, as the viewer's
+        own download dialog (#166). -#}
     <div class="add-layer-fields">
       <label>Spacing
         <select id="group-spacing">
-          <option value="auto" selected>Auto (from trace spacing)</option>
-          <option value="1">1 m</option>
-          <option value="5">5 m</option>
-          <option value="10">10 m</option>
-          <option value="25">25 m</option>
-          <option value="per-trace">Every trace</option>
-          <option value="vertices">Picked vertices only</option>
+          {% for option in spacings %}
+            <option value="{{ option.value }}"
+              {%- if option.value == active_spacing %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
         </select>
       </label>
       <label>Format
         <select id="group-format">
-          <option value="geojson" selected>GeoJSON (WGS84)</option>
-          <option value="geojson-native">GeoJSON (native CRS)</option>
-          <option value="csv">CSV</option>
+          {% for option in formats %}
+            <option value="{{ option.value }}"
+              {%- if option.value == active_format %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
         </select>
       </label>
     </div>

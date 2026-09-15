@@ -1,5 +1,9 @@
 <!doctype html>
-<html lang="en">
+{#- The theme this person chose, or nothing at all to follow the device
+    (#141). Written on the root element by the server rather than applied by
+    a script, so the page arrives in the right colours instead of flashing
+    the wrong ones while JavaScript loads. -#}
+<html lang="en"{% if active_theme %} data-theme="{{ active_theme }}"{% endif %}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">

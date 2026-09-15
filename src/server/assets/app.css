@@ -85,8 +85,21 @@
   }
 }
 
+/* The dark tokens, in two places on purpose (#141).
+ *
+ * A person can now override what their device asks for, and CSS has no way
+ * to share one declaration block between a media query and an attribute
+ * selector -- so the values are written twice and pinned equal by
+ * `the_two_dark_theme_blocks_agree` in assets.rs, which fails if one is
+ * edited without the other.
+ *
+ * The media block is guarded: someone who asked for light on a device set
+ * to dark means it. `color-scheme` follows the choice as well, so form
+ * controls, scrollbars and the browser's own surfaces match the page
+ * instead of staying whatever the device said.
+ */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --color-bg: #16171a;
     --color-surface: #1e2024;
     --color-surface-sunken: #26282d;
@@ -104,6 +117,30 @@
     --color-danger-text: #f5cfc7;
     --color-popup-bg: rgb(30 32 36 / 92%);
   }
+}
+
+:root[data-theme="dark"] {
+  --color-bg: #16171a;
+  --color-surface: #1e2024;
+  --color-surface-sunken: #26282d;
+  --color-text: #e6e5e1;
+  --color-text-muted: #a3a19b;
+  --color-border: #34373d;
+  --color-border-strong: #4b4f57;
+  --color-accent: #6fb7cf;
+  --color-accent-hover: #9ad2e6;
+  --color-warning-bg: #3a2f14;
+  --color-warning-border: #8a6a20;
+  --color-warning-text: #f2dfae;
+  --color-danger-bg: #3d1a14;
+  --color-danger-border: #b04a34;
+  --color-danger-text: #f5cfc7;
+  --color-popup-bg: rgb(30 32 36 / 92%);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 /* ---------- base ---------- */

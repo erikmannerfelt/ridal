@@ -126,6 +126,7 @@
     const selectionHint = document.getElementById("pick-selection-hint");
     const layerSwatch = document.getElementById("pick-layer-swatch");
     const selectedSwatch = document.getElementById("pick-selected-swatch");
+    const visibilityButton = document.getElementById("pick-visibility");
 
     /** Stored features, as gprinterp features in index space. */
     let features = [];
@@ -149,6 +150,17 @@
     let handles = [];
     let overhangMarkers = [];
     let nextId = 1;
+    /** Whether the stored lines are drawn at all (#143).
+     *
+     * Starts from this person's settings and changes from the toolbar
+     * without saving: hiding the picks to read the radargram underneath is
+     * something you do for a minute, not a preference you are declaring.
+     * The setting is what it *starts* as.
+     *
+     * Only the stored lines are affected. The draft, its handles and the
+     * overhang markers belong to an edit in progress, and an edit in
+     * progress forces this back on -- see `revealPicks`. */
+    let picksVisible = CFG.showPicks !== false;
 
     const showError = (message) => {
       errorBox.textContent = message;
@@ -611,7 +623,13 @@
     function redraw() {
       drawnLines.forEach((line) => map.removeLayer(line));
       drawnLines = [];
-      features.forEach((feature, index) => {
+      // Hidden means not drawn, rather than drawn transparently: a
+      // zero-opacity line still swallows taps aimed at the radargram, and
+      // "let me see the data" should not leave invisible obstacles on it.
+      // The features themselves are untouched, so showing them again is a
+      // redraw and nothing more.
+      const shown = picksVisible ? features : [];
+      shown.forEach((feature, index) => {
         const label = feature.properties && feature.properties.label;
         const isSelected = index === selected;
         const points = feature.geometry.coordinates.map(([t, s]) => toLatLng(t, s));
@@ -842,7 +860,31 @@
 
     // --- Drawing --------------------------------------------------------------
 
+    /** Draw the stored lines, or stop drawing them (#143). */
+    function setPicksVisible(visible) {
+      picksVisible = visible;
+      visibilityButton.textContent = visible ? "Hide picks" : "Show picks";
+      visibilityButton.setAttribute("aria-pressed", String(visible));
+      if (!visible) {
+        // A selection you cannot see is a delete button pointed at
+        // something invisible, so hiding clears it.
+        deselect();
+      }
+      redraw();
+    }
+
+    /** Bring the picks back because something is about to change them.
+     *
+     * Called wherever an edit begins. Editing what is not on screen is the
+     * one case where the toggle must lose: the person is no longer reading
+     * the radargram, and a line that appears out of nowhere on save is
+     * worse than one that reappears when picking starts. */
+    function revealPicks() {
+      if (!picksVisible) setPicksVisible(true);
+    }
+
     function setPicking(on) {
+      if (on) revealPicks();
       picking = on;
       toggleButton.textContent = on ? "Stop picking" : "Start picking";
       toggleButton.setAttribute("aria-pressed", String(on));
@@ -947,6 +989,11 @@
     // both wasteful and visibly jumpy.
     map.on("moveend zoomend", redrawHandles);
 
+    // The button's label says what pressing it does, so it has to start
+    // agreeing with the setting the page arrived with (#143).
+    visibilityButton.textContent = picksVisible ? "Hide picks" : "Show picks";
+    visibilityButton.setAttribute("aria-pressed", String(picksVisible));
+    visibilityButton.addEventListener("click", () => setPicksVisible(!picksVisible));
     toggleButton.addEventListener("click", () => setPicking(!picking));
     undoButton.addEventListener("click", () => {
       if (draft && draft.length) {
@@ -1013,6 +1060,10 @@
           lost,
       );
       if (!agreed) return;
+      // Adopting rewrites what is stored, so the picks come back into view
+      // for the same reason picking does (#143): a change this consequential
+      // should not land on a screen showing none of it.
+      revealPicks();
 
       try {
         // What is on screen, edits and all -- an edit made over a carried

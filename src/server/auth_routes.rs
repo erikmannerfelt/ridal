@@ -661,17 +661,32 @@ pub async fn get_preferences(
         "user": user.as_str(),
         "render_profile": preferences.render_profile,
         "x_scale": preferences.x_scale,
+        "theme": preferences.theme,
+        "show_picks": preferences.show_picks,
+        "level2_spacing": preferences.level2_spacing,
+        "level2_format": preferences.level2_format,
     })))
 }
 
 #[derive(serde::Deserialize)]
 pub struct PreferencesBody {
     /// `null` clears the preference, falling back to the project default.
-    /// Absent means the same, because the page always sends both.
+    /// Absent means the same, because the page always sends all of them.
     #[serde(default)]
     render_profile: Option<String>,
     #[serde(default)]
     x_scale: Option<f64>,
+    /// `light`, `dark`, or `null` to follow the device (#141).
+    #[serde(default)]
+    theme: Option<String>,
+    /// Whether the viewer opens with the interpretations drawn (#143).
+    #[serde(default)]
+    show_picks: Option<bool>,
+    /// What the layer-point download dialogs open on (#166).
+    #[serde(default)]
+    level2_spacing: Option<String>,
+    #[serde(default)]
+    level2_format: Option<String>,
 }
 
 /// `PUT /api/v1/preferences`
@@ -718,9 +733,58 @@ pub async fn put_preferences(
         }
     };
 
+    // The same rule for each of the three below: a stored value nothing
+    // offers would leave a control showing something that cannot be chosen
+    // back, so it is refused here rather than stored and worked around.
+    let theme = match body.theme.as_deref() {
+        None | Some("") => None,
+        Some(name) => {
+            if !super::routes::is_offered_theme(name) {
+                return Err(ApiError::bad_request(
+                    "unknown_theme",
+                    format!("'{name}' is not a theme. Use 'light', 'dark', or nothing at all to follow the device."),
+                ));
+            }
+            Some(name.to_string())
+        }
+    };
+    let level2_spacing = match body.level2_spacing.as_deref() {
+        None | Some("") => None,
+        Some(value) => {
+            if !super::routes::is_offered_spacing(value) {
+                return Err(ApiError::bad_request(
+                    "unknown_spacing",
+                    format!("The download dialogs do not offer a spacing of '{value}'."),
+                ));
+            }
+            // `auto` is the neutral answer rather than a preference, so
+            // choosing it leaves the key out and a later project default
+            // still reaches this person.
+            (value != super::routes::DEFAULT_LEVEL2_SPACING).then(|| value.to_string())
+        }
+    };
+    let level2_format = match body.level2_format.as_deref() {
+        None | Some("") => None,
+        Some(value) => {
+            if !super::routes::is_offered_format(value) {
+                return Err(ApiError::bad_request(
+                    "unknown_format",
+                    format!("The download dialogs do not offer a format of '{value}'."),
+                ));
+            }
+            (value != super::routes::DEFAULT_LEVEL2_FORMAT).then(|| value.to_string())
+        }
+    };
+
     let stored = Preferences {
         render_profile,
         x_scale,
+        theme,
+        // Shown is the built-in answer, so only "hidden" is stored -- the
+        // same rule the neutral values above follow.
+        show_picks: body.show_picks.filter(|shown| !*shown),
+        level2_spacing,
+        level2_format,
     };
     preferences::write(project.documents(), user, &stored, &Expectation::Any)
         .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
@@ -729,6 +793,10 @@ pub async fn put_preferences(
         "user": user.as_str(),
         "render_profile": stored.render_profile,
         "x_scale": stored.x_scale,
+        "theme": stored.theme,
+        "show_picks": stored.show_picks,
+        "level2_spacing": stored.level2_spacing,
+        "level2_format": stored.level2_format,
     })))
 }
 

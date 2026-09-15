@@ -57,6 +57,53 @@
               <option value="">Loading&hellip;</option>
             </select>
           </label>
+          {#- #141. "Follow this device" is the absence of a choice rather
+              than a third theme, which is what lets a laptop that switches
+              at dusk keep switching. -#}
+          <label class="settings-field">
+            <span class="settings-label">Theme</span>
+            <select id="my-theme">
+              <option value="">Loading&hellip;</option>
+            </select>
+            <span class="hint">
+              &ldquo;Follow this device&rdquo; uses whatever your system asks
+              for, including when it changes during the day.
+            </span>
+          </label>
+          {#- #143. A starting state, not a lock: the viewer has its own
+              toggle, and picking brings the lines back by itself. -#}
+          <label class="settings-field checkbox">
+            <input type="checkbox" id="my-show-picks">
+            Show interpretations when a radargram opens
+            <span class="hint">
+              Off means the viewer opens on the radargram alone. The
+              viewer&rsquo;s own &ldquo;Show picks&rdquo; button changes it
+              for that page either way, and starting to pick always shows
+              them.
+            </span>
+          </label>
+          {#- #166. The two download dialogs open on these. -#}
+          <label class="settings-field">
+            <span class="settings-label">Layer point spacing</span>
+            <select id="my-spacing">
+              <option value="">Loading&hellip;</option>
+            </select>
+            <span class="hint">
+              What the layer-point downloads open on. Still changeable in the
+              dialog for a download that needs something else.
+            </span>
+          </label>
+          <label class="settings-field">
+            <span class="settings-label">Layer point format</span>
+            <select id="my-format">
+              <option value="">Loading&hellip;</option>
+            </select>
+            <span class="hint">
+              GeoJSON in WGS84 is the portable choice and what RFC 7946
+              requires; the native variant writes the radargram&rsquo;s own
+              projected coordinates instead.
+            </span>
+          </label>
           <button type="submit">Save my settings</button>
           <span id="my-settings-status" class="pick-status"></span>
         </form>
@@ -121,6 +168,25 @@
             project whose lines are short or densely sampled often wants
             more than 1&times;.
           </span>
+        </label>
+        {#- #166 at the project layer: a survey that always exports the same
+            way should say so once. Everyone who has not chosen for
+            themselves gets these. -#}
+        <label class="settings-field">
+          <span class="settings-label">Default layer point spacing</span>
+          <select id="default-spacing" {% if not can_edit_project %}disabled{% endif %}>
+            <option value="">Loading&hellip;</option>
+          </select>
+          <span class="hint">
+            Exporting at one spacing across a survey is what makes two
+            people&rsquo;s files comparable.
+          </span>
+        </label>
+        <label class="settings-field">
+          <span class="settings-label">Default layer point format</span>
+          <select id="default-format" {% if not can_edit_project %}disabled{% endif %}>
+            <option value="">Loading&hellip;</option>
+          </select>
         </label>
         {% if can_edit_project %}
           <button type="submit">Save project defaults</button>
