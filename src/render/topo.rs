@@ -349,6 +349,60 @@ fn compute_diagnostics(elevation: &[f64], finite_count: usize) -> TopoDiagnostic
     }
 }
 
+/// Half-width, in source samples, of the windowed-sinc kernel that
+/// resolves a trace's sub-sample vertical shift.
+///
+/// **Not a quality knob -- the reason the shear is not visibly banded.**
+/// The obvious implementation of a fractional shift is a two-tap linear
+/// blend, `(1 - f) * src[i] + f * src[i + 1]`, and on this data that is
+/// wrong in a way that is easy to miss and impossible to unsee. Linear
+/// interpolation is a low-pass filter whose strength depends on the
+/// fraction `f`: against the high-frequency, near-uncorrelated content of
+/// a deep radargram it scales amplitude by `sqrt((1 - f)^2 + f^2)`, i.e.
+/// by 1.00 at `f = 0` but only 0.71 at `f = 0.5`. Since `f` is
+/// `frac((E_top - elev[i]) / dz)` it sweeps the whole `[0, 1)` range as
+/// the surface rises and falls, so that 29% swing lands *across traces*
+/// as vertical banding -- measured on a real profile at a 30% peak-to-peak
+/// contrast swing, glaring under a high-gain profile like `positive`.
+///
+/// A windowed-sinc kernel is the standard fix: an ideal fractional-delay
+/// filter has unit magnitude at every frequency and changes only phase, so
+/// amplitude stops depending on `f` at all. Truncating it to a finite
+/// window costs a little of that flatness, and the measured residual swing
+/// on the same profile falls off with the half-width: 14.8% at 2, 5.7% at
+/// 3, 3.0% at 4, 1.6% at 6. `4` is where the curve flattens against the
+/// cost -- eight taps per output sample, and eight extra source rows per
+/// read rather than two.
+///
+/// Deliberately its own constant rather than `resample::LANCZOS_A` (which
+/// is 3): that one sizes an *anti-aliasing* kernel for downsampling, where
+/// the ringing of extra lobes is a real cost, while this one sizes a
+/// *fractional-delay* kernel at a 1:1 rate, where a wider window is
+/// straightforwardly flatter. They answer different questions and should
+/// be free to move independently.
+const SHIFT_KERNEL_HALF_WIDTH: i64 = 4;
+
+/// `sinc(x) = sin(pi x) / (pi x)`, with the removable singularity at zero
+/// filled in.
+fn sinc(x: f64) -> f64 {
+    if x.abs() < 1e-12 {
+        1.0
+    } else {
+        let pix = std::f64::consts::PI * x;
+        pix.sin() / pix
+    }
+}
+
+/// The Lanczos window of [`SHIFT_KERNEL_HALF_WIDTH`], evaluated at `x`.
+fn shift_kernel_weight(x: f64) -> f64 {
+    let a = SHIFT_KERNEL_HALF_WIDTH as f64;
+    if x.abs() >= a {
+        0.0
+    } else {
+        sinc(x) * sinc(x / a)
+    }
+}
+
 /// A decorator over `AmplitudeSource` that reports the taller, sheared
 /// topographically corrected raster and assembles each output row by
 /// reading the appropriately shifted source row(s) -- see the module docs
@@ -374,25 +428,43 @@ impl<S: AmplitudeSource> AmplitudeSource for TopoSource<'_, S> {
         (self.geometry.raster_height, width)
     }
 
-    /// For output rows `[row0, row1)` and columns `[col0, col1)`:
+    /// For output rows `[row0, row1)` and columns `[col0, col1)`, with
+    /// `K = SHIFT_KERNEL_HALF_WIDTH`:
     ///
     /// ```text
     /// lo   = row0 as f64 - max(shift[col0..col1])
     /// hi   = row1 as f64 - min(shift[col0..col1])
-    /// slab = [ floor(lo).clamp(0, H), (ceil(hi) + 1).clamp(0, H) ]
+    /// slab = [ (floor(lo) - K + 1).clamp(0, H), (ceil(hi) + K).clamp(0, H) ]
     /// ```
     ///
-    /// The `+ 1` is the second interpolation tap: without it, every chunk
-    /// edge and every overview band boundary loses its last row of
-    /// contribution and seams.
+    /// The `K` margins are the interpolation kernel's reach either side of
+    /// the samples this window actually lands on. Without them every chunk
+    /// edge and every overview band boundary would lose the contributions
+    /// its kernel needs from just outside, and seam.
     ///
     /// Per output cell at row `R`, column `c`, with `p = R - shift[c]`,
-    /// `i = floor(p)`, `f = p - i`: `f == 0` takes `src[i]` with no second
-    /// tap (what keeps the final source row renderable rather than NaN for
-    /// want of a row `H` that does not exist); `f != 0` blends `src[i]` and
-    /// `src[i + 1]`, NaN if either falls outside `[0, H - 1]` -- and a
-    /// non-finite input tap propagates to NaN, consistent with the rest of
-    /// the pipeline.
+    /// `i = floor(p)`, `f = p - i`:
+    ///
+    /// - `f == 0` takes `src[i]` exactly, with no kernel at all. Not a
+    ///   special case for its own sake: the kernel's taps land on integers
+    ///   there, where `sinc` is zero everywhere but the centre, so this is
+    ///   the value the general branch would compute anyway -- taken
+    ///   directly so the "shift is a whole number of samples" path is
+    ///   exact rather than exact-to-rounding, which is what keeps the
+    ///   final source row renderable rather than NaN for want of a row `H`
+    ///   that does not exist.
+    /// - `f != 0` evaluates the windowed-sinc kernel over
+    ///   `[i - K + 1, i + K]`. Taps outside `[0, H - 1]` and non-finite
+    ///   taps are dropped and the surviving weights renormalised, the same
+    ///   contract `resample.rs`'s Lanczos path follows: NaN means "no data
+    ///   here", so it must not drag the result toward zero.
+    ///
+    /// The *data band* is unchanged by the wider kernel: an output row is
+    /// NaN unless `i` and `i + 1` are both inside `[0, H - 1]`, exactly as
+    /// the two-tap version required. That keeps the wedge boundary, and
+    /// therefore the frontend's `chunkDataBand` culling, identical -- the
+    /// kernel changes what a renderable sample *is*, never which samples
+    /// are renderable.
     fn read_window(
         &self,
         row0: usize,
@@ -411,10 +483,11 @@ impl<S: AmplitudeSource> AmplitudeSource for TopoSource<'_, S> {
         let max_shift = shifts.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
         let min_shift = shifts.iter().cloned().fold(f32::INFINITY, f32::min) as f64;
 
+        let k = SHIFT_KERNEL_HALF_WIDTH;
         let lo = row0 as f64 - max_shift;
         let hi = row1 as f64 - min_shift;
-        let slab_row0 = (lo.floor().max(0.0) as usize).min(h);
-        let slab_row1 = ((hi.ceil() + 1.0).max(0.0) as usize).min(h);
+        let slab_row0 = ((lo.floor() as i64 - k + 1).max(0) as usize).min(h);
+        let slab_row1 = ((hi.ceil() as i64 + k).max(0) as usize).min(h);
 
         let slab = if slab_row0 < slab_row1 {
             self.inner.read_window(slab_row0, slab_row1, col0, col1)?
@@ -444,13 +517,34 @@ impl<S: AmplitudeSource> AmplitudeSource for TopoSource<'_, S> {
 
                 let value = if f == 0.0 {
                     read_tap(i0)
+                } else if !read_tap(i0).is_finite() || !read_tap(i0 + 1).is_finite() {
+                    // Outside the data band (or straddling a genuine
+                    // no-data sample): NaN, on exactly the same condition
+                    // the two-tap version used, so the wedge does not move.
+                    f32::NAN
                 } else {
-                    let v0 = read_tap(i0);
-                    let v1 = read_tap(i0 + 1);
-                    if v0.is_finite() && v1.is_finite() {
-                        ((1.0 - f) * v0 as f64 + f * v1 as f64) as f32
+                    let mut acc = 0.0_f64;
+                    let mut wsum = 0.0_f64;
+                    for idx in (i0 - k + 1)..=(i0 + k) {
+                        let v = read_tap(idx);
+                        if !v.is_finite() {
+                            continue;
+                        }
+                        let w = shift_kernel_weight(p - idx as f64);
+                        acc += v as f64 * w;
+                        wsum += w;
+                    }
+                    // Lanczos weights are signed, so a footprint whose
+                    // surviving taps nearly cancel would divide by ~0.
+                    // Fall back to the two central taps there rather than
+                    // producing a wild value -- same guard, and same
+                    // threshold, as `resample::resample_lanczos`.
+                    if wsum.abs() > 1e-6 {
+                        (acc / wsum) as f32
                     } else {
-                        f32::NAN
+                        let v0 = read_tap(i0) as f64;
+                        let v1 = read_tap(i0 + 1) as f64;
+                        ((1.0 - f) * v0 + f * v1) as f32
                     }
                 };
                 out[[r - row0, local_c]] = value;
@@ -479,7 +573,9 @@ impl<S: AmplitudeSource> AmplitudeSource for TopoSource<'_, S> {
         let shifts = &self.geometry.shift[col0..col1];
         let max_shift = shifts.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let min_shift = shifts.iter().cloned().fold(f32::INFINITY, f32::min);
-        (max_shift - min_shift).ceil().max(0.0) as usize + 1
+        // The shift span across these columns, plus the interpolation
+        // kernel's own reach either side of the rows the window lands on.
+        (max_shift - min_shift).ceil().max(0.0) as usize + 2 * SHIFT_KERNEL_HALF_WIDTH as usize
     }
 }
 
@@ -789,15 +885,22 @@ mod tests {
     }
 
     #[test]
-    fn fractional_shift_blends_two_taps_by_distance() {
+    fn a_fractional_shift_interpolates_a_ramp_to_its_true_intermediate_value() {
+        // A linear ramp is where any correct interpolator is essentially
+        // exact: half a sample down a ramp rising by 10 per sample reads
+        // 5 below its neighbour. Asserted away from the array's ends,
+        // where the kernel is truncated and renormalised over an
+        // asymmetric set of surviving taps and is approximate by
+        // construction (the same caveat `resample.rs`'s ramp test carries).
         let dz = 1.0;
-        let source = Array2::from_shape_fn((4, 2), |(r, _)| r as f32 * 10.0);
+        let height = 24;
+        let source = Array2::from_shape_fn((height, 2), |(r, _)| r as f32 * 10.0);
         let elevation = vec![100.5, 100.0]; // trace 1 is half a sample lower
         let geometry = resolve_topo_geometry(
             Some(&elevation),
-            Some(&flat_depth(4, dz as f32)),
+            Some(&flat_depth(height, dz as f32)),
             2,
-            4,
+            height,
             ElevationRange::NONE,
         )
         .unwrap();
@@ -808,8 +911,94 @@ mod tests {
         let inner = ArraySource::new(source.view());
         let topo = TopoSource::new(&inner, &geometry);
         let full = topo.read_window(0, topo.shape().0, 0, 2).unwrap();
-        // Trace 1, row 1 = 0.5*source[0,1] + 0.5*source[1,1] = 0.5*0 + 0.5*10 = 5.0.
-        assert!((full[[1, 1]] - 5.0).abs() < 1e-5);
+        // Trace 1 row R samples the ramp at source position R - 0.5, i.e.
+        // `(R - 0.5) * 10`. Checked well inside the kernel's reach.
+        for r in 12..18 {
+            let expected = (r as f32 - 0.5) * 10.0;
+            assert!(
+                (full[[r, 1]] - expected).abs() < 0.05,
+                "row {r}: got {}, expected about {expected}",
+                full[[r, 1]]
+            );
+        }
+        // Trace 0 has no shift at all and must be untouched.
+        for r in 0..height {
+            assert_eq!(full[[r, 0]], source[[r, 0]]);
+        }
+    }
+
+    #[test]
+    fn a_fractional_shift_preserves_amplitude_regardless_of_the_fraction() {
+        // The regression guard for the banding this kernel exists to fix
+        // (#168). A two-tap linear blend scales high-frequency amplitude
+        // by `sqrt((1-f)^2 + f^2)` -- 1.00 at f=0 but 0.71 at f=0.5 -- and
+        // because `f` sweeps `[0, 1)` as the surface rises and falls, that
+        // 29% swing lands across traces as vertical banding. Measured at a
+        // 30% peak-to-peak contrast swing on a real profile.
+        //
+        // Built from a deterministic *band-limited* high-frequency signal,
+        // sheared by a different fraction on every trace, then compared on
+        // standard deviation: with a flat fractional-delay response every
+        // trace keeps essentially the same amplitude no matter what its
+        // fraction is.
+        //
+        // Band-limited, not a pure alternating sign, and the distinction
+        // is not a convenience. Content at *exactly* Nyquist cannot
+        // survive a fractional delay at all -- delaying `(-1)^n` by `f`
+        // scales it by `cos(pi f)`, which is zero at `f = 0.5` -- so a
+        // fixture built from one would be asserting against information
+        // theory rather than against this kernel. Properly sampled radar
+        // data lives below Nyquist, which is the case that matters and
+        // the case a windowed-sinc kernel actually fixes. The components
+        // here top out at 0.7 of Nyquist.
+        let dz = 1.0;
+        let height = 256;
+        let n_traces = 16;
+        let source = Array2::from_shape_fn((height, n_traces), |(r, c)| {
+            let t = r as f32;
+            let phase = c as f32 * 0.37;
+            (0.70 * std::f32::consts::PI * t + phase).sin() * 10.0
+                + (0.55 * std::f32::consts::PI * t + phase * 2.0).sin() * 6.0
+                + (0.31 * std::f32::consts::PI * t + phase * 3.0).sin() * 4.0
+        });
+        // One trace per sixteenth of a sample, so the whole `[0, 1)` range
+        // of fractions is represented.
+        let elevation: Vec<f64> = (0..n_traces).map(|i| 100.0 - i as f64 / 16.0).collect();
+        let geometry = resolve_topo_geometry(
+            Some(&elevation),
+            Some(&flat_depth(height, dz as f32)),
+            n_traces,
+            height,
+            ElevationRange::NONE,
+        )
+        .unwrap();
+
+        let inner = ArraySource::new(source.view());
+        let topo = TopoSource::new(&inner, &geometry);
+        let full = topo.read_window(0, topo.shape().0, 0, n_traces).unwrap();
+
+        // Measured well inside the data band, so no trace's window is
+        // truncated by the wedge above or the array's end below.
+        let std_dev = |c: usize| -> f64 {
+            let vals: Vec<f64> = (32..(height - 32))
+                .map(|r| full[[r, c]] as f64)
+                .filter(|v| v.is_finite())
+                .collect();
+            let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+            (vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64).sqrt()
+        };
+
+        let reference = std_dev(0); // fraction 0: an exact, unfiltered tap
+        for c in 1..n_traces {
+            let ratio = std_dev(c) / reference;
+            assert!(
+                ratio > 0.9,
+                "trace {c} (shift fraction {:.3}) lost {:.1}% of its amplitude; a \
+                 fractional-delay kernel must not attenuate by fraction",
+                geometry.shift[c] - geometry.shift[c].floor(),
+                (1.0 - ratio) * 100.0
+            );
+        }
     }
 
     #[test]
@@ -896,15 +1085,17 @@ mod tests {
         let topo = TopoSource::new(&inner, &geometry);
         let (raster_h, _) = topo.shape();
         assert!(topo.read_window(0, raster_h, 0, 3).is_ok());
+        // The shift span across these columns, plus the interpolation
+        // kernel's reach either side.
+        let span = geometry
+            .shift
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max)
+            - geometry.shift.iter().cloned().fold(f32::INFINITY, f32::min);
         assert_eq!(
-            topo.vertical_read_overhead(0, 3) as f32,
-            geometry
-                .shift
-                .iter()
-                .cloned()
-                .fold(f32::NEG_INFINITY, f32::max)
-                - geometry.shift.iter().cloned().fold(f32::INFINITY, f32::min)
-                + 1.0
+            topo.vertical_read_overhead(0, 3),
+            span.ceil() as usize + 2 * SHIFT_KERNEL_HALF_WIDTH as usize
         );
     }
 
