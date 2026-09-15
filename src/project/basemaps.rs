@@ -63,18 +63,18 @@ pub const BUILT_IN_ID: &str = "esri-world-imagery";
 
 /// Tile edge in pixels when a basemap does not say. What almost every XYZ
 /// service serves; 512 is the common alternative.
-pub const DEFAULT_TILE_SIZE: u32 = 256;
+pub const DEFAULT_TILE_SIZE: i64 = 256;
 
 /// Deepest zoom when a basemap does not say. The built-in's own limit.
-pub const DEFAULT_MAX_ZOOM: u8 = 18;
+pub const DEFAULT_MAX_ZOOM: i64 = 18;
 
-const MIN_TILE_SIZE: u32 = 32;
-const MAX_TILE_SIZE: u32 = 2048;
-const MAX_MAX_ZOOM: u8 = 24;
+const MIN_TILE_SIZE: i64 = 32;
+const MAX_TILE_SIZE: i64 = 2048;
+const MAX_MAX_ZOOM: i64 = 24;
 /// Both directions. Beyond a level or two this is a mistake rather than a
 /// tiling scheme, and a large offset asks the provider for zooms it has no
 /// tiles at.
-const MAX_ZOOM_OFFSET: i8 = 4;
+const MAX_ZOOM_OFFSET: i64 = 4;
 
 /// Placeholders Leaflet's `TileLayer` fills in.
 ///
@@ -124,11 +124,18 @@ pub struct Basemap {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution_url: Option<String>,
     /// Tile edge in pixels. Unset means [`DEFAULT_TILE_SIZE`].
+    ///
+    /// `i64` rather than the `u32` this can usefully hold, and likewise for
+    /// the two below: `ridal.toml` is hand-edited, and a narrow type makes
+    /// a typo -- `max_zoom = 300`, `tile_size = -1` -- a *deserialisation*
+    /// failure, which takes the whole project down before `validate` can
+    /// report it as one unusable basemap. Reading wide and bounding here is
+    /// what keeps a bad entry costing only itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tile_size: Option<u32>,
+    pub tile_size: Option<i64>,
     /// Deepest zoom the provider serves. Unset means [`DEFAULT_MAX_ZOOM`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_zoom: Option<u8>,
+    pub max_zoom: Option<i64>,
     /// What to add to the map's zoom before asking for a tile. Unset means
     /// 0.
     ///
@@ -139,7 +146,7 @@ pub struct Basemap {
     /// wants `0`. Guessing from the tile size would silently halve or
     /// double the scale of the one it guessed wrong about.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zoom_offset: Option<i8>,
+    pub zoom_offset: Option<i64>,
     /// Hosts `{s}` cycles through, as one letter each: `"abc"`. Required
     /// when the URL uses `{s}`, meaningless otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -177,9 +184,9 @@ pub enum BasemapError {
     DuplicateId(String),
     ReservedId(String),
     InvalidUrl { id: String, reason: String },
-    InvalidTileSize { id: String, tile_size: u32 },
-    InvalidMaxZoom { id: String, max_zoom: u8 },
-    InvalidZoomOffset { id: String, zoom_offset: i8 },
+    InvalidTileSize { id: String, tile_size: i64 },
+    InvalidMaxZoom { id: String, max_zoom: i64 },
+    InvalidZoomOffset { id: String, zoom_offset: i64 },
 }
 
 impl std::fmt::Display for BasemapError {
@@ -208,8 +215,8 @@ impl std::fmt::Display for BasemapError {
             ),
             BasemapError::InvalidMaxZoom { id, max_zoom } => write!(
                 f,
-                "basemap '{id}' has a maximum zoom of {max_zoom}; it must be at \
-                 most {MAX_MAX_ZOOM}."
+                "basemap '{id}' has a maximum zoom of {max_zoom}; it must be \
+                 between 0 and {MAX_MAX_ZOOM}."
             ),
             BasemapError::InvalidZoomOffset { id, zoom_offset } => write!(
                 f,
@@ -226,17 +233,17 @@ impl std::error::Error for BasemapError {}
 
 impl Basemap {
     /// Tile edge in pixels, resolved.
-    pub fn tile_size(&self) -> u32 {
+    pub fn tile_size(&self) -> i64 {
         self.tile_size.unwrap_or(DEFAULT_TILE_SIZE)
     }
 
     /// Deepest zoom, resolved.
-    pub fn max_zoom(&self) -> u8 {
+    pub fn max_zoom(&self) -> i64 {
         self.max_zoom.unwrap_or(DEFAULT_MAX_ZOOM)
     }
 
     /// Zoom offset, resolved.
-    pub fn zoom_offset(&self) -> i8 {
+    pub fn zoom_offset(&self) -> i64 {
         self.zoom_offset.unwrap_or(0)
     }
 
@@ -290,7 +297,7 @@ impl Basemap {
                 tile_size,
             });
         }
-        if self.max_zoom() > MAX_MAX_ZOOM {
+        if !(0..=MAX_MAX_ZOOM).contains(&self.max_zoom()) {
             return Err(BasemapError::InvalidMaxZoom {
                 id: self.id.clone(),
                 max_zoom: self.max_zoom(),
@@ -451,6 +458,13 @@ pub fn offered(entries: &[Basemap], built_in_offered: bool) -> Vec<Basemap> {
         if entry.validate().is_err() {
             continue;
         }
+        // The reserved id is refused on the way in by `validate_set`, and
+        // has to be refused on the way out too: `ridal.toml` is
+        // hand-editable, and with the built-in switched off an entry
+        // claiming its id would otherwise be served *as* the built-in.
+        if entry.id == BUILT_IN_ID {
+            continue;
+        }
         if offered.iter().any(|kept| kept.id == entry.id) {
             continue;
         }
@@ -585,6 +599,46 @@ mod tests {
         assert!(map.validate().is_err());
         map.attribution_url = Some("https://example.org/terms".to_string());
         map.validate().unwrap();
+    }
+
+    #[test]
+    fn an_out_of_range_number_costs_that_basemap_and_not_the_project() {
+        // Copilot's review of #185: with the natural narrow types, a typo in
+        // a hand-edited file -- `max_zoom = 300` -- failed *deserialisation*,
+        // so the project would not open at all rather than reporting one
+        // unusable entry. The fields read wide and are bounded here instead.
+        let text = r#"
+            [[basemaps]]
+            id = "typo"
+            name = "Typo"
+            url = "https://tile.example.org/{z}/{x}/{y}.png"
+            max_zoom = 300
+            tile_size = -1
+            zoom_offset = 128
+        "#;
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            basemaps: Vec<Basemap>,
+        }
+        let parsed: Wrapper = toml::from_str(text).expect("a typo must still parse");
+        assert!(parsed.basemaps[0].validate().is_err());
+        assert_eq!(problems(&parsed.basemaps).len(), 1);
+        // And what is left to draw is the built-in, not nothing.
+        assert_eq!(offered(&parsed.basemaps, true), vec![built_in()]);
+    }
+
+    #[test]
+    fn the_reserved_id_is_refused_when_reading_as_well_as_when_saving() {
+        // `validate_set` rejects it on the way in, but `ridal.toml` is
+        // hand-editable: with the built-in switched off, an entry claiming
+        // its id would otherwise have been served *as* the built-in.
+        let mut impostor = basemap(BUILT_IN_ID, GOOD_URL);
+        impostor.name = "Not the built-in".to_string();
+        impostor.url = "https://tile.example.org/impostor/{z}/{x}/{y}.png".to_string();
+
+        assert_eq!(offered(&[impostor.clone()], false), vec![built_in()]);
+        assert_eq!(offered(&[impostor.clone()], true), vec![built_in()]);
+        assert_eq!(problems(&[impostor]).len(), 1);
     }
 
     #[test]

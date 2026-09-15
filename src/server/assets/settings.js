@@ -170,7 +170,15 @@
     if (selected) select.value = selected;
   }
 
-  async function load() {
+  /* Read everything the page shows and redraw it.
+   *
+   * `keep` names a section whose in-memory list and unsaved marker must
+   * survive -- a save in one list-shaped section must not quietly replace
+   * the other section's pending edits with the server's older copy, and
+   * then clear the warning that said they were pending. The saved section
+   * always takes the server's answer, because that is what was just
+   * normalised and stored. */
+  async function load(keep) {
     clearError();
     let settings;
     try {
@@ -183,24 +191,30 @@
     canEditAccess = Boolean(settings.can_edit_access);
     profiles = settings.profiles || [];
     xscales = settings.xscales || [];
+    // The *offered* list always refreshes: both dropdowns are built from
+    // it, and a basemap just saved has to be selectable.
     offeredBasemaps = settings.basemaps || [];
-    basemaps = settings.project_basemaps || [];
+    if (keep !== "basemaps-section") {
+      basemaps = settings.project_basemaps || [];
+      showBasemapProblems(settings.basemap_problems || []);
+    }
 
     fillBasemaps(byId("my-basemap"), "Project default", settings.my_basemap);
 
     fillBasemaps(byId("default-basemap"), "First in the list", settings.default_basemap);
     const builtIn = byId("built-in-basemap");
     if (builtIn) builtIn.checked = settings.built_in_basemap !== false;
-    showBasemapProblems(settings.basemap_problems || []);
     renderBasemaps();
 
-    // Whatever is on screen after this is what the server just answered
-    // with, so nothing is pending.
-    setUnsaved("basemaps-section", false);
-    setUnsaved("overlays-section", false);
+    // A section showing what the server just answered with has nothing
+    // pending; one being kept keeps whatever state it had.
+    if (keep !== "basemaps-section") setUnsaved("basemaps-section", false);
+    if (keep !== "overlays-section") setUnsaved("overlays-section", false);
 
-    overlays = settings.overlays || [];
-    showOverlayProblems(settings.overlay_problems || []);
+    if (keep !== "overlays-section") {
+      overlays = settings.overlays || [];
+      showOverlayProblems(settings.overlay_problems || []);
+    }
     renderOverlays();
     spacings = settings.spacings || [];
     formats = settings.formats || [];
@@ -507,8 +521,9 @@
         });
         // Reloaded rather than patched: saving normalises what was typed,
         // and the offered list -- which both dropdowns are built from --
-        // has just changed.
-        await load();
+        // has just changed. The overlays are left as they are on screen,
+        // pending edits included.
+        await load("overlays-section");
         setStatus(
           "basemap-status",
           saved.project_basemaps.length === 0
@@ -693,7 +708,7 @@
       setStatus("overlay-status", "Saving…");
       try {
         const saved = await send("PUT", "/api/v1/project/settings", { overlays });
-        await load();
+        await load("basemaps-section");
         setStatus(
           "overlay-status",
           `Saved ${saved.overlays.length} to ridal.toml`,

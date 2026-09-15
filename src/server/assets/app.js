@@ -380,7 +380,11 @@ const RIDAL = Object.freeze({
    * project that never defined a basemap therefore looks exactly as it did
    * before #177, rather than growing a menu with one item in it. */
   basemap(map, hostId) {
-    const layers = {};
+    // A null-prototype dictionary, not `{}`: these keys are free-text
+    // names, and a basemap called `__proto__` would hit the prototype
+    // setter instead of becoming an entry -- the layer would simply not be
+    // in the control, with nothing anywhere saying why.
+    const layers = Object.create(null);
     const labels = new Set();
     let active = null;
 
@@ -394,10 +398,7 @@ const RIDAL = Object.freeze({
         subdomains: entry.subdomains || "abc",
         attribution: RIDAL.attributionHtml(entry),
       });
-      // The control is keyed by label, so two basemaps a project named the
-      // same would silently become one. Ids are unique; names are free text.
-      const label = labels.has(entry.name) ? `${entry.name} (${entry.id})` : entry.name;
-      labels.add(label);
+      const label = RIDAL.uniqueLabel(labels, entry);
       layers[label] = layer;
       if (active === null || entry.id === RIDAL.activeBasemap) active = layer;
     }
@@ -427,7 +428,7 @@ const RIDAL = Object.freeze({
    * maps exist to show where the radargrams are and an overlay is context
    * around that. */
   overlayLayers(map, hostId) {
-    const layers = {};
+    const layers = Object.create(null);
     const labels = new Set();
 
     for (const overlay of RIDAL.overlays) {
@@ -455,13 +456,36 @@ const RIDAL = Object.freeze({
           });
       });
 
-      const label = labels.has(overlay.name)
-        ? `${overlay.name} (${overlay.id})`
-        : overlay.name;
-      labels.add(label);
-      layers[label] = group;
+      layers[RIDAL.uniqueLabel(labels, overlay)] = group;
     }
     return layers;
+  },
+
+  /** A layer-control label for `entry` that is escaped, unique, and taken.
+   *
+   * Two things at once, because both are about the same string:
+   *
+   * Leaflet writes a layer's name into the control with `innerHTML` (see
+   * `_addItem` in the vendored build), so a project naming a basemap
+   * `<img src=x onerror=...>` would run it on every map. The name is
+   * escaped for the same reason the attribution is.
+   *
+   * And the control is keyed by that label, so two entries sharing one
+   * would silently become one layer. Disambiguating with the id is not
+   * enough on its own -- `A`/`one`, `A`/`two` and a third entry actually
+   * named `A (two)` all collide -- so this keeps suffixing until the label
+   * is genuinely unused, and records what it took. */
+  uniqueLabel(taken, entry) {
+    const name = RIDAL.escapeHtml(entry.name);
+    let label = name;
+    if (taken.has(label)) label = `${name} (${RIDAL.escapeHtml(entry.id)})`;
+    let attempt = 2;
+    while (taken.has(label)) {
+      label = `${name} (${RIDAL.escapeHtml(entry.id)} ${attempt})`;
+      attempt += 1;
+    }
+    taken.add(label);
+    return label;
   },
 
   /** Fetch one overlay's GeoJSON and build its layer.
@@ -538,48 +562,61 @@ const RIDAL = Object.freeze({
       " Reproject it to WGS84 first, for example with " +
       "`ogr2ogr -t_srs EPSG:4326 wgs84.geojson yours.geojson`.";
 
-    const declared = data.crs && data.crs.properties && data.crs.properties.name;
+    // Both forms the 2008 spec allowed: a named CRS, and a link to one.
+    // An exporter that writes only the `href` would otherwise walk past
+    // this check and be drawn as degrees.
+    const properties = (data.crs && data.crs.properties) || {};
+    const declared = properties.name || properties.href;
     if (declared && !/(CRS84|EPSG:*0*4326)/i.test(String(declared))) {
       return `the file declares the coordinate system ${declared}, and Ridal draws WGS84 only.${convert}`;
     }
 
-    const sample = RIDAL.firstCoordinate(data);
-    if (sample && (Math.abs(sample[0]) > 180 || Math.abs(sample[1]) > 90)) {
+    // Every coordinate, not just the first: a file can open with a
+    // plausible point and carry a projected one further in, and "Ridal
+    // draws WGS84 only" should be a property of the file rather than of
+    // its first vertex. Stops at the first bad one, so a good file costs
+    // one pass and a bad one usually much less.
+    const outlier = RIDAL.firstCoordinateOutsideDegrees(data);
+    if (outlier) {
       return (
-        `its coordinates are not degrees -- the first point is ` +
-        `${sample[0]}, ${sample[1]} -- so the file is in a projected ` +
-        `coordinate system, and Ridal draws WGS84 only.${convert}`
+        `it has coordinates that are not degrees -- ${outlier[0]}, ` +
+        `${outlier[1]} -- so the file is in a projected coordinate ` +
+        `system, and Ridal draws WGS84 only.${convert}`
       );
     }
     return null;
   },
 
-  /** The first `[x, y]` anywhere in a GeoJSON object, or null.
+  /** The first `[x, y]` in a GeoJSON object that no degree can hold, or
+   * null if every coordinate could be WGS84.
    *
-   * Enough to tell degrees from metres, which is all the caller asks. Walks
-   * the nested arrays a geometry can be rather than switching on every
-   * geometry type, so it handles a GeometryCollection inside a Feature
-   * inside a FeatureCollection without knowing that those exist. */
-  firstCoordinate(data) {
-    const fromGeometry = (node) => {
+   * Walks the nested arrays a geometry can be rather than switching on
+   * every geometry type, so a GeometryCollection inside a Feature inside a
+   * FeatureCollection is handled without knowing those exist. */
+  firstCoordinateOutsideDegrees(data) {
+    const walk = (node) => {
       if (!node || typeof node !== "object") return null;
       if (Array.isArray(node)) {
         if (typeof node[0] === "number" && typeof node[1] === "number") {
-          return [node[0], node[1]];
+          return Math.abs(node[0]) > 180 || Math.abs(node[1]) > 90
+            ? [node[0], node[1]]
+            : null;
         }
         for (const child of node) {
-          const found = fromGeometry(child);
+          const found = walk(child);
           if (found) return found;
         }
         return null;
       }
-      if (node.coordinates) return fromGeometry(node.coordinates);
-      if (node.geometry) return fromGeometry(node.geometry);
-      if (node.geometries) return fromGeometry(node.geometries);
-      if (node.features) return fromGeometry(node.features);
+      for (const key of ["coordinates", "geometry", "geometries", "features"]) {
+        if (node[key]) {
+          const found = walk(node[key]);
+          if (found) return found;
+        }
+      }
       return null;
     };
-    return fromGeometry(data);
+    return walk(data);
   },
 
   /** One overlay feature's popup, as DOM nodes, or null when there is
