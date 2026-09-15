@@ -941,7 +941,13 @@ fn render_command(args: RenderArgs) -> Result<(), String> {
         )
         .map_err(|e| e.message)?;
         let source = crate::render::topo::TopoSource::new(&reader, &geometry);
-        crate::render::oneshot::render_to_file(&source, &output, &request)?
+        // Drawn through the shear, but with contrast estimated from the
+        // standard reader -- the same split the server makes, so a
+        // corrected render from the command line and from the browser
+        // agree about contrast.
+        crate::render::oneshot::render_to_file_with_stats_source(
+            &source, &reader, &output, &request,
+        )?
     } else {
         crate::render::oneshot::render_path_to_file(&args.input, &output, &request)?
     };

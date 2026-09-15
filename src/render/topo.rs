@@ -220,6 +220,13 @@ impl TopoGeometry {
         hasher.update(&self.dz.to_le_bytes());
         hasher.update(&self.elevation_top.to_le_bytes());
         hasher.update(&self.source_height.to_le_bytes());
+        // `raster_height` is not derivable from the rest: editing only the
+        // floor crops the raster while leaving `dz`, `elevation_top` and
+        // every shift untouched. Without it in the hash the bottom chunk
+        // row keeps its URL across that edit, and the browser serves the
+        // taller cached image for a chunk whose valid extent just shrank
+        // -- which `chunkBounds` then stretches into the new, shorter box.
+        hasher.update(&self.raster_height.to_le_bytes());
         for s in self.shift.iter() {
             hasher.update(&s.to_le_bytes());
         }
@@ -270,6 +277,17 @@ pub fn resolve_topo_geometry(
              does not have",
         )
     })?;
+    // Checked for the same reason `elevation`'s length is, and it was an
+    // oversight that only one of them was: `median_positive_diff` accepts
+    // any vector with one positive step, so a malformed two-value `depth`
+    // would yield a plausible `dz` and silently apply the wrong vertical
+    // scale to every sample row -- a wrong picture rather than a refusal.
+    if depth.len() != source_height {
+        return Err(TopoUnavailable::file(format!(
+            "'depth' has {} values but this radargram has {source_height} samples per trace",
+            depth.len()
+        )));
+    }
     let dz = match median_positive_diff(depth) {
         Some(dz) if dz.is_finite() && dz > 0.0 => dz,
         _ => {
@@ -819,6 +837,39 @@ mod tests {
         assert_eq!(cropped.shift, uncropped.shift);
         assert_eq!(cropped.elevation_top, uncropped.elevation_top);
         assert_eq!(cropped.diagnostics.clamped_count, 0);
+    }
+
+    #[test]
+    fn the_fingerprint_changes_when_only_the_floor_does() {
+        // #168 review: the floor crops the raster while leaving `dz`,
+        // `elevation_top` and every shift untouched, so a fingerprint over
+        // those alone is identical across a floor-only edit -- and the
+        // browser then reuses the bottom chunk it cached for the taller
+        // raster, which `chunkBounds` stretches into the shorter box.
+        let elevation = vec![100.0, 99.5, 100.0];
+        let geom = |range| {
+            resolve_topo_geometry(Some(&elevation), Some(&flat_depth(200, 0.1)), 3, 200, range)
+                .unwrap()
+        };
+        let uncropped = geom(ElevationRange::NONE);
+        let cropped = geom(ElevationRange {
+            min: Some(95.0),
+            max: None,
+        });
+        let cropped_more = geom(ElevationRange {
+            min: Some(96.0),
+            max: None,
+        });
+
+        assert_eq!(cropped.shift, uncropped.shift, "the shear is untouched");
+        assert_eq!(cropped.dz, uncropped.dz);
+        assert_eq!(cropped.elevation_top, uncropped.elevation_top);
+        // ...so only `raster_height` distinguishes them, and the
+        // fingerprint has to notice it.
+        assert_ne!(cropped.fingerprint(), uncropped.fingerprint());
+        assert_ne!(cropped.fingerprint(), cropped_more.fingerprint());
+        // Same inputs still give the same answer.
+        assert_eq!(cropped.fingerprint(), geom(cropped.range).fingerprint());
     }
 
     #[test]

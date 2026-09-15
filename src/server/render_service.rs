@@ -60,18 +60,27 @@ impl RenderVariantId {
     /// unreachable, and `to_bits()` is exact where a decimal string could
     /// round two distinct bounds to the same text.
     ///
-    /// Meaningful only for [`DatasetView::Topographic`], but taken for
-    /// every view rather than special-cased away for
-    /// [`DatasetView::Standard`]: a standard render's pixels do not depend
-    /// on it, so callers pass [`ElevationRange::NONE`] there and this
-    /// still folds in a fixed, harmless value rather than a branch that
-    /// could drift out of sync with which views actually use it.
+    /// Meaningful only for [`DatasetView::Topographic`], and **normalised
+    /// away here** for [`DatasetView::Standard`] rather than left to
+    /// callers to pass [`ElevationRange::NONE`]. Asking callers was the
+    /// original design and it did not survive contact with the routes:
+    /// they hand the catalog entry's configured range to every render,
+    /// which is right for the corrected view and meaningless for the
+    /// standard one -- so editing a floor or cap silently re-keyed every
+    /// standard chunk and overview too, filling the bounded cache with
+    /// duplicates of pixels that had not changed. Normalising at the one
+    /// place the key is built makes that unrepresentable instead of
+    /// merely discouraged.
     pub fn compute(
         revision_id: &RevisionId,
         view: DatasetView,
         profile: &RenderProfile,
         elevation_range: ElevationRange,
     ) -> Self {
+        let elevation_range = match view {
+            DatasetView::Standard => ElevationRange::NONE,
+            DatasetView::Topographic => elevation_range,
+        };
         let (has_min, min_bits) = match elevation_range.min {
             Some(v) => (1u8, v.to_bits()),
             None => (0u8, 0u64),
@@ -628,6 +637,56 @@ mod tests {
             ElevationRange::NONE,
         );
         assert_ne!(a1, c, "different profile must produce a different variant");
+    }
+
+    #[test]
+    fn the_elevation_window_keys_the_corrected_view_and_only_it() {
+        // #168 review: the routes hand the catalog entry's configured
+        // window to *every* render, since one entry has one window. That
+        // is right for the corrected view and meaningless for the standard
+        // one, so normalising it away here is what stops an elevation edit
+        // from re-keying -- and therefore duplicating, in a byte-bounded
+        // cache -- every standard chunk and overview whose pixels did not
+        // change.
+        let rev = test_revision_id();
+        let profile = RenderProfile::default_profile();
+        let window = ElevationRange {
+            min: Some(100.0),
+            max: Some(600.0),
+        };
+        let other_window = ElevationRange {
+            min: Some(150.0),
+            max: Some(600.0),
+        };
+
+        let standard_none =
+            RenderVariantId::compute(&rev, DatasetView::Standard, &profile, ElevationRange::NONE);
+        let standard_windowed =
+            RenderVariantId::compute(&rev, DatasetView::Standard, &profile, window);
+        assert_eq!(
+            standard_none, standard_windowed,
+            "a standard render must key identically however the window is set"
+        );
+
+        let topo_none = RenderVariantId::compute(
+            &rev,
+            DatasetView::Topographic,
+            &profile,
+            ElevationRange::NONE,
+        );
+        let topo_windowed =
+            RenderVariantId::compute(&rev, DatasetView::Topographic, &profile, window);
+        let topo_other =
+            RenderVariantId::compute(&rev, DatasetView::Topographic, &profile, other_window);
+        assert_ne!(
+            topo_none, topo_windowed,
+            "the corrected view's pixels depend on the window, so its key must too"
+        );
+        assert_ne!(
+            topo_windowed, topo_other,
+            "two different windows must not share a corrected-view key"
+        );
+        assert_ne!(standard_none, topo_none, "the views must not share a key");
     }
 
     #[test]

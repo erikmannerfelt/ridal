@@ -99,7 +99,8 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
         profile: &RenderProfile,
         limits: (f32, f32),
     ) -> Result<Vec<u8>, String> {
-        self.render_overview_banded(spec, profile, limits, self.overview_rows_per_band(spec))
+        let band = self.overview_rows_per_band(spec, profile);
+        self.render_overview_banded(spec, profile, limits, band)
     }
 
     /// Output rows per read, derived from [`OVERVIEW_READ_BUDGET_BYTES`]:
@@ -118,16 +119,30 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
     /// shrinks the band instead, so the read `read_window` actually
     /// performs (which already accounts for the shear correctly,
     /// independent of this) stays within budget.
-    fn overview_rows_per_band(&self, spec: &OverviewSpec) -> usize {
+    fn overview_rows_per_band(&self, spec: &OverviewSpec, profile: &RenderProfile) -> usize {
         let (src_h, src_w) = self.reader.shape();
-        let overhead = self.reader.vertical_read_overhead(0, src_w);
+        let source_rows_per_output_row = src_h as f64 / spec.height.max(1) as f64;
+        // Both of the things `render_overview_banded` adds to a band's own
+        // rows before reading. `vertical_read_overhead` is the shear span
+        // (zero for every source but `TopoSource`); `halo` is what a
+        // Lanczos kernel reaches beyond the band on each side, which is
+        // `3 * scale` and therefore the larger of the two on a typical
+        // ~24x overview downsample. Reserving only the first left the
+        // Lanczos profiles reading past the budget this function exists to
+        // enforce.
+        let overhead = self.reader.vertical_read_overhead(0, src_w)
+            + 2 * super::resample::halo(profile.resampling, source_rows_per_output_row);
         let bytes_per_source_row = src_w.max(1) * std::mem::size_of::<f32>();
         let max_source_rows = (OVERVIEW_READ_BUDGET_BYTES / bytes_per_source_row.max(1))
             .saturating_sub(overhead)
             .max(1);
-        let source_rows_per_output_row = src_h as f64 / spec.height.max(1) as f64;
         if source_rows_per_output_row <= 1.0 {
-            return spec.height.max(1);
+            // No vertical downsampling, so one output row is at most one
+            // source row and the band is bounded by the budget directly
+            // rather than by the ratio. Still capped: a full-resolution
+            // render of a tall radargram through a shear would otherwise
+            // read the whole array in one go regardless of the budget.
+            return spec.height.max(1).min(max_source_rows);
         }
         ((max_source_rows as f64 / source_rows_per_output_row).floor() as usize).max(1)
     }
@@ -537,7 +552,7 @@ mod tests {
         let renderer = Renderer::new(&reader);
 
         let spec = OverviewSpec::new(500, 40, 100);
-        assert!(renderer.overview_rows_per_band(&spec) >= 1);
+        assert!(renderer.overview_rows_per_band(&spec, &RenderProfile::default_profile()) >= 1);
     }
 
     #[test]
@@ -573,7 +588,8 @@ mod tests {
         let renderer = Renderer::new(&source);
 
         let spec = OverviewSpec::new(width, geometry.raster_height, 100);
-        let band = renderer.overview_rows_per_band(&spec);
+        let profile = RenderProfile::default_profile();
+        let band = renderer.overview_rows_per_band(&spec, &profile);
         assert!(band >= 1);
 
         let overhead = source.vertical_read_overhead(0, width);

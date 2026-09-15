@@ -564,9 +564,14 @@ const RENDER_BUSY_RETRY_AFTER_SECS: u64 = 5;
 /// A render already in flight cannot be cancelled -- `spawn_blocking`
 /// tasks are not cancellable -- but it finishes into the cache, so the
 /// work is not thrown away.
+/// `radargram` is the [`OpenRadargram`] the handler already took from its
+/// own catalog snapshot, not one looked up again here: a rediscovery
+/// landing mid-request must not let a render run against a different
+/// generation's service than the one whose shape built its grid. See
+/// [`resolve_view_height`].
 async fn render_under_permit<F>(
     state: Arc<AppState>,
-    radargram_id: String,
+    radargram: Arc<super::app::OpenRadargram>,
     render: F,
 ) -> Result<Vec<u8>, ApiError>
 where
@@ -600,12 +605,6 @@ where
         // Held until the render finishes, then released for the next
         // waiter.
         let _permit = permit;
-        let radargram = state.catalog().radargram(&radargram_id).ok_or_else(|| {
-            ApiError::internal(
-                "dataset_unavailable",
-                "Dataset is cataloged but its render service failed to initialize.",
-            )
-        })?;
         let mut service = radargram.service.lock().map_err(|_| {
             ApiError::internal(
                 "render_service_poisoned",
@@ -625,16 +624,6 @@ where
     .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))?
 }
 
-/// The raster height `dataset_view` covers for this radargram: the source
-/// shape for [`DatasetView::Standard`], or the topographically corrected
-/// raster's (taller, sheared) sample count for
-/// [`DatasetView::Topographic`] (#168), which routing has to know *before*
-/// building a [`ViewerRaster`]/[`ChunkGrid`]/[`OverviewSpec`] -- a
-/// corrected-view chunk below `source_height / CHUNK_SIZE` rows is
-/// perfectly valid in the taller raster, and would 404 forever if this
-/// were built from the source shape the way every route did before this
-/// view existed.
-///
 /// Turn a topographic-view refusal into an API error, keeping the two
 /// causes apart in the `code` (#168).
 ///
@@ -654,6 +643,25 @@ fn topo_unavailable_error(e: crate::render::topo::TopoUnavailable) -> ApiError {
     ApiError::bad_request(code, e.message)
 }
 
+/// The raster height `dataset_view` covers for this radargram: the source
+/// shape for [`DatasetView::Standard`], or the topographically corrected
+/// raster's (taller, sheared) sample count for
+/// [`DatasetView::Topographic`] (#168), which routing has to know *before*
+/// building a [`ViewerRaster`]/[`ChunkGrid`]/[`OverviewSpec`] -- a
+/// corrected-view chunk below `source_height / CHUNK_SIZE` rows is
+/// perfectly valid in the taller raster, and would 404 forever if this
+/// were built from the source shape the way every route did before this
+/// view existed.
+///
+/// Takes the [`OpenRadargram`] its caller already holds rather than
+/// looking one up again. The handler resolved `entry`, `shape` and the
+/// elevation range from one catalog snapshot, and a rediscovery landing
+/// between that and this would answer with a *different* generation's
+/// height -- a grid built from one file's shape and another's shear. This
+/// is the rule `AppState::catalog`'s own documentation states ("asking
+/// twice in one handler is how two halves of a page come to disagree"),
+/// and resolving the height was a second ask.
+///
 /// Deliberately not gated by `state.render_permits`: resolving the
 /// geometry is bounded, cheap, and memoized after the first call per
 /// elevation range -- it renders nothing -- so gating it behind the same
@@ -661,8 +669,7 @@ fn topo_unavailable_error(e: crate::render::topo::TopoUnavailable) -> ApiError {
 /// already-resolved corrected view compete for render slots over work
 /// that produces no image. `Standard` needs no lock at all.
 async fn resolve_view_height(
-    state: &Arc<AppState>,
-    radargram_id: &str,
+    radargram: Arc<super::app::OpenRadargram>,
     dataset_view: DatasetView,
     source_height: usize,
     elevation_range: crate::render::topo::ElevationRange,
@@ -670,15 +677,7 @@ async fn resolve_view_height(
     if dataset_view == DatasetView::Standard {
         return Ok(source_height);
     }
-    let state = state.clone();
-    let radargram_id = radargram_id.to_string();
     tokio::task::spawn_blocking(move || {
-        let radargram = state.catalog().radargram(&radargram_id).ok_or_else(|| {
-            ApiError::internal(
-                "dataset_unavailable",
-                "Dataset is cataloged but its render service failed to initialize.",
-            )
-        })?;
         let mut service = radargram.service.lock().map_err(|_| {
             ApiError::internal(
                 "render_service_poisoned",
@@ -722,10 +721,8 @@ pub async fn overview_image(
 
     let (source_height, width) = radargram.shape;
     let elevation_range = entry.elevation_range();
-    let radargram_id = entry.radargram_id.to_string();
     let height = resolve_view_height(
-        &state,
-        &radargram_id,
+        Arc::clone(&radargram),
         dataset_view,
         source_height,
         elevation_range,
@@ -734,7 +731,7 @@ pub async fn overview_image(
     let spec = OverviewSpec::new(width, height, 512);
     let render_profile = profile.clone();
 
-    let bytes = render_under_permit(state.clone(), radargram_id, move |service| {
+    let bytes = render_under_permit(state.clone(), radargram, move |service| {
         service
             .get_or_render_overview(&spec, dataset_view, &render_profile, elevation_range)
             .map_err(|e| ApiError::internal("render_failed", e))
@@ -781,10 +778,8 @@ pub async fn chunk_image(
 
     let (source_height, width) = radargram.shape;
     let elevation_range = entry.elevation_range();
-    let radargram_id = entry.radargram_id.to_string();
     let height = resolve_view_height(
-        &state,
-        &radargram_id,
+        Arc::clone(&radargram),
         dataset_view,
         source_height,
         elevation_range,
@@ -800,7 +795,7 @@ pub async fn chunk_image(
     })?;
     let render_profile = profile.clone();
 
-    let bytes = render_under_permit(state.clone(), radargram_id, move |service| {
+    let bytes = render_under_permit(state.clone(), radargram, move |service| {
         service
             .get_or_render_chunk(&chunk, dataset_view, &render_profile, elevation_range)
             .map_err(|e| ApiError::internal("render_failed", e))
@@ -1263,6 +1258,12 @@ pub struct ImageQuery {
     format: Option<String>,
     /// JPEG quality, 1-100. Ignored for PNG.
     quality: Option<u8>,
+    // The viewer also appends `fp=<geometry fingerprint>` to corrected-view
+    // downloads. It is deliberately not a field here: it exists only to
+    // make the URL change when the elevation window does, so the browser
+    // cannot serve a stale image for it. The server's answer is decided by
+    // the current override, never by this parameter, and serde ignores the
+    // unknown key. Do not "tidy it up" out of the frontend.
 }
 
 /// `GET /api/v1/datasets/{id}/views/{view}/image`
@@ -1310,8 +1311,7 @@ pub async fn dataset_image(
     let elevation_range = entry.elevation_range();
     let radargram_id_owned = entry.radargram_id.to_string();
     let height = resolve_view_height(
-        &state,
-        &radargram_id_owned,
+        Arc::clone(&radargram),
         dataset_view,
         source_height,
         elevation_range,
@@ -1392,7 +1392,7 @@ pub async fn dataset_image(
     );
     let render_profile = profile.clone();
 
-    let bytes = render_under_permit(state.clone(), radargram_id_owned, move |service| {
+    let bytes = render_under_permit(state.clone(), radargram, move |service| {
         service
             .get_or_render_overview(&spec, dataset_view, &render_profile, elevation_range)
             .map_err(|e| ApiError::internal("render_failed", e))

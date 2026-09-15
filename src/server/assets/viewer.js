@@ -800,6 +800,11 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
       format: formatSelect.value,
     });
     if (formatSelect.value === 'jpeg') params.set('quality', qualitySelect.value);
+    // The same cache-busting the chunk URLs carry, and for the same
+    // reason: `RIDAL.download` fetches, the image response sets no
+    // validators, and after an elevation-window edit this URL is otherwise
+    // byte-identical while the server now renders a different height.
+    if (G.view === 'topo' && G.fingerprint) params.set('fp', G.fingerprint);
     imageDialog.close();
     // `G.view`, not a fixed "standard": the downloaded image matches
     // whatever is on screen, corrected view included (#168).
@@ -842,6 +847,15 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
    */
   const WARNING_HOST = 'download-error';
 
+  /* Explain the control's state on both halves of it. Leaving the reason
+   * only on the label meant the checkbox itself kept whatever the template
+   * rendered ("Checking availability…") forever, so hovering the thing you
+   * just failed to tick explained nothing. */
+  function setReason(reason) {
+    row.title = reason;
+    toggle.title = reason;
+  }
+
   async function fetchGeometry() {
     try {
       const response = await fetch(geometryUrl);
@@ -849,10 +863,17 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
         const failure = await response.json().catch(() => null);
         const reason =
           failure?.error?.message || `Could not check availability (${response.status}).`;
-        toggle.disabled = true;
+        const recoverable = failure?.error?.code === 'topo_window_invalid';
         toggle.checked = false;
-        row.title = reason;
-        if (failure?.error?.code === 'topo_window_invalid') {
+        // A bad window stays *enabled*: the fix is in the catalog's
+        // properties dialog, the geometry is re-fetched on every toggle,
+        // and so ticking the box again is how you find out you fixed it.
+        // Disabling it would leave the one recoverable failure with no way
+        // to retry short of a reload. An unsupported file has nothing to
+        // retry and stays disabled.
+        toggle.disabled = !recoverable;
+        setReason(reason);
+        if (recoverable) {
           RIDAL.reportProblem(
             WARNING_HOST,
             `Topographic correction is unavailable: ${reason}`,
@@ -860,18 +881,64 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
         }
         return null;
       }
-      row.title = '';
+      setReason('');
       toggle.disabled = false;
       return await response.json();
     } catch (error) {
-      toggle.disabled = true;
       toggle.checked = false;
-      row.title = `Could not check availability: ${error.message}`;
+      // A transport failure is recoverable too -- the server may simply
+      // have been restarting -- so the control stays usable.
+      toggle.disabled = false;
+      setReason(`Could not check availability: ${error.message}`);
       return null;
     }
   }
 
   const mapEl = document.getElementById('map');
+
+  /* Say what the correction did to this radargram's elevations.
+   *
+   * Every one of these changes the geometry on screen, and #168's rule is
+   * that none of them may be silent -- a reader has to be able to tell a
+   * surface they are looking at from one this view invented. Previously
+   * only `suspect` was surfaced, so an interpolated gap, a clamped spike
+   * or a cropped floor all passed without a word.
+   *
+   * One combined message rather than one per condition: `reportProblem`
+   * replaces the host's contents, so separate calls would leave only
+   * whichever fired last. */
+  function reportDiagnostics(d) {
+    if (!d) return;
+    const notes = [];
+    if (d.suspect) {
+      notes.push(
+        "this radargram's elevation spread looks like it may contain GPS spikes " +
+          'rather than real topography',
+      );
+    }
+    if (d.interpolated_count > 0) {
+      notes.push(
+        `${d.interpolated_count} trace${d.interpolated_count === 1 ? '' : 's'} had no ` +
+          'elevation and were interpolated from their neighbours',
+      );
+    }
+    if (d.clamped_count > 0) {
+      notes.push(
+        `${d.clamped_count} trace${d.clamped_count === 1 ? '' : 's'} sat above the ` +
+          'surface cap and were flattened to it',
+      );
+    }
+    if (d.cropped_rows > 0) {
+      notes.push(`the floor is cropping ${d.cropped_rows} rows off the bottom`);
+    }
+    if (notes.length === 0) return;
+    RIDAL.reportProblem(
+      WARNING_HOST,
+      `Topographic correction: ${notes.join('; ')}. ` +
+        "The catalog page's properties dialog sets the floor and surface cap.",
+      'note',
+    );
+  }
 
   /* Apply a fetched geometry (or its absence, for turning the view back
    * off) to the shared state, in the order #168 specifies: update the
@@ -904,16 +971,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
       // own background instead of showing a hard-edged rectangle against
       // it (#168 feedback).
       mapEl.classList.add('map-topo');
-      if (geometry.diagnostics && geometry.diagnostics.suspect) {
-        RIDAL.reportProblem(
-          WARNING_HOST,
-          "This radargram's elevation spread looks like it may contain GPS " +
-            'spikes rather than real topography. The catalog page\'s properties ' +
-            'dialog can set a surface cap for it, which flattens a spike instead ' +
-            'of letting it stretch the view.',
-          'note',
-        );
-      }
+      reportDiagnostics(geometry.diagnostics);
     } else {
       G.view = "standard";
       G.rasterHeight = CFG.viewerHeight;
@@ -951,10 +1009,19 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
       if (s > hi) hi = s;
     }
     if (!isFinite(lo)) return;
-    const top = -(hi + G.sourceHeight);
-    const bottom = -lo;
+    // Clamped to the rows the raster actually has. A configured floor
+    // crops the corrected raster, so `shift + sourceHeight` can reach well
+    // past its bottom -- and fitting to rows that are never rendered would
+    // park the view in empty space, which is the opposite of what this
+    // button is for.
+    const bandTop = Math.max(0, lo);
+    const bandBottom = Math.min(hi + G.sourceHeight, G.rasterHeight);
+    if (bandBottom <= bandTop) return;
     map.fitBounds(
-      [[top, bounds.getWest()], [bottom, bounds.getEast()]],
+      [
+        [-bandBottom, bounds.getWest()],
+        [-bandTop, bounds.getEast()],
+      ],
       { animate: false },
     );
   }

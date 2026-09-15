@@ -130,6 +130,15 @@ encode.** Everything lives under `src/server/render/`.
   radargram regardless of how small the output is — banding this
   dropped peak memory on the largest file in the test corpus from
   268 MB to 159 MB with render time unchanged.
+
+  A band's read is wider than the band itself, and `overview_rows_per_band`
+  has to reserve for **both** of the things that widen it or the budget is
+  a number rather than a bound: `resample::halo`, which is what a Lanczos
+  kernel reaches beyond the band on each side (`3 × scale`, so ~144 rows at
+  a typical 24× overview), and `AmplitudeSource::vertical_read_overhead`,
+  which is the shear span for a topographically corrected source and zero
+  for every other. Reserving only the second let the two Lanczos profiles
+  read past the budget.
 - **Resampling** (`resample.rs`) offers four methods, each required to
   degrade gracefully to the exact raw sample at a true 1:1 footprint —
   the same behaviour a naive box filter has, and a real bug (see below)
