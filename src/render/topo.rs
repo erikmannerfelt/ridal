@@ -20,18 +20,25 @@
 //! # Geometry
 //!
 //! ```text
-//! elev_eff[i] = elev[i], or interpolated from nearest valid neighbours when
-//!               non-finite or outside the configured range (constant
-//!               extrapolation at the ends)
+//! elev_eff[i] = elev[i], interpolated from nearest finite neighbours when
+//!               non-finite (constant extrapolation at the ends), then
+//!               clamped down to `range.max` when one is configured
 //! dz          = median positive diff of the depth(y) axis
 //! E_top       = max_i elev_eff[i]
 //! shift[i]    = (E_top - elev_eff[i]) / dz          [float, in samples, >= 0]
 //! S           = max_i shift[i]
-//! H_topo      = ceil(S) + H
+//! H_natural   = ceil(S) + H
+//! H_topo      = min(H_natural, ceil((E_top - range.min) / dz))  [the floor]
 //!
 //! out row R on trace i  <-  source row  R - shift[i]   (NaN outside [0, H-1])
 //! elevation of row R    =   E_top - R*dz
 //! ```
+//!
+//! The configured window's two bounds are **not** two ends of one range,
+//! and the asymmetry is deliberate -- see [`ElevationRange`]. `max` bounds
+//! a trace's *surface* (clamping it, so a spike flattens instead of
+//! stretching the view); `min` bounds the *raster* (cropping it, so
+//! nothing below that elevation is drawn and no trace moves).
 //!
 //! Resolved once into a [`TopoGeometry`] and reused everywhere the numbers
 //! are needed -- the decorator, chunk/overview routing, the geometry HTTP
@@ -45,11 +52,23 @@ use ndarray::Array2;
 
 use crate::source::AmplitudeSource;
 
-/// A project-configured elevation range, outside which a trace's elevation
-/// is treated the same as a non-finite one: interpolated from its nearest
-/// valid neighbours rather than trusted. `None` on either end means no
-/// bound on that side; `ElevationRange::NONE` means no configured range at
-/// all, which is the default for a catalog with no project.
+/// A project-configured elevation window for the corrected view. The two
+/// bounds do **different** things, because the two failure modes they
+/// guard against are different:
+///
+/// - `max` is a bound on a trace's **surface elevation**. A surface above
+///   it is clamped down to it, so an upward GPS spike becomes a flat
+///   plateau at the cap instead of dragging the whole raster's top
+///   hundreds of metres above the real terrain.
+/// - `min` is the **floor of the rendered raster**: nothing is drawn below
+///   that elevation, on any trace. It crops the view rather than touching
+///   any trace's position, which is what stops a downward spike (or
+///   simply a very deep record) from making the view enormously tall.
+///
+/// Between them they are what keeps erroneous elevations from silently
+/// inflating the vertical bounds of the view, from either direction.
+/// `None` on either end means no bound on that side; [`Self::NONE`] means
+/// no configured window at all, the default for a catalog with no project.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ElevationRange {
     pub min: Option<f64>,
@@ -61,9 +80,53 @@ impl ElevationRange {
         min: None,
         max: None,
     };
+}
 
-    fn excludes(&self, elevation: f64) -> bool {
-        self.min.is_some_and(|min| elevation < min) || self.max.is_some_and(|max| elevation > max)
+/// Why the topographically corrected view cannot be offered.
+///
+/// Split by *what could fix it*, which is the only distinction the
+/// frontend needs: a file that never carried the axes is a quiet,
+/// permanent limitation of that radargram, while a configured window that
+/// excludes its own data is somebody's edit and is fixed by editing it
+/// again. Collapsing the two meant a bad window looked exactly like an
+/// unsupported file -- a checkbox that silently refused to enable, with
+/// the reason only in a tooltip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TopoUnavailableCause {
+    /// The radargram itself cannot support the view: no `elevation`, no
+    /// `depth`, a length mismatch, or no finite elevation at all. Nothing
+    /// in the project's configuration will change that.
+    File,
+    /// The project's configured elevation window is what makes this fail.
+    /// Editing it in the catalog's properties dialog will fix it.
+    Window,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TopoUnavailable {
+    pub cause: TopoUnavailableCause,
+    pub message: String,
+}
+
+impl TopoUnavailable {
+    fn file(message: impl Into<String>) -> Self {
+        Self {
+            cause: TopoUnavailableCause::File,
+            message: message.into(),
+        }
+    }
+
+    fn window(message: impl Into<String>) -> Self {
+        Self {
+            cause: TopoUnavailableCause::Window,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for TopoUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 
@@ -107,13 +170,20 @@ pub struct TopoDiagnostics {
     /// `full_span` disagrees) or when there are too few finite values for
     /// the percentile to mean anything.
     pub ratio: Option<f64>,
-    /// Elevation values that were finite, before any configured range was
+    /// Elevation values that were finite, before any configured window was
     /// applied.
     pub finite_count: usize,
-    /// Traces whose elevation was non-finite or excluded by a configured
-    /// range, and were therefore interpolated from their nearest valid
-    /// neighbours.
+    /// Traces whose elevation was non-finite and therefore interpolated
+    /// from their nearest finite neighbours. A trace with no elevation at
+    /// all has no vertical position, so "leave it alone" is not an
+    /// available behaviour -- but it is never silent.
     pub interpolated_count: usize,
+    /// Traces whose surface elevation was above the configured maximum and
+    /// was clamped down to it.
+    pub clamped_count: usize,
+    /// Raster rows dropped from the bottom by the configured minimum, i.e.
+    /// how much of the view the floor is cropping away.
+    pub cropped_rows: usize,
 }
 
 /// Everything downstream of the raw `elevation`/`depth` axes needs to
@@ -172,56 +242,64 @@ pub fn resolve_topo_geometry(
     n_traces: usize,
     source_height: usize,
     range: ElevationRange,
-) -> Result<TopoGeometry, String> {
+) -> Result<TopoGeometry, TopoUnavailable> {
     let elevation = elevation.ok_or_else(|| {
-        "the topographically corrected view needs an 'elevation' variable, which this \
-         radargram does not have"
-            .to_string()
+        TopoUnavailable::file(
+            "the topographically corrected view needs an 'elevation' variable, which this \
+             radargram does not have",
+        )
     })?;
     if elevation.len() != n_traces {
-        return Err(format!(
+        return Err(TopoUnavailable::file(format!(
             "'elevation' has {} values but this radargram has {n_traces} traces",
             elevation.len()
-        ));
+        )));
     }
 
     let finite_count = elevation.iter().filter(|v| v.is_finite()).count();
     if finite_count == 0 {
-        return Err(
+        return Err(TopoUnavailable::file(
             "the topographically corrected view needs at least one finite elevation value, \
-             and this radargram has none"
-                .to_string(),
-        );
-    }
-
-    let depth = depth.ok_or_else(|| {
-        "the topographically corrected view needs a 'depth' axis, which this radargram does \
-         not have"
-            .to_string()
-    })?;
-    let dz =
-        match median_positive_diff(depth) {
-            Some(dz) if dz.is_finite() && dz > 0.0 => dz,
-            _ => return Err(
-                "the 'depth' axis has no usable sample spacing (its positive diffs are non-finite \
-                 or its median is not positive), so a vertical scale cannot be derived"
-                    .to_string(),
-            ),
-        };
-
-    let valid: Vec<bool> = elevation
-        .iter()
-        .map(|&v| v.is_finite() && !range.excludes(v))
-        .collect();
-    if !valid.iter().any(|&v| v) {
-        return Err(format!(
-            "the configured elevation range ({:?}..{:?}) excludes every trace's elevation",
-            range.min, range.max
+             and this radargram has none",
         ));
     }
 
-    let elev_eff = interpolate_gaps(elevation, &valid);
-    let interpolated_count = valid.iter().filter(|&&v| !v).count();
+    let depth = depth.ok_or_else(|| {
+        TopoUnavailable::file(
+            "the topographically corrected view needs a 'depth' axis, which this radargram \
+             does not have",
+        )
+    })?;
+    let dz = match median_positive_diff(depth) {
+        Some(dz) if dz.is_finite() && dz > 0.0 => dz,
+        _ => {
+            return Err(TopoUnavailable::file(
+                "the 'depth' axis has no usable sample spacing (its positive diffs are \
+                 non-finite or its median is not positive), so a vertical scale cannot be \
+                 derived",
+            ))
+        }
+    };
+
+    // Only *missing* elevations are interpolated. A trace with no
+    // elevation at all has no vertical position, so there is nothing to
+    // leave alone; a trace outside the configured window has a perfectly
+    // good position and is handled by the window's own rules below.
+    let finite: Vec<bool> = elevation.iter().map(|v| v.is_finite()).collect();
+    let mut elev_eff = interpolate_gaps(elevation, &finite);
+    let interpolated_count = finite.iter().filter(|&&v| !v).count();
+
+    // `max` bounds the *surface*: a spike is flattened to the cap rather
+    // than lifting the whole raster's top to meet it.
+    let mut clamped_count = 0usize;
+    if let Some(max) = range.max {
+        for e in elev_eff.iter_mut() {
+            if *e > max {
+                *e = max;
+                clamped_count += 1;
+            }
+        }
+    }
 
     let elevation_top = elev_eff.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let shift: Vec<f32> = elev_eff
@@ -229,10 +307,34 @@ pub fn resolve_topo_geometry(
         .map(|&e| ((elevation_top - e) / dz) as f32)
         .collect();
     let s_max = shift.iter().cloned().fold(0.0f32, f32::max);
-    let raster_height = source_height + (s_max.ceil().max(0.0) as usize);
+    let natural_height = source_height + (s_max.ceil().max(0.0) as usize);
+
+    // `min` bounds the *raster*, not any trace: it is the elevation the
+    // view stops at, so it simply truncates the raster's height. Nothing
+    // below it is drawn, which is what keeps a downward spike (or just a
+    // very deep record) from making the view enormously tall, without
+    // moving a single trace off its true position.
+    let mut raster_height = natural_height;
+    if let Some(min) = range.min {
+        if min >= elevation_top {
+            return Err(TopoUnavailable::window(format!(
+                "the floor ({min} m) is at or above this radargram's highest surface \
+                 ({elevation_top:.1} m), so the corrected view would have no rows left to \
+                 draw. Lower the floor, or raise the surface cap, in this radargram's \
+                 properties."
+            )));
+        }
+        let floor_row = ((elevation_top - min) / dz).ceil();
+        // `>= 1.0` is guaranteed by the check above, so this cannot round
+        // down to a zero-height raster.
+        raster_height = natural_height.min(floor_row as usize);
+    }
+    let cropped_rows = natural_height - raster_height;
 
     let mut diagnostics = compute_diagnostics(elevation, finite_count);
     diagnostics.interpolated_count = interpolated_count;
+    diagnostics.clamped_count = clamped_count;
+    diagnostics.cropped_rows = cropped_rows;
 
     Ok(TopoGeometry {
         dz,
@@ -325,6 +427,8 @@ fn compute_diagnostics(elevation: &[f64], finite_count: usize) -> TopoDiagnostic
             ratio: None,
             finite_count,
             interpolated_count: 0,
+            clamped_count: 0,
+            cropped_rows: 0,
         };
     }
 
@@ -346,6 +450,8 @@ fn compute_diagnostics(elevation: &[f64], finite_count: usize) -> TopoDiagnostic
         ratio,
         finite_count,
         interpolated_count: 0,
+        clamped_count: 0,
+        cropped_rows: 0,
     }
 }
 
@@ -600,7 +706,7 @@ mod tests {
             ElevationRange::NONE,
         )
         .unwrap_err();
-        assert!(err.contains("elevation"), "{err}");
+        assert!(err.message.contains("elevation"), "{err}");
     }
 
     #[test]
@@ -614,7 +720,7 @@ mod tests {
             ElevationRange::NONE,
         )
         .unwrap_err();
-        assert!(err.contains("traces"), "{err}");
+        assert!(err.message.contains("traces"), "{err}");
     }
 
     #[test]
@@ -628,7 +734,7 @@ mod tests {
             ElevationRange::NONE,
         )
         .unwrap_err();
-        assert!(err.contains("finite"), "{err}");
+        assert!(err.message.contains("finite"), "{err}");
     }
 
     #[test]
@@ -636,7 +742,7 @@ mod tests {
         let elevation = vec![100.0; 5];
         let err =
             resolve_topo_geometry(Some(&elevation), None, 5, 10, ElevationRange::NONE).unwrap_err();
-        assert!(err.contains("depth"), "{err}");
+        assert!(err.message.contains("depth"), "{err}");
     }
 
     #[test]
@@ -645,11 +751,17 @@ mod tests {
         let flat = vec![0.0f32; 10]; // no positive diffs at all
         let err = resolve_topo_geometry(Some(&elevation), Some(&flat), 5, 10, ElevationRange::NONE)
             .unwrap_err();
-        assert!(err.contains("sample spacing"), "{err}");
+        assert!(err.message.contains("sample spacing"), "{err}");
     }
 
     #[test]
-    fn range_excluding_every_trace_is_unavailable() {
+    fn a_floor_at_or_above_the_surface_is_unavailable_and_blames_the_window() {
+        // The one way a configured window can still refuse outright:
+        // cropping at or above the highest surface leaves no rows at all.
+        // Reported as a *window* problem, not a file one, because editing
+        // the window is what fixes it -- the distinction the frontend uses
+        // to decide between a quiet disabled checkbox and a visible
+        // warning.
         let elevation = vec![100.0; 5];
         let range = ElevationRange {
             min: Some(200.0),
@@ -657,7 +769,70 @@ mod tests {
         };
         let err = resolve_topo_geometry(Some(&elevation), Some(&flat_depth(10, 0.1)), 5, 10, range)
             .unwrap_err();
-        assert!(err.contains("range"), "{err}");
+        assert_eq!(err.cause, TopoUnavailableCause::Window);
+        assert!(err.message.contains("floor"), "{err}");
+
+        // A file that simply lacks the axes is the other cause, and must
+        // stay distinguishable from it.
+        let missing =
+            resolve_topo_geometry(None, Some(&flat_depth(10, 0.1)), 5, 10, range).unwrap_err();
+        assert_eq!(missing.cause, TopoUnavailableCause::File);
+    }
+
+    #[test]
+    fn a_floor_crops_the_raster_without_moving_any_trace() {
+        // `min` is the floor of the rendered raster, not a test on any
+        // trace's own elevation: it truncates the view and leaves every
+        // shift exactly where it was.
+        let dz = 0.1;
+        let elevation = vec![100.0, 99.5, 100.0];
+        let uncropped = resolve_topo_geometry(
+            Some(&elevation),
+            Some(&flat_depth(200, dz as f32)),
+            3,
+            200,
+            ElevationRange::NONE,
+        )
+        .unwrap();
+
+        // Floor 5 m below the top: (100 - 95) / 0.1 = 50 rows.
+        let range = ElevationRange {
+            min: Some(95.0),
+            max: None,
+        };
+        let cropped = resolve_topo_geometry(
+            Some(&elevation),
+            Some(&flat_depth(200, dz as f32)),
+            3,
+            200,
+            range,
+        )
+        .unwrap();
+
+        assert_eq!(cropped.raster_height, 50);
+        assert!(cropped.raster_height < uncropped.raster_height);
+        assert_eq!(
+            cropped.diagnostics.cropped_rows,
+            uncropped.raster_height - 50
+        );
+        // Not one trace moved: same shifts, same top.
+        assert_eq!(cropped.shift, uncropped.shift);
+        assert_eq!(cropped.elevation_top, uncropped.elevation_top);
+        assert_eq!(cropped.diagnostics.clamped_count, 0);
+    }
+
+    #[test]
+    fn a_floor_below_the_data_crops_nothing() {
+        let elevation = vec![100.0, 99.5, 100.0];
+        let range = ElevationRange {
+            min: Some(-1000.0),
+            max: None,
+        };
+        let geometry =
+            resolve_topo_geometry(Some(&elevation), Some(&flat_depth(200, 0.1)), 3, 200, range)
+                .unwrap();
+        assert_eq!(geometry.diagnostics.cropped_rows, 0);
+        assert_eq!(geometry.raster_height, 200 + 5);
     }
 
     #[test]
@@ -717,17 +892,46 @@ mod tests {
     }
 
     #[test]
-    fn traces_excluded_by_a_configured_range_are_interpolated() {
+    fn a_surface_above_the_maximum_is_clamped_to_it() {
+        // `max` bounds the surface: an upward GPS spike is flattened to
+        // the cap rather than lifting the whole raster's top to meet it.
+        // Without the clamp this spike alone would put `elevation_top` at
+        // 9999 and make the raster ~99 000 rows tall.
         let elevation = vec![100.0, 9999.0, 100.0];
         let range = ElevationRange {
-            min: Some(0.0),
+            min: None,
             max: Some(200.0),
         };
         let geometry =
             resolve_topo_geometry(Some(&elevation), Some(&flat_depth(10, 0.1)), 3, 10, range)
                 .unwrap();
-        assert_eq!(geometry.diagnostics.interpolated_count, 1);
-        assert!((geometry.elev_eff[1] - 100.0).abs() < 1e-9);
+        assert_eq!(geometry.diagnostics.clamped_count, 1);
+        assert_eq!(geometry.elev_eff[1], 200.0, "flattened to the cap");
+        assert_eq!(geometry.elevation_top, 200.0);
+        // Untouched traces keep their real elevation.
+        assert_eq!(geometry.elev_eff[0], 100.0);
+        assert_eq!(geometry.elev_eff[2], 100.0);
+        // And nothing was interpolated -- the clamp is not a validity test.
+        assert_eq!(geometry.diagnostics.interpolated_count, 0);
+    }
+
+    #[test]
+    fn a_surface_below_the_floor_keeps_its_real_elevation() {
+        // The floor crops the view; it must never pull a trace up to
+        // itself the way the maximum pulls one down. A trace sitting below
+        // the floor keeps its true position -- its data simply falls
+        // outside the rows the raster covers.
+        let elevation = vec![100.0, 90.0, 100.0];
+        let range = ElevationRange {
+            min: Some(95.0),
+            max: None,
+        };
+        let geometry =
+            resolve_topo_geometry(Some(&elevation), Some(&flat_depth(200, 0.1)), 3, 200, range)
+                .unwrap();
+        assert_eq!(geometry.elev_eff[1], 90.0, "not raised to the floor");
+        assert_eq!(geometry.diagnostics.clamped_count, 0);
+        assert_eq!(geometry.diagnostics.interpolated_count, 0);
     }
 
     // --- Diagnostics --------------------------------------------------------

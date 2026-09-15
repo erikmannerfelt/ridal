@@ -635,6 +635,25 @@ where
 /// were built from the source shape the way every route did before this
 /// view existed.
 ///
+/// Turn a topographic-view refusal into an API error, keeping the two
+/// causes apart in the `code` (#168).
+///
+/// The frontend treats them very differently: a file that never carried
+/// the axes is a permanent limitation of that radargram and is reported
+/// quietly (a disabled checkbox explaining itself on hover), while a
+/// configured elevation window that excludes its own data is somebody's
+/// edit, is fixable, and gets a visible warning naming the reason. One
+/// shared code for both is what made a bad window look like an
+/// unsupported file.
+fn topo_unavailable_error(e: crate::render::topo::TopoUnavailable) -> ApiError {
+    use crate::render::topo::TopoUnavailableCause;
+    let code = match e.cause {
+        TopoUnavailableCause::File => "topo_unavailable",
+        TopoUnavailableCause::Window => "topo_window_invalid",
+    };
+    ApiError::bad_request(code, e.message)
+}
+
 /// Deliberately not gated by `state.render_permits`: resolving the
 /// geometry is bounded, cheap, and memoized after the first call per
 /// elevation range -- it renders nothing -- so gating it behind the same
@@ -674,7 +693,7 @@ async fn resolve_view_height(
         // --topo`'s HTTP-facing sibling).
         service
             .topo_raster_height(elevation_range)
-            .map_err(|e| ApiError::bad_request("topo_unavailable", e))
+            .map_err(topo_unavailable_error)
     })
     .await
     .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))?
@@ -2052,6 +2071,8 @@ struct TopoDiagnosticsJson {
     ratio: Option<f64>,
     finite_count: usize,
     interpolated_count: usize,
+    clamped_count: usize,
+    cropped_rows: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -2110,7 +2131,7 @@ pub async fn dataset_topo_geometry(
         })?;
         service
             .topo_geometry(elevation_range)
-            .map_err(|e| ApiError::bad_request("topo_unavailable", e))
+            .map_err(topo_unavailable_error)
     })
     .await
     .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))??;
@@ -2133,6 +2154,8 @@ pub async fn dataset_topo_geometry(
             ratio: geometry.diagnostics.ratio,
             finite_count: geometry.diagnostics.finite_count,
             interpolated_count: geometry.diagnostics.interpolated_count,
+            clamped_count: geometry.diagnostics.clamped_count,
+            cropped_rows: geometry.diagnostics.cropped_rows,
         },
     }))
 }

@@ -1868,6 +1868,26 @@ async fn an_operator_can_set_and_revert_an_elevation_range() {
     let after_revert = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
     assert!(after_revert.body["effective"]["elevation_min"].is_null());
     assert_eq!(after_revert.body["overridden"]["elevation"], false);
+
+    // A floor above the radargram's own surface is refused as a *window*
+    // problem, not a file one (#168): the viewer shows a visible warning
+    // for this cause and stays quiet for the other, so the two codes have
+    // to stay apart. This fixture has no elevation axis at all, which is
+    // the `topo_unavailable` case -- so asserting the code here also pins
+    // that an unsupported file is not reported as a bad window.
+    let geometry = get(
+        &app,
+        "/api/v1/datasets/line-01/views/topo/geometry",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        geometry.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        geometry.text
+    );
+    assert_eq!(geometry.body["error"]["code"], "topo_unavailable");
 }
 
 #[tokio::test]

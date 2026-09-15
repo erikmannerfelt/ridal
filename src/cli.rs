@@ -938,7 +938,8 @@ fn render_command(args: RenderArgs) -> Result<(), String> {
             n_traces,
             source_height,
             crate::render::topo::ElevationRange::NONE,
-        )?;
+        )
+        .map_err(|e| e.message)?;
         let source = crate::render::topo::TopoSource::new(&reader, &geometry);
         crate::render::oneshot::render_to_file(&source, &output, &request)?
     } else {

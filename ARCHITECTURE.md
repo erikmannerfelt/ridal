@@ -349,13 +349,36 @@ max_depth`) vertical scale, by design (see `topo.rs`'s module docs).
   `TopoSource` would read its NaN wedges into the percentile estimate and
   shift contrast every time the checkbox is toggled.
 - **Erroneous elevations** (GPS spikes) never silently inflate the
-  raster: non-finite values and values outside a project-configured
-  `elevation_min`/`elevation_max` range (`overrides.json`, edited from
-  the catalog's properties dialog — a property of the survey, not of
-  whoever is viewing it) are interpolated from their nearest trusted
-  neighbours, and a spread that looks like spikes (full span far
+  raster, and the two directions are guarded differently, because they
+  are different problems. `elevation_max` caps a trace's *surface*: a
+  surface above it is clamped down, so an upward spike is flattened to
+  the cap rather than lifting the whole raster's top to meet it.
+  `elevation_min` is the *floor of the rendered raster*: nothing below it
+  is drawn, which bounds the view from beneath without moving any trace
+  off its true position. Both live in `overrides.json` and are edited
+  from the catalog's properties dialog — a property of the survey, not of
+  whoever is viewing it. A *missing* elevation is the one case that is
+  interpolated from neighbours (a trace with no elevation has no vertical
+  position at all, so "leave it alone" is not available), and is counted
+  in the diagnostics. A spread that looks like spikes (full span far
   exceeding the 1-99th percentile span) is flagged in the geometry
   response and surfaced as a viewer warning, never auto-corrected.
+- **Unavailability says what can fix it.** `TopoUnavailableCause`
+  separates a file that cannot support the view (no `elevation`, no
+  `depth` — permanent, reported quietly as a disabled checkbox
+  explaining itself on hover) from a configured window that excludes its
+  own data (`topo_window_invalid` — somebody's edit, fixable, and given a
+  visible warning naming the reason). One code for both is what made a
+  bad window look like an unsupported file.
+- **The sub-sample shift is a windowed-sinc fractional delay**, not a
+  two-tap linear blend. Linear interpolation is a low-pass filter whose
+  strength depends on the fractional shift, scaling amplitude by
+  `sqrt((1-f)^2 + f^2)` — 1.00 at `f = 0`, 0.71 at `f = 0.5` — and since
+  `f` sweeps `[0, 1)` as the surface rises and falls, that 29% swing
+  lands across traces as vertical banding and its average as an overall
+  darkening. Measured at a 30% peak-to-peak contrast swing on a real
+  profile before the fix, 6-10% after. See
+  `topo::SHIFT_KERNEL_HALF_WIDTH`.
 - **The catalog's own index overviews stay `Standard`** — only the
   viewer offers the corrected view, and its checkbox is disabled with the
   unavailability reason as its `title` when a radargram lacks usable

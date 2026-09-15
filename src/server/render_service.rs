@@ -23,7 +23,7 @@ use crate::render::grid::{Chunk, OverviewSpec, CHUNK_SIZE};
 use crate::render::profile::{AmplitudeLimits, DatasetView, RenderProfile};
 use crate::render::renderer::Renderer;
 use crate::render::stats::sampled_amplitude_limits;
-use crate::render::topo::{self, ElevationRange, TopoGeometry, TopoSource};
+use crate::render::topo::{self, ElevationRange, TopoGeometry, TopoSource, TopoUnavailable};
 use crate::server::catalog::RevisionId;
 use crate::source::SourceReader;
 
@@ -313,7 +313,7 @@ impl RenderService {
     fn resolve_topo_geometry(
         &mut self,
         range: ElevationRange,
-    ) -> Result<Arc<TopoGeometry>, String> {
+    ) -> Result<Arc<TopoGeometry>, TopoUnavailable> {
         if let Some((cached_range, geometry)) = &self.topo_geometry {
             if *cached_range == range {
                 return Ok(Arc::clone(geometry));
@@ -343,7 +343,7 @@ impl RenderService {
     /// corrected view, since those have to cover the *sheared* extent, not
     /// the source one, or a corrected-view chunk below the source's own
     /// row count would 404 before ever reaching the render service.
-    pub fn topo_raster_height(&mut self, range: ElevationRange) -> Result<usize, String> {
+    pub fn topo_raster_height(&mut self, range: ElevationRange) -> Result<usize, TopoUnavailable> {
         Ok(self.resolve_topo_geometry(range)?.raster_height)
     }
 
@@ -351,7 +351,10 @@ impl RenderService {
     /// HTTP endpoint (per-trace shifts, diagnostics) and for `routes.rs`'s
     /// availability check (a corrected-view checkbox disabled with the
     /// `Err` reason as its `title`).
-    pub fn topo_geometry(&mut self, range: ElevationRange) -> Result<Arc<TopoGeometry>, String> {
+    pub fn topo_geometry(
+        &mut self,
+        range: ElevationRange,
+    ) -> Result<Arc<TopoGeometry>, TopoUnavailable> {
         self.resolve_topo_geometry(range)
     }
 
@@ -380,7 +383,7 @@ impl RenderService {
                 Renderer::new(&self.reader).render_chunk(chunk, profile, limits)?
             }
             DatasetView::Topographic => {
-                let geometry = self.resolve_topo_geometry(range)?;
+                let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
                 let source = TopoSource::new(&self.reader, &geometry);
                 Renderer::new(&source).render_chunk(chunk, profile, limits)?
             }
@@ -413,7 +416,7 @@ impl RenderService {
                 Renderer::new(&self.reader).render_overview(spec, profile, limits)?
             }
             DatasetView::Topographic => {
-                let geometry = self.resolve_topo_geometry(range)?;
+                let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
                 let source = TopoSource::new(&self.reader, &geometry);
                 Renderer::new(&source).render_overview(spec, profile, limits)?
             }

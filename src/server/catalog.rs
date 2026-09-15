@@ -41,13 +41,15 @@ pub struct CatalogEntry {
     /// unlisted radargram is left out of listings and still reachable by
     /// anyone who knows its id.
     pub unlisted: bool,
-    /// Set by a project override (#168). The elevation range the
-    /// topographically corrected view trusts this radargram's per-trace
-    /// `elevation` values within; `None` on either side means no bound.
-    /// Files never carry a counterpart for this -- it has no `from_file`
-    /// entry, unlike `display_name`/`group_name`/`group_id` -- since the
-    /// sane range for a survey is a project decision, not something a
-    /// processed file states about itself.
+    /// Set by a project override (#168): the floor of the corrected
+    /// view's raster, and the cap on a trace's surface elevation. See
+    /// [`crate::project::overrides::RadargramOverride`] for what each one
+    /// does -- they are not two ends of one range. `None` on either side
+    /// means no bound. Files never carry a counterpart for these -- they
+    /// have no `from_file` entry, unlike
+    /// `display_name`/`group_name`/`group_id` -- since sane bounds for a
+    /// survey are a project decision, not something a processed file
+    /// states about itself.
     pub elevation_min: Option<f64>,
     pub elevation_max: Option<f64>,
     /// What the file said, before the project's overrides (#145).
@@ -78,8 +80,8 @@ impl CatalogEntry {
         }
     }
 
-    /// The elevation range the topographically corrected view (#168)
-    /// should trust this radargram's elevations within.
+    /// The bounds the topographically corrected view (#168) should render
+    /// this radargram within.
     pub fn elevation_range(&self) -> crate::render::topo::ElevationRange {
         crate::render::topo::ElevationRange {
             min: self.elevation_min,

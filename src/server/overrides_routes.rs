@@ -221,13 +221,13 @@ pub async fn put_properties(
     // plain `>=` rather than a negated `<` -- clearer, and correct only
     // because NaN has already been ruled out by this point.
     for (label, value) in [
-        ("minimum", body.elevation_min),
-        ("maximum", body.elevation_max),
+        ("floor", body.elevation_min),
+        ("surface cap", body.elevation_max),
     ] {
         if value.is_some_and(|v| !v.is_finite()) {
             return Err(ApiError::bad_request(
                 "invalid_elevation_range",
-                format!("The elevation {label} must be a finite number."),
+                format!("The topographic correction {label} must be a finite number."),
             ));
         }
     }
@@ -235,7 +235,10 @@ pub async fn put_properties(
         if min >= max {
             return Err(ApiError::bad_request(
                 "invalid_elevation_range",
-                format!("The elevation minimum ({min}) must be less than the maximum ({max})."),
+                format!(
+                    "The topographic correction floor ({min} m) must be below the surface \
+                     cap ({max} m)."
+                ),
             ));
         }
     }

@@ -1337,6 +1337,62 @@ mod tests {
             // An unknown view name is still a 400, not confused with topo.
             let (status, _) = get(&app, "/api/v1/datasets/topo-a/views/bogus/overview").await;
             assert_eq!(status, StatusCode::BAD_REQUEST);
+
+            // The window's two bounds do different things (#168), which the
+            // resolved geometry has to show: the cap clamps the top, the
+            // floor crops the bottom, and neither is the other. Resolved
+            // directly here rather than through an override edit, so this
+            // stays about the geometry rather than about the write path
+            // (which `auth_routes_tests` covers).
+            use crate::render::topo::{resolve_topo_geometry, ElevationRange};
+            let elevation: Vec<f64> = (0..300)
+                .map(|i| 100.0 + (i as f64 * 0.1).sin() * 2.0)
+                .collect();
+            let depth: Vec<f32> = (0..20).map(|i| i as f32 * 0.1).collect();
+
+            let plain = resolve_topo_geometry(
+                Some(&elevation),
+                Some(&depth),
+                300,
+                20,
+                ElevationRange::NONE,
+            )
+            .unwrap();
+
+            // A cap below every surface flattens them all: one elevation,
+            // so no shear at all and a raster exactly the source's height.
+            let capped = resolve_topo_geometry(
+                Some(&elevation),
+                Some(&depth),
+                300,
+                20,
+                ElevationRange {
+                    min: None,
+                    max: Some(97.0),
+                },
+            )
+            .unwrap();
+            assert_eq!(capped.elevation_top, 97.0);
+            assert_eq!(capped.raster_height, 20);
+            assert_eq!(capped.diagnostics.clamped_count, 300);
+
+            // A floor just under the top crops the raster without moving
+            // any trace off its position.
+            let floored = resolve_topo_geometry(
+                Some(&elevation),
+                Some(&depth),
+                300,
+                20,
+                ElevationRange {
+                    min: Some(plain.elevation_top - 1.0),
+                    max: None,
+                },
+            )
+            .unwrap();
+            assert!(floored.raster_height < plain.raster_height);
+            assert_eq!(floored.shift, plain.shift, "a floor moves no trace");
+            assert_eq!(floored.diagnostics.clamped_count, 0);
+            assert!(floored.diagnostics.cropped_rows > 0);
         });
     }
 

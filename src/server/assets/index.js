@@ -321,15 +321,15 @@ document.querySelectorAll('.group-map').forEach((el) => {
     const minValue = parseElevation(elevationMin);
     const maxValue = parseElevation(elevationMax);
     if (minValue !== null && Number.isNaN(minValue)) {
-      showError('The elevation minimum is not a number.');
+      showError('The topographic correction floor is not a number.');
       return;
     }
     if (maxValue !== null && Number.isNaN(maxValue)) {
-      showError('The elevation maximum is not a number.');
+      showError('The topographic correction surface cap is not a number.');
       return;
     }
     if (minValue !== null && maxValue !== null && !(minValue < maxValue)) {
-      showError('The elevation minimum must be less than the maximum.');
+      showError('The floor must be below the surface cap.');
       return;
     }
     body.elevation_min = minValue;

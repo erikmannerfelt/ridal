@@ -824,17 +824,40 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
   const geometryUrl = RIDAL.apiPath("datasets", RADARGRAM_ID, "views", "topo", "geometry");
 
   /* Fetch and validate the geometry. Returns the parsed body on success;
-   * on failure, disables the checkbox with the reason as its `title` (the
-   * rule that unavailability must never be silent) and returns null. */
+   * on failure, disables the checkbox with the reason as its `title` and
+   * returns null -- the rule that unavailability must never be silent.
+   *
+   * How loudly depends on what can fix it, which the server says in the
+   * error `code`:
+   *
+   * - `topo_window_invalid` -- the project's configured floor/cap is what
+   *   excludes the data. Somebody set that, it is wrong, and editing it
+   *   fixes it, so it gets a visible warning naming the reason. A
+   *   checkbox that merely refuses to enable is how this was reported:
+   *   the cause was real, actionable, and only in a tooltip.
+   * - anything else -- the radargram itself cannot support the view (no
+   *   `elevation`, no `depth`). Nothing to act on, so the disabled
+   *   checkbox explaining itself on hover is the whole story; a banner on
+   *   every such file would be noise.
+   */
+  const WARNING_HOST = 'download-error';
+
   async function fetchGeometry() {
     try {
       const response = await fetch(geometryUrl);
       if (!response.ok) {
         const failure = await response.json().catch(() => null);
-        const reason = failure?.error?.message || `Could not check availability (${response.status}).`;
+        const reason =
+          failure?.error?.message || `Could not check availability (${response.status}).`;
         toggle.disabled = true;
         toggle.checked = false;
         row.title = reason;
+        if (failure?.error?.code === 'topo_window_invalid') {
+          RIDAL.reportProblem(
+            WARNING_HOST,
+            `Topographic correction is unavailable: ${reason}`,
+          );
+        }
         return null;
       }
       row.title = '';
@@ -883,11 +906,11 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
       mapEl.classList.add('map-topo');
       if (geometry.diagnostics && geometry.diagnostics.suspect) {
         RIDAL.reportProblem(
-          'download-error',
+          WARNING_HOST,
           "This radargram's elevation spread looks like it may contain GPS " +
-            "spikes rather than real topography. Check it on the catalog " +
-            "page's properties dialog, which can set a trusted elevation " +
-            "range for this radargram.",
+            'spikes rather than real topography. The catalog page\'s properties ' +
+            'dialog can set a surface cap for it, which flattens a spike instead ' +
+            'of letting it stretch the view.',
           'note',
         );
       }
