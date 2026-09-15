@@ -30,6 +30,25 @@
 //! They fall through to the project default and can still override per page
 //! with `?profile=`. Preferences are one more thing logging in gets you,
 //! rather than a reason to require it.
+//!
+//! # Every choice in "My settings" offers "Project default" (#176)
+//!
+//! A dropdown on the settings page must have an explicit *unset* entry,
+//! named for the layer below it -- "Project default", or "Follow this
+//! device" where there is no project layer. It is what someone picks to stop
+//! having an opinion, and it is why a project default can still reach them
+//! afterwards.
+//!
+//! That means a preference is never collapsed to absence because its value
+//! happens to equal the fallback. The horizontal scale was, on the grounds
+//! that 1x is neutral, and the effect was that "I want 1x" could not be said
+//! at all in a project whose default was 2x. Absence means *deferring*, not
+//! *agreeing*.
+//!
+//! [`Preferences::show_picks`] is the standing exception: it is a checkbox
+//! rather than a dropdown, a third "project default" state would need a
+//! control that does not exist yet, and there is no project layer under it
+//! to defer to.
 
 #![cfg_attr(
     not(feature = "server"),

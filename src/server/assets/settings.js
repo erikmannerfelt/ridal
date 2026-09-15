@@ -76,13 +76,28 @@
   }
 
   /* Offered scales come from the server, so a stored value always has an
-   * entry to select. No empty option: unlike a profile name, 1x *is* the
-   * neutral value, so "no preference" and "1x" are the same choice and
-   * offering both would be a distinction without a difference. */
-  function fillScales(select, selected) {
+   * entry to select.
+   *
+   * `emptyLabel` is what makes this a choice rather than a value (#176):
+   * every dropdown in "My settings" offers the layer below it -- "Project
+   * default" -- because that is how a person stops having an opinion, and
+   * it is what lets a later project change reach them. 1x used to be
+   * treated as the same thing as no preference, which made "I want 1x"
+   * unsayable in a project whose default was 2x.
+   *
+   * The project's own select passes no `emptyLabel`: under it is Ridal's
+   * built-in 1x, and an unset project default already shows as 1x. */
+  function fillScales(select, selected, emptyLabel) {
     if (!select) return;
-    select.replaceChildren(...xscales.map((s) => new Option(s.label, s.text)));
-    select.value = String(selected || 1);
+    const options = emptyLabel === undefined ? [] : [new Option(emptyLabel, "")];
+    options.push(...xscales.map((s) => new Option(s.label, s.text)));
+    select.replaceChildren(...options);
+    select.value =
+      selected === null || selected === undefined
+        ? emptyLabel === undefined
+          ? "1"
+          : ""
+        : String(selected);
   }
 
   /* Fill a <select> from the server's `{value, label}` list. `emptyLabel`,
@@ -128,7 +143,7 @@
     }));
 
     fillProfiles(byId("my-profile"), "Project default", settings.my_profile);
-    fillScales(byId("my-xscale"), settings.my_xscale);
+    fillScales(byId("my-xscale"), settings.my_xscale, "Project default");
     fillOptions(byId("my-theme"), themes, settings.my_theme, "Follow this device");
     // Absent means shown, which is what the viewer did before the toggle
     // existed -- so only an explicit `false` unticks it.
@@ -176,8 +191,9 @@
           level2_format: byId("my-format").value || null,
         });
         byId("my-profile").value = saved.render_profile || "";
-        // 1x is stored as absent, so read it back the way it was sent.
-        byId("my-xscale").value = String(saved.x_scale || 1);
+        // Read back as sent, including an explicit 1x -- and as "Project
+        // default" when it was cleared.
+        byId("my-xscale").value = saved.x_scale ? String(saved.x_scale) : "";
         byId("my-theme").value = saved.theme || "";
         byId("my-show-picks").checked = saved.show_picks !== false;
         byId("my-spacing").value = saved.level2_spacing || "";

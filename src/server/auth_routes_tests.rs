@@ -1138,6 +1138,63 @@ async fn preferences_sit_between_the_request_and_the_project_default() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn wanting_the_neutral_value_is_a_choice_rather_than_an_absence() {
+    // #176: every dropdown in "My settings" offers "Project default", so
+    // absence means *deferring*. 1x used to be collapsed to absence on the
+    // grounds that it is the neutral value, which made "I want 1x"
+    // unsayable in a project whose default is 2x.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let viewer_uri = format!("/view/{RADARGRAM}");
+
+    put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"default_xscale": 2.0}),
+        Some(&erik),
+    )
+    .await;
+    // Without a preference, the project's 2x applies.
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(page.text.contains("value=\"2\" selected"), "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"x_scale": 1.0}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["x_scale"], 1.0, "an explicit 1x is a preference");
+    let stored = std::fs::read_to_string(dir.path().join("preferences/student.json")).unwrap();
+    assert!(stored.contains("x_scale"), "{stored}");
+
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(page.text.contains("value=\"1\" selected"), "{}", page.text);
+    // And the project's default still applies to everyone else.
+    let page = get(&app, &viewer_uri, Some(&erik)).await;
+    assert!(page.text.contains("value=\"2\" selected"), "{}", page.text);
+
+    // Choosing "Project default" -- an empty value -- defers again.
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"x_scale": null}),
+        Some(&student),
+    )
+    .await;
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(page.text.contains("value=\"2\" selected"), "{}", page.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_chosen_theme_reaches_every_page_and_only_that_person() {
     // #141. Written by the server onto the root element rather than applied
     // by a script, so the page arrives in the right colours instead of

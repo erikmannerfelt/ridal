@@ -726,10 +726,12 @@ pub async fn put_preferences(
                     format!("The viewer does not offer a horizontal scale of {scale}."),
                 ));
             }
-            // 1x is the neutral value, so choosing it means "no preference"
-            // and leaves the key out of the document entirely -- which is
-            // what lets a later project default reach this person.
-            (scale != super::routes::DEFAULT_X_SCALE).then_some(scale)
+            // Stored as sent, 1x included (#176). It used to be collapsed to
+            // absence on the grounds that 1x is the neutral value -- but that
+            // made "I want 1x" unsayable in a project whose default is 2x,
+            // and absence is how a person says "use the project's", which is
+            // now a choice of its own in the dropdown.
+            Some(scale)
         }
     };
 
