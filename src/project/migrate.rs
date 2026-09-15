@@ -305,11 +305,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         legacy_project(dir.path());
         let elsewhere = tempfile::tempdir().unwrap();
+        // Quoted through `toml_string`, not interpolated: a Windows
+        // temporary path is full of backslashes, and `\U` in a TOML basic
+        // string is an escape rather than a directory separator.
         std::fs::write(
             dir.path().join(MARKER),
             format!(
-                "[project]\n[cache]\ndir = \"{}\"\n",
-                elsewhere.path().display()
+                "[project]\n[cache]\ndir = {}\n",
+                crate::project::toml_string(elsewhere.path().to_str().unwrap())
             ),
         )
         .unwrap();
