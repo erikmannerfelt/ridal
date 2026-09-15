@@ -19,6 +19,9 @@ pub struct LaunchOptions {
     pub read_only: bool,
     /// Accept password logins while bound to a non-loopback address.
     pub allow_insecure_login: bool,
+    /// Keep the session-signing key in the project rather than in memory
+    /// (#187). True for `ridal server start`, false for `ridal gui`.
+    pub persist_sessions: bool,
 }
 
 async fn serve(
@@ -66,6 +69,7 @@ async fn serve(
             // snapshot, and the first administrator may be created while
             // this server is running.
             allow_password_login: options.host.is_loopback() || options.allow_insecure_login,
+            persist_sessions: options.persist_sessions,
         },
     )?);
     let catalog = state.catalog();
@@ -83,6 +87,14 @@ async fn serve(
         (Some(project), true) => {
             if accounts {
                 println!("Project {} (authenticated)", project.root().display());
+                if !options.persist_sessions {
+                    // Said out loud because "why am I signed out again?"
+                    // is otherwise a mystery rather than a decision.
+                    println!(
+                        "  Sessions are signed with a key held in memory, so stopping \
+                         this server signs everyone out."
+                    );
+                }
             } else {
                 println!(
                     "Project {} (writable, no accounts -- everyone is '{}')",
@@ -153,6 +165,8 @@ pub fn run_gui(root: &Path, read_only: bool, config: RenderServiceConfig) -> Res
             read_only,
             // Always loopback, so neither bind question can arise.
             allow_insecure_login: false,
+            // Offline mode writes no secret into the user's own directory.
+            persist_sessions: false,
         },
         config,
     ))
@@ -181,6 +195,9 @@ pub fn run_server_start(
             open_browser,
             read_only,
             allow_insecure_login,
+            // A deployment's sessions are expected to outlive a restart,
+            // and the project directory is the operator's own.
+            persist_sessions: true,
         },
         config,
     ))

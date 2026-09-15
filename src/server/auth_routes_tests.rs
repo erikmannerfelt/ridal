@@ -27,6 +27,20 @@ use crate::server::render_service::RenderServiceConfig;
 
 const RADARGRAM: &str = "line-01";
 
+/// Where a project keeps everything Ridal owns, since #187 moved it out of
+/// the project root. Tests reach past the API to assert on files on disk --
+/// the layout is part of the contract -- so they need the same answer the
+/// code has.
+fn data(root: &StdPath) -> std::path::PathBuf {
+    root.join(crate::project::DEFAULT_DATA_DIR)
+}
+
+/// Where a freshly initialized project keeps its radargrams, and where an
+/// upload from the browser lands.
+fn radargrams(root: &StdPath) -> std::path::PathBuf {
+    data(root).join(crate::project::DEFAULT_RADARGRAM_DIR)
+}
+
 /// The passphrase every account in this file is activated with.
 ///
 /// Generated once per run rather than written down. Nothing here asserts
@@ -83,9 +97,13 @@ fn app_with(users: Vec<User>) -> (tempfile::TempDir, Router) {
 }
 
 fn app_with_set(set: UserSet) -> (tempfile::TempDir, Router) {
+    app_with_set_and_access(set, AccessOptions::default())
+}
+
+fn app_with_set_and_access(set: UserSet, access: AccessOptions) -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     users::write(project.documents(), &set, &Expectation::Any).unwrap();
 
@@ -94,7 +112,7 @@ fn app_with_set(set: UserSet) -> (tempfile::TempDir, Router) {
             dir.path(),
             &RenderServiceConfig::default(),
             Some(project),
-            AccessOptions::default(),
+            access,
         )
         .unwrap(),
     );
@@ -730,7 +748,7 @@ async fn a_departed_users_picks_survive_the_account() {
 
     // Their preferences are, because a preference is about a person.
     assert!(
-        !dir.path().join("preferences/student.json").exists(),
+        !data(dir.path()).join("preferences/student.json").exists(),
         "a departed account's preferences should not linger"
     );
 }
@@ -1172,7 +1190,8 @@ async fn wanting_the_neutral_value_is_a_choice_rather_than_an_absence() {
     .await;
     assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
     assert_eq!(saved.body["x_scale"], 1.0, "an explicit 1x is a preference");
-    let stored = std::fs::read_to_string(dir.path().join("preferences/student.json")).unwrap();
+    let stored =
+        std::fs::read_to_string(data(dir.path()).join("preferences/student.json")).unwrap();
     assert!(stored.contains("x_scale"), "{stored}");
 
     let page = get(&app, &viewer_uri, Some(&student)).await;
@@ -1382,7 +1401,8 @@ async fn hiding_the_interpretations_is_remembered_per_person() {
         Some(&student),
     )
     .await;
-    let stored = std::fs::read_to_string(dir.path().join("preferences/student.json")).unwrap();
+    let stored =
+        std::fs::read_to_string(data(dir.path()).join("preferences/student.json")).unwrap();
     assert!(!stored.contains("show_picks"), "{stored}");
 }
 
@@ -1669,7 +1689,7 @@ async fn a_session_survives_a_restart() {
     let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
 
     let build = || {
         let project = Project::discover(dir.path()).unwrap().unwrap();
@@ -1713,7 +1733,7 @@ async fn a_project_with_no_accounts_offers_no_login_and_still_writes() {
     // own data, and `ridal gui` must keep working with no login step.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     let state = Arc::new(
         AppState::build_with_project(
@@ -1742,10 +1762,10 @@ async fn a_project_with_no_accounts_offers_no_login_and_still_writes() {
 
     // No `users.json` was created by serving, only by an administrator
     // deciding to create one.
-    assert!(!dir.path().join("users.json").exists());
+    assert!(!data(dir.path()).join("users.json").exists());
     // And no session key either: a project that never authenticates never
     // grows one.
-    assert!(!dir.path().join("session.key").exists());
+    assert!(!data(dir.path()).join("session.key").exists());
 
     // The login page explains rather than offering a form that cannot work.
     let login = get(&app, "/login", None).await;
@@ -1764,6 +1784,64 @@ async fn a_project_with_no_accounts_offers_no_login_and_still_writes() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn an_offline_session_signs_its_cookies_with_a_key_it_never_writes_down() {
+    // `ridal gui` runs in the user's own survey directory, and that
+    // directory gets zipped, synced and mailed around (#187). A signing key
+    // in one is a leaked signing key, so offline mode keeps it in memory:
+    // sessions work for as long as the server runs, and stop when it does.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_set_and_access(
+        UserSet {
+            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        AccessOptions {
+            persist_sessions: false,
+            ..AccessOptions::default()
+        },
+    );
+
+    let erik = sign_in(&app, "erik").await;
+    let me = get(&app, "/api/v1/auth/me", Some(&erik)).await;
+    assert_eq!(me.body["user"], "erik", "{}", me.text);
+
+    assert!(
+        !data(dir.path()).join("session.key").exists(),
+        "offline mode must not leave a signing key in the project"
+    );
+    // The accounts file is the user's own decision and stays on disk; only
+    // the secret Ridal generates is withheld.
+    assert!(data(dir.path()).join("users.json").exists());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_served_project_keeps_its_signing_key_so_a_restart_does_not_sign_everyone_out() {
+    // The other half: `ridal server start` is a deployment whose sessions
+    // are expected to outlive a restart, and whose project directory is the
+    // operator's rather than a survey directory being passed around.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_set_and_access(
+        UserSet {
+            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+        AccessOptions {
+            persist_sessions: true,
+            ..AccessOptions::default()
+        },
+    );
+
+    sign_in(&app, "erik").await;
+
+    // In the data directory, which is what the `.gitignore` written at init
+    // covers -- and never in the project root.
+    assert!(data(dir.path()).join("session.key").exists());
+    assert!(!dir.path().join("session.key").exists());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn the_first_account_takes_effect_without_a_restart() {
     // What lets `ridal project user add` say there is nothing to restart.
     // The account file is read per request, so a server already serving an
@@ -1772,7 +1850,7 @@ async fn the_first_account_takes_effect_without_a_restart() {
     let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     let state = Arc::new(
         AppState::build_with_project(
@@ -1831,7 +1909,7 @@ async fn a_damaged_user_file_denies_everything_rather_than_opening_it() {
     // file was damaged.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     users::write(project.documents(), &UserSet::default(), &Expectation::Any).unwrap();
     let state = Arc::new(
@@ -1851,7 +1929,7 @@ async fn a_damaged_user_file_denies_everything_rather_than_opening_it() {
         StatusCode::OK
     );
 
-    std::fs::write(dir.path().join("users.json"), "{ not json at all").unwrap();
+    std::fs::write(data(dir.path()).join("users.json"), "{ not json at all").unwrap();
 
     // And closed once it is not: no public read, and no downloads.
     assert_eq!(
@@ -1883,7 +1961,7 @@ async fn a_bind_that_cannot_carry_a_password_refuses_one_per_request() {
     let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     users::write(
         project.documents(),
@@ -1989,7 +2067,7 @@ async fn a_read_only_server_tells_an_anonymous_caller_the_truth() {
     let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     users::write(
         project.documents(),
@@ -2042,7 +2120,7 @@ async fn a_read_only_server_caps_even_an_administrator() {
     let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     users::write(
         project.documents(),
@@ -2103,7 +2181,7 @@ fn app_with_an_unlisted_radargram(set: UserSet) -> (tempfile::TempDir, Router) {
     // is for.
     for id in ["line-01", "line-02"] {
         super::interp_routes_tests::write_test_nc_with_axes(
-            &dir.path().join("radargrams").join(format!("{id}.nc")),
+            &radargrams(dir.path()).join(format!("{id}.nc")),
             id,
             None,
         );
@@ -2327,7 +2405,7 @@ async fn a_bad_elevation_window_is_reported_as_a_window_problem_not_an_unsupport
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
 
-    let path = dir.path().join("radargrams").join("topo-line.nc");
+    let path = radargrams(dir.path()).join("topo-line.nc");
     let (n_samples, n_traces) = (16usize, 32usize);
     {
         let mut file = netcdf::create(&path).unwrap();
@@ -2763,7 +2841,7 @@ async fn merged_downloads_leave_unlisted_members_out_and_say_how_many() {
             "properties": {"id": "f-1", "label": "bed"}
         }]
     });
-    let stored = dir.path().join("interpretations/line-01");
+    let stored = data(dir.path()).join("interpretations/line-01");
     std::fs::create_dir_all(&stored).unwrap();
     std::fs::write(
         stored.join("erik.gprinterp.json"),
@@ -2804,7 +2882,7 @@ async fn a_warning_naming_an_unlisted_radargram_is_not_shown_to_a_picker() {
         ("duplicate.nc", "line-02"),
     ] {
         super::interp_routes_tests::write_test_nc_with_axes(
-            &dir.path().join("radargrams").join(file),
+            &radargrams(dir.path()).join(file),
             id,
             None,
         );
@@ -2877,7 +2955,7 @@ async fn a_radargram_from_an_external_root_says_it_is_not_in_the_project() {
     let archive = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
     super::interp_routes_tests::write_test_nc_with_axes(
-        &dir.path().join("radargrams").join("ours.nc"),
+        &radargrams(dir.path()).join("ours.nc"),
         "ours",
         None,
     );
@@ -2956,7 +3034,7 @@ fn lifecycle_app_with_cap(
     let archive = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
     super::interp_routes_tests::write_test_nc_with_axes(
-        &dir.path().join("radargrams").join("ours.nc"),
+        &radargrams(dir.path()).join("ours.nc"),
         "ours",
         None,
     );
@@ -2968,7 +3046,10 @@ fn lifecycle_app_with_cap(
     std::fs::write(
         dir.path().join("ridal.toml"),
         format!(
-            "[project]\nname = \"test\"\n\n[radargrams]\nroots = [\"radargrams\", \"{}\"]\n{}",
+            "[project]\nname = \"test\"\nformat_version = 1\n\n[radargrams]\n\
+             roots = [\"{}/{}\", \"{}\"]\n{}",
+            crate::project::DEFAULT_DATA_DIR,
+            crate::project::DEFAULT_RADARGRAM_DIR,
             archive.path().display(),
             max_bytes
                 .map(|n| format!("max_bytes = {n}\n"))
@@ -3042,13 +3123,14 @@ async fn an_uploaded_radargram_appears_without_a_restart() {
         .map(|e| e["radargram_id"].as_str().unwrap())
         .collect();
     assert!(ids.contains(&"arrived"), "{ids:?}");
-    assert!(dir.path().join("radargrams/arrived.nc").exists());
-    assert!(!dir.path().join("radargrams/new.nc").exists());
+    assert!(radargrams(dir.path()).join("arrived.nc").exists());
+    assert!(!radargrams(dir.path()).join("new.nc").exists());
 
     // And it is recorded.
-    let log: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("audit.json")).unwrap())
-            .unwrap();
+    let log: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(data(dir.path()).join("audit.json")).unwrap(),
+    )
+    .unwrap();
     let entries = log["entries"].as_array().unwrap();
     assert_eq!(entries.last().unwrap()["action"], "added");
     assert_eq!(entries.last().unwrap()["user"], "erik");
@@ -3083,7 +3165,7 @@ async fn an_upload_that_is_not_a_ridal_radargram_leaves_nothing_behind() {
     );
     assert_eq!(response.body["error"]["code"], "not_a_radargram");
 
-    let left: Vec<String> = std::fs::read_dir(dir.path().join("radargrams"))
+    let left: Vec<String> = std::fs::read_dir(radargrams(dir.path()))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
         .collect();
@@ -3113,7 +3195,7 @@ async fn an_upload_colliding_with_an_existing_id_is_refused() {
     assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text);
     assert_eq!(response.body["error"]["code"], "radargram_exists");
 
-    let left: Vec<String> = std::fs::read_dir(dir.path().join("radargrams"))
+    let left: Vec<String> = std::fs::read_dir(radargrams(dir.path()))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
         .collect();
@@ -3135,7 +3217,7 @@ async fn removing_a_project_radargram_deletes_the_file_and_keeps_the_picks() {
     )]);
     let erik = sign_in(&app, "erik").await;
 
-    let picks = dir.path().join("interpretations/ours");
+    let picks = data(dir.path()).join("interpretations/ours");
     std::fs::create_dir_all(&picks).unwrap();
     std::fs::write(
         picks.join("erik.gprinterp.json"),
@@ -3148,12 +3230,12 @@ async fn removing_a_project_radargram_deletes_the_file_and_keeps_the_picks() {
     assert_eq!(response.body["outcome"], "removed");
     assert_eq!(response.body["archived"], 1);
 
-    assert!(!dir.path().join("radargrams/ours.nc").exists());
+    assert!(!radargrams(dir.path()).join("ours.nc").exists());
     assert!(
         !picks.join("erik.gprinterp.json").exists(),
         "nothing is left to reattach"
     );
-    let archived = dir.path().join("interpretations/_archived/ours");
+    let archived = data(dir.path()).join("interpretations/_archived/ours");
     assert!(archived.exists(), "and nothing authored was destroyed");
 
     // Gone from the catalog without a restart.
@@ -3250,7 +3332,7 @@ async fn an_upload_past_the_project_cap_is_refused_before_it_is_written() {
         "the message says how to fix it: {}",
         response.body["error"]["message"]
     );
-    assert!(!dir.path().join("radargrams/big.nc").exists());
+    assert!(!radargrams(dir.path()).join("big.nc").exists());
 }
 
 #[tokio::test]
@@ -3308,7 +3390,7 @@ async fn serving_one_file_inside_a_project_still_knows_it_is_the_project() {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
     super::interp_routes_tests::write_test_nc_with_axes(
-        &dir.path().join("radargrams").join("ours.nc"),
+        &radargrams(dir.path()).join("ours.nc"),
         "ours",
         None,
     );
@@ -3327,11 +3409,11 @@ async fn serving_one_file_inside_a_project_still_knows_it_is_the_project() {
     // rather than a directory -- which `Project::discover` supports, since
     // it searches upwards for the marker.
     super::interp_routes_tests::write_test_nc_with_axes(
-        &dir.path().join("radargrams").join("theirs.nc"),
+        &radargrams(dir.path()).join("theirs.nc"),
         "theirs",
         None,
     );
-    let inside = dir.path().join("radargrams").join("ours.nc");
+    let inside = radargrams(dir.path()).join("ours.nc");
     let project = Project::discover(&inside).unwrap().unwrap();
     let state = Arc::new(
         AppState::build_with_project(
@@ -3386,7 +3468,7 @@ async fn an_upload_of_an_ignored_id_is_refused_rather_than_installed_and_hidden(
     assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text);
     assert_eq!(response.body["error"]["code"], "radargram_ignored");
     assert!(
-        !dir.path().join("radargrams/theirs.nc").exists(),
+        !radargrams(dir.path()).join("theirs.nc").exists(),
         "nothing was installed"
     );
 }
@@ -3414,7 +3496,7 @@ async fn an_interrupted_upload_leaves_no_temporary_file_behind() {
         response.text
     );
 
-    let left: Vec<String> = std::fs::read_dir(dir.path().join("radargrams"))
+    let left: Vec<String> = std::fs::read_dir(radargrams(dir.path()))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
         .collect();
@@ -3439,8 +3521,8 @@ async fn an_upload_will_not_follow_a_symlinked_radargram_directory_out_of_the_pr
         let erik = sign_in(&app, "erik").await;
 
         let elsewhere = tempfile::tempdir().unwrap();
-        std::fs::remove_dir_all(dir.path().join("radargrams")).unwrap();
-        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("radargrams")).unwrap();
+        std::fs::remove_dir_all(radargrams(dir.path())).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), radargrams(dir.path())).unwrap();
 
         let staging = tempfile::tempdir().unwrap();
         let source = staging.path().join("new.nc");
@@ -3490,7 +3572,7 @@ async fn removing_a_radargram_keeps_its_axes_so_the_picks_stay_carryable() {
 
     let removed = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
-    assert!(!dir.path().join("radargrams/ours.nc").exists());
+    assert!(!radargrams(dir.path()).join("ours.nc").exists());
 
     let after = get(&app, "/api/v1/datasets/ours/revisions", Some(&erik)).await;
     let revisions = after.body["revisions"].as_array().unwrap();
@@ -3508,7 +3590,7 @@ async fn removing_a_radargram_keeps_its_axes_so_the_picks_stay_carryable() {
     assert_eq!(record["n_samples"], 8);
 
     // And the snapshot is on disk, tiny, next to the ledger.
-    let axes = dir.path().join("revisions/ours");
+    let axes = data(dir.path()).join("revisions/ours");
     let kept: Vec<_> = std::fs::read_dir(&axes)
         .unwrap()
         .map(|e| e.unwrap())
@@ -3518,7 +3600,7 @@ async fn removing_a_radargram_keeps_its_axes_so_the_picks_stay_carryable() {
         kept[0].metadata().unwrap().len() < 2048,
         "a few hundred bytes standing in for the file"
     );
-    assert!(dir.path().join("revisions.json").exists());
+    assert!(data(dir.path()).join("revisions.json").exists());
 }
 
 #[tokio::test]
@@ -3578,7 +3660,7 @@ async fn a_radargram_that_has_never_been_removed_still_has_a_current_revision() 
         revisions[0]["has_axes"], false,
         "no snapshot yet: nothing has superseded it"
     );
-    assert!(dir.path().join("revisions.json").exists());
+    assert!(data(dir.path()).join("revisions.json").exists());
 }
 
 #[tokio::test]
@@ -3646,7 +3728,7 @@ async fn a_removal_is_refused_when_the_axes_it_declares_cannot_be_kept() {
     // snapshot directory belongs makes creating it fail with `ENOTDIR`,
     // which -- unlike a permission bit -- also holds when the tests run as
     // root, as they do in the container.
-    let revisions = dir.path().join("revisions");
+    let revisions = data(dir.path()).join("revisions");
     std::fs::create_dir_all(&revisions).unwrap();
     std::fs::write(revisions.join("ours"), b"not a directory").unwrap();
 
@@ -3659,7 +3741,7 @@ async fn a_removal_is_refused_when_the_axes_it_declares_cannot_be_kept() {
     );
     assert_eq!(refused.body["error"]["code"], "snapshot_failed");
     assert!(
-        dir.path().join("radargrams/ours.nc").exists(),
+        radargrams(dir.path()).join("ours.nc").exists(),
         "the file is still there, which is the whole point"
     );
 
@@ -3667,7 +3749,7 @@ async fn a_removal_is_refused_when_the_axes_it_declares_cannot_be_kept() {
     std::fs::remove_file(revisions.join("ours")).unwrap();
     let removed = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
-    assert!(!dir.path().join("radargrams/ours.nc").exists());
+    assert!(!radargrams(dir.path()).join("ours.nc").exists());
 }
 
 /// The bytes of a radargram processed with the given id, for an upload.
@@ -3716,8 +3798,10 @@ async fn a_staged_replacement_is_not_served_as_a_radargram() {
     assert_eq!(response.status, StatusCode::OK, "{}", response.text);
     assert!(response.body["token"].as_str().is_some());
 
-    // On disk, and invisible to the catalog.
-    let staging = dir.path().join(".staging");
+    // On disk, under the project's data directory rather than loose in the
+    // project root (#187), and invisible to the catalog.
+    assert!(data(dir.path()).join(".staging").is_dir());
+    assert!(!dir.path().join(".staging").exists());
     assert_eq!(staged_count(dir.path()), 1, "the upload is staged");
     let listed = get(&app, "/api/v1/datasets", Some(&erik)).await;
     let ids: Vec<&str> = listed.body["entries"]
@@ -3793,7 +3877,7 @@ async fn replacing_a_radargram_leaves_every_pick_exactly_as_drawn() {
     // The document on disk is untouched, down to the coordinates and the
     // revision it declares.
     let stored: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("interpretations/ours/erik.gprinterp.json"))
+        &std::fs::read_to_string(data(dir.path()).join("interpretations/ours/erik.gprinterp.json"))
             .unwrap(),
     )
     .unwrap();
@@ -3986,7 +4070,7 @@ async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
     // And the radargram is untouched: same revision, same file.
     let still = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     assert_eq!(still.status, StatusCode::OK);
-    assert!(dir.path().join("radargrams/ours.nc").exists());
+    assert!(radargrams(dir.path()).join("ours.nc").exists());
 }
 
 #[tokio::test]
@@ -4008,7 +4092,7 @@ async fn an_uncorrected_revision_can_be_replaced() {
     Project::init(dir.path(), Some("test")).unwrap();
     // The radargram being replaced has never had a zero correction.
     super::interp_routes_tests::write_test_nc_uncorrected(
-        &dir.path().join("radargrams").join("ours.nc"),
+        &radargrams(dir.path()).join("ours.nc"),
         "ours",
         "2026-01-01T00:00:00Z",
     );
@@ -4176,7 +4260,7 @@ async fn carried_picks_can_be_adopted_onto_the_current_revision() {
 
     // The stored document now belongs to this revision, and says how.
     let stored: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("interpretations/ours/erik.gprinterp.json"))
+        &std::fs::read_to_string(data(dir.path()).join("interpretations/ours/erik.gprinterp.json"))
             .unwrap(),
     )
     .unwrap();
@@ -4193,7 +4277,7 @@ async fn carried_picks_can_be_adopted_onto_the_current_revision() {
 
     // And the version as drawn is archived, which is what makes this
     // reversible and therefore defensible at all.
-    let archived = dir.path().join("interpretations/_archived/ours");
+    let archived = data(dir.path()).join("interpretations/_archived/ours");
     let mut found = Vec::new();
     for removal in std::fs::read_dir(&archived).unwrap() {
         for file in std::fs::read_dir(removal.unwrap().path()).unwrap() {
@@ -4344,7 +4428,7 @@ async fn an_edit_made_over_a_carried_view_survives_adopting() {
     assert_eq!(adopted.status, StatusCode::OK, "{}", adopted.text);
 
     let stored: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("interpretations/ours/erik.gprinterp.json"))
+        &std::fs::read_to_string(data(dir.path()).join("interpretations/ours/erik.gprinterp.json"))
             .unwrap(),
     )
     .unwrap();
@@ -4426,7 +4510,7 @@ async fn adopting_from_a_page_left_open_across_a_replace_is_refused() {
 
 /// How many replacements are staged, ignoring the note beside each one.
 fn staged_count(dir: &StdPath) -> usize {
-    std::fs::read_dir(dir.join(".staging"))
+    std::fs::read_dir(data(dir).join(".staging"))
         .map(|entries| {
             entries
                 .flatten()
@@ -4505,7 +4589,7 @@ async fn a_report_measured_against_a_superseded_revision_is_not_committed() {
     // And what is served is still what the second replace installed.
     let now = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     assert_eq!(now.body["revision_id"], landed.body["to_revision"]);
-    assert!(dir.path().join("radargrams/ours.nc").exists());
+    assert!(radargrams(dir.path()).join("ours.nc").exists());
 }
 
 #[tokio::test]
@@ -4596,7 +4680,9 @@ async fn adopting_from_a_page_that_missed_a_save_is_refused() {
 
     // And nothing was archived, because nothing was replaced.
     assert!(
-        !dir.path().join("interpretations/_archived/ours").exists(),
+        !data(dir.path())
+            .join("interpretations/_archived/ours")
+            .exists(),
         "a refused adoption leaves no stray archived copy"
     );
 }

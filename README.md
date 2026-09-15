@@ -117,6 +117,46 @@ ridal batch-process data/*.rd3 --merge "10 min" --default -o output/
 A rudimentary profile renderer is available with the `-r` argument.
 This will be saved in the same location as the output file as a JPG if another filename is not given.
 
+### Projects and the browser GUI
+*Not in any released version yet: the GUI is on `main` and is not in `cargo install ridal`.*
+
+A **project** is a directory holding a `ridal.toml`. Making one is what gives interpretations — picked reflectors and the layers they belong to — somewhere to be saved:
+
+```bash
+cd my_survey/          # already full of your processed .nc files
+ridal project init
+ridal gui              # or `ridal gui .`; without a path, Ridal looks upwards for the project
+```
+
+`init` adds exactly two entries to the directory, and touches nothing else in it:
+
+```
+my_survey/
+├── line_01.nc ...      your own files, untouched
+├── ridal.toml          settings, and the marker that makes this a project
+└── ridal_data/         everything Ridal owns
+    ├── .gitignore      keeps the cache and any secrets out of version control
+    ├── interpretations/
+    ├── layers/
+    ├── radargrams/     where uploads from the browser land
+    ├── revisions/
+    └── cache/          derived data; safe to delete at any time
+```
+
+`ridal_data/` is the whole project state: back it up and you have taken the work with you, delete it and the project is gone. Every relative path in `ridal.toml` resolves against the directory holding it, so the project can be moved or renamed as a whole. Both locations are configurable:
+
+```toml
+[project]
+data_dir = "ridal_data"     # where Ridal keeps its own data
+
+[cache]
+dir = "/var/cache/ridal"    # derived data, e.g. on local disk when the project is on a share
+```
+
+`ridal project info` prints where everything resolved to. A project created by an earlier build of `main`, with its state loose in the project directory, is not opened silently — run `ridal project migrate` (add `--dry-run` to see what it would move first).
+
+`ridal gui` binds loopback and writes no secret into your directory: its sessions are signed with a key generated at startup, so stopping the server ends them. `ridal server start` is the deployment-oriented mode, where accounts and persistent sessions live in `ridal_data/`.
+
 
 ## Papers using Ridal
 

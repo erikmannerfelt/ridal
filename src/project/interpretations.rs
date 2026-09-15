@@ -373,7 +373,7 @@ mod tests {
     fn it_lands_at_the_documented_path() {
         // The layout is part of the contract: other tools are expected to
         // read these files directly.
-        let (dir, project) = project();
+        let (_dir, project) = project();
         let (radargram, user) = ids("dronbreen-0237", DEFAULT_USER);
         write(
             project.documents(),
@@ -384,8 +384,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(dir
-            .path()
+        assert!(project
+            .data_dir()
             .join("interpretations/dronbreen-0237/default.gprinterp.json")
             .is_file());
     }
@@ -540,9 +540,9 @@ mod tests {
 
     #[test]
     fn a_corrupt_document_names_the_file_rather_than_failing_obscurely() {
-        let (dir, project) = project();
+        let (_dir, project) = project();
         let (radargram, user) = ids("dronbreen-0237", DEFAULT_USER);
-        let path = dir.path().join("interpretations/dronbreen-0237");
+        let path = project.data_dir().join("interpretations/dronbreen-0237");
         std::fs::create_dir_all(&path).unwrap();
         std::fs::write(path.join("default.gprinterp.json"), "{ not json").unwrap();
 
@@ -588,7 +588,7 @@ mod archive_tests {
         // The hazard removal has to avoid: a different file arrives later
         // under the same id and orphaned picks silently reattach to data
         // they were never drawn on.
-        let (dir, project) = project();
+        let (_dir, project) = project();
         let store = project.documents();
         let id = radargram("line-01");
         write_picks(store, &id, "erik");
@@ -601,8 +601,8 @@ mod archive_tests {
             "nothing is left to reattach"
         );
 
-        let archived = dir
-            .path()
+        let archived = project
+            .data_dir()
             .join("interpretations/_archived/line-01/2026-09-13T12-00-00Z");
         let mut names: Vec<String> = std::fs::read_dir(&archived)
             .unwrap()
@@ -628,7 +628,7 @@ mod archive_tests {
         // second archive would overwrite the first, and the picks from
         // before the re-add would be the ones lost -- the older and more
         // easily forgotten of the two.
-        let (dir, project) = project();
+        let (_dir, project) = project();
         let store = project.documents();
         let id = radargram("line-01");
 
@@ -637,7 +637,7 @@ mod archive_tests {
         write_picks(store, &id, "erik");
         archive_all(store, &id, "2026-09-14T12:00:00Z").unwrap();
 
-        let archived = dir.path().join("interpretations/_archived/line-01");
+        let archived = project.data_dir().join("interpretations/_archived/line-01");
         let mut stamps: Vec<String> = std::fs::read_dir(&archived)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
@@ -691,7 +691,7 @@ mod archive_tests {
         // and both removals name the same directory. The set that would be
         // lost is the older one, which is exactly the one nobody is
         // watching.
-        let (dir, project) = project();
+        let (_dir, project) = project();
         let store = project.documents();
         let id = radargram("line-01");
         let at = "2026-09-13T12:00:00Z";
@@ -701,7 +701,7 @@ mod archive_tests {
         write_picks(store, &id, "student");
         assert_eq!(archive_all(store, &id, at).unwrap(), 1);
 
-        let archived = dir.path().join("interpretations/_archived/line-01");
+        let archived = project.data_dir().join("interpretations/_archived/line-01");
         let mut dirs: Vec<String> = std::fs::read_dir(&archived)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
