@@ -44,15 +44,30 @@ pub struct AccessOptions {
     /// request, so a guard sampled at boot would be bypassed by exactly
     /// the sequence that makes it matter.
     pub allow_password_login: bool,
+    /// Whether the key that signs session cookies is kept in the project,
+    /// or generated at startup and held only in memory (#187).
+    ///
+    /// False for `ridal gui`. A survey directory gets zipped, synced and
+    /// mailed around, and a signing key inside one is a leaked signing key
+    /// -- so the offline mode that writes into the user's own directory
+    /// writes no secret there at all. The cost is that a `ridal gui`
+    /// restart signs its own sessions out, which for a session that lives
+    /// as long as the window is open is not much of a cost.
+    ///
+    /// True for `ridal server start`, where sessions outliving a restart is
+    /// the point and the project directory is the operator's.
+    pub persist_sessions: bool,
 }
 
 impl Default for AccessOptions {
-    /// Writable, and logins permitted. The loopback case, and what tests
-    /// want: a bind that is either genuinely local or behind a proxy.
+    /// Writable, logins permitted, sessions persisted. The loopback case,
+    /// and what tests want: a bind that is either genuinely local or behind
+    /// a proxy.
     fn default() -> Self {
         Self {
             read_only: false,
             allow_password_login: true,
+            persist_sessions: true,
         }
     }
 }
@@ -545,7 +560,14 @@ impl AppState {
         if let Some(key) = guard.as_ref() {
             return Ok(key.clone());
         }
-        let key = super::auth::project_session_key(project)?;
+        // Either way it is cached above, so every session this process
+        // mints is signed with one key -- an ephemeral key that changed
+        // per request would sign each caller out of the page they were on.
+        let key = if self.access.persist_sessions {
+            super::auth::project_session_key(project)?
+        } else {
+            super::auth::SessionKey::ephemeral()?
+        };
         *guard = Some(key.clone());
         Ok(key)
     }

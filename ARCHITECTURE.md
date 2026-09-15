@@ -287,12 +287,28 @@ Durable, load-bearing decisions rather than oversights:
   supported way to serve this remotely (#131).
 - **Sessions are a signed cookie, with no server-side table.**
   `blake3::keyed_hash` over `user|version|expiry`, verified by
-  constant-time `blake3::Hash` comparison against a 32-byte key file.
+  constant-time `blake3::Hash` comparison against a 32-byte key.
   The credential version in the cookie is what makes a stateless
   session revocable: changing a password, role or download scope bumps
   it on the account and the outstanding cookie stops verifying. A
   project with no `users.json` has not opted into any of this and
   behaves exactly as it did before authentication existed.
+  `ridal server start` keeps the key in `ridal_data/session.key`;
+  `ridal gui` generates one at startup and never writes it down, so an
+  offline session ends with the server and a survey directory that is
+  zipped and shared carries no secret out with it (#187).
+- **A project's state is one directory, and `ridal.toml` is not in
+  it.** Everything Ridal owns lives under `ridal_data/`; the marker
+  stays at the project root so the project root remains the directory
+  the user points Ridal at, and every relative path in the marker
+  resolves against the directory holding it. This is what lets a
+  project be initialized in a survey directory that is already full of
+  the user's files without colliding with them, and what makes "back
+  this up" and "delete this project" single operations. The layout is
+  recorded as `format_version` in the marker rather than inferred from
+  which files exist, so a future move is detectable: an older Ridal
+  refuses a newer project instead of writing into the wrong places
+  (#187).
 - **Amplitude limits are global per revision+profile**, which is what
   keeps chunks seamless — a radargram with strongly varying gain
   down-profile cannot be locally renormalised without breaking that

@@ -559,6 +559,13 @@ pub async fn list_ignored(
 
 /// The project's radargram directory, checked to be inside the project.
 ///
+/// Which directory that is comes from `[radargrams] roots` rather than
+/// being the built-in name (#187): a project declares where its radargrams
+/// live, and an upload that landed somewhere else would sit outside every
+/// directory the project says to scan. `Project::relative_upload_dir`
+/// returns it relative to the root, so the join below still starts from a
+/// resolved path.
+///
 /// Both sides are canonicalized, so a `radargrams` replaced by a symlink to
 /// somewhere else resolves and is caught. Without this, `create_dir_all`
 /// and `rename` follow the link and the upload lands outside the project —
@@ -579,7 +586,7 @@ fn writable_destination(project: &crate::project::Project) -> Result<std::path::
             format!("Could not resolve the project root: {e}"),
         )
     })?;
-    let destination = root.join(crate::project::DEFAULT_RADARGRAM_DIR);
+    let destination = root.join(project.relative_upload_dir());
     std::fs::create_dir_all(&destination).map_err(|e| {
         ApiError::internal(
             "upload_failed",

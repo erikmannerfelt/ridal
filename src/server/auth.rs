@@ -124,6 +124,19 @@ impl SessionKey {
         }
     }
 
+    /// A key for this process only, written nowhere (#187).
+    ///
+    /// What `ridal gui` signs with. Sessions last as long as the server
+    /// does, which is the honest lifetime for a viewer somebody started on
+    /// their own machine -- and it keeps a signing key out of a directory
+    /// that gets zipped and shared.
+    pub fn ephemeral() -> Result<SessionKey, String> {
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes)
+            .map_err(|e| format!("could not read system randomness: {e}"))?;
+        Ok(SessionKey(bytes))
+    }
+
     fn sign(&self, user: &UserId, credential_version: u64, expires: i64) -> blake3::Hash {
         let payload = format!(
             "{SESSION_DOMAIN}|{}|{credential_version}|{expires}",
