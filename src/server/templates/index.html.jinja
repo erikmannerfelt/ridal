@@ -283,6 +283,24 @@
         Leaves this radargram out of listings and out of merged downloads.
         It is not private: anyone who knows the address can still open it.
       </p>
+
+      {#- The trusted elevation range for the viewer's topographically
+          corrected view. A property of the survey's GPS track, not of
+          whoever is looking at it, so it is edited here rather than in the
+          viewer -- which only points back at this dialog when it notices a
+          spread that looks like spikes. -#}
+      <label>Elevation minimum (m)
+        <input type="number" id="properties-elevation-min" step="any" autocomplete="off">
+      </label>
+      <label>Elevation maximum (m)
+        <input type="number" id="properties-elevation-max" step="any" autocomplete="off">
+      </label>
+      <p class="hint">
+        Traces whose elevation falls outside this range, or is missing, are
+        interpolated from their nearest neighbours in the corrected view
+        rather than trusted as-is. Leave both blank to trust every finite
+        elevation value.
+      </p>
     </div>
     <p>
       <button type="button" id="properties-save">Save</button>

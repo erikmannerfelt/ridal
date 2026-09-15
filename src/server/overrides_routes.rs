@@ -60,6 +60,8 @@ struct EffectiveProperties {
     group_id: Option<String>,
     group_name: Option<String>,
     unlisted: bool,
+    elevation_min: Option<f64>,
+    elevation_max: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -73,6 +75,7 @@ struct FileProperties {
 struct OverriddenFields {
     display_name: bool,
     group: bool,
+    elevation: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +107,11 @@ pub struct PropertiesBody {
     group_name: Option<String>,
     #[serde(default)]
     unlisted: bool,
+    /// `null` on either side reverts that bound to no range at all (#168).
+    #[serde(default)]
+    elevation_min: Option<f64>,
+    #[serde(default)]
+    elevation_max: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -167,6 +175,8 @@ pub async fn get_properties(
             group_id: entry.group_id.as_ref().map(|g| g.to_string()),
             group_name: entry.group_name.as_ref().map(|g| g.to_string()),
             unlisted: entry.unlisted,
+            elevation_min: entry.elevation_min,
+            elevation_max: entry.elevation_max,
         },
         from_file: FileProperties {
             display_name: entry.from_file.display_name.as_ref().map(|n| n.to_string()),
@@ -176,6 +186,7 @@ pub async fn get_properties(
         overridden: OverriddenFields {
             display_name: over.display_name.is_some(),
             group: over.group.is_some(),
+            elevation: over.elevation_min.is_some() || over.elevation_max.is_some(),
         },
         groups,
     }))
@@ -206,10 +217,35 @@ pub async fn put_properties(
 
     let (group, group_name) = resolve_grouping(&body)?;
 
+    // Finiteness first, so the ordering check below can compare with a
+    // plain `>=` rather than a negated `<` -- clearer, and correct only
+    // because NaN has already been ruled out by this point.
+    for (label, value) in [
+        ("minimum", body.elevation_min),
+        ("maximum", body.elevation_max),
+    ] {
+        if value.is_some_and(|v| !v.is_finite()) {
+            return Err(ApiError::bad_request(
+                "invalid_elevation_range",
+                format!("The elevation {label} must be a finite number."),
+            ));
+        }
+    }
+    if let (Some(min), Some(max)) = (body.elevation_min, body.elevation_max) {
+        if min >= max {
+            return Err(ApiError::bad_request(
+                "invalid_elevation_range",
+                format!("The elevation minimum ({min}) must be less than the maximum ({max})."),
+            ));
+        }
+    }
+
     let over = RadargramOverride {
         display_name,
         group,
         unlisted: body.unlisted,
+        elevation_min: body.elevation_min,
+        elevation_max: body.elevation_max,
     };
 
     overrides::update(project.documents(), |stored| {

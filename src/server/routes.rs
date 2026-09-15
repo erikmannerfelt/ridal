@@ -497,9 +497,10 @@ pub async fn dataset_detail(
 fn lookup_view(view: &str) -> Result<DatasetView, ApiError> {
     match view {
         "standard" => Ok(DatasetView::Standard),
+        "topo" => Ok(DatasetView::Topographic),
         _ => Err(ApiError::bad_request(
             "unknown_dataset_view",
-            format!("Unknown dataset view '{view}'. Supported: standard."),
+            format!("Unknown dataset view '{view}'. Supported: standard, topo."),
         )),
     }
 }
@@ -569,7 +570,7 @@ async fn render_under_permit<F>(
     render: F,
 ) -> Result<Vec<u8>, ApiError>
 where
-    F: FnOnce(&mut crate::server::render_service::RenderService) -> Result<Vec<u8>, String>
+    F: FnOnce(&mut crate::server::render_service::RenderService) -> Result<Vec<u8>, ApiError>
         + Send
         + 'static,
 {
@@ -611,7 +612,69 @@ where
                 "Render service lock was poisoned",
             )
         })?;
-        render(&mut service).map_err(|e| ApiError::internal("render_failed", e))
+        // `render` builds its own `ApiError` (a 404 for a well-formed but
+        // out-of-grid chunk, a 400 naming why the corrected view is
+        // unavailable, a 500 for anything else) rather than this function
+        // collapsing every failure to one status -- resolving the
+        // corrected view's raster height happens inside this closure too,
+        // under the same lock, since it needs the render service's
+        // memoized geometry.
+        render(&mut service)
+    })
+    .await
+    .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))?
+}
+
+/// The raster height `dataset_view` covers for this radargram: the source
+/// shape for [`DatasetView::Standard`], or the topographically corrected
+/// raster's (taller, sheared) sample count for
+/// [`DatasetView::Topographic`] (#168), which routing has to know *before*
+/// building a [`ViewerRaster`]/[`ChunkGrid`]/[`OverviewSpec`] -- a
+/// corrected-view chunk below `source_height / CHUNK_SIZE` rows is
+/// perfectly valid in the taller raster, and would 404 forever if this
+/// were built from the source shape the way every route did before this
+/// view existed.
+///
+/// Deliberately not gated by `state.render_permits`: resolving the
+/// geometry is bounded, cheap, and memoized after the first call per
+/// elevation range -- it renders nothing -- so gating it behind the same
+/// semaphore a render acquires would make a burst of chunk requests for an
+/// already-resolved corrected view compete for render slots over work
+/// that produces no image. `Standard` needs no lock at all.
+async fn resolve_view_height(
+    state: &Arc<AppState>,
+    radargram_id: &str,
+    dataset_view: DatasetView,
+    source_height: usize,
+    elevation_range: crate::render::topo::ElevationRange,
+) -> Result<usize, ApiError> {
+    if dataset_view == DatasetView::Standard {
+        return Ok(source_height);
+    }
+    let state = state.clone();
+    let radargram_id = radargram_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let radargram = state.catalog().radargram(&radargram_id).ok_or_else(|| {
+            ApiError::internal(
+                "dataset_unavailable",
+                "Dataset is cataloged but its render service failed to initialize.",
+            )
+        })?;
+        let mut service = radargram.service.lock().map_err(|_| {
+            ApiError::internal(
+                "render_service_poisoned",
+                "Render service lock was poisoned",
+            )
+        })?;
+        // Named as unavailability, not a server fault: an absent or
+        // malformed axis is an ordinary, expected outcome for a file that
+        // predates the `elevation`/`depth` axes this view needs, and the
+        // frontend surfaces the reason directly (the checkbox's disabled
+        // `title`, or this route's own error envelope for `ridal render
+        // --topo`'s HTTP-facing sibling).
+        service
+            .topo_raster_height(elevation_range)
+            .map_err(|e| ApiError::bad_request("topo_unavailable", e))
     })
     .await
     .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))?
@@ -638,14 +701,24 @@ pub async fn overview_image(
             )
         })?;
 
-    let (height, width) = radargram.shape;
-    let spec = OverviewSpec::new(width, height, 512);
-    // Owned before spawning: everything above borrows `state`.
+    let (source_height, width) = radargram.shape;
+    let elevation_range = entry.elevation_range();
     let radargram_id = entry.radargram_id.to_string();
+    let height = resolve_view_height(
+        &state,
+        &radargram_id,
+        dataset_view,
+        source_height,
+        elevation_range,
+    )
+    .await?;
+    let spec = OverviewSpec::new(width, height, 512);
     let render_profile = profile.clone();
 
     let bytes = render_under_permit(state.clone(), radargram_id, move |service| {
-        service.get_or_render_overview(&spec, dataset_view, &render_profile)
+        service
+            .get_or_render_overview(&spec, dataset_view, &render_profile, elevation_range)
+            .map_err(|e| ApiError::internal("render_failed", e))
     })
     .await?;
     Ok(image_response(bytes, &profile))
@@ -687,7 +760,17 @@ pub async fn chunk_image(
             )
         })?;
 
-    let (height, width) = radargram.shape;
+    let (source_height, width) = radargram.shape;
+    let elevation_range = entry.elevation_range();
+    let radargram_id = entry.radargram_id.to_string();
+    let height = resolve_view_height(
+        &state,
+        &radargram_id,
+        dataset_view,
+        source_height,
+        elevation_range,
+    )
+    .await?;
     let raster = ViewerRaster::new(width, height);
     let grid = ChunkGrid::new(raster);
     let chunk = grid.chunk(x, y).ok_or_else(|| {
@@ -696,13 +779,12 @@ pub async fn chunk_image(
             "The requested image chunk is outside the radargram bounds.",
         )
     })?;
-
-    // Owned before spawning: everything above borrows `state`.
-    let radargram_id = entry.radargram_id.to_string();
     let render_profile = profile.clone();
 
     let bytes = render_under_permit(state.clone(), radargram_id, move |service| {
-        service.get_or_render_chunk(&chunk, dataset_view, &render_profile)
+        service
+            .get_or_render_chunk(&chunk, dataset_view, &render_profile, elevation_range)
+            .map_err(|e| ApiError::internal("render_failed", e))
     })
     .await?;
     Ok(image_response(bytes, &profile))
@@ -1206,6 +1288,16 @@ pub async fn dataset_image(
             )
         })?;
     let (source_height, source_width) = radargram.shape;
+    let elevation_range = entry.elevation_range();
+    let radargram_id_owned = entry.radargram_id.to_string();
+    let height = resolve_view_height(
+        &state,
+        &radargram_id_owned,
+        dataset_view,
+        source_height,
+        elevation_range,
+    )
+    .await?;
 
     let format = match query.format.as_deref() {
         None | Some("") | Some("png") => crate::render::profile::ImageFormat::Png,
@@ -1239,8 +1331,10 @@ pub async fn dataset_image(
     // Derived the same way the viewer's own overview is, so the aspect
     // ratio matches what is on screen. Never upscaled past the source: an
     // image wider than the trace count carries no more information, and
-    // asking for one is more likely a mistake than an intent.
-    let spec = OverviewSpec::new(source_width, source_height, width.min(source_width));
+    // asking for one is more likely a mistake than an intent. `height` is
+    // the raster this view actually covers -- the corrected raster's own
+    // (taller) sample count for the topographic view, not the source's.
+    let spec = OverviewSpec::new(source_width, height, width.min(source_width));
 
     if spec.width.saturating_mul(spec.height) > MAX_IMAGE_PIXELS {
         return Err(ApiError::bad_request(
@@ -1273,15 +1367,16 @@ pub async fn dataset_image(
     };
     let content_type = format.content_type();
     let profile = crate::render::profile::RenderProfile { format, ..base };
-    let id = entry.radargram_id.to_string();
     let filename = format!(
-        "{id}-{}-{}x{}.{extension}",
+        "{radargram_id_owned}-{}-{}x{}.{extension}",
         profile.name, spec.width, spec.height
     );
     let render_profile = profile.clone();
 
-    let bytes = render_under_permit(state.clone(), id, move |service| {
-        service.get_or_render_overview(&spec, dataset_view, &render_profile)
+    let bytes = render_under_permit(state.clone(), radargram_id_owned, move |service| {
+        service
+            .get_or_render_overview(&spec, dataset_view, &render_profile, elevation_range)
+            .map_err(|e| ApiError::internal("render_failed", e))
     })
     .await?;
 
@@ -1904,17 +1999,24 @@ pub async fn dataset_attributes(
     })))
 }
 
-/// Distance/TWTT/depth axes for the viewer's cursor readout (item 3 of the
-/// planning round). `distance`/`twtt`/`depth` are written unconditionally
-/// by `export.rs`, but small hand-built test fixtures
-/// (`write_test_nc`/`write_test_nc_with_track`) do not write them -- so
-/// each axis degrades independently to `null` rather than failing the
-/// whole response.
+/// Distance/TWTT/depth/elevation axes for the viewer's cursor readout
+/// (item 3 of the planning round; `elevation` added for #168). All four
+/// are written unconditionally by `export.rs`, but small hand-built test
+/// fixtures (`write_test_nc`/`write_test_nc_with_track`) do not write them
+/// -- so each axis degrades independently to `null` rather than failing
+/// the whole response.
+///
+/// `elevation` is per-*trace* (unlike the other three, which are
+/// per-sample), the file's own raw values -- never the topographic view's
+/// clamped/interpolated `elev_eff`, since the point of showing this is to
+/// let someone spot a GPS spike and set a trusted range for it, which a
+/// silently-corrected readout would hide.
 #[derive(serde::Serialize)]
 struct AxesJson {
     distance: Option<Vec<f64>>,
     twtt: Option<Vec<f64>>,
     depth: Option<Vec<f64>>,
+    elevation: Option<Vec<f64>>,
 }
 
 pub async fn dataset_axes(
@@ -1932,6 +2034,106 @@ pub async fn dataset_axes(
         distance: super::track::read_f64_variable(&file, "distance").ok(),
         twtt: super::track::read_f64_variable(&file, "twtt").ok(),
         depth: super::track::read_f64_variable(&file, "depth").ok(),
+        elevation: super::track::read_f64_variable(&file, "elevation").ok(),
+    }))
+}
+
+#[derive(serde::Serialize)]
+struct TopoRangeJson {
+    min: Option<f64>,
+    max: Option<f64>,
+}
+
+#[derive(serde::Serialize)]
+struct TopoDiagnosticsJson {
+    suspect: bool,
+    full_span: f64,
+    robust_span: f64,
+    ratio: Option<f64>,
+    finite_count: usize,
+    interpolated_count: usize,
+}
+
+#[derive(serde::Serialize)]
+struct TopoGeometryJson {
+    dz: f64,
+    elevation_top: f64,
+    source_height: usize,
+    raster_height: usize,
+    /// Per-trace downward shift, in samples. ~90 KB of JSON on the largest
+    /// file in the test corpus, which is not a cheaper form to send: the
+    /// client needs the per-trace shift regardless, to place and cull picks
+    /// in the corrected view (#168), and it compresses well.
+    shift: Vec<f32>,
+    /// A stable identifier of this resolved geometry, carried by the
+    /// frontend as a chunk-URL query parameter so an elevation-range edit
+    /// (which keeps the same view/x/y/profile) busts the browser's own
+    /// image cache instead of being served a stale chunk. The server does
+    /// not read this back on a chunk request -- the current override is
+    /// always the source of truth for what a chunk renders.
+    fingerprint: String,
+    range: TopoRangeJson,
+    diagnostics: TopoDiagnosticsJson,
+}
+
+/// `GET /api/v1/datasets/{id}/views/topo/geometry`
+///
+/// Resolves (and, after the first call, returns the memoized) topographic
+/// geometry for the radargram's currently configured elevation range
+/// (#168). The frontend calls this on page load to decide the corrected
+/// view's checkbox availability -- disabled, with the `Err` reason here as
+/// its `title`, rather than offered and failing on the first toggle -- and
+/// again on toggle, to pick up an elevation-range edit made since the page
+/// loaded.
+pub async fn dataset_topo_geometry(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
+    let elevation_range = entry.elevation_range();
+    let radargram_id = entry.radargram_id.to_string();
+
+    let radargram = catalog.radargram(&radargram_id).ok_or_else(|| {
+        ApiError::internal(
+            "dataset_unavailable",
+            "Dataset is cataloged but its render service failed to initialize.",
+        )
+    })?;
+
+    let geometry = tokio::task::spawn_blocking(move || {
+        let mut service = radargram.service.lock().map_err(|_| {
+            ApiError::internal(
+                "render_service_poisoned",
+                "Render service lock was poisoned",
+            )
+        })?;
+        service
+            .topo_geometry(elevation_range)
+            .map_err(|e| ApiError::bad_request("topo_unavailable", e))
+    })
+    .await
+    .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))??;
+
+    Ok(Json(TopoGeometryJson {
+        dz: geometry.dz,
+        elevation_top: geometry.elevation_top,
+        source_height: geometry.source_height,
+        raster_height: geometry.raster_height,
+        shift: geometry.shift.to_vec(),
+        fingerprint: geometry.fingerprint(),
+        range: TopoRangeJson {
+            min: geometry.range.min,
+            max: geometry.range.max,
+        },
+        diagnostics: TopoDiagnosticsJson {
+            suspect: geometry.diagnostics.suspect,
+            full_span: geometry.diagnostics.full_span,
+            robust_span: geometry.diagnostics.robust_span,
+            ratio: geometry.diagnostics.ratio,
+            finite_count: geometry.diagnostics.finite_count,
+            interpolated_count: geometry.diagnostics.interpolated_count,
+        },
     }))
 }
 

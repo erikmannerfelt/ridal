@@ -88,6 +88,23 @@ pub struct RadargramOverride {
     /// word is chosen so nothing half-promises that.
     #[serde(default, skip_serializing_if = "is_false")]
     pub unlisted: bool,
+    /// The elevation range the topographically corrected view (#168) trusts
+    /// this radargram's `elevation` values within; outside it (or when
+    /// non-finite) a trace's elevation is interpolated from its nearest
+    /// trusted neighbours instead of drawn as-is. `None` on either side
+    /// means no bound on that side.
+    ///
+    /// A property of the *data* rather than of whoever is looking at it --
+    /// a GPS spike is a fact about the survey, not a viewing preference --
+    /// so it belongs here rather than to a per-session viewer setting, and
+    /// survives reprocessing (keyed on radargram id, like every other
+    /// override). Validated `min < max` at the point it is written
+    /// (`overrides_routes.rs`), not here: this type only carries what a
+    /// project has already decided.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elevation_max: Option<f64>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -351,6 +368,8 @@ mod tests {
                     display_name: DisplayName::from_input("Drønbreen centre line"),
                     group: Some(GroupMembership::Group(group("dronbreen-2022"))),
                     unlisted: false,
+                    elevation_min: None,
+                    elevation_max: None,
                 },
             );
             o.groups.insert(

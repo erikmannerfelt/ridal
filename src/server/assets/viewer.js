@@ -14,19 +14,66 @@ const CFG = window.RIDAL_VIEWER;
 
 const RADARGRAM_ID = CFG.radargramId;
 const GROUP = CFG.groupId;
-const VIEW = "standard";
 const CHUNK_SIZE = CFG.chunkSize;
-const N_COLS = CFG.nCols;
-const N_ROWS = CFG.nRows;
-const VIEWER_WIDTH = CFG.viewerWidth;
-const VIEWER_HEIGHT = CFG.viewerHeight;
 const SOURCE_WIDTH = CFG.sourceWidth;
 const SOURCE_HEIGHT = CFG.sourceHeight;
-// viewer pixels per source trace/sample -- inverts the render raster's
-// own downsampling scale, so the cursor-sync trace lookup below can map a
-// viewer pixel back to a real source trace/sample index.
-const RASTER_SCALE = VIEWER_WIDTH / SOURCE_WIDTH;
-const VERTICAL_RASTER_SCALE = VIEWER_HEIGHT / SOURCE_HEIGHT;
+
+/* Shared, mutable geometry state (#168), read live by both this file and
+ * picker.js on every call rather than captured once as `const`s at load.
+ * Toggling the topographically corrected view changes the display height
+ * and the raster<->source-sample mapping; capturing either at
+ * initialization would leave existing markers drawing through one mapping
+ * while newly placed picks are stored through another, corrupting picks
+ * silently -- precisely the failure "always store picks in source
+ * coordinates" exists to prevent. `window.RIDAL_GEOMETRY` (not a local
+ * variable) because picker.js is a separate classic script with no module
+ * boundary to this one (#120: no build step).
+ *
+ * `rasterScale`/`verticalRasterScale` stay `1` in both views: the viewer
+ * never resamples (`ARCHITECTURE.md`), in the corrected view exactly as
+ * in the standard one -- a corrected raster is *taller*, from the shear,
+ * never resampled to a different scale. They are kept as named fields
+ * rather than assumed to be `1` inline, so a future genuinely-downsampled
+ * raster (if one is ever reintroduced) has one place to change this.
+ * `shift` is the per-trace downward shift in samples the corrected view
+ * needs to convert between a raster row and a source sample; `null`
+ * outside that view.
+ */
+window.RIDAL_GEOMETRY = {
+  view: "standard",
+  sourceWidth: SOURCE_WIDTH,
+  sourceHeight: SOURCE_HEIGHT,
+  rasterWidth: CFG.viewerWidth,
+  rasterHeight: CFG.viewerHeight,
+  nCols: CFG.nCols,
+  nRows: CFG.nRows,
+  rasterScale: CFG.viewerWidth / SOURCE_WIDTH,
+  verticalRasterScale: CFG.viewerHeight / SOURCE_HEIGHT,
+  shift: null,
+  fingerprint: null,
+};
+
+/* Per-trace shift, linearly interpolated at a fractional trace index, or
+ * `0` outside the corrected view. The inverse of `TopoSource`'s own
+ * per-trace shift lookup (`src/render/topo.rs`) -- the same number, read
+ * back rather than recomputed, which is what keeps a placed pick and the
+ * render it was placed on agreeing about where "here" is. */
+function shiftAt(trace) {
+  const g = window.RIDAL_GEOMETRY;
+  if (g.view !== "topo" || !g.shift || g.shift.length === 0) return 0;
+  const clamped = Math.min(Math.max(trace, 0), g.shift.length - 1);
+  const i0 = Math.floor(clamped);
+  const i1 = Math.min(i0 + 1, g.shift.length - 1);
+  const f = clamped - i0;
+  return g.shift[i0] * (1 - f) + g.shift[i1] * f;
+}
+
+/* A short alias onto the one geometry object, not a copy: `G.nCols` etc.
+ * always reads whatever the most recent toggle wrote, since object
+ * property lookups go through the live reference. Everything below reads
+ * through `G` rather than caching a field in a local, for the same reason
+ * the object exists at all. */
+const G = window.RIDAL_GEOMETRY;
 
 // The project's default stretch, already validated against the offered
 // factors server-side, so this is the value the dropdown is showing.
@@ -37,7 +84,14 @@ function currentProfile() {
 }
 
 function chunkUrl(x, y, profile) {
-  return RIDAL.apiPath("datasets", RADARGRAM_ID, "views", VIEW, "chunks", profile, x, y);
+  const base = RIDAL.apiPath("datasets", RADARGRAM_ID, "views", G.view, "chunks", profile, x, y);
+  // The corrected view's geometry fingerprint, as a cache-busting query
+  // parameter (#168): an elevation-range edit keeps the same
+  // view/x/y/profile, so the URL would otherwise be unchanged and a
+  // browser could serve a stale cached chunk for it. The server does not
+  // read this back -- the current override is always the source of truth
+  // for what a chunk renders.
+  return G.view === "topo" && G.fingerprint ? `${base}?fp=${G.fingerprint}` : base;
 }
 
 function chunkBounds(x, y, scale) {
@@ -51,12 +105,35 @@ function chunkBounds(x, y, scale) {
   // (the raster rarely divides evenly), and the server renders them at
   // exactly that size. Placing them in a full CHUNK_SIZE box instead
   // would stretch them over their neighbours' edges.
-  const validWidth = Math.min(CHUNK_SIZE, VIEWER_WIDTH - x * CHUNK_SIZE);
-  const validHeight = Math.min(CHUNK_SIZE, VIEWER_HEIGHT - y * CHUNK_SIZE);
+  const validWidth = Math.min(CHUNK_SIZE, G.rasterWidth - x * CHUNK_SIZE);
+  const validHeight = Math.min(CHUNK_SIZE, G.rasterHeight - y * CHUNK_SIZE);
   return [
     [-(y * CHUNK_SIZE + validHeight), x * CHUNK_SIZE * scale],
     [-(y * CHUNK_SIZE), (x * CHUNK_SIZE + validWidth) * scale],
   ];
+}
+
+/* Chunk (x, y)'s raster-row data band in the corrected view: the union,
+ * over its own columns, of `[shift[c], shift[c] + sourceHeight)` --
+ * widened to `[min shift, max shift + sourceHeight)` across the chunk
+ * rather than tracked per column, which is a superset (safe: it can keep
+ * a chunk with no *own* data next to one that has some, never drop one
+ * that does) computed from the shift array already in hand. `null`
+ * outside the corrected view, where every chunk is a candidate exactly as
+ * before. */
+function chunkDataBand(x) {
+  if (G.view !== "topo" || !G.shift) return null;
+  const c0 = x * CHUNK_SIZE;
+  const c1 = Math.min(c0 + CHUNK_SIZE, G.shift.length);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let c = c0; c < c1; c++) {
+    const s = G.shift[c];
+    if (s < lo) lo = s;
+    if (s > hi) hi = s;
+  }
+  if (!isFinite(lo)) return null;
+  return [lo, hi + G.sourceHeight];
 }
 
 /* One chunk overlay, fetched only once the browser decides it is near the
@@ -83,7 +160,11 @@ function chunkImage(x, y, profile) {
 }
 
 /* Which chunks the current view touches, padded by one chunk so a small
- * pan reveals an already-loaded tile rather than a blank one. */
+ * pan reveals an already-loaded tile rather than a blank one. In the
+ * corrected view, a chunk whose row range cannot contain any data (per
+ * `chunkDataBand`) is skipped regardless of viewport overlap -- panning
+ * into the wedge above a sheared trace must not fetch a chunk that can
+ * only ever be NaN. */
 function chunksInView(scale) {
   const bounds = map.getBounds();
   const west = bounds.getWest() - CHUNK_SIZE;
@@ -91,8 +172,13 @@ function chunksInView(scale) {
   const south = bounds.getSouth() - CHUNK_SIZE;
   const north = bounds.getNorth() + CHUNK_SIZE;
   const found = [];
-  for (let y = 0; y < N_ROWS; y++) {
-    for (let x = 0; x < N_COLS; x++) {
+  for (let x = 0; x < G.nCols; x++) {
+    const band = chunkDataBand(x);
+    for (let y = 0; y < G.nRows; y++) {
+      if (band) {
+        const [rowLo, rowHi] = [y * CHUNK_SIZE, (y + 1) * CHUNK_SIZE];
+        if (rowHi <= band[0] || rowLo >= band[1]) continue;
+      }
       const [[lat0, lng0], [lat1, lng1]] = chunkBounds(x, y, scale);
       if (lng1 < west || lng0 > east || lat1 < south || lat0 > north) continue;
       found.push([x, y]);
@@ -156,9 +242,9 @@ window.RIDAL_XSCALE = xScale;
 function fitToScale(scale) {
   const size = map.getSize();
   // Viewer px that span the container once the full sample range fits it.
-  const widthAtFullHeight = size.y > 0 ? (VIEWER_HEIGHT * size.x) / size.y : VIEWER_WIDTH * scale;
-  const width = Math.min(VIEWER_WIDTH * scale, widthAtFullHeight);
-  map.fitBounds([[-VIEWER_HEIGHT, 0], [0, width]]);
+  const widthAtFullHeight = size.y > 0 ? (G.rasterHeight * size.x) / size.y : G.rasterWidth * scale;
+  const width = Math.min(G.rasterWidth * scale, widthAtFullHeight);
+  map.fitBounds([[-G.rasterHeight, 0], [0, width]]);
 }
 fitToScale(xScale);
 loadChunks(map, currentProfile(), xScale);
@@ -435,13 +521,17 @@ readout.textContent = `trace - / ${SOURCE_WIDTH}`;
 map.on('mousemove', (event) => {
   const viewerX = event.latlng.lng / xScale;
   const viewerY = -event.latlng.lat;
-  if (viewerX < 0 || viewerX > VIEWER_WIDTH || viewerY < 0 || viewerY > VIEWER_HEIGHT) {
+  if (viewerX < 0 || viewerX > G.rasterWidth || viewerY < 0 || viewerY > G.rasterHeight) {
     cursorMarker.setStyle({ opacity: 0 });
     readout.textContent = '';
     return;
   }
-  const traceIndex = viewerX / RASTER_SCALE;
-  const sampleIndex = viewerY / VERTICAL_RASTER_SCALE;
+  const traceIndex = viewerX / G.rasterScale;
+  const rasterRow = viewerY / G.verticalRasterScale;
+  // Distance/TWTT/depth are all indexed by *source* sample, so a raster
+  // row in the corrected view has to invert the shear first -- the
+  // cursor-sync twin of `toIndex` in picker.js.
+  const sampleIndex = rasterRow - shiftAt(traceIndex);
 
   let text = `trace ${Math.round(traceIndex)} / ${SOURCE_WIDTH}`;
   if (axes) {
@@ -451,6 +541,17 @@ map.on('mousemove', (event) => {
     if (distance !== null) text += ` · ${distance.toFixed(1)} m`;
     if (twtt !== null) text += ` · TWTT ${twtt.toFixed(1)} ns`;
     if (depth !== null) text += ` · depth ${depth.toFixed(1)} m`;
+    // Point elevation = this trace's own surface elevation minus this
+    // sample's depth -- shown in every view, not only the corrected one,
+    // since the point of it is to let someone read off a radargram's raw
+    // `elevation` values (spikes included) well enough to set a trusted
+    // range for the corrected view in the catalog's properties dialog.
+    // `axes.elevation` is per-*trace*, so it is looked up by trace index
+    // even though `axisValue` is the same helper the per-sample axes use.
+    const surfaceElevation = axisValue(axes.elevation, traceIndex);
+    if (surfaceElevation !== null && depth !== null) {
+      text += ` · elev. ${(surfaceElevation - depth).toFixed(1)} m`;
+    }
   }
   readout.textContent = text;
 
@@ -653,7 +754,10 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
 
   function describeChoice() {
     const width = Number(widthSelect.value) || SOURCE_WIDTH;
-    const height = Math.max(1, Math.round((SOURCE_HEIGHT * width) / SOURCE_WIDTH));
+    // `G.rasterHeight`, not the source height: the corrected view's
+    // download is the taller, sheared raster, and the estimate should
+    // match what `G.view` above will actually ask the server for.
+    const height = Math.max(1, Math.round((G.rasterHeight * width) / SOURCE_WIDTH));
     const megapixels = (width * height) / 1e6;
     // Deliberately about size rather than time. An earlier version warned
     // that large widths were slow, from timings taken on a debug build --
@@ -680,6 +784,10 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
 
   bind('dl-image', () => {
     menu.open = false;
+    // Re-estimated on open, not only on width/format change: the
+    // corrected view can have been toggled since the dialog last
+    // recomputed, which changes the height half of the estimate.
+    describeChoice();
     imageDialog.showModal();
   });
   document
@@ -693,6 +801,161 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     });
     if (formatSelect.value === 'jpeg') params.set('quality', qualitySelect.value);
     imageDialog.close();
-    go(`${datasetUrl}/views/${VIEW}/image?${params}`);
+    // `G.view`, not a fixed "standard": the downloaded image matches
+    // whatever is on screen, corrected view included (#168).
+    go(`${datasetUrl}/views/${G.view}/image?${params}`);
   });
+})();
+
+/* --- Topographic correction (#168) ---------------------------------------
+ *
+ * A render-time-only vertical shear of the existing `data` array -- see
+ * `src/render/topo.rs`'s module docs for the geometry. Nothing here is
+ * precomputed or stored; toggling the checkbox changes which view the
+ * viewer requests chunks/overviews from and updates the shared
+ * `window.RIDAL_GEOMETRY` picker.js reads for placing and drawing picks.
+ */
+(function setupTopoView() {
+  const toggle = document.getElementById('topo-toggle');
+  const row = document.getElementById('topo-toggle-row');
+  const recentreButton = document.getElementById('topo-recentre');
+  if (!toggle) return;
+
+  const geometryUrl = RIDAL.apiPath("datasets", RADARGRAM_ID, "views", "topo", "geometry");
+
+  /* Fetch and validate the geometry. Returns the parsed body on success;
+   * on failure, disables the checkbox with the reason as its `title` (the
+   * rule that unavailability must never be silent) and returns null. */
+  async function fetchGeometry() {
+    try {
+      const response = await fetch(geometryUrl);
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null);
+        const reason = failure?.error?.message || `Could not check availability (${response.status}).`;
+        toggle.disabled = true;
+        toggle.checked = false;
+        row.title = reason;
+        return null;
+      }
+      row.title = '';
+      toggle.disabled = false;
+      return await response.json();
+    } catch (error) {
+      toggle.disabled = true;
+      toggle.checked = false;
+      row.title = `Could not check availability: ${error.message}`;
+      return null;
+    }
+  }
+
+  const mapEl = document.getElementById('map');
+
+  /* Apply a fetched geometry (or its absence, for turning the view back
+   * off) to the shared state, in the order #168 specifies: update the
+   * shared geometry state and view name, rebuild chunk overlays and
+   * bounds, redraw picks, then recentre. Any other order draws something
+   * through a mapping that no longer applies.
+   *
+   * "Recentre" here means keeping the same underlying (trace,
+   * source-sample) point under the same screen position, not refitting
+   * the view -- refitting to the data band on the way in and resetting to
+   * the start of the radargram on the way out (the previous behaviour)
+   * both threw away where the person doing the toggling was actually
+   * looking. Only the vertical placement needs correcting for the shear;
+   * the horizontal (trace) mapping and the zoom level are untouched by
+   * this view, so `lng`/zoom are carried straight through. */
+  function applyView(on, geometry) {
+    const center = map.getCenter();
+    const trace = center.lng / xScale / G.rasterScale;
+    const oldRasterRow = -center.lat / G.verticalRasterScale;
+    const sourceSample = oldRasterRow - shiftAt(trace);
+
+    if (on && geometry) {
+      G.view = "topo";
+      G.rasterHeight = geometry.raster_height;
+      G.nRows = Math.ceil(geometry.raster_height / CHUNK_SIZE);
+      G.shift = Float32Array.from(geometry.shift);
+      G.fingerprint = geometry.fingerprint;
+      // Matches `renderer.rs`'s `PAD_VALUE` exactly, so the wedge of
+      // genuine no-data above the sheared surface blends into the map's
+      // own background instead of showing a hard-edged rectangle against
+      // it (#168 feedback).
+      mapEl.classList.add('map-topo');
+      if (geometry.diagnostics && geometry.diagnostics.suspect) {
+        RIDAL.reportProblem(
+          'download-error',
+          "This radargram's elevation spread looks like it may contain GPS " +
+            "spikes rather than real topography. Check it on the catalog " +
+            "page's properties dialog, which can set a trusted elevation " +
+            "range for this radargram.",
+          'note',
+        );
+      }
+    } else {
+      G.view = "standard";
+      G.rasterHeight = CFG.viewerHeight;
+      G.nRows = CFG.nRows;
+      G.shift = null;
+      G.fingerprint = null;
+      mapEl.classList.remove('map-topo');
+    }
+    recentreButton.hidden = G.view !== "topo";
+
+    const newRasterRow = sourceSample + shiftAt(trace);
+    const newLat = -newRasterRow * G.verticalRasterScale;
+    map.setView([newLat, center.lng], map.getZoom(), { animate: false });
+
+    loadChunks(map, currentProfile(), xScale);
+    if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
+  }
+
+  /* Fit the view vertically to the data band over the traces currently on
+   * screen -- the way back from panning into empty space above or below
+   * the corrected surface (#168). */
+  function recentreToData() {
+    if (G.view !== "topo" || !G.shift) return;
+    const bounds = map.getBounds();
+    const traceLo = Math.max(0, Math.floor(bounds.getWest() / xScale / G.rasterScale));
+    const traceHi = Math.min(
+      G.sourceWidth - 1,
+      Math.ceil(bounds.getEast() / xScale / G.rasterScale),
+    );
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let t = traceLo; t <= traceHi; t++) {
+      const s = G.shift[t];
+      if (s < lo) lo = s;
+      if (s > hi) hi = s;
+    }
+    if (!isFinite(lo)) return;
+    const top = -(hi + G.sourceHeight);
+    const bottom = -lo;
+    map.fitBounds(
+      [[top, bounds.getWest()], [bottom, bounds.getEast()]],
+      { animate: false },
+    );
+  }
+
+  toggle.addEventListener('change', async () => {
+    const on = toggle.checked;
+    toggle.disabled = true;
+    // Re-fetched on every toggle, not just the first: an elevation-range
+    // edit made in the catalog's properties dialog since page load must
+    // take effect the next time this view is turned on.
+    const geometry = on ? await fetchGeometry() : null;
+    if (on && !geometry) {
+      toggle.checked = false;
+      toggle.disabled = false;
+      return;
+    }
+    applyView(on, geometry);
+    toggle.disabled = false;
+  });
+
+  recentreButton.addEventListener('click', recentreToData);
+
+  // Availability check on load, so the checkbox starts in its correct
+  // state (disabled with a reason, or enabled) rather than offering a
+  // view that will only fail on the first toggle.
+  fetchGeometry();
 })();

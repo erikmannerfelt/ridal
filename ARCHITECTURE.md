@@ -317,7 +317,47 @@ above:
    `?min=…&max=…&contrast=…` on every chunk request would make each one
    a distinct, uncacheable render variant and let a client trivially
    thrash the cache.
-4. A topographically corrected `DatasetView` — `DatasetView` is already
-   an enum with one variant specifically so this can be added without
-   reshaping the API. A significant bonus, not a blocker for
-   digitization.
+
+## Topographic correction
+
+`DatasetView::Topographic` (#168) is a render-time-only vertical shear of
+the `data` array, applied by `render::topo::TopoSource` — a decorator
+over `AmplitudeSource`, exactly like every other stage of the [render
+pipeline](#render-pipeline): it reports a taller, sheared shape and
+assembles each output row from the appropriately shifted source row(s),
+so chunks, overview banding, `ridal render`, the GUI image download and
+even the amplitude-limits sampler (which deliberately does *not* read
+through it — see below) all work unchanged. Nothing is precomputed or
+stored, and no interpretation is ever saved in the corrected coordinate
+space — distinct from `gpr.rs::correct_topography`'s `data_topocorr`,
+which writes a NetCDF product on a slightly different (`height /
+max_depth`) vertical scale, by design (see `topo.rs`'s module docs).
+
+- **Geometry** (`TopoGeometry`, resolved by `topo::resolve_topo_geometry`
+  from the `elevation`/`depth` axes) is the one place the numbers are
+  computed: `dz` (median positive diff of `depth`), `E_top` (max
+  effective elevation) and a per-trace `shift`, memoized per
+  `RenderService` and re-resolved only when the requested elevation range
+  changes. `routes.rs` resolves it (via `RenderService::topo_raster_height`)
+  *before* building a chunk/overview's geometry — a corrected-view chunk
+  below the source's own row count is perfectly valid in the taller
+  raster, and routes built from the source shape the way every other view
+  is would 404 it forever.
+- **Amplitude limits are always sampled from the standard source**,
+  regardless of which view was requested: the distribution a shear
+  relocates is unchanged by relocating it, so resampling through
+  `TopoSource` would read its NaN wedges into the percentile estimate and
+  shift contrast every time the checkbox is toggled.
+- **Erroneous elevations** (GPS spikes) never silently inflate the
+  raster: non-finite values and values outside a project-configured
+  `elevation_min`/`elevation_max` range (`overrides.json`, edited from
+  the catalog's properties dialog — a property of the survey, not of
+  whoever is viewing it) are interpolated from their nearest trusted
+  neighbours, and a spread that looks like spikes (full span far
+  exceeding the 1-99th percentile span) is flagged in the geometry
+  response and surfaced as a viewer warning, never auto-corrected.
+- **The catalog's own index overviews stay `Standard`** — only the
+  viewer offers the corrected view, and its checkbox is disabled with the
+  unavailability reason as its `title` when a radargram lacks usable
+  axes, both from an on-load availability check and from
+  `ridal render --topo` failing the same way on the command line.

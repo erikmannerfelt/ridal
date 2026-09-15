@@ -467,6 +467,16 @@ section.group {
   border-radius: var(--radius-md);
 }
 
+/* The topographically corrected view (#168) has a genuine wedge of no
+ * data above the sheared surface, which otherwise shows as a hard-edged
+ * rectangle of `--color-viewer-bg` against the tiles' own NaN padding --
+ * a different, much lighter grey. `rgb(96, 96, 96)` matches
+ * `renderer.rs`'s `PAD_VALUE` exactly, so the two are indistinguishable
+ * and the wedge reads as part of the image rather than as missing tiles. */
+#map.map-topo {
+  background: rgb(96, 96, 96);
+}
+
 #overview-map {
   flex: 1 1 260px;
   height: var(--map-height-viewer);

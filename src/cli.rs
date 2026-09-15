@@ -59,6 +59,13 @@ pub struct RenderArgs {
     #[arg(long)]
     pub quality: Option<u8>,
 
+    /// Render the topographically corrected view instead of the standard
+    /// one (#168). Fails with a clear reason rather than falling back to a
+    /// standard render when the file lacks usable `elevation`/`depth`
+    /// axes.
+    #[arg(long)]
+    pub topo: bool,
+
     /// Suppress progress messages.
     #[arg(short, long)]
     pub quiet: bool,
@@ -911,8 +918,32 @@ fn render_command(args: RenderArgs) -> Result<(), String> {
         width: args.width,
         quality: args.quality,
     };
-    let (width, height) =
-        crate::render::oneshot::render_path_to_file(&args.input, &output, &request)?;
+
+    let (width, height) = if args.topo {
+        // The CLI's own copy of what `render_service.rs` does server-side:
+        // read and validate the axes, resolve the geometry through the
+        // same function the server uses, then wrap the source. Absent or
+        // malformed axes fail here with the reason from
+        // `topo::resolve_topo_geometry`, never a silent standard render.
+        let reader = crate::source::SourceReader::open(&args.input)?;
+        let (source_height, n_traces) = crate::source::AmplitudeSource::shape(&reader);
+        let elevation = reader.read_axis_f64("elevation").ok();
+        let depth = reader
+            .read_axis_f64("depth")
+            .ok()
+            .map(|values| values.into_iter().map(|v| v as f32).collect::<Vec<f32>>());
+        let geometry = crate::render::topo::resolve_topo_geometry(
+            elevation.as_deref(),
+            depth.as_deref(),
+            n_traces,
+            source_height,
+            crate::render::topo::ElevationRange::NONE,
+        )?;
+        let source = crate::render::topo::TopoSource::new(&reader, &geometry);
+        crate::render::oneshot::render_to_file(&source, &output, &request)?
+    } else {
+        crate::render::oneshot::render_path_to_file(&args.input, &output, &request)?
+    };
 
     if !args.quiet {
         println!(

@@ -1814,6 +1814,64 @@ async fn an_operator_can_rename_a_radargram_without_restarting_the_server() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn an_operator_can_set_and_revert_an_elevation_range() {
+    // #168: the elevation range lives on the same properties document as
+    // display_name/group, edited and reverted the same way.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+
+    let before = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.text);
+    assert!(before.body["effective"]["elevation_min"].is_null());
+    assert_eq!(before.body["overridden"]["elevation"], false);
+
+    // min >= max is refused rather than silently accepted and then
+    // excluding every trace once the corrected view tries to use it.
+    let invalid = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"unlisted": false, "elevation_min": 100.0, "elevation_max": 100.0}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(invalid.status, StatusCode::BAD_REQUEST, "{}", invalid.text);
+    assert_eq!(invalid.body["error"]["code"], "invalid_elevation_range");
+
+    let saved = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"unlisted": false, "elevation_min": 50.0, "elevation_max": 150.0}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{}", saved.text);
+
+    let after = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert_eq!(after.body["effective"]["elevation_min"], 50.0);
+    assert_eq!(after.body["effective"]["elevation_max"], 150.0);
+    assert_eq!(after.body["overridden"]["elevation"], true);
+
+    // Reverting (both bounds null) leaves no trace, exactly like
+    // display_name.
+    let reverted = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"unlisted": false, "elevation_min": null, "elevation_max": null}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(reverted.status, StatusCode::NO_CONTENT, "{}", reverted.text);
+    let after_revert = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert!(after_revert.body["effective"]["elevation_min"].is_null());
+    assert_eq!(after_revert.body["overridden"]["elevation"], false);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_picker_cannot_edit_properties() {
     let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {

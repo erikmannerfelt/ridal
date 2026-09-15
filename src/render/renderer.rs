@@ -107,10 +107,24 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
     /// one, so a radargram whose single source row already exceeds the
     /// budget still renders (one row at a time) rather than dividing to
     /// zero and looping forever.
+    ///
+    /// `vertical_read_overhead` (zero for every source but
+    /// [`crate::render::topo::TopoSource`]) is reserved out of the budget
+    /// before dividing it into bands: a topographically sheared source
+    /// additionally spans the shift range across a band's columns, so a
+    /// band sized only from `OVERVIEW_READ_BUDGET_BYTES` would overshoot
+    /// the budget by roughly that span -- a 2-3x overshoot measured on a
+    /// long profile with a few hundred metres of relief. Reserving it here
+    /// shrinks the band instead, so the read `read_window` actually
+    /// performs (which already accounts for the shear correctly,
+    /// independent of this) stays within budget.
     fn overview_rows_per_band(&self, spec: &OverviewSpec) -> usize {
         let (src_h, src_w) = self.reader.shape();
+        let overhead = self.reader.vertical_read_overhead(0, src_w);
         let bytes_per_source_row = src_w.max(1) * std::mem::size_of::<f32>();
-        let max_source_rows = (OVERVIEW_READ_BUDGET_BYTES / bytes_per_source_row.max(1)).max(1);
+        let max_source_rows = (OVERVIEW_READ_BUDGET_BYTES / bytes_per_source_row.max(1))
+            .saturating_sub(overhead)
+            .max(1);
         let source_rows_per_output_row = src_h as f64 / spec.height.max(1) as f64;
         if source_rows_per_output_row <= 1.0 {
             return spec.height.max(1);
@@ -524,6 +538,52 @@ mod tests {
 
         let spec = OverviewSpec::new(500, 40, 100);
         assert!(renderer.overview_rows_per_band(&spec) >= 1);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_high_relief_topo_source_shrinks_the_band_to_stay_in_budget() {
+        // A pathological shift vector (traces alternating between no shift
+        // and a huge one) blows up the per-band read if band sizing does
+        // not account for it -- the overshoot #168 measured on a real
+        // survey. `vertical_read_overhead` must shrink the band enough
+        // that the band's *actual* inner read (rows_per_band *
+        // source_rows_per_output_row + overhead) stays within budget.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        let height = 200;
+        let width = 300;
+        write_asymmetric_nc(&path, height, width);
+        let reader = SourceReader::open(&path).unwrap();
+
+        let elevation: Vec<f64> = (0..width)
+            .map(|i| if i % 2 == 0 { 0.0 } else { 5000.0 })
+            .collect();
+        let depth: Vec<f32> = (0..height).map(|i| i as f32).collect();
+        let geometry = super::super::topo::resolve_topo_geometry(
+            Some(&elevation),
+            Some(&depth),
+            width,
+            height,
+            super::super::topo::ElevationRange::NONE,
+        )
+        .unwrap();
+        let source = super::super::topo::TopoSource::new(&reader, &geometry);
+        let renderer = Renderer::new(&source);
+
+        let spec = OverviewSpec::new(width, geometry.raster_height, 100);
+        let band = renderer.overview_rows_per_band(&spec);
+        assert!(band >= 1);
+
+        let overhead = source.vertical_read_overhead(0, width);
+        let source_rows_per_output_row = geometry.raster_height as f64 / spec.height.max(1) as f64;
+        let estimated_read_rows = (band as f64 * source_rows_per_output_row) as usize + overhead;
+        let bytes_per_source_row = width * std::mem::size_of::<f32>();
+        assert!(
+            estimated_read_rows * bytes_per_source_row <= OVERVIEW_READ_BUDGET_BYTES,
+            "band size {band} with overhead {overhead} exceeds the read budget"
+        );
     }
 
     #[test]

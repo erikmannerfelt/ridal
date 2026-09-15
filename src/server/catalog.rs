@@ -41,6 +41,15 @@ pub struct CatalogEntry {
     /// unlisted radargram is left out of listings and still reachable by
     /// anyone who knows its id.
     pub unlisted: bool,
+    /// Set by a project override (#168). The elevation range the
+    /// topographically corrected view trusts this radargram's per-trace
+    /// `elevation` values within; `None` on either side means no bound.
+    /// Files never carry a counterpart for this -- it has no `from_file`
+    /// entry, unlike `display_name`/`group_name`/`group_id` -- since the
+    /// sane range for a survey is a project decision, not something a
+    /// processed file states about itself.
+    pub elevation_min: Option<f64>,
+    pub elevation_max: Option<f64>,
     /// What the file said, before the project's overrides (#145).
     ///
     /// Kept beside the resolved values so the Edit properties dialog can
@@ -66,6 +75,15 @@ impl CatalogEntry {
         match &self.display_name {
             Some(name) => name.to_string(),
             None => self.radargram_id.to_string(),
+        }
+    }
+
+    /// The elevation range the topographically corrected view (#168)
+    /// should trust this radargram's elevations within.
+    pub fn elevation_range(&self) -> crate::render::topo::ElevationRange {
+        crate::render::topo::ElevationRange {
+            min: self.elevation_min,
+            max: self.elevation_max,
         }
     }
 }
@@ -411,6 +429,8 @@ impl Catalog {
                 shape: meta.shape,
                 relative_path: candidate.relative_path.clone(),
                 unlisted: false,
+                elevation_min: None,
+                elevation_max: None,
                 root: candidate.root,
                 from_file: FileMetadata {
                     display_name: display_name.clone(),
@@ -679,6 +699,8 @@ fn apply_override(entry: &mut CatalogEntry, overrides: &CatalogOverrides) {
         entry.group_id = new_id.cloned();
     }
     entry.unlisted = over.unlisted;
+    entry.elevation_min = over.elevation_min;
+    entry.elevation_max = over.elevation_max;
 }
 
 /// One representative name per group id (see [`Catalog::group_names`]):
@@ -1644,6 +1666,8 @@ mod tests {
             relative_path: "a.nc".to_string(),
             root: 0,
             unlisted: false,
+            elevation_min: None,
+            elevation_max: None,
             from_file: FileMetadata::default(),
         };
         assert_eq!(entry.effective_label(), "Kroppbreen line 1");

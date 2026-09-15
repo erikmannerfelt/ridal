@@ -87,6 +87,21 @@ pub trait AmplitudeSource {
         }
         Ok(samples)
     }
+
+    /// Source rows a `read_window` over `[col0, col1)` fetches beyond the
+    /// naive `row1 - row0` its caller asked for.
+    ///
+    /// Zero for every source that reads exactly its own footprint, which is
+    /// every one of them except [`crate::render::topo::TopoSource`]: a
+    /// vertical shear makes a raster-row window span a wider range of
+    /// *source* rows than its own height, by an amount that depends on the
+    /// shift spread over the requested columns. `Renderer::overview_rows_per_band`
+    /// is the caller -- it uses this to size overview bands so their reads
+    /// stay within the read budget, without every other source needing to
+    /// know that concept exists.
+    fn vertical_read_overhead(&self, _col0: usize, _col1: usize) -> usize {
+        0
+    }
 }
 
 /// An in-memory array as a render source.
@@ -152,6 +167,24 @@ impl SourceReader {
         }
         let shape = (dims[0].len(), dims[1].len());
         Ok(Self { file, shape })
+    }
+}
+
+impl SourceReader {
+    /// Read a 1-D variable as `f64` from the same open handle
+    /// `read_window` reads `data` from, coercing whatever numeric type it
+    /// was stored as. Used for the `elevation`/`depth` axes a topographic
+    /// correction needs (#168) -- a second `netcdf::open` per view would
+    /// work too, but this file is already open, and `netcdf-c` is not
+    /// thread-safe, so avoiding a second handle avoids a second point of
+    /// contention on the process-wide lock.
+    pub fn read_axis_f64(&self, name: &str) -> Result<Vec<f64>, String> {
+        let var = self
+            .file
+            .variable(name)
+            .ok_or_else(|| format!("Missing variable '{name}'"))?;
+        var.get_values::<f64, _>(..)
+            .map_err(|e| format!("Failed to read variable '{name}': {e}"))
     }
 }
 

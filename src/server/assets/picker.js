@@ -109,8 +109,6 @@
   }
 
   function initPicker() {
-    const RASTER_SCALE = CFG.viewerWidth / CFG.sourceWidth;
-    const VERTICAL_RASTER_SCALE = CFG.viewerHeight / CFG.sourceHeight;
     const DEFAULT_COLOR = "#ffcc00";
 
     const map = window.RIDAL_MAP;
@@ -174,18 +172,35 @@
     };
 
     // --- Coordinate conversion ----------------------------------------------
+    //
+    // Reads `window.RIDAL_GEOMETRY` live on every call rather than a
+    // `RASTER_SCALE`/`VERTICAL_RASTER_SCALE` captured once at
+    // initialization (#168): toggling the topographically corrected view
+    // changes the raster height and the raster<->source-sample mapping,
+    // and capturing either at load would leave existing markers drawing
+    // through one mapping while newly placed picks are stored through
+    // another -- corrupting picks silently, which is exactly what "always
+    // store picks in source coordinates" exists to prevent.
+    //
+    // The corrected view's extra step is `shiftAt` (defined in
+    // viewer.js): `toIndex` inverts it to recover the *source* sample a
+    // click landed on, `toLatLng` re-applies it to place a stored
+    // source-space pick back on the sheared raster. Both are no-ops
+    // outside that view, so the standard view's math is unchanged.
 
     function toIndex(latlng) {
       const scale = window.RIDAL_XSCALE || 1;
-      return [
-        latlng.lng / scale / RASTER_SCALE,
-        -latlng.lat / VERTICAL_RASTER_SCALE,
-      ];
+      const g = window.RIDAL_GEOMETRY;
+      const trace = latlng.lng / scale / g.rasterScale;
+      const rasterRow = -latlng.lat / g.verticalRasterScale;
+      return [trace, rasterRow - shiftAt(trace)];
     }
 
     function toLatLng(trace, sample) {
       const scale = window.RIDAL_XSCALE || 1;
-      return [-sample * VERTICAL_RASTER_SCALE, trace * RASTER_SCALE * scale];
+      const g = window.RIDAL_GEOMETRY;
+      const rasterRow = sample + shiftAt(trace);
+      return [-rasterRow * g.verticalRasterScale, trace * g.rasterScale * scale];
     }
 
     /** Show the colour a layer's lines are actually drawn in.
