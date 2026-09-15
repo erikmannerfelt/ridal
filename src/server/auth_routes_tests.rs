@@ -1195,6 +1195,89 @@ async fn wanting_the_neutral_value_is_a_choice_rather_than_an_absence() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn a_preference_save_leaves_the_settings_it_does_not_mention_alone() {
+    // Absent used to mean "clear it", which made the endpoint a trap for
+    // anything but the one page that sends every field: `PUT
+    // {"theme":"dark"}` silently wiped the profile and the scale with it.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"render_profile": "abslog", "x_scale": 2.0, "level2_spacing": "10"}),
+        Some(&erik),
+    )
+    .await;
+
+    // A request about one setting changes that setting.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"theme": "dark"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["theme"], "dark");
+    assert_eq!(saved.body["render_profile"], "abslog", "{}", saved.text);
+    assert_eq!(saved.body["x_scale"], 2.0, "{}", saved.text);
+    assert_eq!(saved.body["level2_spacing"], "10", "{}", saved.text);
+
+    // And `null` still clears the one it names, which is what "Project
+    // default" in the dropdown sends.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"render_profile": null}),
+        Some(&erik),
+    )
+    .await;
+    assert!(saved.body["render_profile"].is_null(), "{}", saved.text);
+    assert_eq!(saved.body["theme"], "dark", "{}", saved.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_signed_in_theme_reaches_the_login_page_too() {
+    // It is the way *out* as much as the way in, so a person who chose dark
+    // should not get one light screen on the way past it (#141).
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"theme": "dark"}),
+        Some(&erik),
+    )
+    .await;
+
+    let page = get(&app, "/login", Some(&erik)).await;
+    assert!(
+        page.text.contains("<html lang=\"en\" data-theme=\"dark\">"),
+        "{}",
+        page.text
+    );
+    // And an anonymous visitor has no preference to apply, so the page
+    // follows their device as it always did.
+    let page = get(&app, "/login", None).await;
+    assert!(!page.text.contains("data-theme"), "{}", page.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_chosen_theme_reaches_every_page_and_only_that_person() {
     // #141. Written by the server onto the root element rather than applied
     // by a script, so the page arrives in the right colours instead of
@@ -1278,8 +1361,17 @@ async fn hiding_the_interpretations_is_remembered_per_person() {
 
     let page = get(&app, &viewer_uri, Some(&student)).await;
     assert!(page.text.contains("showPicks: false"), "{}", page.text);
+    // The button arrives saying what pressing it will do, rather than
+    // announcing the opposite until the script catches up.
+    assert!(page.text.contains(">Show picks</button>"), "{}", page.text);
+    assert!(
+        page.text.contains("aria-pressed=\"false\""),
+        "{}",
+        page.text
+    );
     let page = get(&app, &viewer_uri, Some(&erik)).await;
     assert!(page.text.contains("showPicks: true"), "{}", page.text);
+    assert!(page.text.contains(">Hide picks</button>"), "{}", page.text);
 
     // Ticking it again stores nothing, so the shown default keeps applying
     // rather than being frozen in.

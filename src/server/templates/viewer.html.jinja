@@ -119,8 +119,10 @@
           at all -- a reader who is not signed in has none on screen to
           hide. `aria-pressed` carries the state for a screen reader; the
           label says what pressing it will do. -#}
-      <button id="pick-visibility" type="button" aria-pressed="true"
-              title="Show or hide the picked lines over the radargram. Starting to pick shows them again.">Hide picks</button>
+      <button id="pick-visibility" type="button"
+              aria-pressed="{% if show_picks %}true{% else %}false{% endif %}"
+              title="Show or hide the picked lines over the radargram. Starting to pick shows them again."
+        >{% if show_picks %}Hide picks{% else %}Show picks{% endif %}</button>
       <button id="pick-toggle" type="button" aria-pressed="false">Start picking</button>
       <button id="pick-undo" type="button" disabled>Undo vertex</button>
       <button id="pick-finish" type="button" disabled

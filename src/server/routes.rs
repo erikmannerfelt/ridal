@@ -432,7 +432,7 @@ fn resolve_export_defaults(state: &AppState, caller: &Caller) -> (String, String
 /// whether *you* want a dark screen, and the built-in answer is not a
 /// colour but "ask the browser", which `prefers-color-scheme` already
 /// does.
-fn resolve_theme(state: &AppState, caller: &Caller) -> String {
+pub fn resolve_theme(state: &AppState, caller: &Caller) -> String {
     my_preferences(state, caller)
         .theme
         .filter(|theme| is_offered_theme(theme))

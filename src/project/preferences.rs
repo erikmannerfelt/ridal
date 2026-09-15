@@ -96,8 +96,14 @@ pub struct Preferences {
     /// (#143).
     ///
     /// `None` means shown, which is what the viewer did before the toggle
-    /// existed. Stored only when someone has turned it off, so "I have not
-    /// chosen" and "I chose the default" stay distinguishable.
+    /// existed, and is what *both* "I have not chosen" and an explicit tick
+    /// store: shown deliberately uses the unset representation.
+    ///
+    /// That is the exception this module's rule names. Every other setting
+    /// keeps the neutral value it is sent, because its dropdown offers
+    /// "Project default" as a separate entry -- a checkbox has no third
+    /// state to offer, and there is no project layer under this one to
+    /// defer to, so the two are genuinely the same answer here.
     ///
     /// This is a *starting* state, not a lock: the viewer's own toggle
     /// changes what is on screen without saving, and beginning to pick

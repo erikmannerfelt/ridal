@@ -1077,14 +1077,18 @@ pub async fn put_settings(
         }
     };
 
+    // One write, not two. Everything the form submits lands together or not
+    // at all: two conditional writes could leave the file holding the render
+    // half of a save that then failed, and two saves arriving at once could
+    // interleave their halves.
     project
-        .set_render_defaults(&crate::project::RenderDefaults {
-            profile: profile.map(str::to_string),
-            xscale,
-        })
-        .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
-    project
-        .set_export_defaults(&crate::project::ExportDefaults { spacing, format })
+        .set_defaults(
+            &crate::project::RenderDefaults {
+                profile: profile.map(str::to_string),
+                xscale,
+            },
+            &crate::project::ExportDefaults { spacing, format },
+        )
         .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
 
     Ok(Json(serde_json::json!({

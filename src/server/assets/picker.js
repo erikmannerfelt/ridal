@@ -751,7 +751,11 @@
       overhangMarkers.forEach((marker) => map.removeLayer(marker));
       overhangMarkers = [];
 
-      const lines = features.map((f) => [
+      // Hidden means hidden (#143): a marker and its tooltip left floating
+      // over a radargram whose picks were switched off is exactly the view
+      // the toggle exists to give. The draft is not a stored pick and is
+      // always marked -- and starting to draw one reveals the rest anyway.
+      const lines = (picksVisible ? features : []).map((f) => [
         f.geometry.coordinates,
         (f.properties && f.properties.label) || null,
       ]);
@@ -989,8 +993,10 @@
     // both wasteful and visibly jumpy.
     map.on("moveend zoomend", redrawHandles);
 
-    // The button's label says what pressing it does, so it has to start
-    // agreeing with the setting the page arrived with (#143).
+    // The template renders the label and `aria-pressed` from the same
+    // setting this reads, so the page is never briefly wrong -- including
+    // with JavaScript disabled. Re-applied here anyway, because that
+    // agreement is an invariant rather than a coincidence.
     visibilityButton.textContent = picksVisible ? "Hide picks" : "Show picks";
     visibilityButton.setAttribute("aria-pressed", String(picksVisible));
     visibilityButton.addEventListener("click", () => setPicksVisible(!picksVisible));

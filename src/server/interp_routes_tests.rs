@@ -1615,6 +1615,11 @@ async fn the_viewer_opens_with_the_picks_drawn_unless_told_otherwise() {
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("showPicks: true"), "{html}");
     assert!(html.contains("id=\"pick-visibility\""), "{html}");
+    // The button's own label and pressed state are rendered from the same
+    // setting rather than hardcoded, so the markup is never briefly wrong
+    // -- including for a screen reader, and with JavaScript unavailable.
+    assert!(html.contains("aria-pressed=\"true\""), "{html}");
+    assert!(html.contains(">Hide picks</button>"), "{html}");
 }
 
 #[tokio::test]

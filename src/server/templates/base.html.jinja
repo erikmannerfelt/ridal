@@ -2,7 +2,16 @@
 {#- The theme this person chose, or nothing at all to follow the device
     (#141). Written on the root element by the server rather than applied by
     a script, so the page arrives in the right colours instead of flashing
-    the wrong ones while JavaScript loads. -#}
+    the wrong ones while JavaScript loads.
+
+    Two pages built on this layout deliberately carry no theme, and follow
+    the device instead. The invite page is opened from a one-time link by
+    somebody who is not signed in, so there is no preference to read. The
+    error page is rendered from `PageError`, which is an `IntoResponse` with
+    no access to the application state or the caller -- threading either
+    into it would mean changing every `map_err(PageError)` in the codebase
+    to carry a colour. Both are momentary pages, and following the device is
+    the answer everyone got before there was a setting at all. -#}
 <html lang="en"{% if active_theme %} data-theme="{{ active_theme }}"{% endif %}>
 <head>
   <meta charset="utf-8">
