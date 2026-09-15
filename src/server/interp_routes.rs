@@ -960,6 +960,15 @@ pub async fn get_settings(
         "xscales": crate::server::routes::x_scale_options(),
         "my_profile": mine.render_profile,
         "my_xscale": mine.x_scale,
+        "my_theme": mine.theme,
+        "my_show_picks": mine.show_picks,
+        "my_spacing": mine.level2_spacing,
+        "my_format": mine.level2_format,
+        "themes": crate::server::routes::THEMES,
+        "spacings": crate::server::routes::spacing_options(),
+        "formats": crate::server::routes::format_options(),
+        "default_spacing": project.and_then(|p| p.default_spacing()),
+        "default_format": project.and_then(|p| p.default_format()),
         "require_auth_to_read": access.as_ref().map(|set| set.require_auth_to_read),
         "anonymous_download": access
             .as_ref()
@@ -977,6 +986,12 @@ pub struct SettingsUpdate {
     /// it, restoring 1x.
     #[serde(default)]
     default_xscale: Option<f64>,
+    /// What the layer-point download dialogs open on (#166). `null` (or
+    /// absent) clears them, restoring automatic spacing and WGS84 GeoJSON.
+    #[serde(default)]
+    default_spacing: Option<String>,
+    #[serde(default)]
+    default_format: Option<String>,
 }
 
 /// `PUT /api/v1/project/settings`
@@ -1031,16 +1046,56 @@ pub async fn put_settings(
         }
     };
 
+    // Same reasoning again, for the two download defaults (#166): which
+    // spacings and formats the dialogs offer is a server concept, and a
+    // stored value they do not offer would open every download on a choice
+    // with no entry to change it back.
+    let spacing = match update.default_spacing.as_deref() {
+        None | Some("") => None,
+        Some(value) => {
+            if !crate::server::routes::is_offered_spacing(value) {
+                return Err(ApiError::bad_request(
+                    "unknown_spacing",
+                    format!("The download dialogs do not offer a spacing of '{value}'."),
+                ));
+            }
+            // Automatic is the neutral answer, so choosing it stores
+            // nothing -- the rule 1x already follows above.
+            (value != crate::server::routes::DEFAULT_LEVEL2_SPACING).then(|| value.to_string())
+        }
+    };
+    let format = match update.default_format.as_deref() {
+        None | Some("") => None,
+        Some(value) => {
+            if !crate::server::routes::is_offered_format(value) {
+                return Err(ApiError::bad_request(
+                    "unknown_format",
+                    format!("The download dialogs do not offer a format of '{value}'."),
+                ));
+            }
+            (value != crate::server::routes::DEFAULT_LEVEL2_FORMAT).then(|| value.to_string())
+        }
+    };
+
+    // One write, not two. Everything the form submits lands together or not
+    // at all: two conditional writes could leave the file holding the render
+    // half of a save that then failed, and two saves arriving at once could
+    // interleave their halves.
     project
-        .set_render_defaults(&crate::project::RenderDefaults {
-            profile: profile.map(str::to_string),
-            xscale,
-        })
+        .set_defaults(
+            &crate::project::RenderDefaults {
+                profile: profile.map(str::to_string),
+                xscale,
+            },
+            &crate::project::ExportDefaults { spacing, format },
+        )
         .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
 
     Ok(Json(serde_json::json!({
         "default_profile": project.default_profile(),
         "default_xscale": project.default_xscale(),
+        "default_spacing": project.default_spacing(),
+        "default_format": project.default_format(),
     })))
 }
 

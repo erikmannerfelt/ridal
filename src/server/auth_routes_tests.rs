@@ -1138,6 +1138,315 @@ async fn preferences_sit_between_the_request_and_the_project_default() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn wanting_the_neutral_value_is_a_choice_rather_than_an_absence() {
+    // #176: every dropdown in "My settings" offers "Project default", so
+    // absence means *deferring*. 1x used to be collapsed to absence on the
+    // grounds that it is the neutral value, which made "I want 1x"
+    // unsayable in a project whose default is 2x.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let viewer_uri = format!("/view/{RADARGRAM}");
+
+    put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"default_xscale": 2.0}),
+        Some(&erik),
+    )
+    .await;
+    // Without a preference, the project's 2x applies.
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(page.text.contains("value=\"2\" selected"), "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"x_scale": 1.0}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["x_scale"], 1.0, "an explicit 1x is a preference");
+    let stored = std::fs::read_to_string(dir.path().join("preferences/student.json")).unwrap();
+    assert!(stored.contains("x_scale"), "{stored}");
+
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(page.text.contains("value=\"1\" selected"), "{}", page.text);
+    // And the project's default still applies to everyone else.
+    let page = get(&app, &viewer_uri, Some(&erik)).await;
+    assert!(page.text.contains("value=\"2\" selected"), "{}", page.text);
+
+    // Choosing "Project default" -- an empty value -- defers again.
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"x_scale": null}),
+        Some(&student),
+    )
+    .await;
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(page.text.contains("value=\"2\" selected"), "{}", page.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_preference_save_leaves_the_settings_it_does_not_mention_alone() {
+    // Absent used to mean "clear it", which made the endpoint a trap for
+    // anything but the one page that sends every field: `PUT
+    // {"theme":"dark"}` silently wiped the profile and the scale with it.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"render_profile": "abslog", "x_scale": 2.0, "level2_spacing": "10"}),
+        Some(&erik),
+    )
+    .await;
+
+    // A request about one setting changes that setting.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"theme": "dark"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["theme"], "dark");
+    assert_eq!(saved.body["render_profile"], "abslog", "{}", saved.text);
+    assert_eq!(saved.body["x_scale"], 2.0, "{}", saved.text);
+    assert_eq!(saved.body["level2_spacing"], "10", "{}", saved.text);
+
+    // And `null` still clears the one it names, which is what "Project
+    // default" in the dropdown sends.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"render_profile": null}),
+        Some(&erik),
+    )
+    .await;
+    assert!(saved.body["render_profile"].is_null(), "{}", saved.text);
+    assert_eq!(saved.body["theme"], "dark", "{}", saved.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_signed_in_theme_reaches_the_login_page_too() {
+    // It is the way *out* as much as the way in, so a person who chose dark
+    // should not get one light screen on the way past it (#141).
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"theme": "dark"}),
+        Some(&erik),
+    )
+    .await;
+
+    let page = get(&app, "/login", Some(&erik)).await;
+    assert!(
+        page.text.contains("<html lang=\"en\" data-theme=\"dark\">"),
+        "{}",
+        page.text
+    );
+    // And an anonymous visitor has no preference to apply, so the page
+    // follows their device as it always did.
+    let page = get(&app, "/login", None).await;
+    assert!(!page.text.contains("data-theme"), "{}", page.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_chosen_theme_reaches_every_page_and_only_that_person() {
+    // #141. Written by the server onto the root element rather than applied
+    // by a script, so the page arrives in the right colours instead of
+    // flashing the wrong ones -- which is the thing worth pinning.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"theme": "dark"}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+
+    for uri in ["/", &format!("/view/{RADARGRAM}"), "/settings", "/layers"] {
+        let page = get(&app, uri, Some(&student)).await;
+        assert!(
+            page.text.contains("<html lang=\"en\" data-theme=\"dark\">"),
+            "{uri} did not carry the chosen theme"
+        );
+    }
+    // For them alone: a theme is about a person, not about the project.
+    let page = get(&app, "/", Some(&erik)).await;
+    assert!(!page.text.contains("data-theme"), "{}", page.text);
+
+    // Clearing it goes back to following the device, which is the absence
+    // of the attribute rather than a third value.
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"theme": null}),
+        Some(&student),
+    )
+    .await;
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(!page.text.contains("data-theme"), "{}", page.text);
+
+    // And a theme nothing renders is refused rather than stored.
+    let refused = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"theme": "sepia"}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(refused.body["error"]["code"], "unknown_theme");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn hiding_the_interpretations_is_remembered_per_person() {
+    // #143. Only "hidden" is stored: shown is what the viewer did before
+    // the toggle existed, so it stays the answer for anyone who has not
+    // chosen.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with(vec![
+        activated("erik", Role::Picker, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let viewer_uri = format!("/view/{RADARGRAM}");
+
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_picks": false}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["show_picks"], false);
+
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(page.text.contains("showPicks: false"), "{}", page.text);
+    // The button arrives saying what pressing it will do, rather than
+    // announcing the opposite until the script catches up.
+    assert!(page.text.contains(">Show picks</button>"), "{}", page.text);
+    assert!(
+        page.text.contains("aria-pressed=\"false\""),
+        "{}",
+        page.text
+    );
+    let page = get(&app, &viewer_uri, Some(&erik)).await;
+    assert!(page.text.contains("showPicks: true"), "{}", page.text);
+    assert!(page.text.contains(">Hide picks</button>"), "{}", page.text);
+
+    // Ticking it again stores nothing, so the shown default keeps applying
+    // rather than being frozen in.
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_picks": true}),
+        Some(&student),
+    )
+    .await;
+    let stored = std::fs::read_to_string(dir.path().join("preferences/student.json")).unwrap();
+    assert!(!stored.contains("show_picks"), "{stored}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_download_defaults_cascade_from_the_project_to_the_person() {
+    // #166, through the same cascade as every other setting: the project
+    // says what a survey exports, a person may disagree, and the dialog
+    // still wins for one download.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let viewer_uri = format!("/view/{RADARGRAM}");
+    let opens_on = |text: &str, value: &str| text.contains(&format!("value=\"{value}\" selected"));
+
+    // Ridal's own answer, with nothing set anywhere.
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(opens_on(&page.text, "auto"), "{}", page.text);
+    assert!(opens_on(&page.text, "geojson"), "{}", page.text);
+
+    put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"default_spacing": "25", "default_format": "csv"}),
+        Some(&erik),
+    )
+    .await;
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(opens_on(&page.text, "25"), "{}", page.text);
+    assert!(opens_on(&page.text, "csv"), "{}", page.text);
+
+    // One person's own wins over it, for them alone.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"level2_spacing": "5", "level2_format": "geojson-native"}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(opens_on(&page.text, "5"), "{}", page.text);
+    assert!(opens_on(&page.text, "geojson-native"), "{}", page.text);
+    let page = get(&app, &viewer_uri, Some(&erik)).await;
+    assert!(opens_on(&page.text, "25"), "{}", page.text);
+
+    // A spacing the dialogs do not offer is refused rather than stored.
+    let refused = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"level2_spacing": "17"}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(refused.body["error"]["code"], "unknown_spacing");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_admin_setting_the_project_default_does_not_overwrite_anyone() {
     // The alternative -- a project default that stamps over personal
     // choices -- would make the operator's save button destructive in a way

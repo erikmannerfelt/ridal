@@ -27,6 +27,11 @@
   let canEditAccess = false;
   let xscales = [];
   let profiles = [];
+  /* Offered by the server so a stored value always has an option to select,
+   * and so these lists cannot drift from the download dialogs' (#166). */
+  let spacings = [];
+  let formats = [];
+  let themes = [];
 
   const showError = (message) => {
     errorBox.textContent = message;
@@ -71,13 +76,42 @@
   }
 
   /* Offered scales come from the server, so a stored value always has an
-   * entry to select. No empty option: unlike a profile name, 1x *is* the
-   * neutral value, so "no preference" and "1x" are the same choice and
-   * offering both would be a distinction without a difference. */
-  function fillScales(select, selected) {
+   * entry to select.
+   *
+   * `emptyLabel` is what makes this a choice rather than a value (#176):
+   * every dropdown in "My settings" offers the layer below it -- "Project
+   * default" -- because that is how a person stops having an opinion, and
+   * it is what lets a later project change reach them. 1x used to be
+   * treated as the same thing as no preference, which made "I want 1x"
+   * unsayable in a project whose default was 2x.
+   *
+   * The project's own select passes no `emptyLabel`: under it is Ridal's
+   * built-in 1x, and an unset project default already shows as 1x. */
+  function fillScales(select, selected, emptyLabel) {
     if (!select) return;
-    select.replaceChildren(...xscales.map((s) => new Option(s.label, s.text)));
-    select.value = String(selected || 1);
+    const options = emptyLabel === undefined ? [] : [new Option(emptyLabel, "")];
+    options.push(...xscales.map((s) => new Option(s.label, s.text)));
+    select.replaceChildren(...options);
+    select.value =
+      selected === null || selected === undefined
+        ? emptyLabel === undefined
+          ? "1"
+          : ""
+        : String(selected);
+  }
+
+  /* Fill a <select> from the server's `{value, label}` list. `emptyLabel`,
+   * when given, is the "no choice" option -- a real entry rather than a
+   * placeholder, since choosing it clears the setting instead of storing
+   * the name of the fallback. */
+  function fillOptions(select, options, selected, emptyLabel) {
+    if (!select) return;
+    const entries = emptyLabel === undefined ? [] : [new Option(emptyLabel, "")];
+    for (const option of options) {
+      entries.push(new Option(option.label, option.value));
+    }
+    select.replaceChildren(...entries);
+    select.value = selected || "";
   }
 
   function fillNames(select, names, selected) {
@@ -99,9 +133,24 @@
     canEditAccess = Boolean(settings.can_edit_access);
     profiles = settings.profiles || [];
     xscales = settings.xscales || [];
+    spacings = settings.spacings || [];
+    formats = settings.formats || [];
+    themes = (settings.themes || []).map((name) => ({
+      value: name,
+      // Capitalised here rather than server-side: these are two words shown
+      // in one dropdown, not a vocabulary anything else reads.
+      label: name.charAt(0).toUpperCase() + name.slice(1),
+    }));
 
     fillProfiles(byId("my-profile"), "Project default", settings.my_profile);
-    fillScales(byId("my-xscale"), settings.my_xscale);
+    fillScales(byId("my-xscale"), settings.my_xscale, "Project default");
+    fillOptions(byId("my-theme"), themes, settings.my_theme, "Follow this device");
+    // Absent means shown, which is what the viewer did before the toggle
+    // existed -- so only an explicit `false` unticks it.
+    const showPicks = byId("my-show-picks");
+    if (showPicks) showPicks.checked = settings.my_show_picks !== false;
+    fillOptions(byId("my-spacing"), spacings, settings.my_spacing, "Project default");
+    fillOptions(byId("my-format"), formats, settings.my_format, "Project default");
 
     fillProfiles(
       byId("default-profile"),
@@ -109,10 +158,17 @@
       settings.default_profile,
     );
     fillScales(byId("default-xscale"), settings.default_xscale);
-    const projectProfile = byId("default-profile");
-    const projectScale = byId("default-xscale");
-    if (projectProfile) projectProfile.disabled = !canEditProject;
-    if (projectScale) projectScale.disabled = !canEditProject;
+    fillOptions(byId("default-spacing"), spacings, settings.default_spacing, "Ridal default");
+    fillOptions(byId("default-format"), formats, settings.default_format, "Ridal default");
+    for (const id of [
+      "default-profile",
+      "default-xscale",
+      "default-spacing",
+      "default-format",
+    ]) {
+      const select = byId(id);
+      if (select) select.disabled = !canEditProject;
+    }
 
     setStatus("settings-status", "");
     setStatus("my-settings-status", "");
@@ -129,10 +185,28 @@
         const saved = await send("PUT", "/api/v1/preferences", {
           render_profile: byId("my-profile").value || null,
           x_scale: Number(byId("my-xscale").value) || null,
+          theme: byId("my-theme").value || null,
+          show_picks: byId("my-show-picks").checked,
+          level2_spacing: byId("my-spacing").value || null,
+          level2_format: byId("my-format").value || null,
         });
         byId("my-profile").value = saved.render_profile || "";
-        // 1x is stored as absent, so read it back the way it was sent.
-        byId("my-xscale").value = String(saved.x_scale || 1);
+        // Read back as sent, including an explicit 1x -- and as "Project
+        // default" when it was cleared.
+        byId("my-xscale").value = saved.x_scale ? String(saved.x_scale) : "";
+        byId("my-theme").value = saved.theme || "";
+        byId("my-show-picks").checked = saved.show_picks !== false;
+        byId("my-spacing").value = saved.level2_spacing || "";
+        byId("my-format").value = saved.level2_format || "";
+        // Applied to the page being looked at, not only stored: a theme
+        // that took effect on the next page load would read as a setting
+        // that did not work. The server writes the same attribute into
+        // every page it renders from here on.
+        if (saved.theme) {
+          document.documentElement.dataset.theme = saved.theme;
+        } else {
+          delete document.documentElement.dataset.theme;
+        }
         setStatus("my-settings-status", "Saved");
       } catch (error) {
         showError(error.message);
@@ -151,9 +225,16 @@
         const saved = await send("PUT", "/api/v1/project/settings", {
           default_profile: byId("default-profile").value || null,
           default_xscale: Number(byId("default-xscale").value) || null,
+          default_spacing: byId("default-spacing").value || null,
+          default_format: byId("default-format").value || null,
         });
         byId("default-profile").value = saved.default_profile || "";
         byId("default-xscale").value = String(saved.default_xscale || 1);
+        // Both are stored as absent when they are the neutral answer, so
+        // they read back as the "Ridal default" option rather than as the
+        // value that was sent.
+        byId("default-spacing").value = saved.default_spacing || "";
+        byId("default-format").value = saved.default_format || "";
         // Naming the file is the point: the change lands somewhere the user
         // can go and look at, which is not obvious from a dropdown.
         setStatus("settings-status", "Saved to ridal.toml");

@@ -45,7 +45,7 @@ use super::auth::{self, Caller};
 use super::routes::{ApiError, PageError};
 use super::templates;
 use crate::identity::UserId;
-use crate::project::preferences::{self, Preferences};
+use crate::project::preferences;
 use crate::project::store::Expectation;
 use crate::project::users::{self, DownloadScope, Role, User, UserError, UserSet};
 use crate::project::Project;
@@ -123,6 +123,10 @@ pub async fn login_page(
             current_user => caller.user.as_ref().map(|u| u.as_str()),
             current_role => caller.role.as_str(),
             project => state.project.is_some(),
+            // Reached while signed in as often as not -- it is also the way
+            // out -- so it follows the same theme as every other page
+            // rather than reverting to the device's for one screen (#141).
+            active_theme => super::routes::resolve_theme(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -661,17 +665,64 @@ pub async fn get_preferences(
         "user": user.as_str(),
         "render_profile": preferences.render_profile,
         "x_scale": preferences.x_scale,
+        "theme": preferences.theme,
+        "show_picks": preferences.show_picks,
+        "level2_spacing": preferences.level2_spacing,
+        "level2_format": preferences.level2_format,
     })))
 }
 
+/// One person's settings, as the page submits them.
+///
+/// Every field distinguishes three things: absent leaves the stored value
+/// alone, `null` clears it -- which is what "Project default" in the
+/// dropdown means -- and a value sets it.
+///
+/// Absent used to mean "clear it", on the grounds that the page always
+/// sends everything. That made the endpoint a trap for anything else:
+/// `PUT {"theme":"dark"}` silently wiped this person's render profile and
+/// scale. With six settings and more coming, "sends everything" is a
+/// property of one caller rather than of the API, so it is no longer
+/// assumed.
+///
+/// This narrows, but does not close, last-writer-wins between two settings
+/// tabs: both send every field, so the later save still overwrites what the
+/// earlier one changed. Deliberately left there. A preference is cheap to
+/// re-choose and belongs to one person, so the conditional-write machinery
+/// the picks and the layer vocabulary use -- ETag out, `If-Match` back --
+/// would cost a round trip and a 412 dialog to protect a dropdown from its
+/// owner's other tab.
 #[derive(serde::Deserialize)]
 pub struct PreferencesBody {
-    /// `null` clears the preference, falling back to the project default.
-    /// Absent means the same, because the page always sends both.
-    #[serde(default)]
-    render_profile: Option<String>,
-    #[serde(default)]
-    x_scale: Option<f64>,
+    #[serde(default, deserialize_with = "present")]
+    render_profile: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    x_scale: Option<Option<f64>>,
+    /// `light`, `dark`, or `null` to follow the device (#141).
+    #[serde(default, deserialize_with = "present")]
+    theme: Option<Option<String>>,
+    /// Whether the viewer opens with the interpretations drawn (#143).
+    #[serde(default, deserialize_with = "present")]
+    show_picks: Option<Option<bool>>,
+    /// What the layer-point download dialogs open on (#166).
+    #[serde(default, deserialize_with = "present")]
+    level2_spacing: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    level2_format: Option<Option<String>>,
+}
+
+/// Tell an absent key from one sent as `null`.
+///
+/// `Option<Option<T>>`: the outer layer is "was it mentioned", the inner is
+/// "was it set". Serde has no built-in for the distinction, and without it
+/// a partial update is indistinguishable from a request to clear whatever
+/// it left out.
+fn present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    T: serde::Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 /// `PUT /api/v1/preferences`
@@ -686,42 +737,103 @@ pub async fn put_preferences(
 ) -> Result<impl IntoResponse, ApiError> {
     let (project, user) = my_preferences_target(&state, &caller)?;
 
+    // Read first, then apply what was sent: a field the request did not
+    // mention keeps the value it had. Leniently, so that saving over a
+    // hand-broken document repairs it rather than failing forever -- the
+    // settings page reads strictly elsewhere, which is where a fault is
+    // visible and fixable.
+    let mut stored = preferences::read_lenient(project.documents(), user);
+
     // Validated here rather than in the store, for the same reason the
     // project's defaults are: which profiles exist and which scales the
     // viewer offers are server concepts, and storing one that nothing
     // renders would leave every page failing with no obvious cause.
-    let render_profile = match body.render_profile.as_deref() {
-        None | Some("") => None,
-        Some(name) => {
-            if crate::render::profile::RenderProfile::by_name(name).is_none() {
-                return Err(ApiError::bad_request(
-                    "unknown_profile",
-                    format!("There is no render profile called '{name}'."),
-                ));
+    //
+    // Every one of these keeps what it is sent, neutral values included
+    // (#176): each dropdown offers "Project default" as its own entry, so
+    // absence means deferring rather than agreeing, and collapsing a value
+    // to absence because it matches the fallback would make that value
+    // unsayable.
+    if let Some(sent) = body.render_profile {
+        stored.render_profile = match sent.as_deref() {
+            None | Some("") => None,
+            Some(name) => {
+                if crate::render::profile::RenderProfile::by_name(name).is_none() {
+                    return Err(ApiError::bad_request(
+                        "unknown_profile",
+                        format!("There is no render profile called '{name}'."),
+                    ));
+                }
+                Some(name.to_string())
             }
-            Some(name.to_string())
-        }
-    };
-    let x_scale = match body.x_scale {
-        None => None,
-        Some(scale) => {
-            if !super::routes::is_offered_x_scale(scale) {
-                return Err(ApiError::bad_request(
-                    "unknown_xscale",
-                    format!("The viewer does not offer a horizontal scale of {scale}."),
-                ));
+        };
+    }
+    if let Some(sent) = body.x_scale {
+        stored.x_scale = match sent {
+            None => None,
+            Some(scale) => {
+                if !super::routes::is_offered_x_scale(scale) {
+                    return Err(ApiError::bad_request(
+                        "unknown_xscale",
+                        format!("The viewer does not offer a horizontal scale of {scale}."),
+                    ));
+                }
+                Some(scale)
             }
-            // 1x is the neutral value, so choosing it means "no preference"
-            // and leaves the key out of the document entirely -- which is
-            // what lets a later project default reach this person.
-            (scale != super::routes::DEFAULT_X_SCALE).then_some(scale)
-        }
-    };
+        };
+    }
+    if let Some(sent) = body.theme {
+        stored.theme = match sent.as_deref() {
+            None | Some("") => None,
+            Some(name) => {
+                if !super::routes::is_offered_theme(name) {
+                    return Err(ApiError::bad_request(
+                        "unknown_theme",
+                        format!(
+                            "'{name}' is not a theme. Use 'light', 'dark', or \
+                             nothing at all to follow the device."
+                        ),
+                    ));
+                }
+                Some(name.to_string())
+            }
+        };
+    }
+    if let Some(sent) = body.level2_spacing {
+        stored.level2_spacing = match sent.as_deref() {
+            None | Some("") => None,
+            Some(value) => {
+                if !super::routes::is_offered_spacing(value) {
+                    return Err(ApiError::bad_request(
+                        "unknown_spacing",
+                        format!("The download dialogs do not offer a spacing of '{value}'."),
+                    ));
+                }
+                Some(value.to_string())
+            }
+        };
+    }
+    if let Some(sent) = body.level2_format {
+        stored.level2_format = match sent.as_deref() {
+            None | Some("") => None,
+            Some(value) => {
+                if !super::routes::is_offered_format(value) {
+                    return Err(ApiError::bad_request(
+                        "unknown_format",
+                        format!("The download dialogs do not offer a format of '{value}'."),
+                    ));
+                }
+                Some(value.to_string())
+            }
+        };
+    }
+    if let Some(sent) = body.show_picks {
+        // The one that *is* collapsed, and the one exception the rule above
+        // names: it is a checkbox with no "project default" state to offer,
+        // so shown -- the built-in answer -- is stored as absence.
+        stored.show_picks = sent.filter(|shown| !*shown);
+    }
 
-    let stored = Preferences {
-        render_profile,
-        x_scale,
-    };
     preferences::write(project.documents(), user, &stored, &Expectation::Any)
         .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
 
@@ -729,6 +841,10 @@ pub async fn put_preferences(
         "user": user.as_str(),
         "render_profile": stored.render_profile,
         "x_scale": stored.x_scale,
+        "theme": stored.theme,
+        "show_picks": stored.show_picks,
+        "level2_spacing": stored.level2_spacing,
+        "level2_format": stored.level2_format,
     })))
 }
 

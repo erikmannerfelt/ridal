@@ -151,6 +151,8 @@ pub struct ProjectConfig {
     pub cache: CacheSection,
     #[serde(default)]
     pub render: RenderSection,
+    #[serde(default)]
+    pub export: ExportSection,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -208,6 +210,30 @@ pub struct RenderSection {
     pub default_xscale: Option<f64>,
 }
 
+/// Defaults for the layer-point downloads (#166).
+///
+/// A project section rather than only a personal one because these are
+/// conventions a survey agrees on -- everyone exporting at 10 m in the same
+/// CRS is what makes two people's files comparable -- while still being
+/// overridable per person and per download, which is the order the settings
+/// cascade already establishes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExportSection {
+    /// Point spacing the download dialogs open on: `auto`, a distance in
+    /// metres, `per-trace` or `vertices`. Unset means `auto`.
+    ///
+    /// A plain string for the same reason the render profile is one: which
+    /// spacings the dialogs offer is a server concept, checked at the HTTP
+    /// boundary where a bad value can be refused with a useful message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_spacing: Option<String>,
+    /// File format the download dialogs open on, which is also the choice
+    /// of coordinates: `geojson` (WGS84), `geojson-native` or `csv`. Unset
+    /// means `geojson`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_format: Option<String>,
+}
+
 /// The `[render]` defaults a project can carry, as one value.
 ///
 /// `None` on a field clears that key rather than leaving it alone: the
@@ -220,24 +246,39 @@ pub struct RenderDefaults {
     pub xscale: Option<f64>,
 }
 
-/// Write `key` under `[render]`, creating the table, or remove it when the
+/// The `[export]` defaults a project can carry, as one value (#166).
+///
+/// `None` on a field clears that key, on the same terms as
+/// [`RenderDefaults`]: the form that edits these always sends both.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExportDefaults {
+    pub spacing: Option<String>,
+    pub format: Option<String>,
+}
+
+/// Write `key` under `[table]`, creating the table, or remove it when the
 /// value is `None`. Keeps `toml_edit`'s formatting-preserving edit in one
-/// place now that there are two keys to apply it to.
+/// place now that there are several keys, in two tables, to apply it to.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-fn set_or_clear(document: &mut toml_edit::DocumentMut, key: &str, value: Option<toml_edit::Item>) {
+fn set_or_clear(
+    document: &mut toml_edit::DocumentMut,
+    table: &str,
+    key: &str,
+    value: Option<toml_edit::Item>,
+) {
     match value {
         Some(item) => {
-            if !document.contains_key("render") {
-                document["render"] = toml_edit::Item::Table(toml_edit::Table::new());
+            if !document.contains_key(table) {
+                document[table] = toml_edit::Item::Table(toml_edit::Table::new());
             }
-            document["render"][key] = item;
+            document[table][key] = item;
         }
         None => {
-            if let Some(table) = document
-                .get_mut("render")
+            if let Some(existing) = document
+                .get_mut(table)
                 .and_then(toml_edit::Item::as_table_mut)
             {
-                table.remove(key);
+                existing.remove(key);
             }
         }
     }
@@ -390,6 +431,7 @@ impl Project {
             },
             cache: CacheSection::default(),
             render: RenderSection::default(),
+            export: ExportSection::default(),
         };
         // Written as a commented template rather than serialized, because
         // this file exists to be hand-edited: serde would emit a bare,
@@ -426,10 +468,22 @@ impl Project {
              # A real (empty) table rather than a commented one, so that\n\
              # saving from the browser puts the key under this note instead\n\
              # of appending a second [render] elsewhere in the file.\n\
-             [render]\n",
+             [render]\n\
+             \n\
+             # What the layer-point download dialogs open on, so a survey\n\
+             # that always exports the same way does not choose it every\n\
+             # time. Set them from Project settings in the browser, or add\n\
+             # lines such as `default_spacing = {}` and\n\
+             # `default_format = {}`. Left unset, Ridal opens on automatic\n\
+             # spacing and GeoJSON in WGS84. A person can override both in\n\
+             # their own settings, and either can still be changed in the\n\
+             # dialog itself.\n\
+             [export]\n",
             toml_string(DEFAULT_RADARGRAM_DIR),
             toml_string("/var/cache/ridal"),
             toml_string("default"),
+            toml_string("10"),
+            toml_string("geojson-native"),
         );
         let marker = root.join(MARKER);
         std::fs::write(&marker, text).map_err(|e| ProjectError::Io {
@@ -475,28 +529,84 @@ impl Project {
     /// The horizontal stretch to open radargrams at. `None` means 1x.
     ///
     /// Only the viewer reads it, so a CLI-only build has no caller -- the
-    /// same situation as `set_render_defaults` below.
+    /// same situation as `set_defaults` below.
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn default_xscale(&self) -> Option<f64> {
         self.read_config().render.default_xscale
     }
 
-    /// Set (or clear) the project's render defaults, in the file and in
-    /// memory.
+    /// Set (or clear) every project default the settings page edits, in the
+    /// file and in memory.
     ///
-    /// Takes them together rather than one call per key: the settings page
-    /// saves them in one go, and two sequential writes could leave the file
-    /// holding half a change.
+    /// All four keys in one call, and therefore in one version-conditional
+    /// write. Two calls would be two edits: a failure between them leaves
+    /// the file holding half of what the form submitted, and two saves
+    /// arriving together can interleave their halves. The form sends all
+    /// four every time, so there is no caller that wants one half alone.
     ///
     /// Reached through the settings page, so a CLI-only build never calls
     /// it -- same situation as the write half of the stores beside this.
+    /// [`Project::edit_marker`] holds the comment-preserving, conditional
+    /// write every settings section goes through.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn set_defaults(
+        &self,
+        render: &RenderDefaults,
+        export: &ExportDefaults,
+    ) -> Result<(), ProjectError> {
+        self.edit_marker(|document| {
+            set_or_clear(
+                document,
+                "render",
+                "default_profile",
+                render.profile.as_deref().map(toml_edit::value),
+            );
+            set_or_clear(
+                document,
+                "render",
+                "default_xscale",
+                render.xscale.map(toml_edit::value),
+            );
+            set_or_clear(
+                document,
+                "export",
+                "default_spacing",
+                export.spacing.as_deref().map(toml_edit::value),
+            );
+            set_or_clear(
+                document,
+                "export",
+                "default_format",
+                export.format.as_deref().map(toml_edit::value),
+            );
+            Ok(())
+        })
+    }
+
+    /// The point spacing the download dialogs should open on (#166).
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn default_spacing(&self) -> Option<String> {
+        self.read_config().export.default_spacing.clone()
+    }
+
+    /// The file format -- and coordinates -- the download dialogs should
+    /// open on (#166).
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn default_format(&self) -> Option<String> {
+        self.read_config().export.default_format.clone()
+    }
+
+    /// Apply `edit` to `ridal.toml`, in the file and in memory.
     ///
     /// Edited with `toml_edit` rather than re-serialised, so the comments
     /// `ridal project init` writes survive. The file is meant to be
     /// hand-editable; a settings page that silently stripped a user's notes
     /// out of it would be a poor trade for one dropdown.
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
-    pub fn set_render_defaults(&self, defaults: &RenderDefaults) -> Result<(), ProjectError> {
+    fn edit_marker(
+        &self,
+        edit: impl FnOnce(&mut toml_edit::DocumentMut) -> Result<(), ProjectError>,
+    ) -> Result<(), ProjectError> {
         let marker = self.root.join(MARKER);
         // Read through the store so the version comes with the text. The
         // write below is conditional on it: the store's lock serialises the
@@ -523,16 +633,7 @@ impl Project {
                     message: e.to_string(),
                 })?;
 
-        set_or_clear(
-            &mut document,
-            "default_profile",
-            defaults.profile.as_deref().map(toml_edit::value),
-        );
-        set_or_clear(
-            &mut document,
-            "default_xscale",
-            defaults.xscale.map(toml_edit::value),
-        );
+        edit(&mut document)?;
 
         let updated = document.to_string();
         // Atomic, and conditional on the version just read, so a save that
@@ -884,10 +985,13 @@ mod tests {
     /// these tests predate there being a second key and only care about one.
     fn set_profile(project: &Project, profile: Option<&str>) {
         project
-            .set_render_defaults(&RenderDefaults {
-                profile: profile.map(str::to_string),
-                xscale: None,
-            })
+            .set_defaults(
+                &RenderDefaults {
+                    profile: profile.map(str::to_string),
+                    xscale: None,
+                },
+                &ExportDefaults::default(),
+            )
             .unwrap();
     }
 
@@ -911,10 +1015,13 @@ mod tests {
         // is that the version is checked, not that saving is fragile.
         let reopened = Project::open(dir.path()).unwrap();
         reopened
-            .set_render_defaults(&RenderDefaults {
-                profile: Some("positive".to_string()),
-                xscale: None,
-            })
+            .set_defaults(
+                &RenderDefaults {
+                    profile: Some("positive".to_string()),
+                    xscale: None,
+                },
+                &ExportDefaults::default(),
+            )
             .unwrap();
         assert_eq!(reopened.default_profile().as_deref(), Some("positive"));
         // The other writer's line survived, because the edit was applied to
@@ -924,14 +1031,73 @@ mod tests {
     }
 
     #[test]
+    fn every_project_default_is_written_in_one_edit() {
+        // #166 plus the review of #184: the settings form submits four keys
+        // across two tables, and they land in a single version-conditional
+        // write. Two writes could leave the file holding half a save, and
+        // two of them arriving together could interleave their halves.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        assert_eq!(project.default_spacing(), None);
+        assert_eq!(project.default_format(), None);
+
+        project
+            .set_defaults(
+                &RenderDefaults {
+                    profile: Some("abslog".to_string()),
+                    xscale: Some(2.0),
+                },
+                &ExportDefaults {
+                    spacing: Some("10".to_string()),
+                    format: Some("geojson-native".to_string()),
+                },
+            )
+            .unwrap();
+
+        // In memory straight away, and on disk for the next process.
+        assert_eq!(project.default_spacing().as_deref(), Some("10"));
+        let reopened = Project::open(dir.path()).unwrap();
+        assert_eq!(reopened.default_spacing().as_deref(), Some("10"));
+        assert_eq!(reopened.default_format().as_deref(), Some("geojson-native"));
+        assert_eq!(reopened.default_profile().as_deref(), Some("abslog"));
+        assert_eq!(reopened.default_xscale(), Some(2.0));
+
+        // Clearing leaves no key behind, so a later change to Ridal's own
+        // default still reaches a project that never chose.
+        project
+            .set_defaults(
+                &RenderDefaults {
+                    profile: Some("abslog".to_string()),
+                    xscale: Some(2.0),
+                },
+                &ExportDefaults::default(),
+            )
+            .unwrap();
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        let live = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .filter(|l| l.contains("default_spacing") || l.contains("default_format"))
+            .count();
+        assert_eq!(live, 0, "{text}");
+        assert!(
+            text.contains("[radargrams]"),
+            "the rest is untouched:\n{text}"
+        );
+    }
+
+    #[test]
     fn both_render_defaults_are_written_in_one_edit() {
         let dir = tempfile::tempdir().unwrap();
         let project = Project::init(dir.path(), None).unwrap();
         project
-            .set_render_defaults(&RenderDefaults {
-                profile: Some("abslog".to_string()),
-                xscale: Some(2.0),
-            })
+            .set_defaults(
+                &RenderDefaults {
+                    profile: Some("abslog".to_string()),
+                    xscale: Some(2.0),
+                },
+                &ExportDefaults::default(),
+            )
             .unwrap();
 
         assert_eq!(project.default_profile().as_deref(), Some("abslog"));
@@ -948,17 +1114,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let project = Project::init(dir.path(), None).unwrap();
         project
-            .set_render_defaults(&RenderDefaults {
-                profile: Some("abslog".to_string()),
-                xscale: Some(4.0),
-            })
+            .set_defaults(
+                &RenderDefaults {
+                    profile: Some("abslog".to_string()),
+                    xscale: Some(4.0),
+                },
+                &ExportDefaults::default(),
+            )
             .unwrap();
         // Back to 1x, which is stored as absence, while the profile stays.
         project
-            .set_render_defaults(&RenderDefaults {
-                profile: Some("abslog".to_string()),
-                xscale: None,
-            })
+            .set_defaults(
+                &RenderDefaults {
+                    profile: Some("abslog".to_string()),
+                    xscale: None,
+                },
+                &ExportDefaults::default(),
+            )
             .unwrap();
 
         assert_eq!(project.default_xscale(), None);

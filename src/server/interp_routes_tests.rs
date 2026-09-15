@@ -1508,6 +1508,136 @@ async fn settings_are_read_only_where_writes_are() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_download_defaults_round_trip_and_reach_both_dialogs() {
+    // #166: the dialogs should open on what the project agreed on, rather
+    // than on Ridal's answer every time.
+    let (dir, app) = project_app(true);
+
+    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["default_spacing"].is_null(), "unset to begin with");
+    assert!(
+        body["spacings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|option| option["value"] == "10"),
+        "the page needs the list to populate its select: {body}"
+    );
+
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_spacing": "10", "default_format": "csv"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["default_spacing"], "10");
+
+    // Both dialogs open on it: the viewer's own, and the catalog's merged
+    // download. Pinned by the rendered `selected`, since that is the thing
+    // a person actually gets.
+    for uri in ["/", "/view/line-01"] {
+        let (status, html) = page(&app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(
+            html.contains("value=\"10\" selected"),
+            "{uri} did not open on the project's spacing"
+        );
+        assert!(
+            html.contains("value=\"csv\" selected"),
+            "{uri} did not open on the project's format"
+        );
+    }
+
+    // And on disk, so it survives a restart.
+    let marker = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    assert!(marker.contains("default_spacing = \"10\""), "{marker}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_download_default_the_dialogs_do_not_offer_is_refused() {
+    // Storing one would open every download on a choice with no entry to
+    // change it back -- the same reason an unknown profile is refused.
+    let (_dir, app) = project_app(true);
+    for (body, code) in [
+        (
+            serde_json::json!({"default_spacing": "17"}),
+            "unknown_spacing",
+        ),
+        (
+            serde_json::json!({"default_format": "shapefile"}),
+            "unknown_format",
+        ),
+    ] {
+        let (status, _, answer) = put(&app, "/api/v1/project/settings", &body, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+        assert_eq!(answer["error"]["code"], code, "{answer}");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_neutral_download_defaults_are_stored_as_absence() {
+    // `auto` and WGS84 GeoJSON are what Ridal does anyway, so choosing them
+    // means "no preference" -- and storing them would quietly opt the
+    // project out of a later change to either.
+    let (dir, app) = project_app(true);
+    let (status, _, body) = put(
+        &app,
+        "/api/v1/project/settings",
+        &serde_json::json!({"default_spacing": "auto", "default_format": "geojson"}),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["default_spacing"].is_null(), "{body}");
+    assert!(body["default_format"].is_null(), "{body}");
+
+    let marker = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    let live = marker
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| l.contains("default_spacing") || l.contains("default_format"))
+        .count();
+    assert_eq!(live, 0, "{marker}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_viewer_opens_with_the_picks_drawn_unless_told_otherwise() {
+    // #143. The toolbar's toggle changes it from there; this is the state
+    // the page arrives in.
+    let (_dir, app) = project_app(true);
+    let (status, html) = page(&app, "/view/line-01").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("showPicks: true"), "{html}");
+    assert!(html.contains("id=\"pick-visibility\""), "{html}");
+    // The button's own label and pressed state are rendered from the same
+    // setting rather than hardcoded, so the markup is never briefly wrong
+    // -- including for a screen reader, and with JavaScript unavailable.
+    assert!(html.contains("aria-pressed=\"true\""), "{html}");
+    assert!(html.contains(">Hide picks</button>"), "{html}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_page_follows_the_device_until_a_theme_is_chosen() {
+    // #141. No attribute at all is what `prefers-color-scheme` needs to
+    // stay in charge, so its absence is the feature rather than an omission.
+    let (_dir, app) = project_app(true);
+    for uri in ["/", "/view/line-01", "/settings", "/layers"] {
+        let (status, html) = page(&app, uri).await;
+        assert_eq!(status, StatusCode::OK, "{uri}");
+        assert!(html.contains("<html lang=\"en\">"), "{uri}: {html}");
+        assert!(!html.contains("data-theme"), "{uri} should carry no theme");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_bare_catalog_has_nothing_to_configure() {
     let (_dir, app) = bare_app();
     let (status, _, body) = get(&app, "/api/v1/project/settings").await;

@@ -110,6 +110,19 @@
               aria-hidden="true"></span>
         <select id="pick-layer"><option value="">Loading&hellip;</option></select>
       </label>
+      {#- Hiding the interpretations to look at the radargram underneath
+          (#143). A toggle rather than a mode: it changes what is drawn and
+          nothing else, and picking brings them back by itself, since
+          drawing over lines you cannot see is not a state worth allowing.
+
+          Inside the writable branch because this is where picks are drawn
+          at all -- a reader who is not signed in has none on screen to
+          hide. `aria-pressed` carries the state for a screen reader; the
+          label says what pressing it will do. -#}
+      <button id="pick-visibility" type="button"
+              aria-pressed="{% if show_picks %}true{% else %}false{% endif %}"
+              title="Show or hide the picked lines over the radargram. Starting to pick shows them again."
+        >{% if show_picks %}Hide picks{% else %}Show picks{% endif %}</button>
       <button id="pick-toggle" type="button" aria-pressed="false">Start picking</button>
       <button id="pick-undo" type="button" disabled>Undo vertex</button>
       <button id="pick-finish" type="button" disabled
@@ -210,23 +223,25 @@
       degrees. Either way the projected easting and northing are also
       present as properties on every point.
     </p>
+    {#- Both selects open on the resolved default (#166): this person's
+        choice, then the project's, then Ridal's. Rendered from the server's
+        own lists so the options, the settings page's and what `?spacing=`
+        accepts cannot drift apart. -#}
     <div class="add-layer-fields">
       <label>Spacing
         <select id="download-spacing">
-          <option value="auto" selected>Auto (from trace spacing)</option>
-          <option value="1">1 m</option>
-          <option value="5">5 m</option>
-          <option value="10">10 m</option>
-          <option value="25">25 m</option>
-          <option value="per-trace">Every trace</option>
-          <option value="vertices">Picked vertices only</option>
+          {% for option in spacings %}
+            <option value="{{ option.value }}"
+              {%- if option.value == active_spacing %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
         </select>
       </label>
       <label>Format
         <select id="download-format">
-          <option value="geojson" selected>GeoJSON (WGS84)</option>
-          <option value="geojson-native">GeoJSON (native CRS)</option>
-          <option value="csv">CSV</option>
+          {% for option in formats %}
+            <option value="{{ option.value }}"
+              {%- if option.value == active_format %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
         </select>
       </label>
     </div>
@@ -281,6 +296,9 @@
     sourceHeight: {{ shape_height }},
     writable: {% if writable %}true{% else %}false{% endif %},
     user: "{{ user }}",
+    {#- Whether the picks are drawn when this page opens (#143), resolved
+        from this person's settings. -#}
+    showPicks: {% if show_picks %}true{% else %}false{% endif %},
   };
 </script>
 <script src="/static/viewer.js"></script>

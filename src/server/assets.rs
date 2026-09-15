@@ -205,6 +205,47 @@ mod tests {
         }
     }
 
+    /// The dark palette is written twice -- once for `prefers-color-scheme`
+    /// and once for an explicit `data-theme="dark"` (#141) -- because CSS
+    /// cannot share a declaration block between a media query and an
+    /// attribute selector.
+    ///
+    /// Two copies drift. The failure would be quiet and half-visible: a
+    /// token changed in one place leaves the people who chose dark looking
+    /// at a page slightly different from the people whose device chose it
+    /// for them.
+    #[test]
+    fn the_two_dark_theme_blocks_agree() {
+        let css = strip_css_comments(include_str!("assets/app.css"));
+
+        /// The `--token: value;` lines of the block starting at `marker`.
+        fn tokens_after(css: &str, marker: &str) -> Vec<String> {
+            let start = css
+                .find(marker)
+                .unwrap_or_else(|| panic!("app.css must contain a block starting with {marker:?}"))
+                + marker.len();
+            css[start..]
+                .lines()
+                .take_while(|line| !line.contains('}'))
+                .map(str::trim)
+                .filter(|line| line.starts_with("--"))
+                .map(str::to_string)
+                .collect()
+        }
+
+        let by_device = tokens_after(&css, ":root:not([data-theme=\"light\"]) {");
+        let by_choice = tokens_after(&css, ":root[data-theme=\"dark\"] {");
+        assert!(
+            by_device.len() > 10,
+            "the dark palette should be a full token set, found {by_device:?}"
+        );
+        assert_eq!(
+            by_device, by_choice,
+            "the dark palette must be identical whether the device asked for \
+             it or the person did"
+        );
+    }
+
     fn strip_css_comments(css: &str) -> String {
         let mut out = String::with_capacity(css.len());
         let mut rest = css;

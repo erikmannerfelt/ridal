@@ -263,6 +263,73 @@ pub fn is_offered_x_scale(scale: f64) -> bool {
     X_SCALES.iter().any(|s| (s - scale).abs() < 1e-9)
 }
 
+/// Point spacings the layer-point download dialogs offer (#166).
+///
+/// One list, used to build both dialogs, to build the settings page's two
+/// selects, and to validate a stored default -- four places that would
+/// otherwise drift, leaving a saved value with no option to select it. The
+/// label is what a person reads; the value is what `?spacing=` takes.
+pub const LEVEL2_SPACINGS: [(&str, &str); 7] = [
+    ("auto", "Auto (from trace spacing)"),
+    ("1", "1 m"),
+    ("5", "5 m"),
+    ("10", "10 m"),
+    ("25", "25 m"),
+    ("per-trace", "Every trace"),
+    ("vertices", "Picked vertices only"),
+];
+
+/// What a download opens on when nobody has chosen: automatic spacing, the
+/// neutral answer rather than a preference.
+pub const DEFAULT_LEVEL2_SPACING: &str = "auto";
+
+/// File formats the download dialogs offer, which is also where the choice
+/// of coordinates lives (#166): GeoJSON is written in WGS84 unless the
+/// native variant is asked for, and CSV carries both.
+pub const LEVEL2_FORMATS: [(&str, &str); 3] = [
+    ("geojson", "GeoJSON (WGS84)"),
+    ("geojson-native", "GeoJSON (native CRS)"),
+    ("csv", "CSV"),
+];
+
+/// WGS84 GeoJSON: the portable choice, and what RFC 7946 requires.
+pub const DEFAULT_LEVEL2_FORMAT: &str = "geojson";
+
+/// The offered spacings for a template to render as `<option>`s.
+pub fn spacing_options() -> Vec<serde_json::Value> {
+    LEVEL2_SPACINGS
+        .iter()
+        .map(|(value, label)| serde_json::json!({ "value": value, "label": label }))
+        .collect()
+}
+
+/// The offered formats for a template to render as `<option>`s.
+pub fn format_options() -> Vec<serde_json::Value> {
+    LEVEL2_FORMATS
+        .iter()
+        .map(|(value, label)| serde_json::json!({ "value": value, "label": label }))
+        .collect()
+}
+
+pub fn is_offered_spacing(value: &str) -> bool {
+    LEVEL2_SPACINGS.iter().any(|(offered, _)| *offered == value)
+}
+
+pub fn is_offered_format(value: &str) -> bool {
+    LEVEL2_FORMATS.iter().any(|(offered, _)| *offered == value)
+}
+
+/// Themes a person can pick (#141).
+///
+/// Only the two overrides: "follow the system" is the absence of a choice,
+/// not a third value, which is what lets a page follow a device that
+/// switches at dusk.
+pub const THEMES: [&str; 2] = ["light", "dark"];
+
+pub fn is_offered_theme(value: &str) -> bool {
+    THEMES.contains(&value)
+}
+
 /// How every preference resolves:
 ///
 /// ```text
@@ -325,6 +392,56 @@ fn resolve_profile(state: &AppState, caller: &Caller, requested: Option<String>)
         state.project.as_ref().and_then(|p| p.default_profile()),
         "default".to_string(),
     )
+}
+
+/// The spacing and format the download dialogs should open on (#166).
+///
+/// Answered together because the two dialogs render them together, and
+/// because resolving them separately would read the preferences document
+/// twice per page.
+///
+/// A stored value that is no longer offered is skipped at every layer, the
+/// same way [`resolve_x_scale`] treats a retired scale: a dialog whose
+/// select matches nothing would silently download at a spacing the person
+/// never picked.
+fn resolve_export_defaults(state: &AppState, caller: &Caller) -> (String, String) {
+    let mine = my_preferences(state, caller);
+    let project = state.project.as_ref();
+    let spacing = |value: Option<String>| value.filter(|v| is_offered_spacing(v));
+    let format = |value: Option<String>| value.filter(|v| is_offered_format(v));
+    (
+        cascade(
+            None,
+            spacing(mine.level2_spacing),
+            spacing(project.and_then(|p| p.default_spacing())),
+            DEFAULT_LEVEL2_SPACING.to_string(),
+        ),
+        cascade(
+            None,
+            format(mine.level2_format),
+            format(project.and_then(|p| p.default_format())),
+            DEFAULT_LEVEL2_FORMAT.to_string(),
+        ),
+    )
+}
+
+/// The theme a page should be rendered in, or `""` to follow the device
+/// (#141).
+///
+/// No project layer: a project cannot reasonably have an opinion about
+/// whether *you* want a dark screen, and the built-in answer is not a
+/// colour but "ask the browser", which `prefers-color-scheme` already
+/// does.
+pub fn resolve_theme(state: &AppState, caller: &Caller) -> String {
+    my_preferences(state, caller)
+        .theme
+        .filter(|theme| is_offered_theme(theme))
+        .unwrap_or_default()
+}
+
+/// Whether the viewer should open with the interpretations drawn (#143).
+fn resolve_show_picks(state: &AppState, caller: &Caller) -> bool {
+    my_preferences(state, caller).show_picks.unwrap_or(true)
 }
 
 /// Escape the characters that let JSON break out of a `<script>` block.
@@ -855,7 +972,7 @@ pub async fn settings_page(
                 .project
                 .as_ref()
                 .map(|p| p.root().display().to_string()),
-            ..caller_context(&caller),
+            ..caller_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -865,8 +982,15 @@ pub async fn settings_page(
 ///
 /// One function so the sign-in control in `base.html.jinja` reads the same
 /// values everywhere rather than each page assembling its own near-miss.
-fn caller_context(caller: &Caller) -> minijinja::Value {
+///
+/// Takes the state as well as the caller because the theme lives here too
+/// (#141): it belongs to the shared layout rather than to any one page, and
+/// reading it needs the preferences document.
+fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
     minijinja::context! {
+        // Empty means "follow the device", which is the absence of an
+        // override rather than a third theme -- see `resolve_theme`.
+        active_theme => resolve_theme(state, caller),
         current_user => caller.user.as_ref().map(|u| u.as_str()),
         current_role => caller.role.as_str(),
         // Whether to offer a sign-in link at all. A project with no
@@ -928,7 +1052,7 @@ pub async fn layers_page(
             writable => caller.may(crate::project::users::Role::Operator),
             can_pick => caller.may(crate::project::users::Role::Picker),
             active_profile => active_profile,
-            ..caller_context(&caller),
+            ..caller_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -1048,6 +1172,7 @@ pub async fn index_page(
         });
     }
 
+    let export_defaults = resolve_export_defaults(&state, &caller);
     let env = templates::environment();
     let tmpl = env
         .get_template("index.html.jinja")
@@ -1066,7 +1191,11 @@ pub async fn index_page(
             // permission than never having been offered it.
             can_edit_project => state.project.is_some()
                 && caller.may(crate::project::users::Role::Operator),
-            ..caller_context(&caller),
+            spacings => spacing_options(),
+            formats => format_options(),
+            active_spacing => export_defaults.0,
+            active_format => export_defaults.1,
+            ..caller_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
@@ -1127,6 +1256,7 @@ pub async fn viewer_page(
         .map(|json| script_safe_json(&json))
         .unwrap_or_else(|| "null".to_string());
 
+    let export_defaults = resolve_export_defaults(&state, &caller);
     let env = templates::environment();
     let tmpl = env
         .get_template("viewer.html.jinja")
@@ -1161,7 +1291,14 @@ pub async fn viewer_page(
             viewer_height => raster.height,
             x_scales => x_scale_options(),
             active_x_scale => resolve_x_scale(&state, &caller, query.xscale),
-            ..caller_context(&caller),
+            spacings => spacing_options(),
+            formats => format_options(),
+            active_spacing => export_defaults.0,
+            active_format => export_defaults.1,
+            // Whether the picks are drawn when the viewer opens (#143). The
+            // toggle in the toolbar changes it from there without saving.
+            show_picks => resolve_show_picks(&state, &caller),
+            ..caller_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
