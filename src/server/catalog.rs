@@ -394,8 +394,27 @@ impl Catalog {
                     continue;
                 }
             };
-            let RidalNetcdfKind::Supported(meta) = inspection else {
-                continue; // NotRidal: silently ignored, per #122/#123.
+            let meta = match inspection {
+                RidalNetcdfKind::Supported(meta) => meta,
+                RidalNetcdfKind::Legacy(version) => {
+                    // Unlike a plain NotRidal candidate, this is recognizably an
+                    // old ridal output that an operator would otherwise see
+                    // silently vanish from their catalog with no explanation
+                    // (#167). `about` stays empty: a file this old was never
+                    // assigned a radargram id, so there is no entry for this
+                    // warning to be attached to or hidden by an unlist.
+                    warnings.push(CatalogWarning {
+                        message: format!(
+                            "{} was {}",
+                            candidate.relative_path,
+                            io::legacy_reason(&version)
+                        ),
+                        about: Vec::new(),
+                        operator_only: false,
+                    });
+                    continue;
+                }
+                RidalNetcdfKind::NotRidal => continue, // silently ignored, per #122/#123.
             };
 
             // The file's own ridal_group_name/ridal_group_id win; absent
@@ -1035,10 +1054,67 @@ mod tests {
         assert_eq!(catalog.warnings.len(), 1);
     }
 
+    /// A ridal file old enough to predate radargram ids (#116): the
+    /// pre-rename unprefixed `program_version` attribute and none of the
+    /// `ridal_*` ones, mirroring real pre-0.6 output (#167).
+    fn write_legacy_nc(path: &std::path::Path, version: &str) {
+        let mut file = netcdf::create(path).unwrap();
+        file.add_dimension("y", 2).unwrap();
+        file.add_dimension("x", 2).unwrap();
+        let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+        var.put_values(&[0.0f32, 0., 0., 0.], ..).unwrap();
+        file.add_attribute("processing_datetime", "2020-01-01T00:00:00Z")
+            .unwrap();
+        file.add_attribute("program_version", version).unwrap();
+    }
+
     #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_legacy_ridal_file_is_warned_about_not_silently_skipped() {
+        // Unlike a genuinely unrelated file (#122/#123), an old ridal file
+        // should not just vanish from the catalog with no explanation
+        // (#167).
+        let dir = tempfile::tempdir().unwrap();
+        write_legacy_nc(&dir.path().join("old.nc"), "ridal version 0.5.1 by test");
+        process_to(
+            ASSET_2022,
+            &dir.path().join("good.nc"),
+            Some("good-one"),
+            None,
+        );
+
+        let catalog = Catalog::discover(dir.path());
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.entries[0].radargram_id.as_str(), "good-one");
+        assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
+        let warning = &catalog.warnings[0];
+        assert!(warning.message.contains("old.nc"), "{}", warning.message);
+        assert!(warning.message.contains("0.5.1"), "{}", warning.message);
+        assert!(
+            warning.message.contains("ridal process"),
+            "{}",
+            warning.message
+        );
+        assert!(warning.about.is_empty());
+        assert!(!warning.operator_only);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
     fn unrelated_and_invalid_files_are_silently_ignored_not_warned() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("readme.txt"), b"not even nc").unwrap();
+        // A file that parses fine as NetCDF but carries none of ridal's
+        // attributes at all -- distinct from the legacy case, which does
+        // get a warning (#167).
+        {
+            let mut file = netcdf::create(dir.path().join("unrelated.nc")).unwrap();
+            file.add_dimension("x", 3).unwrap();
+            let mut var = file.add_variable::<f32>("temperature", &["x"]).unwrap();
+            var.put_values(&[1.0f32, 2.0, 3.0], ..).unwrap();
+        }
 
         let catalog = Catalog::discover(dir.path());
         assert!(catalog.entries.is_empty());
