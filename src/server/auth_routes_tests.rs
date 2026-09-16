@@ -3214,6 +3214,50 @@ async fn an_upload_of_a_legacy_ridal_file_is_refused_with_a_reprocess_message() 
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn an_upload_of_a_valid_but_unrelated_netcdf_is_refused_as_not_ridal() {
+    // Distinct from `an_upload_that_is_not_a_ridal_radargram_leaves_nothing_behind`
+    // (unparseable bytes, refused before inspection even succeeds) and from
+    // the legacy case above: this file parses fine as NetCDF and still has
+    // none of ridal's attributes at all, so it should land on the plain
+    // "not one Ridal processed" answer (#167).
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("unrelated.nc");
+    super::interp_routes_tests::write_unrelated_test_nc(&source);
+    let bytes = std::fs::read(&source).unwrap();
+
+    let response = post_bytes(
+        &app,
+        "/api/v1/datasets?filename=unrelated.nc",
+        bytes,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert_eq!(response.body["error"]["code"], "not_a_ridal_radargram");
+
+    let left: Vec<String> = std::fs::read_dir(radargrams(dir.path()))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(left, vec!["ours.nc"], "no temporary file survived");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_upload_colliding_with_an_existing_id_is_refused() {
     // Refused while the operator is standing there and can rename it,
     // rather than left to become a duplicate-id warning later.
@@ -4006,6 +4050,41 @@ async fn a_replacement_that_is_a_legacy_ridal_file_is_refused_with_a_reprocess_m
     let message = response.body["error"]["message"].as_str().unwrap();
     assert!(message.contains("0.5.1"), "{message}");
     assert!(message.contains("ridal process"), "{message}");
+    assert_eq!(
+        staged_count(dir.path()),
+        0,
+        "a refused upload leaves nothing behind"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_replacement_that_is_a_valid_but_unrelated_netcdf_is_refused_as_not_ridal() {
+    // Same distinction as the upload route's equivalent test (#167): a file
+    // that parses fine as NetCDF but has none of ridal's attributes at all
+    // should land on the plain "not one Ridal processed" answer.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("unrelated.nc");
+    super::interp_routes_tests::write_unrelated_test_nc(&source);
+    let bytes = std::fs::read(&source).unwrap();
+
+    let response = post_bytes(&app, "/api/v1/datasets/ours/replace", bytes, Some(&erik)).await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert_eq!(response.body["error"]["code"], "not_a_ridal_radargram");
     assert_eq!(
         staged_count(dir.path()),
         0,

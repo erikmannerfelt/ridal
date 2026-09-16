@@ -1101,9 +1101,20 @@ mod tests {
     }
 
     #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
     fn unrelated_and_invalid_files_are_silently_ignored_not_warned() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("readme.txt"), b"not even nc").unwrap();
+        // A file that parses fine as NetCDF but carries none of ridal's
+        // attributes at all -- distinct from the legacy case, which does
+        // get a warning (#167).
+        {
+            let mut file = netcdf::create(dir.path().join("unrelated.nc")).unwrap();
+            file.add_dimension("x", 3).unwrap();
+            let mut var = file.add_variable::<f32>("temperature", &["x"]).unwrap();
+            var.put_values(&[1.0f32, 2.0, 3.0], ..).unwrap();
+        }
 
         let catalog = Catalog::discover(dir.path());
         assert!(catalog.entries.is_empty());
