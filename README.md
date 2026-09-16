@@ -8,6 +8,7 @@ https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml
 # ![](https://raw.githubusercontent.com/erikmannerfelt/ridal/v0.5.0/images/logo.svg) Ridal — Speeding up Ground Penetrating Radar (GPR) processing
 The aim of `ridal` is to quickly and accurately process GPR data.
 In one command, most data can be processed in pre-set profiles or with custom filter settings, and batch modes allow for sequences of datasets to be processed with the same settings.
+It can be used from the command line, from Python, or through a browser GUI for looking at and interpreting the results.
 Built in [rust](https://rust-lang.org/) with a high focus on testing and performance, `ridal` may be for you if large data volumes and strange fileformats are common issues.
 
 The name is a take on the loosely defined "Data Abstraction Library" (DAL) projects like [GDAL](https://gdal.org) and [PDAL](https://pdal.org), but for radar.
@@ -114,53 +115,52 @@ Optionally, for many sequential files, the `--merge` argument allows merging mul
 ridal batch-process data/*.rd3 --merge "10 min" --default -o output/
 ```
 
-A rudimentary profile renderer is available with the `-r` argument.
+A profile renderer is available with the `-r` argument.
 This will be saved in the same location as the output file as a JPG if another filename is not given.
-
-### Projects and the browser GUI
-*Not in any released version yet: the GUI is on `main` and is not in `cargo install ridal`.*
-
-A **project** is a directory holding a `ridal.toml`. Making one is what gives interpretations — picked reflectors and the layers they belong to — somewhere to be saved:
-
+Files that are already processed can be rendered on their own with the `render` subcommand:
 ```bash
-cd my_survey/          # already full of your processed .nc files
+ridal render processed.nc -o profile.png
+```
+
+### The browser GUI
+*New in version 0.6.0.*
+
+Processed files can be looked at in a browser:
+```bash
+ridal gui path/to/processed/
+```
+Every Ridal `.nc` file below that directory is found and listed, grouped by survey, with a map of where each survey's lines were collected.
+Opening one gives a zoomable view of the radargram, where the cursor reports the trace number, the distance along the line, the two-way travel time and the depth, and a map shows where on the ground that point is.
+Radargrams are rendered where Ridal runs, and only the parts being looked at, so files larger than memory are not a problem.
+
+Reflectors can also be picked in the browser, which needs somewhere to keep them: a **project**.
+Making one in the directory with the processed files is all that is required:
+```bash
+cd my_survey/
 ridal project init
-ridal gui              # or `ridal gui .`; without a path, Ridal looks upwards for the project
+ridal gui
 ```
+Without a path, `ridal gui` looks for the project by searching upwards from the current directory.
+Picked layers can be exported as points, as GeoJSON or CSV, from the browser or with `ridal interp export`.
 
-`init` adds exactly two entries to the directory, and touches nothing else in it:
-
+`ridal gui` is for looking at your own files on your own computer, and it stops when you do.
+To keep a project up for longer, or to share it with colleagues, `ridal server start` binds a fixed port instead:
+```bash
+ridal server start my_survey/ --port 8000
 ```
-my_survey/
-├── line_01.nc ...      your own files, untouched
-├── ridal.toml          settings, and the marker that makes this a project
-└── ridal_data/         everything Ridal owns
-    ├── .gitignore      keeps the cache and any secrets out of version control
-    ├── interpretations/
-    ├── layers/
-    ├── radargrams/     where uploads from the browser land
-    ├── revisions/
-    └── cache/          derived data; safe to delete at any time
+Everyone who reaches that address is the same anonymous user until the project has accounts.
+The first account is made from the command line, since there is no one to ask for permission yet:
+```bash
+ridal project user add erik --role admin
 ```
-
-`ridal_data/` is the whole project state: back it up and you have taken the work with you, delete it and the project is gone. Every relative path in `ridal.toml` resolves against the directory holding it, so the project can be moved or renamed as a whole. Both locations are configurable:
-
-```toml
-[project]
-data_dir = "ridal_data"     # where Ridal keeps its own data
-
-[cache]
-dir = "/var/cache/ridal"    # derived data, e.g. on local disk when the project is on a share
-```
-
-`ridal project info` prints where everything resolved to. A project created by an earlier build of `main`, with its state loose in the project directory, is not opened silently — run `ridal project migrate` (add `--dry-run` to see what it would move first).
-
-`ridal gui` binds loopback and writes no secret into your directory: its sessions are signed with a key generated at startup, so stopping the server ends them. `ridal server start` is the deployment-oriented mode, where accounts and persistent sessions live in `ridal_data/`.
+This prints a single-use invite link to send to that person, which is where they set their own password.
+Ridal does not encrypt anything itself, so serving a project beyond your own machine means leaving it on `127.0.0.1` and putting a reverse proxy in front of it.
 
 
 ## Papers using Ridal
 
 - [Kleber et al. (2023): Groundwater springs formed during glacial retreat are a large source of methane in the high Arctic](https://doi.org/10.1038/s41561-023-01210-6)
 - [Harcourt et al. (2026): Surging glaciers in Svalbard: Observing their distribution, characteristics and evolution](https://doi.org/10.1016/j.earscirev.2026.105410)
+- [Kleber et al. (2026): Subglacial geology and thermal conditions regulate methane emissions from Svalbard glaciers](https://doi.org/10.1038/s41467-026-77190-z)
 
 ... and many others in preparation/review
