@@ -1075,7 +1075,28 @@ pub fn export_locations(
 #[derive(Debug, Clone, PartialEq)]
 pub enum RidalNetcdfKind {
     NotRidal,
+    /// Written by a ridal old enough to predate radargram ids (#116): it
+    /// has the pre-rename unprefixed `program_version` attribute but none
+    /// of the `ridal_*` ones, so it structurally cannot supply a
+    /// `RidalNetcdfMetadata`. Kept distinct from `NotRidal` so a caller can
+    /// give a specific "reprocess it" answer instead of a generic "not a
+    /// ridal file" one (#167). Carries the raw `program_version` string,
+    /// which is always present -- it is what this variant is detected by.
+    Legacy(String),
     Supported(RidalNetcdfMetadata),
+}
+
+/// The reason clause of a "this file needs reprocessing" message, shared by
+/// every caller that reports a `RidalNetcdfKind::Legacy` result (upload,
+/// replace, and catalog discovery) so the wording stays one decision instead
+/// of three (#167). Callers prepend whatever names the file for them, e.g.
+/// `format!("{name} was {}", legacy_reason(&version))`.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub fn legacy_reason(version: &str) -> String {
+    format!(
+        "processed by an old ridal ({version}), which predates radargram ids. \
+         Reprocess it with a current `ridal process` first."
+    )
 }
 
 /// Metadata read from a supported Ridal-produced NetCDF file, without
@@ -1141,7 +1162,18 @@ pub fn inspect_ridal_netcdf(path: &Path) -> Result<RidalNetcdfKind, String> {
     let processing_datetime = read_global_str_attr(&file, "ridal_processing_datetime");
     let (ridal_version, processing_datetime) = match (ridal_version, processing_datetime) {
         (Some(v), Some(d)) => (v, d),
-        _ => return Ok(RidalNetcdfKind::NotRidal),
+        // No ridal_* attributes at all: either an unrelated NetCDF file, or
+        // a ridal file old enough to predate the #116 rename (and, with it,
+        // radargram ids). `program_version` is that rename's unprefixed
+        // predecessor and was never written by anything else, so its
+        // presence -- regardless of what else the file does or doesn't
+        // have -- is a reliable "old ridal" signal (#167).
+        _ => {
+            return Ok(match read_global_str_attr(&file, "program_version") {
+                Some(version) => RidalNetcdfKind::Legacy(version),
+                None => RidalNetcdfKind::NotRidal,
+            })
+        }
     };
 
     let radargram_id = match read_global_str_attr(&file, "ridal_radargram_id") {
@@ -1750,16 +1782,16 @@ mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
-    fn test_inspect_ridal_netcdf_rejects_unprefixed_legacy_attrs() {
+    fn test_inspect_ridal_netcdf_recognizes_unprefixed_legacy_attrs_as_legacy() {
         // Unprefixed processing_datetime/program_version, with no
-        // ridal_processing_datetime/ridal_version at all: not recognized.
-        // A prior version of this function fell back to these unprefixed
-        // names, on the theory that a file might predate the ridal_*
-        // rename (#116) while still having ridal_radargram_id -- but that
-        // combination can never occur, since ridal_radargram_id became
-        // mandatory in the exact same change that introduced the rename.
-        // Any file with only the unprefixed names necessarily also lacks
-        // ridal_radargram_id, and is rejected on that check regardless.
+        // ridal_processing_datetime/ridal_version at all: recognized as an
+        // old ridal file rather than an arbitrary NetCDF file (#167), even
+        // though a `ridal_radargram_id` is (artificially) present here too.
+        // A real file never has both -- ridal_radargram_id became
+        // mandatory in the exact same change that introduced the ridal_*
+        // rename (#116) -- but the check only looks at the version
+        // attributes, so this combination still resolves to `Legacy`
+        // rather than `Supported`.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy.nc");
         {
@@ -1778,7 +1810,7 @@ mod tests {
 
         assert_eq!(
             super::inspect_ridal_netcdf(&path).unwrap(),
-            super::RidalNetcdfKind::NotRidal
+            super::RidalNetcdfKind::Legacy("ridal version 0.1.0 by test".to_string())
         );
     }
 
@@ -1830,6 +1862,15 @@ mod tests {
         assert_eq!(
             super::inspect_ridal_netcdf(&path).unwrap(),
             super::RidalNetcdfKind::NotRidal
+        );
+    }
+
+    #[test]
+    fn test_legacy_reason_names_the_version() {
+        assert_eq!(
+            super::legacy_reason("ridal version 0.5.1 by test"),
+            "processed by an old ridal (ridal version 0.5.1 by test), which predates \
+             radargram ids. Reprocess it with a current `ridal process` first."
         );
     }
 

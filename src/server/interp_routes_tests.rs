@@ -57,6 +57,21 @@ fn write_test_nc(path: &StdPath, radargram_id: &str) {
         .unwrap();
 }
 
+/// A ridal file old enough to predate radargram ids (#116): the pre-rename
+/// unprefixed `program_version` attribute and none of the `ridal_*` ones,
+/// mirroring the shape of real pre-0.6 output (#167).
+pub(super) fn write_legacy_test_nc(path: &StdPath, version: &str) {
+    let mut file = netcdf::create(path).unwrap();
+    file.add_dimension("y", 8).unwrap();
+    file.add_dimension("x", 40).unwrap();
+    let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+    let data: Vec<f32> = (0..(8 * 40)).map(|i| (i % 97) as f32).collect();
+    var.put_values(&data, ..).unwrap();
+    file.add_attribute("processing_datetime", "2020-01-01T00:00:00Z")
+        .unwrap();
+    file.add_attribute("program_version", version).unwrap();
+}
+
 /// A radargram with the coordinate variables a level 2 export needs.
 ///
 /// `write_test_nc` deliberately writes the bare minimum the catalog

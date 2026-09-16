@@ -484,14 +484,27 @@ pub async fn stage_replacement(
             ),
         )
     })?;
-    let RidalNetcdfKind::Supported(meta) = inspection else {
-        return Err(ApiError::bad_request(
-            "not_a_ridal_radargram",
-            format!(
-                "{} is a NetCDF file but not one Ridal processed.",
-                query.filename.as_deref().unwrap_or("the upload")
-            ),
-        ));
+    let meta = match inspection {
+        RidalNetcdfKind::Supported(meta) => meta,
+        RidalNetcdfKind::Legacy(version) => {
+            return Err(ApiError::bad_request(
+                "ridal_file_too_old",
+                format!(
+                    "{} was {}",
+                    query.filename.as_deref().unwrap_or("the upload"),
+                    crate::io::legacy_reason(&version)
+                ),
+            ));
+        }
+        RidalNetcdfKind::NotRidal => {
+            return Err(ApiError::bad_request(
+                "not_a_ridal_radargram",
+                format!(
+                    "{} is a NetCDF file but not one Ridal processed.",
+                    query.filename.as_deref().unwrap_or("the upload")
+                ),
+            ));
+        }
     };
 
     // A replacement has to be a replacement *of this radargram*. Without

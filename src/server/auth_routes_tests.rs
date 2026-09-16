@@ -3174,6 +3174,46 @@ async fn an_upload_that_is_not_a_ridal_radargram_leaves_nothing_behind() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn an_upload_of_a_legacy_ridal_file_is_refused_with_a_reprocess_message() {
+    // Distinct from the generic "not a ridal radargram" case (#167): an old
+    // ridal file is recognizable as ridal output, so the refusal should say
+    // so and point at reprocessing, not just "no radargram id".
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("old.nc");
+    super::interp_routes_tests::write_legacy_test_nc(&source, "ridal version 0.5.1 by test");
+    let bytes = std::fs::read(&source).unwrap();
+
+    let response = post_bytes(&app, "/api/v1/datasets?filename=old.nc", bytes, Some(&erik)).await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert_eq!(response.body["error"]["code"], "ridal_file_too_old");
+    let message = response.body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("old.nc"), "{message}");
+    assert!(message.contains("0.5.1"), "{message}");
+    assert!(message.contains("ridal process"), "{message}");
+
+    let left: Vec<String> = std::fs::read_dir(radargrams(dir.path()))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(left, vec!["ours.nc"], "no temporary file survived");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_upload_colliding_with_an_existing_id_is_refused() {
     // Refused while the operator is standing there and can rename it,
     // rather than left to become a duplicate-id warning later.
@@ -3929,6 +3969,43 @@ async fn a_replacement_for_a_different_radargram_is_refused() {
     .await;
     assert_eq!(response.status, StatusCode::CONFLICT, "{}", response.text);
     assert_eq!(response.body["error"]["code"], "wrong_radargram");
+    assert_eq!(
+        staged_count(dir.path()),
+        0,
+        "a refused upload leaves nothing behind"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_replacement_that_is_a_legacy_ridal_file_is_refused_with_a_reprocess_message() {
+    // Same distinction as the upload route (#167): an old ridal file gets a
+    // specific "reprocess it" answer, not the generic not-ridal message.
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("old.nc");
+    super::interp_routes_tests::write_legacy_test_nc(&source, "ridal version 0.5.1 by test");
+    let bytes = std::fs::read(&source).unwrap();
+
+    let response = post_bytes(&app, "/api/v1/datasets/ours/replace", bytes, Some(&erik)).await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert_eq!(response.body["error"]["code"], "ridal_file_too_old");
+    let message = response.body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("0.5.1"), "{message}");
+    assert!(message.contains("ridal process"), "{message}");
     assert_eq!(
         staged_count(dir.path()),
         0,

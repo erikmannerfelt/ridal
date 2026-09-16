@@ -170,15 +170,28 @@ pub async fn upload_dataset(
             ),
         )
     })?;
-    let RidalNetcdfKind::Supported(meta) = inspection else {
-        return Err(ApiError::bad_request(
-            "not_a_ridal_radargram",
-            format!(
-                "{} is a NetCDF file but not one Ridal processed: it has no \
-                 radargram id. Process it with `ridal process` first.",
-                query.filename.as_deref().unwrap_or("the upload")
-            ),
-        ));
+    let meta = match inspection {
+        RidalNetcdfKind::Supported(meta) => meta,
+        RidalNetcdfKind::Legacy(version) => {
+            return Err(ApiError::bad_request(
+                "ridal_file_too_old",
+                format!(
+                    "{} was {}",
+                    query.filename.as_deref().unwrap_or("the upload"),
+                    crate::io::legacy_reason(&version)
+                ),
+            ));
+        }
+        RidalNetcdfKind::NotRidal => {
+            return Err(ApiError::bad_request(
+                "not_a_ridal_radargram",
+                format!(
+                    "{} is a NetCDF file but not one Ridal processed: it has no \
+                     radargram id. Process it with `ridal process` first.",
+                    query.filename.as_deref().unwrap_or("the upload")
+                ),
+            ));
+        }
     };
 
     // Refused here rather than left to become a duplicate-id warning after
