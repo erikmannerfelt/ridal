@@ -3216,7 +3216,7 @@ async fn an_upload_of_a_legacy_ridal_file_is_refused_with_a_reprocess_message() 
 #[serial_test::serial(netcdf)]
 async fn an_upload_of_a_valid_but_unrelated_netcdf_is_refused_as_not_ridal() {
     // Distinct from `an_upload_that_is_not_a_ridal_radargram_leaves_nothing_behind`
-    // (unparseable bytes, refused before inspection even succeeds) and from
+    // (unparsable bytes, refused before inspection even succeeds) and from
     // the legacy case above: this file parses fine as NetCDF and still has
     // none of ridal's attributes at all, so it should land on the plain
     // "not one Ridal processed" answer (#167).
