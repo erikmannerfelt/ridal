@@ -25,6 +25,20 @@ use crate::server::render_service::RenderServiceConfig;
 
 const RADARGRAM: &str = "line-01";
 
+/// Where a project keeps everything Ridal owns, since #187 moved it out of
+/// the project root. Tests reach past the API to assert on files on disk --
+/// the layout is part of the contract -- so they need the same answer the
+/// code has.
+fn data(root: &StdPath) -> std::path::PathBuf {
+    root.join(crate::project::DEFAULT_DATA_DIR)
+}
+
+/// Where a freshly initialized project keeps its radargrams, and where an
+/// upload from the browser lands.
+fn radargrams(root: &StdPath) -> std::path::PathBuf {
+    data(root).join(crate::project::DEFAULT_RADARGRAM_DIR)
+}
+
 fn write_test_nc(path: &StdPath, radargram_id: &str) {
     let mut file = netcdf::create(path).unwrap();
     file.add_dimension("y", 8).unwrap();
@@ -177,7 +191,7 @@ fn write_test_nc_full(
 fn group_app() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let radargrams = dir.path().join("radargrams");
+    let radargrams = radargrams(dir.path());
     for id in ["line-01", "line-02"] {
         write_test_nc_with_axes(&radargrams.join(format!("{id}.nc")), id, Some("survey"));
     }
@@ -201,7 +215,7 @@ fn group_app() -> (tempfile::TempDir, Router) {
 fn mixed_catalog_app() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let radargrams = dir.path().join("radargrams");
+    let radargrams = radargrams(dir.path());
     for id in ["line-01", "line-02"] {
         write_test_nc_with_axes(&radargrams.join(format!("{id}.nc")), id, Some("survey"));
     }
@@ -223,11 +237,7 @@ fn mixed_catalog_app() -> (tempfile::TempDir, Router) {
 fn project_app_with_axes() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc_with_axes(
-        &dir.path().join("radargrams").join("line-01.nc"),
-        RADARGRAM,
-        None,
-    );
+    write_test_nc_with_axes(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM, None);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     let state = Arc::new(
         AppState::build_with_project(
@@ -250,7 +260,7 @@ fn project_app_with_axes() -> (tempfile::TempDir, Router) {
 fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let app = app_for(dir.path(), writable);
     (dir, app)
 }
@@ -425,7 +435,7 @@ async fn writing_to_an_unknown_radargram_is_404_not_a_stray_directory() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
-        !dir.path().join("interpretations/not-here").exists(),
+        !data(dir.path()).join("interpretations/not-here").exists(),
         "a typo in the URL must not create an interpretation directory"
     );
 }
@@ -1004,7 +1014,7 @@ async fn the_radargram_downloads_byte_for_byte() {
         Some("attachment; filename=\"line-01.nc\"")
     );
 
-    let source = std::fs::read(dir.path().join("radargrams").join("line-01.nc")).unwrap();
+    let source = std::fs::read(radargrams(dir.path()).join("line-01.nc")).unwrap();
     assert_eq!(
         bytes, source,
         "the download must be the file, not a re-write"
@@ -1176,7 +1186,7 @@ async fn an_export_against_the_wrong_radargram_is_refused() {
     // file -- which is exactly the case the export path has to survive.
     let mut doc = document("line-01");
     doc["key"] = serde_json::json!("some-other-line");
-    let dir = _dir.path().join("interpretations/line-01");
+    let dir = data(_dir.path()).join("interpretations/line-01");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("default.gprinterp.json"),
@@ -1285,7 +1295,7 @@ async fn a_write_cannot_target_another_users_interpretation() {
     assert_eq!(body["error"]["code"], "not_your_interpretation");
     // Nothing was created for them.
     assert!(
-        !dir.path()
+        !data(dir.path())
             .join("interpretations/line-01/someone-else.gprinterp.json")
             .exists(),
         "a refused write must not leave a document behind"
@@ -2263,7 +2273,7 @@ async fn an_anchor_name_cannot_break_out_of_the_script_block() {
     // anyone opens the viewer.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let path = dir.path().join("radargrams").join("nasty.nc");
+    let path = radargrams(dir.path()).join("nasty.nc");
     write_test_nc_with_axes(&path, "nasty", None);
     {
         let mut file = netcdf::append(&path).unwrap();
@@ -2403,11 +2413,7 @@ async fn axes_are_withheld_when_the_file_changed_under_the_catalog() {
             file.add_attribute("ridal_processing_datetime", "2099-01-01T00:00:00Z")
                 .unwrap();
         }
-        std::fs::rename(
-            &replacement,
-            dir.path().join("radargrams").join("line-01.nc"),
-        )
-        .unwrap();
+        std::fs::rename(&replacement, radargrams(dir.path()).join("line-01.nc")).unwrap();
     }
 
     let response = app
@@ -2451,7 +2457,7 @@ async fn a_save_waits_while_a_radargram_is_being_removed() {
     // proceed until it is released.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&dir.path().join("radargrams").join("line-01.nc"), RADARGRAM);
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
     let project = Project::discover(dir.path()).unwrap().unwrap();
     let state = Arc::new(
         AppState::build_with_project(
@@ -2486,7 +2492,7 @@ async fn a_save_waits_while_a_radargram_is_being_removed() {
         "the save went through while a removal held the lifecycle lock"
     );
     assert!(
-        !dir.path().join("interpretations/line-01").exists(),
+        !data(dir.path()).join("interpretations/line-01").exists(),
         "and it wrote nothing in the meantime"
     );
 
@@ -2624,8 +2630,7 @@ async fn a_document_from_another_revision_is_carried_and_the_stored_one_is_untou
     // The file on disk still says what it said.
     let stored: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
-            dir.path()
-                .join("interpretations/line-01/default.gprinterp.json"),
+            data(dir.path()).join("interpretations/line-01/default.gprinterp.json"),
         )
         .unwrap(),
     )

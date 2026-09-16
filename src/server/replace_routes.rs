@@ -55,13 +55,16 @@ use crate::project::revisions::{self, ledger};
 use crate::project::users::Role;
 use crate::project::{audit, interpretations, Project};
 
-/// Where a staged replacement waits between the two requests.
+/// Where a staged replacement waits between the two requests, under the
+/// project's data directory (#187).
 ///
 /// Inside the project rather than the system temporary directory: the file
 /// is about to be installed into `radargrams/`, and a rename across
 /// filesystems is a copy that can half-finish. It also means a staged file
 /// counts against the project's size cap, which is the honest accounting —
-/// it is occupying the project's disk.
+/// it is occupying the project's disk. A `[project] data_dir` pointed at
+/// another filesystem gives the install a cross-device rename, which fails
+/// with the system's message rather than half-succeeding.
 ///
 /// **Dot-prefixed, and that is load-bearing.** Discovery walks the whole
 /// project tree looking for `.nc` files, and a staged replacement is a
@@ -169,12 +172,19 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// The staging directory, created and checked to be inside the project.
+/// The staging directory, created and checked to be inside the project's
+/// data directory.
+///
+/// Checked against the *data* directory rather than the project root,
+/// because a project may put its data elsewhere entirely (`[project]
+/// data_dir`). Both sides are canonicalized, so a `.staging` replaced by a
+/// symlink to somewhere else resolves and is caught — which is the property
+/// the check is for.
 fn staging_dir(project: &Project) -> Result<std::path::PathBuf, ApiError> {
-    let root = project.root().canonicalize().map_err(|e| {
+    let root = project.data_dir().canonicalize().map_err(|e| {
         ApiError::internal(
             "replace_failed",
-            format!("Could not resolve the project root: {e}"),
+            format!("Could not resolve the project's data directory: {e}"),
         )
     })?;
     let dir = root.join(STAGING_DIR);

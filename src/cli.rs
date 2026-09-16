@@ -83,6 +83,8 @@ pub enum ProjectCommand {
     Init(ProjectInitArgs),
     /// Show what a project contains
     Info(ProjectInfoArgs),
+    /// Move a project created by an older Ridal into its data directory
+    Migrate(ProjectMigrateArgs),
     /// Manage who may use the project's server
     User(ProjectUserArgs),
 }
@@ -198,6 +200,17 @@ pub struct ProjectInfoArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct ProjectMigrateArgs {
+    /// The project directory, the one holding ridal.toml.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Print what would move, without moving anything.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, clap::Args)]
 pub struct InterpArgs {
     #[command(subcommand)]
     pub command: InterpCommand,
@@ -253,7 +266,9 @@ pub struct InterpExportArgs {
 #[derive(Debug, clap::Args)]
 pub struct GuiArgs {
     /// A single processed .nc file, or a directory to scan recursively.
-    pub path: PathBuf,
+    /// Omitted, Ridal serves the project found by searching upwards from
+    /// here, or this directory if there is none.
+    pub path: Option<PathBuf>,
 
     /// In-memory cache budget for encoded chunk/overview images, in MB.
     #[arg(long)]
@@ -661,6 +676,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Project(args) => match args.command {
             ProjectCommand::Init(args) => project_init_command(&args),
             ProjectCommand::Info(args) => project_info_command(&args),
+            ProjectCommand::Migrate(args) => project_migrate_command(&args),
             ProjectCommand::User(args) => match args.command {
                 ProjectUserCommand::Add(args) => project_user_add_command(&args),
                 ProjectUserCommand::List(args) => project_user_list_command(&args),
@@ -699,7 +715,32 @@ fn render_service_config(
 #[cfg(feature = "server")]
 fn gui_command(args: GuiArgs) -> Result<(), String> {
     let config = render_service_config(args.cache_memory_mb, args.n_workers)?;
-    crate::server::launch::run_gui(&args.path, args.read_only, config)
+    let path = gui_root(args.path.as_deref());
+    crate::server::launch::run_gui(&path, args.read_only, config)
+}
+
+/// What `ridal gui` serves when it was given no path.
+///
+/// The project root found by walking upwards, the way `cargo` and `git`
+/// work from anywhere inside a tree (#187) -- so `ridal gui` in
+/// `my_survey/2024/` serves the whole survey rather than one year of it,
+/// which is also where the interpretations already are. With no project
+/// above, it is the current directory, which is what it always was.
+#[cfg(feature = "server")]
+fn gui_root(path: Option<&std::path::Path>) -> PathBuf {
+    match path {
+        Some(path) => path.to_path_buf(),
+        None => {
+            let here = PathBuf::from(".");
+            match crate::project::Project::find_root(&here) {
+                Some(root) => {
+                    println!("Serving the project at {}", root.display());
+                    root
+                }
+                None => here,
+            }
+        }
+    }
 }
 
 #[cfg(feature = "server")]
@@ -1106,6 +1147,14 @@ mod tests {
         dir
     }
 
+    /// Where a project's accounts live, which since #187 is inside its
+    /// data directory rather than loose in the project root.
+    fn users_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
+        dir.path()
+            .join(crate::project::DEFAULT_DATA_DIR)
+            .join(crate::project::users::USERS_FILE)
+    }
+
     fn accounts(dir: &tempfile::TempDir) -> crate::project::users::UserSet {
         let project = crate::project::Project::open(dir.path()).unwrap();
         crate::project::users::read(project.documents())
@@ -1123,13 +1172,78 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "server")]
+    #[test]
+    fn gui_without_a_path_serves_the_project_found_above_it() {
+        // The cargo/git behaviour: run it from anywhere inside the tree and
+        // it works on the whole tree, which for Ridal is also where the
+        // interpretations already are (#187).
+        let dir = project_dir();
+        let nested = dir.path().join("2024").join("day-3");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let found = crate::project::Project::find_root(&nested).unwrap();
+        assert_eq!(
+            found,
+            std::fs::canonicalize(dir.path()).unwrap(),
+            "a subdirectory must not be served as if it were the project"
+        );
+
+        // An explicit path is still exactly what it says, project or not.
+        assert_eq!(super::gui_root(Some(&nested)), nested);
+
+        // And outside any project, the answer is the directory itself --
+        // the read-only arrangement Ridal has always had.
+        let bare = tempfile::tempdir().unwrap();
+        assert!(crate::project::Project::find_root(bare.path()).is_none());
+    }
+
+    #[test]
+    fn migrating_is_reported_and_dry_running_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("interpretations/line-01")).unwrap();
+        std::fs::write(
+            dir.path()
+                .join("interpretations/line-01/erik.gprinterp.json"),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(crate::project::MARKER), "[project]\n").unwrap();
+
+        super::project_migrate_command(&ProjectMigrateArgs {
+            path: dir.path().to_path_buf(),
+            dry_run: true,
+        })
+        .unwrap();
+        assert!(
+            dir.path().join("interpretations").exists(),
+            "dry run moved it"
+        );
+
+        super::project_migrate_command(&ProjectMigrateArgs {
+            path: dir.path().to_path_buf(),
+            dry_run: false,
+        })
+        .unwrap();
+        assert!(!dir.path().join("interpretations").exists());
+        crate::project::Project::open(dir.path()).unwrap();
+
+        // Running it again is a no-op rather than an error: the answer to
+        // "did that work?" should not depend on how many times it was run.
+        super::project_migrate_command(&ProjectMigrateArgs {
+            path: dir.path().to_path_buf(),
+            dry_run: false,
+        })
+        .unwrap();
+    }
+
     #[test]
     fn adding_the_first_administrator_is_what_turns_authentication_on() {
         // The bootstrap, and the only way out of the chicken-and-egg: there
         // is no administrator to authorise creating the first one, so it
         // happens on the machine itself.
         let dir = project_dir();
-        assert!(!dir.path().join("users.json").exists());
+        assert!(!users_file(&dir).exists());
 
         add(&dir, "erik", "admin").unwrap();
 
@@ -1157,7 +1271,7 @@ mod tests {
         assert!(error.contains("--role admin"), "{error}");
         // And nothing was written, so the project is still open rather
         // than half-converted.
-        assert!(!dir.path().join("users.json").exists());
+        assert!(!users_file(&dir).exists());
 
         // With an administrator in place, the same command is fine.
         add(&dir, "erik", "admin").unwrap();
@@ -1555,15 +1669,58 @@ fn project_init_command(args: &ProjectInitArgs) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!("Created project at {}", project.root().display());
     println!(
-        "  {} names it; interpretations go in {}/, layer definitions in {}/",
+        "  {} names it and holds its settings; everything else Ridal owns is in {}/.",
         crate::project::MARKER,
-        crate::project::INTERPRETATIONS_DIR,
-        crate::project::LAYERS_DIR,
+        crate::project::DEFAULT_DATA_DIR,
     );
     println!(
-        "  Put processed radargrams in {}/ (or point [radargrams] roots elsewhere).",
-        crate::project::DEFAULT_RADARGRAM_DIR
+        "  Interpretations go in {0}/{1}/, layer definitions in {0}/{2}/, \
+         derived data in {0}/{3}/.",
+        crate::project::DEFAULT_DATA_DIR,
+        crate::project::INTERPRETATIONS_DIR,
+        crate::project::LAYERS_DIR,
+        crate::project::DEFAULT_CACHE_DIR,
     );
+    println!(
+        "  Your own files stay where they are; uploads from the browser go to {}/.",
+        project.relative_upload_dir().display()
+    );
+    Ok(())
+}
+
+fn project_migrate_command(args: &ProjectMigrateArgs) -> Result<(), String> {
+    let plan = crate::project::migrate::plan(&args.path).map_err(|e| e.to_string())?;
+    if plan.is_empty() {
+        println!(
+            "{} is already in the current layout; there is nothing to move.",
+            plan.root.display()
+        );
+        return Ok(());
+    }
+
+    let verb = if args.dry_run { "Would move" } else { "Moved" };
+    if !args.dry_run {
+        crate::project::migrate::apply(&plan).map_err(|e| e.to_string())?;
+    }
+    for entry in &plan.moves {
+        println!("{verb} {entry} -> {}/{entry}", plan.data_dir.display());
+    }
+    if plan.write_gitignore {
+        println!(
+            "{} {}/.gitignore",
+            if args.dry_run { "Would write" } else { "Wrote" },
+            plan.data_dir.display()
+        );
+    }
+    if args.dry_run {
+        println!("Nothing was changed. Run without --dry-run to do it.");
+    } else {
+        println!(
+            "{} is now a format_version {} project.",
+            plan.root.display(),
+            crate::project::FORMAT_VERSION
+        );
+    }
     Ok(())
 }
 
@@ -1580,6 +1737,7 @@ fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
     if let Some(name) = &project.config().project.name {
         println!("Name: {name}");
     }
+    println!("Data: {}", project.data_dir().display());
     for root in project.radargram_roots() {
         println!("Radargram root: {}", root.display());
     }
@@ -1610,7 +1768,7 @@ fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
     // Listed from the interpretations directory rather than from the
     // catalog: an interpretation whose radargram is missing is exactly the
     // thing worth noticing, and inspecting must not need the server feature.
-    let interpretations = project.root().join(crate::project::INTERPRETATIONS_DIR);
+    let interpretations = project.data_dir().join(crate::project::INTERPRETATIONS_DIR);
     let mut total = 0usize;
     if let Ok(entries) = std::fs::read_dir(&interpretations) {
         let mut names: Vec<String> = entries
