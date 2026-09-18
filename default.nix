@@ -29,7 +29,7 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = ./Cargo.lock;
 
   buildNoDefaultFeatures = true;
-  buildFeatures = [ "cli" ];
+  buildFeatures = [ "cli" "server" ];
 
   nativeBuildInputs = with pkgs; [
     pkg-config
