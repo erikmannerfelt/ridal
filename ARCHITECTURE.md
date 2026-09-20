@@ -582,3 +582,59 @@ was the problem.
 `scripts/panel_harness.py` drives these through headless Chromium and a
 same-origin iframe harness; see its module doc for the virtual-time and
 request-counting traps.
+
+### Where derived items are managed, and why in two places
+
+The viewer's layer panel is the **main** place to create, edit and delete a
+derived item, because that is where the expression's effect is visible: the
+live preview only exists next to a radargram. It is not the **only** place.
+A project's derived items are project state, and a project should be
+manageable without opening a radargram, so the `/layers` page lists and edits
+them too. The two are one dialog and one save path: `RIDAL.derivedEditor`
+in `app.js` builds the form and does the `PUT`, and each page supplies what
+it alone can — the viewer passes a `preview` callback that draws a line,
+`/layers` passes none and the dialog says there is no radargram to preview
+against.
+
+Both editors send only the items the caller can see, and `PUT
+/api/v1/derived` merges: items the caller cannot see are preserved, an
+incoming id that collides with one is refused, and a delete that would orphan
+another item's reference is refused naming the dependent. That is why the
+client never has to fetch or resend the invisible partition, which it cannot
+see by design.
+
+### The panel's disclosure
+
+The panel is a `<details>` closed by default — the same pattern the header
+menu uses, so it opens and closes and takes keyboard focus with no
+JavaScript. Unlike `.site-menu` it deliberately does **not** close on an
+outside click: the map is what is being looked at while layers are toggled,
+and a click there must not fold the panel away mid-task. A separate control
+hides the panel entirely for a viewer reading the image, and that choice
+persists for the session in `sessionStorage`.
+
+`audience` is a permission control, not a display setting, and the editor
+labels it as publishing every contributor's picks in aggregate. It is shown
+only to a caller who may set it (`can_release`), and the server's `Role::Admin`
+check on `Audience::Released` remains the real gate; a 403 is shown verbatim
+rather than folded into a generic failure.
+
+### Listed vs shown, and the used-by counter
+
+A derived item has two independent viewer-facing flags. `show` is whether it
+is **drawn** when the viewer opens; `listed` is whether it appears in the
+viewer's layer panel **at all**. The distinction exists for intermediate
+layers: a layer that exists only as an input to another derived item should
+not clutter the panel, so it is unlisted while staying fully usable in
+expressions and fully visible on the `/layers` page. The editor names both
+plainly ("Show in the viewer's layer list", "Draw it when the viewer opens"),
+because the earlier single "Show by default" left it unclear how to take a
+layer out of the list. The panel's own count is the number of layer rows it
+shows -- picked layers plus listed derived layers -- and not the contributor
+toggle.
+
+The `/layers` page shows a **used-by** count per item: how many other derived
+items reference it in an expression. It is computed server-side over the
+*whole* stored set, so an invisible dependent is counted too -- otherwise the
+count would read zero and the server's refusal to delete the item would look
+arbitrary. Only the count leaves the server, never who depends on it.
