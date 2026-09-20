@@ -163,6 +163,38 @@ def convert_feature(
     return converted, used_fallback
 
 
+def user_id(contributor: str) -> str:
+    """Ridal's user id for a legacy contributor nickname.
+
+    Ridal's `UserId` accepts lowercase ASCII letters, digits, `-` and `_`, and
+    **rejects** anything else rather than sanitising it. The study's nicknames
+    are capitalised ("AvalancheAmigo"), and the interpretation filename *is*
+    the user id, so writing them verbatim produces files the server cannot
+    read. Worse, it cannot read them loudly: `get_contributors` turns the
+    rejection into a 500 for the whole request, so one capitalised name hides
+    every valid one behind it and the viewer shows no contributors at all.
+
+    The nickname is kept in `meta.contributor`, so nothing is lost.
+
+    Examples
+    --------
+    >>> user_id("AvalancheAmigo")
+    'avalancheamigo'
+    >>> user_id("Radar Force 2")
+    'radar_force_2'
+    """
+    out = []
+    for character in contributor.lower():
+        if character.isascii() and (character.isalnum() or character in "-_"):
+            out.append(character)
+        else:
+            out.append("_")
+    cleaned = "".join(out).strip("_")
+    if not cleaned:
+        raise ValueError(f"no usable user id in contributor name {contributor!r}")
+    return cleaned
+
+
 def convert_submission(
     path: Path,
     radar_key: str,
@@ -262,7 +294,7 @@ def main() -> None:
         document, n_features, fallbacks = convert_submission(
             path, args.radar_key, args.n_samples, args.n_traces, out_of_grid
         )
-        destination = args.out / f"{user}.gprinterp.json"
+        destination = args.out / f"{user_id(user)}.gprinterp.json"
         destination.write_text(json.dumps(document, indent=2) + "\n")
         total_features += n_features
         total_fallbacks += fallbacks
