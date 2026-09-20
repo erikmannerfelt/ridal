@@ -164,6 +164,40 @@ fn derived_set() -> DerivedSet {
                 "thickness_user_count",
                 "count(concatenate(bed, bed_no_temperate))",
             ),
+            // The CTS depth with the study's gap rule: where nobody picked a
+            // CTS but the bed is known, the CTS *is* the bed, i.e. no
+            // temperate ice rather than no information.
+            item(
+                "cts_filled",
+                "if is_nan(cts_depth) { thickness } else { cts_depth }",
+            ),
+            // Temperate-ice thickness above the bed, before the study's two
+            // post-rules. Clipped because a CTS picked below the bed would
+            // otherwise give a negative thickness.
+            item(
+                "temperate_raw",
+                "clamp(thickness - cts_filled, 0.0, thickness)",
+            ),
+            // The published `temperate`, post-rules included.
+            //
+            // `no_temp` first, because it wins: if hardly anyone drew an
+            // actual temperate-ice line, ambiguity in the "bed with no
+            // temperate ice" class would otherwise read as real temperate
+            // ice everywhere. `to_clamp` then says that a thin column which
+            // is mostly temperate is temperate all through -- below about
+            // one wavelength the CTS and the bed are not separable.
+            item(
+                "temperate",
+                "if count(temperate_ice) == 0 \
+                 || count(temperate_ice) \
+                    / max(count(concatenate(bed_no_temperate, temperate_ice)), 1.0) < 0.25 { \
+                     0.0 \
+                 } else if temperate_raw / thickness > 0.5 && temperate_raw <= 17.0 { \
+                     thickness \
+                 } else { \
+                     temperate_raw \
+                 }",
+            ),
             item(
                 "thickness_user_lower",
                 "percentile_lower(concatenate(bed, bed_no_temperate), 25.0)",
@@ -347,7 +381,7 @@ fn the_derived_layers_reproduce_the_published_consensus() {
     let mut std_dev = Vec::new();
     let mut nmad = Vec::new();
     let mut count_exact = 0usize;
-    let mut cts_informational = Vec::new();
+    let mut temperate = Vec::new();
 
     for (trace, row) in &expected {
         let position = *trace as usize;
@@ -377,11 +411,7 @@ fn the_derived_layers_reproduce_the_published_consensus() {
         if results["thickness_user_count"].values[position].round() == row.thickness_user_count {
             count_exact += 1;
         }
-        if row.temperate > 0.0 {
-            cts_informational.push(
-                (results["cts_depth"].values[position] - (row.thickness - row.temperate)).abs(),
-            );
-        }
+        temperate.push((results["temperate"].values[position] - row.temperate).abs());
     }
 
     println!("rows joined: {joined}");
@@ -404,12 +434,10 @@ fn the_derived_layers_reproduce_the_published_consensus() {
         exact_share * 100.0
     );
 
-    // Informational only: the published `temperate` has the two study
-    // post-rules baked in, so this is not a clean comparison until they are
-    // expressed as derived items (P9).
-    let mut cts_sorted = cts_informational;
-    println!(
-        "cts_depth vs thickness - temperate (informational): median|e|={:.6}",
-        median(&mut cts_sorted)
-    );
+    // `temperate` is now asserted rather than informational: the study's two
+    // post-rules are expressed as derived items, so the comparison is
+    // like-for-like. It reaches the published column through six chained
+    // expressions -- cts_depth, cts_filled, temperate_raw and the rules --
+    // which is the strongest end-to-end check the evaluator has.
+    assert_errors("temperate", &temperate, 1e-5, 0.30);
 }

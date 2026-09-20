@@ -18,6 +18,26 @@
       "color": "#e6194b"
     },
     {
+      "id": "cts_filled",
+      "name": "CTS depth, gaps filled with the bed",
+      "expression": "if is_nan(cts_depth) { thickness } else { cts_depth }",
+      "unit": "meters"
+    },
+    {
+      "id": "temperate_raw",
+      "name": "Temperate ice above the bed (before the study rules)",
+      "expression": "clamp(thickness - cts_filled, 0.0, thickness)",
+      "unit": "meters"
+    },
+    {
+      "id": "temperate",
+      "name": "Temperate ice above the bed",
+      "expression": "if count(temperate_ice) == 0 || count(temperate_ice) / max(count(concatenate(bed_no_temperate, temperate_ice)), 1.0) < 0.25 { 0.0 } else if temperate_raw / thickness > 0.5 && temperate_raw <= 17.0 { thickness } else { temperate_raw }",
+      "unit": "meters",
+      "color": "#e6194b",
+      "show": true
+    },
+    {
       "id": "thickness_user_count",
       "name": "Contributors with a bed pick",
       "expression": "count(concatenate(bed, bed_no_temperate))",
