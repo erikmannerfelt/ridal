@@ -409,3 +409,61 @@ max_depth`) vertical scale, by design (see `topo.rs`'s module docs).
   unavailability reason as its `title` when a radargram lacks usable
   axes, both from an on-load availability check and from
   `ridal render --topo` failing the same way on the command line.
+
+## Derived layers and reducers (#205–#210)
+
+A **derived item** is a named Rhai expression over the project's picked
+layers, e.g. `median(bed)` or `std(concatenate(bed, bed_no_temperate))`.
+Whether it is a *layer* or an *attribute* is inferred, never declared: an
+expression that yields a position is a derived layer (a line, available as
+depth, TWTT and sample number); anything else is a derived attribute (a
+per-position number exported in its own unit). The evaluator lives in
+`interp::derive` (pure, no I/O) and the document model in `project::derived`
+(`ridal_data/derived/derived.json`).
+
+### Reducers turn multi-valued geometry into one line per user
+
+A reflector is supposed to be a function of trace, but a layer may be drawn
+in several pieces, or a fold may have two limbs. `Layer::reducer` decides
+how several picked values for one user at one position collapse to one:
+`shallowest` (the project default), `deepest`, `median`, `mean`. The default
+is shallowest because stray picks on multiples and ringing lie *below* the
+true reflector, so the minimum depth is the defensible choice — for a folded
+reflector it keeps only the upper limb. Reducers apply **at evaluation
+time**; stored picks are never rewritten, so changing one is
+non-destructive and reversible.
+
+### Exclusivity groups
+
+`LayerSet::groups` declares sets of layers that cannot all hold a value for
+one user at one position. Two layers conflict iff they share a group, and
+membership is deliberately not transitive. When one user holds values for
+two conflicting layers at a position, *every* layer involved becomes NaN for
+that user there, so group evaluation order cannot matter. A group naming an
+undefined layer is reported, never dropped.
+
+### Units
+
+Every layer value is converted into the expression's unit (`meters`,
+`nanoseconds`, or `samples`, positive **down**) before the expression runs,
+and a position result is converted back to the other two. Sample numbers may
+be fractional. An attribute result is exported in its own unit and never
+converted.
+
+**Which velocity model the expressions assume:** the depth axis of a
+processed radargram, i.e. the single `medium_velocity` the file was processed
+with. A derived expression in `meters` therefore inherits that velocity, and
+changing it means reprocessing the radargram; the picks themselves are in
+trace/sample space and are unaffected.
+
+### Permissions
+
+An expression is evaluated over the picks the caller may see: an operator
+(or a project that never opted into authentication) gets the full consensus,
+an ordinary picker only their own picks. Defining a project-wide item needs
+the operator role; a private item belongs to one user and any signed-in user
+may keep one. Results have their own download scope, separate from picks.
+
+A worked example — the layers, exclusivity group and seven expressions used
+to reproduce the Mannerfelt et al. (2026) consensus — is in
+`assets/examples/dronbreen-20250327-DAT_0066_A1_1/`.

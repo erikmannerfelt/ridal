@@ -1,0 +1,38 @@
+{
+  "schema": "ridal-layers",
+  "schema_version": "1",
+  "default_reducer": "shallowest",
+  "layers": [
+    {
+      "id": "bed",
+      "name": "Glacier bed",
+      "color": "#ce00ff",
+      "description": "Legacy `bed_unspecified`: a bed observation without a statement about the ice above it."
+    },
+    {
+      "id": "bed_no_temperate",
+      "name": "Glacier bed (no temperate ice above)",
+      "color": "#002ebd",
+      "description": "Legacy `bed_cold`. Votes in both the bed pool and the CTS pool, because it is a bed observation and a statement that the CTS coincides with the bed."
+    },
+    {
+      "id": "temperate_ice",
+      "name": "Temperate ice (CTS)",
+      "color": "#e6194b",
+      "description": "Legacy `temperate` (and the old `Temperate ice` name). The cold-temperate transition surface."
+    },
+    {
+      "id": "bed_not_visible",
+      "name": "Glacier bed not visible",
+      "color": "#4363d8",
+      "description": "Legacy `bed_missing`. Used only for the tie rule: a position is dropped where more contributors say the bed is missing than say it is there."
+    }
+  ],
+  "groups": [
+    {
+      "id": "bed_and_cold_bed",
+      "name": "Bed with and without temperate ice above",
+      "members": ["bed", "bed_no_temperate"]
+    }
+  ]
+}

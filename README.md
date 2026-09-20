@@ -143,6 +143,8 @@ ridal gui
 Without a path, `ridal gui` looks for the project by searching upwards from the current directory.
 Picked layers can be exported as points, as GeoJSON or CSV, from the browser or with `ridal interp export`.
 
+*Unreleased.* Derived layers — named expressions over the picks, such as `median(bed)` for a consensus line or `std(bed)` for a per-position spread — are implemented on the `feat/derived-layers` branch and are not in any published version. A worked example, and the reducer and exclusivity-group semantics, are in [`assets/examples/dronbreen-20250327-DAT_0066_A1_1/`](assets/examples/dronbreen-20250327-DAT_0066_A1_1/) and [`ARCHITECTURE.md`](ARCHITECTURE.md#derived-layers-and-reducers-205210).
+
 `ridal gui` is for looking at your own files on your own computer, and it stops when you do.
 To keep a project up for longer, or to share it with colleagues, `ridal server start` binds a fixed port instead:
 ```bash
