@@ -84,6 +84,7 @@
 
 pub mod audit;
 pub mod basemaps;
+pub mod derived;
 pub mod interpretations;
 pub mod layers;
 pub mod migrate;
@@ -119,6 +120,8 @@ pub const DEFAULT_DATA_DIR: &str = "ridal_data";
 pub const INTERPRETATIONS_DIR: &str = "interpretations";
 /// Store directory for layer definitions.
 pub const LAYERS_DIR: &str = "layers";
+/// Store directory for derived items (#205).
+pub const DERIVED_DIR: &str = "derived";
 /// Store directory for per-user viewing preferences.
 pub const PREFERENCES_DIR: &str = "preferences";
 /// Default location for derived data, relative to the data directory.
@@ -804,6 +807,7 @@ impl Project {
             data_dir.clone(),
             data_dir.join(INTERPRETATIONS_DIR),
             data_dir.join(LAYERS_DIR),
+            data_dir.join(DERIVED_DIR),
             data_dir.join(DEFAULT_RADARGRAM_DIR),
         ] {
             std::fs::create_dir_all(&dir).map_err(|e| ProjectError::Io {
