@@ -139,6 +139,7 @@ fn item(id: &str, expression: &str) -> DerivedItem {
         unit: Unit::Meters,
         color: None,
         show: false,
+        listed: true,
         fill_to: None,
         scope: Scope::Project,
         audience: Audience::OwnPicks,

@@ -98,6 +98,15 @@ pub struct DerivedItem {
     /// is more likely to be wrong than the layers it is built from.
     #[serde(default, skip_serializing_if = "is_false")]
     pub show: bool,
+    /// Whether the item appears in the viewer's layer panel at all.
+    ///
+    /// On by default. An intermediate layer -- one that exists only as an
+    /// input to another derived item -- can be unlisted so it does not clutter
+    /// the panel; it stays usable in expressions and stays on the /layers
+    /// page. Distinct from `show`, which is only the initial drawn state of an
+    /// item that *is* listed.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub listed: bool,
     /// Optional range fill (#209).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill_to: Option<FillTo>,
@@ -149,6 +158,14 @@ fn default_unit() -> Unit {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl DerivedItem {
@@ -648,6 +665,7 @@ mod tests {
             unit: Unit::Meters,
             color: None,
             show: false,
+            listed: true,
             fill_to: None,
             scope: Scope::Project,
             audience: Audience::OwnPicks,

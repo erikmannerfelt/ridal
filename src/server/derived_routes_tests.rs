@@ -953,3 +953,61 @@ async fn an_id_taken_by_an_invisible_item_is_refused() {
     let after = get(&app, "/api/v1/derived", Some(&alice)).await;
     assert_eq!(after.body["items"][0]["expression"], json!("median(bed)"));
 }
+
+/// Deleting an item another item depends on is refused, naming the dependent.
+///
+/// A delete is a `PUT` that omits the item. The client cannot check this
+/// itself -- the dependent may be a private item it cannot see -- so the
+/// server checks the stored graph, where the item being deleted still exists.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn deleting_an_item_another_depends_on_is_refused() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+
+    let created = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([
+            item("base", "median(bed)", json!("project")),
+            item("dependent", "median(base) + 1.0", json!("project")),
+        ])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+
+    // Omit `base` but keep `dependent`: a delete that would orphan it.
+    let refused = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item(
+            "dependent",
+            "median(base) + 1.0",
+            json!("project")
+        )])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::CONFLICT,
+        "deleting a depended-on item must be refused: {}",
+        refused.text
+    );
+    assert!(
+        refused.text.contains("dependent"),
+        "the refusal must name the dependent: {}",
+        refused.text
+    );
+
+    // Deleting both together is fine.
+    let both = put(&app, "/api/v1/derived", &derived_set(json!([])), Some(&op)).await;
+    assert_eq!(both.status, StatusCode::OK, "{}", both.text);
+    let after = get(&app, "/api/v1/derived", Some(&op)).await;
+    assert_eq!(after.body["items"].as_array().unwrap().len(), 0);
+}

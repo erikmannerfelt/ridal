@@ -183,6 +183,18 @@ pub async fn get_derived(
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
 
     let user = caller.display_name().to_string();
+    // How many other items reference each item. Computed over the *whole*
+    // stored set, not just the caller's visible partition: an invisible item
+    // can depend on a visible one, and deleting it would then be refused, so
+    // the counter has to say so or the refusal looks arbitrary. Only a count
+    // is exposed, never who.
+    let mut used_by: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for item in &set.items {
+        for dependency in set.dependencies(&item.id) {
+            *used_by.entry(dependency).or_insert(0) += 1;
+        }
+    }
+
     let items: Vec<serde_json::Value> = set
         .visible_to(&user)
         .into_iter()
@@ -199,6 +211,8 @@ pub async fn get_derived(
                 "kind": kind,
                 "color": item.color,
                 "show": item.show,
+                "listed": item.listed,
+                "used_by": used_by.get(&item.id).copied().unwrap_or(0),
                 "fill_to": item.fill_to,
                 "scope": item.scope,
                 "audience": item.audience,
@@ -305,6 +319,40 @@ pub async fn put_derived(
             ));
         }
     }
+    // Refuse to delete an item another item depends on. A save that omits a
+    // visible item is a delete, and the client cannot check this itself: the
+    // dependent may be a private item it cannot see, or the dependency may
+    // have been added by hand. The stored set is the only place both
+    // partitions and the whole graph are visible, so the check belongs here.
+    //
+    // Detected against the *stored* graph, where the item being deleted still
+    // exists -- `dependencies` only counts references to items that are
+    // present, so after the delete it would report nothing.
+    let incoming: Vec<&str> = set.items.iter().map(|item| item.id.as_str()).collect();
+    let deleted: Vec<&str> = stored
+        .items
+        .iter()
+        .filter(|item| item.visible_to(viewer))
+        .map(|item| item.id.as_str())
+        .filter(|id| !incoming.contains(id))
+        .collect();
+    if !deleted.is_empty() {
+        for item in set.items.iter().chain(preserved.iter()) {
+            for dependency in stored.dependencies(&item.id) {
+                if deleted.contains(&dependency.as_str()) {
+                    return Err(ApiError::conflict(
+                        "derived_item_in_use",
+                        format!(
+                            "Cannot delete '{}': the derived item '{}' depends on it. \
+                             Delete or change '{}' first.",
+                            dependency, item.id, item.id
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     let mut merged = set;
     merged.items.extend(preserved);
 
@@ -422,6 +470,7 @@ pub async fn preview_derived(
         unit: body.unit.unwrap_or(crate::interp::derive::Unit::Meters),
         color: None,
         show: false,
+        listed: true,
         fill_to: None,
         scope: Scope::Project,
         audience: Audience::OwnPicks,
