@@ -146,6 +146,12 @@
     let selected = null;
 
     let drawnLines = [];
+    /** Layer ids switched off in the layer panel (#209).
+     *
+     * Picker.js owns the caller's *editable* lines, so the panel hides one of
+     * these rather than drawing a second read-only copy of the same pick. A
+     * layer not in the set is visible. */
+    const hiddenLayers = new Set();
     let draftLine = null;
     let handles = [];
     let overhangMarkers = [];
@@ -631,6 +637,10 @@
       const shown = picksVisible ? features : [];
       shown.forEach((feature, index) => {
         const label = feature.properties && feature.properties.label;
+        // A layer switched off in the panel is not drawn at all, for the same
+        // reason hiding the picks is not drawn transparently: a zero-opacity
+        // line still swallows taps aimed at the radargram.
+        if (hiddenLayers.has(label)) return;
         const isSelected = index === selected;
         const points = feature.geometry.coordinates.map(([t, s]) => toLatLng(t, s));
 
@@ -638,7 +648,7 @@
         // draws over it, and carries all the interaction: the visible line
         // is non-interactive, so it cannot swallow a tap meant for the
         // easier target.
-        const hit = RIDAL.hitLine(points).addTo(map);
+        const hit = RIDAL.hitLine(points, "radargram-lines").addTo(map);
         // A text node, not a string: Leaflet assigns a string tooltip with
         // innerHTML, and `label` is free text from the stored document.
         hit.bindTooltip(
@@ -659,6 +669,7 @@
           weight: isSelected ? 5 : 3,
           opacity: isSelected ? 1 : 0.85,
           interactive: false,
+          pane: "radargram-lines",
         }).addTo(map);
 
         drawnLines.push(hit, line);
@@ -685,7 +696,12 @@
         if (draft.length > 1) {
           draftLine = L.polyline(
             draft.map(([t, s]) => toLatLng(t, s)),
-            { color: colorFor(label), weight: 3, dashArray: "6 4" },
+            {
+              color: colorFor(label),
+              weight: 3,
+              dashArray: "6 4",
+              pane: "radargram-lines",
+            },
           ).addTo(map);
         }
         handles = draft.map((_, index) =>
@@ -986,6 +1002,21 @@
     });
 
     window.RIDAL_REDRAW_PICKS = redraw;
+
+    /* Show or hide one of the caller's own layers (#209).
+     *
+     * The layer panel calls this so that toggling a layer removes the actual
+     * editable lines from the map rather than drawing a read-only copy
+     * underneath them. `window.*` because the panel is another classic script
+     * with no module boundary. */
+    window.RIDAL_SET_LAYER_VISIBLE = function (label, visible) {
+      if (visible) {
+        hiddenLayers.delete(label);
+      } else {
+        hiddenLayers.add(label);
+      }
+      redraw();
+    };
 
     // Midpoint visibility depends on zoom and pan, so the handles are
     // rebuilt when the view settles. `moveend`/`zoomend` rather than

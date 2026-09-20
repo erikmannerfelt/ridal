@@ -649,3 +649,128 @@ async fn the_results_scope_releases_a_consensus_without_the_picks_behind_it() {
     .await;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_contributor_route_respects_visibility() {
+    // The layer panel needs other contributors' lines for its overlay, but
+    // the obvious route (#212) takes no Caller and cannot decide what a caller
+    // may see. This route must return the caller's own document always, and
+    // everyone's only to someone who may see cross-user results.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::Derived, &hash),
+            activated("bob", Role::Picker, DownloadScope::Derived, &hash),
+            activated("op", Role::Operator, DownloadScope::Derived, &hash),
+        ],
+        &[("alice", 2.0), ("bob", 4.0)],
+    );
+    let op = sign_in(&app, "op").await;
+    let alice = sign_in(&app, "alice").await;
+
+    let as_op = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/contributors"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(as_op.status, StatusCode::OK, "{}", as_op.text);
+    assert_eq!(as_op.body["can_see_others"], json!(true));
+    assert_eq!(as_op.body["documents"].as_array().unwrap().len(), 2);
+
+    let as_alice = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/contributors"),
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(as_alice.status, StatusCode::OK, "{}", as_alice.text);
+    assert_eq!(as_alice.body["can_see_others"], json!(false));
+    let documents = as_alice.body["documents"].as_array().unwrap();
+    assert_eq!(documents.len(), 1, "{}", as_alice.text);
+    assert_eq!(documents[0]["user"], json!("alice"));
+    assert_eq!(documents[0]["own"], json!(true));
+}
+
+async fn post(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
+    send(
+        app,
+        request("POST", uri, session)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+}
+
+/// The preview route must not let its caller choose whose picks it evaluates
+/// over.
+///
+/// `Audience::Released` grants the cross-user pick set unconditionally,
+/// because on a *stored* item it can only have been put there by an admin.
+/// Accepting it from a request body turns that admin decision into a
+/// self-service one: a picker asks for `released` and gets everyone's data.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_picker_cannot_ask_the_preview_route_for_a_cross_user_evaluation() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::Results, &hash),
+            activated("bob", Role::Picker, DownloadScope::Results, &hash),
+            activated("op", Role::Operator, DownloadScope::All, &hash),
+        ],
+        &[("alice", 2.0), ("bob", 4.0)],
+    );
+    let alice = sign_in(&app, "alice").await;
+    let op = sign_in(&app, "op").await;
+
+    let ask = |session: String, body: Value| {
+        let app = app.clone();
+        async move {
+            let response = post(
+                &app,
+                &format!("/api/v1/datasets/{RADARGRAM}/derived/preview"),
+                &body,
+                Some(&session),
+            )
+            .await;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+            response.body["values"][0].as_f64().unwrap()
+        }
+    };
+
+    // Her own pick, which is the honest answer.
+    let own = ask(
+        alice.clone(),
+        json!({"expression": "median(bed)", "unit": "meters"}),
+    )
+    .await;
+    assert!(
+        (own - depth(2.0)).abs() < 1e-6,
+        "expected her own pick, got {own}"
+    );
+
+    // The same request, asking for the released pick set. It must not change
+    // the answer: nothing in a request body is an admin decision.
+    let claimed = ask(
+        alice,
+        json!({"expression": "median(bed)", "unit": "meters", "audience": "released"}),
+    )
+    .await;
+    assert!(
+        (claimed - depth(2.0)).abs() < 1e-6,
+        "a picker asking for audience=released must still get only her own picks, got {claimed} \
+         (the consensus of 2 and 4 would be {})",
+        depth(3.0)
+    );
+
+    // An operator gets the cross-user result without asking for anything,
+    // which is rule 3 and is why the body field buys nothing.
+    let operator = ask(op, json!({"expression": "median(bed)", "unit": "meters"})).await;
+    assert!(
+        (operator - depth(3.0)).abs() < 1e-6,
+        "an operator previews over everyone, got {operator}"
+    );
+}

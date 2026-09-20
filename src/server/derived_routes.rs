@@ -35,7 +35,7 @@ use super::routes::{lookup_dataset, ApiError};
 use crate::identity::UserId;
 use crate::interp::derive::{self, GridPosition, ReducedPicks};
 use crate::interp::source;
-use crate::project::derived::{self, Audience, DerivedError, DerivedSet, Scope};
+use crate::project::derived::{self, Audience, DerivedError, DerivedItem, DerivedSet, Scope};
 use crate::project::users::{DownloadScope, Role};
 use crate::project::{interpretations, layers};
 
@@ -224,6 +224,10 @@ pub async fn get_derived(
         Json(serde_json::json!({
             "items": items,
             "layers_unusable_in_expressions": unusable,
+            // The editor asks the server what it may do rather than guessing
+            // from a role string, the same rule as the contributor toggle.
+            "can_author": caller.may(Role::Operator),
+            "can_release": caller.may(Role::Admin),
         })),
     ))
 }
@@ -276,6 +280,128 @@ pub async fn put_derived(
         response,
         Json(serde_json::json!({ "version": version.as_str() })),
     ))
+}
+
+/// `GET /api/v1/datasets/{id}/contributors` -- the interpretation documents
+/// the caller may see, for the layer panel's contributor overlay (#209).
+///
+/// The obvious route, `GET .../interpretations/{user}`, takes no `Caller` at
+/// all (#212) and therefore cannot decide what a caller may see, so the panel
+/// must not use it. This one returns the caller's own document always, and
+/// everyone's only to a caller who may see cross-user results. `can_see_others`
+/// says which, so the panel shows or hides its "show all contributors" toggle
+/// from the server's answer rather than guessing from a role string.
+pub async fn get_contributors(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+    caller: Caller,
+) -> Result<impl IntoResponse, ApiError> {
+    let radargram = parse_radargram(&radargram_id)?;
+    let can_see_others = may_see_cross_user(&caller);
+    let project = readable_project(&state)?;
+    let users = interpretations::list_users(project.documents(), &radargram)
+        .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+
+    let mut documents = Vec::new();
+    for user in users {
+        let parsed =
+            UserId::new(&user).map_err(|e| ApiError::internal("invalid_stored_user", e))?;
+        let is_own = caller.user.as_ref() == Some(&parsed);
+        if !can_see_others && !is_own {
+            continue;
+        }
+        if let Some(stored) = interpretations::read(project.documents(), &radargram, &parsed)
+            .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?
+        {
+            let document = serde_json::to_value(&stored.document)
+                .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+            documents.push(serde_json::json!({
+                "user": user,
+                "own": is_own,
+                "document": document,
+            }));
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "can_see_others": can_see_others,
+        "documents": documents,
+    })))
+}
+
+/// The body of a preview request (#209's expression editor).
+///
+/// Deliberately carries **no audience**. `Audience::Released` grants the
+/// cross-user pick set unconditionally, which is only sound because on a
+/// stored item it can only have been put there by an admin. Accepting it
+/// from a request body would turn that admin decision into a self-service
+/// one -- a picker asks for `released` and gets everyone's data. A preview
+/// is always evaluated as `OwnPicks`, which for an operator already means
+/// everyone (rule 3), so nothing is lost by refusing to take it.
+#[derive(serde::Deserialize)]
+pub struct PreviewBody {
+    pub expression: String,
+    #[serde(default)]
+    pub unit: Option<crate::interp::derive::Unit>,
+}
+
+/// `POST /api/v1/datasets/{id}/derived/preview` -- evaluate an unsaved
+/// expression over the caller's picks.
+///
+/// The editor's live preview is the best guard against a sign or unit
+/// mistake -- `bed - cts` the wrong way round is obvious as a line and
+/// invisible as a number -- so it evaluates without writing anything. The
+/// expression is added to a copy of the set so it can reference the project's
+/// derived items, and only its own result is returned.
+pub async fn preview_derived(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+    caller: Caller,
+    Json(body): Json<PreviewBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_download(DownloadScope::Results, "derived preview")?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let (set, _) = load_set(&state)?;
+    let geometry = geometry_for(&state, &radargram)?;
+    // Never from the body -- see `PreviewBody`.
+    let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry, Audience::OwnPicks)?;
+
+    let mut preview = set.clone();
+    preview.items.retain(|item| item.id != "preview");
+    preview.items.push(DerivedItem {
+        id: "preview".to_string(),
+        name: "preview".to_string(),
+        expression: body.expression.clone(),
+        unit: body.unit.unwrap_or(crate::interp::derive::Unit::Meters),
+        color: None,
+        show: false,
+        fill_to: None,
+        scope: Scope::Project,
+        audience: Audience::OwnPicks,
+        extra: Default::default(),
+    });
+
+    let results = preview
+        .evaluate(&reduced, &geometry)
+        .map_err(|e| ApiError::bad_request("invalid_expression", e.to_string()))?;
+    let result = &results["preview"];
+    let values: Vec<serde_json::Value> = result
+        .values
+        .iter()
+        .map(|v| {
+            if v.is_nan() {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(v)
+            }
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "kind": result.kind,
+        "unit": result.unit,
+        "values": values,
+    })))
 }
 
 /// `GET /api/v1/datasets/{id}/derived/{item}` -- one item's values.

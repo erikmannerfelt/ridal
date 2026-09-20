@@ -795,12 +795,16 @@ const RIDAL = Object.freeze({
    * put every handler on this rather than on the line it shadows -- a
    * visible line left interactive would swallow events aimed at the easier
    * target. */
-  hitLine(latlngs) {
+  hitLine(latlngs, pane) {
     return L.polyline(latlngs, {
       className: "hit-line",
       weight: RIDAL.hitWidth,
       opacity: 0,
       interactive: true,
+      // The picker passes its own line pane so the wide tap target shares the
+      // same z-order as the line it shadows; everywhere else keeps the
+      // default. See `viewer.js`'s pane setup (#209).
+      pane: pane || "overlayPane",
     });
   },
 

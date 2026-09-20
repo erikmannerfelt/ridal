@@ -68,6 +68,26 @@ function shiftAt(trace) {
   return g.shift[i0] * (1 - f) + g.shift[i1] * f;
 }
 
+/* Index-space <-> viewer-raster conversion, published for picker.js and the
+ * layer panel (#209) so there is one definition of where a stored
+ * (trace, sample) lands on screen. Reads `window.RIDAL_GEOMETRY` live for the
+ * same reason picker.js does: toggling the topographic view changes the
+ * mapping and a captured copy would draw through the wrong one. */
+window.RIDAL_TO_LATLNG = function (trace, sample) {
+  const g = window.RIDAL_GEOMETRY;
+  const scale = window.RIDAL_XSCALE || 1;
+  const rasterRow = sample + shiftAt(trace);
+  return L.latLng(-rasterRow * g.verticalRasterScale, trace * g.rasterScale * scale);
+};
+
+window.RIDAL_TO_INDEX = function (latlng) {
+  const g = window.RIDAL_GEOMETRY;
+  const scale = window.RIDAL_XSCALE || 1;
+  const trace = latlng.lng / scale / g.rasterScale;
+  const rasterRow = -latlng.lat / g.verticalRasterScale;
+  return [trace, rasterRow - shiftAt(trace)];
+};
+
 /* A short alias onto the one geometry object, not a copy: `G.nCols` etc.
  * always reads whatever the most recent toggle wrote, since object
  * property lookups go through the live reference. Everything below reads
@@ -230,6 +250,14 @@ const map = L.map('map', { crs: L.CRS.Simple, minZoom: -6, attributionControl: f
 // boundary between them (#120: no build step).
 window.RIDAL_MAP = map;
 window.RIDAL_XSCALE = xScale;
+
+/* Two panes so a range fill can sit behind every line (#209). Leaflet's
+ * `overlayPane` holds both the radargram images and the SVG lines, so
+ * "behind the lines but in front of the radargram" needs panes of its own:
+ * fills at 401, all panel and pick lines at 402. Markers (handles, overhang
+ * markers) stay in `markerPane` at 600, above both. */
+map.createPane("radargram-fills").style.zIndex = 401;
+map.createPane("radargram-lines").style.zIndex = 402;
 /* Open on the start of the radargram at full depth, not on the whole thing.
  *
  * Fitting the entire length put every chunk in the viewport at once, which
