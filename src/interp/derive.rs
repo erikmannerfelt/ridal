@@ -239,9 +239,19 @@ pub fn reduce_picks(
         let mut per_position: Vec<Vec<f64>> = Vec::with_capacity(grid.len());
 
         for position in grid {
-            let mut values = vec![f64::NAN; users.len()];
-            for (user_index, (_, document)) in documents.iter().enumerate() {
-                let mut raw: Vec<f64> = Vec::new();
+            // Gather by *slot in `users`*, never by position in `documents`.
+            // `users` is sorted, so the two orders coincide only when the
+            // caller happens to hand documents over already sorted -- and a
+            // slot that does not mean the user `users` says it does turns
+            // every per-contributor readout into someone else's data. Two
+            // documents for one user merge into one slot rather than
+            // overwriting, which also keeps `values` from being indexed past
+            // its length.
+            let mut raw_per_user: Vec<Vec<f64>> = vec![Vec::new(); users.len()];
+            for (user, document) in documents {
+                let Some(slot) = users.iter().position(|u| u == user) else {
+                    continue;
+                };
                 for feature in &document.features {
                     if feature.label() != Some(layer_id.as_str()) {
                         continue;
@@ -254,14 +264,18 @@ pub fn reduce_picks(
                                 value
                             };
                             if (0.0..geometry.n_samples() as f64).contains(&value) {
-                                raw.push(value);
+                                raw_per_user[slot].push(value);
                             }
                         }
                     }
                 }
-                values[user_index] = reduce_values(&raw, reducer);
             }
-            per_position.push(values);
+            per_position.push(
+                raw_per_user
+                    .iter()
+                    .map(|raw| reduce_values(raw, reducer))
+                    .collect(),
+            );
         }
         layers.insert(layer_id.clone(), per_position);
     }
@@ -1159,6 +1173,203 @@ mod tests {
         assert!(reduced.values("bed_no_temperate", 0).unwrap()[0].is_nan());
         // A layer not in the conflict is untouched.
         assert_ne!(reduced.values("temperate_ice", 0), None);
+    }
+
+    /// The Svalbard bed vocabulary, including the "not visible" class. Kept
+    /// separate from [`layer_set`] so the existing tests keep their shape.
+    fn layer_set_with_not_visible() -> LayerSet {
+        use crate::project::layers::Layer;
+        let mut set = layer_set();
+        set.layers.push(Layer {
+            id: "bed_not_visible".to_string(),
+            name: "Glacier bed not visible".to_string(),
+            color: None,
+            description: None,
+            allow_overhangs: false,
+            reducer: None,
+            warn_on_duplicates: true,
+            groups: Vec::new(),
+            extra: Default::default(),
+        });
+        set
+    }
+
+    fn group(id: &str, members: &[&str]) -> crate::project::layers::ExclusivityGroup {
+        crate::project::layers::ExclusivityGroup {
+            id: id.to_string(),
+            name: id.to_string(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+            extra: Default::default(),
+        }
+    }
+
+    fn line(label: &str, sample: f64) -> (&str, Vec<[f64; 2]>) {
+        (label, vec![[0.0, sample], [10.0, sample]])
+    }
+
+    /// Reduce real documents, then evaluate `expression` at one grid position.
+    ///
+    /// Goes through `reduce_picks` rather than binding arrays by hand, so the
+    /// reducer, the conflict rule and the expression are all exercised
+    /// together -- which is the path a real request takes.
+    fn eval_over_documents(
+        expression: &str,
+        set: &LayerSet,
+        documents: &[(String, Document)],
+        position: usize,
+    ) -> f64 {
+        let reduced = reduce_picks(documents, set, &geometry(), &grid(11), false);
+        let engine = build_engine();
+        let ast = compile(&engine, expression).unwrap();
+        let bound: BTreeMap<String, UserArray> = reduced
+            .layers
+            .iter()
+            .map(|(id, per_position)| (id.clone(), UserArray(per_position[position].clone())))
+            .collect();
+        let layer_ids: Vec<String> = bound.keys().cloned().collect();
+        evaluate_at(
+            &engine,
+            &ast,
+            expression,
+            &bound,
+            &BTreeMap::new(),
+            &layer_ids,
+            &BTreeMap::new(),
+        )
+        .unwrap()
+    }
+
+    /// The study's bed consensus, as shipped in the example project.
+    const BED_CONSENSUS: &str = "if count(bed) + count(bed_no_temperate) >= \
+                                 count(bed_not_visible) { \
+                                 percentile_lower(concatenate(bed, bed_no_temperate), 49.0) \
+                                 } else { NaN }";
+
+    /// The legacy dataset has no `bed_not_visible` picks at all, so the
+    /// regression test can never take this branch: `count` of an absent layer
+    /// is always zero and the guard always passes. Synthetic votes are the
+    /// only way to pin the rule that #205 and #208 exist for.
+    #[test]
+    fn a_majority_of_not_visible_votes_erases_the_bed() {
+        let documents = vec![
+            ("a".to_string(), document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])])),
+            (
+                "b".to_string(),
+                document(&[("bed_not_visible", &[[0.0, 30.0], [10.0, 30.0]])]),
+            ),
+            (
+                "c".to_string(),
+                document(&[("bed_not_visible", &[[0.0, 31.0], [10.0, 31.0]])]),
+            ),
+        ];
+        let value = eval_over_documents(BED_CONSENSUS, &layer_set_with_not_visible(), &documents, 0);
+        assert!(
+            value.is_nan(),
+            "one bed vote against two 'not visible' votes must erase the bed, got {value}"
+        );
+    }
+
+    /// A tie is *kept*. The legacy pipeline dropped a position only where
+    /// `missing > existing`, so the guard is `>=` on the existing side; a `>`
+    /// here would silently shorten every profile at its ambiguous ends.
+    #[test]
+    fn a_tied_vote_keeps_the_bed() {
+        let documents = vec![
+            ("a".to_string(), document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])])),
+            ("b".to_string(), document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])])),
+            (
+                "c".to_string(),
+                document(&[("bed_not_visible", &[[0.0, 30.0], [10.0, 30.0]])]),
+            ),
+            (
+                "d".to_string(),
+                document(&[("bed_not_visible", &[[0.0, 31.0], [10.0, 31.0]])]),
+            ),
+        ];
+        let value = eval_over_documents(BED_CONSENSUS, &layer_set_with_not_visible(), &documents, 0);
+        // Two bed values, so the 49th lower percentile is the first of them.
+        assert_eq!(value, 10.0, "a 2-2 tie must keep the bed");
+    }
+
+    /// `users[i]` must name the contributor whose value is at slot `i`, for
+    /// any document order. Reductions are order-insensitive, so a misalignment
+    /// here leaves every consensus number correct and silently attributes each
+    /// value to the wrong person -- which only surfaces once something reads
+    /// per-contributor, as the layer panel (#209) does.
+    #[test]
+    fn user_slots_line_up_with_the_user_list_whatever_order_documents_arrive_in() {
+        let set = layer_set();
+        let zoe = ("zoe".to_string(), document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])]));
+        let amy = ("amy".to_string(), document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])]));
+
+        for documents in [vec![zoe.clone(), amy.clone()], vec![amy, zoe]] {
+            let reduced = reduce_picks(&documents, &set, &geometry(), &grid(11), false);
+            let bed = reduced.values("bed", 0).unwrap();
+            let slot = |name: &str| reduced.users.iter().position(|u| u == name).unwrap();
+            assert_eq!(bed[slot("zoe")], 10.0, "zoe's value follows her name");
+            assert_eq!(bed[slot("amy")], 20.0, "amy's value follows hers");
+        }
+    }
+
+    /// Exclusivity is deliberately not transitive, which is the whole reason
+    /// a layer may belong to several groups rather than carrying one "group"
+    /// field. A and B conflict, B and C conflict, A and C coexist.
+    #[test]
+    fn exclusivity_is_not_transitive_across_groups() {
+        let mut set = layer_set();
+        set.groups = vec![
+            group("g1", &["bed", "bed_no_temperate"]),
+            group("g2", &["bed_no_temperate", "temperate_ice"]),
+        ];
+
+        // A + C: no shared group, so both survive.
+        let both_ends = vec![(
+            "a".to_string(),
+            document(&[
+                ("bed", &[[0.0, 10.0], [10.0, 10.0]]),
+                ("temperate_ice", &[[0.0, 5.0], [10.0, 5.0]]),
+            ]),
+        )];
+        let reduced = reduce_picks(&both_ends, &set, &geometry(), &grid(11), false);
+        assert_eq!(reduced.values("bed", 0).unwrap()[0], 10.0);
+        assert_eq!(reduced.values("temperate_ice", 0).unwrap()[0], 5.0);
+
+        // B + C: they share g2, so both go NaN.
+        let middle_and_end = vec![(
+            "a".to_string(),
+            document(&[
+                ("bed_no_temperate", &[[0.0, 12.0], [10.0, 12.0]]),
+                ("temperate_ice", &[[0.0, 5.0], [10.0, 5.0]]),
+            ]),
+        )];
+        let reduced = reduce_picks(&middle_and_end, &set, &geometry(), &grid(11), false);
+        assert!(reduced.values("bed_no_temperate", 0).unwrap()[0].is_nan());
+        assert!(reduced.values("temperate_ice", 0).unwrap()[0].is_nan());
+    }
+
+    /// A conflict is one contributor's problem, not the position's. If it
+    /// tainted every user the consensus would collapse wherever one person
+    /// contradicted themselves.
+    #[test]
+    fn a_conflict_only_taints_the_contributor_who_has_it() {
+        let mut set = layer_set();
+        set.groups = vec![group("g1", &["bed", "bed_no_temperate"])];
+        let documents = vec![
+            (
+                "conflicted".to_string(),
+                document(&[
+                    ("bed", &[[0.0, 10.0], [10.0, 10.0]]),
+                    ("bed_no_temperate", &[[0.0, 12.0], [10.0, 12.0]]),
+                ]),
+            ),
+            ("clean".to_string(), document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])])),
+        ];
+        let reduced = reduce_picks(&documents, &set, &geometry(), &grid(11), false);
+        let bed = reduced.values("bed", 0).unwrap();
+        let conflicted = reduced.users.iter().position(|u| u == "conflicted").unwrap();
+        let clean = reduced.users.iter().position(|u| u == "clean").unwrap();
+        assert!(bed[conflicted].is_nan(), "the conflicted contributor loses their bed");
+        assert_eq!(bed[clean], 20.0, "the other contributor keeps theirs");
     }
 
     fn eval(expression: &str, layers: &[(&str, &[f64])]) -> f64 {
