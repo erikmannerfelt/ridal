@@ -163,11 +163,11 @@ fn export_var_to_py<'py>(py: Python<'py>, var: &ExportVariable<'_>) -> PyResult<
             dict.set_item("data", py_arr)?;
         }
         ExportArray::U8Scalar(v) => {
-            let py_arr = PyArray1::from_slice(py, &[v.to_owned()]).get_item(0)?;
+            let py_arr = PyArray1::from_slice(py, std::slice::from_ref(v)).get_item(0)?;
             dict.set_item("data", py_arr)?;
         }
         ExportArray::F64Scalar(v) => {
-            let py_arr = PyArray1::from_slice(py, &[v.to_owned()]).get_item(0)?;
+            let py_arr = PyArray1::from_slice(py, std::slice::from_ref(v)).get_item(0)?;
             dict.set_item("data", py_arr)?;
         }
     }
