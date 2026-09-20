@@ -297,7 +297,17 @@ pub async fn get_contributors(
     caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
     let radargram = parse_radargram(&radargram_id)?;
-    let can_see_others = may_see_cross_user(&caller);
+    // Another contributor's picks are raw picks, whatever route they leave by.
+    // `get_interpretation_raw` serves the same bytes behind `Picks`, and two
+    // routes disclosing identical data under different gates is exactly how
+    // #212 happened. A project that set a scope below `Picks` said those
+    // documents should not leave the server; it did not say "unless the
+    // request came from the layer panel".
+    //
+    // Role is still the first gate -- this only narrows what an operator may
+    // have. The caller's own picks are never gated: they already have them,
+    // and the viewer has always drawn them.
+    let can_see_others = may_see_cross_user(&caller) && caller.may_download(DownloadScope::Picks);
     let project = readable_project(&state)?;
     let users = interpretations::list_users(project.documents(), &radargram)
         .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;

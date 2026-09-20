@@ -774,3 +774,60 @@ async fn a_picker_cannot_ask_the_preview_route_for_a_cross_user_evaluation() {
         "an operator previews over everyone, got {operator}"
     );
 }
+
+/// Another contributor's picks are raw picks whatever route they leave by.
+///
+/// `get_interpretation_raw` serves the same bytes behind `DownloadScope::Picks`;
+/// two routes disclosing identical data under different gates is how #212
+/// happened. Role stays the first gate, so this only narrows what an operator
+/// may have — and the caller's own picks are never gated, because they already
+/// have them.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_contributor_overlay_needs_the_picks_download_scope() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            // An operator who may see everyone by role, but whose project
+            // says nothing leaves the server.
+            activated("restricted", Role::Operator, DownloadScope::Results, &hash),
+            activated("op", Role::Operator, DownloadScope::Picks, &hash),
+            activated("bob", Role::Picker, DownloadScope::Picks, &hash),
+        ],
+        &[("restricted", 2.0), ("bob", 4.0)],
+    );
+
+    let restricted = sign_in(&app, "restricted").await;
+    let response = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/contributors"),
+        Some(&restricted),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    assert_eq!(
+        response.body["can_see_others"],
+        json!(false),
+        "a scope below Picks must not unlock the contributor overlay"
+    );
+    let documents = response.body["documents"].as_array().unwrap();
+    assert_eq!(documents.len(), 1, "only their own: {}", response.text);
+    assert_eq!(documents[0]["user"], json!("restricted"));
+    assert_eq!(
+        documents[0]["own"],
+        json!(true),
+        "their own picks are never gated"
+    );
+
+    // One rung up, the same role sees everyone.
+    let op = sign_in(&app, "op").await;
+    let allowed = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/contributors"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
+    assert_eq!(allowed.body["can_see_others"], json!(true));
+    assert_eq!(allowed.body["documents"].as_array().unwrap().len(), 2);
+}
