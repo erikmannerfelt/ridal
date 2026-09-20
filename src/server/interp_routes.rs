@@ -1481,12 +1481,18 @@ pub async fn layer_usage(
     let catalog = state.catalog();
     for entry in &catalog.entries {
         let radargram = &entry.radargram_id;
-        let users = interpretations::list_users(project.documents(), radargram)
-            .map_err(interpretation_error)?;
-        for user in users {
-            let Ok(user_id) = UserId::new(user.as_str()) else {
-                continue;
-            };
+        // Skip and report (#213) rather than skip in silence.
+        let (users, unreadable) =
+            interpretations::list_users_checked(project.documents(), radargram)
+                .map_err(interpretation_error)?;
+        for stem in &unreadable {
+            tracing::warn!(
+                radargram = radargram.as_str(),
+                stem = stem.as_str(),
+                "skipping an interpretation whose filename is not a valid user id"
+            );
+        }
+        for user_id in users {
             let Some(stored) = interpretations::read(project.documents(), radargram, &user_id)
                 .map_err(interpretation_error)?
             else {

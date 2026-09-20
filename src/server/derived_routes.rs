@@ -105,13 +105,21 @@ fn visible_documents(
     audience: Audience,
 ) -> Result<Vec<(String, gprinterp::Document)>, ApiError> {
     let project = readable_project(state)?;
-    let users = interpretations::list_users(project.documents(), radargram)
-        .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+    // Skip and report (#213): a filename that is not a valid `UserId` used to
+    // fail the whole request, so one bad name hid every good one.
+    let (users, unreadable) =
+        interpretations::list_users_checked(project.documents(), radargram)
+            .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+    for stem in &unreadable {
+        tracing::warn!(
+            radargram = radargram.as_str(),
+            stem = stem.as_str(),
+            "skipping an interpretation whose filename is not a valid user id"
+        );
+    }
 
     let mut documents = Vec::new();
-    for user in users {
-        let parsed =
-            UserId::new(&user).map_err(|e| ApiError::internal("invalid_stored_user", e))?;
+    for parsed in users {
         let permitted = match evaluable_users(caller, audience) {
             EvaluableUsers::All => true,
             EvaluableUsers::Only(Some(own)) => own == parsed,
@@ -123,7 +131,7 @@ fn visible_documents(
         if let Some(stored) = interpretations::read(project.documents(), radargram, &parsed)
             .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?
         {
-            documents.push((user, stored.document));
+            documents.push((parsed.as_str().to_string(), stored.document));
         }
     }
     Ok(documents)
@@ -394,13 +402,19 @@ pub async fn get_contributors(
     // and the viewer has always drawn them.
     let can_see_others = may_see_cross_user(&caller) && caller.may_download(DownloadScope::Picks);
     let project = readable_project(&state)?;
-    let users = interpretations::list_users(project.documents(), &radargram)
+    let (users, unreadable) = interpretations::list_users_checked(project.documents(), &radargram)
         .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+    for stem in &unreadable {
+        tracing::warn!(
+            radargram = radargram.as_str(),
+            stem = stem.as_str(),
+            "skipping an interpretation whose filename is not a valid user id"
+        );
+    }
 
     let mut documents = Vec::new();
-    for user in users {
-        let parsed =
-            UserId::new(&user).map_err(|e| ApiError::internal("invalid_stored_user", e))?;
+    for parsed in users {
+        let user = parsed.as_str().to_string();
         let is_own = caller.user.as_ref() == Some(&parsed);
         if !can_see_others && !is_own {
             continue;
@@ -421,6 +435,9 @@ pub async fn get_contributors(
     Ok(Json(serde_json::json!({
         "can_see_others": can_see_others,
         "documents": documents,
+        // Reported rather than swallowed, so the viewer can say a contributor
+        // was dropped instead of quietly showing fewer than exist (#213).
+        "unreadable": unreadable,
     })))
 }
 

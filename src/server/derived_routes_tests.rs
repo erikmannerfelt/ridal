@@ -1011,3 +1011,72 @@ async fn deleting_an_item_another_depends_on_is_refused() {
     let after = get(&app, "/api/v1/derived", Some(&op)).await;
     assert_eq!(after.body["items"].as_array().unwrap().len(), 0);
 }
+
+/// One unreadable filename must not hide every readable one (#213).
+///
+/// `UserId` rejects anything outside its charset, and both derived routes used
+/// to turn that into a 500 for the whole request — so a single badly-named file
+/// produced an empty contributor list and a consensus over nothing, which reads
+/// as "the feature is broken" rather than "one file is named wrong".
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn one_unreadable_filename_does_not_hide_the_readable_ones() {
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+
+    // A pick whose filename is not a valid user id, placed beside a good one.
+    let bad = dir
+        .path()
+        .join(crate::project::DEFAULT_DATA_DIR)
+        .join("interpretations")
+        .join(RADARGRAM)
+        .join("NotAUserId.gprinterp.json");
+    std::fs::write(
+        &bad,
+        format!(r#"{{"schema":"gprinterp","key":"{RADARGRAM}","features":[]}}"#),
+    )
+    .unwrap();
+
+    let op = sign_in(&app, "op").await;
+    let response = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/contributors"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::OK,
+        "a bad filename must not fail the request: {}",
+        response.text
+    );
+    let documents = response.body["documents"].as_array().unwrap();
+    assert_eq!(
+        documents.len(),
+        1,
+        "the good pick survives: {}",
+        response.text
+    );
+    assert_eq!(documents[0]["user"], json!("op"));
+    assert_eq!(
+        response.body["unreadable"],
+        json!(["NotAUserId"]),
+        "and the skipped one is reported rather than swallowed: {}",
+        response.text
+    );
+
+    // The consensus is still computed, over the readable picks.
+    let created = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item("bed_median", "median(bed)", json!("project"))])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+    let value = first_value(&app, "bed_median", &op).await;
+    assert!((value - depth(2.0)).abs() < 1e-6, "got {value}");
+}
