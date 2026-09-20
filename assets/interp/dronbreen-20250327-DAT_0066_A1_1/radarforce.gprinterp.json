@@ -914,7 +914,7 @@
     }
   ],
   "meta": {
-    "legacy_source": "/tmp/interp_full/RadarForce/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_11_11T00_31_25.813Z.json",
+    "legacy_source": "RadarForce/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_11_11T00_31_25.813Z.json",
     "legacy_date_modified": "2025-11-11T00:31:25.813Z",
     "contributor": "RadarForce",
     "difficulty": "easy",

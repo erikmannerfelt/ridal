@@ -329,7 +329,7 @@ fn the_derived_layers_reproduce_the_published_consensus() {
     let fixtures = load_fixtures();
     assert_eq!(fixtures.len(), 10, "expected ten committed contributors");
     assert!(
-        fixtures.iter().any(|(user, _)| user == "AvalancheAmigo"),
+        fixtures.iter().any(|(user, _)| user == "avalancheamigo"),
         "the recovered tenth contributor must be present"
     );
 

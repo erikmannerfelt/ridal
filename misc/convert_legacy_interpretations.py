@@ -201,6 +201,7 @@ def convert_submission(
     n_samples: int,
     n_traces: int,
     out_of_grid: dict[tuple[str, str], int],
+    source_label: str | None = None,
 ) -> tuple[dict, int, int]:
     """Convert one submission. Returns ``(document, n_features, n_fallbacks)``."""
     document = json.loads(path.read_text())
@@ -261,7 +262,10 @@ def convert_submission(
         },
         "features": converted_features,
         "meta": {
-            "legacy_source": str(path),
+            # The path *within the archive*, not the directory it happened to
+            # be unzipped into: provenance should identify the submission, and
+            # an absolute temp path identifies whoever ran the converter.
+            "legacy_source": source_label or str(path),
             "legacy_date_modified": document.get("date_modified"),
             "contributor": user,
             "difficulty": document.get("difficulty"),
@@ -291,8 +295,12 @@ def main() -> None:
     total_fallbacks = 0
 
     for user, path in sorted(submissions.items()):
+        try:
+            label = str(path.relative_to(args.interpretations))
+        except ValueError:
+            label = str(path)
         document, n_features, fallbacks = convert_submission(
-            path, args.radar_key, args.n_samples, args.n_traces, out_of_grid
+            path, args.radar_key, args.n_samples, args.n_traces, out_of_grid, label
         )
         destination = args.out / f"{user_id(user)}.gprinterp.json"
         destination.write_text(json.dumps(document, indent=2) + "\n")

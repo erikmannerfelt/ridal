@@ -362,7 +362,7 @@
     }
   ],
   "meta": {
-    "legacy_source": "/tmp/interp_full/AvalancheAmigo/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_12_02T17_20_05.723Z.json",
+    "legacy_source": "AvalancheAmigo/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_12_02T17_20_05.723Z.json",
     "legacy_date_modified": "2025-12-02T17:20:05.723Z",
     "contributor": "AvalancheAmigo",
     "difficulty": "medium",

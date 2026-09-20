@@ -542,7 +542,7 @@
     }
   ],
   "meta": {
-    "legacy_source": "/tmp/interp_full/SnowScout/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_10_09T13_22_48.100Z.json",
+    "legacy_source": "SnowScout/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_10_09T13_22_48.100Z.json",
     "legacy_date_modified": "2025-10-09T13:22:48.100Z",
     "contributor": "SnowScout",
     "difficulty": "easy",

@@ -486,7 +486,7 @@
     }
   ],
   "meta": {
-    "legacy_source": "/tmp/interp_full/IceJive/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_11_17T09_46_26.884Z.json",
+    "legacy_source": "IceJive/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_11_17T09_46_26.884Z.json",
     "legacy_date_modified": "2025-11-17T09:46:26.884Z",
     "contributor": "IceJive",
     "difficulty": "easy",
