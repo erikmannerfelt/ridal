@@ -831,3 +831,125 @@ async fn the_contributor_overlay_needs_the_picks_download_scope() {
     assert_eq!(allowed.body["can_see_others"], json!(true));
     assert_eq!(allowed.body["documents"].as_array().unwrap().len(), 2);
 }
+
+/// Saving must not delete items the caller could not see.
+///
+/// `GET /api/v1/derived` returns only what the caller may see, and the editor
+/// saves back what it loaded, so a whole-document write silently drops every
+/// other user's private item. The panel is the only way to author an
+/// expression, which makes this the normal path rather than an edge case.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn saving_preserves_items_the_caller_cannot_see() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::All, &hash),
+            activated("op", Role::Operator, DownloadScope::All, &hash),
+        ],
+        &[("alice", 2.0), ("op", 4.0)],
+    );
+    let alice = sign_in(&app, "alice").await;
+    let op = sign_in(&app, "op").await;
+
+    // Alice keeps a private expression.
+    let hers = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item(
+            "alice_only",
+            "median(bed)",
+            json!({"private": {"user": "alice"}})
+        )])),
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(hers.status, StatusCode::OK, "{}", hers.text);
+
+    // The operator cannot see it, and saves an unrelated project-wide item —
+    // exactly what the panel does: load what you can see, save it back.
+    let visible = get(&app, "/api/v1/derived", Some(&op)).await;
+    assert_eq!(
+        visible.body["items"].as_array().unwrap().len(),
+        0,
+        "the operator must not see her private item: {}",
+        visible.text
+    );
+    let theirs = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item("shared", "median(bed)", json!("project"))])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.text);
+
+    // Alice's item must still be there.
+    let after = get(&app, "/api/v1/derived", Some(&alice)).await;
+    let ids: Vec<String> = after.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        ids.contains(&"alice_only".to_string()),
+        "the operator's save deleted alice's private item; ids are {ids:?}"
+    );
+}
+
+/// An id already used by an invisible item is refused, not merged over.
+///
+/// The caller cannot see what they would be overwriting, so there is no way
+/// for them to have meant it. The message does not name the owner: that would
+/// turn a save into a way to enumerate who keeps what.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_id_taken_by_an_invisible_item_is_refused() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::All, &hash),
+            activated("op", Role::Operator, DownloadScope::All, &hash),
+        ],
+        &[("alice", 2.0)],
+    );
+    let alice = sign_in(&app, "alice").await;
+    let op = sign_in(&app, "op").await;
+
+    let hers = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item(
+            "shared_name",
+            "median(bed)",
+            json!({"private": {"user": "alice"}})
+        )])),
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(hers.status, StatusCode::OK, "{}", hers.text);
+
+    let clash = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item("shared_name", "mean(bed)", json!("project"))])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(
+        clash.status,
+        StatusCode::CONFLICT,
+        "a taken id must be refused: {}",
+        clash.text
+    );
+    assert!(
+        !clash.text.contains("alice"),
+        "the refusal must not name the owner: {}",
+        clash.text
+    );
+
+    // And hers is untouched.
+    let after = get(&app, "/api/v1/derived", Some(&alice)).await;
+    assert_eq!(after.body["items"][0]["expression"], json!("median(bed)"));
+}

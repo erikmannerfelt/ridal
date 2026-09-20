@@ -271,7 +271,44 @@ pub async fn put_derived(
     }
     let project = readable_project(&state)?;
     let expected = expectation_from(&headers);
-    let version = derived::write(project.documents(), &set, &expected).map_err(derived_error)?;
+
+    // Merge rather than replace. `GET /api/v1/derived` returns only the items
+    // the caller may see, and the editor saves back what it loaded, so writing
+    // the body wholesale deletes every other user's private item -- and the
+    // panel is the ordinary way to author an expression, so that is the normal
+    // path, not an edge case.
+    //
+    // Items the caller cannot see are preserved verbatim and appended: order
+    // decides draw order, but nobody ever sees both partitions at once, so
+    // where they sit relative to each other cannot matter.
+    let (stored, _) = derived::read(project.documents()).map_err(derived_error)?;
+    let viewer = caller.display_name();
+    let preserved: Vec<DerivedItem> = stored
+        .items
+        .iter()
+        .filter(|item| !item.visible_to(viewer))
+        .cloned()
+        .collect();
+    for item in &set.items {
+        if let Some(clash) = preserved.iter().find(|p| p.id == item.id) {
+            // Refused rather than merged: the caller cannot see what they
+            // would be overwriting, so there is no way for them to have meant
+            // it. Naming the owner would leak who has what, so it does not.
+            let _ = clash;
+            return Err(ApiError::conflict(
+                "derived_id_taken",
+                format!(
+                    "The derived id '{}' is already used by an item you cannot see. \
+                     Choose another id.",
+                    item.id
+                ),
+            ));
+        }
+    }
+    let mut merged = set;
+    merged.items.extend(preserved);
+
+    let version = derived::write(project.documents(), &merged, &expected).map_err(derived_error)?;
     let mut response = HeaderMap::new();
     if let Ok(value) = format!("\"{version}\"").parse() {
         response.insert(header::ETAG, value);
