@@ -21,7 +21,7 @@
       "id": "thickness_user_count",
       "name": "Contributors with a bed pick",
       "expression": "count(concatenate(bed, bed_no_temperate))",
-      "unit": "samples"
+      "unit": "dimensionless"
     },
     {
       "id": "thickness_user_lower",

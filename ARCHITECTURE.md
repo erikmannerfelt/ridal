@@ -450,6 +450,40 @@ and a position result is converted back to the other two. Sample numbers may
 be fractional. An attribute result is exported in its own unit and never
 converted.
 
+A fourth unit, `dimensionless`, exists for counts, ratios and flags. A
+*position* may not be declared dimensionless — a position is a depth, and a
+depth has a unit — which `Unit::allows` enforces at evaluation time, where
+the inferred kind is known. (`validate` cannot: it has no layer vocabulary,
+so it cannot know an expression's kind.)
+
+### Who sees a result computed from whose picks
+
+Three rules, and they are the whole permission model for derived results:
+
+1. **Anyone may see a result computed from their own picks.** It is a
+   function of data they already have, so it needs nobody's permission. This
+   is `Audience::OwnPicks`, the default.
+2. **A cross-user result is an admin decision**, recorded as
+   `Audience::Released` on the item. Releasing needs `Role::Admin`, not the
+   `Role::Operator` that *authoring* an item needs, because releasing
+   publishes other contributors' work in aggregate.
+3. **An operator sees the cross-user result either way**, so a consensus can
+   be defined and watched while picking is still open, without pickers seeing
+   each other's work — which is the bias the study design exists to avoid.
+
+`audience` is deliberately separate from `scope`: `scope` decides who can see
+that an item *exists*, `audience` decides *whose data feeds it*. A download
+that mixes audiences evaluates once per audience and serves each item only
+from its own evaluation, because serving both from one wider evaluation and
+filtering afterwards is how a consensus leaks into an unreleased item.
+
+`DownloadScope::Results` sits **below** `Picks` in the scope ladder, and is
+the one rung where "more" inverts: an aggregate over many contributors
+discloses less than any single contributor's raw picks. It is what expresses
+"you may have the consensus but not the individual interpretations", and
+without it that setting is unreachable — the lowest scope permitting a result
+also permitted every pick behind it.
+
 **Which velocity model the expressions assume:** the depth axis of a
 processed radargram, i.e. the single `medium_velocity` the file was processed
 with. A derived expression in `meters` therefore inherits that velocity, and

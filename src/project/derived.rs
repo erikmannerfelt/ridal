@@ -416,6 +416,16 @@ impl DerivedSet {
                 results.iter().map(|(k, v)| (k.clone(), v.kind)).collect();
             let kind =
                 derive::infer_kind(&engine, &ast, &item.expression, &layer_ids, &item_kinds)?;
+            // A position is a depth, and a depth is not dimensionless. Caught
+            // here rather than in `validate`, which has no layer vocabulary
+            // and so cannot know an expression's kind.
+            if !item.unit.allows(kind) {
+                return Err(DerivedError::UnitMismatch {
+                    id: item.id.clone(),
+                    kind,
+                    unit: item.unit,
+                });
+            }
 
             let mut values = Vec::with_capacity(reduced.n_positions());
             for position in 0..reduced.n_positions() {
@@ -491,6 +501,12 @@ fn is_hex_color(value: &str) -> bool {
 
 #[derive(Debug)]
 pub enum DerivedError {
+    /// The declared unit cannot describe the expression's inferred kind.
+    UnitMismatch {
+        id: String,
+        kind: Kind,
+        unit: Unit,
+    },
     Store(StoreError),
     Malformed { message: String },
     DuplicateId(String),
@@ -503,6 +519,12 @@ pub enum DerivedError {
 impl std::fmt::Display for DerivedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            DerivedError::UnitMismatch { id, kind, unit } => write!(
+                f,
+                "the derived item '{id}' is declared in '{unit}' but its expression \
+                 is a {kind}; a position is a depth and cannot be dimensionless. \
+                 Use meters, nanoseconds or samples."
+            ),
             DerivedError::Store(e) => write!(f, "{e}"),
             DerivedError::Malformed { message } => {
                 write!(f, "the derived items are not readable: {message}")
@@ -620,6 +642,28 @@ mod tests {
             scope: Scope::Project,
             audience: Audience::OwnPicks,
             extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_position_may_not_be_declared_dimensionless() {
+        use crate::interp::derive::Unit;
+        // `count` is a scalar, so dimensionless is exactly right for it.
+        let mut counting = item("n", "count(bed)");
+        counting.unit = Unit::Dimensionless;
+        assert!(Unit::Dimensionless.allows(Kind::Scalar));
+
+        // `median(bed)` is a depth, and a depth has a unit.
+        let mut positional = item("m", "median(bed)");
+        positional.unit = Unit::Dimensionless;
+        assert!(!Unit::Dimensionless.allows(Kind::Position));
+
+        // Every other unit takes any kind: an attribute is simply never
+        // converted, so declaring a count in metres is odd but not wrong.
+        for unit in [Unit::Meters, Unit::Nanoseconds, Unit::Samples] {
+            for kind in [Kind::Position, Kind::Length, Kind::Scalar] {
+                assert!(unit.allows(kind), "{unit} should accept {kind}");
+            }
         }
     }
 

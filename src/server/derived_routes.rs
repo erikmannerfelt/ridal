@@ -57,6 +57,9 @@ fn derived_error(error: DerivedError) -> ApiError {
             ApiError::bad_request("invalid_derived_items", error.to_string())
         }
         DerivedError::Derive(e) => ApiError::bad_request("invalid_derived_items", e.to_string()),
+        DerivedError::UnitMismatch { .. } => {
+            ApiError::bad_request("invalid_derived_items", error.to_string())
+        }
     }
 }
 
@@ -209,7 +212,20 @@ pub async fn get_derived(
             headers.insert(header::ETAG, value);
         }
     }
-    Ok((headers, Json(serde_json::json!({ "items": items }))))
+    // Layers whose id predates #206 cannot appear in an expression at all --
+    // a hyphen is a minus sign to the parser. The editor needs to say so next
+    // to its layer-name autocomplete, because the alternative is a user typing
+    // a name they can see in the layer manager and getting a parse error with
+    // no hint that the *id* is the problem.
+    let unusable = layer_set.expression_unsafe_ids();
+
+    Ok((
+        headers,
+        Json(serde_json::json!({
+            "items": items,
+            "layers_unusable_in_expressions": unusable,
+        })),
+    ))
 }
 
 /// `PUT /api/v1/derived` -- replace the derived set.

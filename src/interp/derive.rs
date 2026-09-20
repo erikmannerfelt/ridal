@@ -71,6 +71,25 @@ pub enum Unit {
     Meters,
     Nanoseconds,
     Samples,
+    /// No unit: a count, a ratio, a flag.
+    ///
+    /// The three vertical units all answer "how far down", and a count of
+    /// contributors is not an answer to that question -- writing
+    /// `count(bed)` as `samples` says something false about it, and only
+    /// escapes notice because an attribute is never converted. A position
+    /// may not be dimensionless, which [`Unit::allows`] enforces, so this
+    /// cannot be used to smuggle a depth past the conversion.
+    Dimensionless,
+}
+
+impl Unit {
+    /// Whether an expression of this `kind` may be written in this unit.
+    pub fn allows(self, kind: Kind) -> bool {
+        match self {
+            Unit::Dimensionless => kind != Kind::Position,
+            _ => true,
+        }
+    }
 }
 
 impl fmt::Display for Unit {
@@ -79,6 +98,7 @@ impl fmt::Display for Unit {
             Unit::Meters => "m",
             Unit::Nanoseconds => "ns",
             Unit::Samples => "samples",
+            Unit::Dimensionless => "",
         })
     }
 }
@@ -908,7 +928,7 @@ fn axis_invert(axis: &[f64], value: f64) -> f64 {
 /// Convert a sample index into `unit`.
 pub fn sample_to_unit(sample: f64, unit: Unit, geometry: &RadargramGeometry) -> f64 {
     match unit {
-        Unit::Samples => sample,
+        Unit::Samples | Unit::Dimensionless => sample,
         Unit::Meters => axis_at(&geometry.depth, sample),
         Unit::Nanoseconds => axis_at(&geometry.twtt, sample),
     }
@@ -918,7 +938,7 @@ pub fn sample_to_unit(sample: f64, unit: Unit, geometry: &RadargramGeometry) -> 
 /// [`sample_to_unit`]).
 pub fn unit_to_sample(value: f64, unit: Unit, geometry: &RadargramGeometry) -> f64 {
     match unit {
-        Unit::Samples => value,
+        Unit::Samples | Unit::Dimensionless => value,
         Unit::Meters => axis_invert(&geometry.depth, value),
         Unit::Nanoseconds => axis_invert(&geometry.twtt, value),
     }
