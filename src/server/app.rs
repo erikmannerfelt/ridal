@@ -904,6 +904,18 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::interp_routes::interpretation_level2),
         )
         .route(
+            "/api/v1/derived",
+            get(super::derived_routes::get_derived).put(super::derived_routes::put_derived),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/derived",
+            get(super::derived_routes::download_derived),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/derived/{item}",
+            get(super::derived_routes::get_derived_item),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}",
             get(super::interp_routes::get_interpretation)
                 .put(super::interp_routes::put_interpretation)
