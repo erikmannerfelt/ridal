@@ -47,6 +47,11 @@
       Recentre
     </button>
     <button id="metadata-button" type="button">Metadata</button>
+    {#- Show or hide the whole layer panel (#209). Hidden until panel.js runs,
+        so a page without JavaScript does not show a control that does
+        nothing. The state persists for the session in sessionStorage. -#}
+    <button id="panel-visibility" type="button" hidden
+            title="Show or hide the layer panel over the radargram.">Layers</button>
     {#- A menu rather than a button: there are five things to download and
         they are not variations of one another. Lives in this row, not the
         picking toolbar, because a radargram, its track and an image are
@@ -259,46 +264,9 @@
     <div id="overview-map"></div>
   </div>
 
-  {#- The expression editor (#209). Built here rather than by panel.js so the
-      form exists with JavaScript disabled and its fields are ordinary,
-      labelled controls; panel.js only wires the preview and the save. -#}
-  <dialog id="derived-editor">
-    <h2 id="derived-editor-title">New derived expression</h2>
-    <p class="hint">
-      A Rhai expression over the layer ids and derived items, for example
-      <code>median(bed)</code> or
-      <code>std(concatenate(bed, bed_no_temperate))</code>. The line is
-      previewed on the radargram as you type, without saving.
-    </p>
-    <div class="add-layer-fields">
-      <label>Name
-        <input id="derived-name" type="text" autocomplete="off">
-      </label>
-      <label>Id
-        <input id="derived-id" type="text" autocomplete="off" spellcheck="false">
-      </label>
-      <label>Unit
-        <select id="derived-unit">
-          <option value="meters" selected>metres</option>
-          <option value="nanoseconds">nanoseconds</option>
-          <option value="samples">samples</option>
-          <option value="dimensionless">dimensionless</option>
-        </select>
-      </label>
-    </div>
-    <div class="editor-input">
-      <pre id="derived-highlight" aria-hidden="true"></pre>
-      <textarea id="derived-expression" rows="4" spellcheck="false"
-                list="derived-suggestions" autocomplete="off"></textarea>
-      <datalist id="derived-suggestions"></datalist>
-    </div>
-    <p class="editor-status" id="derived-status" role="status" aria-live="polite"></p>
-    <p class="editor-warning" id="derived-unusable" hidden></p>
-    <p>
-      <button type="button" id="derived-save">Save</button>
-      <button type="button" id="derived-cancel">Close</button>
-    </p>
-  </dialog>
+  {#- The derived-item editor is built by `RIDAL.derivedEditor` (app.js) so the
+      /layers page uses the same dialog and save path. It is appended to the
+      body on first open rather than templated here. -#}
 
   <dialog id="metadata-dialog">
     <h2>Metadata</h2>

@@ -138,9 +138,14 @@
 
   // --- Drawing -------------------------------------------------------------
 
-  /** Draw one document's lines into `target`, honouring layer visibility. */
-  function drawDocument(document, target, options) {
-    const features = (document && document.features) || [];
+  /** Draw one document's lines into `target`, honouring layer visibility.
+   *
+   * The parameter is `source`, not `document`: a parameter named `document`
+   * shadows the global and made `document.createTextNode` below throw *after*
+   * the line had been added to the map but *before* it was recorded in
+   * `target`, so it could never be removed again. */
+  function drawDocument(source, target, options) {
+    const features = (source && source.features) || [];
     features.forEach((feature) => {
       if (!feature.geometry || feature.geometry.type !== "LineString") return;
       const label = feature.properties && feature.properties.label;
@@ -155,6 +160,9 @@
         dashArray: options.dashArray || null,
         interactive: false,
         pane: "radargram-lines",
+        // A stable class so the harness can count these independently of the
+        // picker's own editable lines.
+        className: options.className || null,
       }).addTo(map);
       if (options.tooltip) {
         line.bindTooltip(document.createTextNode(options.tooltip(label)));
@@ -169,7 +177,9 @@
     if (CFG.writable) return;
     state.documents
       .filter((entry) => entry.own)
-      .forEach((entry) => drawDocument(entry.document, ownLines, {}));
+      .forEach((entry) =>
+        drawDocument(entry.document, ownLines, { className: "own-pick-line" }),
+      );
   }
 
   /** Other contributors' picks, when the toggle is on. */
@@ -182,6 +192,7 @@
         drawDocument(entry.document, contributorLines, {
           weight: 2,
           opacity: 0.55,
+          className: "contributor-pick-line",
           tooltip: (label) => `${entry.user} · ${label || "unlabelled"}`,
         });
       });
@@ -331,16 +342,17 @@
     for (const item of state.items) {
       if (!item.fill_to) continue;
       if (item.kind !== "position") continue;
-      // A fill is independent of its bound *lines*: it is drawn with both
-      // toggled off (the whole point of a percentile band). What it does
-      // depend on is the caller being able to see both bounds at all, which
-      // is what the server already filtered `state.items` by -- a derived
-      // target missing from it is one the caller may not see, and a fill
-      // against it would disclose its position exactly.
+      // A fill is drawn only while *both* its bounds are shown. Hiding either
+      // one removes it: a band between a visible line and one the viewer has
+      // switched off is a shape with no visible edges, and reading it as a
+      // range is guesswork. This also covers a bound the caller may not see at
+      // all -- it is absent from `state.items`, so no fill is drawn and its
+      // position cannot leak.
+      if (state.itemVisible.get(item.id) === false) continue;
       const target = state.items.find((i) => i.id === item.fill_to.target);
       const targetVisible = target
-        ? true
-        : Boolean(layerFor(item.fill_to.target));
+        ? state.itemVisible.get(target.id) !== false
+        : state.layerVisible.get(item.fill_to.target) !== false;
       if (!targetVisible) continue;
       let itemValues;
       let targetValues;
@@ -356,9 +368,27 @@
     }
   }
 
-  // --- The panel control ---------------------------------------------------
+  /* Redraw the derived lines and fills at the current geometry.
+   *
+   * Published for viewer.js: toggling the topographic correction changes
+   * `window.RIDAL_GEOMETRY.shift`, and the existing lines were drawn with the
+   * old one, so they sit in the wrong place until something redraws them.
+   * picker.js is redrawn on the same event through `RIDAL_REDRAW_PICKS`. */
+  window.RIDAL_REDRAW_DERIVED = () => {
+    refreshDerivedLines().then(refreshFills);
+  };
 
-  function checkbox(container, { checked, label, title, onChange }) {
+  // --- The panel control ---------------------------------------------------
+  //
+  // A `<details>` disclosure, closed by default. `<details>` opens and closes
+  // with no JavaScript and is keyboard-accessible for free -- the same pattern
+  // the header menu uses. Unlike `.site-menu`, it deliberately does NOT close
+  // on an outside click: the map is the thing being looked at while toggling
+  // layers, so a click there must not fold the panel away mid-task.
+
+  const PANEL_HIDDEN_KEY = "ridal.layer-panel.hidden";
+
+  function checkbox(container, { checked, label, title, onChange, swatch = true }) {
     const row = document.createElement("label");
     row.className = "layer-panel-row";
     const input = document.createElement("input");
@@ -366,12 +396,18 @@
     input.checked = checked;
     if (title) input.title = title;
     input.addEventListener("change", () => onChange(input.checked));
-    const swatch = document.createElement("span");
-    swatch.className = "layer-panel-swatch";
-    if (label.color) swatch.style.background = label.color;
+    row.appendChild(input);
+    // A control with no colour of its own (the contributor toggle) gets no
+    // swatch; an empty box beside it reads as a colour that failed to load.
+    if (swatch) {
+      const chip = document.createElement("span");
+      chip.className = "layer-panel-swatch";
+      if (label.color) chip.style.background = label.color;
+      row.appendChild(chip);
+    }
     const text = document.createElement("span");
     text.textContent = label.text;
-    row.append(input, swatch, text);
+    row.appendChild(text);
     container.appendChild(row);
     return input;
   }
@@ -379,31 +415,167 @@
   const LayerPanel = L.Control.extend({
     options: { position: "topright" },
     onAdd() {
-      const container = L.DomUtil.create("div", "leaflet-bar layer-panel");
-      container.id = "layer-panel";
-      L.DomEvent.disableClickPropagation(container);
-      L.DomEvent.disableScrollPropagation(container);
-      this._container = container;
-      return container;
+      const details = L.DomUtil.create("details", "leaflet-bar layer-panel");
+      details.id = "layer-panel";
+      const summary = document.createElement("summary");
+      summary.id = "layer-panel-summary";
+      summary.textContent = "Layers";
+      const body = document.createElement("div");
+      body.className = "layer-panel-body";
+      details.append(summary, body);
+      L.DomEvent.disableClickPropagation(details);
+      L.DomEvent.disableScrollPropagation(details);
+      this._container = details;
+      this._body = body;
+      return details;
     },
   });
   const panelControl = new LayerPanel();
   map.addControl(panelControl);
 
-  function renderPanel() {
-    const container = panelControl._container;
-    if (!container) return;
-    container.replaceChildren();
+  /* Cap the body to the map's height, not the viewport's.
+   *
+   * On a phone in portrait the layout stacks the overview map below, so the
+   * map pane is shorter than `60vh`: a viewport-relative cap let the panel
+   * run past the bottom of the map, where the map clipped it and the hidden
+   * part could not be scrolled to. In landscape the map is shorter still but
+   * `60vh` happened to fit, which is why only portrait looked broken. */
+  function fitPanelToMap() {
+    const body = panelControl._body;
+    if (!body) return;
+    const height = map.getSize().y;
+    body.style.maxHeight = `${Math.max(120, height - 96)}px`;
+  }
+  map.on("resize", fitPanelToMap);
+  fitPanelToMap();
 
-    const heading = document.createElement("div");
-    heading.className = "layer-panel-heading";
-    heading.textContent = "Layers";
-    container.appendChild(heading);
+  const panelToggle = document.getElementById("panel-visibility");
+
+  function applyPanelHidden(hidden) {
+    if (panelControl._container) panelControl._container.hidden = hidden;
+    if (panelToggle) {
+      panelToggle.textContent = hidden ? "Show layers" : "Hide layers";
+      panelToggle.setAttribute("aria-pressed", String(!hidden));
+    }
+  }
+
+  let panelHidden = false;
+  try {
+    panelHidden = sessionStorage.getItem(PANEL_HIDDEN_KEY) === "1";
+  } catch (error) {
+    // A browser that blocks storage just does not remember the choice.
+  }
+  applyPanelHidden(panelHidden);
+  if (panelToggle) {
+    panelToggle.hidden = false;
+    panelToggle.addEventListener("click", () => {
+      panelHidden = !panelHidden;
+      try {
+        sessionStorage.setItem(PANEL_HIDDEN_KEY, panelHidden ? "1" : "0");
+      } catch (error) {
+        // As above.
+      }
+      applyPanelHidden(panelHidden);
+    });
+  }
+
+  function derivedLabel(item) {
+    // The label says when a project-wide definition is being read as a
+    // personal number. Silently showing an OwnPicks evaluation under a name
+    // like "Consensus" is the one failure nobody can see.
+    const personal = item.audience === "own_picks" && !state.canSeeOthers;
+    return item.name + (personal ? " (your picks)" : "");
+  }
+
+  /** One derived *layer*'s row. Only positions reach here: an attribute has
+   * no line to draw, so it is not shown in the viewer's panel at all -- it
+   * belongs on the /layers page. */
+  function derivedRow(item, container) {
+    const row = document.createElement("div");
+    row.className = "layer-panel-row layer-panel-derived-row";
+    row.dataset.derivedId = item.id;
+
+    const label = document.createElement("label");
+    label.className = "layer-panel-toggle";
+    label.title = item.expression;
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = state.itemVisible.get(item.id) === true;
+    input.addEventListener("change", () => {
+      state.itemVisible.set(item.id, input.checked);
+      refreshDerivedLines().then(refreshFills);
+    });
+    const swatch = document.createElement("span");
+    swatch.className = "layer-panel-swatch";
+    if (item.color) swatch.style.background = item.color;
+    const text = document.createElement("span");
+    text.textContent = derivedLabel(item);
+    label.append(input, swatch, text);
+    row.appendChild(label);
+
+    if (state.canAuthor) {
+      const actions = document.createElement("span");
+      // `.row-actions` is the shared table-row button style, so Edit and
+      // Delete read as one set here and on the /layers page.
+      actions.className = "row-actions layer-panel-actions";
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "layer-panel-edit";
+      edit.textContent = "Edit";
+      edit.title = `Edit '${item.name || item.id}'`;
+      edit.addEventListener("click", () => openEditor(item));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      // `.danger` is the shared row-action style, so Edit and Delete match
+      // the /layers page (and differ only in colour).
+      remove.className = "danger";
+      remove.textContent = "Delete";
+      remove.title = `Delete '${item.name || item.id}'`;
+      remove.addEventListener("click", () => confirmDelete(item, actions));
+      actions.append(edit, remove);
+      row.appendChild(actions);
+    }
+    container.appendChild(row);
+  }
+
+  /** Inline delete confirmation. Names the item, and does not use
+   * `window.confirm`, which blocks the Chromium harness and reads as a
+   * browser dialog rather than part of the panel. */
+  function confirmDelete(item, actions) {
+    actions.replaceChildren();
+    const prompt = document.createElement("span");
+    prompt.className = "layer-panel-confirm";
+    prompt.textContent = `Delete '${item.name || item.id}'?`;
+    const yes = document.createElement("button");
+    yes.type = "button";
+    yes.className = "danger";
+    yes.textContent = "Delete";
+    yes.addEventListener("click", () => deleteItem(item));
+    const no = document.createElement("button");
+    no.type = "button";
+    no.textContent = "Cancel";
+    no.addEventListener("click", renderPanel);
+    prompt.append(yes, no);
+    actions.appendChild(prompt);
+  }
+
+  function renderPanel() {
+    const body = panelControl._body;
+    if (!body) return;
+    body.replaceChildren();
+
+    const error = document.createElement("div");
+    error.id = "layer-panel-error";
+    error.className = "layer-panel-error";
+    error.hidden = true;
+    body.appendChild(error);
 
     state.layers.forEach((layer) => {
-      checkbox(container, {
+      checkbox(body, {
         checked: state.layerVisible.get(layer.id) !== false,
-        label: { text: layer.name || layer.id, color: layer.color },
+        // The drawn colour, which falls back to the viewer default, so the
+        // swatch is never an empty box for a layer with no stored colour.
+        label: { text: layer.name || layer.id, color: layerColor(layer.id) },
         onChange: (visible) => {
           state.layerVisible.set(layer.id, visible);
           if (CFG.writable && window.RIDAL_SET_LAYER_VISIBLE) {
@@ -416,40 +588,40 @@
       });
     });
 
-    if (state.items.length) {
+    // Only a position is a drawable derived layer, and only a *listed* one
+    // belongs in this panel. An attribute (a number per position) and an
+    // intermediate layer marked "not listed" are managed on the /layers page.
+    const derivedLayers = state.items.filter(
+      (item) => item.kind === "position" && item.listed !== false,
+    );
+    if (derivedLayers.length || state.canAuthor) {
       const derivedHeading = document.createElement("div");
       derivedHeading.className = "layer-panel-heading";
-      derivedHeading.textContent = "Derived";
-      container.appendChild(derivedHeading);
-      state.items.forEach((item) => {
-        // The label says when a project-wide definition is being read as a
-        // personal number. Silently showing an OwnPicks evaluation under a
-        // name like "Consensus" is the one failure nobody can see.
-        const personal = item.audience === "own_picks" && !state.canSeeOthers;
-        const text = item.name + (personal ? " (your picks)" : "");
-        checkbox(container, {
-          checked: state.itemVisible.get(item.id) === true,
-          label: { text, color: item.color },
-          title:
-            item.kind === "position"
-              ? item.expression
-              : `${item.kind}: ${item.expression}`,
-          onChange: (visible) => {
-            state.itemVisible.set(item.id, visible);
-            refreshDerivedLines().then(refreshFills);
-          },
-        });
-      });
+      derivedHeading.textContent = "Derived layers";
+      body.appendChild(derivedHeading);
+      derivedLayers.forEach((item) => derivedRow(item, body));
+      // The create button belongs with the section it adds to, not after the
+      // contributor toggle.
+      if (state.canAuthor) {
+        const add = document.createElement("button");
+        add.type = "button";
+        add.id = "derived-new";
+        add.textContent = "New expression";
+        add.addEventListener("click", () => openEditor(null));
+        body.appendChild(add);
+      }
     }
 
     if (state.canSeeOthers) {
       const contributors = document.createElement("div");
       contributors.className = "layer-panel-heading";
       contributors.textContent = "Contributors";
-      container.appendChild(contributors);
-      checkbox(container, {
+      body.appendChild(contributors);
+      checkbox(body, {
         checked: state.showContributors,
         label: { text: "Show all contributors" },
+        // No colour of its own: no swatch.
+        swatch: false,
         onChange: (visible) => {
           state.showContributors = visible;
           drawContributors();
@@ -457,121 +629,39 @@
       });
     }
 
-    if (state.canAuthor) {
-      const edit = document.createElement("button");
-      edit.type = "button";
-      edit.id = "derived-new";
-      edit.textContent = "New expression";
-      edit.addEventListener("click", () => openEditor(null));
-      container.appendChild(edit);
+    const summary = document.getElementById("layer-panel-summary");
+    if (summary) {
+      // Exactly the number of layer rows the panel shows: picked layers plus
+      // listed derived layers. The contributor toggle is not a layer.
+      const total = state.layers.length + derivedLayers.length;
+      summary.textContent = `Layers (${total})`;
     }
   }
 
-  // --- The expression editor (Q3) ------------------------------------------
+  // --- The shared expression editor ----------------------------------------
+  //
+  // The dialog, its save path and the highlighting live in `RIDAL.derivedEditor`
+  // (app.js) so the /layers page uses exactly the same one. The viewer adds the
+  // one thing /layers cannot: a live preview line, which needs a radargram.
 
-  const editor = document.getElementById("derived-editor");
-  const editorTitle = document.getElementById("derived-editor-title");
-  const nameInput = document.getElementById("derived-name");
-  const idInput = document.getElementById("derived-id");
-  const unitSelect = document.getElementById("derived-unit");
-  const expressionInput = document.getElementById("derived-expression");
-  const highlightBox = document.getElementById("derived-highlight");
-  const statusBox = document.getElementById("derived-status");
-  const unusableBox = document.getElementById("derived-unusable");
-  const suggestions = document.getElementById("derived-suggestions");
-  const saveButton = document.getElementById("derived-save");
-  const cancelButton = document.getElementById("derived-cancel");
-  let editingId = null;
-  let previewTimer = null;
-
-  function sanitizeId(name) {
-    const translit = { ø: "o", å: "a", ä: "a", ö: "o", æ: "ae", é: "e" };
-    let out = "";
-    let lastSep = false;
-    for (const character of name.toLowerCase()) {
-      if (translit[character] !== undefined) {
-        out += translit[character];
-        lastSep = false;
-      } else if (/[a-z0-9]/.test(character)) {
-        out += character;
-        lastSep = false;
-      } else if (/[\x00-\x7f]/.test(character) && !lastSep && out) {
-        out += "_";
-        lastSep = true;
-      }
-    }
-    out = out.replace(/_+$/, "");
-    if (!out || /^[0-9]/.test(out)) out = `l_${out}`;
-    if (BUILTINS.includes(out) || KEYWORDS.includes(out)) out += "_layer";
-    return out;
-  }
-
-  function highlight(expression) {
-    const token = /([A-Za-z_][A-Za-z0-9_]*)|(\d+(?:\.\d+)?)|([+\-*/<>=!]+)|([()[\]{},])|(\s+)|(.)/g;
-    let out = "";
-    let match;
-    while ((match = token.exec(expression)) !== null) {
-      const [text, identifier, number, operator] = match;
-      if (identifier) {
-        const kind = BUILTINS.includes(identifier)
-          ? "tok-builtin"
-          : KEYWORDS.includes(identifier)
-            ? "tok-keyword"
-            : "tok-layer";
-        out += `<span class="${kind}">${RIDAL.escapeHtml(identifier)}</span>`;
-      } else if (number) {
-        out += `<span class="tok-number">${RIDAL.escapeHtml(number)}</span>`;
-      } else if (operator) {
-        out += `<span class="tok-op">${RIDAL.escapeHtml(text)}</span>`;
-      } else {
-        out += RIDAL.escapeHtml(text);
-      }
-    }
-    return out;
-  }
-
-  function syncHighlight() {
-    highlightBox.innerHTML = `${highlight(expressionInput.value)}\n`;
-    highlightBox.scrollTop = expressionInput.scrollTop;
-    highlightBox.scrollLeft = expressionInput.scrollLeft;
-  }
-
-  function clearPreview() {
+  function clearPreviewLine() {
     if (previewLine) {
       map.removeLayer(previewLine);
       previewLine = null;
     }
   }
 
-  async function runPreview() {
-    clearPreview();
-    const expression = expressionInput.value.trim();
-    if (!expression) {
-      statusBox.textContent = "";
-      statusBox.classList.remove("editor-error");
-      return;
-    }
-    let body;
-    try {
-      body = await RIDAL.fetchJson(
-        RIDAL.apiPath("datasets", RADARGRAM, "derived", "preview"),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ expression, unit: unitSelect.value }),
-        },
-      );
-    } catch (error) {
-      // An invalid expression clears the previous preview rather than leaving
-      // a stale line on screen pretending to be the current one.
-      statusBox.textContent = error.message;
-      statusBox.classList.add("editor-error");
-      return;
-    }
-    statusBox.classList.remove("editor-error");
-    const kindLabel = body.kind === "position" ? "position (a line)" : body.kind;
-    statusBox.textContent = `${kindLabel} · ${body.unit || "no unit"}`;
-    if (body.kind !== "position") return;
+  async function previewExpression(expression, unit) {
+    clearPreviewLine();
+    const body = await RIDAL.fetchJson(
+      RIDAL.apiPath("datasets", RADARGRAM, "derived", "preview"),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expression, unit }),
+      },
+    );
+    if (body.kind !== "position") return body;
     const points = [];
     let run = [];
     body.values.forEach((value, trace) => {
@@ -584,129 +674,79 @@
       run.push(toLatLng(trace, sample));
     });
     if (run.length > 1) points.push(run);
-    if (!points.length) return;
-    const group = L.layerGroup(
-      points.map((runPoints) =>
-        L.polyline(runPoints, {
-          color: "#00e5ff",
-          weight: 3,
-          dashArray: "8 5",
-          interactive: false,
-          pane: "radargram-lines",
-        }),
-      ),
-    ).addTo(map);
-    previewLine = group;
-  }
-
-  function schedulePreview() {
-    if (previewTimer) clearTimeout(previewTimer);
-    previewTimer = setTimeout(runPreview, 300);
+    if (points.length) {
+      previewLine = L.layerGroup(
+        points.map((runPoints) =>
+          L.polyline(runPoints, {
+            color: "#00e5ff",
+            weight: 3,
+            dashArray: "8 5",
+            interactive: false,
+            pane: "radargram-lines",
+          }),
+        ),
+      ).addTo(map);
+    }
+    return body;
   }
 
   function openEditor(item) {
-    editingId = item ? item.id : null;
-    editorTitle.textContent = item ? `Edit '${item.name}'` : "New derived expression";
-    nameInput.value = item ? item.name : "";
-    idInput.value = item ? item.id : "";
-    unitSelect.value = item ? item.unit : "meters";
-    expressionInput.value = item ? item.expression : "";
-    statusBox.textContent = "";
-    statusBox.classList.remove("editor-error");
-    unusableBox.hidden = state.unusable.length === 0;
-    unusableBox.textContent = state.unusable.length
-      ? `These layer ids cannot be used in an expression (a hyphen parses as a minus): ${state.unusable.join(", ")}.`
-      : "";
-    syncHighlight();
-    if (typeof editor.showModal === "function") editor.showModal();
-    else editor.setAttribute("open", "");
-    schedulePreview();
+    RIDAL.derivedEditor.open({
+      item,
+      items: state.items,
+      layerIds: state.layers.map((layer) => layer.id),
+      unusable: state.unusable,
+      canRelease: state.canRelease,
+      preview: previewExpression,
+      onSaved: loadDerived,
+      onClose: clearPreviewLine,
+    });
   }
 
-  function closeEditor() {
-    clearPreview();
-    if (typeof editor.close === "function") editor.close();
-    else editor.removeAttribute("open");
-  }
-
-  function editorItem() {
-    const name = nameInput.value.trim();
-    const id = (idInput.value.trim() || sanitizeId(name)).trim();
-    return {
-      id,
-      name: name || id,
-      expression: expressionInput.value.trim(),
-      unit: unitSelect.value,
-      color: null,
-      show: false,
-      fill_to: null,
-      scope: "project",
-      audience: "own_picks",
-    };
-  }
-
-  async function saveEditor() {
-    const item = editorItem();
-    if (!item.expression) {
-      statusBox.textContent = "The expression is empty.";
-      statusBox.classList.add("editor-error");
-      return;
-    }
-    const index = state.items.findIndex((existing) => existing.id === editingId);
-    const next = state.items.map((existing) => ({
-      id: existing.id,
-      name: existing.name,
-      expression: existing.expression,
-      unit: existing.unit,
-      color: existing.color,
-      show: existing.show,
-      fill_to: existing.fill_to,
-      scope: existing.scope,
-      audience: existing.audience,
-    }));
-    if (index >= 0) next[index] = { ...next[index], ...item };
-    else next.push(item);
+  /** Delete one item, as a PUT that omits it.
+   *
+   * The server merges (it preserves items the caller cannot see) and refuses
+   * a delete another item depends on, naming the dependent; its message is
+   * shown as-is. Confirmation is inline rather than `window.confirm`, which
+   * would block the Chromium harness and cannot name the item as legibly. */
+  async function deleteItem(item) {
+    const next = state.items
+      .filter((existing) => existing.id !== item.id)
+      .map((existing) => ({
+        id: existing.id,
+        name: existing.name,
+        expression: existing.expression,
+        unit: existing.unit,
+        color: existing.color,
+        show: existing.show,
+        listed: existing.listed,
+        fill_to: existing.fill_to,
+        scope: existing.scope,
+        audience: existing.audience,
+      }));
     try {
       await RIDAL.fetchJson("/api/v1/derived", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ schema: "ridal-derived", schema_version: "1", items: next }),
+        body: JSON.stringify({
+          schema: "ridal-derived",
+          schema_version: "1",
+          items: next,
+        }),
       });
     } catch (error) {
-      statusBox.textContent = error.message;
-      statusBox.classList.add("editor-error");
+      showPanelError(error.message);
       return;
     }
-    closeEditor();
     await loadDerived();
   }
 
-  function buildSuggestions() {
-    const names = [
-      ...state.layers.map((layer) => layer.id),
-      ...state.items.map((item) => item.id),
-      ...BUILTINS,
-    ];
-    suggestions.replaceChildren(
-      ...names.map((name) => {
-        const option = document.createElement("option");
-        option.value = name;
-        return option;
-      }),
-    );
+  function showPanelError(message) {
+    const box = document.getElementById("layer-panel-error");
+    if (!box) return;
+    box.textContent = message;
+    box.hidden = false;
   }
-
-  nameInput.addEventListener("input", () => {
-    if (!editingId) idInput.value = sanitizeId(nameInput.value);
-  });
-  expressionInput.addEventListener("input", () => {
-    syncHighlight();
-    schedulePreview();
-  });
-  expressionInput.addEventListener("scroll", syncHighlight);
-  unitSelect.addEventListener("change", schedulePreview);
-  saveButton.addEventListener("click", saveEditor);
-  cancelButton.addEventListener("click", closeEditor);
 
   // --- Load ----------------------------------------------------------------
 
@@ -730,7 +770,6 @@
       noteError(error);
       state.items = [];
     }
-    buildSuggestions();
     renderPanel();
     await refreshDerivedLines();
     await refreshFills();

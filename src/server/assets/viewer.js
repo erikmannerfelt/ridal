@@ -88,6 +88,18 @@ window.RIDAL_TO_INDEX = function (latlng) {
   return [trace, rasterRow - shiftAt(trace)];
 };
 
+/* Redraw every index-space overlay after the geometry changed.
+ *
+ * The picker's editable lines and the layer panel's derived lines and fills
+ * all convert (trace, sample) through `window.RIDAL_GEOMETRY`, which the
+ * topographic toggle and the horizontal-scale change rewrite. The picker was
+ * already redrawn on those events; the derived overlays were not, so they
+ * stayed where the previous geometry put them until they were toggled. */
+function redrawOverlays() {
+  if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
+  if (window.RIDAL_REDRAW_DERIVED) window.RIDAL_REDRAW_DERIVED();
+}
+
 /* A short alias onto the one geometry object, not a copy: `G.nCols` etc.
  * always reads whatever the most recent toggle wrote, since object
  * property lookups go through the live reference. Everything below reads
@@ -295,7 +307,7 @@ document.getElementById('xscale-select').addEventListener('change', (event) => {
   xScale = newScale;
   window.RIDAL_XSCALE = newScale;
   loadChunks(map, currentProfile(), xScale);
-  if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
+  redrawOverlays();
   map.setView(
     [center.lat, center.lng * (newScale / oldScale)],
     map.getZoom(),
@@ -1015,7 +1027,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     map.setView([newLat, center.lng], map.getZoom(), { animate: false });
 
     loadChunks(map, currentProfile(), xScale);
-    if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
+    redrawOverlays();
   }
 
   /* Fit the view vertically to the data band over the traces currently on

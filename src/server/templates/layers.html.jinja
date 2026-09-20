@@ -105,6 +105,42 @@
     </p>
     <ul id="undefined-list"></ul>
   </div>
+
+  {#- Derived items (#209). The viewer's layer panel is the main place to
+      author these; this is the other place, so a project can be managed
+      without opening a radargram. The live preview lives in the viewer only,
+      because it needs one. -#}
+  <section id="derived-section">
+    <h2>Derived items</h2>
+    <p class="lede">
+      Named expressions over the layers above, for example
+      <code>median(bed)</code> for a consensus line. They appear in the
+      viewer's layer panel and can be exported. The live preview is in the
+      viewer, which has a radargram to draw against; here an expression is
+      checked when you save.
+    </p>
+    <div id="derived-error" class="warning" hidden></div>
+    <div id="derived-actions"></div>
+    <table id="derived-table" class="layers-table">
+      <thead>
+        <tr>
+          <th scope="col">Colour</th>
+          <th scope="col">ID</th>
+          <th scope="col">Name</th>
+          <th scope="col">Kind</th>
+          <th scope="col">Unit</th>
+          <th scope="col">Expression</th>
+          <th scope="col" title="Whether the viewer draws it when it opens.">Shown</th>
+          <th scope="col" title="Whether it appears in the viewer's layer panel. An intermediate layer can be unlisted to keep the panel short.">Listed</th>
+          <th scope="col" title="How many other derived items use this one in an expression. Deleting it would be refused while any do.">Used by</th>
+          <th scope="col" title="Whose picks feed it: the viewer's own, or every contributor's once released.">Audience</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <p id="derived-empty" class="empty" hidden>No derived items defined yet.</p>
+  </section>
 {% endblock %}
 {% block extrascript %}
   {#- The only inline JS on this page: a server-side value layers.js cannot

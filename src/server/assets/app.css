@@ -1995,9 +1995,12 @@ button.danger:disabled {
   border: 1px solid var(--color-border);
   border-radius: var(--radius, 4px);
   padding: var(--space-2);
-  max-height: 70vh;
-  overflow-y: auto;
-  min-width: 11rem;
+  /* Never wider than the map, however long a layer name is: the control sits
+   * at the map's right edge with a margin, so a cap tied to `vw` alone still
+   * overflows a phone. The scrolling lives on the body below, so a long row
+   * pans sideways instead of pushing the control off screen. */
+  max-width: min(22rem, calc(90vw - 1rem));
+  box-sizing: border-box;
 }
 
 .layer-panel-heading {
@@ -2118,4 +2121,89 @@ button.danger:disabled {
   color: var(--color-warning-text);
   border-radius: var(--radius, 4px);
   padding: var(--space-2);
+}
+
+/* --- Layer panel disclosure and derived management (#209) ---------------- */
+
+/* The panel is a `<details>`, closed by default. Reusing the header menu's
+ * pattern means the open/close is keyboard-accessible with no JavaScript; it
+ * deliberately does not close on an outside click, because the map is what is
+ * being looked at while layers are toggled. */
+.layer-panel > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: var(--space-1) var(--space-2);
+  list-style: none;
+}
+
+.layer-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.layer-panel > summary::marker {
+  content: "";
+}
+
+.layer-panel-body {
+  padding: 0 var(--space-2) var(--space-2);
+  max-height: 60vh;
+  overflow: auto;
+  /* Horizontal touch panning is the phone case: a long expression or layer
+   * name scrolls sideways rather than being clipped. `pan-x pan-y` keeps
+   * that gesture off the map behind it. */
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.layer-panel-derived-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.layer-panel-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.layer-panel-confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.75rem;
+}
+
+.layer-panel-error {
+  color: var(--color-danger-text);
+  font-size: 0.8rem;
+  margin-bottom: var(--space-1);
+  white-space: normal;
+}
+
+/* The shared derived-item editor (app.js). The range fields are disabled as a
+ * group until the checkbox is on, so the control reads as one choice. */
+#derived-editor {
+  max-width: 42rem;
+}
+
+#derived-range-fields {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 4px);
+  padding: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+#derived-range-fields.is-disabled .add-layer-fields {
+  opacity: 0.5;
+}
+
+#derived-editor input[type="color"] {
+  padding: 0;
+  width: 2.2rem;
+  height: 1.6rem;
+  vertical-align: middle;
 }

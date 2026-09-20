@@ -97,6 +97,35 @@ DERIVED: Final[list[dict]] = [
         "fill_to": {"target": "op_secret", "opacity": 0.3},
     },
     {
+        "id": "bed_count",
+        "name": "Bed count",
+        "expression": "count(bed)",
+        "unit": "dimensionless",
+        "color": "#654321",
+    },
+    {
+        "id": "intermediate",
+        "name": "Intermediate layer",
+        "expression": "median(bed)",
+        "unit": "meters",
+        "color": "#999999",
+        "listed": False,
+    },
+    {
+        "id": "dep_base",
+        "name": "Dependency base",
+        "expression": "median(bed)",
+        "unit": "meters",
+        "color": "#111111",
+    },
+    {
+        "id": "dep_child",
+        "name": "Dependency child",
+        "expression": "dep_base + 1.0",
+        "unit": "meters",
+        "color": "#222222",
+    },
+    {
         "id": "op_secret",
         "name": "Operator's private line",
         "expression": "median(bed)",
@@ -211,8 +240,7 @@ def build_project(root: Path, binary: Path) -> None:
     picks = {
         "op": [
             ("bed", [[0.0, 20.0], [40.0, 20.0]]),
-            ("bed", [[60.0, 20.0], [99.0, 20.0]]),
-            ("bed_no_temperate", [[60.0, 25.0], [99.0, 25.0]]),
+            ("bed", [[70.0, 20.0], [99.0, 20.0]]),
             ("upper_bound", [[0.0, 10.0], [99.0, 40.0]]),
             ("lower_bound", [[0.0, 40.0], [99.0, 10.0]]),
         ],
@@ -322,7 +350,10 @@ function finish(value) {
 
 function panelRows(doc) {
   return Array.from(doc.querySelectorAll("#layer-panel .layer-panel-row")).map(
-    (row) => ({ text: row.textContent.trim(), checked: row.querySelector("input").checked }),
+    (row) => {
+      const input = row.querySelector("input");
+      return { text: row.textContent.trim(), checked: input ? input.checked : null };
+    },
   );
 }
 
@@ -340,10 +371,137 @@ function fillColorCount(doc, color) {
   ).length;
 }
 
+function derivedRowById(doc, id) {
+  return doc.querySelector(`.layer-panel-derived-row[data-derived-id="${id}"]`);
+}
+
+function openEditorFor(doc, id) {
+  derivedRowById(doc, id).querySelector(".layer-panel-edit").click();
+}
+
 function findRow(doc, text) {
   return Array.from(doc.querySelectorAll("#layer-panel .layer-panel-row")).find(
     (row) => row.textContent.includes(text),
   );
+}
+
+
+/* The /layers page: derived items are managed there too (#209 S4). The live
+ * preview needs a radargram, so it is absent here; everything else is the
+ * same shared editor. */
+async function layersMode(doc, frame, result) {
+  // layers.js deletes a layer with `window.confirm`; stub it so the harness
+  // is not blocked by a native dialog.
+  try {
+    frame.contentWindow.confirm = () => true;
+  } catch (error) {
+    // If the window is not reachable the layer-delete step is skipped below.
+  }
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const derivedIds = async () =>
+    fetch("/api/v1/derived")
+      .then((r) => r.json())
+      .then((body) => body.items.map((item) => item.id));
+
+  await wait(600);
+  result.derivedRows = Array.from(
+    doc.querySelectorAll("#derived-table tbody tr"),
+  ).map((row) => row.textContent.trim());
+  result.canAdd = Boolean(doc.querySelector("#derived-new"));
+  const depBaseRow = Array.from(
+    doc.querySelectorAll("#derived-table tbody tr"),
+  ).find((row) => row.textContent.includes("dep_base"));
+  result.usedByDepBase = depBaseRow ? depBaseRow.textContent : null;
+  const intermediateRow = Array.from(
+    doc.querySelectorAll("#derived-table tbody tr"),
+  ).find((row) => row.textContent.includes("Intermediate layer"));
+  result.intermediateRow = intermediateRow ? intermediateRow.textContent : null;
+
+  // S4 #1: create on /layers, and it appears in the viewer panel.
+  doc.querySelector("#derived-new").click();
+  await wait(250);
+  const dlg = doc.querySelector("#derived-editor");
+  result.editorHasNoPreview = dlg.querySelector("#derived-editor-hint").textContent.includes(
+    "no live preview",
+  );
+  dlg.querySelector("#derived-name").value = "From the layers page";
+  dlg.querySelector("#derived-name").dispatchEvent(new Event("input", { bubbles: true }));
+  dlg.querySelector("#derived-id").value = "from_layers";
+  dlg.querySelector("#derived-expression").value = "median(bed)";
+  dlg.querySelector("#derived-save").click();
+  await wait(900);
+  result.createdInApi = (await derivedIds()).includes("from_layers");
+  const createdRow = Array.from(
+    doc.querySelectorAll("#derived-table tbody tr"),
+  ).find((candidate) => candidate.textContent.includes("from_layers"));
+  if (createdRow) {
+    const editButton = createdRow.querySelector("button");
+    const deleteButton = createdRow.querySelector("button.danger");
+    const style = (element) => frame.contentWindow.getComputedStyle(element);
+    result.buttonStyleMatches =
+      editButton &&
+      deleteButton &&
+      style(editButton).paddingTop === style(deleteButton).paddingTop &&
+      style(editButton).borderRadius === style(deleteButton).borderRadius &&
+      style(editButton).fontSize === style(deleteButton).fontSize;
+  } else {
+    result.buttonStyleMatches = false;
+  }
+
+  // Load the viewer in a second iframe and check the panel lists it.
+  const viewer = document.createElement("iframe");
+  viewer.width = "1200";
+  viewer.height = "800";
+  viewer.src = "/view/%(radargram)s";
+  document.body.appendChild(viewer);
+  await wait(3500);
+  const viewerDoc = viewer.contentDocument;
+  result.createdInViewer = Boolean(
+    viewerDoc &&
+      Array.from(viewerDoc.querySelectorAll("#layer-panel .layer-panel-row")).some(
+        (row) => row.textContent.includes("From the layers page"),
+      ),
+  );
+  viewer.remove();
+
+  // S4 #3: the vocabulary can still be edited with derived items present, and
+  // the derived items survive it.
+  const form = doc.querySelector("#add-layer");
+  form.querySelector('input[name="id"]').value = "test_layer";
+  form.querySelector('input[name="name"]').value = "Test layer";
+  form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+  await wait(900);
+  result.layerAdded = await fetch("/api/v1/layers")
+    .then((r) => r.json())
+    .then((body) => body.layers.some((layer) => layer.id === "test_layer"));
+  result.derivedAfterLayerSave = (await derivedIds()).includes("from_layers");
+
+  // S4 #2: delete on /layers, and it is gone from the viewer.
+  const row = Array.from(doc.querySelectorAll("#derived-table tbody tr")).find(
+    (candidate) => candidate.textContent.includes("from_layers"),
+  );
+  row.querySelector("button.danger").click();
+  await wait(150);
+  row.querySelector("button").click();
+  await wait(900);
+  result.deletedFromApi = !(await derivedIds()).includes("from_layers");
+  result.deletedRowGone = !Array.from(
+    doc.querySelectorAll("#derived-table tbody tr"),
+  ).some((candidate) => candidate.textContent.includes("from_layers"));
+
+  // S4 #3 (the other direction): remove the layer again.
+  const layerRow = Array.from(doc.querySelectorAll("#layers-table tbody tr")).find(
+    (candidate) => candidate.textContent.includes("test_layer"),
+  );
+  if (layerRow) {
+    layerRow.querySelector("button.danger").click();
+    await wait(900);
+    result.layerGone = await fetch("/api/v1/layers")
+      .then((r) => r.json())
+      .then((body) => !body.layers.some((layer) => layer.id === "test_layer"));
+  } else {
+    result.layerGone = false;
+  }
 }
 
 /* Fixed sleeps only. Under Chromium's virtual time a poll loop keeps a timer
@@ -362,15 +520,64 @@ async function main() {
 
   const frame = document.createElement("iframe");
   frame.id = FRAME_ID;
-  frame.width = "1200";
+  frame.width = MODE === "narrow" ? "360" : "1200";
   frame.height = "800";
-  frame.src = "/view/%(radargram)s";
+  frame.src = MODE === "layers" ? "/layers" : "/view/%(radargram)s";
   document.body.appendChild(frame);
 
   await sleep(3500);
   const doc = frame.contentDocument;
-  if (!doc || !doc.querySelector("#layer-panel")) {
+  if (!doc) {
+    finish({ who: WHO, mode: MODE, error: "no document" });
+    return;
+  }
+
+  if (MODE === "layers") {
+    const result = { who: WHO, mode: MODE };
+    await layersMode(doc, frame, result);
+    finish(result);
+    return;
+  }
+
+  if (!doc.querySelector("#layer-panel")) {
     finish({ who: WHO, mode: MODE, error: "no layer panel" });
+    return;
+  }
+
+  if (MODE === "narrow") {
+    const result = { who: WHO, mode: MODE };
+    const panel = doc.querySelector("#layer-panel");
+    panel.querySelector("summary").click();
+    await sleep(300);
+    const rect = panel.getBoundingClientRect();
+    const viewport = frame.contentWindow.innerWidth;
+    result.viewport = viewport;
+    result.panelLeft = Math.round(rect.left);
+    result.panelRight = Math.round(rect.right);
+    result.panelFits = rect.left >= -1 && rect.right <= viewport + 1;
+    const mapRect = doc.querySelector("#map").getBoundingClientRect();
+    result.panelBottom = Math.round(rect.bottom);
+    result.mapBottom = Math.round(mapRect.bottom);
+    // The panel must stay inside the map, or its lower half is clipped and
+    // unreachable.
+    result.panelWithinMap = rect.bottom <= mapRect.bottom + 1;
+    const body = panel.querySelector(".layer-panel-body");
+    result.bodyMaxHeight = body.style.maxHeight;
+    // A long row must scroll rather than be clipped: force a wide child.
+    const wide = doc.createElement("div");
+    wide.style.width = "600px";
+    body.appendChild(wide);
+    result.bodyScrollable = body.scrollWidth > body.clientWidth;
+    body.scrollLeft = 40;
+    result.bodyScrolled = body.scrollLeft > 0;
+    // And tall content must scroll vertically inside the capped height.
+    const tall = doc.createElement("div");
+    tall.style.height = "900px";
+    body.appendChild(tall);
+    result.bodyScrollableV = body.scrollHeight > body.clientHeight;
+    body.scrollTop = 40;
+    result.bodyScrolledV = body.scrollTop > 0;
+    finish(result);
     return;
   }
 
@@ -384,6 +591,98 @@ async function main() {
   };
 
   if (MODE === "panel") {
+    // S1: the panel is a disclosure, closed by default.
+    const panel = doc.querySelector("#layer-panel");
+    const firstRow = doc.querySelector("#layer-panel .layer-panel-row");
+    result.panelOpenOnLoad = panel.open;
+    const visible = (node) => Boolean(node && node.checkVisibility && node.checkVisibility());
+    result.rowHiddenWhenClosed = firstRow ? !visible(firstRow) : null;
+    panel.querySelector("summary").click();
+    await sleep(200);
+    result.rowShownWhenOpen = visible(firstRow);
+    panel.querySelector("summary").click();
+    await sleep(200);
+    result.rowHiddenAfterClose = firstRow ? !visible(firstRow) : null;
+    // S1: hideable entirely, and the state survives a redraw.
+    const toggle = doc.querySelector("#panel-visibility");
+    toggle.click();
+    await sleep(200);
+    result.panelHidden = panel.hidden;
+    // A layer toggle redraws; the hidden state must survive it.
+    const anyLayer = findRow(doc, "Glacier bed");
+    anyLayer.querySelector("input").click();
+    await sleep(200);
+    result.panelStillHidden = panel.hidden;
+    anyLayer.querySelector("input").click();
+    await sleep(200);
+    try {
+      result.panelHiddenStored = frame.contentWindow.sessionStorage.getItem(
+        "ridal.layer-panel.hidden",
+      );
+    } catch (error) {
+      result.panelHiddenStored = null;
+    }
+    toggle.click();
+    await sleep(200);
+
+    // The summary count is exactly the layer rows the panel shows (the
+    // contributor toggle is not a layer).
+    const summaryText = doc.querySelector("#layer-panel-summary").textContent;
+    result.summaryText = summaryText;
+    result.layerRows = doc.querySelectorAll("#layer-panel .layer-panel-row").length;
+    result.contributorRows = Array.from(
+      doc.querySelectorAll("#layer-panel .layer-panel-row"),
+    ).filter((row) => row.textContent.includes("Show all contributors")).length;
+
+    // A control with no colour gets no empty swatch.
+    const contributorRow = findRow(doc, "Show all contributors");
+    result.contributorSwatch = Boolean(
+      contributorRow && contributorRow.querySelector(".layer-panel-swatch"),
+    );
+
+    // "New expression" belongs to the Derived layers section, before the
+    // Contributors heading.
+    const panelBody = doc.querySelector(".layer-panel-body");
+    const order = Array.from(panelBody.children);
+    const newButtonIndex = order.indexOf(doc.querySelector("#derived-new"));
+    const contributorsIndex = order.findIndex((node) =>
+      node.textContent.trim() === "Contributors",
+    );
+    result.newButtonBeforeContributors =
+      newButtonIndex >= 0 && contributorsIndex >= 0 && newButtonIndex < contributorsIndex;
+
+    // An unlisted intermediate layer is not in the panel at all.
+    result.intermediateAbsent = !Array.from(
+      doc.querySelectorAll("#layer-panel .layer-panel-row"),
+    ).some((row) => row.textContent.includes("Intermediate layer"));
+
+    // The contributor toggle shows and hides other users' lines, without
+    // stacking them on repeated toggles.
+    result.contributorsApi = await fetch(
+      "/api/v1/datasets/%(radargram)s/contributors",
+    )
+      .then((r) => r.json())
+      .then((body) => ({
+        can_see_others: body.can_see_others,
+        docs: (body.documents || []).map((entry) => ({
+          user: entry.user,
+          own: entry.own,
+          features: (entry.document.features || []).length,
+        })),
+      }));
+    const contributors = findRow(doc, "Show all contributors");
+    if (contributors) {
+      contributors.querySelector("input").click();
+      await sleep(800);
+      result.contributorOn = doc.querySelectorAll(".contributor-pick-line").length;
+      contributors.querySelector("input").click();
+      await sleep(800);
+      result.contributorOff = doc.querySelectorAll(".contributor-pick-line").length;
+      contributors.querySelector("input").click();
+      await sleep(800);
+      result.contributorOnAgain = doc.querySelectorAll(".contributor-pick-line").length;
+    }
+
     // Q1 #2: toggling a layer off removes its polylines.
     const bedRow = findRow(doc, "Glacier bed");
     const before = lineCount(doc);
@@ -394,6 +693,12 @@ async function main() {
     await sleep(300);
     result.layerToggle = { before, afterOff, afterOn: lineCount(doc) };
 
+    // An attribute has no line, so it is not in the viewer panel at all --
+    // it is managed on the /layers page.
+    result.attributeAbsent = !Array.from(
+      doc.querySelectorAll("#layer-panel .layer-panel-row"),
+    ).some((row) => row.textContent.includes("Bed count"));
+
     // Q1 #3: derived items present, unchecked, private one only for op.
     result.derived = Array.from(doc.querySelectorAll("#layer-panel .layer-panel-row"))
       .filter((row) => /Band|Crossing|private/.test(row.textContent))
@@ -402,29 +707,52 @@ async function main() {
     // Q2: a fill between the two bounds, broken at the NaN gap.
     const top = findRow(doc, "Band top");
     const bottom = findRow(doc, "Band bottom");
+    const gapFill = findRow(doc, "Fill against a hidden bound");
+    // One at a time: each toggle redraws asynchronously, and three at once
+    // interleave their clears and redraws.
+    // The hidden-bound item's own bound must be visible too, for the
+    // operator (who can see it); the picker never sees the item at all.
+    const hiddenBound = findRow(doc, "Operator's private line");
     top.querySelector("input").click();
+    await sleep(500);
     bottom.querySelector("input").click();
-    await sleep(1200);
+    await sleep(500);
+    if (hiddenBound) {
+      hiddenBound.querySelector("input").click();
+      await sleep(500);
+    }
+    gapFill.querySelector("input").click();
+    await sleep(1400);
     result.bandFill = fillCount(doc);
     result.bandRings = fillColorCount(doc, "#0088ff");
     // A fill whose other bound is not visible to the caller must not draw.
     result.invisibleFill = fillColorCount(doc, "#123456");
+    result.fillColours = Array.from(
+      doc.querySelectorAll(".leaflet-radargram-fills-pane path"),
+    ).map((path) => path.getAttribute("fill"));
+    result.visibleDerived = Array.from(
+      doc.querySelectorAll(".layer-panel-derived-row"),
+    ).map((row) => ({ id: row.dataset.derivedId, checked: row.querySelector("input").checked }));
 
     // Q2: two crossing lines must not make a self-intersecting polygon.
     const crossTop = findRow(doc, "Crossing top");
     const crossBottom = findRow(doc, "Crossing bottom");
     crossTop.querySelector("input").click();
+    await sleep(500);
     crossBottom.querySelector("input").click();
-    await sleep(1200);
+    await sleep(1400);
     result.crossingFill = fillCount(doc);
     // One crossing means two rings; a bowtie would be one.
     result.crossingRings = fillColorCount(doc, "#aa00aa");
 
-    // Q2 #4: the fill survives with both bound lines off.
+    // A fill is visible only while both bounds are: hiding one removes it,
+    // and hiding both keeps it gone.
     top.querySelector("input").click();
+    await sleep(600);
+    result.fillWithOneBoundOff = fillColorCount(doc, "#0088ff");
     bottom.querySelector("input").click();
-    await sleep(500);
-    result.fillWithLinesOff = fillCount(doc);
+    await sleep(600);
+    result.fillWithLinesOff = fillColorCount(doc, "#0088ff");
   }
 
   if (MODE === "editor" && result.canEdit) {
@@ -444,6 +772,99 @@ async function main() {
     result.suggestions = Array.from(doc.querySelectorAll("#derived-suggestions option")).map(
       (option) => option.value,
     );
+  }
+
+  if (MODE === "manage" && result.canEdit) {
+    // The dialog is created lazily on the first open, so it must be opened
+    // before it can be queried.
+    const editorDialog = () => doc.querySelector("#derived-editor");
+    const saveAndWait = async (ms) => {
+      editorDialog().querySelector("#derived-save").click();
+      await sleep(ms || 900);
+    };
+
+    // S2 #1: editing pre-fills, the id is read-only, and a changed
+    // expression is saved.
+    openEditorFor(doc, "dep_child");
+    await sleep(250);
+    const dlg = editorDialog();
+    result.editPrefill = {
+      name: dlg.querySelector("#derived-name").value,
+      id: dlg.querySelector("#derived-id").value,
+      expression: dlg.querySelector("#derived-expression").value,
+      idReadOnly: dlg.querySelector("#derived-id").readOnly,
+    };
+    dlg.querySelector("#derived-expression").value = "dep_base + 2.0";
+    await saveAndWait(900);
+    result.savedExpression = await fetch("/api/v1/derived")
+      .then((r) => r.json())
+      .then((body) => body.items.find((i) => i.id === "dep_child").expression);
+
+    // S3 #4: a colour reaches the drawn line and the swatch.
+    openEditorFor(doc, "band_top");
+    await sleep(250);
+    dlg.querySelector("#derived-no-color").checked = false;
+    const colour = dlg.querySelector("#derived-color");
+    colour.value = "#123456";
+    colour.dispatchEvent(new Event("input", { bubbles: true }));
+    await saveAndWait(900);
+    const topRow = derivedRowById(doc, "band_top");
+    if (!topRow.querySelector("input").checked) {
+      topRow.querySelector("input").click();
+    }
+    await sleep(900);
+    result.colourStroke = doc.querySelectorAll(
+      '.leaflet-radargram-lines-pane path[stroke="#123456"]',
+    ).length;
+    result.colourSwatch = topRow.querySelector(".layer-panel-swatch").style.background;
+
+    // S3 #5: a range set in the editor draws a fill.
+    openEditorFor(doc, "band_bottom");
+    await sleep(250);
+    const range = dlg.querySelector("#derived-range");
+    range.checked = true;
+    range.dispatchEvent(new Event("change", { bubbles: true }));
+    dlg.querySelector("#derived-range-target").value = "band_top";
+    dlg.querySelector("#derived-range-color").value = "#abcdef";
+    dlg.querySelector("#derived-range-opacity").value = "0.4";
+    await saveAndWait(1100);
+    const bottomRow = derivedRowById(doc, "band_bottom");
+    if (!bottomRow.querySelector("input").checked) {
+      bottomRow.querySelector("input").click();
+    }
+    await sleep(900);
+    result.rangeFill = doc.querySelectorAll(
+      '.leaflet-radargram-fills-pane path[fill="#abcdef"]',
+    ).length;
+
+    // S3 #6: a non-hex colour is refused with the server's message.
+    openEditorFor(doc, "band_top");
+    await sleep(250);
+    dlg.querySelector("#derived-no-color").checked = false;
+    dlg.querySelector("#derived-color").value = "red";
+    await saveAndWait(900);
+    result.nonHexStatus = dlg.querySelector("#derived-status").textContent;
+    dlg.querySelector("#derived-cancel").click();
+    await sleep(250);
+
+    // S2 #3: deleting a depended-on item is refused, naming the dependent.
+    const baseRow = derivedRowById(doc, "dep_base");
+    baseRow.querySelector("button.danger").click();
+    await sleep(150);
+    baseRow.querySelector(".layer-panel-confirm button").click();
+    await sleep(700);
+    result.deleteRefused = doc.querySelector("#layer-panel-error").textContent;
+
+    // S2 #2: deleting a standalone item removes it, and it stays gone.
+    const childRow = derivedRowById(doc, "dep_child");
+    childRow.querySelector("button.danger").click();
+    await sleep(150);
+    childRow.querySelector(".layer-panel-confirm button").click();
+    await sleep(900);
+    result.deletedGone = await fetch("/api/v1/derived")
+      .then((r) => r.json())
+      .then((body) => !body.items.some((i) => i.id === "dep_child"));
+    result.deletedRowGone = !derivedRowById(doc, "dep_child");
   }
 
   finish(result);
@@ -494,7 +915,7 @@ def chromium(proxy_port: int, who: str, mode: str = "panel") -> str:
         # radargram chunks that virtual time deadlocks on the editor's preview
         # fetch. The panel tests do not need a specific size.
         f"--user-data-dir={profile}",
-        "--virtual-time-budget=15000",
+        "--virtual-time-budget=" + ("25000" if mode == "layers" else "15000"),
         "--dump-dom",
         f"http://127.0.0.1:{proxy_port}/harness.html?who={who}&mode={mode}",
     ]
@@ -522,6 +943,22 @@ def assert_q1(operator: dict, picker: dict) -> None:
     labels = [row["text"] for row in operator["rows"]]
     for layer in LAYERS:
         assert any(layer["name"] in label for label in labels), (layer, labels)
+    assert operator["attributeAbsent"] is True, "attributes belong on /layers, not the panel"
+    assert operator["intermediateAbsent"] is True, "an unlisted layer must not be in the panel"
+    count = int(operator["summaryText"].split("(")[1].split(")")[0])
+    assert count == operator["layerRows"] - operator["contributorRows"], (
+        f"summary says {operator['summaryText']} but there are "
+        f"{operator['layerRows']} rows ({operator['contributorRows']} of them the contributor toggle)"
+    )
+    assert operator["contributorSwatch"] is False, "the contributor toggle needs no colour swatch"
+    assert operator["newButtonBeforeContributors"] is True, (
+        "'New expression' must sit in the Derived layers section"
+    )
+    assert operator["contributorOn"] > 0, "the contributor toggle must draw lines"
+    assert operator["contributorOff"] == 0, "disabling it must remove them"
+    assert (
+        operator["contributorOnAgain"] == operator["contributorOn"]
+    ), "re-enabling must not stack lines"
     assert operator["layerToggle"]["before"] > operator["layerToggle"]["afterOff"], operator[
         "layerToggle"
     ]
@@ -550,8 +987,9 @@ def assert_q2(operator: dict, picker: dict) -> None:
     # ring; Leaflet renders each ring as two <path>s, so the count is even and
     # at least two.
     assert operator["crossingRings"] >= 2, operator["crossingRings"]
-    # It survives with both bound lines off.
-    assert operator["fillWithLinesOff"] > 0, operator["fillWithLinesOff"]
+    # Hiding either bound removes the fill; hiding both keeps it gone.
+    assert operator["fillWithOneBoundOff"] == 0, operator["fillWithOneBoundOff"]
+    assert operator["fillWithLinesOff"] == 0, operator["fillWithLinesOff"]
     # A fill whose other bound the caller cannot see is not drawn.
     assert operator["invisibleFill"] > 0, operator["invisibleFill"]
     assert picker["invisibleFill"] == 0, picker["invisibleFill"]
@@ -566,6 +1004,64 @@ def assert_q3(operator: dict) -> None:
     suggestions = operator["suggestions"]
     assert "bed" in suggestions, suggestions
     assert "median" in suggestions, suggestions
+
+
+def assert_layers(layers: dict) -> None:
+    assert layers.get("error") is None, layers
+    assert layers["canAdd"] is True, "an operator must be able to add on /layers"
+    assert layers["buttonStyleMatches"] is True, "Edit and Delete must share one style"
+    assert layers["usedByDepBase"] is not None and "dep_child" not in (
+        layers["usedByDepBase"] or ""
+    ), layers["usedByDepBase"]
+    assert "1" in (layers["usedByDepBase"] or ""), (
+        "the used-by counter must show dep_base is used once"
+    )
+    assert layers["intermediateRow"] is not None and "no" in layers["intermediateRow"], (
+        layers["intermediateRow"]
+    )
+    assert layers["editorHasNoPreview"] is True, layers
+    assert layers["createdInApi"] is True, layers
+    assert layers["createdInViewer"] is True, "an item created on /layers must appear in the viewer"
+    assert layers["deletedFromApi"] is True, layers
+    assert layers["deletedRowGone"] is True, layers
+    assert layers["layerAdded"] is True, layers
+    assert layers["derivedAfterLayerSave"] is True, "a layer save must not lose derived items"
+    assert layers["layerGone"] is True, layers
+
+
+def assert_narrow(narrow: dict) -> None:
+    assert narrow.get("error") is None, narrow
+    assert narrow["panelFits"] is True, narrow
+    assert narrow["panelWithinMap"] is True, "the panel must not run past the map"
+    assert narrow["bodyScrollable"] is True, "the panel body must scroll, not clip"
+    assert narrow["bodyScrolled"] is True, "horizontal touch scrolling must work"
+    assert narrow["bodyScrollableV"] is True, "tall content must scroll vertically"
+    assert narrow["bodyScrolledV"] is True, "vertical touch scrolling must work"
+
+
+def assert_s1(operator: dict) -> None:
+    assert operator["panelOpenOnLoad"] is False, "the panel must start closed"
+    assert operator["rowHiddenWhenClosed"] is True, "closed rows must not be visible"
+    assert operator["rowShownWhenOpen"] is True, "opening must reveal the rows"
+    assert operator["rowHiddenAfterClose"] is True, "closing must hide them again"
+    assert operator["panelHidden"] is True, "the hide toggle must hide the control"
+    assert operator["panelStillHidden"] is True, "a redraw must not un-hide it"
+    assert operator["panelHiddenStored"] == "1", "the choice must persist for the session"
+
+
+def assert_manage(operator: dict) -> None:
+    prefill = operator["editPrefill"]
+    assert prefill["id"] == "dep_child", prefill
+    assert prefill["idReadOnly"] is True, "an existing id must be read-only"
+    assert "dep_base" in prefill["expression"], prefill
+    assert "+ 2.0" in operator["savedExpression"], operator["savedExpression"]
+    assert operator["colourStroke"] > 0, "the colour must reach the drawn line"
+    assert "18, 52, 86" in operator["colourSwatch"], operator["colourSwatch"]
+    assert operator["rangeFill"] > 0, "a range set in the editor must draw a fill"
+    assert "hex" in operator["nonHexStatus"], operator["nonHexStatus"]
+    assert "dep_child" in operator["deleteRefused"], operator["deleteRefused"]
+    assert operator["deletedGone"] is True, "a deleted item must stay gone"
+    assert operator["deletedRowGone"] is True, "its row must be gone too"
 
 
 def main() -> None:
@@ -639,15 +1135,29 @@ def main() -> None:
 
         operator = run("op", "editor")
         operator.update(run("op", "panel"))
+        # Before `manage`, which deletes a dependent item; the /layers used-by
+        # counter is checked while the dependency still exists.
+        layers = run("op", "layers")
+        operator.update(run("op", "manage"))
         picker = run("picker", "panel")
+        narrow = run("op", "narrow")
 
         external = [path for path in all_requests if "://" in path]
-        print(json.dumps({"operator": operator, "picker": picker}, indent=2))
+        print(
+            json.dumps(
+                {"operator": operator, "picker": picker, "layers": layers, "narrow": narrow},
+                indent=2,
+            )
+        )
         print(f"proxy saw {len(all_requests)} requests; external: {external}")
 
         assert_q1(operator, picker)
         assert_q2(operator, picker)
         assert_q3(operator)
+        assert_s1(operator)
+        assert_manage(operator)
+        assert_layers(layers)
+        assert_narrow(narrow)
         assert not external, external
         print("PANEL HARNESS: all assertions passed")
     finally:

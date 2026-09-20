@@ -841,6 +841,451 @@ const RIDAL = Object.freeze({
       card.addEventListener("mouseleave", () => { hovered = false; apply(); });
     }
   },
+
+  /** The derived-item editor, shared by the viewer panel and the /layers page.
+   *
+   * Built once, lazily, and appended to `<body>`, so both pages use the same
+   * dialog and the same save path. Two editors that drift apart is a worse
+   * outcome than one that is slightly awkward in both places.
+   *
+   * The one thing that cannot be shared is the live preview, which needs a
+   * radargram: the caller passes `preview`, and when it is absent the dialog
+   * says there is nothing to preview against rather than looking broken.
+   *
+   * `open({ item, items, unusable, canRelease, preview, onSaved, onClose })`
+   * where `item` is an existing item or `null`, `items` is every item the
+   * caller can see (the save is a full PUT of that set), and `preview` is
+   * `async (expression, unit) => ({ kind, unit })` or `null`.
+   *
+   * `audience` is a permission control, not a display option: the release
+   * checkbox is shown only to a caller who may set it, and labelled as
+   * publishing other contributors' work. `put_derived` requires `Role::Admin`
+   * for it, and that server check is the real gate; a 403 it returns is shown
+   * verbatim rather than folded into a generic failure.
+   */
+  derivedEditor: (function () {
+    // Must match `interp::derive`'s registered functions, or the highlighter
+    // colours a name the evaluator does not know.
+    const BUILTINS = [
+      "count", "median", "mean", "std", "nmad", "percentile",
+      "percentile_lower", "min", "max", "concatenate", "shallowest",
+      "deepest", "clamp", "where",
+    ];
+    const KEYWORDS = ["if", "else", "true", "false", "NaN"];
+    const UNITS = [
+      ["meters", "metres"],
+      ["nanoseconds", "nanoseconds"],
+      ["samples", "samples"],
+      ["dimensionless", "dimensionless"],
+    ];
+
+    let dialog = null;
+    let fields = null;
+    let options = null;
+    let editingId = null;
+    let originalAudience = "own_picks";
+    let originalScope = "project";
+    let previewTimer = null;
+    // Bumped whenever a preview must no longer be trusted (a save started or
+    // failed), so a slower in-flight preview cannot overwrite a save error.
+    let previewGeneration = 0;
+
+    function build() {
+      dialog = document.createElement("dialog");
+      dialog.id = "derived-editor";
+      // Static markup only; every value that comes from a document is set
+      // through `.value`/`.textContent` below, never interpolated here.
+      dialog.innerHTML = `
+        <h2 id="derived-editor-title">New derived expression</h2>
+        <p class="hint" id="derived-editor-hint"></p>
+        <div class="add-layer-fields">
+          <label>Name <input id="derived-name" type="text" autocomplete="off"></label>
+          <label>Id <input id="derived-id" type="text" autocomplete="off" spellcheck="false"></label>
+          <label>Unit <select id="derived-unit">${UNITS.map(
+            ([value, label]) => `<option value="${value}">${label}</option>`,
+          ).join("")}</select></label>
+          <label class="checkbox"><input id="derived-listed" type="checkbox" checked> Show in the viewer's layer list</label>
+          <label class="checkbox"><input id="derived-show" type="checkbox"> Draw it when the viewer opens</label>
+        </div>
+        <div class="editor-input">
+          <pre id="derived-highlight" aria-hidden="true"></pre>
+          <textarea id="derived-expression" rows="4" spellcheck="false"
+                    list="derived-suggestions" autocomplete="off"></textarea>
+          <datalist id="derived-suggestions"></datalist>
+        </div>
+        <p class="editor-status" id="derived-status" role="status" aria-live="polite"></p>
+        <p class="editor-warning" id="derived-unusable" hidden></p>
+        <div class="add-layer-fields">
+          <label>Colour <input id="derived-color" type="text" placeholder="#rrggbb" autocomplete="off"></label>
+          <label>Pick <input id="derived-color-picker" type="color" value="#ffcc00"></label>
+          <label class="checkbox"><input id="derived-no-color" type="checkbox"> No colour</label>
+        </div>
+        <fieldset id="derived-range-fields">
+          <label class="checkbox"><input id="derived-range" type="checkbox"> Range fill</label>
+          <div class="add-layer-fields">
+            <label>Target <select id="derived-range-target"></select></label>
+            <label>Colour <input id="derived-range-color" type="text" placeholder="optional" autocomplete="off"></label>
+            <label>Pick <input id="derived-range-picker" type="color" value="#888888"></label>
+            <label>Opacity <input id="derived-range-opacity" type="number" min="0" max="1" step="0.05" value="0.25"></label>
+          </div>
+        </fieldset>
+        <label class="checkbox" id="derived-audience-row" hidden>
+          <input id="derived-release" type="checkbox">
+          Release to everyone (publishes every contributor's picks in aggregate)
+        </label>
+        <p>
+          <button id="derived-save" type="button">Save</button>
+          <button id="derived-cancel" type="button">Close</button>
+        </p>`;
+      document.body.appendChild(dialog);
+      fields = {
+        title: dialog.querySelector("#derived-editor-title"),
+        hint: dialog.querySelector("#derived-editor-hint"),
+        name: dialog.querySelector("#derived-name"),
+        id: dialog.querySelector("#derived-id"),
+        unit: dialog.querySelector("#derived-unit"),
+        show: dialog.querySelector("#derived-show"),
+        listed: dialog.querySelector("#derived-listed"),
+        expression: dialog.querySelector("#derived-expression"),
+        highlight: dialog.querySelector("#derived-highlight"),
+        status: dialog.querySelector("#derived-status"),
+        unusable: dialog.querySelector("#derived-unusable"),
+        suggestions: dialog.querySelector("#derived-suggestions"),
+        color: dialog.querySelector("#derived-color"),
+        colorPicker: dialog.querySelector("#derived-color-picker"),
+        noColor: dialog.querySelector("#derived-no-color"),
+        range: dialog.querySelector("#derived-range"),
+        rangeFields: dialog.querySelector("#derived-range-fields"),
+        rangeTarget: dialog.querySelector("#derived-range-target"),
+        rangeColor: dialog.querySelector("#derived-range-color"),
+        rangePicker: dialog.querySelector("#derived-range-picker"),
+        rangeOpacity: dialog.querySelector("#derived-range-opacity"),
+        audienceRow: dialog.querySelector("#derived-audience-row"),
+        release: dialog.querySelector("#derived-release"),
+        save: dialog.querySelector("#derived-save"),
+        cancel: dialog.querySelector("#derived-cancel"),
+      };
+
+      fields.name.addEventListener("input", () => {
+        if (!editingId) fields.id.value = sanitizeId(fields.name.value);
+      });
+      fields.color.addEventListener("input", () => {
+        if (/^#[0-9a-fA-F]{6}$/.test(fields.color.value.trim())) {
+          fields.colorPicker.value = fields.color.value.trim();
+        }
+      });
+      fields.colorPicker.addEventListener("input", () => {
+        fields.color.value = fields.colorPicker.value;
+        fields.noColor.checked = false;
+      });
+      fields.rangePicker.addEventListener("input", () => {
+        fields.rangeColor.value = fields.rangePicker.value;
+      });
+      fields.range.addEventListener("change", syncRangeEnabled);
+      fields.expression.addEventListener("input", () => {
+        syncHighlight();
+        schedulePreview();
+      });
+      fields.expression.addEventListener("scroll", syncHighlight);
+      fields.unit.addEventListener("change", schedulePreview);
+      fields.save.addEventListener("click", save);
+      fields.cancel.addEventListener("click", close);
+      // Native Escape close; make sure the preview line goes with it.
+      dialog.addEventListener("close", clearPreview);
+      return dialog;
+    }
+
+    function syncRangeEnabled() {
+      const on = fields.range.checked;
+      fields.rangeFields.classList.toggle("is-disabled", !on);
+      fields.rangeTarget.disabled = !on;
+      fields.rangeColor.disabled = !on;
+      fields.rangePicker.disabled = !on;
+      fields.rangeOpacity.disabled = !on;
+    }
+
+    function sanitizeId(name) {
+      const translit = { ø: "o", å: "a", ä: "a", ö: "o", æ: "ae", é: "e" };
+      let out = "";
+      let lastSep = false;
+      for (const character of name.toLowerCase()) {
+        if (translit[character] !== undefined) {
+          out += translit[character];
+          lastSep = false;
+        } else if (/[a-z0-9]/.test(character)) {
+          out += character;
+          lastSep = false;
+        } else if (/[\x00-\x7f]/.test(character) && !lastSep && out) {
+          out += "_";
+          lastSep = true;
+        }
+      }
+      out = out.replace(/_+$/, "");
+      if (!out || /^[0-9]/.test(out)) out = `l_${out}`;
+      if (BUILTINS.includes(out) || KEYWORDS.includes(out)) out += "_layer";
+      return out;
+    }
+
+    function highlight(expression) {
+      const token = /([A-Za-z_][A-Za-z0-9_]*)|(\d+(?:\.\d+)?)|([+\-*/<>=!]+)|([()[\]{},])|(\s+)|(.)/g;
+      let out = "";
+      let match;
+      while ((match = token.exec(expression)) !== null) {
+        const [text, identifier, number, operator] = match;
+        if (identifier) {
+          const kind = BUILTINS.includes(identifier)
+            ? "tok-builtin"
+            : KEYWORDS.includes(identifier)
+              ? "tok-keyword"
+              : "tok-layer";
+          out += `<span class="${kind}">${RIDAL.escapeHtml(identifier)}</span>`;
+        } else if (number) {
+          out += `<span class="tok-number">${RIDAL.escapeHtml(number)}</span>`;
+        } else if (operator) {
+          out += `<span class="tok-op">${RIDAL.escapeHtml(text)}</span>`;
+        } else {
+          out += RIDAL.escapeHtml(text);
+        }
+      }
+      return out;
+    }
+
+    function syncHighlight() {
+      fields.highlight.innerHTML = `${highlight(fields.expression.value)}\n`;
+      fields.highlight.scrollTop = fields.expression.scrollTop;
+      fields.highlight.scrollLeft = fields.expression.scrollLeft;
+    }
+
+    function clearPreview() {
+      if (previewTimer) {
+        clearTimeout(previewTimer);
+        previewTimer = null;
+      }
+      // The caller's way to drop its preview line. Called here rather than in
+      // `close` so an invalid expression clears it too, not just a close.
+      if (options && options.onClose) options.onClose();
+    }
+
+    function schedulePreview() {
+      if (previewTimer) clearTimeout(previewTimer);
+      if (!options || !options.preview) return;
+      const generation = ++previewGeneration;
+      previewTimer = setTimeout(() => runPreview(generation), 300);
+    }
+
+    async function runPreview(generation) {
+      if (!options || !options.preview) return;
+      const expression = fields.expression.value.trim();
+      if (!expression) {
+        fields.status.textContent = "";
+        fields.status.classList.remove("editor-error");
+        if (options.onClose) options.onClose();
+        return;
+      }
+      let body;
+      try {
+        body = await options.preview(expression, fields.unit.value);
+      } catch (error) {
+        // An invalid expression clears the previous preview rather than
+        // leaving a stale line on screen pretending to be the current one.
+        if (generation !== previewGeneration) return;
+        clearPreview();
+        fields.status.textContent = error.message;
+        fields.status.classList.add("editor-error");
+        return;
+      }
+      if (generation !== previewGeneration) return;
+      fields.status.classList.remove("editor-error");
+      const kindLabel = body.kind === "position" ? "position (a line)" : body.kind;
+      fields.status.textContent = `${kindLabel} · ${body.unit || "no unit"}`;
+    }
+
+    function buildSuggestions() {
+      const names = [
+        ...(options.layerIds || []),
+        ...options.items.map((item) => item.id),
+        ...BUILTINS,
+      ];
+      fields.suggestions.replaceChildren(
+        ...names.map((name) => {
+          const option = document.createElement("option");
+          option.value = name;
+          return option;
+        }),
+      );
+    }
+
+    function buildTargets(current) {
+      const targets = options.items.filter(
+        (item) => item.kind === "position" && item.id !== editingId,
+      );
+      const choices = [["", "None"]].concat(
+        targets.map((item) => [item.id, item.name || item.id]),
+      );
+      // A target the caller cannot see (or a non-position one) is not offered,
+      // but an existing one is kept as an option so saving does not silently
+      // drop the range.
+      if (current && !choices.some(([value]) => value === current)) {
+        choices.push([current, `${current} (current)`]);
+      }
+      fields.rangeTarget.replaceChildren(
+        ...choices.map(([value, label]) => {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          return option;
+        }),
+      );
+    }
+
+    function open(newOptions) {
+      if (!dialog) build();
+      options = newOptions;
+      const item = newOptions.item;
+      editingId = item ? item.id : null;
+      originalAudience = item ? item.audience : "own_picks";
+      originalScope = item ? item.scope : "project";
+
+      fields.title.textContent = item
+        ? `Edit '${item.name || item.id}'`
+        : "New derived expression";
+      fields.hint.textContent = newOptions.preview
+        ? "A Rhai expression over the layer ids and derived items. The line is previewed on the radargram as you type, without saving."
+        : "A Rhai expression over the layer ids and derived items. There is no radargram on this page, so there is no live preview; the expression is checked when you save.";
+      fields.name.value = item ? item.name : "";
+      fields.id.value = item ? item.id : "";
+      // Ids are immutable (#206): shown but not editable when editing.
+      fields.id.readOnly = Boolean(item);
+      fields.unit.value = item ? item.unit : "meters";
+      fields.show.checked = item ? Boolean(item.show) : false;
+      fields.listed.checked = item ? item.listed !== false : true;
+      fields.expression.value = item ? item.expression : "";
+      fields.color.value = item && item.color ? item.color : "";
+      fields.noColor.checked = !(item && item.color);
+      fields.color.disabled = fields.noColor.checked;
+      fields.colorPicker.disabled = fields.noColor.checked;
+      const fill = item && item.fill_to ? item.fill_to : null;
+      fields.range.checked = Boolean(fill);
+      fields.rangeColor.value = fill && fill.color ? fill.color : "";
+      fields.rangeOpacity.value = fill && fill.opacity != null ? fill.opacity : 0.25;
+      buildTargets(fill ? fill.target : null);
+      fields.rangeTarget.value = fill ? fill.target : "";
+      syncRangeEnabled();
+      fields.release.checked = originalAudience === "released";
+      fields.audienceRow.hidden = !newOptions.canRelease;
+      fields.unusable.hidden = !newOptions.unusable || newOptions.unusable.length === 0;
+      fields.unusable.textContent =
+        newOptions.unusable && newOptions.unusable.length
+          ? `These layer ids cannot be used in an expression (a hyphen parses as a minus): ${newOptions.unusable.join(", ")}.`
+          : "";
+      previewGeneration++;
+      fields.status.textContent = "";
+      fields.status.classList.remove("editor-error");
+      buildSuggestions();
+      syncHighlight();
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+      if (newOptions.preview) schedulePreview();
+    }
+
+    function close() {
+      if (!dialog) return;
+      // The `close` event does the cleanup, so an Escape and this button take
+      // exactly the same path.
+      if (typeof dialog.close === "function") {
+        dialog.close();
+      } else {
+        clearPreview();
+        dialog.removeAttribute("open");
+      }
+    }
+
+    function editorItem() {
+      const name = fields.name.value.trim();
+      const id = (fields.id.value.trim() || sanitizeId(name)).trim();
+      const noColor = fields.noColor.checked;
+      const color = noColor ? null : fields.color.value.trim() || null;
+      const fill =
+        fields.range.checked && fields.rangeTarget.value
+          ? {
+              target: fields.rangeTarget.value,
+              color: fields.rangeColor.value.trim() || null,
+              opacity:
+                fields.rangeOpacity.value === ""
+                  ? 0.25
+                  : Number(fields.rangeOpacity.value),
+            }
+          : null;
+      return {
+        id,
+        name: name || id,
+        expression: fields.expression.value.trim(),
+        unit: fields.unit.value,
+        color,
+        show: fields.show.checked,
+        listed: fields.listed.checked,
+        fill_to: fill,
+        scope: originalScope,
+        audience: options.canRelease
+          ? fields.release.checked
+            ? "released"
+            : "own_picks"
+          : originalAudience,
+      };
+    }
+
+    async function save() {
+      // Any preview still in flight must not overwrite the result of this
+      // save, success or failure.
+      previewGeneration++;
+      if (previewTimer) {
+        clearTimeout(previewTimer);
+        previewTimer = null;
+      }
+      const item = editorItem();
+      if (!item.expression) {
+        fields.status.textContent = "The expression is empty.";
+        fields.status.classList.add("editor-error");
+        return;
+      }
+      const next = options.items.map((existing) => ({
+        id: existing.id,
+        name: existing.name,
+        expression: existing.expression,
+        unit: existing.unit,
+        color: existing.color,
+        show: existing.show,
+        listed: existing.listed,
+        fill_to: existing.fill_to,
+        scope: existing.scope,
+        audience: existing.audience,
+      }));
+      const index = next.findIndex((existing) => existing.id === editingId);
+      if (index >= 0) next[index] = { ...next[index], ...item };
+      else next.push(item);
+      try {
+        await RIDAL.fetchJson("/api/v1/derived", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            schema: "ridal-derived",
+            schema_version: "1",
+            items: next,
+          }),
+        });
+      } catch (error) {
+        // The server's message, verbatim -- including a 403 on releasing,
+        // which must not be folded into a generic failure.
+        fields.status.textContent = error.message;
+        fields.status.classList.add("editor-error");
+        return;
+      }
+      close();
+      await options.onSaved();
+    }
+
+    return { open, close };
+  })(),
 });
 
 /* Dismiss any menu on Escape or a click outside it.
