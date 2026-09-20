@@ -1,0 +1,280 @@
+{
+  "key": "dronbreen-20250327-dat_0066_a1_1",
+  "schema": "gprinterp",
+  "schema_version": "0.3",
+  "date_modified": "2025-08-08T11:45:40.334Z",
+  "source": {
+    "id": "dronbreen-20250327-dat_0066_a1_1",
+    "n_traces": 3548,
+    "n_samples": 700
+  },
+  "coordinates": {
+    "space": "index2d",
+    "convention": {
+      "origin": "upper-left",
+      "indexing": "zero-based",
+      "pixel_reference": "center",
+      "axis_directions": {
+        "x": "right",
+        "y": "down"
+      }
+    },
+    "axes": {
+      "x": {
+        "primary": {
+          "name": "trace",
+          "unit": "index"
+        }
+      },
+      "y": {
+        "primary": {
+          "name": "sample",
+          "unit": "index"
+        },
+        "anchor": [
+          {
+            "name": "twtt",
+            "unit": "ns",
+            "type": "regular",
+            "t0": 0.0,
+            "dt": 3.0459948363733904
+          }
+        ]
+      }
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            -2,
+            293.566681
+          ],
+          [
+            62,
+            309.566681
+          ],
+          [
+            110,
+            347.566681
+          ],
+          [
+            180,
+            353.566681
+          ],
+          [
+            294,
+            387.566681
+          ],
+          [
+            344,
+            385.566681
+          ],
+          [
+            448,
+            329.566681
+          ],
+          [
+            526,
+            337.566681
+          ],
+          [
+            608,
+            373.566681
+          ],
+          [
+            770,
+            341.566681
+          ],
+          [
+            860,
+            357.566681
+          ],
+          [
+            974,
+            439.566681
+          ],
+          [
+            1014,
+            459.566681
+          ],
+          [
+            1122,
+            447.566681
+          ],
+          [
+            1202,
+            477.566681
+          ],
+          [
+            1282,
+            497.566681
+          ],
+          [
+            1334,
+            543.566681
+          ],
+          [
+            1410,
+            533.566681
+          ],
+          [
+            1558,
+            571.566681
+          ]
+        ]
+      },
+      "properties": {
+        "kind": "bed_cold",
+        "color": "#002EBD",
+        "name": "Glacier bed (no temperate ice above)",
+        "issues": [],
+        "id": "coolclown-0",
+        "label": "bed_no_temperate"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            1559,
+            571.9499969999999
+          ],
+          [
+            1619,
+            570.9499969999999
+          ],
+          [
+            1680,
+            559.9499969999999
+          ],
+          [
+            1738,
+            545.9499969999999
+          ],
+          [
+            1907,
+            489.949997
+          ],
+          [
+            2053,
+            450.949997
+          ],
+          [
+            2188,
+            461.949997
+          ],
+          [
+            2301,
+            487.949997
+          ],
+          [
+            2427,
+            473.949997
+          ],
+          [
+            2529,
+            472.949997
+          ],
+          [
+            2631,
+            486.949997
+          ],
+          [
+            2678,
+            513.9499969999999
+          ],
+          [
+            2798,
+            485.949997
+          ],
+          [
+            2963,
+            467.949997
+          ],
+          [
+            3133,
+            459.949997
+          ],
+          [
+            3262,
+            468.949997
+          ],
+          [
+            3369,
+            441.949997
+          ],
+          [
+            3437,
+            399.949997
+          ],
+          [
+            3545,
+            340.949997
+          ]
+        ]
+      },
+      "properties": {
+        "kind": "bed_unspecified",
+        "color": "#CE00FF",
+        "name": "Glacier bed",
+        "issues": [],
+        "id": "coolclown-1",
+        "label": "bed"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            1554,
+            568.566681
+          ],
+          [
+            1696,
+            366.566681
+          ],
+          [
+            1870,
+            240.56668100000002
+          ],
+          [
+            1944,
+            180.56668100000002
+          ],
+          [
+            2020,
+            8.566681000000017
+          ],
+          [
+            3550,
+            6.566681000000017
+          ]
+        ]
+      },
+      "properties": {
+        "kind": "temperate",
+        "color": "red",
+        "name": "Temperate ice (CTS)",
+        "issues": [],
+        "id": "coolclown-2",
+        "label": "temperate_ice"
+      }
+    }
+  ],
+  "meta": {
+    "legacy_source": "/tmp/interp_full/CoolClown/dronbreen-20250327-DAT_0066_A1_1/digitized-dronbreen-20250327-DAT_0066_A1_1-2025_08_08T11_45_40.334Z.json",
+    "legacy_date_modified": "2025-08-08T11:45:40.334Z",
+    "contributor": "CoolClown",
+    "difficulty": "easy",
+    "comment": null,
+    "converter_version": "1"
+  }
+}

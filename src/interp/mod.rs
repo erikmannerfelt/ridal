@@ -24,6 +24,8 @@ pub mod anchors;
 pub mod carry;
 pub mod checks;
 pub mod derive;
+#[cfg(test)]
+pub mod derive_regression_tests;
 pub mod level2;
 pub mod source;
 pub mod writer;
