@@ -1272,7 +1272,10 @@ mod tests {
     #[test]
     fn a_majority_of_not_visible_votes_erases_the_bed() {
         let documents = vec![
-            ("a".to_string(), document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])])),
+            (
+                "a".to_string(),
+                document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])]),
+            ),
             (
                 "b".to_string(),
                 document(&[("bed_not_visible", &[[0.0, 30.0], [10.0, 30.0]])]),
@@ -1282,7 +1285,8 @@ mod tests {
                 document(&[("bed_not_visible", &[[0.0, 31.0], [10.0, 31.0]])]),
             ),
         ];
-        let value = eval_over_documents(BED_CONSENSUS, &layer_set_with_not_visible(), &documents, 0);
+        let value =
+            eval_over_documents(BED_CONSENSUS, &layer_set_with_not_visible(), &documents, 0);
         assert!(
             value.is_nan(),
             "one bed vote against two 'not visible' votes must erase the bed, got {value}"
@@ -1295,8 +1299,14 @@ mod tests {
     #[test]
     fn a_tied_vote_keeps_the_bed() {
         let documents = vec![
-            ("a".to_string(), document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])])),
-            ("b".to_string(), document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])])),
+            (
+                "a".to_string(),
+                document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])]),
+            ),
+            (
+                "b".to_string(),
+                document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])]),
+            ),
             (
                 "c".to_string(),
                 document(&[("bed_not_visible", &[[0.0, 30.0], [10.0, 30.0]])]),
@@ -1306,7 +1316,8 @@ mod tests {
                 document(&[("bed_not_visible", &[[0.0, 31.0], [10.0, 31.0]])]),
             ),
         ];
-        let value = eval_over_documents(BED_CONSENSUS, &layer_set_with_not_visible(), &documents, 0);
+        let value =
+            eval_over_documents(BED_CONSENSUS, &layer_set_with_not_visible(), &documents, 0);
         // Two bed values, so the 49th lower percentile is the first of them.
         assert_eq!(value, 10.0, "a 2-2 tie must keep the bed");
     }
@@ -1319,8 +1330,14 @@ mod tests {
     #[test]
     fn user_slots_line_up_with_the_user_list_whatever_order_documents_arrive_in() {
         let set = layer_set();
-        let zoe = ("zoe".to_string(), document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])]));
-        let amy = ("amy".to_string(), document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])]));
+        let zoe = (
+            "zoe".to_string(),
+            document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])]),
+        );
+        let amy = (
+            "amy".to_string(),
+            document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])]),
+        );
 
         for documents in [vec![zoe.clone(), amy.clone()], vec![amy, zoe]] {
             let reduced = reduce_picks(&documents, &set, &geometry(), &grid(11), false);
@@ -1382,13 +1399,23 @@ mod tests {
                     ("bed_no_temperate", &[[0.0, 12.0], [10.0, 12.0]]),
                 ]),
             ),
-            ("clean".to_string(), document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])])),
+            (
+                "clean".to_string(),
+                document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])]),
+            ),
         ];
         let reduced = reduce_picks(&documents, &set, &geometry(), &grid(11), false);
         let bed = reduced.values("bed", 0).unwrap();
-        let conflicted = reduced.users.iter().position(|u| u == "conflicted").unwrap();
+        let conflicted = reduced
+            .users
+            .iter()
+            .position(|u| u == "conflicted")
+            .unwrap();
         let clean = reduced.users.iter().position(|u| u == "clean").unwrap();
-        assert!(bed[conflicted].is_nan(), "the conflicted contributor loses their bed");
+        assert!(
+            bed[conflicted].is_nan(),
+            "the conflicted contributor loses their bed"
+        );
         assert_eq!(bed[clean], 20.0, "the other contributor keeps theirs");
     }
 

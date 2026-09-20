@@ -508,11 +508,21 @@ pub enum DerivedError {
         unit: Unit,
     },
     Store(StoreError),
-    Malformed { message: String },
+    Malformed {
+        message: String,
+    },
     DuplicateId(String),
-    InvalidId { id: String, reason: String },
-    InvalidColor { id: String, color: String },
-    Cycle { path: Vec<String> },
+    InvalidId {
+        id: String,
+        reason: String,
+    },
+    InvalidColor {
+        id: String,
+        color: String,
+    },
+    Cycle {
+        path: Vec<String>,
+    },
     Derive(DeriveError),
 }
 
