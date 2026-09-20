@@ -198,6 +198,7 @@ pub async fn get_derived(
                 "show": item.show,
                 "fill_to": item.fill_to,
                 "scope": item.scope,
+                "audience": item.audience,
             })
         })
         .collect();
@@ -267,7 +268,7 @@ pub async fn get_derived_item(
     Path((radargram_id, item_id)): Path<(String, String)>,
     caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_download(DownloadScope::Derived, "derived results")?;
+    caller.require_download(DownloadScope::Results, "derived results")?;
     let radargram = parse_radargram(&radargram_id)?;
     let (set, _) = load_set(&state)?;
     let Some(item) = set.get(&item_id) else {
@@ -320,7 +321,7 @@ pub async fn download_derived(
     Path(radargram_id): Path<String>,
     caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_download(DownloadScope::Derived, "derived results")?;
+    caller.require_download(DownloadScope::Results, "derived results")?;
     let radargram = parse_radargram(&radargram_id)?;
     let (set, _) = load_set(&state)?;
     let geometry = geometry_for(&state, &radargram)?;

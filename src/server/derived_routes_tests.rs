@@ -581,3 +581,71 @@ async fn a_mixed_download_keeps_each_item_to_its_own_pick_set() {
         "the released item is the consensus"
     );
 }
+
+/// What #205 actually asked for: release a consensus without releasing the
+/// individual picks behind it.
+///
+/// This is the one place the download ladder inverts -- an aggregate over many
+/// contributors discloses less than any one contributor's raw picks -- so it
+/// needs its own rung below `Picks`. Before `DownloadScope::Results` existed
+/// the property was simply not expressible: the lowest scope that permitted a
+/// result also permitted every pick that went into it.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_results_scope_releases_a_consensus_without_the_picks_behind_it() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::Results, &hash),
+            activated("bob", Role::Picker, DownloadScope::Picks, &hash),
+            activated("boss", Role::Admin, DownloadScope::All, &hash),
+        ],
+        &[("alice", 2.0), ("bob", 4.0)],
+    );
+    let boss = sign_in(&app, "boss").await;
+    let alice = sign_in(&app, "alice").await;
+
+    let created = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([released_item("bed_median", "median(bed)")])),
+        Some(&boss),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+
+    // Alice may have the consensus...
+    let consensus = first_value(&app, "bed_median", &alice).await;
+    assert!(
+        (consensus - depth(3.0)).abs() < 1e-6,
+        "the released consensus must reach a Results-scope user, got {consensus}"
+    );
+
+    // ...but not the raw picks behind it, which is the whole point of the rung.
+    // `/raw` rather than the plain interpretation route because that one takes
+    // no `Caller` at all and is ungated for everyone -- pre-existing on main,
+    // reported separately, and not this branch's to change.
+    let picks = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/interpretations/bob/raw"),
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(
+        picks.status,
+        StatusCode::FORBIDDEN,
+        "a Results-scope user must not download another contributor's raw picks: {}",
+        picks.text
+    );
+
+    // And the rung is a real restriction, not a relabelling: bob, one rung up
+    // at `Picks`, may have them.
+    let bob = sign_in(&app, "bob").await;
+    let allowed = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/interpretations/alice/raw"),
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
+}
