@@ -501,3 +501,57 @@ may keep one. Results have their own download scope, separate from picks.
 A worked example — the layers, exclusivity group and seven expressions used
 to reproduce the Mannerfelt et al. (2026) consensus — is in
 `assets/examples/dronbreen-20250327-DAT_0066_A1_1/`.
+
+## The layer panel, fills and the expression editor (#209)
+
+The viewer's controls for all of this live in `assets/panel.js`, a small
+`L.Control` subclass rather than `L.control.layers`. The built-in is a flat
+checkbox list that cannot group derived items apart from picked layers, label
+an item "(your picks)", or add one contributor toggle without doubling every
+row — so the subclass is less code than working around it. Panel order is
+draw order.
+
+- **Own layers are on by default; derived items are off.** A new expression
+  is likelier to be wrong than the layers it is built from, so `show` starts
+  false. An item the caller may not see is absent from `GET /api/v1/derived`
+  entirely — `scope` is applied server-side before the panel ever sees it.
+- **One "show all contributors" toggle**, not a per-layer variant. It is
+  offered only when the server says so (`can_see_others`), never inferred
+  from a role string. Other contributors' lines are fetched through
+  `GET /api/v1/datasets/{id}/contributors`, which applies the caller's own
+  visibility; the ungated `.../interpretations/{user}` route (#212) is
+  deliberately not used.
+- **A project-wide item read as a personal number says so.** When an
+  `OwnPicks` item is shown to someone who cannot see cross-user results, its
+  label carries "(your picks)". Silently showing a personal evaluation under
+  a name like "Consensus" is wrong in a way nobody can see, which is the
+  failure this phase most needs to avoid.
+
+### Range fills
+
+A `fill_to` on a derived position draws a matplotlib `fill_between` band
+toward another item. It is filled **per trace interval** and split wherever
+the two bounds cross, so a fill can never render as a bowtie; it **breaks at
+a NaN gap** on either side rather than bridging it; and it is drawn in its
+own Leaflet pane **behind every line**, so it is visible with both bound
+lines toggled off. It is drawn only when the caller can see both bounds — a
+fill against an invisible bound would disclose that bound's position exactly
+— and only in the radargram viewer, where a depth range has meaning.
+
+### The expression editor
+
+The editor previews a line on the radargram as you type, without saving:
+`POST /api/v1/datasets/{id}/derived/preview` evaluates the expression over
+the same picks the caller may see and returns the inferred kind and unit.
+That live line is the best guard against a sign or unit mistake, and an
+invalid expression clears it rather than leaving a stale line pretending to
+be current. Highlighting is hand-rolled for the twenty-token grammar (layer
+ids, built-ins, numbers, `if`/`else`, `NaN`) rather than vendoring Prism, and
+autocomplete is a `<datalist>` fed from the layer vocabulary and the built-in
+list. `layers_unusable_in_expressions` is shown beside it: a legacy id with a
+hyphen parses as a minus and would otherwise fail with no hint that the id
+was the problem.
+
+`scripts/panel_harness.py` drives these through headless Chromium and a
+same-origin iframe harness; see its module doc for the virtual-time and
+request-counting traps.
