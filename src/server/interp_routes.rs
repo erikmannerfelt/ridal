@@ -57,7 +57,7 @@ fn project_for<'a>(
 }
 
 /// The project for reading. Reads do not require writes to be enabled.
-fn readable_project(state: &AppState) -> Result<&Project, ApiError> {
+pub(crate) fn readable_project(state: &AppState) -> Result<&Project, ApiError> {
     state.project.as_ref().ok_or_else(|| {
         ApiError::not_found(
             "not_a_project",
@@ -70,7 +70,7 @@ fn readable_project(state: &AppState) -> Result<&Project, ApiError> {
 ///
 /// `If-Match` wins over `If-None-Match` when both are present; sending both
 /// is contradictory, and honouring the stricter one is the safer reading.
-fn expectation_from(headers: &HeaderMap) -> Expectation {
+pub(crate) fn expectation_from(headers: &HeaderMap) -> Expectation {
     if let Some(value) = headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()) {
         let value = value.trim();
         if value == "*" {
@@ -92,11 +92,11 @@ fn expectation_from(headers: &HeaderMap) -> Expectation {
     Expectation::Any
 }
 
-fn parse_radargram(raw: &str) -> Result<RadargramId, ApiError> {
+pub(crate) fn parse_radargram(raw: &str) -> Result<RadargramId, ApiError> {
     RadargramId::new(raw).map_err(|e| ApiError::bad_request("invalid_radargram_id", e))
 }
 
-fn parse_user(raw: &str) -> Result<UserId, ApiError> {
+pub(crate) fn parse_user(raw: &str) -> Result<UserId, ApiError> {
     UserId::new(raw).map_err(|e| ApiError::bad_request("invalid_user", e))
 }
 
@@ -157,7 +157,7 @@ fn interpretation_error(error: interpretations::InterpretationError) -> ApiError
     }
 }
 
-fn layer_error(error: layers::LayerError) -> ApiError {
+pub(crate) fn layer_error(error: layers::LayerError) -> ApiError {
     match &error {
         layers::LayerError::Store(e) => store_error(e),
         layers::LayerError::Malformed { .. } => {
@@ -165,7 +165,9 @@ fn layer_error(error: layers::LayerError) -> ApiError {
         }
         layers::LayerError::DuplicateId(_)
         | layers::LayerError::InvalidId { .. }
-        | layers::LayerError::InvalidColor { .. } => {
+        | layers::LayerError::InvalidColor { .. }
+        | layers::LayerError::IdNotExpressionSafe { .. }
+        | layers::LayerError::IdChanged { .. } => {
             ApiError::bad_request("invalid_layers", error.to_string())
         }
     }
@@ -453,7 +455,11 @@ pub async fn promote_interpretation(
         ));
     }
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
-    let violations = checks::check(&document, &|label| layer_set.allows_overhangs(label));
+    let violations = checks::check(
+        &document,
+        &|label| layer_set.allows_overhangs(label),
+        &|label| layer_set.warns_on_duplicates(label),
+    );
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
         return Err(ApiError::bad_request("overhang", joined.join("; ")));
@@ -620,7 +626,11 @@ pub async fn put_interpretation(
     // that is a convenience: anything reaching this route -- a second client,
     // a script, a replayed request -- has to pass the same rule.
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
-    let violations = checks::check(&document, &|label| layer_set.allows_overhangs(label));
+    let violations = checks::check(
+        &document,
+        &|label| layer_set.allows_overhangs(label),
+        &|label| layer_set.warns_on_duplicates(label),
+    );
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
         return Err(ApiError::bad_request("overhang", joined.join("; ")));

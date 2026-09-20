@@ -37,6 +37,16 @@
 
 use gprinterp::{Document, Geometry, Position};
 
+/// How close two samples at one trace must be to count as lines that merely
+/// touch rather than a genuine duplicate (#207).
+///
+/// Two features of one layer may legitimately share an endpoint trace -- one
+/// line ends where the next begins -- and their samples there are within
+/// rounding of each other. A larger difference is two depths at one position,
+/// which is the thing the reducer exists to resolve deliberately rather than
+/// by accident.
+pub const TOUCH_TOLERANCE_SAMPLES: f64 = 1.0;
+
 /// A rule an interpretation breaks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Violation {
@@ -48,6 +58,18 @@ pub enum Violation {
         /// Index of the vertex that reverses or repeats a trace.
         at_vertex: usize,
         trace: f64,
+    },
+    /// One user has more than one value for one layer at one trace (#207).
+    ///
+    /// Checked over the raw picked vertices, across every feature sharing the
+    /// layer, because that is where the ambiguity exists. A layer with
+    /// `warn_on_duplicates = false` is exempt: it is declared multi-valued
+    /// (a folded englacial reflector, say).
+    DuplicateValue {
+        layer: String,
+        trace: f64,
+        samples: Vec<f64>,
+        feature_indices: Vec<usize>,
     },
 }
 
@@ -72,6 +94,24 @@ impl std::fmt::Display for Violation {
                      trace {trace}, so the layer has two depths at that position. Split \
                      it into separate lines, or allow overhangs on this layer if that is \
                      intended."
+                )
+            }
+            Violation::DuplicateValue {
+                layer,
+                trace,
+                samples,
+                feature_indices,
+            } => {
+                let rendered: Vec<String> = samples.iter().map(|s| format!("{s:.1}")).collect();
+                write!(
+                    f,
+                    "layer '{layer}' has {} values at trace {trace} (samples {}), from \
+                     features {:?}. One user may have one value per layer per position; \
+                     set a reducer to choose between them, or turn off duplicate warnings \
+                     on this layer if it is legitimately multi-valued.",
+                    samples.len(),
+                    rendered.join(", "),
+                    feature_indices
                 )
             }
         }
@@ -159,6 +199,7 @@ pub fn overhang_at(positions: &[Position]) -> Option<(usize, f64)> {
 pub fn check(
     document: &Document,
     allows_overhangs: &dyn Fn(Option<&str>) -> bool,
+    warns_on_duplicates: &dyn Fn(Option<&str>) -> bool,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
     for (feature_index, feature) in document.features.iter().enumerate() {
@@ -179,6 +220,80 @@ pub fn check(
                 at_vertex,
                 trace,
             });
+        }
+    }
+    violations.extend(duplicate_values(document, warns_on_duplicates));
+    violations
+}
+
+/// Find traces at which one layer holds more than one value (#207).
+///
+/// The overhang check is per-feature; this one is per-layer, since two
+/// separate features of one layer can collide at a trace just as easily as
+/// one feature can double back. Both express the same rule -- one user, one
+/// layer, one position, one value -- which is why they live together rather
+/// than in two modules that can drift apart.
+fn duplicate_values(
+    document: &Document,
+    warns_on_duplicates: &dyn Fn(Option<&str>) -> bool,
+) -> Vec<Violation> {
+    use std::collections::BTreeMap;
+
+    // layer -> (feature_index, trace, sample), for every picked vertex.
+    let mut per_layer: BTreeMap<Option<&str>, Vec<(usize, f64, f64)>> = BTreeMap::new();
+    for (feature_index, feature) in document.features.iter().enumerate() {
+        let layer = feature.label();
+        if !warns_on_duplicates(layer) {
+            continue;
+        }
+        let Geometry::LineString(positions) = &feature.geometry else {
+            continue;
+        };
+        for position in positions {
+            if let (Some(trace), Some(sample)) = (position.x(), position.y()) {
+                per_layer
+                    .entry(layer)
+                    .or_default()
+                    .push((feature_index, trace, sample));
+            }
+        }
+    }
+
+    let mut violations = Vec::new();
+    for (layer, vertices) in per_layer {
+        let mut vertices = vertices;
+        vertices.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2)));
+
+        let mut i = 0;
+        while i < vertices.len() {
+            let trace = vertices[i].1;
+            let mut j = i;
+            while j < vertices.len() && vertices[j].1 == trace {
+                j += 1;
+            }
+            let group = &vertices[i..j];
+            if group.len() >= 2 {
+                // Two features that merely touch at a shared endpoint are
+                // allowed. A single feature repeating a trace is not: that
+                // is a vertical segment, and its two values are two depths.
+                let one_feature = group.iter().all(|v| v.0 == group[0].0);
+                let min = group.iter().map(|v| v.2).fold(f64::INFINITY, f64::min);
+                let max = group.iter().map(|v| v.2).fold(f64::NEG_INFINITY, f64::max);
+                if one_feature || max - min > TOUCH_TOLERANCE_SAMPLES {
+                    let mut samples: Vec<f64> = group.iter().map(|v| v.2).collect();
+                    samples.sort_by(f64::total_cmp);
+                    let mut feature_indices: Vec<usize> = group.iter().map(|v| v.0).collect();
+                    feature_indices.sort_unstable();
+                    feature_indices.dedup();
+                    violations.push(Violation::DuplicateValue {
+                        layer: layer.unwrap_or("<unlabelled>").to_string(),
+                        trace,
+                        samples,
+                        feature_indices,
+                    });
+                }
+            }
+            i = j;
         }
     }
     violations
@@ -209,6 +324,10 @@ mod tests {
 
     fn enforce_everywhere(_: Option<&str>) -> bool {
         false
+    }
+
+    fn warn_everywhere(_: Option<&str>) -> bool {
+        true
     }
 
     #[test]
@@ -255,7 +374,7 @@ mod tests {
             ("bed", &[[0.0, 10.0], [100.0, 20.0]]),
             ("bed", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]]),
         ]);
-        let violations = check(&doc, &enforce_everywhere);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
         assert_eq!(violations.len(), 1);
         match &violations[0] {
             Violation::Overhang {
@@ -270,6 +389,7 @@ mod tests {
                 assert_eq!(layer.as_deref(), Some("bed"));
                 assert_eq!(*at_vertex, 2);
             }
+            other => panic!("expected an overhang, got {other:?}"),
         }
     }
 
@@ -277,8 +397,8 @@ mod tests {
     fn a_layer_that_allows_overhangs_is_skipped() {
         let doc = document(&[("crevasse", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]])]);
         let allows = |layer: Option<&str>| layer == Some("crevasse");
-        assert!(check(&doc, &allows).is_empty());
-        assert_eq!(check(&doc, &enforce_everywhere).len(), 1);
+        assert!(check(&doc, &allows, &warn_everywhere).is_empty());
+        assert_eq!(check(&doc, &enforce_everywhere, &warn_everywhere).len(), 1);
     }
 
     #[test]
@@ -290,7 +410,7 @@ mod tests {
             &[[0.0, 1.0], [5.0, 2.0], [3.0, 3.0]],
         )]);
         let allows = |layer: Option<&str>| layer == Some("crevasse");
-        assert_eq!(check(&doc, &allows).len(), 1);
+        assert_eq!(check(&doc, &allows, &warn_everywhere).len(), 1);
 
         let unlabelled: Document = serde_json::from_value(serde_json::json!({
             "key": "line-01",
@@ -300,7 +420,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        assert_eq!(check(&unlabelled, &allows).len(), 1);
+        assert_eq!(check(&unlabelled, &allows, &warn_everywhere).len(), 1);
     }
 
     #[test]
@@ -317,13 +437,102 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert!(check(&doc, &enforce_everywhere).is_empty());
+        assert!(check(&doc, &enforce_everywhere, &warn_everywhere).is_empty());
+    }
+
+    fn duplicates(violations: &[Violation]) -> Vec<&Violation> {
+        violations
+            .iter()
+            .filter(|v| matches!(v, Violation::DuplicateValue { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn one_feature_with_two_vertices_on_a_trace_is_a_duplicate() {
+        let doc = document(&[("bed", &[[500.0, 100.0], [500.0, 140.0]])]);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let found = duplicates(&violations);
+        assert_eq!(found.len(), 1, "{violations:?}");
+        match found[0] {
+            Violation::DuplicateValue {
+                layer,
+                trace,
+                samples,
+                feature_indices,
+            } => {
+                assert_eq!(layer, "bed");
+                assert_eq!(*trace, 500.0);
+                assert_eq!(samples, &vec![100.0, 140.0]);
+                assert_eq!(feature_indices, &vec![0]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn two_features_that_touch_at_a_trace_are_not_a_duplicate() {
+        let doc = document(&[
+            ("bed", &[[0.0, 100.0], [500.0, 100.0]]),
+            ("bed", &[[500.0, 100.5], [900.0, 110.0]]),
+        ]);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        assert!(duplicates(&violations).is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn two_features_with_different_values_at_a_trace_are_a_duplicate() {
+        let doc = document(&[
+            ("bed", &[[0.0, 100.0], [500.0, 100.0]]),
+            ("bed", &[[500.0, 140.0], [900.0, 110.0]]),
+        ]);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let found = duplicates(&violations);
+        assert_eq!(found.len(), 1, "{violations:?}");
+        match found[0] {
+            Violation::DuplicateValue {
+                trace,
+                feature_indices,
+                ..
+            } => {
+                assert_eq!(*trace, 500.0);
+                assert_eq!(feature_indices, &vec![0, 1]);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_layer_that_allows_duplicates_reports_none() {
+        let tolerates = |_: Option<&str>| false;
+        let single = document(&[("bed", &[[500.0, 100.0], [500.0, 140.0]])]);
+        assert!(duplicates(&check(&single, &enforce_everywhere, &tolerates)).is_empty());
+
+        let crossed = document(&[
+            ("bed", &[[0.0, 100.0], [500.0, 100.0]]),
+            ("bed", &[[500.0, 140.0], [900.0, 110.0]]),
+        ]);
+        assert!(duplicates(&check(&crossed, &enforce_everywhere, &tolerates)).is_empty());
+    }
+
+    #[test]
+    fn a_reversing_line_is_an_overhang_not_a_duplicate_value() {
+        // The same document the overhang test uses. The reversal at trace 30
+        // is a per-feature overhang; no trace actually holds two values.
+        let doc = document(&[
+            ("bed", &[[0.0, 10.0], [100.0, 20.0]]),
+            ("bed", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]]),
+        ]);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        assert!(duplicates(&violations).is_empty(), "{violations:?}");
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v, Violation::Overhang { at_vertex: 2, .. })));
     }
 
     #[test]
     fn the_message_names_what_to_do_about_it() {
         let doc = document(&[("bed", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]])]);
-        let message = check(&doc, &enforce_everywhere)[0].to_string();
+        let message = check(&doc, &enforce_everywhere, &warn_everywhere)[0].to_string();
         assert!(message.contains("f-0"), "{message}");
         assert!(message.contains("bed"), "{message}");
         assert!(
