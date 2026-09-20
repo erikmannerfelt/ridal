@@ -103,8 +103,44 @@ pub struct DerivedItem {
     pub fill_to: Option<FillTo>,
     #[serde(default)]
     pub scope: Scope,
+    /// Whose picks feed this item, for viewers who cannot already see
+    /// everyone's picks (below the operator role).
+    #[serde(default)]
+    pub audience: Audience,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Whose picks an item is evaluated over, for a viewer who cannot already see
+/// everyone's picks.
+///
+/// This is the axis that decides whether a result is a *personal* readout or a
+/// *cross-user* one, and it is deliberately separate from [`Scope`], which
+/// decides who can see the item exists at all. The distinction matters because
+/// a consensus computed over other people's picks is the one thing a picker
+/// must not see mid-experiment: seeing it would tell them what everyone else
+/// concluded, which is exactly the bias the study design exists to avoid.
+///
+/// Note that `OwnPicks` is not a restriction on the *item*, it is a promise
+/// about what a given viewer gets: the same project-wide definition yields the
+/// full consensus for an operator and a personal result for a picker. That is
+/// what lets a consensus be defined and monitored while picking is still open.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Audience {
+    /// Every viewer below operator gets the item over **their own** picks.
+    ///
+    /// The default, and always safe: it can only show someone a function of
+    /// data they already have.
+    #[default]
+    OwnPicks,
+    /// An admin has released the cross-user result to everyone who can see
+    /// the item.
+    ///
+    /// Setting this is the deliberate act of publishing other people's work
+    /// in aggregate, which is why it needs the admin role rather than the
+    /// operator role that authoring an item needs.
+    Released,
 }
 
 fn default_unit() -> Unit {
@@ -582,6 +618,7 @@ mod tests {
             show: false,
             fill_to: None,
             scope: Scope::Project,
+            audience: Audience::OwnPicks,
             extra: Default::default(),
         }
     }

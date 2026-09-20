@@ -1,10 +1,17 @@
 //! HTTP-level tests for the derived-item routes (#205).
 //!
-//! The property under test is the permission one: an expression is evaluated
-//! over the picks the caller may see, so one project-wide definition gives an
-//! operator the full consensus and a picker their own picks only. Picks and
-//! results also have separate download scopes, so a result can be released
-//! without the picks behind it.
+//! The property under test is the permission one, in three parts:
+//!
+//! 1. Anyone may see a result computed from **their own** picks.
+//! 2. A **cross-user** result reaches a picker only once an admin has released
+//!    it, and releasing needs the admin role rather than the operator role that
+//!    authoring needs.
+//! 3. An **operator** sees the cross-user result either way, so a consensus can
+//!    be defined and watched while picking is still open.
+//!
+//! The mixed-download test exists because serving items of different audiences
+//! from one evaluation is the obvious way to leak a consensus into an
+//! unreleased item.
 
 use std::path::Path as StdPath;
 use std::sync::Arc;
@@ -238,6 +245,32 @@ fn item(id: &str, expression: &str, scope: Value) -> Value {
     })
 }
 
+/// The trace-0 value of one derived item, as this session sees it.
+async fn first_value(app: &Router, item: &str, session: &str) -> f64 {
+    let response = get(
+        app,
+        &format!("/api/v1/datasets/{RADARGRAM}/derived/{item}"),
+        Some(session),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    response.body["values"][0]
+        .as_f64()
+        .unwrap_or_else(|| panic!("no numeric trace-0 value for '{item}': {}", response.text))
+}
+
+/// An item whose cross-user result an admin has released to everyone.
+fn released_item(id: &str, expression: &str) -> Value {
+    json!({
+        "id": id,
+        "name": id,
+        "expression": expression,
+        "unit": "meters",
+        "scope": "project",
+        "audience": "released",
+    })
+}
+
 /// The depth at a sample, for building expectations from the test geometry.
 fn depth(sample: f64) -> f64 {
     sample * 0.02
@@ -386,4 +419,165 @@ async fn derived_results_need_the_derived_download_scope() {
     )
     .await;
     assert_eq!(raw.status, StatusCode::OK, "{}", raw.text);
+}
+
+/// Rule 2 of the derived permission model: a cross-user result reaches
+/// pickers only once an admin has released it. Before that the *same*
+/// project-wide definition is a personal readout for each of them.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn releasing_an_item_is_what_lets_a_picker_see_the_consensus() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::Derived, &hash),
+            activated("bob", Role::Picker, DownloadScope::Derived, &hash),
+            activated("boss", Role::Admin, DownloadScope::Derived, &hash),
+        ],
+        &[("alice", 2.0), ("bob", 4.0)],
+    );
+    let boss = sign_in(&app, "boss").await;
+    let alice = sign_in(&app, "alice").await;
+
+    // Unreleased: alice gets her own pick, not the consensus.
+    let created = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item("bed_median", "median(bed)", json!("project"))])),
+        Some(&boss),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+    let before = first_value(&app, "bed_median", &alice).await;
+    assert!(
+        (before - depth(2.0)).abs() < 1e-6,
+        "before release alice must see only her own pick, got {before}"
+    );
+
+    // Released: the very same expression now gives her the consensus.
+    let released = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([released_item("bed_median", "median(bed)")])),
+        Some(&boss),
+    )
+    .await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.text);
+    let after = first_value(&app, "bed_median", &alice).await;
+    assert!(
+        (after - depth(3.0)).abs() < 1e-6,
+        "after release alice must see the consensus of 2 and 4, got {after}"
+    );
+}
+
+/// Releasing publishes other people's work in aggregate, so it is an admin
+/// decision -- not something the operator who maintains the vocabulary can do
+/// as a side effect of editing an expression.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_operator_cannot_release_a_cross_user_result() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("op", Role::Operator, DownloadScope::Derived, &hash),
+            activated("boss", Role::Admin, DownloadScope::Derived, &hash),
+        ],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+    let boss = sign_in(&app, "boss").await;
+
+    let refused = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([released_item("bed_median", "median(bed)")])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::FORBIDDEN,
+        "an operator must not release: {}",
+        refused.text
+    );
+
+    // The same operator may still author the unreleased form.
+    let allowed = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item("bed_median", "median(bed)", json!("project"))])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
+
+    // And an admin may release it.
+    let released = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([released_item("bed_median", "median(bed)")])),
+        Some(&boss),
+    )
+    .await;
+    assert_eq!(released.status, StatusCode::OK, "{}", released.text);
+}
+
+/// A download may mix audiences, and each item must come from an evaluation
+/// over exactly its own pick set. Serving both from one wider evaluation is
+/// the obvious way to leak a consensus into an unreleased item.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_mixed_download_keeps_each_item_to_its_own_pick_set() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::Derived, &hash),
+            activated("bob", Role::Picker, DownloadScope::Derived, &hash),
+            activated("boss", Role::Admin, DownloadScope::Derived, &hash),
+        ],
+        &[("alice", 2.0), ("bob", 4.0)],
+    );
+    let boss = sign_in(&app, "boss").await;
+    let alice = sign_in(&app, "alice").await;
+
+    let created = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([
+            item("mine", "median(bed)", json!("project")),
+            released_item("ours", "median(bed)"),
+        ])),
+        Some(&boss),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+
+    let csv = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/derived"),
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(csv.status, StatusCode::OK, "{}", csv.text);
+
+    let value_for = |item: &str| -> f64 {
+        csv.text
+            .lines()
+            .find(|line| {
+                let mut fields = line.split(',');
+                fields.nth(1) == Some(item) && fields.nth(2) == Some("0")
+            })
+            .and_then(|line| line.rsplit(',').next().map(str::to_string))
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or_else(|| panic!("no trace-0 row for '{item}' in:\n{}", csv.text))
+    };
+
+    assert!(
+        (value_for("mine") - depth(2.0)).abs() < 1e-6,
+        "the unreleased item stays alice's own pick"
+    );
+    assert!(
+        (value_for("ours") - depth(3.0)).abs() < 1e-6,
+        "the released item is the consensus"
+    );
 }

@@ -6,9 +6,17 @@
 //!   project-wide definition gives an operator the full consensus and an
 //!   ordinary picker a result from their own picks only. This is the core
 //!   property, and it is a property of the *evaluation*, not of the response.
-//! - **Picks and results have separate download scopes.** A project can
-//!   release a consensus without releasing the individual picks that went
-//!   into it, which is the whole reason `DownloadScope::Derived` exists.
+//! - **Cross-user results are an explicit decision.** Anyone may see a result
+//!   computed from their own picks; a result computed across contributors
+//!   needs an admin to set `Audience::Released` on the item. An operator sees
+//!   the cross-user result either way, so a consensus can be defined and
+//!   watched while picking is still open.
+//!
+//! Note what is *not* true: `DownloadScope` is an ordered ladder
+//! (`None < Results < Picks < Derived < All`), so a scope that permits raw
+//! picks necessarily permits results too. Releasing a consensus without
+//! releasing picks is expressed by giving a user `DownloadScope::Results`,
+//! not by any per-item setting.
 //!
 //! Defining a project-wide item needs the operator role; a private item
 //! belongs to one user and any signed-in user may keep one.
@@ -27,7 +35,7 @@ use super::routes::{lookup_dataset, ApiError};
 use crate::identity::UserId;
 use crate::interp::derive::{self, GridPosition, ReducedPicks};
 use crate::interp::source;
-use crate::project::derived::{self, DerivedError, DerivedSet, Scope};
+use crate::project::derived::{self, Audience, DerivedError, DerivedSet, Scope};
 use crate::project::users::{DownloadScope, Role};
 use crate::project::{interpretations, layers};
 
@@ -52,14 +60,29 @@ fn derived_error(error: DerivedError) -> ApiError {
     }
 }
 
-/// The users whose picks `caller` may evaluate over.
+/// Whether `caller` may see results computed across everyone's picks,
+/// regardless of what any single item says.
 ///
-/// An operator (or a project that never opted into authentication) sees
-/// everyone; anyone else sees only their own. `authentication_configured`
-/// being false is the legacy single-user state, where "everyone" is one
-/// person and restricting to the caller would return nothing.
-fn evaluable_users(caller: &Caller) -> EvaluableUsers {
-    if caller.may(Role::Operator) || !caller.authentication_configured {
+/// Operators and above can already read every interpretation, so an aggregate
+/// of them reveals nothing new. A project with no authentication configured
+/// behaves as it did before #131.
+fn may_see_cross_user(caller: &Caller) -> bool {
+    caller.may(Role::Operator) || !caller.authentication_configured
+}
+
+/// The pick set one item is evaluated over, for this caller.
+///
+/// Three rules, and they are the whole permission model for derived results:
+///
+/// 1. Anyone may see a result computed from **their own** picks. It is a
+///    function of data they already have, so it needs no decision from anyone.
+/// 2. A result computed **across users** is an admin decision, recorded as
+///    [`Audience::Released`] on the item.
+/// 3. An operator sees the cross-user result either way, so a consensus can be
+///    defined and watched while picking is still open without the pickers
+///    seeing each other's work.
+fn evaluable_users(caller: &Caller, audience: Audience) -> EvaluableUsers {
+    if may_see_cross_user(caller) || audience == Audience::Released {
         EvaluableUsers::All
     } else {
         EvaluableUsers::Only(caller.user.clone())
@@ -71,11 +94,12 @@ enum EvaluableUsers {
     Only(Option<UserId>),
 }
 
-/// Read the picks `caller` may see for one radargram.
+/// Read the picks that feed an item with this `audience`, for this caller.
 fn visible_documents(
     state: &AppState,
     caller: &Caller,
     radargram: &crate::identity::RadargramId,
+    audience: Audience,
 ) -> Result<Vec<(String, gprinterp::Document)>, ApiError> {
     let project = readable_project(state)?;
     let users = interpretations::list_users(project.documents(), radargram)
@@ -85,7 +109,7 @@ fn visible_documents(
     for user in users {
         let parsed =
             UserId::new(&user).map_err(|e| ApiError::internal("invalid_stored_user", e))?;
-        let permitted = match evaluable_users(caller) {
+        let permitted = match evaluable_users(caller, audience) {
             EvaluableUsers::All => true,
             EvaluableUsers::Only(Some(own)) => own == parsed,
             EvaluableUsers::Only(None) => false,
@@ -103,15 +127,20 @@ fn visible_documents(
 }
 
 /// Build the reduced picks for one radargram at per-trace spacing.
+///
+/// `audience` decides whose picks go in, so an item is always evaluated over
+/// exactly the set its audience permits -- never over a wider set that is
+/// filtered afterwards, which is how a cross-user value leaks.
 fn reduce_for(
     state: &AppState,
     caller: &Caller,
     radargram: &crate::identity::RadargramId,
     geometry: &crate::interp::level2::RadargramGeometry,
+    audience: Audience,
 ) -> Result<(ReducedPicks, crate::project::layers::LayerSet), ApiError> {
     let project = readable_project(state)?;
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
-    let documents = visible_documents(state, caller, radargram)?;
+    let documents = visible_documents(state, caller, radargram, audience)?;
     let grid: Vec<GridPosition> = (0..geometry.n_traces())
         .map(|trace| GridPosition {
             trace: trace as f64,
@@ -192,6 +221,12 @@ pub async fn put_derived(
     // Project-wide items need the operator role. Private items must belong to
     // the caller, and need a signed-in caller to belong to.
     for item in &set.items {
+        // Releasing is a bigger decision than authoring: it publishes other
+        // contributors' work in aggregate, to everyone who can see the item.
+        // Authoring stays with the operator who maintains the vocabulary.
+        if item.audience == Audience::Released {
+            caller.require(Role::Admin, "release a cross-user derived result")?;
+        }
         match &item.scope {
             Scope::Project => caller.require(Role::Operator, "edit project-wide derived items")?,
             Scope::Private { user } => {
@@ -248,7 +283,7 @@ pub async fn get_derived_item(
         ));
     }
     let geometry = geometry_for(&state, &radargram)?;
-    let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry)?;
+    let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry, item.audience)?;
     let results = set
         .evaluate(&reduced, &geometry)
         .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
@@ -289,14 +324,36 @@ pub async fn download_derived(
     let radargram = parse_radargram(&radargram_id)?;
     let (set, _) = load_set(&state)?;
     let geometry = geometry_for(&state, &radargram)?;
-    let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry)?;
-    let results = set
-        .evaluate(&reduced, &geometry)
-        .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
+
+    // Items in one download may not share an audience, and an item must never
+    // be served from an evaluation over a wider pick set than its own audience
+    // allows. So evaluate once per distinct audience present -- at most twice,
+    // and exactly once whenever the caller may see everything anyway.
+    let mut per_audience: std::collections::BTreeMap<
+        Audience,
+        std::collections::BTreeMap<String, crate::interp::derive::EvaluatedItem>,
+    > = std::collections::BTreeMap::new();
+    for audience in [Audience::OwnPicks, Audience::Released] {
+        if !set
+            .visible_to(caller.display_name())
+            .iter()
+            .any(|item| item.audience == audience)
+        {
+            continue;
+        }
+        let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry, audience)?;
+        let results = set
+            .evaluate(&reduced, &geometry)
+            .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
+        per_audience.insert(audience, results);
+    }
 
     let mut body = String::from("radargram_id,item,kind,unit,trace,value\n");
     for item in set.visible_to(caller.display_name()) {
-        let Some(result) = results.get(&item.id) else {
+        let Some(result) = per_audience
+            .get(&item.audience)
+            .and_then(|results| results.get(&item.id))
+        else {
             continue;
         };
         for (trace, value) in result.values.iter().enumerate() {

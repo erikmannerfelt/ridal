@@ -22,7 +22,7 @@ use gprinterp::Document;
 
 use crate::interp::derive::{self, GridPosition, Kind, Unit};
 use crate::interp::level2::RadargramGeometry;
-use crate::project::derived::{DerivedItem, DerivedSet, Scope};
+use crate::project::derived::{Audience, DerivedItem, DerivedSet, Scope};
 use crate::project::layers::{ExclusivityGroup, Layer, LayerSet, Reducer};
 
 /// The steps that regenerate the published grid bit-for-bit (PLAN §2.4). They
@@ -141,6 +141,7 @@ fn item(id: &str, expression: &str) -> DerivedItem {
         show: false,
         fill_to: None,
         scope: Scope::Project,
+        audience: Audience::OwnPicks,
         extra: Default::default(),
     }
 }
