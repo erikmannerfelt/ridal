@@ -655,6 +655,60 @@ fn register_user_array(engine: &mut Engine) {
         )
     });
 
+    // Scalar forms of the element-wise helpers.
+    //
+    // A *layer* is a `UserArray`, but a reference to another derived item is
+    // already reduced and binds as a plain `f64`, so `clamp(thickness, 0, d)`
+    // is a scalar call. Without these the kind inference pass -- which sees
+    // every scalar as a `Kinded`, and so matches the array registrations --
+    // accepts such an expression and lets it be saved, and only evaluation
+    // fails, with `ErrorFunctionNotFound`. An expression that validates, says
+    // "position (a line)" in the editor, saves, and then fails on every read
+    // is the worst shape a mistake here can take.
+    //
+    // Rhai's standard library already supplies scalar `min`, `max`, `abs` and
+    // `is_nan`, so only the ones this module defines need a scalar twin.
+    engine.register_fn("clamp", |a: f64, lo: f64, hi: f64| -> f64 {
+        if a.is_nan() {
+            f64::NAN
+        } else {
+            a.clamp(lo, hi)
+        }
+    });
+    engine.register_fn("shallowest", |a: f64, b: f64| -> f64 {
+        nan_aware(a, b, f64::min)
+    });
+    engine.register_fn("deepest", |a: f64, b: f64| -> f64 {
+        nan_aware(a, b, f64::max)
+    });
+    engine.register_fn("where", |cond: bool, a: f64, b: f64| -> f64 {
+        if cond {
+            a
+        } else {
+            b
+        }
+    });
+
+    // Mixed array/scalar branches. `where(bed > 2.0, bed, 0.0)` is the obvious
+    // thing to write, and a scalar branch broadcasts across the users, exactly
+    // as it does for `+` and the other element-wise operators.
+    engine.register_fn("where", |cond: UserArray, a: UserArray, b: f64| {
+        UserArray(pick(&cond.0, &a.0, &vec![b; a.0.len()]))
+    });
+    engine.register_fn("where", |cond: UserArray, a: f64, b: UserArray| {
+        UserArray(pick(&cond.0, &vec![a; b.0.len()], &b.0))
+    });
+    engine.register_fn("where", |cond: UserArray, a: f64, b: f64| {
+        let n = cond.0.len();
+        UserArray(pick(&cond.0, &vec![a; n], &vec![b; n]))
+    });
+    engine.register_fn("where", |cond: bool, a: UserArray, b: f64| {
+        UserArray(if cond { a.0 } else { vec![b; a.0.len()] })
+    });
+    engine.register_fn("where", |cond: bool, a: f64, b: UserArray| {
+        UserArray(if cond { vec![a; b.0.len()] } else { b.0 })
+    });
+
     // Comparisons produce a 1.0/0.0 per-user mask, which is what `where`
     // consumes. `if` cannot take one -- that is the error the sandbox explains
     // with a pointer to `where`.
@@ -673,6 +727,41 @@ fn register_user_array(engine: &mut Engine) {
         engine.register_fn(op, |a: f64, b: UserArray| {
             UserArray(b.0.iter().map(|y| compare(op, a, *y)).collect())
         });
+    }
+}
+
+/// Choose per user from `a` or `b` according to a mask, propagating NaN.
+///
+/// A NaN in the mask means "this contributor has no opinion here", which is
+/// neither branch -- so the result is absent rather than silently the `else`.
+fn pick(cond: &[f64], a: &[f64], b: &[f64]) -> Vec<f64> {
+    cond.iter()
+        .zip(a)
+        .zip(b)
+        .map(|((c, x), y)| {
+            if c.is_nan() {
+                f64::NAN
+            } else if *c != 0.0 {
+                *x
+            } else {
+                *y
+            }
+        })
+        .collect()
+}
+
+/// Combine two scalars the way [`UserArray::map`] combines two elements.
+///
+/// Explicitly, because `f64::min(NaN, 3.0)` is `3.0` -- Rust's `min`/`max`
+/// ignore a NaN operand, while every array operation here *propagates* it so a
+/// reduction never treats a missing pick as a number. Reusing `f64::min`
+/// directly for the scalar form would make `shallowest` mean one thing on a
+/// layer and another on a derived item.
+fn nan_aware(a: f64, b: f64, f: impl Fn(f64, f64) -> f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        f(a, b)
     }
 }
 
@@ -735,16 +824,85 @@ fn register_kinded(engine: &mut Engine) {
     engine.register_fn("concatenate", |a: Kinded, _b: Kinded| -> Kinded {
         array(a.kind)
     });
-    engine.register_fn("shallowest", |a: Kinded, _b: Kinded| -> Kinded {
-        array(a.kind)
-    });
-    engine.register_fn("deepest", |a: Kinded, _b: Kinded| -> Kinded {
-        array(a.kind)
-    });
+    // `shallowest`/`deepest` are element-wise, so the result is an array only
+    // if an operand is. Returning `array(..)` unconditionally said that
+    // `shallowest` of two derived items -- both already reduced to scalars --
+    // was still an array, which is the opposite of true.
+    for name in ["shallowest", "deepest"] {
+        engine.register_fn(name, |a: Kinded, b: Kinded| -> Kinded {
+            Kinded {
+                is_array: a.is_array || b.is_array,
+                kind: a.kind,
+            }
+        });
+        engine.register_fn(name, |a: Kinded, _b: f64| -> Kinded { a });
+    }
     engine.register_fn("clamp", |a: Kinded, _lo: f64, _hi: f64| -> Kinded { a });
+    // A bound may itself be a reduced expression (`clamp(x, 0.0,
+    // median(bed))`), which is an `f64` at evaluation but a scalar `Kinded`
+    // here. Accept those, and refuse an *array* bound, because the real
+    // engine has no `clamp` taking one -- the two must agree on what exists.
+    fn bounded(
+        a: Kinded,
+        lo: Option<Kinded>,
+        hi: Option<Kinded>,
+    ) -> Result<Kinded, Box<rhai::EvalAltResult>> {
+        for bound in [lo, hi].into_iter().flatten() {
+            if bound.is_array {
+                return Err(
+                    "clamp bounds must be single values; reduce the bound first, \
+                            for example with median()"
+                        .into(),
+                );
+            }
+        }
+        Ok(a)
+    }
+    engine.register_fn("clamp", |a: Kinded, lo: Kinded, hi: Kinded| {
+        bounded(a, Some(lo), Some(hi))
+    });
+    engine.register_fn("clamp", |a: Kinded, lo: Kinded, _hi: f64| {
+        bounded(a, Some(lo), None)
+    });
+    engine.register_fn("clamp", |a: Kinded, _lo: f64, hi: Kinded| {
+        bounded(a, None, Some(hi))
+    });
     engine.register_fn("where", |_cond: Kinded, a: Kinded, _b: Kinded| -> Kinded {
         a
     });
+    // A comparison between two scalars is a native `bool`, so a `where` over
+    // already-reduced derived items reaches this form and not the `Kinded`
+    // one. Without it, inference rejects an expression evaluation accepts --
+    // the same mismatch as the missing scalar `clamp`, pointing the other way.
+    engine.register_fn("where", |_cond: bool, a: Kinded, _b: Kinded| -> Kinded {
+        a
+    });
+    // Mirrors of the real engine's mixed array/scalar branches. Every form
+    // registered there must exist here, or the two disagree about what is a
+    // valid expression -- which the symmetry test enforces.
+    engine.register_fn("where", |_cond: Kinded, a: Kinded, _b: f64| -> Kinded { a });
+    engine.register_fn("where", |_cond: Kinded, _a: f64, b: Kinded| -> Kinded { b });
+    engine.register_fn("where", |cond: Kinded, _a: f64, _b: f64| -> Kinded {
+        Kinded {
+            is_array: cond.is_array,
+            kind: Kind::Scalar,
+        }
+    });
+    engine.register_fn("where", |_cond: bool, a: Kinded, _b: f64| -> Kinded { a });
+    engine.register_fn("where", |_cond: bool, _a: f64, b: Kinded| -> Kinded { b });
+    // Rhai's standard library supplies these for `f64`, so evaluation has them
+    // whether or not inference does.
+    for name in ["min", "max"] {
+        engine.register_fn(name, |a: Kinded, b: Kinded| -> Kinded {
+            Kinded {
+                is_array: a.is_array || b.is_array,
+                kind: a.kind,
+            }
+        });
+        engine.register_fn(name, |a: Kinded, _b: f64| -> Kinded { a });
+        engine.register_fn(name, |_a: f64, b: Kinded| -> Kinded { b });
+    }
+    engine.register_fn("is_nan", |_a: Kinded| -> bool { true });
     engine.register_fn("+", |a: Kinded, _b: Kinded| -> Kinded {
         Kinded {
             is_array: a.is_array,
@@ -834,7 +992,21 @@ pub fn infer_kind(
         .map_err(|e| map_eval_error(expression, &e, layers, items))?;
 
     if result.is::<Kinded>() {
-        return Ok(result.cast::<Kinded>().kind);
+        let kinded = result.cast::<Kinded>();
+        // An expression that is still per-user is not an item. Evaluation
+        // refuses it with `NotScalar`, so inference must too: inference runs
+        // when an item is saved and evaluation when it is read, and an
+        // expression that infers a kind but cannot evaluate saves cleanly,
+        // reports "position (a line)" in the editor, and then fails on every
+        // read. `bed - temperate_ice` *is* a length, but it is a length per
+        // contributor; `median(bed) - median(temperate_ice)` is the item.
+        if kinded.is_array {
+            return Err(DeriveError::NotScalar {
+                expression: expression.to_string(),
+                kind: kinded.kind,
+            });
+        }
+        return Ok(kinded.kind);
     }
     // A plain number is a scalar with no spatial meaning.
     Ok(Kind::Scalar)
@@ -1059,6 +1231,82 @@ mod tests {
 
     fn arrays(values: &[f64]) -> UserArray {
         UserArray(values.to_vec())
+    }
+
+    /// Kind inference and evaluation must accept exactly the same
+    /// expressions.
+    ///
+    /// They are two engines over two parallel type tables, so a function
+    /// registered on one and not the other makes them disagree — and the
+    /// disagreement is silent in the worst direction: inference runs when an
+    /// item is *saved*, evaluation when it is *read*. An expression that
+    /// infers but does not evaluate validates, reports its kind in the editor,
+    /// saves, and then fails on every read afterwards.
+    ///
+    /// This is the class of bug, not an instance: it caught a missing scalar
+    /// `clamp` (inference accepted, evaluation did not) and a missing
+    /// `where(bool, ..)` on the inference side (the reverse). Add a row
+    /// whenever a function is registered.
+    #[test]
+    fn inference_and_evaluation_accept_the_same_expressions() {
+        let engine = build_engine();
+        // `bed` is a layer (an array); `dep` is a reference to another derived
+        // item, which is already reduced and so binds as a scalar.
+        let layers = vec!["bed".to_string()];
+        let mut items = BTreeMap::new();
+        items.insert("dep".to_string(), Kind::Position);
+        let mut other = BTreeMap::new();
+        other.insert("dep".to_string(), 5.0_f64);
+
+        for expression in [
+            // Arrays.
+            "median(bed)",
+            "clamp(bed, 0.0, 10.0)",
+            "shallowest(bed, 3.0)",
+            "where(bed > 2.0, bed, 0.0 * bed)",
+            // Scalars, via a derived-item reference. These are the ones the
+            // two engines used to disagree about.
+            "clamp(dep, 0.0, 10.0)",
+            "shallowest(dep, 3.0)",
+            "min(dep, 3.0)",
+            "max(dep, 3.0)",
+            "where(dep > 2.0, dep, 0.0)",
+            "if is_nan(dep) { 0.0 } else { dep }",
+            // Mixed array/scalar, which is what most real expressions are.
+            "median(bed) - dep",
+            "clamp(median(bed) - dep, 0.0, median(bed))",
+            "where(bed > 2.0, bed, 0.0)",
+            "where(bed > 2.0, 0.0, bed)",
+            "shallowest(median(bed), dep)",
+            "min(median(bed), dep)",
+            // An array bound on clamp exists on neither engine.
+            "clamp(median(bed), 0.0, bed)",
+        ] {
+            let ast = compile(&engine, expression).unwrap_or_else(|e| {
+                panic!("{expression} did not compile: {e}");
+            });
+            let inferred = infer_kind(&engine, &ast, expression, &layers, &items);
+
+            let bound: BTreeMap<String, UserArray> = layers
+                .iter()
+                .map(|id| (id.clone(), UserArray(vec![1.0, 4.0, f64::NAN])))
+                .collect();
+            let evaluated = evaluate_at(&engine, &ast, expression, &bound, &other, &layers, &items);
+
+            assert_eq!(
+                inferred.is_ok(),
+                evaluated.is_ok(),
+                "{expression}: inference {:?} but evaluation {:?}",
+                inferred
+                    .as_ref()
+                    .map(|k| k.to_string())
+                    .map_err(|e| e.to_string()),
+                evaluated
+                    .as_ref()
+                    .map(|v| v.to_string())
+                    .map_err(|e| e.to_string()),
+            );
+        }
     }
 
     #[test]
@@ -1542,7 +1790,9 @@ mod tests {
             infer_kind(&engine, &ast, expression, &layers, &items).unwrap()
         };
         assert_eq!(infer("median(bed)"), Kind::Position);
-        assert_eq!(infer("bed - temperate_ice"), Kind::Length);
+        // Reduced on both sides: `bed - temperate_ice` is a length *per
+        // contributor*, which is not an item -- see `infer_kind`.
+        assert_eq!(infer("median(bed) - median(temperate_ice)"), Kind::Length);
         assert_eq!(infer("count(bed)"), Kind::Scalar);
         assert_eq!(infer("std(bed)"), Kind::Scalar);
         assert_eq!(

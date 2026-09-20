@@ -725,7 +725,7 @@ mod tests {
             Kind::Position
         );
         assert_eq!(
-            item("x", "bed - temperate_ice")
+            item("x", "median(bed) - median(temperate_ice)")
                 .inferred_kind(&layers)
                 .unwrap(),
             Kind::Length

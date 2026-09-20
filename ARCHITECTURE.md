@@ -456,6 +456,33 @@ depth has a unit — which `Unit::allows` enforces at evaluation time, where
 the inferred kind is known. (`validate` cannot: it has no layer vocabulary,
 so it cannot know an expression's kind.)
 
+### Two engines, one function table
+
+Kind inference and evaluation are **two Rhai engines over parallel type
+tables**: evaluation binds a layer as a `UserArray` and a reference to another
+derived item as a plain `f64`; inference binds both as a `Kinded`, which
+carries the kind and whether the value is still per-user.
+
+That split is what makes `median(bed)` inferable without any picks, and it is
+also the standing hazard: **a function registered on one engine and not the
+other makes them disagree about what is a valid expression**, and the
+disagreement is silent in the worst direction. Inference runs when an item is
+*saved*; evaluation when it is *read*. An expression that infers but cannot
+evaluate saves cleanly, reports its kind in the editor, and then fails on
+every read afterwards.
+
+So every element-wise helper has a scalar twin (`clamp`, `shallowest`,
+`deepest`, `where`), the mixed array/scalar forms exist on both engines, and
+inference refuses an array-valued result exactly as evaluation does —
+`bed - temperate_ice` is a length *per contributor*, not an item;
+`median(bed) - median(temperate_ice)` is. Rhai's standard library already
+supplies scalar `min`, `max`, `abs` and `is_nan`, so those need only a
+`Kinded` mirror.
+
+`inference_and_evaluation_accept_the_same_expressions` enforces this over a
+table of expressions. **Add a row whenever a function is registered** — the
+test exists to catch the class, not the three instances that prompted it.
+
 ### Who sees a result computed from whose picks
 
 Three rules, and they are the whole permission model for derived results:
