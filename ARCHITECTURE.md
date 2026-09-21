@@ -652,16 +652,29 @@ arbitrary. Only the count leaves the server, never who depends on it.
 
 ### Downloading derived layers
 
-The download menus offer **Picked layer points** and **Derived layer points**
-(the former was called "Layer points"). The derived export evaluates the
-caller's visible picks and turns each derived *layer* into a level 2 export
-through the same resampling and writers the picked export uses, so spacing,
-CSV/GeoJSON and the coordinate options are identical; an attribute is a
-number, not a line, and is skipped. "Include unlisted" brings in layers marked
-`listed: false`, off by default to match the viewer panel. The single-radargram
-route is `GET /api/v1/datasets/{id}/derived/level2`; the merged group/catalog
-menus select the same path with `derived=true` on the existing `level2` route,
-so one dialog serves both.
+The download menus offer **Picked layer points** and **Derived layer points**.
+They share the spacing, format and coordinate options, but not their shape.
+
+Both sample the radargram's own **arc-distance grid**, built once from the
+radargram start (distance 0 by construction) at exact multiples of the step,
+so a 5 m export gives 0, 5, 10 m for every layer and every user. A layer emits
+the grid nodes inside its span; "per-trace" is the integer-trace axis and
+"vertices" is the line as drawn.
+
+**Picked layer points** are long: one point per picked line per position, each
+row tagged with its layer. **Derived layer points** are wide: one point per
+position, and every visible derived item -- layer or attribute -- is a property
+of it. A derived layer is a depth, so it is written in all three vertical units
+(`thickness_m`, `thickness_ns`, `thickness_samples`); a derived attribute is
+written in its own unit (`thickness_user_std_m`, or the bare id when
+dimensionless). A thickness and a cts depth therefore share a row, with the
+statistics that summarise them beside them. "Include unlisted" brings in items
+marked `listed: false`, off by default to match the viewer panel. The
+single-radargram route is `GET /api/v1/datasets/{id}/derived/level2`; the merged
+group/catalog menus select the same path with `derived=true` on the existing
+`level2` route, so one dialog serves both. A merged derived file's CSV columns
+are the union across its radargrams, with missing values empty -- the shape
+`assets/interp/.../expected_consensus.csv` uses.
 
 An admin also gets **For every user** on picked layer points: one file with
 every contributor's points, each row still tagged with its user. It is an

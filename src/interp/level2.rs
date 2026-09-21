@@ -306,29 +306,13 @@ pub fn export(
 ) -> Result<Level2Export, Level2Error> {
     geometry.validate()?;
 
-    let step = match spacing {
-        Spacing::ArcLength(step) => {
-            if !step.is_finite() || step <= 0.0 {
-                return Err(Level2Error::InvalidSpacing(step));
-            }
-            Some(step)
-        }
-        Spacing::Auto => Some(auto_step(&geometry.distance)),
-        Spacing::PerTrace | Spacing::Vertices => None,
-    };
+    let step = resolve_step(&geometry.distance, spacing)?;
 
     // Build the grid once, for the whole radargram. Every layer and every
     // user is then sampled on the same distances; the earlier per-line
     // anchor made each line start its own 5, 10, ... sequence at its first
     // vertex, so a line beginning at 5.128 m reported 5.128, 10.128, ...
-    let grid: Option<Vec<f64>> = match spacing {
-        Spacing::Vertices => None,
-        Spacing::PerTrace => Some((0..geometry.n_traces()).map(|t| t as f64).collect()),
-        Spacing::ArcLength(_) | Spacing::Auto => Some(arc_grid(
-            &geometry.distance,
-            step.expect("arc spacings always carry a step"),
-        )?),
-    };
+    let grid = grid(geometry, spacing)?;
     // `Vertices` leaves the grid unset, but that path sends every layer
     // through `sample_vertices` and never reaches `Line::sample`.
     let grid = grid.as_deref().unwrap_or(&[]);
@@ -525,6 +509,44 @@ impl Line {
     }
 }
 
+/// Resolve and validate a spacing's step, if it has one.
+///
+/// `None` for per-trace and vertices; `Some` for arc-length and auto.
+fn resolve_step(distance: &[f64], spacing: Spacing) -> Result<Option<f64>, Level2Error> {
+    match spacing {
+        Spacing::ArcLength(step) => {
+            if !step.is_finite() || step <= 0.0 {
+                return Err(Level2Error::InvalidSpacing(step));
+            }
+            Ok(Some(step))
+        }
+        Spacing::Auto => Ok(Some(auto_step(distance))),
+        Spacing::PerTrace | Spacing::Vertices => Ok(None),
+    }
+}
+
+/// The radargram-wide sampling grid: one fractional trace per node.
+///
+/// `None` for [`Spacing::Vertices`], where each line is kept as drawn and
+/// there is no shared grid. Every other spacing yields nodes every layer,
+/// and every user, is sampled on. The derived export evaluates its
+/// expressions on this same grid, so a derived point and the picked points
+/// beside it describe the same positions.
+pub fn grid(
+    geometry: &RadargramGeometry,
+    spacing: Spacing,
+) -> Result<Option<Vec<f64>>, Level2Error> {
+    match spacing {
+        Spacing::Vertices => Ok(None),
+        Spacing::PerTrace => Ok(Some((0..geometry.n_traces()).map(|t| t as f64).collect())),
+        Spacing::ArcLength(_) | Spacing::Auto => {
+            let step = resolve_step(&geometry.distance, spacing)?
+                .expect("arc spacings always carry a step");
+            Ok(Some(arc_grid(&geometry.distance, step)?))
+        }
+    }
+}
+
 /// The even-spacing grid: fractional trace positions `step` metres apart,
 /// anchored at the radargram's own start.
 ///
@@ -602,7 +624,7 @@ pub fn auto_step(distance: &[f64]) -> f64 {
 /// pick on *this* radargram, so a fractional index at the very last trace is
 /// an edge effect of interpolation rather than a coordinate from somewhere
 /// else.
-fn interpolate_index(axis: &[f64], index: f64) -> f64 {
+pub(crate) fn interpolate_index(axis: &[f64], index: f64) -> f64 {
     if axis.is_empty() {
         return f64::NAN;
     }

@@ -21,7 +21,6 @@
 //! Defining a project-wide item needs the operator role; a private item
 //! belongs to one user and any signed-in user may keep one.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -34,7 +33,8 @@ use super::auth::Caller;
 use super::interp_routes::{expectation_from, layer_error, parse_radargram, readable_project};
 use super::routes::{lookup_dataset, ApiError};
 use crate::identity::UserId;
-use crate::interp::derive::{self, EvaluatedItem, GridPosition, Kind, ReducedPicks};
+use crate::interp::derive::{self, GridPosition, ReducedPicks};
+use crate::interp::derived_points::{self, DerivedPointsExport};
 use crate::interp::level2::{self, RadargramGeometry};
 use crate::interp::{source, writer};
 use crate::project::derived::{self, Audience, DerivedError, DerivedItem, DerivedSet, Scope};
@@ -148,19 +148,36 @@ fn reduce_for(
     state: &AppState,
     caller: &Caller,
     radargram: &crate::identity::RadargramId,
-    geometry: &crate::interp::level2::RadargramGeometry,
+    geometry: &RadargramGeometry,
     audience: Audience,
+) -> Result<(ReducedPicks, crate::project::layers::LayerSet), ApiError> {
+    // The viewer draws derived items per native trace, so its routes stay on
+    // the per-trace grid. The export evaluates on the radargram's arc grid
+    // instead, so a derived point and a picked point coincide.
+    let grid: Vec<f64> = (0..geometry.n_traces()).map(|t| t as f64).collect();
+    reduce_on(state, caller, radargram, geometry, audience, &grid)
+}
+
+/// Build the reduced picks on an explicit grid of fractional traces.
+fn reduce_on(
+    state: &AppState,
+    caller: &Caller,
+    radargram: &crate::identity::RadargramId,
+    geometry: &RadargramGeometry,
+    audience: Audience,
+    grid: &[f64],
 ) -> Result<(ReducedPicks, crate::project::layers::LayerSet), ApiError> {
     let project = readable_project(state)?;
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
     let documents = visible_documents(state, caller, radargram, audience)?;
-    let grid: Vec<GridPosition> = (0..geometry.n_traces())
+    let positions: Vec<GridPosition> = grid
+        .iter()
         .map(|trace| GridPosition {
-            trace: trace as f64,
-            distance_m: geometry.distance[trace],
+            trace: *trace,
+            distance_m: level2::interpolate_index(&geometry.distance, *trace),
         })
         .collect();
-    let reduced = derive::reduce_picks(&documents, &layer_set, geometry, &grid, false);
+    let reduced = derive::reduce_picks(&documents, &layer_set, geometry, &positions, false);
     Ok((reduced, layer_set))
 }
 
@@ -668,65 +685,7 @@ pub struct DerivedPointsQuery {
     pub include_unlisted: bool,
 }
 
-/// Build a gprinterp document from the evaluated derived *layers*, so the
-/// existing level 2 resampling and writers export them unchanged.
-///
-/// An attribute is not a line and is skipped. Each contiguous run of finite
-/// samples becomes one LineString -- a gap is a separate line, exactly as the
-/// viewer draws it.
-pub fn derived_document(
-    set: &DerivedSet,
-    results: &BTreeMap<String, EvaluatedItem>,
-    geometry: &RadargramGeometry,
-    viewer: &str,
-    include_unlisted: bool,
-) -> Result<gprinterp::Document, String> {
-    let mut features: Vec<serde_json::Value> = Vec::new();
-    for item in set.visible_to(viewer) {
-        let Some(result) = results.get(&item.id) else {
-            continue;
-        };
-        // The kind is inferred, not stored: an attribute is a number per
-        // position and has no line to export.
-        if result.kind != Kind::Layer {
-            continue;
-        }
-        if !item.listed && !include_unlisted {
-            continue;
-        }
-        let mut run: Vec<[f64; 2]> = Vec::new();
-        let mut flush = |run: &mut Vec<[f64; 2]>| {
-            if run.len() >= 2 {
-                features.push(serde_json::json!({
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "LineString",
-                        "coordinates": std::mem::take(run),
-                    },
-                    "properties": {"id": item.id, "label": item.id},
-                }));
-            } else {
-                run.clear();
-            }
-        };
-        for (trace, value) in result.values.iter().enumerate() {
-            let sample = derive::unit_to_sample(*value, item.unit, geometry);
-            if sample.is_finite() {
-                run.push([trace as f64, sample]);
-            } else {
-                flush(&mut run);
-            }
-        }
-        flush(&mut run);
-    }
-    let document = serde_json::json!({
-        "key": geometry.radargram_id,
-        "features": features,
-    });
-    gprinterp::Document::from_json(&document.to_string()).map_err(|e| e.to_string())
-}
-
-/// Export one radargram's derived layers as level 2 points.
+/// Export one radargram's derived items as a wide point product.
 ///
 /// Shared with the merged (group/catalog) export so both produce exactly the
 /// same points for the same radargram; only the assembly differs.
@@ -735,21 +694,47 @@ pub(crate) fn export_derived_points(
     caller: &Caller,
     radargram: &crate::identity::RadargramId,
     geometry: &RadargramGeometry,
-    spacing: crate::interp::level2::Spacing,
+    spacing: level2::Spacing,
     include_unlisted: bool,
-) -> Result<level2::Level2Export, ApiError> {
+) -> Result<DerivedPointsExport, ApiError> {
+    // `vertices` describes a drawn polyline; a derived item is one value per
+    // position, so its only sensible reading is per-trace. Everything else
+    // evaluates on the radargram's shared arc grid, exactly as the picked
+    // export samples, so a derived point and a picked point coincide.
+    let spacing = match spacing {
+        level2::Spacing::Vertices => level2::Spacing::PerTrace,
+        other => other,
+    };
+    let grid = level2::grid(geometry, spacing)
+        .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))?
+        .unwrap_or_default();
+    let spacing_m = match spacing {
+        level2::Spacing::ArcLength(step) => Some(step),
+        level2::Spacing::Auto => Some(level2::auto_step(&geometry.distance)),
+        level2::Spacing::PerTrace | level2::Spacing::Vertices => None,
+    };
     let (set, _) = load_set(state)?;
-    let (reduced, _) = reduce_for(state, caller, radargram, geometry, Audience::OwnPicks)?;
+    let (reduced, _) = reduce_on(
+        state,
+        caller,
+        radargram,
+        geometry,
+        Audience::OwnPicks,
+        &grid,
+    )?;
     let results = set
         .evaluate(&reduced, geometry)
         .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
     let viewer = caller.display_name().to_string();
-    let document = derived_document(&set, &results, geometry, &viewer, include_unlisted)
-        .map_err(|e| ApiError::internal("derived_export_failed", e))?;
-    // Derived lines are functions of trace by construction, so no layer can
-    // permit overhangs here.
-    level2::export(&document, geometry, spacing, &viewer, &|_| false)
-        .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))
+    Ok(derived_points::build(
+        &set,
+        &results,
+        geometry,
+        &grid,
+        spacing_m,
+        &viewer,
+        include_unlisted,
+    ))
 }
 
 /// `GET /api/v1/datasets/{id}/derived/level2` -- derived layers as level 2
@@ -777,14 +762,18 @@ pub async fn derived_level2(
     let exports = [export];
     let csv = matches!(query.format.as_deref(), Some("csv"));
     let (body, content_type, extension) = if csv {
-        (writer::to_csv(&exports), "text/csv; charset=utf-8", "csv")
+        (
+            writer::to_csv_derived(&exports),
+            "text/csv; charset=utf-8",
+            "csv",
+        )
     } else {
         let output_crs = match query.crs.as_deref() {
             None | Some("") => writer::OutputCrs::Wgs84,
             Some(name) => writer::OutputCrs::Named(name.to_string()),
         };
         (
-            writer::to_geojson(&exports, &output_crs)
+            writer::to_geojson_derived(&exports, &output_crs)
                 .map_err(|e| ApiError::bad_request("invalid_crs", e))?,
             "application/geo+json",
             "geojson",
