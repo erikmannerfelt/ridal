@@ -13,6 +13,12 @@
 //! leave the radargram's index space. Per-trace export remains available via
 //! [`Spacing::PerTrace`] for callers who want the native sampling.
 //!
+//! The arc grid is a property of the **radargram**, not of any one line. It
+//! is anchored at the radargram's own start (distance 0 by construction), so
+//! a 5 m step yields 0, 5, 10 m for every layer and every user rather than
+//! each line's own start offset plus 5. A layer is sampled on the nodes that
+//! fall inside its span; a node outside contributes no point.
+//!
 //! This module is pure: it takes a [`RadargramGeometry`] rather than reading
 //! a NetCDF itself, so the resampling and lookup logic is testable against
 //! synthetic geometry with no file I/O. The adapter that builds a
@@ -27,14 +33,14 @@ use gprinterp::{Document, Geometry, Position};
 /// can never disagree.
 pub use crate::identity::DEFAULT_USER;
 
-/// Ceiling on the points one picked line may expand to.
+/// Ceiling on the points the radargram-wide arc grid may expand to.
 ///
 /// Spacing reaches this as a query parameter on a public route, and the
 /// point count is `span / step`, so a small enough step asks for an
 /// unbounded allocation. Ten million is far above any real export -- a
 /// 50 km profile at 1 cm spacing is five million -- and far below a size
 /// that threatens the process.
-const MAX_POINTS_PER_LINE: usize = 10_000_000;
+const MAX_GRID_POINTS: usize = 10_000_000;
 
 /// Everything about one processed radargram that level 2 derivation needs.
 ///
@@ -206,12 +212,13 @@ pub enum Level2Error {
     /// The `distance` axis decreases somewhere, so distance cannot be
     /// inverted to a trace index.
     NonMonotoneDistance,
-    /// The requested spacing would expand one line past
-    /// [`MAX_POINTS_PER_LINE`]. Refused rather than clamped: a caller who
+    /// The requested spacing would expand the radargram's grid past
+    /// [`MAX_GRID_POINTS`]. Refused rather than clamped: a caller who
     /// asked for 1 cm spacing and silently got 10 m would not know.
+    ///
+    /// Radargram-wide rather than per-line: the grid is one property of the
+    /// radargram now, so it is the whole track that fixes the count.
     SpacingTooFine {
-        layer: String,
-        line_index: usize,
         step: f64,
         span: f64,
         estimate: f64,
@@ -255,16 +262,14 @@ impl fmt::Display for Level2Error {
                  resolved to a single trace"
             ),
             Level2Error::SpacingTooFine {
-                layer,
-                line_index,
                 step,
                 span,
                 estimate,
             } => write!(
                 f,
-                "a spacing of {step} m over the {span:.1} m of line {line_index} in \
-                 layer '{layer}' would produce about {estimate:.0} points, above the \
-                 limit of {MAX_POINTS_PER_LINE}. Use a larger spacing."
+                "a spacing of {step} m over the {span:.1} m radargram would produce \
+                 about {estimate:.0} points, above the limit of {MAX_GRID_POINTS}. Use \
+                 a larger spacing."
             ),
             Level2Error::NonMonotoneLine {
                 layer,
@@ -301,16 +306,16 @@ pub fn export(
 ) -> Result<Level2Export, Level2Error> {
     geometry.validate()?;
 
-    let step = match spacing {
-        Spacing::ArcLength(step) => {
-            if !step.is_finite() || step <= 0.0 {
-                return Err(Level2Error::InvalidSpacing(step));
-            }
-            Some(step)
-        }
-        Spacing::Auto => Some(auto_step(&geometry.distance)),
-        Spacing::PerTrace | Spacing::Vertices => None,
-    };
+    let step = resolve_step(&geometry.distance, spacing)?;
+
+    // Build the grid once, for the whole radargram. Every layer and every
+    // user is then sampled on the same distances; the earlier per-line
+    // anchor made each line start its own 5, 10, ... sequence at its first
+    // vertex, so a line beginning at 5.128 m reported 5.128, 10.128, ...
+    let grid = grid(geometry, spacing)?;
+    // `Vertices` leaves the grid unset, but that path sends every layer
+    // through `sample_vertices` and never reaches `Line::sample`.
+    let grid = grid.as_deref().unwrap_or(&[]);
 
     let mut points = Vec::new();
     let mut vertex_layers: Vec<String> = Vec::new();
@@ -348,7 +353,7 @@ pub fn export(
                 continue;
             }
             let line = Line::new(&vertices, &layer, line_index)?;
-            points.extend(line.sample(geometry, step, &layer, line_index, &feature_id, user)?);
+            points.extend(line.sample(geometry, grid, &layer, line_index, &feature_id, user)?);
         }
     }
     if !vertex_layers.is_empty() {
@@ -456,7 +461,7 @@ impl Line {
     fn sample(
         &self,
         geometry: &RadargramGeometry,
-        step: Option<f64>,
+        grid: &[f64],
         layer: &str,
         line_index: usize,
         feature_id: &Option<String>,
@@ -466,60 +471,15 @@ impl Line {
             return Ok(Vec::new());
         };
 
-        let traces: Vec<f64> = match step {
-            // Evenly spaced in metres: walk the distance axis, then invert
-            // each target distance back to a fractional trace.
-            Some(step) => {
-                let d0 = interpolate_index(&geometry.distance, first_trace);
-                let d1 = interpolate_index(&geometry.distance, last_trace);
-                let span = d1 - d0;
-                let n = if span <= 0.0 {
-                    // A line drawn entirely within a standstill has no
-                    // along-track extent. One point still describes it.
-                    1
-                } else {
-                    // Computed in f64 and checked *before* the cast.
-                    // `as usize` saturates, so a spacing of 1e-300 would
-                    // otherwise land on usize::MAX and the allocation
-                    // below would take the process down -- and spacing
-                    // arrives as a query parameter on a public route.
-                    let estimate = (span / step).floor() + 1.0;
-                    if !estimate.is_finite() || estimate > MAX_POINTS_PER_LINE as f64 {
-                        return Err(Level2Error::SpacingTooFine {
-                            layer: layer.to_string(),
-                            line_index,
-                            step,
-                            span,
-                            estimate,
-                        });
-                    }
-                    estimate as usize
-                };
-                (0..n)
-                    .map(|i| {
-                        let target = d0 + i as f64 * step;
-                        invert_axis(&geometry.distance, target).clamp(first_trace, last_trace)
-                    })
-                    .collect()
-            }
-            // Per-trace: every native trace the line spans, inclusive.
-            None => {
-                let lo = first_trace.ceil().max(0.0) as usize;
-                let hi = (last_trace.floor() as usize).min(geometry.n_traces().saturating_sub(1));
-                if lo > hi {
-                    // The line lies strictly between two native traces --
-                    // 39.5 to 39.9, say -- so it spans none of them. That
-                    // is an empty result, not one point: the previous
-                    // `hi.max(lo)` turned the empty range into `40..=40`
-                    // and produced a trace beyond the end of the geometry,
-                    // which `sample_at` then extrapolated into a
-                    // plausible-looking but fictitious point.
-                    Vec::new()
-                } else {
-                    (lo..=hi).map(|t| t as f64).collect()
-                }
-            }
-        };
+        // The shared radargram grid, restricted to this line's span. The
+        // grid fixes the distances; a node outside the span contributes
+        // nothing. This is what makes two layers that start at different
+        // traces report the same 0, 5, 10, ... metres.
+        let traces: Vec<f64> = grid
+            .iter()
+            .copied()
+            .filter(|trace| *trace >= first_trace && *trace <= last_trace)
+            .collect();
 
         Ok(traces
             .into_iter()
@@ -547,6 +507,82 @@ impl Line {
             })
             .collect())
     }
+}
+
+/// Resolve and validate a spacing's step, if it has one.
+///
+/// `None` for per-trace and vertices; `Some` for arc-length and auto.
+fn resolve_step(distance: &[f64], spacing: Spacing) -> Result<Option<f64>, Level2Error> {
+    match spacing {
+        Spacing::ArcLength(step) => {
+            if !step.is_finite() || step <= 0.0 {
+                return Err(Level2Error::InvalidSpacing(step));
+            }
+            Ok(Some(step))
+        }
+        Spacing::Auto => Ok(Some(auto_step(distance))),
+        Spacing::PerTrace | Spacing::Vertices => Ok(None),
+    }
+}
+
+/// The radargram-wide sampling grid: one fractional trace per node.
+///
+/// `None` for [`Spacing::Vertices`], where each line is kept as drawn and
+/// there is no shared grid. Every other spacing yields nodes every layer,
+/// and every user, is sampled on. The derived export evaluates its
+/// expressions on this same grid, so a derived point and the picked points
+/// beside it describe the same positions.
+pub fn grid(
+    geometry: &RadargramGeometry,
+    spacing: Spacing,
+) -> Result<Option<Vec<f64>>, Level2Error> {
+    match spacing {
+        Spacing::Vertices => Ok(None),
+        Spacing::PerTrace => Ok(Some((0..geometry.n_traces()).map(|t| t as f64).collect())),
+        Spacing::ArcLength(_) | Spacing::Auto => {
+            let step = resolve_step(&geometry.distance, spacing)?
+                .expect("arc spacings always carry a step");
+            Ok(Some(arc_grid(&geometry.distance, step)?))
+        }
+    }
+}
+
+/// The even-spacing grid: fractional trace positions `step` metres apart,
+/// anchored at the radargram's own start.
+///
+/// Anchored at the radargram rather than at each line's first vertex, so
+/// every layer and every user shares the same distances. The radargram's
+/// first trace is at distance 0 by construction, so a 5 m step yields
+/// 0, 5, 10 m instead of the 5.128, 10.128 a per-line anchor gives.
+///
+/// Refuses a grid denser than [`MAX_GRID_POINTS`] rather than attempting an
+/// unbounded allocation, since the step arrives as a query parameter on a
+/// public route.
+fn arc_grid(distance: &[f64], step: f64) -> Result<Vec<f64>, Level2Error> {
+    let Some((&first, &last)) = distance.first().zip(distance.last()) else {
+        return Ok(Vec::new());
+    };
+    let span = last - first;
+    if span <= 0.0 {
+        // A radargram that never moved has no along-track extent. One node
+        // still describes it.
+        return Ok(vec![invert_axis(distance, first)]);
+    }
+    // Computed in f64 and checked *before* the cast. `as usize` saturates,
+    // so a spacing of 1e-300 would otherwise land on usize::MAX and the
+    // allocation below would take the process down.
+    let estimate = (span / step).floor() + 1.0;
+    if !estimate.is_finite() || estimate > MAX_GRID_POINTS as f64 {
+        return Err(Level2Error::SpacingTooFine {
+            step,
+            span,
+            estimate,
+        });
+    }
+    let n = estimate as usize;
+    Ok((0..n)
+        .map(|i| invert_axis(distance, first + i as f64 * step))
+        .collect())
 }
 
 /// A tidy spacing derived from the radargram's own trace density.
@@ -588,7 +624,7 @@ pub fn auto_step(distance: &[f64]) -> f64 {
 /// pick on *this* radargram, so a fractional index at the very last trace is
 /// an edge effect of interpolation rather than a coordinate from somewhere
 /// else.
-fn interpolate_index(axis: &[f64], index: f64) -> f64 {
+pub(crate) fn interpolate_index(axis: &[f64], index: f64) -> f64 {
     if axis.is_empty() {
         return f64::NAN;
     }
@@ -861,6 +897,62 @@ mod tests {
         // while the last two span the remaining 90 traces.
         assert!((export.points[1].trace - 1.0).abs() < 1e-6);
         assert!(export.points[11].trace > 90.0);
+    }
+
+    #[test]
+    fn every_layer_shares_one_arc_distance_grid_anchored_at_zero() {
+        // The grid is a property of the radargram, not of any one line. A
+        // line that starts at 12 m must report the shared 15, 20, ... nodes
+        // -- not its own 12, 17, ... sequence -- so a 5 m export lands on
+        // 0, 5, 10 m everywhere.
+        let doc = document_multi(&[
+            ("bed", &[[0.0, 10.0], [100.0, 10.0]]),
+            ("internal", &[[12.0, 5.0], [58.0, 5.0]]),
+        ]);
+        let export = export(
+            &doc,
+            &geometry(),
+            Spacing::ArcLength(5.0),
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .unwrap();
+
+        let distances = |layer: &str| -> Vec<f64> {
+            export
+                .points
+                .iter()
+                .filter(|p| p.layer == layer)
+                .map(|p| p.distance_m)
+                .collect()
+        };
+
+        assert_eq!(
+            distances("bed"),
+            (0..=20).map(|i| i as f64 * 5.0).collect::<Vec<f64>>()
+        );
+        // Nodes strictly inside [12, 58]: 15, 20, ..., 55.
+        assert_eq!(
+            distances("internal"),
+            (3..=11).map(|i| i as f64 * 5.0).collect::<Vec<f64>>()
+        );
+    }
+
+    #[test]
+    fn a_line_between_two_traces_on_the_arc_grid_yields_only_grid_nodes() {
+        // Endpoints are not special: a line from 12.4 to 17.6 spans the
+        // single shared node at 15 m, and nothing else.
+        let export = export(
+            &document(&[[12.4, 10.0], [17.6, 10.0]]),
+            &geometry(),
+            Spacing::ArcLength(5.0),
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .unwrap();
+
+        let distances: Vec<f64> = export.points.iter().map(|p| p.distance_m).collect();
+        assert_eq!(distances, vec![15.0]);
     }
 
     #[test]

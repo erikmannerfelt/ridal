@@ -1088,11 +1088,12 @@ async fn one_unreadable_filename_does_not_hide_the_readable_ones() {
     assert!((value - depth(2.0)).abs() < 1e-6, "got {value}");
 }
 
-/// Derived layer points are lines only: an attribute and an unlisted layer
-/// are left out, and `include_unlisted` brings the unlisted one back.
+/// Derived points are wide: every visible item -- layer or attribute -- is a
+/// property of one point per position, and an unlisted layer is left out
+/// unless `include_unlisted` brings it back.
 #[tokio::test]
 #[serial_test::serial(netcdf)]
-async fn derived_points_skip_attributes_and_unlisted_layers() {
+async fn derived_points_are_wide_and_skip_unlisted_layers_by_default() {
     let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
@@ -1118,17 +1119,21 @@ async fn derived_points_skip_attributes_and_unlisted_layers() {
     let url = format!("/api/v1/datasets/{RADARGRAM}/derived/level2?format=csv");
     let response = get(&app, &url, Some(&op)).await;
     assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    assert!(response.text.contains("line_a"), "{}", response.text);
+
+    let header = response.text.lines().next().unwrap();
+    // A derived layer is a position, so it is written in all three vertical
+    // units; an attribute is a number in its own. Both are columns of the
+    // same point.
+    for column in ["line_a_m", "line_a_ns", "line_a_samples", "count_a_m"] {
+        assert!(header.contains(column), "missing {column}: {header}");
+    }
     assert!(
-        !response.text.contains("count_a"),
-        "an attribute is not a line: {}",
-        response.text
+        !header.contains("hidden_a"),
+        "an unlisted layer must be excluded by default: {header}"
     );
-    assert!(
-        !response.text.contains("hidden_a"),
-        "an unlisted layer must be excluded by default: {}",
-        response.text
-    );
+    // One row per grid position, not one per item: this radargram has 40
+    // traces at 1 m, and the derived rows are on the same arc grid.
+    assert_eq!(response.text.lines().count(), 1 + 40, "{}", response.text);
 
     let response = get(&app, &format!("{url}&include_unlisted=true"), Some(&op)).await;
     assert_eq!(response.status, StatusCode::OK, "{}", response.text);
@@ -1136,6 +1141,152 @@ async fn derived_points_skip_attributes_and_unlisted_layers() {
         response.text.contains("hidden_a"),
         "include_unlisted must bring it back: {}",
         response.text
+    );
+}
+
+/// A property name that would displace a point's own field is refused when the
+/// item is saved, while the author can still pick another id.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_property_that_shadows_a_base_field_is_refused_at_save() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+
+    let mut colliding = item("easting", "count(bed)", json!("project"));
+    colliding["unit"] = json!("dimensionless");
+    let response = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([colliding])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert!(
+        response.text.contains("invalid_derived_items") && response.text.contains("easting"),
+        "{}",
+        response.text
+    );
+}
+
+/// A collision that reached the store anyway (written by hand or by an older
+/// build) is refused at export rather than written as a dropped or duplicate
+/// property.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_stored_collision_is_refused_at_export() {
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+
+    let stored = json!({
+        "schema": "ridal-derived",
+        "schema_version": "1",
+        "items": [{
+            "id": "easting",
+            "name": "easting",
+            "expression": "count(bed)",
+            "unit": "dimensionless",
+            "scope": "project",
+        }]
+    });
+    let derived_dir = dir
+        .path()
+        .join(crate::project::DEFAULT_DATA_DIR)
+        .join(crate::project::DERIVED_DIR);
+    std::fs::create_dir_all(&derived_dir).unwrap();
+    std::fs::write(
+        derived_dir.join("derived.json"),
+        serde_json::to_string(&stored).unwrap(),
+    )
+    .unwrap();
+
+    let response = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/derived/level2?format=csv"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert!(
+        response.text.contains("derived_property_collision"),
+        "{}",
+        response.text
+    );
+}
+
+/// A derived layer and a picked layer are sampled on the same radargram-wide
+/// arc grid, so their distances line up node for node.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn derived_and_picked_points_share_the_arc_grid() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+    let created = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item("line_a", "median(bed)", json!("project"))])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+
+    let distances = |text: &str, column: usize| -> Vec<String> {
+        text.lines()
+            .skip(1)
+            .filter(|line| !line.is_empty())
+            .map(|line| line.split(',').nth(column).unwrap().to_string())
+            .collect()
+    };
+
+    let picked = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/interpretations/op/level2?format=csv&spacing=5"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(picked.status, StatusCode::OK, "{}", picked.text);
+
+    let derived = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/derived/level2?format=csv&spacing=5"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(derived.status, StatusCode::OK, "{}", derived.text);
+
+    // The derived CSV's `distance_m` is the fourth column; the picked CSV's
+    // is the ninth. Both must be 0, 5, 10, ... on the shared grid.
+    let picked_distances = distances(&picked.text, 8);
+    let derived_distances = distances(&derived.text, 3);
+    assert_eq!(
+        derived_distances,
+        ["0", "5", "10", "15", "20", "25", "30", "35"]
+    );
+    assert_eq!(
+        picked_distances, derived_distances,
+        "picked and derived points must share one arc grid"
     );
 }
 

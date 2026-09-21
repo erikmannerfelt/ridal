@@ -1381,7 +1381,12 @@ fn merged_level2(
         })
     };
 
-    let mut exports = Vec::new();
+    // The two products have different shapes -- picked points are long, one
+    // per layer per position; derived points are wide, one per position with
+    // every item a property -- so they accumulate separately and are only
+    // serialized once the whole scope has been assembled.
+    let mut picked: Vec<crate::interp::level2::Level2Export> = Vec::new();
+    let mut derived: Vec<crate::interp::derived_points::DerivedPointsExport> = Vec::new();
     let mut skipped = Vec::new();
     let mut stale = Vec::new();
     for entry in &entries {
@@ -1393,7 +1398,7 @@ fn merged_level2(
             .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
 
         if query.derived {
-            exports.push(super::derived_routes::export_derived_points(
+            derived.push(super::derived_routes::export_derived_points(
                 state,
                 caller,
                 radargram,
@@ -1448,11 +1453,16 @@ fn merged_level2(
             .map_err(|e| {
                 ApiError::bad_request("level2_failed", format!("{}: {e}", radargram.as_str()))
             })?;
-            exports.push(export);
+            picked.push(export);
         }
     }
 
-    if exports.is_empty() {
+    let empty = if query.derived {
+        derived.is_empty()
+    } else {
+        picked.is_empty()
+    };
+    if empty {
         return Err(ApiError::not_found(
             "interpretation_not_found",
             format!(
@@ -1464,19 +1474,34 @@ fn merged_level2(
     }
 
     let csv = matches!(query.format.as_deref(), Some("csv"));
-    let (body, content_type, extension) = if csv {
+    let output_crs = match query.crs.as_deref() {
+        None | Some("") => crate::interp::writer::OutputCrs::Wgs84,
+        Some(name) => crate::interp::writer::OutputCrs::Named(name.to_string()),
+    };
+    let (body, content_type, extension) = if query.derived {
+        if csv {
+            (
+                crate::interp::writer::to_csv_derived(&derived),
+                "text/csv; charset=utf-8",
+                "csv",
+            )
+        } else {
+            (
+                crate::interp::writer::to_geojson_derived(&derived, &output_crs)
+                    .map_err(|e| ApiError::bad_request("invalid_crs", e))?,
+                "application/geo+json",
+                "geojson",
+            )
+        }
+    } else if csv {
         (
-            crate::interp::writer::to_csv(&exports),
+            crate::interp::writer::to_csv(&picked),
             "text/csv; charset=utf-8",
             "csv",
         )
     } else {
-        let output_crs = match query.crs.as_deref() {
-            None | Some("") => crate::interp::writer::OutputCrs::Wgs84,
-            Some(name) => crate::interp::writer::OutputCrs::Named(name.to_string()),
-        };
         (
-            crate::interp::writer::to_geojson(&exports, &output_crs)
+            crate::interp::writer::to_geojson(&picked, &output_crs)
                 .map_err(|e| ApiError::bad_request("invalid_crs", e))?,
             "application/geo+json",
             "geojson",
