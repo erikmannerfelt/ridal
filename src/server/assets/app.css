@@ -1986,3 +1986,258 @@ button.danger:disabled {
 #replace-dialog {
   max-width: 40rem;
 }
+
+/* --- Layer panel, derived items and the expression editor (#209) --------- */
+
+.layer-panel {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 4px);
+  padding: var(--space-2);
+  /* Never wider than the map, however long a layer name is: the control sits
+   * at the map's right edge with a margin, so a cap tied to `vw` alone still
+   * overflows a phone. The scrolling lives on the body below, so a long row
+   * pans sideways instead of pushing the control off screen. */
+  max-width: min(22rem, calc(90vw - 1rem));
+  box-sizing: border-box;
+}
+
+.layer-panel-heading {
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: var(--space-2) 0 var(--space-1);
+}
+
+.layer-panel-heading:first-child {
+  margin-top: 0;
+}
+
+.layer-panel-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0.1rem 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.layer-panel-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 2px;
+  border: 1px solid var(--color-border-strong);
+  flex: none;
+}
+
+/* The textarea sits on top of a highlighted <pre>; both share one box model
+ * so the tokens line up under the caret exactly. The textarea's own text is
+ * transparent -- the <pre> is what is read -- but its caret stays visible. */
+.editor-input {
+  position: relative;
+  margin: var(--space-2) 0;
+}
+
+#derived-expression,
+#derived-highlight {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 5.5rem;
+  margin: 0;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius, 4px);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2;
+}
+
+#derived-highlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+
+#derived-expression {
+  position: relative;
+  z-index: 1;
+  resize: vertical;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--color-text);
+}
+
+#derived-expression:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.tok-builtin {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.tok-keyword {
+  color: #9a3f9a;
+  font-weight: 600;
+}
+
+.tok-layer {
+  color: #2f7d32;
+}
+
+.tok-number {
+  color: #b06000;
+}
+
+.tok-op {
+  color: var(--color-text-muted);
+}
+
+.editor-status {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  min-height: 1.2em;
+  margin: var(--space-1) 0;
+}
+
+.editor-status.editor-error {
+  color: var(--color-danger-text);
+}
+
+.editor-warning {
+  font-size: 0.85rem;
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning-text);
+  border-radius: var(--radius, 4px);
+  padding: var(--space-2);
+}
+
+/* --- Layer panel disclosure and derived management (#209) ---------------- */
+
+/* The panel is a `<details>`, closed by default. Reusing the header menu's
+ * pattern means the open/close is keyboard-accessible with no JavaScript; it
+ * deliberately does not close on an outside click, because the map is what is
+ * being looked at while layers are toggled. */
+.layer-panel > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: var(--space-1) var(--space-2);
+  list-style: none;
+}
+
+.layer-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.layer-panel > summary::marker {
+  content: "";
+}
+
+.layer-panel-body {
+  padding: 0 var(--space-2) var(--space-2);
+  max-height: 60vh;
+  overflow: auto;
+  /* Horizontal touch panning is the phone case: a long expression or layer
+   * name scrolls sideways rather than being clipped. `pan-x pan-y` keeps
+   * that gesture off the map behind it. */
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.layer-panel-derived-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.layer-panel-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.layer-panel-confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.75rem;
+}
+
+.layer-panel-error {
+  color: var(--color-danger-text);
+  font-size: 0.8rem;
+  margin-bottom: var(--space-1);
+  white-space: normal;
+}
+
+/* The shared derived-item editor (app.js). The range fields are disabled as a
+ * group until the checkbox is on, so the control reads as one choice. */
+#derived-editor {
+  max-width: 42rem;
+}
+
+#derived-range-fields {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius, 4px);
+  padding: var(--space-2);
+  margin: var(--space-2) 0;
+}
+
+#derived-range-fields.is-disabled .add-layer-fields {
+  opacity: 0.5;
+}
+
+#derived-editor input[type="color"] {
+  padding: 0;
+  width: 2.2rem;
+  height: 1.6rem;
+  vertical-align: middle;
+}
+
+/* The layers-panel toggle in the viewer controls row. `.controls button:hover`
+ * only recolours the border and text, which is easy to miss on a small
+ * control, so this one fills with the accent colour (and animates) on hover.
+ * `var(--color-surface)` as the text keeps it legible in both themes: it is
+ * light where the accent is dark and dark where the accent is light. */
+#panel-visibility {
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+#panel-visibility:hover {
+  border-color: var(--color-accent-hover);
+  background: var(--color-accent-hover);
+  color: var(--color-surface);
+}
+
+#panel-visibility[aria-pressed="true"] {
+  border-color: var(--color-accent);
+}
+
+/* The disclosure summary ("Layers (N)") is the control people actually click
+ * on the map, so it gets the same affordance. */
+.layer-panel > summary {
+  border-radius: var(--radius, 4px);
+  transition: background-color 0.12s ease;
+}
+
+.layer-panel > summary:hover {
+  background: var(--color-surface-sunken);
+}

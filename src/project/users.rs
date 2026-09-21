@@ -144,6 +144,16 @@ impl fmt::Display for Role {
 pub enum DownloadScope {
     /// Nothing leaves the server.
     None,
+    /// Derived results only: consensus lines and attributes (#205).
+    ///
+    /// Deliberately **below** [`Picks`](DownloadScope::Picks), which is the one
+    /// place this ladder inverts the usual reading of "more". An aggregate over
+    /// many contributors is *less* disclosing than any one contributor's raw
+    /// picks, so "you may have the consensus but not the individual
+    /// interpretations" is a real and useful setting -- and the only rung that
+    /// expresses it. Inserted here rather than appended so the existing rungs
+    /// keep their order and their stored spellings.
+    Results,
     /// Raw picks (level 1 gprinterp).
     Picks,
     /// Level 2 points; the rendered radargram image. Usually enough to
@@ -156,8 +166,9 @@ pub enum DownloadScope {
 }
 
 impl DownloadScope {
-    pub const ALL: [DownloadScope; 4] = [
+    pub const ALL: [DownloadScope; 5] = [
         DownloadScope::None,
+        DownloadScope::Results,
         DownloadScope::Picks,
         DownloadScope::Derived,
         DownloadScope::All,
@@ -166,6 +177,7 @@ impl DownloadScope {
     pub fn as_str(self) -> &'static str {
         match self {
             DownloadScope::None => "none",
+            DownloadScope::Results => "results",
             DownloadScope::Picks => "picks",
             DownloadScope::Derived => "derived",
             DownloadScope::All => "all",

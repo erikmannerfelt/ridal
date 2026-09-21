@@ -1114,6 +1114,9 @@ fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
         can_download_derived =>
             caller.may_download(crate::project::users::DownloadScope::Derived),
         can_download_all => caller.may_download(crate::project::users::DownloadScope::All),
+        // Admins may release a cross-user result and may download every
+        // contributor's picks in one file; both are the same authority.
+        can_administer => caller.may(crate::project::users::Role::Admin),
     }
 }
 

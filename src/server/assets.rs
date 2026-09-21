@@ -14,7 +14,10 @@ macro_rules! embedded_asset {
     ($fn_name:ident, $path:literal, $content_type:literal) => {
         pub async fn $fn_name() -> Response {
             (
-                [(header::CONTENT_TYPE, $content_type)],
+                [
+                    (header::CONTENT_TYPE, $content_type),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
                 include_bytes!(concat!("assets/", $path)).as_slice(),
             )
                 .into_response()
@@ -31,7 +34,10 @@ macro_rules! embedded_repo_asset {
     ($fn_name:ident, $path:literal, $content_type:literal) => {
         pub async fn $fn_name() -> Response {
             (
-                [(header::CONTENT_TYPE, $content_type)],
+                [
+                    (header::CONTENT_TYPE, $content_type),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
                 include_bytes!(concat!("../../", $path)).as_slice(),
             )
                 .into_response()
@@ -68,6 +74,7 @@ embedded_asset!(layers_js, "layers.js", "text/javascript");
 embedded_asset!(settings_js, "settings.js", "text/javascript");
 embedded_asset!(login_js, "login.js", "text/javascript");
 embedded_asset!(picker_js, "picker.js", "text/javascript");
+embedded_asset!(panel_js, "panel.js", "text/javascript");
 
 // Repo-root, first-party. Shown beside the "Ridal" wordmark in the shared
 // header (base.html.jinja); logo.png doubles as the favicon.
@@ -398,6 +405,7 @@ mod tests {
                     app,
                     ("viewer.js", include_str!("assets/viewer.js")),
                     ("picker.js", include_str!("assets/picker.js")),
+                    ("panel.js", include_str!("assets/panel.js")),
                 ],
             ),
             (

@@ -50,6 +50,15 @@ serde_json = "1"
 # ridal in its own repository; see github.com/erikmannerfelt/gprinterp.
 gprinterp = "0.3"
 
+# Derived items (#205) are user-authored expressions over picked layers, e.g.
+# `median(bed)` or `std(bed)`. Rhai is an embedded scripting language with no
+# I/O surface, which is what makes it usable for expressions that arrive over
+# HTTP: the evaluator exposes only the reductions and element-wise arithmetic
+# on picks, and the sandbox limits are set explicitly in `interp::derive`. Not
+# optional -- both the CLI (the legacy converter and `interp export`) and the
+# server evaluate expressions, so a CLI-only build needs it too.
+rhai = { version = "1", features = ["sync"] }
+
 # Web server and browser GUI (feature "server"). See tracking issue #115.
 axum = { version = "0.8", optional = true }
 # "time" is for the render-permit acquisition timeout in routes.rs, which

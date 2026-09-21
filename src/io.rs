@@ -155,7 +155,7 @@ pub fn load_cor(
         // Ugly fix for 9:00:00 -> 09:00:00
         let mut time_str = data[2].to_string();
         if time_str.len() == 7 {
-            time_str = "0".to_string() + &time_str;
+            time_str = "0".to_string() + time_str.as_str();
         }
         // Parse the date and time columns into datetime, then convert to seconds after UNIX epoch.
         // In some odd cases, the time information is wrong. Those lines should b eskipped

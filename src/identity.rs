@@ -120,6 +120,158 @@ fn sanitize_to_slug(stem: &str) -> String {
     out.trim_matches(['-', '_']).to_string()
 }
 
+/// Transliterate the letters that have an obvious ASCII mapping for use in an
+/// *expression identifier* (#206).
+///
+/// Deliberately different from [`transliterate_nordic`], which is the slug
+/// rule: a slug may contain both `-` and `_` and maps `å` to `aa`, while an
+/// identifier must match `^[a-z][a-z0-9_]*$`, so `å` maps to `a` and `æ` to
+/// `ae`. The two tables cannot be shared without one of them becoming wrong.
+///
+/// A letter with no mapping here is dropped rather than turned into a
+/// separator, so `Drønbreen` is `dronbreen` and not `dr_nbreen`.
+fn transliterate_identifier(c: char) -> Option<&'static str> {
+    match c {
+        'ø' | 'Ø' => Some("o"),
+        'å' | 'Å' => Some("a"),
+        'ä' | 'Ä' => Some("a"),
+        'ö' | 'Ö' => Some("o"),
+        'æ' | 'Æ' => Some("ae"),
+        'é' | 'É' => Some("e"),
+        _ => None,
+    }
+}
+
+/// Is `s` usable as a variable name in a derived-layer expression (#206)?
+///
+/// The rule is `^[a-z][a-z0-9_]*$`. It is intentionally narrower than
+/// [`validate_slug`]: a slug may contain `-` and start with `_`, neither of
+/// which Rhai accepts in a bare identifier.
+pub fn is_valid_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Rhai keywords and reserved words that cannot be a bare variable name.
+const RHAI_KEYWORDS: &[&str] = &[
+    "if",
+    "else",
+    "switch",
+    "do",
+    "while",
+    "loop",
+    "for",
+    "in",
+    "continue",
+    "break",
+    "return",
+    "let",
+    "const",
+    "fn",
+    "private",
+    "import",
+    "export",
+    "as",
+    "true",
+    "false",
+    "this",
+    "global",
+    "Fn",
+    "call",
+    "curry",
+    "type_of",
+    "print",
+    "debug",
+    "eval",
+    "is_def_var",
+    "is_def_fn",
+    "is_shared",
+];
+
+/// Names of the expression built-ins. A layer called `count` would shadow the
+/// `count` reduction, so it is suffixed rather than accepted as a variable.
+const EXPRESSION_BUILTINS: &[&str] = &[
+    "count",
+    "median",
+    "mean",
+    "std",
+    "nmad",
+    "percentile",
+    "min",
+    "max",
+    "concatenate",
+    "shallowest",
+    "deepest",
+    "clamp",
+    "where",
+    "nan",
+];
+
+/// Turn a human display name into a valid, non-colliding Rhai identifier
+/// (#206).
+///
+/// Rules, in order: lowercase; transliterate the letters in
+/// [`transliterate_identifier`]; collapse every run of non-alphanumeric ASCII
+/// to a single `_`; strip leading/trailing `_`; prefix `l_` when the result is
+/// empty or starts with a digit; append `_layer` when the result is a Rhai
+/// keyword or an expression built-in; append `_2`, `_3`, ... until the result
+/// is not in `taken`.
+///
+/// `taken` is the set of ids already in use. The result always satisfies
+/// [`is_valid_identifier`].
+pub fn sanitize_to_identifier(display_name: &str, taken: &[String]) -> String {
+    let lowered = display_name.to_lowercase();
+    let mut out = String::with_capacity(lowered.len());
+    let mut last_was_sep = false;
+    for c in lowered.chars() {
+        if let Some(ascii) = transliterate_identifier(c) {
+            out.push_str(ascii);
+            last_was_sep = false;
+        } else if c.is_ascii_alphanumeric() {
+            out.push(c);
+            last_was_sep = false;
+        } else if c.is_ascii() {
+            // A run of punctuation/whitespace collapses to one `_`. A leading
+            // run is dropped by the `out.is_empty()` guard; a trailing run is
+            // trimmed below.
+            if !last_was_sep && !out.is_empty() {
+                out.push('_');
+                last_was_sep = true;
+            }
+        }
+        // A non-ASCII character with no mapping is dropped outright, not
+        // treated as a separator: `Drønbreen` must not become `dr_nbreen`.
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+
+    if out.is_empty() || out.starts_with(|c: char| c.is_ascii_digit()) {
+        out.insert_str(0, "l_");
+    }
+
+    if RHAI_KEYWORDS.contains(&out.as_str()) || EXPRESSION_BUILTINS.contains(&out.as_str()) {
+        out.push_str("_layer");
+    }
+
+    if taken.iter().any(|t| t == &out) {
+        let base = out.clone();
+        let mut n = 2;
+        loop {
+            let candidate = format!("{base}_{n}");
+            if !taken.iter().any(|t| t == &candidate) {
+                return candidate;
+            }
+            n += 1;
+        }
+    }
+    out
+}
+
 macro_rules! slug_newtype {
     ($name:ident, $kind:literal) => {
         #[doc = concat!("A validated ", $kind, " slug.")]
@@ -699,6 +851,64 @@ mod tests {
     #[test]
     fn resolve_group_rejects_invalid_explicit_id() {
         assert!(resolve_group(Some("Dronbreen"), Some("Bad Id"), None, None).is_err());
+    }
+
+    #[test]
+    fn identifiers_sanitize_display_names() {
+        assert_eq!(
+            sanitize_to_identifier("Glacier bed (to temperate ice above)", &[]),
+            "glacier_bed_to_temperate_ice_above"
+        );
+        assert_eq!(
+            sanitize_to_identifier("Drønbreen bed", &[]),
+            "dronbreen_bed"
+        );
+        assert_eq!(sanitize_to_identifier("2nd bed", &[]), "l_2nd_bed");
+        assert_eq!(sanitize_to_identifier("!!!", &[]), "l_");
+    }
+
+    #[test]
+    fn identifier_keywords_and_builtins_are_suffixed() {
+        assert_eq!(sanitize_to_identifier("count", &[]), "count_layer");
+        assert_eq!(sanitize_to_identifier("if", &[]), "if_layer");
+        assert_eq!(sanitize_to_identifier("median", &[]), "median_layer");
+        assert_eq!(sanitize_to_identifier("while", &[]), "while_layer");
+    }
+
+    #[test]
+    fn identifier_collisions_get_a_numeric_suffix() {
+        let taken = vec!["bed".to_string()];
+        assert_eq!(sanitize_to_identifier("Bed", &taken), "bed_2");
+        let taken = vec!["bed".to_string(), "bed_2".to_string()];
+        assert_eq!(sanitize_to_identifier("Bed", &taken), "bed_3");
+    }
+
+    #[test]
+    fn identifiers_are_valid_by_construction() {
+        for name in [
+            "Glacier bed (to temperate ice above)",
+            "Drønbreen bed",
+            "2nd bed",
+            "!!!",
+            "count",
+            "if",
+            "Ålesund — öst",
+            "  leading and trailing  ",
+        ] {
+            let id = sanitize_to_identifier(name, &[]);
+            assert!(is_valid_identifier(&id), "{name:?} produced {id:?}");
+        }
+    }
+
+    #[test]
+    fn identifier_validation_rejects_hyphens_and_other_slug_shapes() {
+        assert!(!is_valid_identifier("bed-2"));
+        assert!(is_valid_identifier("bed_2"));
+        assert!(!is_valid_identifier(""));
+        assert!(!is_valid_identifier("_bed"));
+        assert!(!is_valid_identifier("2bed"));
+        assert!(!is_valid_identifier("Bed"));
+        assert!(!is_valid_identifier("bed "));
     }
 
     #[test]

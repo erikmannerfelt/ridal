@@ -57,7 +57,7 @@ fn project_for<'a>(
 }
 
 /// The project for reading. Reads do not require writes to be enabled.
-fn readable_project(state: &AppState) -> Result<&Project, ApiError> {
+pub(crate) fn readable_project(state: &AppState) -> Result<&Project, ApiError> {
     state.project.as_ref().ok_or_else(|| {
         ApiError::not_found(
             "not_a_project",
@@ -70,7 +70,7 @@ fn readable_project(state: &AppState) -> Result<&Project, ApiError> {
 ///
 /// `If-Match` wins over `If-None-Match` when both are present; sending both
 /// is contradictory, and honouring the stricter one is the safer reading.
-fn expectation_from(headers: &HeaderMap) -> Expectation {
+pub(crate) fn expectation_from(headers: &HeaderMap) -> Expectation {
     if let Some(value) = headers.get(header::IF_MATCH).and_then(|v| v.to_str().ok()) {
         let value = value.trim();
         if value == "*" {
@@ -92,11 +92,11 @@ fn expectation_from(headers: &HeaderMap) -> Expectation {
     Expectation::Any
 }
 
-fn parse_radargram(raw: &str) -> Result<RadargramId, ApiError> {
+pub(crate) fn parse_radargram(raw: &str) -> Result<RadargramId, ApiError> {
     RadargramId::new(raw).map_err(|e| ApiError::bad_request("invalid_radargram_id", e))
 }
 
-fn parse_user(raw: &str) -> Result<UserId, ApiError> {
+pub(crate) fn parse_user(raw: &str) -> Result<UserId, ApiError> {
     UserId::new(raw).map_err(|e| ApiError::bad_request("invalid_user", e))
 }
 
@@ -157,7 +157,7 @@ fn interpretation_error(error: interpretations::InterpretationError) -> ApiError
     }
 }
 
-fn layer_error(error: layers::LayerError) -> ApiError {
+pub(crate) fn layer_error(error: layers::LayerError) -> ApiError {
     match &error {
         layers::LayerError::Store(e) => store_error(e),
         layers::LayerError::Malformed { .. } => {
@@ -165,7 +165,9 @@ fn layer_error(error: layers::LayerError) -> ApiError {
         }
         layers::LayerError::DuplicateId(_)
         | layers::LayerError::InvalidId { .. }
-        | layers::LayerError::InvalidColor { .. } => {
+        | layers::LayerError::InvalidColor { .. }
+        | layers::LayerError::IdNotExpressionSafe { .. }
+        | layers::LayerError::IdChanged { .. } => {
             ApiError::bad_request("invalid_layers", error.to_string())
         }
     }
@@ -453,7 +455,11 @@ pub async fn promote_interpretation(
         ));
     }
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
-    let violations = checks::check(&document, &|label| layer_set.allows_overhangs(label));
+    let violations = checks::check(
+        &document,
+        &|label| layer_set.allows_overhangs(label),
+        &|label| layer_set.warns_on_duplicates(label),
+    );
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
         return Err(ApiError::bad_request("overhang", joined.join("; ")));
@@ -620,7 +626,11 @@ pub async fn put_interpretation(
     // that is a convenience: anything reaching this route -- a second client,
     // a script, a replayed request -- has to pass the same rule.
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
-    let violations = checks::check(&document, &|label| layer_set.allows_overhangs(label));
+    let violations = checks::check(
+        &document,
+        &|label| layer_set.allows_overhangs(label),
+        &|label| layer_set.warns_on_duplicates(label),
+    );
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
         return Err(ApiError::bad_request("overhang", joined.join("; ")));
@@ -805,6 +815,18 @@ pub struct Level2Query {
     /// anonymous reader has no "own", so they have to name someone.
     #[serde(default)]
     user: Option<String>,
+    /// Admin only: one file with every contributor's points, each row still
+    /// tagged with its user. Off by default; the server checks the role.
+    #[serde(default)]
+    every_user: bool,
+    /// Export the computed derived layers instead of the picked points.
+    /// Only the merged (group/catalog) route reads this; the single-radargram
+    /// derived export has its own route.
+    #[serde(default)]
+    derived: bool,
+    /// When `derived`, include derived layers marked "not listed".
+    #[serde(default)]
+    include_unlisted: bool,
 }
 
 pub async fn interpretation_level2(
@@ -816,47 +838,70 @@ pub async fn interpretation_level2(
     caller.require_download(DownloadScope::Derived, "level 2 points")?;
     let project = readable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
-    let user = parse_user(&user)?;
+    let requested = parse_user(&user)?;
 
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, radargram.as_str())?;
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
-
-    let stored = interpretations::read(project.documents(), &radargram, &user)
-        .map_err(interpretation_error)?
-        .ok_or_else(|| {
-            ApiError::not_found(
-                "interpretation_not_found",
-                format!(
-                    "'{}' has no saved interpretation of '{}'. Save some picks first.",
-                    user.as_str(),
-                    radargram.as_str()
-                ),
-            )
-        })?;
-
     let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
         .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
-
     let geometry = crate::interp::source::read_geometry(&path)
         .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
-
-    // The same refusal the CLI makes. Without it a misplaced or
-    // hand-edited document exports against the wrong radargram and
-    // produces depths that are plausible and wrong.
-    let identity = checks::check_identity(&stored.document, &geometry)
-        .map_err(|e| ApiError::bad_request("radargram_mismatch", e))?;
-
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
     let allows = |label: Option<&str>| layer_set.allows_overhangs(label);
 
-    let export =
-        crate::interp::level2::export(&stored.document, &geometry, spacing, user.as_str(), &allows)
-            .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))?;
+    // One named user, or every contributor for an admin. The role check is
+    // the gate; `every_user` only asks for it.
+    let users: Vec<UserId> = if query.every_user {
+        caller.require(Role::Admin, "download every user's picks")?;
+        interpretations::list_users(project.documents(), &radargram)
+            .map_err(interpretation_error)?
+            .into_iter()
+            .map(|name| parse_user(&name))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![requested.clone()]
+    };
 
-    let exports = [export];
+    let mut exports = Vec::new();
+    let mut warnings = Vec::new();
+    for user in &users {
+        let Some(stored) = interpretations::read(project.documents(), &radargram, user)
+            .map_err(interpretation_error)?
+        else {
+            continue;
+        };
+        // The same refusal the CLI makes. Without it a misplaced or
+        // hand-edited document exports against the wrong radargram and
+        // produces depths that are plausible and wrong.
+        let identity = checks::check_identity(&stored.document, &geometry)
+            .map_err(|e| ApiError::bad_request("radargram_mismatch", e))?;
+        if let Some(warning) = identity.warning {
+            warnings.push(warning);
+        }
+        let export = crate::interp::level2::export(
+            &stored.document,
+            &geometry,
+            spacing,
+            user.as_str(),
+            &allows,
+        )
+        .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))?;
+        exports.push(export);
+    }
+    if exports.is_empty() {
+        return Err(ApiError::not_found(
+            "interpretation_not_found",
+            format!(
+                "'{}' has no saved interpretation of '{}'. Save some picks first.",
+                requested.as_str(),
+                radargram.as_str()
+            ),
+        ));
+    }
+
     let csv = matches!(query.format.as_deref(), Some("csv"));
     let (body, content_type, extension) = if csv {
         (
@@ -879,12 +924,18 @@ pub async fn interpretation_level2(
         )
     };
 
-    // Both components are validated slugs, so the filename cannot carry a
-    // quote, a newline, or a path separator into the header.
+    // A distinct, descriptive name: the picked and derived downloads used to
+    // share one, so a browser saved the second under the first's name and it
+    // was impossible to tell which file was which.
+    let who = if query.every_user {
+        format!("{}-every-user", requested.as_str())
+    } else {
+        requested.as_str().to_string()
+    };
     let filename = format!(
-        "{}-{}-level2.{extension}",
+        "{}-{}-picked-layer-points.{extension}",
         radargram.as_str(),
-        user.as_str()
+        who
     );
     let mut headers = HeaderMap::new();
     let set = |headers: &mut HeaderMap, name: header::HeaderName, value: String| {
@@ -893,6 +944,9 @@ pub async fn interpretation_level2(
         }
     };
     set(&mut headers, header::CONTENT_TYPE, content_type.to_string());
+    // A download must not be served from a stale cache: the whole point is
+    // that it reflects the saved state at the moment it is asked for.
+    set(&mut headers, header::CACHE_CONTROL, "no-store".to_string());
     set(
         &mut headers,
         header::CONTENT_DISPOSITION,
@@ -902,11 +956,11 @@ pub async fn interpretation_level2(
     // but a download that quietly used stale picks should say so. The CLI
     // prints this to stderr; over HTTP the header is the only place it can
     // go without corrupting the file.
-    if let Some(warning) = identity.warning {
+    if !warnings.is_empty() {
         set(
             &mut headers,
             header::WARNING,
-            format!("199 ridal \"{warning}\""),
+            format!("199 ridal \"{}\"", warnings.join("; ")),
         );
     }
     Ok((headers, body))
@@ -1296,66 +1350,106 @@ fn merged_level2(
         ));
     }
 
-    // Whose picks a merged download contains: the caller's own unless the
-    // request names someone. An anonymous reader has no "own", so rather
-    // than guessing -- and silently producing an empty download -- they are
-    // asked to say.
-    let user = match query.user.as_deref() {
-        Some(name) => parse_user(name)?,
-        None => caller.user.clone().ok_or_else(|| {
-            ApiError::bad_request(
-                "user_required",
-                "A merged download covers one person's picks. Add ?user=<name> \
-                 to say whose, or sign in to download your own.",
-            )
-        })?,
-    };
+    // Admin only: every contributor's picks in one file. Checked here rather
+    // than trusted from the checkbox.
+    if query.every_user {
+        caller.require(Role::Admin, "download every user's picks")?;
+    }
     let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
         .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
     let allows = |label: Option<&str>| layer_set.allows_overhangs(label);
+
+    // Whose picks a merged download contains: the caller's own unless the
+    // request names someone. An anonymous reader has no "own", so rather
+    // than guessing -- and silently producing an empty download -- they are
+    // asked to say. Resolved up front, before any radargram is opened, and
+    // only on the picked path: a derived download names no user, so it must
+    // not demand one.
+    let named_user: Option<UserId> = if query.derived || query.every_user {
+        None
+    } else {
+        Some(match query.user.as_deref() {
+            Some(name) => parse_user(name)?,
+            None => caller.user.clone().ok_or_else(|| {
+                ApiError::bad_request(
+                    "user_required",
+                    "A merged download covers one person's picks. Add ?user=<name> \
+                     to say whose, or sign in to download your own.",
+                )
+            })?,
+        })
+    };
 
     let mut exports = Vec::new();
     let mut skipped = Vec::new();
     let mut stale = Vec::new();
     for entry in &entries {
         let radargram = &entry.radargram_id;
-        let Some(stored) = interpretations::read(project.documents(), radargram, &user)
-            .map_err(interpretation_error)?
-        else {
-            skipped.push(radargram.to_string());
-            continue;
-        };
         let path = state
             .absolute_path(entry)
             .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
         let geometry = crate::interp::source::read_geometry(&path)
             .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
 
-        // Per member, and named, because a merge is where this goes
-        // unnoticed: one stale document among twenty produces a file that
-        // looks complete. A mismatched radargram still fails the whole
-        // download -- it means the project is inconsistent, not that one
-        // member is behind.
-        let identity = checks::check_identity(&stored.document, &geometry).map_err(|e| {
-            ApiError::bad_request("radargram_mismatch", format!("{}: {e}", radargram.as_str()))
-        })?;
-        if identity.warning.is_some() {
-            stale.push(radargram.to_string());
+        if query.derived {
+            exports.push(super::derived_routes::export_derived_points(
+                state,
+                caller,
+                radargram,
+                &geometry,
+                spacing,
+                query.include_unlisted,
+            )?);
+            continue;
         }
-        let export = crate::interp::level2::export(
-            &stored.document,
-            &geometry,
-            spacing,
-            user.as_str(),
-            &allows,
-        )
-        // Named, because in a group export "which one failed?" is the
-        // first thing anyone would ask.
-        .map_err(|e| {
-            ApiError::bad_request("level2_failed", format!("{}: {e}", radargram.as_str()))
-        })?;
-        exports.push(export);
+
+        // One named user, or everyone for an admin. The user list differs
+        // per radargram, so it is resolved inside the loop for `every_user`.
+        let entry_users: Vec<UserId> = if query.every_user {
+            interpretations::list_users(project.documents(), radargram)
+                .map_err(interpretation_error)?
+                .into_iter()
+                .map(|name| parse_user(&name))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![named_user
+                .clone()
+                .expect("the picked path resolves a user up front")]
+        };
+        for user in &entry_users {
+            let Some(stored) = interpretations::read(project.documents(), radargram, user)
+                .map_err(interpretation_error)?
+            else {
+                skipped.push(radargram.to_string());
+                continue;
+            };
+
+            // Per member, and named, because a merge is where this goes
+            // unnoticed: one stale document among twenty produces a file that
+            // looks complete. A mismatched radargram still fails the whole
+            // download -- it means the project is inconsistent, not that one
+            // member is behind.
+            let identity = checks::check_identity(&stored.document, &geometry).map_err(|e| {
+                ApiError::bad_request("radargram_mismatch", format!("{}: {e}", radargram.as_str()))
+            })?;
+            if identity.warning.is_some() && !stale.contains(&radargram.to_string()) {
+                stale.push(radargram.to_string());
+            }
+            let export = crate::interp::level2::export(
+                &stored.document,
+                &geometry,
+                spacing,
+                user.as_str(),
+                &allows,
+            )
+            // Named, because in a group export "which one failed?" is the
+            // first thing anyone would ask.
+            .map_err(|e| {
+                ApiError::bad_request("level2_failed", format!("{}: {e}", radargram.as_str()))
+            })?;
+            exports.push(export);
+        }
     }
 
     if exports.is_empty() {
@@ -1389,7 +1483,12 @@ fn merged_level2(
         )
     };
 
-    let filename = format!("{}-level2.{extension}", scope.slug());
+    let kind = if query.derived {
+        "derived-layer-points"
+    } else {
+        "picked-layer-points"
+    };
+    let filename = format!("{}-{}.{extension}", scope.slug(), kind);
     let mut headers = HeaderMap::new();
     let set = |headers: &mut HeaderMap, name: header::HeaderName, value: String| {
         // A header value that will not parse is dropped rather than turned
@@ -1400,6 +1499,9 @@ fn merged_level2(
         }
     };
     set(&mut headers, header::CONTENT_TYPE, content_type.to_string());
+    // A download must not be served from a stale cache: the whole point is
+    // that it reflects the saved state at the moment it is asked for.
+    set(&mut headers, header::CACHE_CONTROL, "no-store".to_string());
     set(
         &mut headers,
         header::CONTENT_DISPOSITION,
@@ -1471,12 +1573,18 @@ pub async fn layer_usage(
     let catalog = state.catalog();
     for entry in &catalog.entries {
         let radargram = &entry.radargram_id;
-        let users = interpretations::list_users(project.documents(), radargram)
-            .map_err(interpretation_error)?;
-        for user in users {
-            let Ok(user_id) = UserId::new(user.as_str()) else {
-                continue;
-            };
+        // Skip and report (#213) rather than skip in silence.
+        let (users, unreadable) =
+            interpretations::list_users_checked(project.documents(), radargram)
+                .map_err(interpretation_error)?;
+        for stem in &unreadable {
+            tracing::warn!(
+                radargram = radargram.as_str(),
+                stem = stem.as_str(),
+                "skipping an interpretation whose filename is not a valid user id"
+            );
+        }
+        for user_id in users {
             let Some(stored) = interpretations::read(project.documents(), radargram, &user_id)
                 .map_err(interpretation_error)?
             else {

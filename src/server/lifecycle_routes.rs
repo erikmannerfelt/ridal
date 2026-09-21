@@ -404,8 +404,19 @@ pub async fn remove_dataset(
     // Archived before the file goes. If the deletion fails afterwards the
     // catalog still has the radargram and the picks are one directory over,
     // which is recoverable; the other order could lose them outright.
-    let archived = interpretations::archive_all(project.documents(), &id, &at)
+    let archive = interpretations::archive_all(project.documents(), &id, &at)
         .map_err(|e| ApiError::internal("archive_failed", e.to_string()))?;
+    let archived = archive.moved;
+    // Left in place because the filename is not a valid user id (#213). Said
+    // out loud, because the point of archiving is that no orphan stays behind
+    // to reattach to a different radargram under the same id.
+    for stem in &archive.skipped {
+        tracing::warn!(
+            radargram = id.as_str(),
+            stem = stem.as_str(),
+            "interpretation left unarchived: its filename is not a valid user id"
+        );
+    }
 
     let outcome = if in_project {
         // Let go of the file before unlinking it. Windows refuses to

@@ -61,6 +61,9 @@ pub mod auth_routes;
 #[cfg(test)]
 mod auth_routes_tests;
 pub mod catalog;
+pub mod derived_routes;
+#[cfg(test)]
+mod derived_routes_tests;
 pub mod interp_routes;
 #[cfg(test)]
 mod interp_routes_tests;

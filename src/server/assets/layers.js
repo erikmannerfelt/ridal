@@ -231,6 +231,9 @@ async function load() {
   } catch (error) {
     showError(`Could not load layers: ${error.message}`);
   }
+  // A separate document with a separate save; a failure of one must not stop
+  // the other from working.
+  await loadDerived();
 }
 
 const form = document.getElementById("add-layer");
@@ -292,6 +295,199 @@ if (form) {
     form.reset();
     save();
   });
+}
+
+
+// --- Derived items (#209) -------------------------------------------------
+//
+// The vocabulary and the derived items are two documents with two saves. This
+// section is deliberately independent of the layer table above: a rejected
+// layer write reloads the layers, and a rejected derived write reloads the
+// derived items, and neither touches the other.
+
+const derivedTable = document.querySelector("#derived-table tbody");
+const derivedEmpty = document.getElementById("derived-empty");
+const derivedError = document.getElementById("derived-error");
+const derivedActions = document.getElementById("derived-actions");
+
+let derivedItems = [];
+let derivedUnusable = [];
+let derivedCanAuthor = false;
+let derivedCanRelease = false;
+
+function showDerivedError(message) {
+  if (!derivedError) return;
+  derivedError.textContent = message;
+  derivedError.hidden = false;
+}
+
+function clearDerivedError() {
+  if (!derivedError) return;
+  derivedError.hidden = true;
+  derivedError.textContent = "";
+}
+
+function derivedCell(text) {
+  const cell = document.createElement("td");
+  cell.textContent = text == null ? "" : String(text);
+  return cell;
+}
+
+function renderDerivedRow(item) {
+  const row = document.createElement("tr");
+
+  const swatchCell = document.createElement("td");
+  const swatch = document.createElement("span");
+  swatch.className = "layer-swatch";
+  swatch.style.background = item.color || "#888888";
+  swatchCell.appendChild(swatch);
+  row.appendChild(swatchCell);
+
+  const idCell = document.createElement("td");
+  const code = document.createElement("code");
+  code.textContent = item.id;
+  idCell.appendChild(code);
+  row.appendChild(idCell);
+
+  row.appendChild(derivedCell(item.name));
+  row.appendChild(derivedCell(item.kind));
+  row.appendChild(derivedCell(item.unit));
+  const expressionCell = document.createElement("td");
+  const expression = document.createElement("code");
+  // Same token colours as the editor; `highlight` escapes every token.
+  expression.innerHTML = RIDAL.derivedEditor.highlight(item.expression);
+  expressionCell.appendChild(expression);
+  row.appendChild(expressionCell);
+  row.appendChild(derivedCell(item.show ? "yes" : "no"));
+  row.appendChild(derivedCell(item.listed === false ? "no" : "yes"));
+  // A counter, so an intermediate layer is visibly one before someone tries
+  // to delete it; the server refuses that delete and names the dependent.
+  row.appendChild(
+    derivedCell(item.used_by ? `${item.used_by}` : "—"),
+  );
+  row.appendChild(
+    derivedCell(item.audience === "released" ? "everyone" : "own picks"),
+  );
+
+  const actionCell = document.createElement("td");
+  if (derivedCanAuthor) {
+    // `.row-actions` is the shared table-row button style, so Edit and Delete
+    // read as one set rather than as controls borrowed from two pages.
+    const actions = document.createElement("span");
+    actions.className = "row-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => editDerived(item));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => confirmDeleteDerived(item, actions));
+    actions.append(edit, remove);
+    actionCell.appendChild(actions);
+  }
+  row.appendChild(actionCell);
+  return row;
+}
+
+function renderDerived() {
+  if (!derivedTable) return;
+  derivedTable.replaceChildren(...derivedItems.map(renderDerivedRow));
+  if (derivedEmpty) derivedEmpty.hidden = derivedItems.length > 0;
+  if (derivedActions) {
+    derivedActions.replaceChildren();
+    if (derivedCanAuthor) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.id = "derived-new";
+      add.textContent = "Add expression";
+      add.addEventListener("click", () => editDerived(null));
+      derivedActions.appendChild(add);
+    }
+  }
+}
+
+function editDerived(item) {
+  RIDAL.derivedEditor.open({
+    item,
+    items: derivedItems,
+    layerIds: layers.map((layer) => layer.id),
+    unusable: derivedUnusable,
+    canRelease: derivedCanRelease,
+    // No radargram on this page, so no live preview; the editor says so.
+    preview: null,
+    onSaved: loadDerived,
+    onClose: () => {},
+  });
+}
+
+function confirmDeleteDerived(item, actionCell) {
+  actionCell.replaceChildren();
+  const prompt = document.createElement("span");
+  prompt.className = "layer-panel-confirm";
+  prompt.textContent = `Delete '${item.name || item.id}'?`;
+  const yes = document.createElement("button");
+  yes.type = "button";
+  yes.className = "danger";
+  yes.textContent = "Delete";
+  yes.addEventListener("click", () => deleteDerived(item));
+  const no = document.createElement("button");
+  no.type = "button";
+  no.textContent = "Cancel";
+  no.addEventListener("click", renderDerived);
+  prompt.append(yes, no);
+  actionCell.appendChild(prompt);
+}
+
+async function deleteDerived(item) {
+  clearDerivedError();
+  const next = derivedItems
+    .filter((existing) => existing.id !== item.id)
+    .map((existing) => ({
+      id: existing.id,
+      name: existing.name,
+      expression: existing.expression,
+      unit: existing.unit,
+      color: existing.color,
+      show: existing.show,
+      listed: existing.listed,
+      fill_to: existing.fill_to,
+      scope: existing.scope,
+      audience: existing.audience,
+    }));
+  try {
+    await RIDAL.fetchJson("/api/v1/derived", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        schema: "ridal-derived",
+        schema_version: "1",
+        items: next,
+      }),
+    });
+  } catch (error) {
+    // Includes the server's refusal to delete an item another depends on,
+    // which names the dependent.
+    showDerivedError(error.message);
+    return;
+  }
+  await loadDerived();
+}
+
+async function loadDerived() {
+  clearDerivedError();
+  try {
+    const body = await RIDAL.fetchJson("/api/v1/derived");
+    derivedItems = body.items || [];
+    derivedUnusable = body.layers_unusable_in_expressions || [];
+    derivedCanAuthor = Boolean(body.can_author);
+    derivedCanRelease = Boolean(body.can_release);
+  } catch (error) {
+    showDerivedError(`Could not load derived items: ${error.message}`);
+    derivedItems = [];
+  }
+  renderDerived();
 }
 
 load();

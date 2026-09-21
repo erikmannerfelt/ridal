@@ -14,6 +14,8 @@ AGENTS.md
 # work but is not something the repository should carry.
 PR1_WEB_GUI_LOG.md
 PHASE1_LOG.md
+PLAN.md
+PROGRESS_LOG.md
 # PR and issue drafts: text meant to live on GitHub once the PR or issue
 # is opened, not as a permanent tracked file that would survive a squash
 # merge into main. Globs rather than one line per draft, because the list

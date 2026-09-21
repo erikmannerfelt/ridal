@@ -409,3 +409,261 @@ max_depth`) vertical scale, by design (see `topo.rs`'s module docs).
   unavailability reason as its `title` when a radargram lacks usable
   axes, both from an on-load availability check and from
   `ridal render --topo` failing the same way on the command line.
+
+## Derived layers and reducers (#205–#210)
+
+A **derived item** is a named Rhai expression over the project's picked
+layers, e.g. `median(bed)` or `std(concatenate(bed, bed_no_temperate))`.
+Whether it is a **layer** or an **attribute** is inferred, never declared: an
+expression that yields a position is a derived layer (a line, available as
+depth, TWTT and sample number); anything else is a derived attribute (a
+per-position number exported in its own unit). The evaluator lives in
+`interp::derive` (pure, no I/O) and the document model in `project::derived`
+(`ridal_data/derived/derived.json`).
+
+There are exactly two kinds, matching the two words the UI uses. An earlier
+`length`/`scalar` split was never acted on by any branch — the only decisions
+are "is it a layer" — and the stored `unit` already distinguishes a thickness
+from a count, so the extra terms only reached the UI and confused it. The
+`percentile(a, p)` built-in is the order statistic at `floor(p/100 * (n-1))`;
+it deliberately does not interpolate, so it always returns a value a
+contributor actually picked (see the Mannerfelt consensus).
+
+### Reducers turn multi-valued geometry into one line per user
+
+A reflector is supposed to be a function of trace, but a layer may be drawn
+in several pieces, or a fold may have two limbs. `Layer::reducer` decides
+how several picked values for one user at one position collapse to one:
+`shallowest` (the project default), `deepest`, `median`, `mean`. The default
+is shallowest because stray picks on multiples and ringing lie *below* the
+true reflector, so the minimum depth is the defensible choice — for a folded
+reflector it keeps only the upper limb. Reducers apply **at evaluation
+time**; stored picks are never rewritten, so changing one is
+non-destructive and reversible.
+
+### Exclusivity groups
+
+`LayerSet::groups` declares sets of layers that cannot all hold a value for
+one user at one position. Two layers conflict iff they share a group, and
+membership is deliberately not transitive. When one user holds values for
+two conflicting layers at a position, *every* layer involved becomes NaN for
+that user there, so group evaluation order cannot matter. A group naming an
+undefined layer is reported, never dropped.
+
+### Units
+
+Every layer value is converted into the expression's unit (`meters`,
+`nanoseconds`, or `samples`, positive **down**) before the expression runs,
+and a position result is converted back to the other two. Sample numbers may
+be fractional. An attribute result is exported in its own unit and never
+converted.
+
+A fourth unit, `dimensionless`, exists for counts, ratios and flags. A
+*layer* may not be declared dimensionless — a layer is a depth, and a depth
+has a unit — which `Unit::allows` enforces at evaluation time, where the
+inferred kind is known. (`validate` cannot: it has no layer vocabulary, so it
+cannot know an expression's kind.)
+
+### Two engines, one function table
+
+Kind inference and evaluation are **two Rhai engines over parallel type
+tables**: evaluation binds a layer as a `UserArray` and a reference to another
+derived item as a plain `f64`; inference binds both as a `Kinded`, which
+carries the kind and whether the value is still per-user.
+
+That split is what makes `median(bed)` inferable without any picks, and it is
+also the standing hazard: **a function registered on one engine and not the
+other makes them disagree about what is a valid expression**, and the
+disagreement is silent in the worst direction. Inference runs when an item is
+*saved*; evaluation when it is *read*. An expression that infers but cannot
+evaluate saves cleanly, reports its kind in the editor, and then fails on
+every read afterwards.
+
+So every element-wise helper has a scalar twin (`clamp`, `shallowest`,
+`deepest`, `where`), the mixed array/scalar forms exist on both engines, and
+inference refuses an array-valued result exactly as evaluation does —
+`bed - temperate_ice` is a length *per contributor*, not an item;
+`median(bed) - median(temperate_ice)` is. Rhai's standard library already
+supplies scalar `min`, `max`, `abs` and `is_nan`, so those need only a
+`Kinded` mirror.
+
+`inference_and_evaluation_accept_the_same_expressions` enforces this over a
+table of expressions. **Add a row whenever a function is registered** — the
+test exists to catch the class, not the three instances that prompted it.
+
+### Who sees a result computed from whose picks
+
+Three rules, and they are the whole permission model for derived results:
+
+1. **Anyone may see a result computed from their own picks.** It is a
+   function of data they already have, so it needs nobody's permission. This
+   is `Audience::OwnPicks`, the default.
+2. **A cross-user result is an admin decision**, recorded as
+   `Audience::Released` on the item. Releasing needs `Role::Admin`, not the
+   `Role::Operator` that *authoring* an item needs, because releasing
+   publishes other contributors' work in aggregate.
+3. **An operator sees the cross-user result either way**, so a consensus can
+   be defined and watched while picking is still open, without pickers seeing
+   each other's work — which is the bias the study design exists to avoid.
+
+`audience` is deliberately separate from `scope`: `scope` decides who can see
+that an item *exists*, `audience` decides *whose data feeds it*. A download
+that mixes audiences evaluates once per audience and serves each item only
+from its own evaluation, because serving both from one wider evaluation and
+filtering afterwards is how a consensus leaks into an unreleased item.
+
+`DownloadScope::Results` sits **below** `Picks` in the scope ladder, and is
+the one rung where "more" inverts: an aggregate over many contributors
+discloses less than any single contributor's raw picks. It is what expresses
+"you may have the consensus but not the individual interpretations", and
+without it that setting is unreachable — the lowest scope permitting a result
+also permitted every pick behind it.
+
+**Which velocity model the expressions assume:** the depth axis of a
+processed radargram, i.e. the single `medium_velocity` the file was processed
+with. A derived expression in `meters` therefore inherits that velocity, and
+changing it means reprocessing the radargram; the picks themselves are in
+trace/sample space and are unaffected.
+
+### Permissions
+
+An expression is evaluated over the picks the caller may see: an operator
+(or a project that never opted into authentication) gets the full consensus,
+an ordinary picker only their own picks. Defining a project-wide item needs
+the operator role; a private item belongs to one user and any signed-in user
+may keep one. Results have their own download scope, separate from picks.
+
+A worked example — the layers, exclusivity group and seven expressions used
+to reproduce the Mannerfelt et al. (2026) consensus — is in
+`assets/examples/dronbreen-20250327-DAT_0066_A1_1/`.
+
+## The layer panel, fills and the expression editor (#209)
+
+The viewer's controls for all of this live in `assets/panel.js`, a small
+`L.Control` subclass rather than `L.control.layers`. The built-in is a flat
+checkbox list that cannot group derived items apart from picked layers, label
+an item "(your picks)", or add one contributor toggle without doubling every
+row — so the subclass is less code than working around it. Panel order is
+draw order.
+
+- **Own layers are on by default; derived items are off.** A new expression
+  is likelier to be wrong than the layers it is built from, so `show` starts
+  false. An item the caller may not see is absent from `GET /api/v1/derived`
+  entirely — `scope` is applied server-side before the panel ever sees it.
+- **One "show all contributors" toggle**, not a per-layer variant. It is
+  offered only when the server says so (`can_see_others`), never inferred
+  from a role string. Other contributors' lines are fetched through
+  `GET /api/v1/datasets/{id}/contributors`, which applies the caller's own
+  visibility; the ungated `.../interpretations/{user}` route (#212) is
+  deliberately not used.
+- **A project-wide item read as a personal number says so.** When an
+  `OwnPicks` item is shown to someone who cannot see cross-user results, its
+  label carries "(your picks)". Silently showing a personal evaluation under
+  a name like "Consensus" is wrong in a way nobody can see, which is the
+  failure this phase most needs to avoid.
+
+### Range fills
+
+A `fill_to` on a derived position draws a matplotlib `fill_between` band
+toward another item. It is filled **per trace interval** and split wherever
+the two bounds cross, so a fill can never render as a bowtie; it **breaks at
+a NaN gap** on either side rather than bridging it; and it is drawn in its
+own Leaflet pane **behind every line**, so it is visible with both bound
+lines toggled off. It is drawn only when the caller can see both bounds — a
+fill against an invisible bound would disclose that bound's position exactly
+— and only in the radargram viewer, where a depth range has meaning.
+
+### The expression editor
+
+The editor previews a line on the radargram as you type, without saving:
+`POST /api/v1/datasets/{id}/derived/preview` evaluates the expression over
+the same picks the caller may see and returns the inferred kind and unit.
+That live line is the best guard against a sign or unit mistake, and an
+invalid expression clears it rather than leaving a stale line pretending to
+be current. Highlighting is hand-rolled for the twenty-token grammar (layer
+ids, built-ins, numbers, `if`/`else`, `NaN`) rather than vendoring Prism, and
+autocomplete is a `<datalist>` fed from the layer vocabulary and the built-in
+list. `layers_unusable_in_expressions` is shown beside it: a legacy id with a
+hyphen parses as a minus and would otherwise fail with no hint that the id
+was the problem.
+
+`scripts/panel_harness.py` drives these through headless Chromium and a
+same-origin iframe harness; see its module doc for the virtual-time and
+request-counting traps.
+
+### Where derived items are managed, and why in two places
+
+The viewer's layer panel is the **main** place to create, edit and delete a
+derived item, because that is where the expression's effect is visible: the
+live preview only exists next to a radargram. It is not the **only** place.
+A project's derived items are project state, and a project should be
+manageable without opening a radargram, so the `/layers` page lists and edits
+them too. The two are one dialog and one save path: `RIDAL.derivedEditor`
+in `app.js` builds the form and does the `PUT`, and each page supplies what
+it alone can — the viewer passes a `preview` callback that draws a line,
+`/layers` passes none and the dialog says there is no radargram to preview
+against.
+
+Both editors send only the items the caller can see, and `PUT
+/api/v1/derived` merges: items the caller cannot see are preserved, an
+incoming id that collides with one is refused, and a delete that would orphan
+another item's reference is refused naming the dependent. That is why the
+client never has to fetch or resend the invisible partition, which it cannot
+see by design.
+
+### The panel's disclosure
+
+The panel is a `<details>` closed by default — the same pattern the header
+menu uses, so it opens and closes and takes keyboard focus with no
+JavaScript. Unlike `.site-menu` it deliberately does **not** close on an
+outside click — the close-on-outside handler in `app.js` is bound to
+`details.site-menu`, and the panel is not one — because the map is what is
+being looked at while layers are toggled, and a click there must not fold the
+panel away mid-task. A separate control hides the panel entirely for a viewer
+reading the image, and that choice persists for the session in
+`sessionStorage`; the toggle has its own hover treatment because it is small
+and easy to overlook.
+
+`audience` is a permission control, not a display setting, and the editor
+labels it as publishing every contributor's picks in aggregate ("Visible to
+everyone"). It is shown only to a caller who may set it (`can_release`), and
+the server's `Role::Admin` check on `Audience::Released` remains the real
+gate; a 403 is shown verbatim rather than folded into a generic failure.
+
+### Listed vs shown, and the used-by counter
+
+A derived item has two independent viewer-facing flags. `show` is whether it
+is **drawn** when the viewer opens; `listed` is whether it appears in the
+viewer's layer panel **at all**. The distinction exists for intermediate
+layers: a layer that exists only as an input to another derived item should
+not clutter the panel, so it is unlisted while staying fully usable in
+expressions and fully visible on the `/layers` page. The editor names both
+plainly ("Show in the viewer's layer list", "Draw it when the viewer opens"),
+because the earlier single "Show by default" left it unclear how to take a
+layer out of the list. The panel's own count is the number of layer rows it
+shows -- picked layers plus listed derived layers -- and not the contributor
+toggle.
+
+The `/layers` page shows a **used-by** count per item: how many other derived
+items reference it in an expression. It is computed server-side over the
+*whole* stored set, so an invisible dependent is counted too -- otherwise the
+count would read zero and the server's refusal to delete the item would look
+arbitrary. Only the count leaves the server, never who depends on it.
+
+### Downloading derived layers
+
+The download menus offer **Picked layer points** and **Derived layer points**
+(the former was called "Layer points"). The derived export evaluates the
+caller's visible picks and turns each derived *layer* into a level 2 export
+through the same resampling and writers the picked export uses, so spacing,
+CSV/GeoJSON and the coordinate options are identical; an attribute is a
+number, not a line, and is skipped. "Include unlisted" brings in layers marked
+`listed: false`, off by default to match the viewer panel. The single-radargram
+route is `GET /api/v1/datasets/{id}/derived/level2`; the merged group/catalog
+menus select the same path with `derived=true` on the existing `level2` route,
+so one dialog serves both.
+
+An admin also gets **For every user** on picked layer points: one file with
+every contributor's points, each row still tagged with its user. It is an
+`Role::Admin` decision (the server checks it, not just the checkbox), because
+it discloses individual picks in aggregate.

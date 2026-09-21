@@ -787,6 +787,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/index.js", get(super::assets::index_js))
         .route("/static/viewer.js", get(super::assets::viewer_js))
         .route("/static/picker.js", get(super::assets::picker_js))
+        .route("/static/panel.js", get(super::assets::panel_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -902,6 +903,30 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}/level2",
             get(super::interp_routes::interpretation_level2),
+        )
+        .route(
+            "/api/v1/derived",
+            get(super::derived_routes::get_derived).put(super::derived_routes::put_derived),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/derived",
+            get(super::derived_routes::download_derived),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/derived/{item}",
+            get(super::derived_routes::get_derived_item),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/contributors",
+            get(super::derived_routes::get_contributors),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/derived/preview",
+            axum::routing::post(super::derived_routes::preview_derived),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/derived/level2",
+            get(super::derived_routes::derived_level2),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}",

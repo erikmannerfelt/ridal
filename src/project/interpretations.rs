@@ -101,6 +101,35 @@ pub fn list_users(
     Ok(store.list_stems(&directory_of(radargram), SUFFIX)?)
 }
 
+/// Users who have an interpretation, split into the readable and the not.
+///
+/// A stem is a filename the server wrote, but [`UserId`] rejects anything
+/// outside its charset rather than sanitising, so a file placed by hand or by
+/// a converter that did not know the rules is unreadable. Callers used to
+/// handle that four different ways -- four silent `continue`s and two `?`s
+/// that turned one bad filename into a 500 for the whole request, hiding every
+/// good file behind it (#213).
+///
+/// Returning both halves makes the honest thing the easy thing: skip what
+/// cannot be read so one bad name cannot hide the rest, **and** report it, so
+/// a consensus computed over fewer contributors than exist can say so. Silence
+/// is the worse failure of the two -- a median over 9 of 10 contributors
+/// presented as *the* consensus is wrong in a way nobody can see.
+pub fn list_users_checked(
+    store: &DocumentStore,
+    radargram: &RadargramId,
+) -> Result<(Vec<UserId>, Vec<String>), InterpretationError> {
+    let mut readable = Vec::new();
+    let mut unreadable = Vec::new();
+    for stem in list_users(store, radargram)? {
+        match UserId::new(stem.as_str()) {
+            Ok(user) => readable.push(user),
+            Err(_) => unreadable.push(stem),
+        }
+    }
+    Ok((readable, unreadable))
+}
+
 /// Read one user's interpretation, or `None` if they have not made one.
 pub fn read(
     store: &DocumentStore,
@@ -263,6 +292,19 @@ pub fn archive_one(
 /// Move every interpretation of `radargram` into the archive, returning how
 /// many moved.
 ///
+/// What [`archive_all`] did, and what it could not.
+///
+/// `skipped` names files left in place because their filename is not a valid
+/// [`UserId`] and the archive path is built from one (#213). That matters more
+/// here than elsewhere: the whole point of archiving is that nothing authored
+/// is destroyed and no orphan is left to reattach to a different radargram
+/// under the same id, so a file quietly left behind defeats the purpose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveReport {
+    pub moved: usize,
+    pub skipped: Vec<String>,
+}
+
 /// Archived rather than deleted, and not only to be careful with data. The
 /// hazard is that someone removes a radargram, someone else later adds a
 /// *different* file under the same id, and the orphaned picks silently
@@ -277,17 +319,19 @@ pub fn archive_all(
     store: &DocumentStore,
     radargram: &RadargramId,
     at: &str,
-) -> Result<usize, InterpretationError> {
-    let users = list_users(store, radargram)?;
+) -> Result<ArchiveReport, InterpretationError> {
+    // Skip and report (#213). An unreadable filename is left where it is
+    // rather than archived, since the archive path is built from a `UserId`.
+    let (users, unreadable) = list_users_checked(store, radargram)?;
     if users.is_empty() {
-        return Ok(0);
+        return Ok(ArchiveReport {
+            moved: 0,
+            skipped: unreadable,
+        });
     }
     let destination = free_archive_directory(store, radargram, at)?;
     let mut moved = 0;
-    for user in users {
-        let Ok(user_id) = UserId::new(user.as_str()) else {
-            continue;
-        };
+    for user_id in users {
         let source = path_of(radargram, &user_id);
         let Some(stored) = store.read(&source)? else {
             continue;
@@ -303,7 +347,10 @@ pub fn archive_all(
         store.remove(&source, &Expectation::Any)?;
         moved += 1;
     }
-    Ok(moved)
+    Ok(ArchiveReport {
+        moved,
+        skipped: unreadable,
+    })
 }
 
 /// Delete one user's interpretation. Returns whether it existed.
@@ -594,7 +641,9 @@ mod archive_tests {
         write_picks(store, &id, "erik");
         write_picks(store, &id, "student");
 
-        let moved = archive_all(store, &id, "2026-09-13T12:00:00Z").unwrap();
+        let moved = archive_all(store, &id, "2026-09-13T12:00:00Z")
+            .unwrap()
+            .moved;
         assert_eq!(moved, 2);
         assert!(
             list_users(store, &id).unwrap().is_empty(),
@@ -697,9 +746,9 @@ mod archive_tests {
         let at = "2026-09-13T12:00:00Z";
 
         write_picks(store, &id, "erik");
-        assert_eq!(archive_all(store, &id, at).unwrap(), 1);
+        assert_eq!(archive_all(store, &id, at).unwrap().moved, 1);
         write_picks(store, &id, "student");
-        assert_eq!(archive_all(store, &id, at).unwrap(), 1);
+        assert_eq!(archive_all(store, &id, at).unwrap().moved, 1);
 
         let archived = project.data_dir().join("interpretations/_archived/line-01");
         let mut dirs: Vec<String> = std::fs::read_dir(&archived)
@@ -720,12 +769,50 @@ mod archive_tests {
     #[test]
     fn archiving_a_radargram_nobody_picked_is_not_an_error() {
         let (_dir, project) = project();
-        let moved = archive_all(
+        let report = archive_all(
             project.documents(),
             &radargram("untouched"),
             "2026-09-13T12:00:00Z",
         )
         .unwrap();
-        assert_eq!(moved, 0);
+        assert_eq!(report.moved, 0);
+        assert!(report.skipped.is_empty());
+    }
+
+    /// A filename that is not a valid `UserId` is skipped and *named*, not
+    /// silently dropped and not fatal (#213). Archiving is where this matters
+    /// most: the whole point is that no orphan stays behind to reattach to a
+    /// different radargram under the same id.
+    #[test]
+    fn an_unreadable_filename_is_reported_rather_than_hidden() {
+        let (_dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+
+        // One valid pick, and one whose filename `UserId` refuses.
+        write_picks(store, &id, "valid");
+        store
+            .write(
+                &directory_of(&id).join(format!("NotAUserId{SUFFIX}")),
+                r#"{"schema":"gprinterp","key":"line-01","features":[]}"#,
+                &Expectation::Any,
+            )
+            .unwrap();
+
+        let (readable, unreadable) = list_users_checked(store, &id).unwrap();
+        assert_eq!(
+            readable.iter().map(UserId::as_str).collect::<Vec<_>>(),
+            vec!["valid"],
+            "the valid pick must not be hidden by the invalid one"
+        );
+        assert_eq!(unreadable, vec!["NotAUserId".to_string()]);
+
+        let report = archive_all(store, &id, "2026-09-20T12:00:00Z").unwrap();
+        assert_eq!(report.moved, 1, "the readable pick is archived");
+        assert_eq!(
+            report.skipped,
+            vec!["NotAUserId".to_string()],
+            "the unreadable one is named, not silently left behind"
+        );
     }
 }

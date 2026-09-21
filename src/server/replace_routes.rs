@@ -316,14 +316,22 @@ fn consequences(
         }
     });
 
-    let users = interpretations::list_users(project.documents(), radargram)
-        .map_err(|e| ApiError::internal("interpretations_read_failed", e.to_string()))?;
+    // Skip and report (#213) rather than skip in silence. This one plans a
+    // carry across a replacement, so a pick left out of the plan is a pick
+    // that silently does not get carried.
+    let (users, unreadable) =
+        interpretations::list_users_checked(project.documents(), radargram)
+            .map_err(|e| ApiError::internal("interpretations_read_failed", e.to_string()))?;
+    for stem in &unreadable {
+        tracing::warn!(
+            radargram = radargram.as_str(),
+            stem = stem.as_str(),
+            "not carrying an interpretation: its filename is not a valid user id"
+        );
+    }
 
     let mut documents = Vec::new();
-    for user in users {
-        let Ok(user_id) = crate::identity::UserId::new(&user) else {
-            continue;
-        };
+    for user_id in users {
         let Some(stored) = interpretations::read(project.documents(), radargram, &user_id)
             .map_err(|e| ApiError::internal("interpretations_read_failed", e.to_string()))?
         else {

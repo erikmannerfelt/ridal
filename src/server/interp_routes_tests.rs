@@ -774,7 +774,7 @@ async fn the_level2_download_derives_from_the_saved_interpretation() {
         .unwrap()
         .to_string();
     assert!(
-        disposition.contains("line-01-default-level2.csv"),
+        disposition.contains("line-01-default-picked-layer-points.csv"),
         "{disposition}"
     );
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -858,7 +858,9 @@ async fn a_group_level2_merges_points_that_name_their_radargram() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(disposition.unwrap().contains("survey-level2.csv"));
+    assert!(disposition
+        .unwrap()
+        .contains("survey-picked-layer-points.csv"));
 
     let csv = String::from_utf8(bytes).unwrap();
     let mut lines = csv.lines();
@@ -970,7 +972,9 @@ async fn a_catalog_level2_merges_across_group_boundaries() {
     let (status, disposition, bytes) =
         raw(&app, "/api/v1/catalog/level2?spacing=vertices&format=csv").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(disposition.unwrap().contains("catalog-level2.csv"));
+    assert!(disposition
+        .unwrap()
+        .contains("catalog-picked-layer-points.csv"));
 
     let csv = String::from_utf8(bytes).unwrap();
     let rows: Vec<&str> = csv.lines().skip(1).collect();

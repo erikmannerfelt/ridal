@@ -68,6 +68,38 @@ function shiftAt(trace) {
   return g.shift[i0] * (1 - f) + g.shift[i1] * f;
 }
 
+/* Index-space <-> viewer-raster conversion, published for picker.js and the
+ * layer panel (#209) so there is one definition of where a stored
+ * (trace, sample) lands on screen. Reads `window.RIDAL_GEOMETRY` live for the
+ * same reason picker.js does: toggling the topographic view changes the
+ * mapping and a captured copy would draw through the wrong one. */
+window.RIDAL_TO_LATLNG = function (trace, sample) {
+  const g = window.RIDAL_GEOMETRY;
+  const scale = window.RIDAL_XSCALE || 1;
+  const rasterRow = sample + shiftAt(trace);
+  return L.latLng(-rasterRow * g.verticalRasterScale, trace * g.rasterScale * scale);
+};
+
+window.RIDAL_TO_INDEX = function (latlng) {
+  const g = window.RIDAL_GEOMETRY;
+  const scale = window.RIDAL_XSCALE || 1;
+  const trace = latlng.lng / scale / g.rasterScale;
+  const rasterRow = -latlng.lat / g.verticalRasterScale;
+  return [trace, rasterRow - shiftAt(trace)];
+};
+
+/* Redraw every index-space overlay after the geometry changed.
+ *
+ * The picker's editable lines and the layer panel's derived lines and fills
+ * all convert (trace, sample) through `window.RIDAL_GEOMETRY`, which the
+ * topographic toggle and the horizontal-scale change rewrite. The picker was
+ * already redrawn on those events; the derived overlays were not, so they
+ * stayed where the previous geometry put them until they were toggled. */
+function redrawOverlays() {
+  if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
+  if (window.RIDAL_REDRAW_DERIVED) window.RIDAL_REDRAW_DERIVED();
+}
+
 /* A short alias onto the one geometry object, not a copy: `G.nCols` etc.
  * always reads whatever the most recent toggle wrote, since object
  * property lookups go through the live reference. Everything below reads
@@ -230,6 +262,14 @@ const map = L.map('map', { crs: L.CRS.Simple, minZoom: -6, attributionControl: f
 // boundary between them (#120: no build step).
 window.RIDAL_MAP = map;
 window.RIDAL_XSCALE = xScale;
+
+/* Two panes so a range fill can sit behind every line (#209). Leaflet's
+ * `overlayPane` holds both the radargram images and the SVG lines, so
+ * "behind the lines but in front of the radargram" needs panes of its own:
+ * fills at 401, all panel and pick lines at 402. Markers (handles, overhang
+ * markers) stay in `markerPane` at 600, above both. */
+map.createPane("radargram-fills").style.zIndex = 401;
+map.createPane("radargram-lines").style.zIndex = 402;
 /* Open on the start of the radargram at full depth, not on the whole thing.
  *
  * Fitting the entire length put every chunk in the viewport at once, which
@@ -267,7 +307,7 @@ document.getElementById('xscale-select').addEventListener('change', (event) => {
   xScale = newScale;
   window.RIDAL_XSCALE = newScale;
   loadChunks(map, currentProfile(), xScale);
-  if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
+  redrawOverlays();
   map.setView(
     [center.lat, center.lng * (newScale / oldScale)],
     map.getZoom(),
@@ -715,12 +755,41 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     const choice = document.getElementById('download-format').value;
     const format = choice === 'csv' ? 'csv' : 'geojson';
     const crs = choice === 'geojson-native' ? '&crs=native' : '';
+    // Admin only, and the server enforces the role regardless of the markup.
+    const everyUser = document.getElementById('download-every-user');
+    const every = everyUser && everyUser.checked ? '&every_user=true' : '';
     pointsDialog.close();
     go(
       `${picksUrl}/level2?spacing=${encodeURIComponent(spacing)}` +
-        `&format=${encodeURIComponent(format)}${crs}`,
+        `&format=${encodeURIComponent(format)}${crs}${every}`,
     );
   });
+
+  // --- Derived layer points ---
+  const derivedDialog = document.getElementById('derived-download-dialog');
+  bind('dl-derived-points', () => {
+    menu.open = false;
+    derivedDialog.showModal();
+  });
+  document
+    .getElementById('derived-download-close')
+    .addEventListener('click', () => derivedDialog.close());
+  document
+    .getElementById('derived-download-go')
+    .addEventListener('click', () => {
+      const spacing = document.getElementById('derived-download-spacing').value;
+      const choice = document.getElementById('derived-download-format').value;
+      const format = choice === 'csv' ? 'csv' : 'geojson';
+      const crs = choice === 'geojson-native' ? '&crs=native' : '';
+      const include = document.getElementById('derived-download-include-unlisted').checked
+        ? '&include_unlisted=true'
+        : '';
+      derivedDialog.close();
+      go(
+        `${datasetUrl}/derived/level2?spacing=${encodeURIComponent(spacing)}` +
+          `&format=${encodeURIComponent(format)}${crs}${include}`,
+      );
+    });
 
   // --- Rendered image ---
   const imageDialog = document.getElementById('image-dialog');
@@ -987,7 +1056,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     map.setView([newLat, center.lng], map.getZoom(), { animate: false });
 
     loadChunks(map, currentProfile(), xScale);
-    if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
+    redrawOverlays();
   }
 
   /* Fit the view vertically to the data band over the traces currently on
