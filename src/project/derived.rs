@@ -456,7 +456,7 @@ impl DerivedSet {
                 }
                 let mut deps: BTreeMap<String, f64> = BTreeMap::new();
                 for (dep_id, dep) in &results {
-                    let value = if dep.kind == Kind::Position {
+                    let value = if dep.kind == Kind::Layer {
                         derive::convert_position(
                             dep.values[position],
                             dep.unit,
@@ -674,22 +674,22 @@ mod tests {
     }
 
     #[test]
-    fn a_position_may_not_be_declared_dimensionless() {
+    fn an_attribute_may_not_be_declared_dimensionless_only_a_layer_is_forbidden() {
         use crate::interp::derive::Unit;
-        // `count` is a scalar, so dimensionless is exactly right for it.
+        // `count` is an attribute, so dimensionless is exactly right for it.
         let mut counting = item("n", "count(bed)");
         counting.unit = Unit::Dimensionless;
-        assert!(Unit::Dimensionless.allows(Kind::Scalar));
+        assert!(Unit::Dimensionless.allows(Kind::Attribute));
 
-        // `median(bed)` is a depth, and a depth has a unit.
+        // `median(bed)` is a layer, and a depth has a unit.
         let mut positional = item("m", "median(bed)");
         positional.unit = Unit::Dimensionless;
-        assert!(!Unit::Dimensionless.allows(Kind::Position));
+        assert!(!Unit::Dimensionless.allows(Kind::Layer));
 
         // Every other unit takes any kind: an attribute is simply never
         // converted, so declaring a count in metres is odd but not wrong.
         for unit in [Unit::Meters, Unit::Nanoseconds, Unit::Samples] {
-            for kind in [Kind::Position, Kind::Length, Kind::Scalar] {
+            for kind in [Kind::Layer, Kind::Attribute] {
                 assert!(unit.allows(kind), "{unit} should accept {kind}");
             }
         }
@@ -740,17 +740,17 @@ mod tests {
         let layers = layers();
         assert_eq!(
             item("x", "median(bed)").inferred_kind(&layers).unwrap(),
-            Kind::Position
+            Kind::Layer
         );
         assert_eq!(
             item("x", "median(bed) - median(temperate_ice)")
                 .inferred_kind(&layers)
                 .unwrap(),
-            Kind::Length
+            Kind::Attribute
         );
         assert_eq!(
             item("x", "count(bed)").inferred_kind(&layers).unwrap(),
-            Kind::Scalar
+            Kind::Attribute
         );
     }
 
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn derived_set_round_trips_through_the_store() {
         let (_dir, project) = project();
-        let mut set = set(vec![item("thickness", "percentile_lower(bed, 49.0)")]);
+        let mut set = set(vec![item("thickness", "percentile(bed, 49.0)")]);
         set.items[0].fill_to = Some(FillTo {
             target: "bed".to_string(),
             color: Some("#e6194b".to_string()),
@@ -819,13 +819,13 @@ mod tests {
         derived.validate().unwrap();
         assert_eq!(
             derived.inferred_kind("thickness", &layers).unwrap(),
-            Kind::Position
+            Kind::Layer
         );
         assert_eq!(
             derived
                 .inferred_kind("thickness_user_count", &layers)
                 .unwrap(),
-            Kind::Scalar
+            Kind::Attribute
         );
     }
 
@@ -877,11 +877,11 @@ mod tests {
 
         let set = set(vec![item(
             "thickness",
-            "percentile_lower(bed, 49.0) - percentile_lower(temperate_ice, 49.0)",
+            "percentile(bed, 49.0) - percentile(temperate_ice, 49.0)",
         )]);
         let results = set.evaluate(&reduced, &geometry).unwrap();
         let thickness = &results["thickness"];
-        assert_eq!(thickness.kind, Kind::Length);
+        assert_eq!(thickness.kind, Kind::Attribute);
         // bed at sample 10 -> 0.4 m, cts at 20 -> 0.8 m; thickness is
         // 0.4 - 0.8 = -0.4 m (bed above cts), exactly as written.
         for value in &thickness.values {

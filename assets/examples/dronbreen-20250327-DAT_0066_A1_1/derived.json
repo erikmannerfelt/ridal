@@ -5,7 +5,7 @@
     {
       "id": "thickness",
       "name": "Ice thickness (0.49 order statistic)",
-      "expression": "if count(bed) + count(bed_no_temperate) >= count(bed_not_visible) { percentile_lower(concatenate(bed, bed_no_temperate), 49.0) } else { NaN }",
+      "expression": "if count(bed) + count(bed_no_temperate) >= count(bed_not_visible) { percentile(concatenate(bed, bed_no_temperate), 49.0) } else { NaN }",
       "unit": "meters",
       "color": "#000000",
       "show": true
@@ -13,7 +13,7 @@
     {
       "id": "cts_depth",
       "name": "CTS depth (0.49 order statistic)",
-      "expression": "percentile_lower(concatenate(bed_no_temperate, temperate_ice), 49.0)",
+      "expression": "percentile(concatenate(bed_no_temperate, temperate_ice), 49.0)",
       "unit": "meters",
       "color": "#e6194b"
     },
@@ -46,13 +46,13 @@
     {
       "id": "thickness_user_lower",
       "name": "Thickness, lower quartile",
-      "expression": "percentile_lower(concatenate(bed, bed_no_temperate), 25.0)",
+      "expression": "percentile(concatenate(bed, bed_no_temperate), 25.0)",
       "unit": "meters"
     },
     {
       "id": "thickness_user_upper",
       "name": "Thickness, upper quartile",
-      "expression": "percentile_lower(concatenate(bed, bed_no_temperate), 75.0)",
+      "expression": "percentile(concatenate(bed, bed_no_temperate), 75.0)",
       "unit": "meters"
     },
     {

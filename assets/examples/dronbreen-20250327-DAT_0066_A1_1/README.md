@@ -21,13 +21,13 @@ need the operator role).
 
 ## What the expressions mean
 
-| Item | Kind | Meaning |
+| Item | Type | Meaning |
 |---|---|---|
-| `thickness` | position | Ice thickness: the 0.49 order statistic of depth over the union of `bed` and `bed_no_temperate`. The `if`/`else` drops a position where more contributors say the bed is not visible than say it is; `>=` keeps a tie, matching the published algorithm. |
-| `cts_depth` | position | Cold-temperate transition depth: the 0.49 order statistic over the union of `bed_no_temperate` and `temperate_ice`. |
+| `thickness` | layer | Ice thickness: the 0.49 order statistic of depth over the union of `bed` and `bed_no_temperate`. The `if`/`else` drops a position where more contributors say the bed is not visible than say it is; `>=` keeps a tie, matching the published algorithm. |
+| `cts_depth` | layer | Cold-temperate transition depth: the 0.49 order statistic over the union of `bed_no_temperate` and `temperate_ice`. |
 | `thickness_user_*` | attribute | Count, quartiles, sample standard deviation and normalised median absolute deviation of the same pool. |
 
-`percentile_lower` is pandas' `quantile(q, interpolation="lower")`: the order
+`percentile` is pandas' `quantile(q, interpolation="lower")`: the order
 statistic at `floor(q * (n - 1))`, which never interpolates and so always
 returns a value a contributor actually picked. It is **not** `median()`.
 

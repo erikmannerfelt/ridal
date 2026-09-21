@@ -201,7 +201,6 @@ const EXPRESSION_BUILTINS: &[&str] = &[
     "std",
     "nmad",
     "percentile",
-    "percentile_lower",
     "min",
     "max",
     "concatenate",

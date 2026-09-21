@@ -43,23 +43,26 @@ use crate::interp::level2::RadargramGeometry;
 use crate::project::layers::{LayerSet, Reducer};
 
 /// What an expression's value means (#205).
+///
+/// Two kinds, not three. An earlier `Length`/`Scalar` split was never acted on
+/// by any branch — the only decisions are "is it a layer" — and the stored
+/// `unit` already distinguishes a thickness from a count, so the extra terms
+/// only reached the UI and confused it. A **Layer** is a drawable position; an
+/// **Attribute** is a number per position (a length, a count, a spread).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// A point on the radargram: a single depth/trace position.
-    Position,
-    /// A distance between two positions (a thickness, say).
-    Length,
-    /// A number with no spatial meaning (a count, a standard deviation).
-    Scalar,
+    Layer,
+    /// A number per position with no absolute location (a thickness, a count).
+    Attribute,
 }
 
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Kind::Position => "position",
-            Kind::Length => "length",
-            Kind::Scalar => "scalar",
+            Kind::Layer => "layer",
+            Kind::Attribute => "attribute",
         })
     }
 }
@@ -86,7 +89,7 @@ impl Unit {
     /// Whether an expression of this `kind` may be written in this unit.
     pub fn allows(self, kind: Kind) -> bool {
         match self {
-            Unit::Dimensionless => kind != Kind::Position,
+            Unit::Dimensionless => kind == Kind::Attribute,
             _ => true,
         }
     }
@@ -153,7 +156,7 @@ impl fmt::Display for DeriveError {
                 f,
                 "the expression '{expression}' has type {kind}; a derived item must \
                  reduce to a single value per position (for example wrap it in median() \
-                 or percentile_lower())"
+                 or percentile())"
             ),
             DeriveError::MissingLayer { name } => {
                 write!(f, "references missing layer '{name}'")
@@ -407,32 +410,14 @@ fn resolve_conflicts(
     }
 }
 
-/// Linear-interpolated percentile, `p` in 0..=100. NaN-skipping.
-pub fn percentile(values: &[f64], p: f64) -> f64 {
-    let mut finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
-    if finite.is_empty() {
-        return f64::NAN;
-    }
-    finite.sort_by(f64::total_cmp);
-    if finite.len() == 1 {
-        return finite[0];
-    }
-    let rank = (p / 100.0).clamp(0.0, 1.0) * (finite.len() - 1) as f64;
-    let lower = rank.floor() as usize;
-    let upper = rank.ceil() as usize;
-    if lower == upper {
-        return finite[lower];
-    }
-    let fraction = rank - lower as f64;
-    finite[lower] + fraction * (finite[upper] - finite[lower])
-}
-
 /// The order statistic at `floor(p/100 * (n - 1))`, NaN-skipping.
 ///
 /// This is pandas' `quantile(p/100, interpolation="lower")`, the rule the
 /// published consensus used. It never interpolates, so the result is always a
-/// value some contributor actually picked.
-pub fn percentile_lower(values: &[f64], p: f64) -> f64 {
+/// value some contributor actually picked — which is why it is the only
+/// percentile the language offers: an interpolated percentile can return a
+/// depth nobody drew, and `median` already covers the common case.
+pub fn percentile(values: &[f64], p: f64) -> f64 {
     let mut finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
     if finite.is_empty() {
         return f64::NAN;
@@ -567,23 +552,29 @@ fn register_user_array(engine: &mut Engine) {
     });
     engine.register_fn("std", |a: UserArray| -> f64 { std_dev(&a.0) });
     engine.register_fn("nmad", |a: UserArray| -> f64 { nmad(&a.0) });
+    // An empty (or all-NaN) array is NaN, not infinity. Folding from
+    // `f64::INFINITY` made `max(no_picks)` return `-inf`, which the sample
+    // conversion then read as a real position and drew a fabricated line
+    // across the whole radargram -- visible whenever a caller had no pick on
+    // some layer.
     engine.register_fn("min", |a: UserArray| -> f64 {
-        a.0.iter()
-            .copied()
-            .filter(|v| v.is_finite())
-            .fold(f64::INFINITY, f64::min)
+        let finite: Vec<f64> = a.0.iter().copied().filter(|v| v.is_finite()).collect();
+        if finite.is_empty() {
+            f64::NAN
+        } else {
+            finite.iter().copied().fold(f64::INFINITY, f64::min)
+        }
     });
     engine.register_fn("max", |a: UserArray| -> f64 {
-        a.0.iter()
-            .copied()
-            .filter(|v| v.is_finite())
-            .fold(f64::NEG_INFINITY, f64::max)
+        let finite: Vec<f64> = a.0.iter().copied().filter(|v| v.is_finite()).collect();
+        if finite.is_empty() {
+            f64::NAN
+        } else {
+            finite.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        }
     });
     engine.register_fn("percentile", |a: UserArray, p: f64| -> f64 {
         percentile(&a.0, p)
-    });
-    engine.register_fn("percentile_lower", |a: UserArray, p: f64| -> f64 {
-        percentile_lower(&a.0, p)
     });
 
     // Pooling is always explicit: there is no implicit union of layers.
@@ -801,7 +792,7 @@ fn register_kinded(engine: &mut Engine) {
 
     // count/std/nmad flatten any input to Scalar.
     for name in ["count", "std", "nmad"] {
-        engine.register_fn(name, |_a: Kinded| -> Kinded { scalar(Kind::Scalar) });
+        engine.register_fn(name, |_a: Kinded| -> Kinded { scalar(Kind::Attribute) });
     }
     // median/mean/min/max reduce an array to a scalar while preserving the
     // element kind.
@@ -813,14 +804,12 @@ fn register_kinded(engine: &mut Engine) {
             }
         });
     }
-    for name in ["percentile", "percentile_lower"] {
-        engine.register_fn(name, |a: Kinded, _p: f64| -> Kinded {
-            Kinded {
-                is_array: false,
-                kind: a.kind,
-            }
-        });
-    }
+    engine.register_fn("percentile", |a: Kinded, _p: f64| -> Kinded {
+        Kinded {
+            is_array: false,
+            kind: a.kind,
+        }
+    });
     engine.register_fn("concatenate", |a: Kinded, _b: Kinded| -> Kinded {
         array(a.kind)
     });
@@ -885,7 +874,7 @@ fn register_kinded(engine: &mut Engine) {
     engine.register_fn("where", |cond: Kinded, _a: f64, _b: f64| -> Kinded {
         Kinded {
             is_array: cond.is_array,
-            kind: Kind::Scalar,
+            kind: Kind::Attribute,
         }
     });
     engine.register_fn("where", |_cond: bool, a: Kinded, _b: f64| -> Kinded { a });
@@ -910,8 +899,8 @@ fn register_kinded(engine: &mut Engine) {
         }
     });
     engine.register_fn("-", |a: Kinded, b: Kinded| -> Kinded {
-        let kind = if a.kind == Kind::Position && b.kind == Kind::Position {
-            Kind::Length
+        let kind = if a.kind == Kind::Layer && b.kind == Kind::Layer {
+            Kind::Attribute
         } else {
             a.kind
         };
@@ -924,7 +913,7 @@ fn register_kinded(engine: &mut Engine) {
         engine.register_fn(op, |a: Kinded, _b: Kinded| -> Kinded {
             Kinded {
                 is_array: a.is_array,
-                kind: Kind::Scalar,
+                kind: Kind::Attribute,
             }
         });
     }
@@ -972,7 +961,7 @@ pub fn infer_kind(
             layer.clone(),
             Kinded {
                 is_array: true,
-                kind: Kind::Position,
+                kind: Kind::Layer,
             },
         );
     }
@@ -1009,13 +998,13 @@ pub fn infer_kind(
         return Ok(kinded.kind);
     }
     // A plain number is a scalar with no spatial meaning.
-    Ok(Kind::Scalar)
+    Ok(Kind::Attribute)
 }
 
 fn scalar_kinded() -> Kinded {
     Kinded {
         is_array: false,
-        kind: Kind::Scalar,
+        kind: Kind::Attribute,
     }
 }
 
@@ -1158,7 +1147,7 @@ pub fn evaluate_at(
     }
     Err(DeriveError::NotScalar {
         expression: expression.to_string(),
-        kind: Kind::Position,
+        kind: Kind::Layer,
     })
 }
 
@@ -1254,7 +1243,7 @@ mod tests {
         // item, which is already reduced and so binds as a scalar.
         let layers = vec!["bed".to_string()];
         let mut items = BTreeMap::new();
-        items.insert("dep".to_string(), Kind::Position);
+        items.insert("dep".to_string(), Kind::Layer);
         let mut other = BTreeMap::new();
         other.insert("dep".to_string(), 5.0_f64);
 
@@ -1310,22 +1299,13 @@ mod tests {
     }
 
     #[test]
-    fn percentile_lower_selects_the_legacy_order_statistic() {
-        assert_eq!(
-            percentile_lower(&[10.0, 20.0, 30.0, 40.0, 50.0], 49.0),
-            20.0
-        );
+    fn percentile_selects_the_legacy_order_statistic() {
+        assert_eq!(percentile(&[10.0, 20.0, 30.0, 40.0, 50.0], 49.0), 20.0);
         // floor(0.49 * 4) = 1 -> the second order statistic.
-        assert_eq!(
-            percentile_lower(&[50.0, 10.0, 40.0, 20.0, 30.0], 49.0),
-            20.0
-        );
-        assert_eq!(percentile_lower(&[], 49.0).is_nan(), true);
-    }
-
-    #[test]
-    fn percentile_interpolates_linearly() {
-        assert!((percentile(&[0.0, 10.0], 50.0) - 5.0).abs() < 1e-12);
+        assert_eq!(percentile(&[50.0, 10.0, 40.0, 20.0, 30.0], 49.0), 20.0);
+        assert_eq!(percentile(&[], 49.0).is_nan(), true);
+        // It never interpolates, so it cannot return a value nobody picked.
+        assert_eq!(percentile(&[0.0, 10.0], 50.0), 0.0);
         assert_eq!(percentile(&[1.0, 2.0, 3.0, 4.0], 0.0), 1.0);
         assert_eq!(percentile(&[1.0, 2.0, 3.0, 4.0], 100.0), 4.0);
     }
@@ -1510,7 +1490,7 @@ mod tests {
     /// The study's bed consensus, as shipped in the example project.
     const BED_CONSENSUS: &str = "if count(bed) + count(bed_no_temperate) >= \
                                  count(bed_not_visible) { \
-                                 percentile_lower(concatenate(bed, bed_no_temperate), 49.0) \
+                                 percentile(concatenate(bed, bed_no_temperate), 49.0) \
                                  } else { NaN }";
 
     /// The legacy dataset has no `bed_not_visible` picks at all, so the
@@ -1693,6 +1673,16 @@ mod tests {
     }
 
     #[test]
+    fn min_and_max_of_an_empty_pool_are_nan_not_infinity() {
+        // Folding from +/-infinity made `max(no_picks)` a finite -inf, which
+        // then converted to a real sample and drew a fabricated line.
+        assert!(eval("max(bed)", &[("bed", &[f64::NAN, f64::NAN])]).is_nan());
+        assert!(eval("min(bed)", &[("bed", &[f64::NAN])]).is_nan());
+        assert_eq!(eval("max(bed)", &[("bed", &[1.0, f64::NAN, 3.0])]), 3.0);
+        assert_eq!(eval("min(bed)", &[("bed", &[1.0, f64::NAN, 3.0])]), 1.0);
+    }
+
+    #[test]
     fn median_handles_even_lengths() {
         assert_eq!(eval("median(bed)", &[("bed", &[1.0, 2.0, 3.0, 4.0])]), 2.5);
     }
@@ -1719,10 +1709,10 @@ mod tests {
     }
 
     #[test]
-    fn percentile_lower_builtin_matches_the_reference() {
+    fn percentile_builtin_matches_the_reference() {
         assert_eq!(
             eval(
-                "percentile_lower(bed, 49.0)",
+                "percentile(bed, 49.0)",
                 &[("bed", &[50.0, 10.0, 40.0, 20.0, 30.0])]
             ),
             20.0
@@ -1789,18 +1779,21 @@ mod tests {
             let ast = compile(&engine, expression).unwrap();
             infer_kind(&engine, &ast, expression, &layers, &items).unwrap()
         };
-        assert_eq!(infer("median(bed)"), Kind::Position);
+        assert_eq!(infer("median(bed)"), Kind::Layer);
         // Reduced on both sides: `bed - temperate_ice` is a length *per
         // contributor*, which is not an item -- see `infer_kind`.
-        assert_eq!(infer("median(bed) - median(temperate_ice)"), Kind::Length);
-        assert_eq!(infer("count(bed)"), Kind::Scalar);
-        assert_eq!(infer("std(bed)"), Kind::Scalar);
+        assert_eq!(
+            infer("median(bed) - median(temperate_ice)"),
+            Kind::Attribute
+        );
+        assert_eq!(infer("count(bed)"), Kind::Attribute);
+        assert_eq!(infer("std(bed)"), Kind::Attribute);
         assert_eq!(
             infer(
                 "if count(bed) + count(bed_no_temperate) >= count(bed_not_visible) { \
-                 percentile_lower(concatenate(bed, bed_no_temperate), 49.0) } else { NaN }"
+                 percentile(concatenate(bed, bed_no_temperate), 49.0) } else { NaN }"
             ),
-            Kind::Position
+            Kind::Layer
         );
     }
 

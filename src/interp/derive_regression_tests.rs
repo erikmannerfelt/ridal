@@ -155,11 +155,11 @@ fn derived_set() -> DerivedSet {
             item(
                 "thickness",
                 "if count(bed) + count(bed_no_temperate) >= count(bed_not_visible) { \
-                 percentile_lower(concatenate(bed, bed_no_temperate), 49.0) } else { NaN }",
+                 percentile(concatenate(bed, bed_no_temperate), 49.0) } else { NaN }",
             ),
             item(
                 "cts_depth",
-                "percentile_lower(concatenate(bed_no_temperate, temperate_ice), 49.0)",
+                "percentile(concatenate(bed_no_temperate, temperate_ice), 49.0)",
             ),
             item(
                 "thickness_user_count",
@@ -201,11 +201,11 @@ fn derived_set() -> DerivedSet {
             ),
             item(
                 "thickness_user_lower",
-                "percentile_lower(concatenate(bed, bed_no_temperate), 25.0)",
+                "percentile(concatenate(bed, bed_no_temperate), 25.0)",
             ),
             item(
                 "thickness_user_upper",
-                "percentile_lower(concatenate(bed, bed_no_temperate), 75.0)",
+                "percentile(concatenate(bed, bed_no_temperate), 75.0)",
             ),
             item(
                 "thickness_user_std",
@@ -350,7 +350,7 @@ fn the_derived_layers_reproduce_the_published_consensus() {
         .evaluate(&reduced, &geometry)
         .expect("evaluating the derived items");
 
-    assert_eq!(results["thickness"].kind, Kind::Position);
+    assert_eq!(results["thickness"].kind, Kind::Layer);
 
     // Step 6: does any contributor hold both `bed` and `bed_not_visible` at
     // one trace? Printed either way -- the answer defines the priority
