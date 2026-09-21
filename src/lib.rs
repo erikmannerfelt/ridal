@@ -270,6 +270,19 @@ pub mod ridal {
     /// metadata : mapping, optional
     ///     Additional user metadata to attach to the result. This should be a
     ///     JSON-serializable mapping. Root keys are interpreted as strings.
+    /// radargram_id : str, optional
+    ///     Stable, unique identifier for the output radargram (lowercase ASCII,
+    ///     digits, ``-``, ``_``). Defaults to the output file stem when omitted.
+    /// radargram_name : str, optional
+    ///     Human-readable display label for the output radargram. Purely
+    ///     cosmetic: it carries no identity semantics.
+    /// group_id : str, optional
+    ///     Explicit identifier for the group the output belongs to, overriding
+    ///     the id derived from `group_name`.
+    /// group_name : str, optional
+    ///     Human-readable name of the group the output belongs to (survey,
+    ///     campaign, location; Unicode is fine), used for catalog grouping. An
+    ///     id is derived from it automatically unless `group_id` is given.
     /// return_dataset_format : str, default "xarray_dict"
     ///     Format used when `return_dataset=True`.
     ///
@@ -329,6 +342,10 @@ pub mod ridal {
         override_antenna_mhz=None,
         override_antenna_separation=None,
         metadata=None,
+        radargram_id=None,
+        radargram_name=None,
+        group_id=None,
+        group_name=None,
         return_dataset_format="xarray_dict".to_string()
     ))]
     fn process(
@@ -352,6 +369,10 @@ pub mod ridal {
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         metadata: Option<Py<PyAny>>,
+        radargram_id: Option<String>,
+        radargram_name: Option<String>,
+        group_id: Option<String>,
+        group_name: Option<String>,
         return_dataset_format: String,
     ) -> PyResult<Py<PyAny>> {
         use pyo3::exceptions::PyValueError;
@@ -464,12 +485,10 @@ pub mod ridal {
                 override_antenna_mhz,
                 override_antenna_separation,
                 user_metadata,
-                // Not yet exposed as Python kwargs (#116); falls back to the
-                // output-stem-derived radargram ID, same as the CLI default.
-                radargram_id: None,
-                display_name: None,
-                group: None,
-                group_id: None,
+                radargram_id,
+                display_name: radargram_name,
+                group: group_name,
+                group_id,
             };
             let (gpr_obj, _default_path) = gpr::build_processed_gpr(params2)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
@@ -504,10 +523,10 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             user_metadata,
-            radargram_id: None,
-            display_name: None,
-            group: None,
-            group_id: None,
+            radargram_id,
+            display_name: radargram_name,
+            group: group_name,
+            group_id,
         };
         let result = gpr::run(params)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
@@ -619,6 +638,10 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             metadata,
+            None,
+            None,
+            None,
+            None,
             return_dataset_format,
         )
     }
@@ -695,6 +718,14 @@ pub mod ridal {
     ///     Additional user metadata to attach independently to each produced output.
     ///     This should be a JSON-serializable mapping. Root keys are interpreted as
     ///     strings.
+    /// group_id : str, optional
+    ///     Explicit identifier for the group all outputs in this batch belong to,
+    ///     overriding the id derived from `group_name`.
+    /// group_name : str, optional
+    ///     Human-readable name of the group all outputs in this batch belong to
+    ///     (survey, campaign, location; Unicode is fine), used for catalog
+    ///     grouping. Applied uniformly to the whole batch; radargram IDs and
+    ///     display names are still derived per output.
     ///
     /// Returns
     /// -------
@@ -741,6 +772,8 @@ pub mod ridal {
         override_antenna_mhz=None,
         override_antenna_separation=None,
         metadata=None,
+        group_id=None,
+        group_name=None,
  ))]
     fn batch_process(
         py: Python<'_>,
@@ -763,6 +796,8 @@ pub mod ridal {
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         metadata: Option<Py<PyAny>>,
+        group_id: Option<String>,
+        group_name: Option<String>,
     ) -> PyResult<Vec<String>> {
         use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
@@ -871,8 +906,8 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
             user_metadata,
-            group: None,
-            group_id: None,
+            group: group_name,
+            group_id,
         };
 
         let result =
