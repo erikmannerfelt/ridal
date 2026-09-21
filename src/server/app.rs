@@ -925,6 +925,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             axum::routing::post(super::derived_routes::preview_derived),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/derived/level2",
+            get(super::derived_routes::derived_level2),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}",
             get(super::interp_routes::get_interpretation)
                 .put(super::interp_routes::put_interpretation)

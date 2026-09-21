@@ -107,7 +107,14 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const title = document.getElementById('group-download-title');
   const spacing = document.getElementById('group-spacing');
   const format = document.getElementById('group-format');
+  const everyUserRow = document.getElementById('group-every-user-row');
+  const everyUser = document.getElementById('group-every-user');
+  const includeUnlistedRow = document.getElementById('group-include-unlisted-row');
+  const includeUnlisted = document.getElementById('group-include-unlisted');
   let base = null;
+  // Which product the open dialog is for: the two share one dialog and the
+  // one extra checkbox each needs.
+  let product = 'level2';
 
   /* Fetched rather than navigated to, so a refusal -- "nothing in this
    * group has been interpreted yet" being the ordinary one -- is shown on
@@ -118,18 +125,23 @@ document.querySelectorAll('.group-map').forEach((el) => {
     const menuBase = menu.dataset.downloadBase;
     const label = menu.dataset.downloadLabel || '';
     for (const button of menu.querySelectorAll('button[data-download]')) {
-      const product = button.dataset.download;
       button.addEventListener('click', () => {
         menu.open = false;
-        // Everything except level 2 is a plain link: no options to ask for.
-        if (product !== 'level2') {
-          go(`${menuBase}/${product}`);
+        const wanted = button.dataset.download;
+        // The two point products share this dialog; everything else is a
+        // plain link with no options to ask for.
+        if (wanted !== 'level2' && wanted !== 'derived') {
+          go(`${menuBase}/${wanted}`);
           return;
         }
         base = menuBase;
-        title.textContent = label
-          ? `Download layer points - ${label}`
-          : 'Download layer points';
+        product = wanted;
+        const derived = product === 'derived';
+        title.textContent =
+          (derived ? 'Download derived layer points' : 'Download picked layer points') +
+          (label ? ` - ${label}` : '');
+        if (everyUserRow) everyUserRow.hidden = derived;
+        if (includeUnlistedRow) includeUnlistedRow.hidden = !derived;
         dialog.showModal();
       });
     }
@@ -145,13 +157,20 @@ document.querySelectorAll('.group-map').forEach((el) => {
     // "GeoJSON in native coordinates" is one decision to a user.
     const choice = format.value;
     const fileFormat = choice === 'csv' ? 'csv' : 'geojson';
-    const crs = choice === 'geojson-native' ? '&crs=native' : '';
+    const params = new URLSearchParams();
+    params.set('spacing', spacing.value);
+    params.set('format', fileFormat);
+    if (choice === 'geojson-native') params.set('crs', 'native');
+    if (product === 'derived') {
+      params.set('derived', 'true');
+      if (includeUnlisted && includeUnlisted.checked) {
+        params.set('include_unlisted', 'true');
+      }
+    } else if (everyUser && everyUser.checked) {
+      params.set('every_user', 'true');
+    }
     dialog.close();
-    go(
-      `${base}/level2` +
-        `?spacing=${encodeURIComponent(spacing.value)}` +
-        `&format=${encodeURIComponent(fileFormat)}${crs}`,
-    );
+    go(`${base}/level2?${params.toString()}`);
   });
 })();
 

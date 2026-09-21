@@ -21,9 +21,10 @@
 //! Defining a project-wide item needs the operator role; a private item
 //! belongs to one user and any signed-in user may keep one.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -33,8 +34,9 @@ use super::auth::Caller;
 use super::interp_routes::{expectation_from, layer_error, parse_radargram, readable_project};
 use super::routes::{lookup_dataset, ApiError};
 use crate::identity::UserId;
-use crate::interp::derive::{self, GridPosition, ReducedPicks};
-use crate::interp::source;
+use crate::interp::derive::{self, EvaluatedItem, GridPosition, Kind, ReducedPicks};
+use crate::interp::level2::{self, RadargramGeometry};
+use crate::interp::{source, writer};
 use crate::project::derived::{self, Audience, DerivedError, DerivedItem, DerivedSet, Scope};
 use crate::project::users::{DownloadScope, Role};
 use crate::project::{interpretations, layers};
@@ -640,6 +642,164 @@ pub async fn download_derived(
         header::CONTENT_TYPE,
         "text/csv; charset=utf-8".to_string(),
     );
+    set_header(&mut headers, header::CACHE_CONTROL, "no-store".to_string());
+    set_header(
+        &mut headers,
+        header::CONTENT_DISPOSITION,
+        format!("attachment; filename=\"{filename}\""),
+    );
+    Ok((headers, body))
+}
+
+/// A derived layer points export: the picked-points options plus the listing
+/// choice.
+#[derive(serde::Deserialize)]
+pub struct DerivedPointsQuery {
+    #[serde(default)]
+    pub spacing: Option<String>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub crs: Option<String>,
+    /// Include derived layers marked "not listed". Off by default, matching
+    /// the viewer panel: unlisted means "keep it out of the way", so an
+    /// export takes the same set unless asked otherwise.
+    #[serde(default)]
+    pub include_unlisted: bool,
+}
+
+/// Build a gprinterp document from the evaluated derived *layers*, so the
+/// existing level 2 resampling and writers export them unchanged.
+///
+/// An attribute is not a line and is skipped. Each contiguous run of finite
+/// samples becomes one LineString -- a gap is a separate line, exactly as the
+/// viewer draws it.
+pub fn derived_document(
+    set: &DerivedSet,
+    results: &BTreeMap<String, EvaluatedItem>,
+    geometry: &RadargramGeometry,
+    viewer: &str,
+    include_unlisted: bool,
+) -> Result<gprinterp::Document, String> {
+    let mut features: Vec<serde_json::Value> = Vec::new();
+    for item in set.visible_to(viewer) {
+        let Some(result) = results.get(&item.id) else {
+            continue;
+        };
+        // The kind is inferred, not stored: an attribute is a number per
+        // position and has no line to export.
+        if result.kind != Kind::Layer {
+            continue;
+        }
+        if !item.listed && !include_unlisted {
+            continue;
+        }
+        let mut run: Vec<[f64; 2]> = Vec::new();
+        let mut flush = |run: &mut Vec<[f64; 2]>| {
+            if run.len() >= 2 {
+                features.push(serde_json::json!({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": std::mem::take(run),
+                    },
+                    "properties": {"id": item.id, "label": item.id},
+                }));
+            } else {
+                run.clear();
+            }
+        };
+        for (trace, value) in result.values.iter().enumerate() {
+            let sample = derive::unit_to_sample(*value, item.unit, geometry);
+            if sample.is_finite() {
+                run.push([trace as f64, sample]);
+            } else {
+                flush(&mut run);
+            }
+        }
+        flush(&mut run);
+    }
+    let document = serde_json::json!({
+        "key": geometry.radargram_id,
+        "features": features,
+    });
+    gprinterp::Document::from_json(&document.to_string()).map_err(|e| e.to_string())
+}
+
+/// Export one radargram's derived layers as level 2 points.
+///
+/// Shared with the merged (group/catalog) export so both produce exactly the
+/// same points for the same radargram; only the assembly differs.
+pub(crate) fn export_derived_points(
+    state: &AppState,
+    caller: &Caller,
+    radargram: &crate::identity::RadargramId,
+    geometry: &RadargramGeometry,
+    spacing: crate::interp::level2::Spacing,
+    include_unlisted: bool,
+) -> Result<level2::Level2Export, ApiError> {
+    let (set, _) = load_set(state)?;
+    let (reduced, _) = reduce_for(state, caller, radargram, geometry, Audience::OwnPicks)?;
+    let results = set
+        .evaluate(&reduced, geometry)
+        .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
+    let viewer = caller.display_name().to_string();
+    let document = derived_document(&set, &results, geometry, &viewer, include_unlisted)
+        .map_err(|e| ApiError::internal("derived_export_failed", e))?;
+    // Derived lines are functions of trace by construction, so no layer can
+    // permit overhangs here.
+    level2::export(&document, geometry, spacing, &viewer, &|_| false)
+        .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))
+}
+
+/// `GET /api/v1/datasets/{id}/derived/level2` -- derived layers as level 2
+/// points, in the same formats and spacings as the picked-layer export.
+pub async fn derived_level2(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+    caller: Caller,
+    Query(query): Query<DerivedPointsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_download(DownloadScope::Results, "derived layer points")?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let geometry = geometry_for(&state, &radargram)?;
+    let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
+        .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
+    let export = export_derived_points(
+        &state,
+        &caller,
+        &radargram,
+        &geometry,
+        spacing,
+        query.include_unlisted,
+    )?;
+
+    let exports = [export];
+    let csv = matches!(query.format.as_deref(), Some("csv"));
+    let (body, content_type, extension) = if csv {
+        (writer::to_csv(&exports), "text/csv; charset=utf-8", "csv")
+    } else {
+        let output_crs = match query.crs.as_deref() {
+            None | Some("") => writer::OutputCrs::Wgs84,
+            Some(name) => writer::OutputCrs::Named(name.to_string()),
+        };
+        (
+            writer::to_geojson(&exports, &output_crs)
+                .map_err(|e| ApiError::bad_request("invalid_crs", e))?,
+            "application/geo+json",
+            "geojson",
+        )
+    };
+
+    let filename = format!("{}-derived-layer-points.{extension}", radargram.as_str());
+    let mut headers = HeaderMap::new();
+    let set_header = |headers: &mut HeaderMap, name: header::HeaderName, value: String| {
+        if let Ok(value) = value.parse() {
+            headers.insert(name, value);
+        }
+    };
+    set_header(&mut headers, header::CONTENT_TYPE, content_type.to_string());
+    set_header(&mut headers, header::CACHE_CONTROL, "no-store".to_string());
     set_header(
         &mut headers,
         header::CONTENT_DISPOSITION,

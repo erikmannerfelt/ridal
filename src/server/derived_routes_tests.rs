@@ -157,6 +157,7 @@ struct Response {
     cookie: Option<String>,
     body: Value,
     text: String,
+    disposition: Option<String>,
 }
 
 async fn send(app: &Router, request: Request<Body>) -> Response {
@@ -165,6 +166,11 @@ async fn send(app: &Router, request: Request<Body>) -> Response {
     let cookie = response
         .headers()
         .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -176,6 +182,7 @@ async fn send(app: &Router, request: Request<Body>) -> Response {
         cookie,
         body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         text,
+        disposition,
     }
 }
 
@@ -1079,4 +1086,188 @@ async fn one_unreadable_filename_does_not_hide_the_readable_ones() {
     assert_eq!(created.status, StatusCode::OK, "{}", created.text);
     let value = first_value(&app, "bed_median", &op).await;
     assert!((value - depth(2.0)).abs() < 1e-6, "got {value}");
+}
+
+/// Derived layer points are lines only: an attribute and an unlisted layer
+/// are left out, and `include_unlisted` brings the unlisted one back.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn derived_points_skip_attributes_and_unlisted_layers() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+
+    let mut unlisted = item("hidden_a", "median(bed)", json!("project"));
+    unlisted["listed"] = json!(false);
+    let created = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([
+            item("line_a", "median(bed)", json!("project")),
+            item("count_a", "count(bed)", json!("project")),
+            unlisted,
+        ])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+
+    let url = format!("/api/v1/datasets/{RADARGRAM}/derived/level2?format=csv");
+    let response = get(&app, &url, Some(&op)).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    assert!(response.text.contains("line_a"), "{}", response.text);
+    assert!(
+        !response.text.contains("count_a"),
+        "an attribute is not a line: {}",
+        response.text
+    );
+    assert!(
+        !response.text.contains("hidden_a"),
+        "an unlisted layer must be excluded by default: {}",
+        response.text
+    );
+
+    let response = get(&app, &format!("{url}&include_unlisted=true"), Some(&op)).await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    assert!(
+        response.text.contains("hidden_a"),
+        "include_unlisted must bring it back: {}",
+        response.text
+    );
+}
+
+/// Downloading every user's picks is an admin decision; a picker is refused
+/// even though they may download their own points.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn every_user_points_need_the_admin_role() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("admin", Role::Admin, DownloadScope::All, &hash),
+            activated("alice", Role::Picker, DownloadScope::All, &hash),
+            activated("bob", Role::Picker, DownloadScope::All, &hash),
+        ],
+        &[("alice", 2.0), ("bob", 4.0)],
+    );
+    let alice = sign_in(&app, "alice").await;
+    let admin = sign_in(&app, "admin").await;
+
+    let refused = get(
+        &app,
+        &format!(
+            "/api/v1/datasets/{RADARGRAM}/interpretations/alice/level2?format=csv&every_user=true"
+        ),
+        Some(&alice),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    let allowed = get(
+        &app,
+        &format!(
+            "/api/v1/datasets/{RADARGRAM}/interpretations/admin/level2?format=csv&every_user=true"
+        ),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
+    assert!(
+        allowed.text.contains("alice") && allowed.text.contains("bob"),
+        "an admin's every-user file must name each contributor: {}",
+        allowed.text
+    );
+}
+
+/// The catalog's picked and derived downloads must not share a filename, or
+/// the browser saves the second under the first's name and the user cannot
+/// tell which is which.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn catalog_picked_and_derived_downloads_are_named_apart() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+    let created = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item("line_a", "median(bed)", json!("project"))])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+
+    let picked = get(&app, "/api/v1/catalog/level2?format=geojson", Some(&op)).await;
+    assert_eq!(picked.status, StatusCode::OK, "{}", picked.text);
+    assert!(
+        picked
+            .disposition
+            .as_deref()
+            .unwrap_or("")
+            .contains("picked-layer-points"),
+        "{:?}",
+        picked.disposition
+    );
+
+    let derived = get(
+        &app,
+        "/api/v1/catalog/level2?format=geojson&derived=true",
+        Some(&op),
+    )
+    .await;
+    assert_eq!(derived.status, StatusCode::OK, "{}", derived.text);
+    assert!(
+        derived
+            .disposition
+            .as_deref()
+            .unwrap_or("")
+            .contains("derived-layer-points"),
+        "{:?}",
+        derived.disposition
+    );
+    assert_ne!(picked.disposition, derived.disposition);
+    // And the bodies really are different products: the picked one carries
+    // the picked layer, the derived one the derived item.
+    assert!(picked.text.contains("bed"), "{}", picked.text);
+    assert!(derived.text.contains("line_a"), "{}", derived.text);
+}
+
+/// A merged *derived* download names no user, so it must not demand one.
+/// (The picked path still does: "download my points" needs to know whose.)
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_merged_derived_download_needs_no_user() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+
+    // Anonymous (no session), which is the case that was refused.
+    let picked = get(&app, "/api/v1/catalog/level2?format=geojson", None).await;
+    assert_eq!(picked.status, StatusCode::BAD_REQUEST, "{}", picked.text);
+    assert!(picked.text.contains("user_required"), "{}", picked.text);
+
+    let derived = get(
+        &app,
+        "/api/v1/catalog/level2?format=geojson&derived=true",
+        None,
+    )
+    .await;
+    assert_eq!(derived.status, StatusCode::OK, "{}", derived.text);
+    assert!(
+        derived
+            .disposition
+            .as_deref()
+            .unwrap_or("")
+            .contains("derived-layer-points"),
+        "{:?}",
+        derived.disposition
+    );
 }

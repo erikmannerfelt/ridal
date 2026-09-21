@@ -128,7 +128,8 @@
     <summary>{{ summary }}</summary>
     <ul>
       {% if merged_points %}
-        <li><button type="button" data-download="level2">Layer points</button></li>
+        <li><button type="button" data-download="level2">Picked layer points</button></li>
+        <li><button type="button" data-download="derived">Derived layer points</button></li>
       {% endif %}
       {% if can_download_all %}
         <li><button type="button" data-download="track.geojson">Tracks (GeoJSON)</button></li>
@@ -406,6 +407,18 @@
         </select>
       </label>
     </div>
+    {% if can_administer %}
+    {#- Shown only for the picked-points product, and only to an admin. -#}
+    <label class="checkbox" id="group-every-user-row" hidden>
+      <input type="checkbox" id="group-every-user">
+      For every user (all contributors' points in one file)
+    </label>
+    {% endif %}
+    {#- Shown only for the derived-layer-points product. -#}
+    <label class="checkbox" id="group-include-unlisted-row" hidden>
+      <input type="checkbox" id="group-include-unlisted">
+      Include unlisted
+    </label>
     <p>
       <button type="button" id="group-download-go">Download</button>
       <button type="button" id="group-download-close">Close</button>
