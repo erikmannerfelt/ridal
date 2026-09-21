@@ -755,12 +755,41 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     const choice = document.getElementById('download-format').value;
     const format = choice === 'csv' ? 'csv' : 'geojson';
     const crs = choice === 'geojson-native' ? '&crs=native' : '';
+    // Admin only, and the server enforces the role regardless of the markup.
+    const everyUser = document.getElementById('download-every-user');
+    const every = everyUser && everyUser.checked ? '&every_user=true' : '';
     pointsDialog.close();
     go(
       `${picksUrl}/level2?spacing=${encodeURIComponent(spacing)}` +
-        `&format=${encodeURIComponent(format)}${crs}`,
+        `&format=${encodeURIComponent(format)}${crs}${every}`,
     );
   });
+
+  // --- Derived layer points ---
+  const derivedDialog = document.getElementById('derived-download-dialog');
+  bind('dl-derived-points', () => {
+    menu.open = false;
+    derivedDialog.showModal();
+  });
+  document
+    .getElementById('derived-download-close')
+    .addEventListener('click', () => derivedDialog.close());
+  document
+    .getElementById('derived-download-go')
+    .addEventListener('click', () => {
+      const spacing = document.getElementById('derived-download-spacing').value;
+      const choice = document.getElementById('derived-download-format').value;
+      const format = choice === 'csv' ? 'csv' : 'geojson';
+      const crs = choice === 'geojson-native' ? '&crs=native' : '';
+      const include = document.getElementById('derived-download-include-unlisted').checked
+        ? '&include_unlisted=true'
+        : '';
+      derivedDialog.close();
+      go(
+        `${datasetUrl}/derived/level2?spacing=${encodeURIComponent(spacing)}` +
+          `&format=${encodeURIComponent(format)}${crs}${include}`,
+      );
+    });
 
   // --- Rendered image ---
   const imageDialog = document.getElementById('image-dialog');

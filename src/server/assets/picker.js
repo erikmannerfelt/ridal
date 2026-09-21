@@ -1262,6 +1262,10 @@
         etag = response.headers.get("ETag");
         dirty = false;
         updateStatus();
+        // The derived lines are computed from the *saved* picks, so they are
+        // stale the moment this succeeds. Force a refetch rather than let the
+        // panel redraw its cached values, which are the pre-save ones.
+        if (window.RIDAL_REDRAW_DERIVED) window.RIDAL_REDRAW_DERIVED(true);
       } catch (error) {
         showError(`Could not save: ${error.message}`);
       }

@@ -354,7 +354,8 @@ function renderDerivedRow(item) {
   row.appendChild(derivedCell(item.unit));
   const expressionCell = document.createElement("td");
   const expression = document.createElement("code");
-  expression.textContent = item.expression;
+  // Same token colours as the editor; `highlight` escapes every token.
+  expression.innerHTML = RIDAL.derivedEditor.highlight(item.expression);
   expressionCell.appendChild(expression);
   row.appendChild(expressionCell);
   row.appendChild(derivedCell(item.show ? "yes" : "no"));

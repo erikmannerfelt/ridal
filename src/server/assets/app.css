@@ -2207,3 +2207,37 @@ button.danger:disabled {
   height: 1.6rem;
   vertical-align: middle;
 }
+
+/* The layers-panel toggle in the viewer controls row. `.controls button:hover`
+ * only recolours the border and text, which is easy to miss on a small
+ * control, so this one fills with the accent colour (and animates) on hover.
+ * `var(--color-surface)` as the text keeps it legible in both themes: it is
+ * light where the accent is dark and dark where the accent is light. */
+#panel-visibility {
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+#panel-visibility:hover {
+  border-color: var(--color-accent-hover);
+  background: var(--color-accent-hover);
+  color: var(--color-surface);
+}
+
+#panel-visibility[aria-pressed="true"] {
+  border-color: var(--color-accent);
+}
+
+/* The disclosure summary ("Layers (N)") is the control people actually click
+ * on the map, so it gets the same affordance. */
+.layer-panel > summary {
+  border-radius: var(--radius, 4px);
+  transition: background-color 0.12s ease;
+}
+
+.layer-panel > summary:hover {
+  background: var(--color-surface-sunken);
+}

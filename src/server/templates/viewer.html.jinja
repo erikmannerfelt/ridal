@@ -77,7 +77,10 @@
       <summary>Download</summary>
       <ul>
         {% if own_picks and can_download_derived %}
-          <li><button type="button" id="dl-points">Layer points</button></li>
+          <li><button type="button" id="dl-points">Picked layer points</button></li>
+        {% endif %}
+        {% if can_download_derived %}
+          <li><button type="button" id="dl-derived-points">Derived layer points</button></li>
         {% endif %}
         {% if own_picks and can_download_picks %}
           <li><button type="button" id="dl-raw">Raw picks (gprinterp)</button></li>
@@ -250,9 +253,52 @@
         </select>
       </label>
     </div>
+    {% if can_administer %}
+    {#- Admin only. One file with every contributor's points, each row still
+        tagged with its user; the server enforces the role regardless. -#}
+    <label class="checkbox">
+      <input type="checkbox" id="download-every-user">
+      For every user (all contributors' points in one file)
+    </label>
+    {% endif %}
     <p>
       <button type="button" id="download-go">Download</button>
       <button type="button" id="download-close">Close</button>
+    </p>
+  </dialog>
+
+  <dialog id="derived-download-dialog">
+    <h2>Download derived layer points</h2>
+    <p class="hint">
+      Derived layers &mdash; positions computed from the picks &mdash;
+      resampled to evenly spaced points with depth, travel time and position
+      attached. Unlisted layers are left out unless asked for.
+    </p>
+    <div class="add-layer-fields">
+      <label>Spacing
+        <select id="derived-download-spacing">
+          {% for option in spacings %}
+            <option value="{{ option.value }}"
+              {%- if option.value == active_spacing %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Format
+        <select id="derived-download-format">
+          {% for option in formats %}
+            <option value="{{ option.value }}"
+              {%- if option.value == active_format %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
+    <label class="checkbox">
+      <input type="checkbox" id="derived-download-include-unlisted">
+      Include unlisted
+    </label>
+    <p>
+      <button type="button" id="derived-download-go">Download</button>
+      <button type="button" id="derived-download-close">Close</button>
     </p>
   </dialog>
 

@@ -61,14 +61,14 @@ DERIVED: Final[list[dict]] = [
     {
         "id": "band_top",
         "name": "Band top",
-        "expression": "percentile_lower(concatenate(bed, bed_no_temperate), 75.0)",
+        "expression": "percentile(concatenate(bed, bed_no_temperate), 75.0)",
         "unit": "meters",
         "color": "#ff8800",
     },
     {
         "id": "band_bottom",
         "name": "Band bottom",
-        "expression": "percentile_lower(concatenate(bed, bed_no_temperate), 25.0)",
+        "expression": "percentile(concatenate(bed, bed_no_temperate), 25.0)",
         "unit": "meters",
         "color": "#0088ff",
         "fill_to": {"target": "band_top", "opacity": 0.3},
@@ -91,7 +91,7 @@ DERIVED: Final[list[dict]] = [
     {
         "id": "band_gap_fill",
         "name": "Fill against a hidden bound",
-        "expression": "percentile_lower(concatenate(bed, bed_no_temperate), 50.0)",
+        "expression": "percentile(concatenate(bed, bed_no_temperate), 50.0)",
         "unit": "meters",
         "color": "#123456",
         "fill_to": {"target": "op_secret", "opacity": 0.3},
@@ -416,6 +416,18 @@ async function layersMode(doc, frame, result) {
     doc.querySelectorAll("#derived-table tbody tr"),
   ).find((row) => row.textContent.includes("Intermediate layer"));
   result.intermediateRow = intermediateRow ? intermediateRow.textContent : null;
+  const typeRow = Array.from(doc.querySelectorAll("#derived-table tbody tr")).find(
+    (row) => row.textContent.includes("Band top"),
+  );
+  result.typeLayer = typeRow ? typeRow.textContent : null;
+  const attributeTypeRow = Array.from(
+    doc.querySelectorAll("#derived-table tbody tr"),
+  ).find((row) => row.textContent.includes("Bed count"));
+  result.typeAttribute = attributeTypeRow ? attributeTypeRow.textContent : null;
+  // The expression cell is syntax-highlighted, not plain text.
+  result.expressionHighlighted = Boolean(
+    typeRow && typeRow.querySelector("code .tok-builtin, code .tok-layer"),
+  );
 
   // S4 #1: create on /layers, and it appears in the viewer panel.
   doc.querySelector("#derived-new").click();
@@ -544,6 +556,49 @@ async function main() {
     return;
   }
 
+  if (MODE === "refresh") {
+    // Editing a pick and saving must update the derived lines, which are
+    // computed server-side from the saved picks. The panel caches them, so
+    // the save has to force a refetch. This drives that path: change the
+    // stored picks behind the viewer's back, then redraw with and without
+    // the force flag.
+    const result = { who: WHO, mode: MODE };
+    const top = findRow(doc, "Band top");
+    top.querySelector("input").click();
+    await sleep(1400);
+    const bandPaths = () =>
+      Array.from(doc.querySelectorAll(".derived-line-band_top"))
+        .map((path) => path.getAttribute("d"))
+        .join("|");
+    result.before = bandPaths();
+
+    const documentUrl = "/api/v1/datasets/%(radargram)s/interpretations/" + WHO;
+    const original = await fetch(documentUrl).then((r) => r.json());
+    const modified = JSON.parse(JSON.stringify(original));
+    const bed = modified.features.find(
+      (feature) => feature.properties && feature.properties.label === "bed",
+    );
+    bed.geometry.coordinates = bed.geometry.coordinates.map(([trace]) => [trace, 55.0]);
+    result.putStatus = (
+      await fetch(documentUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(modified),
+      })
+    ).status;
+
+    // Without the force flag the cached values are redrawn unchanged.
+    frame.contentWindow.RIDAL_REDRAW_DERIVED(false);
+    await sleep(900);
+    result.withoutForce = bandPaths();
+    // With it, the values are refetched and the line moves.
+    frame.contentWindow.RIDAL_REDRAW_DERIVED(true);
+    await sleep(1400);
+    result.withForce = bandPaths();
+    finish(result);
+    return;
+  }
+
   if (MODE === "narrow") {
     const result = { who: WHO, mode: MODE };
     const panel = doc.querySelector("#layer-panel");
@@ -624,6 +679,21 @@ async function main() {
     }
     toggle.click();
     await sleep(200);
+
+    // Clicking elsewhere in the viewer closes the open disclosure.
+    panel.querySelector("summary").click();
+    await sleep(200);
+    doc.querySelector("#map").dispatchEvent(
+      new MouseEvent("click", { bubbles: true }),
+    );
+    await sleep(200);
+    result.panelClosesOnOutsideClick = panel.open === false;
+
+    // The download menu renames picked points and adds derived points.
+    const pickedButton = doc.querySelector("#dl-points");
+    const derivedButton = doc.querySelector("#dl-derived-points");
+    result.pickedPointsLabel = pickedButton ? pickedButton.textContent.trim() : null;
+    result.hasDerivedPoints = Boolean(derivedButton);
 
     // The summary count is exactly the layer rows the panel shows (the
     // contributor toggle is not a layer).
@@ -954,6 +1024,13 @@ def assert_q1(operator: dict, picker: dict) -> None:
     assert operator["newButtonBeforeContributors"] is True, (
         "'New expression' must sit in the Derived layers section"
     )
+    assert operator["panelClosesOnOutsideClick"] is True, (
+        "the panel must close when the viewer is clicked"
+    )
+    assert operator["pickedPointsLabel"] == "Picked layer points", operator[
+        "pickedPointsLabel"
+    ]
+    assert operator["hasDerivedPoints"] is True, "the derived-points entry must be offered"
     assert operator["contributorOn"] > 0, "the contributor toggle must draw lines"
     assert operator["contributorOff"] == 0, "disabling it must remove them"
     assert (
@@ -997,7 +1074,7 @@ def assert_q2(operator: dict, picker: dict) -> None:
 
 def assert_q3(operator: dict) -> None:
     assert operator["canEdit"], "an operator must be offered the editor"
-    assert "position" in operator["previewStatus"], operator["previewStatus"]
+    assert "layer" in operator["previewStatus"], operator["previewStatus"]
     assert operator["previewLines"] > operator["layerToggle"]["afterOn"], operator
     assert operator["invalidStatus"], "an invalid expression must show a message"
     assert operator["previewAfterInvalid"] <= operator["layerToggle"]["afterOn"], operator
@@ -1019,6 +1096,13 @@ def assert_layers(layers: dict) -> None:
     assert layers["intermediateRow"] is not None and "no" in layers["intermediateRow"], (
         layers["intermediateRow"]
     )
+    assert layers["typeLayer"] is not None and "layer" in layers["typeLayer"], layers[
+        "typeLayer"
+    ]
+    assert (
+        layers["typeAttribute"] is not None and "attribute" in layers["typeAttribute"]
+    ), layers["typeAttribute"]
+    assert layers["expressionHighlighted"] is True, "the expression must be highlighted"
     assert layers["editorHasNoPreview"] is True, layers
     assert layers["createdInApi"] is True, layers
     assert layers["createdInViewer"] is True, "an item created on /layers must appear in the viewer"
@@ -1027,6 +1111,18 @@ def assert_layers(layers: dict) -> None:
     assert layers["layerAdded"] is True, layers
     assert layers["derivedAfterLayerSave"] is True, "a layer save must not lose derived items"
     assert layers["layerGone"] is True, layers
+
+
+def assert_refresh(refresh: dict) -> None:
+    assert refresh.get("error") is None, refresh
+    assert refresh["before"], "the derived line must be drawn"
+    assert refresh["putStatus"] == 200, refresh["putStatus"]
+    assert refresh["withoutForce"] == refresh["before"], (
+        "a plain redraw must reuse the cached values"
+    )
+    assert refresh["withForce"] != refresh["before"], (
+        "a forced redraw must refetch and move the line"
+    )
 
 
 def assert_narrow(narrow: dict) -> None:
@@ -1141,11 +1237,18 @@ def main() -> None:
         operator.update(run("op", "manage"))
         picker = run("picker", "panel")
         narrow = run("op", "narrow")
+        refresh = run("op", "refresh")
 
         external = [path for path in all_requests if "://" in path]
         print(
             json.dumps(
-                {"operator": operator, "picker": picker, "layers": layers, "narrow": narrow},
+                {
+                    "operator": operator,
+                    "picker": picker,
+                    "layers": layers,
+                    "narrow": narrow,
+                    "refresh": refresh,
+                },
                 indent=2,
             )
         )
@@ -1158,6 +1261,7 @@ def main() -> None:
         assert_manage(operator)
         assert_layers(layers)
         assert_narrow(narrow)
+        assert_refresh(refresh)
         assert not external, external
         print("PANEL HARNESS: all assertions passed")
     finally:

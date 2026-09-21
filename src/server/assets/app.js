@@ -868,7 +868,7 @@ const RIDAL = Object.freeze({
     // colours a name the evaluator does not know.
     const BUILTINS = [
       "count", "median", "mean", "std", "nmad", "percentile",
-      "percentile_lower", "min", "max", "concatenate", "shallowest",
+      "min", "max", "concatenate", "shallowest",
       "deepest", "clamp", "where",
     ];
     const KEYWORDS = ["if", "else", "true", "false", "NaN"];
@@ -931,7 +931,7 @@ const RIDAL = Object.freeze({
         </fieldset>
         <label class="checkbox" id="derived-audience-row" hidden>
           <input id="derived-release" type="checkbox">
-          Release to everyone (publishes every contributor's picks in aggregate)
+          Visible to everyone (publishes every contributor's picks in aggregate)
         </label>
         <p>
           <button id="derived-save" type="button">Save</button>
@@ -1096,7 +1096,7 @@ const RIDAL = Object.freeze({
       }
       if (generation !== previewGeneration) return;
       fields.status.classList.remove("editor-error");
-      const kindLabel = body.kind === "position" ? "position (a line)" : body.kind;
+      const kindLabel = body.kind === "layer" ? "layer (a line)" : "attribute";
       fields.status.textContent = `${kindLabel} · ${body.unit || "no unit"}`;
     }
 
@@ -1284,7 +1284,10 @@ const RIDAL = Object.freeze({
       await options.onSaved();
     }
 
-    return { open, close };
+    // `highlight` is exposed so the /layers derived list can render the same
+    // token colours as the editor, rather than a second tokenizer drifting
+    // from it. It returns sanitised HTML (every token escaped).
+    return { open, close, highlight };
   })(),
 });
 

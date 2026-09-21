@@ -54,7 +54,7 @@
     "std",
     "nmad",
     "percentile",
-    "percentile_lower",
+    "percentile",
     "min",
     "max",
     "concatenate",
@@ -229,6 +229,9 @@
           opacity: 0.9,
           interactive: false,
           pane: "radargram-lines",
+          // Stable per-item class, so the harness can follow one derived line
+          // across redraws.
+          className: `derived-line derived-line-${item.id}`,
         }).addTo(map),
       );
     });
@@ -238,7 +241,7 @@
     derivedLines.forEach((layers) => clearList(layers));
     derivedLines.clear();
     for (const item of state.items) {
-      if (item.kind !== "position") continue;
+      if (item.kind !== "layer") continue;
       if (state.itemVisible.get(item.id) === false) continue;
       let body;
       try {
@@ -341,7 +344,7 @@
     clearList(fillShapes);
     for (const item of state.items) {
       if (!item.fill_to) continue;
-      if (item.kind !== "position") continue;
+      if (item.kind !== "layer") continue;
       // A fill is drawn only while *both* its bounds are shown. Hiding either
       // one removes it: a band between a visible line and one the viewer has
       // switched off is a shape with no visible edges, and reading it as a
@@ -373,8 +376,13 @@
    * Published for viewer.js: toggling the topographic correction changes
    * `window.RIDAL_GEOMETRY.shift`, and the existing lines were drawn with the
    * old one, so they sit in the wrong place until something redraws them.
-   * picker.js is redrawn on the same event through `RIDAL_REDRAW_PICKS`. */
-  window.RIDAL_REDRAW_DERIVED = () => {
+   * picker.js is redrawn on the same event through `RIDAL_REDRAW_PICKS`.
+   *
+   * `force` clears the cached per-item values first. A geometry change keeps
+   * the values and only moves them, but a *saved pick* changes the values
+   * themselves, and without this the cached ones would be redrawn unchanged. */
+  window.RIDAL_REDRAW_DERIVED = (force) => {
+    if (force) state.values.clear();
     refreshDerivedLines().then(refreshFills);
   };
 
@@ -448,6 +456,25 @@
   }
   map.on("resize", fitPanelToMap);
   fitPanelToMap();
+
+  /* Close the disclosure on a click anywhere else.
+   *
+   * Phase 3 deliberately did the opposite, so that a map click would not fold
+   * the panel mid-task; Erik has since asked for the menu to close on any
+   * click in the viewer, which is the usual menu behaviour and keeps a long
+   * panel from sitting over the radargram. A capture-phase listener is used
+   * because `L.DomEvent.disableClickPropagation` stops clicks from inside the
+   * panel reaching the document, and `contains` is still correct there. */
+  document.addEventListener(
+    "click",
+    (event) => {
+      const container = panelControl._container;
+      if (container && container.open && !container.contains(event.target)) {
+        container.open = false;
+      }
+    },
+    true,
+  );
 
   const panelToggle = document.getElementById("panel-visibility");
 
@@ -592,7 +619,7 @@
     // belongs in this panel. An attribute (a number per position) and an
     // intermediate layer marked "not listed" are managed on the /layers page.
     const derivedLayers = state.items.filter(
-      (item) => item.kind === "position" && item.listed !== false,
+      (item) => item.kind === "layer" && item.listed !== false,
     );
     if (derivedLayers.length || state.canAuthor) {
       const derivedHeading = document.createElement("div");
@@ -661,7 +688,7 @@
         body: JSON.stringify({ expression, unit }),
       },
     );
-    if (body.kind !== "position") return body;
+    if (body.kind !== "layer") return body;
     const points = [];
     let run = [];
     body.values.forEach((value, trace) => {
