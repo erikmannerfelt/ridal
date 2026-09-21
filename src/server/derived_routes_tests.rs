@@ -1144,6 +1144,94 @@ async fn derived_points_are_wide_and_skip_unlisted_layers_by_default() {
     );
 }
 
+/// A property name that would displace a point's own field is refused when the
+/// item is saved, while the author can still pick another id.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_property_that_shadows_a_base_field_is_refused_at_save() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+
+    let mut colliding = item("easting", "count(bed)", json!("project"));
+    colliding["unit"] = json!("dimensionless");
+    let response = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([colliding])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert!(
+        response.text.contains("invalid_derived_items") && response.text.contains("easting"),
+        "{}",
+        response.text
+    );
+}
+
+/// A collision that reached the store anyway (written by hand or by an older
+/// build) is refused at export rather than written as a dropped or duplicate
+/// property.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_stored_collision_is_refused_at_export() {
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+
+    let stored = json!({
+        "schema": "ridal-derived",
+        "schema_version": "1",
+        "items": [{
+            "id": "easting",
+            "name": "easting",
+            "expression": "count(bed)",
+            "unit": "dimensionless",
+            "scope": "project",
+        }]
+    });
+    let derived_dir = dir
+        .path()
+        .join(crate::project::DEFAULT_DATA_DIR)
+        .join(crate::project::DERIVED_DIR);
+    std::fs::create_dir_all(&derived_dir).unwrap();
+    std::fs::write(
+        derived_dir.join("derived.json"),
+        serde_json::to_string(&stored).unwrap(),
+    )
+    .unwrap();
+
+    let response = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/derived/level2?format=csv"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(
+        response.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        response.text
+    );
+    assert!(
+        response.text.contains("derived_property_collision"),
+        "{}",
+        response.text
+    );
+}
+
 /// A derived layer and a picked layer are sampled on the same radargram-wide
 /// arc grid, so their distances line up node for node.
 #[tokio::test]

@@ -11,15 +11,79 @@
 //! the same row, with the attributes that summarise them beside them, instead
 //! of each derived line being exported as though it were a picked layer.
 //!
+//! Property names are checked against [`BASE_FIELDS`] and against each other,
+//! because a colliding name is either silently dropped (GeoJSON) or written as
+//! a duplicate column (CSV). [`build`] refuses rather than produce either.
+//! [`possible_properties`] is the same check for the save path, where the kind
+//! is not known yet and all the names an item *could* occupy are reserved.
+//!
 //! This module is pure: the derived evaluation lives in
 //! [`crate::project::derived`] and the grid in [`crate::interp::level2`], so
 //! the assembly can be tested against synthetic inputs with no I/O.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use crate::interp::derive::{convert_position, EvaluatedItem, Kind, Unit};
 use crate::interp::level2::{self, RadargramGeometry};
 use crate::project::derived::DerivedSet;
+
+/// The point properties that describe the point itself.
+///
+/// A derived item may not write any of these. Its value would replace a
+/// coordinate, depth or identity every consumer depends on, and the two
+/// serializers would disagree about which value survived. The list is the one
+/// definition both writers and both collision checks use.
+pub const BASE_FIELDS: [&str; 12] = [
+    "radargram_id",
+    "revision_id",
+    "trace",
+    "distance_m",
+    "easting",
+    "northing",
+    "longitude",
+    "latitude",
+    "crs",
+    "antenna_separation_effective_m",
+    "twtt_anchor",
+    "user",
+];
+
+/// Why a wide derived product could not be built.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DerivedPointsError {
+    /// An item's property name would displace one of the point's own fields.
+    ReservedProperty { id: String, property: String },
+    /// Two items would write the same property.
+    PropertyCollision {
+        id: String,
+        other: String,
+        property: String,
+    },
+}
+
+impl fmt::Display for DerivedPointsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DerivedPointsError::ReservedProperty { id, property } => write!(
+                f,
+                "the derived item '{id}' would write the point property '{property}', \
+                 which every point already carries. Rename the item."
+            ),
+            DerivedPointsError::PropertyCollision {
+                id,
+                other,
+                property,
+            } => write!(
+                f,
+                "the derived items '{id}' and '{other}' would both write the point \
+                 property '{property}'. Rename one of them."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DerivedPointsError {}
 
 /// One property a derived item contributes.
 ///
@@ -71,6 +135,9 @@ pub struct DerivedPointsExport {
 /// Only items `viewer` may see are included, and -- unless `include_unlisted` --
 /// only those marked `listed`, matching the viewer panel and the picked
 /// download's unlisted handling.
+///
+/// Refuses when an item's property would collide with one of [`BASE_FIELDS`]
+/// or with another item's, so neither serializer can emit an ambiguous file.
 pub fn build(
     set: &DerivedSet,
     results: &BTreeMap<String, EvaluatedItem>,
@@ -79,7 +146,7 @@ pub fn build(
     spacing_m: Option<f64>,
     viewer: &str,
     include_unlisted: bool,
-) -> DerivedPointsExport {
+) -> Result<DerivedPointsExport, DerivedPointsError> {
     let visible: Vec<&crate::project::derived::DerivedItem> = set
         .visible_to(viewer)
         .into_iter()
@@ -100,6 +167,8 @@ pub fn build(
             }
         })
         .collect();
+
+    check_property_names(&items)?;
 
     let points: Vec<DerivedPoint> = grid
         .iter()
@@ -145,7 +214,7 @@ pub fn build(
         })
         .collect();
 
-    DerivedPointsExport {
+    Ok(DerivedPointsExport {
         points,
         radargram_id: geometry.radargram_id.clone(),
         revision_id: geometry.revision_id.clone(),
@@ -155,7 +224,31 @@ pub fn build(
         twtt_anchor: geometry.twtt_anchor.clone(),
         user: viewer.to_string(),
         items,
+    })
+}
+
+/// Refuse property names that collide with a base field or with each other.
+fn check_property_names(items: &[DerivedItemInfo]) -> Result<(), DerivedPointsError> {
+    let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
+    for item in items {
+        for property in &item.properties {
+            if BASE_FIELDS.contains(&property.as_str()) {
+                return Err(DerivedPointsError::ReservedProperty {
+                    id: item.id.clone(),
+                    property: property.clone(),
+                });
+            }
+            if let Some(other) = seen.get(property.as_str()) {
+                return Err(DerivedPointsError::PropertyCollision {
+                    id: item.id.clone(),
+                    other: (*other).to_string(),
+                    property: property.clone(),
+                });
+            }
+            seen.insert(property.as_str(), item.id.as_str());
+        }
     }
+    Ok(())
 }
 
 /// The output property names one item contributes, in order.
@@ -171,6 +264,20 @@ pub fn property_names(id: &str, kind: Kind, unit: Unit) -> Vec<String> {
             Unit::Nanoseconds => vec![format!("{id}_ns")],
             Unit::Samples => vec![format!("{id}_samples")],
         },
+    }
+}
+
+/// Every property name an item with this id and unit could contribute.
+///
+/// A superset over kinds, for the save path where the kind is inferred rather
+/// than known: a non-dimensionless item may be a layer (three vertical names)
+/// or an attribute (one), so all three are reserved. Dimensionless can only be
+/// an attribute.
+pub fn possible_properties(id: &str, unit: Unit) -> Vec<String> {
+    if unit == Unit::Dimensionless {
+        vec![id.to_string()]
+    } else {
+        property_names(id, Kind::Layer, unit)
     }
 }
 
@@ -244,7 +351,8 @@ mod tests {
             None,
             "me",
             false,
-        );
+        )
+        .unwrap();
 
         assert_eq!(export.points.len(), 3);
         assert_eq!(
@@ -284,7 +392,7 @@ mod tests {
             result(Kind::Attribute, Unit::Dimensionless, vec![3.0, 4.0]),
         );
 
-        let export = build(&set, &results, &geometry(), &[0.0, 1.0], None, "me", false);
+        let export = build(&set, &results, &geometry(), &[0.0, 1.0], None, "me", false).unwrap();
 
         let first = &export.points[0];
         assert_eq!(first.values["thickness_m"], Some(2.0));
@@ -332,12 +440,127 @@ mod tests {
             result(Kind::Layer, Unit::Meters, vec![2.0]),
         );
 
-        let default = build(&set, &results, &geometry(), &[0.0], None, "me", false);
+        let default = build(&set, &results, &geometry(), &[0.0], None, "me", false).unwrap();
         assert_eq!(default.items.len(), 1);
         assert!(!default.points[0].values.contains_key("hidden_m"));
 
-        let all = build(&set, &results, &geometry(), &[0.0], None, "me", true);
+        let all = build(&set, &results, &geometry(), &[0.0], None, "me", true).unwrap();
         assert_eq!(all.items.len(), 2);
         assert_eq!(all.points[0].values["hidden_m"], Some(2.0));
+    }
+
+    #[test]
+    fn a_reserved_property_name_is_refused_not_dropped() {
+        // A dimensionless attribute is named by its bare id, so `easting`
+        // reaches a base field. The old GeoJSON path silently kept the
+        // coordinate and lost the item; now the build refuses.
+        let set = DerivedSet {
+            items: vec![item("easting", Unit::Dimensionless, true)],
+            ..DerivedSet::default()
+        };
+        let mut results = BTreeMap::new();
+        results.insert(
+            "easting".to_string(),
+            result(Kind::Attribute, Unit::Dimensionless, vec![1.0]),
+        );
+
+        let error = build(&set, &results, &geometry(), &[0.0], None, "me", false).unwrap_err();
+        assert_eq!(
+            error,
+            DerivedPointsError::ReservedProperty {
+                id: "easting".into(),
+                property: "easting".into(),
+            }
+        );
+        assert!(error.to_string().contains("Rename"));
+    }
+
+    #[test]
+    fn a_suffixed_property_that_reaches_a_base_field_is_refused() {
+        // `distance` in metres produces `distance_m`, which is a base field.
+        let set = DerivedSet {
+            items: vec![item("distance", Unit::Meters, true)],
+            ..DerivedSet::default()
+        };
+        let mut results = BTreeMap::new();
+        results.insert(
+            "distance".to_string(),
+            result(Kind::Attribute, Unit::Meters, vec![1.0]),
+        );
+
+        assert_eq!(
+            build(&set, &results, &geometry(), &[0.0], None, "me", false).unwrap_err(),
+            DerivedPointsError::ReservedProperty {
+                id: "distance".into(),
+                property: "distance_m".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn two_items_that_write_the_same_property_are_refused() {
+        // A layer named `thickness` emits `thickness_m`, and so does an
+        // attribute whose id is `thickness_m`.
+        let set = DerivedSet {
+            items: vec![
+                item("thickness", Unit::Meters, true),
+                item("thickness_m", Unit::Dimensionless, true),
+            ],
+            ..DerivedSet::default()
+        };
+        let mut results = BTreeMap::new();
+        results.insert(
+            "thickness".to_string(),
+            result(Kind::Layer, Unit::Meters, vec![1.0]),
+        );
+        results.insert(
+            "thickness_m".to_string(),
+            result(Kind::Attribute, Unit::Dimensionless, vec![2.0]),
+        );
+
+        let error = build(&set, &results, &geometry(), &[0.0], None, "me", false).unwrap_err();
+        assert!(matches!(
+            error,
+            DerivedPointsError::PropertyCollision { property, .. } if property == "thickness_m"
+        ));
+    }
+
+    #[test]
+    fn a_base_like_id_that_does_not_collide_is_allowed() {
+        // A layer `easting` writes `easting_m`/`_ns`/`_samples`, none of which
+        // is the base `easting`; a metres attribute `trace` writes `trace_m`.
+        let set = DerivedSet {
+            items: vec![
+                item("easting", Unit::Meters, true),
+                item("trace", Unit::Meters, true),
+            ],
+            ..DerivedSet::default()
+        };
+        let mut results = BTreeMap::new();
+        results.insert(
+            "easting".to_string(),
+            result(Kind::Layer, Unit::Meters, vec![1.0]),
+        );
+        results.insert(
+            "trace".to_string(),
+            result(Kind::Attribute, Unit::Meters, vec![2.0]),
+        );
+
+        let export = build(&set, &results, &geometry(), &[0.0], None, "me", false).unwrap();
+        assert_eq!(export.items.len(), 2);
+        assert!(export.points[0].values.contains_key("easting_m"));
+        assert!(export.points[0].values.contains_key("trace_m"));
+    }
+
+    #[test]
+    fn possible_properties_is_a_superset_over_kinds() {
+        // A dimensionless item can only be an attribute, so only the bare id.
+        assert_eq!(possible_properties("count", Unit::Dimensionless), ["count"]);
+        // Anything else may be a layer, so all three vertical names are
+        // reserved even though an attribute emits only one.
+        assert_eq!(
+            possible_properties("thickness", Unit::Meters),
+            ["thickness_m", "thickness_ns", "thickness_samples"]
+        );
     }
 }

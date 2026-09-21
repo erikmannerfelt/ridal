@@ -55,7 +55,9 @@ fn derived_error(error: DerivedError) -> ApiError {
         | DerivedError::InvalidId { .. }
         | DerivedError::DuplicateId(_)
         | DerivedError::InvalidColor { .. }
-        | DerivedError::Malformed { .. } => {
+        | DerivedError::Malformed { .. }
+        | DerivedError::ReservedProperty { .. }
+        | DerivedError::PropertyCollision { .. } => {
             ApiError::bad_request("invalid_derived_items", error.to_string())
         }
         DerivedError::Derive(e) => ApiError::bad_request("invalid_derived_items", e.to_string()),
@@ -726,7 +728,7 @@ pub(crate) fn export_derived_points(
         .evaluate(&reduced, geometry)
         .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
     let viewer = caller.display_name().to_string();
-    Ok(derived_points::build(
+    derived_points::build(
         &set,
         &results,
         geometry,
@@ -734,7 +736,8 @@ pub(crate) fn export_derived_points(
         spacing_m,
         &viewer,
         include_unlisted,
-    ))
+    )
+    .map_err(|e| ApiError::bad_request("derived_property_collision", e.to_string()))
 }
 
 /// `GET /api/v1/datasets/{id}/derived/level2` -- derived layers as level 2

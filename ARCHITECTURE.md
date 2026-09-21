@@ -668,7 +668,12 @@ of it. A derived layer is a depth, so it is written in all three vertical units
 (`thickness_m`, `thickness_ns`, `thickness_samples`); a derived attribute is
 written in its own unit (`thickness_user_std_m`, or the bare id when
 dimensionless). A thickness and a cts depth therefore share a row, with the
-statistics that summarise them beside them. "Include unlisted" brings in items
+statistics that summarise them beside them. A property name is reserved
+against the point's own fields and against every other item's: `easting`,
+`northing` or `trace` as a dimensionless attribute, or any id whose `<id>_m`
+is `distance_m`, is refused at save -- while the author can still choose
+another id -- and refused again at export if it reached the store another
+way. "Include unlisted" brings in items
 marked `listed: false`, off by default to match the viewer panel. The
 single-radargram route is `GET /api/v1/datasets/{id}/derived/level2`; the merged
 group/catalog menus select the same path with `derived=true` on the existing

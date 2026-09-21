@@ -409,6 +409,40 @@ impl DerivedSet {
         Ok(())
     }
 
+    /// Reject items whose exported point properties would collide.
+    ///
+    /// Kept out of [`DerivedSet::validate`] so a stored set that already
+    /// carries a collision still reads and edits; the export refuses it, but
+    /// the project does not become unreadable. This runs on save, which is the
+    /// only point the author can still choose another id -- ids are immutable.
+    ///
+    /// The names checked are those an item *could* write, not only those it
+    /// does: the kind is inferred rather than declared, so a non-dimensionless
+    /// item reserves all three vertical names. That can refuse a pair that
+    /// would not actually collide (a metres attribute `foo` beside a
+    /// dimensionless `foo_ns`), which is the safe direction and rare.
+    pub fn validate_output_names(&self) -> Result<(), DerivedError> {
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for item in &self.items {
+            for property in crate::interp::derived_points::possible_properties(&item.id, item.unit)
+            {
+                if crate::interp::derived_points::BASE_FIELDS.contains(&property.as_str()) {
+                    return Err(DerivedError::ReservedProperty {
+                        id: item.id.clone(),
+                        property,
+                    });
+                }
+                if !seen.insert(property.clone()) {
+                    return Err(DerivedError::PropertyCollision {
+                        id: item.id.clone(),
+                        property,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Evaluate every item over one radargram's reduced picks.
     ///
     /// The whole dependency chain is evaluated together on one grid, so no
@@ -541,6 +575,17 @@ pub enum DerivedError {
         path: Vec<String>,
     },
     Derive(DeriveError),
+    /// An item's exported property name would displace one of the point's own
+    /// fields (see [`crate::interp::derived_points::BASE_FIELDS`]).
+    ReservedProperty {
+        id: String,
+        property: String,
+    },
+    /// Two items would export the same point property.
+    PropertyCollision {
+        id: String,
+        property: String,
+    },
 }
 
 impl std::fmt::Display for DerivedError {
@@ -571,6 +616,16 @@ impl std::fmt::Display for DerivedError {
                 write!(f, "the derived items form a cycle: {}", path.join(" → "))
             }
             DerivedError::Derive(e) => write!(f, "{e}"),
+            DerivedError::ReservedProperty { id, property } => write!(
+                f,
+                "the derived item '{id}' would write the point property '{property}', \
+                 which every exported point already carries. Rename the item."
+            ),
+            DerivedError::PropertyCollision { id, property } => write!(
+                f,
+                "the derived item '{id}' would write the point property '{property}', \
+                 which another item already writes. Rename the item."
+            ),
         }
     }
 }
@@ -613,6 +668,7 @@ pub fn write(
     expected: &Expectation,
 ) -> Result<Version, DerivedError> {
     set.validate()?;
+    set.validate_output_names()?;
     let text = serde_json::to_string_pretty(set).map_err(|e| DerivedError::Malformed {
         message: e.to_string(),
     })?;
@@ -887,5 +943,98 @@ mod tests {
         for value in &thickness.values {
             assert!((value + 0.4).abs() < 1e-9, "{value}");
         }
+    }
+
+    #[test]
+    fn a_reserved_point_property_is_refused_at_save() {
+        // A dimensionless attribute is named by its bare id, so `easting`
+        // would reach the point's own field.
+        let mut counting = item("easting", "count(bed)");
+        counting.unit = Unit::Dimensionless;
+        let set = set(vec![counting]);
+
+        // Reading stays lenient -- the export refuses, the project does not
+        // become unreadable.
+        assert!(set.validate().is_ok());
+        assert!(matches!(
+            set.validate_output_names(),
+            Err(DerivedError::ReservedProperty { id, property })
+                if id == "easting" && property == "easting"
+        ));
+    }
+
+    #[test]
+    fn a_suffixed_property_that_reaches_a_base_field_is_refused_at_save() {
+        // `distance` in metres produces `distance_m`, a base field, for a
+        // layer or an attribute alike -- so the unit alone decides.
+        for unit in [Unit::Meters, Unit::Nanoseconds, Unit::Samples] {
+            let mut item = item("distance", "median(bed)");
+            item.unit = unit;
+            let set = set(vec![item]);
+            assert!(
+                matches!(
+                    set.validate_output_names(),
+                    Err(DerivedError::ReservedProperty { id, property })
+                        if id == "distance" && property == "distance_m"
+                ),
+                "{unit} should reserve distance_m"
+            );
+        }
+    }
+
+    #[test]
+    fn two_items_that_would_write_one_property_are_refused_at_save() {
+        // `thickness` emits `thickness_m`; a dimensionless `thickness_m`
+        // emits the same. Ids are unique; property names need not be.
+        let mut clash = item("thickness_m", "count(bed)");
+        clash.unit = Unit::Dimensionless;
+        let set = set(vec![item("thickness", "median(bed)"), clash]);
+
+        assert!(matches!(
+            set.validate_output_names(),
+            Err(DerivedError::PropertyCollision { id, property })
+                if id == "thickness_m" && property == "thickness_m"
+        ));
+    }
+
+    #[test]
+    fn base_like_ids_that_do_not_collide_are_allowed_at_save() {
+        // A layer `easting` writes `easting_m`/`_ns`/`_samples`; a metres
+        // attribute `trace` writes `trace_m`; neither is the bare field.
+        let mut trace = item("trace", "count(bed)");
+        trace.unit = Unit::Meters;
+        let set = set(vec![item("easting", "median(bed)"), trace]);
+        assert!(set.validate_output_names().is_ok());
+    }
+
+    #[test]
+    fn write_refuses_a_collision_but_read_does_not() {
+        let (dir, project) = project();
+        let mut clash = item("trace", "count(bed)");
+        clash.unit = Unit::Dimensionless;
+        let set = set(vec![clash]);
+
+        let error = write(project.documents(), &set, &Expectation::Any).unwrap_err();
+        assert!(
+            error.to_string().contains("every exported point"),
+            "{error}"
+        );
+
+        // The refusal happens before the store, so nothing was written.
+        assert!(read(project.documents()).unwrap().1.is_none());
+
+        // A set written by an older build (or by hand) with a collision still
+        // reads, so editing it is possible; only the export refuses.
+        let stored = DerivedSet {
+            items: set.items.clone(),
+            ..DerivedSet::default()
+        };
+        let text = serde_json::to_string(&stored).unwrap();
+        project
+            .documents()
+            .write(&path(), &text, &Expectation::Any)
+            .unwrap();
+        assert!(read(project.documents()).unwrap().1.is_some());
+        let _ = dir;
     }
 }

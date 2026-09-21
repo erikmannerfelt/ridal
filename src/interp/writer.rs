@@ -17,7 +17,7 @@
 use std::fmt::Write as _;
 
 use crate::coords;
-use crate::interp::derived_points::DerivedPointsExport;
+use crate::interp::derived_points::{DerivedPointsExport, BASE_FIELDS};
 use crate::interp::level2::{Level2Export, Level2Point};
 
 /// Which coordinates the output geometry is expressed in.
@@ -264,11 +264,6 @@ pub fn to_csv(exports: &[Level2Export]) -> String {
     out
 }
 
-/// Base columns of the wide derived CSV, before the per-item properties.
-const DERIVED_CSV_BASE: &str = "radargram_id,revision_id,trace,distance_m,easting,northing,\
-                                longitude,latitude,crs,antenna_separation_effective_m,\
-                                twtt_anchor,user";
-
 /// Serialize derived points as one GeoJSON FeatureCollection of wide points.
 ///
 /// One feature per grid position; every visible derived item is a property,
@@ -346,10 +341,8 @@ fn derived_properties(
     export: &DerivedPointsExport,
 ) -> serde_json::Value {
     let mut object = serde_json::Map::new();
-    // Items first, so a base field always wins a name collision: a
-    // dimensionless attribute is named by its bare id, and an id equal to
-    // `trace` or `distance_m` must not be able to displace the coordinate
-    // every consumer depends on.
+    // Items first, so a base field always wins a name collision. `build`
+    // already refuses collisions, so this only protects a hand-built export.
     for (name, value) in &point.values {
         object.insert(
             name.clone(),
@@ -359,23 +352,26 @@ fn derived_properties(
             },
         );
     }
-    for (name, value) in [
-        ("radargram_id", serde_json::json!(export.radargram_id)),
-        ("revision_id", serde_json::json!(export.revision_id)),
-        ("trace", serde_json::json!(point.trace)),
-        ("distance_m", serde_json::json!(point.distance_m)),
-        ("easting", serde_json::json!(point.easting)),
-        ("northing", serde_json::json!(point.northing)),
-        ("longitude", serde_json::json!(point.longitude)),
-        ("latitude", serde_json::json!(point.latitude)),
-        ("crs", serde_json::json!(export.crs)),
-        (
-            "antenna_separation_effective_m",
-            serde_json::json!(export.antenna_separation_effective_m),
-        ),
-        ("twtt_anchor", serde_json::json!(export.twtt_anchor)),
-        ("user", serde_json::json!(export.user)),
-    ] {
+    // The base fields come from one list, shared with the CSV header and the
+    // collision checks, so the three cannot drift apart.
+    for name in BASE_FIELDS {
+        let value = match name {
+            "radargram_id" => serde_json::json!(export.radargram_id),
+            "revision_id" => serde_json::json!(export.revision_id),
+            "trace" => serde_json::json!(point.trace),
+            "distance_m" => serde_json::json!(point.distance_m),
+            "easting" => serde_json::json!(point.easting),
+            "northing" => serde_json::json!(point.northing),
+            "longitude" => serde_json::json!(point.longitude),
+            "latitude" => serde_json::json!(point.latitude),
+            "crs" => serde_json::json!(export.crs),
+            "antenna_separation_effective_m" => {
+                serde_json::json!(export.antenna_separation_effective_m)
+            }
+            "twtt_anchor" => serde_json::json!(export.twtt_anchor),
+            "user" => serde_json::json!(export.user),
+            other => unreachable!("BASE_FIELDS has a field with no value: {other}"),
+        };
         object.insert(name.to_string(), value);
     }
     serde_json::Value::Object(object)
@@ -386,12 +382,21 @@ fn derived_properties(
 /// Columns are the base fields followed by every item property in the file.
 /// A merged file spans several radargrams whose item sets may differ, so the
 /// header is the union in first-appearance order and a missing value is
-/// empty -- the shape `expected_consensus.csv` uses.
+/// empty -- the shape `expected_consensus.csv` uses. The base columns are
+/// [`BASE_FIELDS`], which the base-field collision check also uses, so the
+/// header and the row below it cannot disagree.
 pub fn to_csv_derived(exports: &[DerivedPointsExport]) -> String {
+    // `build` refuses a property that collides with a base field or another
+    // item's, so no column can shadow a base one. Asserted rather than
+    // silently skipped: silently skipping would drop an item's values.
     let mut columns: Vec<&str> = Vec::new();
     for export in exports {
         for item in &export.items {
             for property in &item.properties {
+                debug_assert!(
+                    !BASE_FIELDS.contains(&property.as_str()),
+                    "build() must refuse a base-field collision: {property}"
+                );
                 if !columns.contains(&property.as_str()) {
                     columns.push(property.as_str());
                 }
@@ -400,8 +405,8 @@ pub fn to_csv_derived(exports: &[DerivedPointsExport]) -> String {
     }
 
     let total: usize = exports.iter().map(|e| e.points.len()).sum();
-    let mut out = String::with_capacity(DERIVED_CSV_BASE.len() + total * (32 + columns.len() * 16));
-    out.push_str(DERIVED_CSV_BASE);
+    let mut out = String::with_capacity(total * (32 + columns.len() * 16));
+    out.push_str(&BASE_FIELDS.join(","));
     for column in &columns {
         out.push(',');
         out.push_str(column);
@@ -410,6 +415,7 @@ pub fn to_csv_derived(exports: &[DerivedPointsExport]) -> String {
 
     for export in exports {
         for point in &export.points {
+            // Same order as `BASE_FIELDS`, which is what built the header.
             let _ = write!(
                 out,
                 "{},{},{},{},{},{},{},{},{},{},{},{}",
