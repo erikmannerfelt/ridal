@@ -414,12 +414,20 @@ max_depth`) vertical scale, by design (see `topo.rs`'s module docs).
 
 A **derived item** is a named Rhai expression over the project's picked
 layers, e.g. `median(bed)` or `std(concatenate(bed, bed_no_temperate))`.
-Whether it is a *layer* or an *attribute* is inferred, never declared: an
+Whether it is a **layer** or an **attribute** is inferred, never declared: an
 expression that yields a position is a derived layer (a line, available as
 depth, TWTT and sample number); anything else is a derived attribute (a
 per-position number exported in its own unit). The evaluator lives in
 `interp::derive` (pure, no I/O) and the document model in `project::derived`
 (`ridal_data/derived/derived.json`).
+
+There are exactly two kinds, matching the two words the UI uses. An earlier
+`length`/`scalar` split was never acted on by any branch — the only decisions
+are "is it a layer" — and the stored `unit` already distinguishes a thickness
+from a count, so the extra terms only reached the UI and confused it. The
+`percentile(a, p)` built-in is the order statistic at `floor(p/100 * (n-1))`;
+it deliberately does not interpolate, so it always returns a value a
+contributor actually picked (see the Mannerfelt consensus).
 
 ### Reducers turn multi-valued geometry into one line per user
 
@@ -451,10 +459,10 @@ be fractional. An attribute result is exported in its own unit and never
 converted.
 
 A fourth unit, `dimensionless`, exists for counts, ratios and flags. A
-*position* may not be declared dimensionless — a position is a depth, and a
-depth has a unit — which `Unit::allows` enforces at evaluation time, where
-the inferred kind is known. (`validate` cannot: it has no layer vocabulary,
-so it cannot know an expression's kind.)
+*layer* may not be declared dimensionless — a layer is a depth, and a depth
+has a unit — which `Unit::allows` enforces at evaluation time, where the
+inferred kind is known. (`validate` cannot: it has no layer vocabulary, so it
+cannot know an expression's kind.)
 
 ### Two engines, one function table
 
@@ -608,16 +616,19 @@ see by design.
 The panel is a `<details>` closed by default — the same pattern the header
 menu uses, so it opens and closes and takes keyboard focus with no
 JavaScript. Unlike `.site-menu` it deliberately does **not** close on an
-outside click: the map is what is being looked at while layers are toggled,
-and a click there must not fold the panel away mid-task. A separate control
-hides the panel entirely for a viewer reading the image, and that choice
-persists for the session in `sessionStorage`.
+outside click — the close-on-outside handler in `app.js` is bound to
+`details.site-menu`, and the panel is not one — because the map is what is
+being looked at while layers are toggled, and a click there must not fold the
+panel away mid-task. A separate control hides the panel entirely for a viewer
+reading the image, and that choice persists for the session in
+`sessionStorage`; the toggle has its own hover treatment because it is small
+and easy to overlook.
 
 `audience` is a permission control, not a display setting, and the editor
-labels it as publishing every contributor's picks in aggregate. It is shown
-only to a caller who may set it (`can_release`), and the server's `Role::Admin`
-check on `Audience::Released` remains the real gate; a 403 is shown verbatim
-rather than folded into a generic failure.
+labels it as publishing every contributor's picks in aggregate ("Visible to
+everyone"). It is shown only to a caller who may set it (`can_release`), and
+the server's `Role::Admin` check on `Audience::Released` remains the real
+gate; a 403 is shown verbatim rather than folded into a generic failure.
 
 ### Listed vs shown, and the used-by counter
 
@@ -638,3 +649,21 @@ items reference it in an expression. It is computed server-side over the
 *whole* stored set, so an invisible dependent is counted too -- otherwise the
 count would read zero and the server's refusal to delete the item would look
 arbitrary. Only the count leaves the server, never who depends on it.
+
+### Downloading derived layers
+
+The download menus offer **Picked layer points** and **Derived layer points**
+(the former was called "Layer points"). The derived export evaluates the
+caller's visible picks and turns each derived *layer* into a level 2 export
+through the same resampling and writers the picked export uses, so spacing,
+CSV/GeoJSON and the coordinate options are identical; an attribute is a
+number, not a line, and is skipped. "Include unlisted" brings in layers marked
+`listed: false`, off by default to match the viewer panel. The single-radargram
+route is `GET /api/v1/datasets/{id}/derived/level2`; the merged group/catalog
+menus select the same path with `derived=true` on the existing `level2` route,
+so one dialog serves both.
+
+An admin also gets **For every user** on picked layer points: one file with
+every contributor's points, each row still tagged with its user. It is an
+`Role::Admin` decision (the server checks it, not just the checkbox), because
+it discloses individual picks in aggregate.
