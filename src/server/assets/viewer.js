@@ -1136,7 +1136,11 @@ map.on('mousemove', (event) => {
     const distance = axisValue(axes.distance, traceIndex);
     const twtt = axisValue(axes.twtt, sampleIndex);
     const depth = axisValue(axes.depth, sampleIndex);
-    if (distance !== null) text += ` · ${distance.toFixed(1)} m`;
+    // Labelled like every other term: distance and depth are both in
+    // metres, so an unlabelled one next to `depth` is two numbers in the
+    // same unit with nothing saying which is which. Abbreviated to match
+    // `elev.` and keep the line from wrapping on a phone.
+    if (distance !== null) text += ` · dist. ${distance.toFixed(1)} m`;
     if (twtt !== null) text += ` · TWTT ${twtt.toFixed(1)} ns`;
     if (depth !== null) text += ` · depth ${depth.toFixed(1)} m`;
     // Point elevation = this trace's own surface elevation minus this
