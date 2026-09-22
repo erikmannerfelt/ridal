@@ -574,6 +574,49 @@
       redraw();
     }
 
+    /** Ask before splitting, anchored at the vertex that was tapped.
+     *
+     * A split is triggered by a tap on a vertex someone may well have been
+     * aiming to *drag*, and the way back is to drag one half's end onto the
+     * other's -- fiddly on a long horizon, and easy not to notice on a
+     * radargram with many lines. So it asks first.
+     *
+     * A popup on the marker rather than a prompt in the selection panel
+     * above the map: the tap landed here, and a question that appears above
+     * the radargram is a question that gets answered without being read.
+     * Not `window.confirm`, which blocks the Chromium harness and reads as a
+     * browser dialog rather than part of the page -- the same reason the
+     * layer panel builds its delete confirmation by hand. */
+    function confirmSplitAt(vertexIndex, marker) {
+      const content = document.createElement("div");
+      content.className = "pick-confirm";
+      const question = document.createElement("span");
+      question.textContent = "Split the line here?";
+      const yes = document.createElement("button");
+      yes.type = "button";
+      yes.id = "pick-split-confirm";
+      yes.textContent = "Split";
+      yes.addEventListener("click", () => {
+        map.closePopup();
+        splitSelectedAt(vertexIndex);
+      });
+      const no = document.createElement("button");
+      no.type = "button";
+      no.id = "pick-split-cancel";
+      no.textContent = "Cancel";
+      no.addEventListener("click", () => map.closePopup());
+      content.append(question, yes, no);
+      // A standalone popup positioned at the marker, not `marker.bindPopup`:
+      // binding also installs Leaflet's own click-to-toggle on the marker, so
+      // the second tap on a handle closed the popup this handler had just
+      // opened and the prompt never reappeared. `openOn` also closes any
+      // popup already up, so two handles cannot both be asking at once.
+      L.popup({ closeButton: false, autoPan: false })
+        .setLatLng(marker.getLatLng())
+        .setContent(content)
+        .openOn(map);
+    }
+
     /** Replace the selected line with the two halves of a split.
      *
      * One `splice` that removes exactly one feature and inserts exactly
@@ -730,7 +773,8 @@
           label,
           interior ? "interior" : "end",
           () => {
-            if (interior) splitSelectedAt(index);
+            // `handle` is assigned by the time a tap can reach this.
+            if (interior) confirmSplitAt(index, handle);
           },
           selected,
         );

@@ -738,6 +738,16 @@ section.group {
   font-weight: 600;
 }
 
+/* The split confirmation inside a vertex's popup. Matches
+ * `.layer-panel-confirm`, so the two confirmations in the viewer read as one
+ * pattern rather than as two unrelated prompts. */
+.pick-confirm {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.75rem;
+}
+
 .popup-thumb {
   display: block;
   margin-top: var(--space-1);
