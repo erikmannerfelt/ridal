@@ -73,6 +73,61 @@
   --thumb-aspect: 5 / 2;
 }
 
+.bulk-users {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-sunken);
+}
+
+.bulk-users summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.bulk-risk {
+  margin-top: 1rem;
+}
+
+.bulk-result {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+.bulk-table {
+  width: 100%;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  #bulk-result,
+  #bulk-result * {
+    visibility: visible;
+  }
+
+  #bulk-result {
+    position: absolute;
+    inset: 0;
+    border: 0;
+  }
+
+  #bulk-result .bulk-actions {
+    display: none;
+  }
+}
+
 /* A phone's address bar hides on the first interaction, which grows `vh`
    and therefore the map, which re-lays the radargram under the finger that
    caused it -- the "jump" on placing a first vertex. `svh` is resolved
@@ -1004,6 +1059,12 @@ dialog th {
   gap: var(--space-2);
 }
 
+/* The bulk random-names switch governs the prefix beside it, so it gets a
+ * row of its own rather than sharing one with the fields it affects. */
+.add-layer-fields label.bulk-random {
+  flex-basis: 100%;
+}
+
 .add-layer-fields input[type="text"] {
   padding: var(--space-2);
   border: 1px solid var(--color-border);
@@ -1011,6 +1072,15 @@ dialog th {
   background: var(--color-surface);
   color: var(--color-text);
   font: inherit;
+}
+
+/* A disabled field must read as inert: the rule above sets a surface colour
+ * and full-strength text, so without this a disabled prefix looks editable. */
+.add-layer-fields input:disabled,
+.add-layer-fields select:disabled {
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
 }
 
 /* The page-level actions that are plain buttons rather than menus. Sized
@@ -1227,6 +1297,7 @@ button.danger:disabled {
  * as one broken thing. One width, one gap. */
 #access-section .add-layer,
 #access-section .settings-form,
+#access-section .bulk-users,
 #access-section .warning {
   max-width: 44rem;
 }

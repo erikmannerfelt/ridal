@@ -109,6 +109,8 @@ pub struct ProjectUserArgs {
 pub enum ProjectUserCommand {
     /// Create an account and print a one-time invite link
     Add(ProjectUserAddArgs),
+    /// Create several accounts and print their invite links or passwords
+    AddBulk(ProjectUserAddBulkArgs),
     /// List the accounts and what each may do
     List(ProjectUserListArgs),
     /// Change someone's role or download scope
@@ -133,6 +135,48 @@ pub struct ProjectUserAddArgs {
     /// What they may download: none, picks, derived or all.
     #[arg(long, default_value = "all")]
     pub download: String,
+
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectUserAddBulkArgs {
+    /// Generate names as prefix-01, prefix-02, and so on.
+    #[arg(long, default_value = "student")]
+    pub prefix: String,
+
+    /// Draw names from a fixed pool of friendly usernames instead of the
+    /// prefix. Fails if fewer unused names remain than were requested.
+    #[arg(long)]
+    pub random_names: bool,
+
+    /// Number of accounts to create.
+    #[arg(long)]
+    pub count: usize,
+
+    /// What they may do: viewer, picker, operator or admin.
+    #[arg(long, default_value = "picker")]
+    pub role: String,
+
+    /// What they may download: none, picks, derived or all.
+    #[arg(long, default_value = "all")]
+    pub download: String,
+
+    /// Generate shared passwords instead of one-time invite links.
+    #[arg(long)]
+    pub passwords: bool,
+
+    /// Required acknowledgement for generated shared passwords.
+    #[arg(long)]
+    pub i_know_what_i_am_doing: bool,
+
+    /// Where password mode writes `name<TAB>password` lines. They are never
+    /// printed to the terminal, which is often captured in a log; hand the
+    /// file out and then delete it.
+    #[arg(long, default_value = "passwords.txt")]
+    pub out: PathBuf,
 
     /// A path inside the project. The project is found by searching upwards.
     #[arg(long, default_value = ".")]
@@ -679,6 +723,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
             ProjectCommand::Migrate(args) => project_migrate_command(&args),
             ProjectCommand::User(args) => match args.command {
                 ProjectUserCommand::Add(args) => project_user_add_command(&args),
+                ProjectUserCommand::AddBulk(args) => project_user_add_bulk_command(&args),
                 ProjectUserCommand::List(args) => project_user_list_command(&args),
                 ProjectUserCommand::Set(args) => project_user_set_command(&args),
                 ProjectUserCommand::Reset(args) => project_user_reset_command(&args),
@@ -1172,6 +1217,29 @@ mod tests {
         })
     }
 
+    /// Run `ridal project user add-bulk` with the acknowledgement tied to
+    /// password mode, which is the only way it is ever useful.
+    fn add_bulk(
+        dir: &tempfile::TempDir,
+        prefix: &str,
+        count: usize,
+        role: &str,
+        passwords: bool,
+        random_names: bool,
+    ) -> Result<(), String> {
+        super::project_user_add_bulk_command(&ProjectUserAddBulkArgs {
+            prefix: prefix.to_string(),
+            random_names,
+            count,
+            role: role.to_string(),
+            download: "all".to_string(),
+            passwords,
+            i_know_what_i_am_doing: passwords,
+            out: dir.path().join("passwords.txt"),
+            path: dir.path().to_path_buf(),
+        })
+    }
+
     #[cfg(feature = "server")]
     #[test]
     fn gui_without_a_path_serves_the_project_found_above_it() {
@@ -1449,6 +1517,163 @@ mod tests {
                 other => panic!("{other:?}"),
             },
             _ => panic!("expected a project command"),
+        }
+    }
+
+    #[test]
+    fn bulk_user_command_parses_its_safety_flag() {
+        let args = Args::parse_from([
+            "ridal",
+            "project",
+            "user",
+            "add-bulk",
+            "--count",
+            "3",
+            "--prefix",
+            "student",
+            "--random-names",
+            "--passwords",
+            "--i-know-what-i-am-doing",
+        ]);
+        match args.command {
+            Commands::Project(project) => match project.command {
+                ProjectCommand::User(user) => match user.command {
+                    ProjectUserCommand::AddBulk(bulk) => {
+                        assert_eq!(bulk.count, 3);
+                        assert!(bulk.random_names);
+                        assert!(bulk.passwords);
+                        assert!(bulk.i_know_what_i_am_doing);
+                    }
+                    _ => panic!("expected add-bulk"),
+                },
+                _ => panic!("expected project user add-bulk"),
+            },
+            _ => panic!("expected project user add-bulk"),
+        }
+    }
+
+    #[test]
+    fn bulk_invites_from_the_command_line_create_each_account_and_continue() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+
+        add_bulk(&dir, "student", 3, "picker", false, false).unwrap();
+        let set = accounts(&dir);
+        assert_eq!(set.users.len(), 4);
+        let invited: Vec<_> = set
+            .users
+            .iter()
+            .filter(|user| user.name.as_str().starts_with("student-"))
+            .collect();
+        assert_eq!(invited.len(), 3);
+        assert!(
+            invited
+                .iter()
+                .all(|user| user.invite.is_some() && !user.is_activated()),
+            "an invite batch must not have passwords yet"
+        );
+
+        // A second run continues rather than colliding.
+        add_bulk(&dir, "student", 2, "picker", false, false).unwrap();
+        let set = accounts(&dir);
+        let id = |name: &str| crate::identity::UserId::new(name).unwrap();
+        assert!(set.get(&id("student-04")).is_some());
+        assert!(set.get(&id("student-05")).is_some());
+    }
+
+    #[test]
+    fn bulk_random_names_from_the_command_line_use_the_fixed_pool() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+
+        add_bulk(&dir, "student", 3, "viewer", false, true).unwrap();
+        let set = accounts(&dir);
+        let drawn: Vec<_> = set
+            .users
+            .iter()
+            .filter(|user| user.name.as_str() != "erik")
+            .collect();
+        assert_eq!(drawn.len(), 3);
+        for user in drawn {
+            assert!(
+                crate::project::users::RANDOM_USERNAMES.contains(&user.name.as_str()),
+                "{} is not from the pool",
+                user.name
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_passwords_need_the_acknowledgement_flag() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        let error = super::project_user_add_bulk_command(&ProjectUserAddBulkArgs {
+            prefix: "student".to_string(),
+            random_names: false,
+            count: 2,
+            role: "viewer".to_string(),
+            download: "all".to_string(),
+            passwords: true,
+            i_know_what_i_am_doing: false,
+            out: dir.path().join("passwords.txt"),
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap_err();
+        assert!(error.contains("--i-know-what-i-am-doing"), "{error}");
+    }
+
+    #[test]
+    fn bulk_password_mode_refuses_administrators() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        let error = add_bulk(&dir, "boss", 1, "admin", true, false).unwrap_err();
+        assert!(error.contains("Administrator"), "{error}");
+    }
+
+    #[test]
+    fn bulk_requires_an_existing_administrator() {
+        let dir = project_dir();
+        let error = add_bulk(&dir, "student", 2, "picker", false, false).unwrap_err();
+        assert!(error.contains("administrator"), "{error}");
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn bulk_passwords_activate_accounts_and_write_a_handout() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+
+        add_bulk(&dir, "student", 2, "viewer", true, false).unwrap();
+        let set = accounts(&dir);
+        let students: Vec<_> = set
+            .users
+            .iter()
+            .filter(|user| user.name.as_str().starts_with("student-"))
+            .collect();
+        assert_eq!(students.len(), 2);
+        for user in &students {
+            assert!(user.is_activated(), "{} has no password", user.name);
+            assert!(user.invite.is_none());
+            assert!(
+                user.password_hash
+                    .as_deref()
+                    .is_some_and(|hash| hash.starts_with("$argon2id$")),
+                "{} is not Argon2id-hashed",
+                user.name
+            );
+        }
+
+        // The plaintext goes to the handout file and nowhere in users.json.
+        let handout =
+            std::fs::read_to_string(dir.path().join("passwords.txt")).expect("a handout file");
+        assert_eq!(handout.lines().count(), 2);
+        let users_text = std::fs::read_to_string(users_file(&dir)).unwrap();
+        for line in handout.lines() {
+            let (_, password) = line.split_once('\t').expect("name<TAB>password");
+            assert!(
+                !users_text.contains(password),
+                "a generated password reached users.json"
+            );
         }
     }
 
@@ -1965,6 +2190,152 @@ fn project_user_add_command(args: &ProjectUserAddArgs) -> Result<(), String> {
             "A server already running on this project picks that up on its next \
              request; there is nothing to restart."
         );
+    }
+    Ok(())
+}
+
+fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), String> {
+    let project = open_project(&args.path)?;
+    let existing = crate::project::users::read(project.documents())
+        .map_err(|e| e.to_string())?
+        .map(|(set, _)| set)
+        .unwrap_or_default();
+    let names = if args.random_names {
+        crate::project::users::random_bulk_names(&existing, args.count)
+            .map_err(|e| e.to_string())?
+    } else {
+        let start = crate::project::users::next_bulk_start(&existing, &args.prefix);
+        crate::project::users::bulk_names_after(&args.prefix, args.count, start)
+            .map_err(|e| e.to_string())?
+    };
+    let role = parse_role(&args.role)?;
+    let download = parse_download(&args.download)?;
+
+    if args.passwords && !args.i_know_what_i_am_doing {
+        return Err(
+            "Generated passwords are shared secrets. Re-run with --i-know-what-i-am-doing, or use invite links instead."
+                .to_string(),
+        );
+    }
+    // `bulk_risk_advisory` has no advice for an administrator, because there is
+    // no acceptable way to hand one a shared password: it is a standing key to
+    // the whole project. Refuse before any account is created.
+    if args.passwords && crate::project::users::bulk_risk_advisory(role).is_none() {
+        return Err(
+            "Administrator accounts must be created with one-time invite links, not shared passwords."
+                .to_string(),
+        );
+    }
+
+    if args.passwords {
+        #[cfg(not(feature = "server"))]
+        return Err("Password mode is unavailable in a CLI-only build.".to_string());
+
+        #[cfg(feature = "server")]
+        {
+            let generated = names
+                .iter()
+                .map(|name| {
+                    crate::project::users::generate_password()
+                        .map(|password| (name.clone(), password))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            let hashed = generated
+                .iter()
+                .map(|(name, password)| {
+                    crate::project::users::hash_password(password).map(|hash| (name.clone(), hash))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            crate::project::users::update(project.documents(), |set| {
+                if !set.users.iter().any(|user| user.role == crate::project::users::Role::Admin) {
+                    return Err(crate::project::users::UserError::Rejected(
+                        "Create an administrator first with `ridal project user add <name> --role admin`."
+                            .to_string(),
+                    ));
+                }
+                if let Some((name, _)) = hashed.iter().find(|(name, _)| set.get(name).is_some()) {
+                    return Err(crate::project::users::UserError::Duplicate(
+                        name.to_string(),
+                    ));
+                }
+                for ((name, _), (_, hash)) in generated.iter().zip(&hashed) {
+                    let mut user = crate::project::users::User::new(name.clone(), role, download);
+                    user.password_hash = Some(hash.clone());
+                    set.users.push(user);
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+            // Written to a file rather than echoed: a terminal is a log, and
+            // standard output is routinely captured. The file is the
+            // handout, and the operator deletes it after distributing.
+            let mut handout = String::new();
+            for (name, password) in &generated {
+                handout.push_str(name.as_str());
+                handout.push('\t');
+                handout.push_str(password);
+                handout.push('\n');
+            }
+            std::fs::write(&args.out, handout)
+                .map_err(|e| format!("could not write {}: {e}", args.out.display()))?;
+            // `None` is unreachable: administrators were refused above.
+            if let Some(advisory) = crate::project::users::bulk_risk_advisory(role) {
+                println!("{advisory}");
+            }
+            println!(
+                "Wrote {} generated passwords to {}.",
+                generated.len(),
+                args.out.display()
+            );
+            println!(
+                "Hand them out, then delete that file: it is as sensitive as the \
+                 passwords themselves and is not stored anywhere else."
+            );
+            return Ok(());
+        }
+    }
+
+    let minted = names
+        .iter()
+        .map(|name| {
+            crate::project::users::mint_invite(chrono::Utc::now().timestamp())
+                .map(|(token, invite)| (name.clone(), token, invite))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    crate::project::users::update(project.documents(), |set| {
+        if !set
+            .users
+            .iter()
+            .any(|user| user.role == crate::project::users::Role::Admin)
+        {
+            return Err(crate::project::users::UserError::Rejected(
+                "Create an administrator first with `ridal project user add <name> --role admin`."
+                    .to_string(),
+            ));
+        }
+        if set.users.iter().any(|user| names.contains(&user.name)) {
+            let name = names
+                .iter()
+                .find(|name| set.get(name).is_some())
+                .expect("the collision was just found");
+            return Err(crate::project::users::UserError::Duplicate(
+                name.to_string(),
+            ));
+        }
+        for (name, _, invite) in &minted {
+            let mut user = crate::project::users::User::new(name.clone(), role, download);
+            user.invite = Some(invite.clone());
+            set.users.push(user);
+        }
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    println!("Invite links let each person set their own password.");
+    for (name, token, invite) in minted {
+        print_invite(name.as_str(), &token, invite.expires);
     }
     Ok(())
 }

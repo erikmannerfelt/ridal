@@ -416,6 +416,14 @@ pub async fn list_users(
         "roles": Role::ALL.map(Role::as_str),
         "download_scopes": DownloadScope::ALL.map(DownloadScope::as_str),
         "invite_ttl_days": users::INVITE_TTL_DAYS,
+        "bulk": {
+            "max_accounts": users::MAX_BULK_ACCOUNTS,
+            "min_password_len": users::MIN_PASSWORD_LEN,
+            "password_roles": Role::ALL
+                .into_iter()
+                .filter_map(|role| users::bulk_risk_advisory(role).map(|advisory| (role.as_str(), advisory)))
+                .collect::<std::collections::HashMap<_, _>>(),
+        },
     })))
 }
 
@@ -471,6 +479,180 @@ pub async fn create_user(
             "invite_ttl_days": users::INVITE_TTL_DAYS,
         })),
     ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct BulkUsersBody {
+    /// Ignored when `random_names` is set, and optional so a request can ask
+    /// for random accounts without having to send an unused prefix.
+    #[serde(default)]
+    prefix: String,
+    count: usize,
+    role: String,
+    #[serde(default)]
+    download: Option<String>,
+    /// Draw names from [`users::RANDOM_USERNAMES`] instead of numbering the
+    /// prefix.
+    #[serde(default)]
+    random_names: bool,
+}
+
+#[derive(serde::Deserialize)]
+pub struct BulkPasswordsBody {
+    #[serde(default)]
+    prefix: String,
+    count: usize,
+    role: String,
+    #[serde(default)]
+    download: Option<String>,
+    #[serde(default)]
+    random_names: bool,
+    acknowledge_risk: bool,
+}
+
+fn parse_bulk_role_download(
+    role: &str,
+    download: Option<&str>,
+) -> Result<(Role, DownloadScope), ApiError> {
+    Ok((
+        parse_role(role)?,
+        match download {
+            Some(value) => parse_download(value)?,
+            None => DownloadScope::default(),
+        },
+    ))
+}
+
+fn read_user_set(project: &Project) -> Result<UserSet, ApiError> {
+    Ok(users::read(project.documents())
+        .map_err(user_error)?
+        .map(|(set, _)| set)
+        .unwrap_or_default())
+}
+
+/// The names a batch will create: random draws from the fixed pool, or the
+/// next free suffixes of the prefix the administrator typed.
+fn bulk_names_for(set: &UserSet, body: &BulkUsersBody) -> Result<Vec<UserId>, ApiError> {
+    if body.random_names {
+        users::random_bulk_names(set, body.count).map_err(user_error)
+    } else {
+        let start = users::next_bulk_start(set, &body.prefix);
+        users::bulk_names_after(&body.prefix, body.count, start).map_err(user_error)
+    }
+}
+
+/// `POST /api/v1/users/bulk/invites` -- create a batch of invite-only accounts.
+pub async fn create_bulk_invites(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Json(body): Json<BulkUsersBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = admin_project(&state, &caller, "create accounts")?;
+    let set = read_user_set(project)?;
+    let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
+    let names = bulk_names_for(&set, &body)?;
+    let minted = names
+        .iter()
+        .map(|name| {
+            users::mint_invite(auth::now())
+                .map(|(token, invite)| (name.clone(), token, invite))
+                .map_err(user_error)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    users::update(project.documents(), |set| {
+        if let Some((name, _, _)) = minted.iter().find(|(name, _, _)| set.get(name).is_some()) {
+            return Err(UserError::Duplicate(name.to_string()));
+        }
+        for (name, _, invite) in &minted {
+            let mut user = User::new(name.clone(), role, download);
+            user.invite = Some(invite.clone());
+            set.users.push(user);
+        }
+        Ok(())
+    })
+    .map_err(user_error)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "users": minted.iter().map(|(name, token, invite)| serde_json::json!({
+                "name": name.as_str(),
+                "invite_path": format!("/invite/{token}"),
+                "invite_expires": invite.expires,
+            })).collect::<Vec<_>>(),
+            "invite_ttl_days": users::INVITE_TTL_DAYS,
+        })),
+    ))
+}
+
+/// `POST /api/v1/users/bulk/passwords` -- create accounts with generated passwords.
+pub async fn create_bulk_passwords(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Json(body): Json<BulkPasswordsBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = admin_project(&state, &caller, "create accounts")?;
+    if !body.acknowledge_risk {
+        return Err(ApiError::bad_request(
+            "risk_acknowledgement_required",
+            "Bulk passwords are less safe than invite links. Set acknowledge_risk to true only if you understand the risk.",
+        ));
+    }
+    let base = BulkUsersBody {
+        prefix: body.prefix,
+        count: body.count,
+        role: body.role,
+        download: body.download,
+        random_names: body.random_names,
+    };
+    let (role, download) = parse_bulk_role_download(&base.role, base.download.as_deref())?;
+    let advisory = users::bulk_risk_advisory(role).ok_or_else(|| {
+        ApiError::bad_request(
+            "admin_bulk_passwords_forbidden",
+            "Administrator accounts must be created with one-time invite links, not shared passwords.",
+        )
+    })?;
+    let set = read_user_set(project)?;
+    let names = bulk_names_for(&set, &base)?;
+
+    let generated = names
+        .iter()
+        .map(|name| users::generate_password().map(|password| (name.clone(), password)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(user_error)?;
+    let to_hash = generated.clone();
+    let hashed = tokio::task::spawn_blocking(move || {
+        to_hash
+            .into_iter()
+            .map(|(name, password)| users::hash_password(&password).map(|hash| (name, hash)))
+            .collect::<Result<Vec<_>, UserError>>()
+    })
+    .await
+    .map_err(|e| ApiError::internal("password_hash_task_failed", e.to_string()))?
+    .map_err(user_error)?;
+
+    users::update(project.documents(), |set| {
+        if let Some((name, _)) = hashed.iter().find(|(name, _)| set.get(name).is_some()) {
+            return Err(UserError::Duplicate(name.to_string()));
+        }
+        for ((name, password), (_, hash)) in generated.iter().zip(&hashed) {
+            let mut user = User::new(name.clone(), role, download);
+            user.password_hash = Some(hash.clone());
+            set.users.push(user);
+            let _ = password;
+        }
+        Ok(())
+    })
+    .map_err(user_error)?;
+
+    Ok(Json(serde_json::json!({
+        "users": generated.iter().map(|(name, password)| serde_json::json!({
+            "name": name.as_str(),
+            "password": password,
+        })).collect::<Vec<_>>(),
+        "advisory": advisory,
+    })))
 }
 
 #[derive(serde::Deserialize)]
