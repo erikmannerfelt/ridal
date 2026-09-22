@@ -1004,11 +1004,27 @@
       bulkWarning.textContent = "";
     };
 
+    const randomNames = byId("bulk-random-names");
+    const prefixInput = bulkForm.elements.prefix;
+    /* Random names make the prefix irrelevant, so the field greys out rather
+     * than looking like it still contributes to the batch. Synced on load as
+     * well as on change, so a restored form cannot leave the box checked
+     * with an editable prefix beside it. */
+    const syncPrefixState = () => {
+      prefixInput.disabled = randomNames.checked;
+    };
+    randomNames.addEventListener("change", () => {
+      syncPrefixState();
+      clearBulkWarning();
+    });
+    syncPrefixState();
+
     const bulkBody = () => ({
-      prefix: bulkForm.elements.prefix.value.trim(),
+      prefix: randomNames.checked ? "" : prefixInput.value.trim(),
       count: Number(bulkForm.elements.count.value),
       role: bulkForm.elements.role.value,
       download: bulkForm.elements.download.value,
+      random_names: randomNames.checked,
     });
 
     bulkForm.addEventListener("submit", async (event) => {

@@ -483,41 +483,62 @@ pub async fn create_user(
 
 #[derive(serde::Deserialize)]
 pub struct BulkUsersBody {
+    /// Ignored when `random_names` is set, and optional so a request can ask
+    /// for random accounts without having to send an unused prefix.
+    #[serde(default)]
     prefix: String,
     count: usize,
     role: String,
     #[serde(default)]
     download: Option<String>,
+    /// Draw names from [`users::RANDOM_USERNAMES`] instead of numbering the
+    /// prefix.
+    #[serde(default)]
+    random_names: bool,
 }
 
 #[derive(serde::Deserialize)]
 pub struct BulkPasswordsBody {
+    #[serde(default)]
     prefix: String,
     count: usize,
     role: String,
     #[serde(default)]
     download: Option<String>,
+    #[serde(default)]
+    random_names: bool,
     acknowledge_risk: bool,
 }
 
-fn bulk_users_input(
-    body: &BulkUsersBody,
-    start: usize,
-) -> Result<(Vec<UserId>, Role, DownloadScope), ApiError> {
-    let names = users::bulk_names_after(&body.prefix, body.count, start).map_err(user_error)?;
-    let role = parse_role(&body.role)?;
-    let download = match body.download.as_deref() {
-        Some(value) => parse_download(value)?,
-        None => DownloadScope::default(),
-    };
-    Ok((names, role, download))
+fn parse_bulk_role_download(
+    role: &str,
+    download: Option<&str>,
+) -> Result<(Role, DownloadScope), ApiError> {
+    Ok((
+        parse_role(role)?,
+        match download {
+            Some(value) => parse_download(value)?,
+            None => DownloadScope::default(),
+        },
+    ))
 }
 
-fn next_bulk_start(project: &Project, prefix: &str) -> Result<usize, ApiError> {
-    let Some((set, _)) = users::read(project.documents()).map_err(user_error)? else {
-        return Ok(1);
-    };
-    Ok(users::next_bulk_start(&set, prefix))
+fn read_user_set(project: &Project) -> Result<UserSet, ApiError> {
+    Ok(users::read(project.documents())
+        .map_err(user_error)?
+        .map(|(set, _)| set)
+        .unwrap_or_default())
+}
+
+/// The names a batch will create: random draws from the fixed pool, or the
+/// next free suffixes of the prefix the administrator typed.
+fn bulk_names_for(set: &UserSet, body: &BulkUsersBody) -> Result<Vec<UserId>, ApiError> {
+    if body.random_names {
+        users::random_bulk_names(set, body.count).map_err(user_error)
+    } else {
+        let start = users::next_bulk_start(set, &body.prefix);
+        users::bulk_names_after(&body.prefix, body.count, start).map_err(user_error)
+    }
 }
 
 /// `POST /api/v1/users/bulk/invites` -- create a batch of invite-only accounts.
@@ -527,8 +548,9 @@ pub async fn create_bulk_invites(
     Json(body): Json<BulkUsersBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = admin_project(&state, &caller, "create accounts")?;
-    let start = next_bulk_start(project, &body.prefix)?;
-    let (names, role, download) = bulk_users_input(&body, start)?;
+    let set = read_user_set(project)?;
+    let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
+    let names = bulk_names_for(&set, &body)?;
     let minted = names
         .iter()
         .map(|name| {
@@ -582,15 +604,17 @@ pub async fn create_bulk_passwords(
         count: body.count,
         role: body.role,
         download: body.download,
+        random_names: body.random_names,
     };
-    let start = next_bulk_start(project, &base.prefix)?;
-    let (names, role, download) = bulk_users_input(&base, start)?;
+    let (role, download) = parse_bulk_role_download(&base.role, base.download.as_deref())?;
     let advisory = users::bulk_password_advisory(role).ok_or_else(|| {
         ApiError::bad_request(
             "admin_bulk_passwords_forbidden",
             "Administrator accounts must be created with one-time invite links, not shared passwords.",
         )
     })?;
+    let set = read_user_set(project)?;
+    let names = bulk_names_for(&set, &base)?;
 
     let generated = names
         .iter()

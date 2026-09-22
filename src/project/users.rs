@@ -71,6 +71,81 @@ pub const MAX_BULK_ACCOUNTS: usize = 100;
 const GENERATED_PASSWORD_ALPHABET: &[u8] =
     b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 
+/// The pool drawn from when an administrator asks for random accounts
+/// instead of a numbered prefix (#202).
+///
+/// Hardcoded rather than generated so a workshop's names are the same every
+/// time. Each source name is lowercase and hyphen-separated because an
+/// account name is a slug -- it is a filename inside the project and a path
+/// component in URLs, and [`UserId`] accepts only `[a-z0-9_-]`. Hyphens
+/// rather than underscores so these read like the ids [`sanitize_to_slug`]
+/// derives for radargrams and groups.
+///
+/// Shorter than [`MAX_BULK_ACCOUNTS`], which is deliberate: a batch larger
+/// than the unused part of this pool is refused with a pointer at prefixes,
+/// rather than handed a partial set of names.
+pub const RANDOM_USERNAMES: [&str; 59] = [
+    "ice-wanderer",
+    "ping-prankster",
+    "arctic-ally",
+    "ice-whiz",
+    "chirp-cheer",
+    "snow-surfer",
+    "radar-rover",
+    "polar-punk",
+    "avalanche-amigo",
+    "signal-scout",
+    "signal-sled",
+    "polar-partier",
+    "radar-rowdy",
+    "snow-scout",
+    "ice-crewmate",
+    "radar-rebel",
+    "crevasse-clan",
+    "polar-pioneer",
+    "ice-cap-cohort",
+    "glacier-grin",
+    "wave-wizard",
+    "berg-buddy",
+    "signal-syncer",
+    "team-freezer",
+    "glacial-guru",
+    "frosty-buddy",
+    "chirp-chum",
+    "ping-pioneer",
+    "echo-enthusiast",
+    "signal-swoop",
+    "glacier-pal",
+    "snowy-scout",
+    "echo-explorer",
+    "chill-chum",
+    "field-frost",
+    "snow-chum",
+    "frosty-frolic",
+    "cheer-chill",
+    "radar-rifter",
+    "ping-frost",
+    "frosty-folk",
+    "wave-wanderer",
+    "radar-scout",
+    "frosty-fellow",
+    "radar-riff",
+    "melt-mate",
+    "signal-mate",
+    "radar-force",
+    "frosty-fusion",
+    "frosty-friend",
+    "frost-facet",
+    "polar-pal",
+    "glacier-goof",
+    "crew-freeze",
+    "blizzard-buddy",
+    "berg-bard",
+    "snow-frolic",
+    "echo-teammate",
+    "chill-chaser",
+];
+
 /// What someone may do. Each level includes the ones below it.
 ///
 /// The ordering is the ladder, so a permission check is `role >= required`.
@@ -156,6 +231,68 @@ pub fn bulk_names_after(
     (start..start + count)
         .map(|index| UserId::new(format!("{prefix}-{index:0width$}")).map_err(UserError::Rejected))
         .collect()
+}
+
+/// Pick `count` distinct random usernames that no existing account uses.
+///
+/// Uniform without replacement: the unused part of [`RANDOM_USERNAMES`] is
+/// partially shuffled and its first `count` entries taken. When too few names
+/// remain the whole draw is refused, naming the shortfall and pointing at
+/// prefixes, so an administrator is never handed a smaller batch than asked
+/// for without being told.
+pub fn random_bulk_names(set: &UserSet, count: usize) -> Result<Vec<UserId>, UserError> {
+    if count == 0 || count > MAX_BULK_ACCOUNTS {
+        return Err(UserError::Rejected(format!(
+            "A bulk operation must contain between 1 and {MAX_BULK_ACCOUNTS} accounts."
+        )));
+    }
+    let mut available: Vec<&str> = RANDOM_USERNAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            UserId::new(*name)
+                .map(|id| set.get(&id).is_none())
+                .unwrap_or(false)
+        })
+        .collect();
+    if count > available.len() {
+        return Err(UserError::Rejected(format!(
+            "Only {} random usernames are still unused, so {count} cannot be \
+             drawn. Add the rest with a prefix instead, for example prefix \
+             'student'.",
+            available.len()
+        )));
+    }
+
+    let remaining = available.len();
+    for index in 0..count {
+        let swap_with = index + random_below(remaining - index)?;
+        available.swap(index, swap_with);
+    }
+    available[..count]
+        .iter()
+        .map(|name| UserId::new(*name).map_err(UserError::Rejected))
+        .collect()
+}
+
+/// A uniform `usize` in `0..limit`, by rejection so a modulo cannot bias it.
+fn random_below(limit: usize) -> Result<usize, UserError> {
+    if limit <= 1 {
+        return Ok(0);
+    }
+    let limit = limit as u64;
+    // Values below this are a whole multiple of `limit`; the narrow band above
+    // it is discarded rather than folding unevenly onto the low numbers.
+    let ceiling = u64::MAX - (u64::MAX % limit);
+    loop {
+        let mut bytes = [0u8; 8];
+        getrandom::fill(&mut bytes)
+            .map_err(|e| UserError::Hash(format!("could not read system randomness: {e}")))?;
+        let value = u64::from_le_bytes(bytes);
+        if value < ceiling {
+            return Ok((value % limit) as usize);
+        }
+    }
 }
 
 /// Generate one printable password without ambiguous look-alike characters.
@@ -715,6 +852,40 @@ mod tests {
         assert!(bulk_password_advisory(Role::Picker)
             .unwrap()
             .contains("invite"));
+    }
+
+    #[test]
+    fn random_usernames_are_distinct_and_avoid_taken_ones() {
+        let mut set = UserSet::default();
+        set.users.push(user("ice-wanderer", Role::Viewer));
+
+        let names = random_bulk_names(&set, 5).unwrap();
+        assert_eq!(names.len(), 5);
+        let unique: std::collections::HashSet<&str> = names.iter().map(UserId::as_str).collect();
+        assert_eq!(unique.len(), 5, "a draw must not repeat a name");
+        assert!(
+            !unique.contains("ice-wanderer"),
+            "a drawn name must be free"
+        );
+        for name in &names {
+            assert!(RANDOM_USERNAMES.contains(&name.as_str()), "{name}");
+        }
+    }
+
+    #[test]
+    fn random_usernames_refuse_more_than_the_pool_holds() {
+        let set = UserSet::default();
+        let error = random_bulk_names(&set, RANDOM_USERNAMES.len() + 1).unwrap_err();
+        assert!(error.to_string().contains("prefix"), "{error}");
+
+        // Exhausted pool: nothing left to draw, and the message says which
+        // way out is available rather than returning a short batch.
+        let mut full = UserSet::default();
+        for name in RANDOM_USERNAMES {
+            full.users.push(user(name, Role::Viewer));
+        }
+        let error = random_bulk_names(&full, 1).unwrap_err();
+        assert!(error.to_string().contains("prefix"), "{error}");
     }
 
     #[test]

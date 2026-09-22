@@ -376,6 +376,58 @@ async fn bulk_invites_are_atomic_and_store_only_token_hashes() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn bulk_invites_can_draw_random_usernames() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let admin = sign_in(&app, "erik").await;
+
+    // No prefix is sent at all: random mode must not require one.
+    let created = post(
+        &app,
+        "/api/v1/users/bulk/invites",
+        &json!({"random_names":true,"count":3,"role":"viewer"}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let users = created.body["users"].as_array().unwrap();
+    assert_eq!(users.len(), 3);
+    let mut names: Vec<String> = users
+        .iter()
+        .map(|user| user["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    names.dedup();
+    assert_eq!(names.len(), 3, "a batch must not repeat a name");
+    for name in &names {
+        assert!(users::RANDOM_USERNAMES.contains(&name.as_str()), "{name}");
+    }
+
+    // The pool is finite, and asking for more than remains says so and points
+    // at prefixes instead of returning a short batch.
+    let too_many = post(
+        &app,
+        "/api/v1/users/bulk/invites",
+        &json!({"random_names":true,"count":users::RANDOM_USERNAMES.len(),"role":"viewer"}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(
+        too_many.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        too_many.text
+    );
+    assert!(too_many.text.contains("prefix"), "{}", too_many.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
     let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(

@@ -147,6 +147,11 @@ pub struct ProjectUserAddBulkArgs {
     #[arg(long, default_value = "student")]
     pub prefix: String,
 
+    /// Draw names from a fixed pool of friendly usernames instead of the
+    /// prefix. Fails if fewer unused names remain than were requested.
+    #[arg(long)]
+    pub random_names: bool,
+
     /// Number of accounts to create.
     #[arg(long)]
     pub count: usize,
@@ -1497,6 +1502,7 @@ mod tests {
             "3",
             "--prefix",
             "student",
+            "--random-names",
             "--passwords",
             "--i-know-what-i-am-doing",
         ]);
@@ -1505,6 +1511,7 @@ mod tests {
                 ProjectCommand::User(user) => match user.command {
                     ProjectUserCommand::AddBulk(bulk) => {
                         assert_eq!(bulk.count, 3);
+                        assert!(bulk.random_names);
                         assert!(bulk.passwords);
                         assert!(bulk.i_know_what_i_am_doing);
                     }
@@ -2039,9 +2046,14 @@ fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), St
         .map_err(|e| e.to_string())?
         .map(|(set, _)| set)
         .unwrap_or_default();
-    let start = crate::project::users::next_bulk_start(&existing, &args.prefix);
-    let names = crate::project::users::bulk_names_after(&args.prefix, args.count, start)
-        .map_err(|e| e.to_string())?;
+    let names = if args.random_names {
+        crate::project::users::random_bulk_names(&existing, args.count)
+            .map_err(|e| e.to_string())?
+    } else {
+        let start = crate::project::users::next_bulk_start(&existing, &args.prefix);
+        crate::project::users::bulk_names_after(&args.prefix, args.count, start)
+            .map_err(|e| e.to_string())?
+    };
     let role = parse_role(&args.role)?;
     let download = parse_download(&args.download)?;
 

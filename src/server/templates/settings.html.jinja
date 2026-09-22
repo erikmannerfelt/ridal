@@ -446,6 +446,10 @@
           </p>
           <form id="bulk-user-form" class="add-layer" novalidate>
             <div class="add-layer-fields">
+              <label class="checkbox bulk-random">
+                <input type="checkbox" id="bulk-random-names">
+                Use random usernames instead of the prefix
+              </label>
               <label>Prefix
                 <input type="text" name="prefix" value="student" required
                        pattern="[a-z0-9_\-]+" autocomplete="off"

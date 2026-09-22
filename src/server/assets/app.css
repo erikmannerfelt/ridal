@@ -1059,6 +1059,12 @@ dialog th {
   gap: var(--space-2);
 }
 
+/* The bulk random-names switch governs the prefix beside it, so it gets a
+ * row of its own rather than sharing one with the fields it affects. */
+.add-layer-fields label.bulk-random {
+  flex-basis: 100%;
+}
+
 .add-layer-fields input[type="text"] {
   padding: var(--space-2);
   border: 1px solid var(--color-border);
@@ -1066,6 +1072,15 @@ dialog th {
   background: var(--color-surface);
   color: var(--color-text);
   font: inherit;
+}
+
+/* A disabled field must read as inert: the rule above sets a surface colour
+ * and full-strength text, so without this a disabled prefix looks editable. */
+.add-layer-fields input:disabled,
+.add-layer-fields select:disabled {
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
 }
 
 /* The page-level actions that are plain buttons rather than menus. Sized
@@ -1282,6 +1297,7 @@ button.danger:disabled {
  * as one broken thing. One width, one gap. */
 #access-section .add-layer,
 #access-section .settings-form,
+#access-section .bulk-users,
 #access-section .warning {
   max-width: 44rem;
 }
