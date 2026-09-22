@@ -898,6 +898,46 @@ async function main() {
     dlg.querySelector("#derived-cancel").click();
     await sleep(250);
 
+    // #228: the colour round trip along the path a person actually takes.
+    //
+    // The colour check above passes without exercising the bug, because
+    // assigning `.value` to a *disabled* input still works -- `disabled`
+    // only stops user interaction -- and setting `.checked` directly fires
+    // no `change` event. So it must click the checkbox, not assign to it.
+    openEditorFor(doc, "crossing_top");
+    await sleep(250);
+    const noColour = () => dlg.querySelector("#derived-no-color");
+    const colourText = () => dlg.querySelector("#derived-color");
+    const colourPick = () => dlg.querySelector("#derived-color-picker");
+    // The picker must carry this item's own colour, not whatever the last
+    // item opened left in the single reused element. `crossing_top` is used
+    // here because no check after this point reads its colour.
+    result.pickerMatchesItem = colourPick().value === "#00aa00";
+    noColour().click();
+    await sleep(150);
+    result.colourDisabledAfterCheck = colourText().disabled;
+    await saveAndWait(900);
+    result.colourClearedInStore = await fetch("/api/v1/derived")
+      .then((r) => r.json())
+      .then((body) => body.items.find((i) => i.id === "crossing_top").color ?? null);
+
+    // Reopened with no colour: the box is checked and the inputs are off.
+    // Unchecking it must turn them back on, and Save must then write the
+    // colour the picker is showing -- `save` reads the text field, so it
+    // has to have been seeded from the picker.
+    openEditorFor(doc, "crossing_top");
+    await sleep(250);
+    result.colourDisabledOnReopen = colourText().disabled;
+    result.pickerResetWhenColourless = colourPick().value;
+    noColour().click();
+    await sleep(150);
+    result.colourDisabledAfterUncheck = colourText().disabled;
+    result.colourSeededFromPicker = colourText().value;
+    await saveAndWait(900);
+    result.colourRestoredInStore = await fetch("/api/v1/derived")
+      .then((r) => r.json())
+      .then((body) => body.items.find((i) => i.id === "crossing_top").color ?? null);
+
     // S2 #3: deleting a depended-on item is refused, naming the dependent.
     const baseRow = derivedRowById(doc, "dep_base");
     baseRow.querySelector("button.danger").click();
@@ -1133,6 +1173,33 @@ def assert_manage(operator: dict) -> None:
     assert "18, 52, 86" in operator["colourSwatch"], operator["colourSwatch"]
     assert operator["rangeFill"] > 0, "a range set in the editor must draw a fill"
     assert "hex" in operator["nonHexStatus"], operator["nonHexStatus"]
+    assert operator["pickerMatchesItem"] is True, (
+        "the colour picker must open on the item's own colour, not the one "
+        "left by the previously edited item"
+    )
+    assert (
+        operator["colourDisabledAfterCheck"] is True
+    ), "ticking 'No colour' must disable the colour inputs"
+    assert (
+        operator["colourClearedInStore"] is None
+    ), f"saving with 'No colour' must clear it, got {operator['colourClearedInStore']!r}"
+    assert (
+        operator["colourDisabledOnReopen"] is True
+    ), "an item with no colour must reopen with the inputs disabled"
+    assert (
+        operator["pickerResetWhenColourless"] == "#ffcc00"
+    ), f"a colourless item must reset the picker, got {operator['pickerResetWhenColourless']!r}"
+    assert operator["colourDisabledAfterUncheck"] is False, (
+        "unticking 'No colour' must re-enable the inputs -- this is #228, and "
+        "it fails without a change listener on the checkbox"
+    )
+    assert (
+        operator["colourSeededFromPicker"] == "#ffcc00"
+    ), f"unticking must seed the text field from the picker, got {operator['colourSeededFromPicker']!r}"
+    assert operator["colourRestoredInStore"] == "#ffcc00", (
+        "a colourless item must be givable a colour again, got "
+        f"{operator['colourRestoredInStore']!r}"
+    )
     assert "dep_child" in operator["deleteRefused"], operator["deleteRefused"]
     assert operator["deletedGone"] is True, "a deleted item must stay gone"
     assert operator["deletedRowGone"] is True, "its row must be gone too"

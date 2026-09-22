@@ -872,6 +872,12 @@ const RIDAL = Object.freeze({
       "deepest", "clamp", "where",
     ];
     const KEYWORDS = ["if", "else", "true", "false", "NaN"];
+    // What the colour picker shows for an item that has none of its own.
+    // Mirrors the `value` in the markup below rather than interpolating into
+    // it: that block is deliberately static so it is trivial to audit, and
+    // `open` assigns the picker on every open anyway.
+    const NEW_ITEM_COLOR = "#ffcc00";
+    const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
     const UNITS = [
       ["meters", "metres"],
       ["nanoseconds", "nanoseconds"],
@@ -970,7 +976,7 @@ const RIDAL = Object.freeze({
         if (!editingId) fields.id.value = sanitizeId(fields.name.value);
       });
       fields.color.addEventListener("input", () => {
-        if (/^#[0-9a-fA-F]{6}$/.test(fields.color.value.trim())) {
+        if (HEX_COLOR.test(fields.color.value.trim())) {
           fields.colorPicker.value = fields.color.value.trim();
         }
       });
@@ -981,6 +987,7 @@ const RIDAL = Object.freeze({
       fields.rangePicker.addEventListener("input", () => {
         fields.rangeColor.value = fields.rangePicker.value;
       });
+      fields.noColor.addEventListener("change", syncColorEnabled);
       fields.range.addEventListener("change", syncRangeEnabled);
       fields.expression.addEventListener("input", () => {
         syncHighlight();
@@ -993,6 +1000,27 @@ const RIDAL = Object.freeze({
       // Native Escape close; make sure the preview line goes with it.
       dialog.addEventListener("close", clearPreview);
       return dialog;
+    }
+
+    /* Enable or disable the colour inputs to match the "No colour" box.
+     *
+     * Wired to the checkbox, not only called when the dialog opens: an item
+     * with no colour opens with the box checked and both inputs disabled, so
+     * without a listener here unchecking it left them greyed out for the rest
+     * of the dialog's life and the item could never be given a colour at all.
+     *
+     * Seeding the text field from the picker when it is empty is the other
+     * half of that: `save` reads the *text* field, so unchecking the box and
+     * pressing Save without touching the picker would otherwise write no
+     * colour back while the picker sat there showing one.
+     */
+    function syncColorEnabled() {
+      const on = !fields.noColor.checked;
+      fields.color.disabled = !on;
+      fields.colorPicker.disabled = !on;
+      if (on && fields.color.value.trim() === "") {
+        fields.color.value = fields.colorPicker.value;
+      }
     }
 
     function syncRangeEnabled() {
@@ -1162,8 +1190,15 @@ const RIDAL = Object.freeze({
       fields.expression.value = item ? item.expression : "";
       fields.color.value = item && item.color ? item.color : "";
       fields.noColor.checked = !(item && item.color);
-      fields.color.disabled = fields.noColor.checked;
-      fields.colorPicker.disabled = fields.noColor.checked;
+      // The dialog is built once and reused, so the picker keeps whatever
+      // the last item left in it unless it is reset here. Left alone, the
+      // swatch disagreed with the text field, and clicking it overwrote the
+      // item's real colour with the previous item's.
+      fields.colorPicker.value =
+        item && item.color && HEX_COLOR.test(item.color)
+          ? item.color
+          : NEW_ITEM_COLOR;
+      syncColorEnabled();
       const fill = item && item.fill_to ? item.fill_to : null;
       fields.range.checked = Boolean(fill);
       fields.rangeColor.value = fill && fill.color ? fill.color : "";
