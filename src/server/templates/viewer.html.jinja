@@ -47,11 +47,6 @@
       Recentre
     </button>
     <button id="metadata-button" type="button">Metadata</button>
-    {#- Show or hide the whole layer panel (#209). Hidden until panel.js runs,
-        so a page without JavaScript does not show a control that does
-        nothing. The state persists for the session in sessionStorage. -#}
-    <button id="panel-visibility" type="button" hidden
-            title="Show or hide the layer panel over the radargram.">Layers</button>
     {#- The trace view (#181). A plain toggle button for now: the
         interaction (click the radargram to choose the trace) is the part
         that was decided, while how the panel should present itself is
