@@ -3,6 +3,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use crate::formats::{self, FormatKind, ResolvedInput};
+use num::Zero;
 use serde::Serialize;
 use std::time::SystemTime;
 
@@ -637,6 +638,17 @@ impl GPR {
                 .flatten()
                 .unwrap_or(DEFAULT_BANDPASS_Q);
             self.bandpass(low_cutoff, high_cutoff, q, true)?;
+        } else if step_name.contains("multiply") {
+            let factor: f32 = tools::parse_option(step_name, 0)?
+                .ok_or("Must provide a factor to `multiply` (e.g. `multiply(5)`)".to_string())?;
+
+            if factor.is_zero() {
+                return Err("The factor of `multiply` cannot be zero".into());
+            } else if factor.is_infinite() {
+                return Err("The factor of `multiply` cannot be infinite".into());
+            };
+
+            self.multiply(factor);
         } else {
             return Err(format!("Step name not recognized: {}", step_name).into());
         }
@@ -1240,6 +1252,21 @@ impl GPR {
         self.log_event(
             "correct_topography",
             "Generated a profile that is corrected for topography (topo_data).",
+            start_time,
+        );
+    }
+
+    pub fn multiply(&mut self, factor: f32) {
+        let start_time = SystemTime::now();
+
+        self.data.mapv_inplace(|v| v * factor);
+
+        self.log_event(
+            "multiply",
+            &format!(
+                "Multiplied all sample values by a constant factor of {}",
+                factor
+            ),
             start_time,
         );
     }
@@ -3616,5 +3643,43 @@ pub mod tests {
         gpr.remove_empty_traces(1.).unwrap();
 
         assert_eq!(gpr.width(), 17);
+    }
+
+    #[test]
+    fn test_multiply() -> Result<(), Box<dyn std::error::Error>> {
+        let mut gpr = make_dummy_gpr(20, 30, Some(1.));
+
+        let mean_pre = gpr.data.mean().unwrap();
+        gpr.multiply(5.);
+        assert_eq!(gpr.data.mean(), Some(mean_pre * 5.));
+
+        gpr.process("multiply(5e0)")?;
+        assert_eq!(gpr.data.mean(), Some(mean_pre * 5. * 5.));
+        gpr.process("multiply(1e2)")?;
+        assert_eq!(gpr.data.mean(), Some(mean_pre * 5. * 5. * 100.));
+
+        let error = gpr.process("multiply(five)").unwrap_err();
+        assert!(
+            error.to_string().contains("Could not parse argument 0"),
+            "Unexpected error: {error:?}"
+        );
+
+        let error = gpr.process("multiply(0)").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("The factor of `multiply` cannot be zero"),
+            "Unexpected error: {error:?}"
+        );
+
+        let error = gpr.process("multiply(inf)").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("The factor of `multiply` cannot be inf"),
+            "Unexpected error: {error:?}"
+        );
+
+        Ok(())
     }
 }
