@@ -421,7 +421,7 @@ pub async fn list_users(
             "min_password_len": users::MIN_PASSWORD_LEN,
             "password_roles": Role::ALL
                 .into_iter()
-                .filter_map(|role| users::bulk_password_advisory(role).map(|advisory| (role.as_str(), advisory)))
+                .filter_map(|role| users::bulk_risk_advisory(role).map(|advisory| (role.as_str(), advisory)))
                 .collect::<std::collections::HashMap<_, _>>(),
         },
     })))
@@ -607,7 +607,7 @@ pub async fn create_bulk_passwords(
         random_names: body.random_names,
     };
     let (role, download) = parse_bulk_role_download(&base.role, base.download.as_deref())?;
-    let advisory = users::bulk_password_advisory(role).ok_or_else(|| {
+    let advisory = users::bulk_risk_advisory(role).ok_or_else(|| {
         ApiError::bad_request(
             "admin_bulk_passwords_forbidden",
             "Administrator accounts must be created with one-time invite links, not shared passwords.",

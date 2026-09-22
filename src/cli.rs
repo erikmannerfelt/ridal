@@ -172,6 +172,12 @@ pub struct ProjectUserAddBulkArgs {
     #[arg(long)]
     pub i_know_what_i_am_doing: bool,
 
+    /// Where password mode writes `name<TAB>password` lines. They are never
+    /// printed to the terminal, which is often captured in a log; hand the
+    /// file out and then delete it.
+    #[arg(long, default_value = "passwords.txt")]
+    pub out: PathBuf,
+
     /// A path inside the project. The project is found by searching upwards.
     #[arg(long, default_value = ".")]
     pub path: PathBuf,
@@ -1211,6 +1217,29 @@ mod tests {
         })
     }
 
+    /// Run `ridal project user add-bulk` with the acknowledgement tied to
+    /// password mode, which is the only way it is ever useful.
+    fn add_bulk(
+        dir: &tempfile::TempDir,
+        prefix: &str,
+        count: usize,
+        role: &str,
+        passwords: bool,
+        random_names: bool,
+    ) -> Result<(), String> {
+        super::project_user_add_bulk_command(&ProjectUserAddBulkArgs {
+            prefix: prefix.to_string(),
+            random_names,
+            count,
+            role: role.to_string(),
+            download: "all".to_string(),
+            passwords,
+            i_know_what_i_am_doing: passwords,
+            out: dir.path().join("passwords.txt"),
+            path: dir.path().to_path_buf(),
+        })
+    }
+
     #[cfg(feature = "server")]
     #[test]
     fn gui_without_a_path_serves_the_project_found_above_it() {
@@ -1520,6 +1549,131 @@ mod tests {
                 _ => panic!("expected project user add-bulk"),
             },
             _ => panic!("expected project user add-bulk"),
+        }
+    }
+
+    #[test]
+    fn bulk_invites_from_the_command_line_create_each_account_and_continue() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+
+        add_bulk(&dir, "student", 3, "picker", false, false).unwrap();
+        let set = accounts(&dir);
+        assert_eq!(set.users.len(), 4);
+        let invited: Vec<_> = set
+            .users
+            .iter()
+            .filter(|user| user.name.as_str().starts_with("student-"))
+            .collect();
+        assert_eq!(invited.len(), 3);
+        assert!(
+            invited
+                .iter()
+                .all(|user| user.invite.is_some() && !user.is_activated()),
+            "an invite batch must not have passwords yet"
+        );
+
+        // A second run continues rather than colliding.
+        add_bulk(&dir, "student", 2, "picker", false, false).unwrap();
+        let set = accounts(&dir);
+        let id = |name: &str| crate::identity::UserId::new(name).unwrap();
+        assert!(set.get(&id("student-04")).is_some());
+        assert!(set.get(&id("student-05")).is_some());
+    }
+
+    #[test]
+    fn bulk_random_names_from_the_command_line_use_the_fixed_pool() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+
+        add_bulk(&dir, "student", 3, "viewer", false, true).unwrap();
+        let set = accounts(&dir);
+        let drawn: Vec<_> = set
+            .users
+            .iter()
+            .filter(|user| user.name.as_str() != "erik")
+            .collect();
+        assert_eq!(drawn.len(), 3);
+        for user in drawn {
+            assert!(
+                crate::project::users::RANDOM_USERNAMES.contains(&user.name.as_str()),
+                "{} is not from the pool",
+                user.name
+            );
+        }
+    }
+
+    #[test]
+    fn bulk_passwords_need_the_acknowledgement_flag() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        let error = super::project_user_add_bulk_command(&ProjectUserAddBulkArgs {
+            prefix: "student".to_string(),
+            random_names: false,
+            count: 2,
+            role: "viewer".to_string(),
+            download: "all".to_string(),
+            passwords: true,
+            i_know_what_i_am_doing: false,
+            out: dir.path().join("passwords.txt"),
+            path: dir.path().to_path_buf(),
+        })
+        .unwrap_err();
+        assert!(error.contains("--i-know-what-i-am-doing"), "{error}");
+    }
+
+    #[test]
+    fn bulk_password_mode_refuses_administrators() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+        let error = add_bulk(&dir, "boss", 1, "admin", true, false).unwrap_err();
+        assert!(error.contains("Administrator"), "{error}");
+    }
+
+    #[test]
+    fn bulk_requires_an_existing_administrator() {
+        let dir = project_dir();
+        let error = add_bulk(&dir, "student", 2, "picker", false, false).unwrap_err();
+        assert!(error.contains("administrator"), "{error}");
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn bulk_passwords_activate_accounts_and_write_a_handout() {
+        let dir = project_dir();
+        add(&dir, "erik", "admin").unwrap();
+
+        add_bulk(&dir, "student", 2, "viewer", true, false).unwrap();
+        let set = accounts(&dir);
+        let students: Vec<_> = set
+            .users
+            .iter()
+            .filter(|user| user.name.as_str().starts_with("student-"))
+            .collect();
+        assert_eq!(students.len(), 2);
+        for user in &students {
+            assert!(user.is_activated(), "{} has no password", user.name);
+            assert!(user.invite.is_none());
+            assert!(
+                user.password_hash
+                    .as_deref()
+                    .is_some_and(|hash| hash.starts_with("$argon2id$")),
+                "{} is not Argon2id-hashed",
+                user.name
+            );
+        }
+
+        // The plaintext goes to the handout file and nowhere in users.json.
+        let handout =
+            std::fs::read_to_string(dir.path().join("passwords.txt")).expect("a handout file");
+        assert_eq!(handout.lines().count(), 2);
+        let users_text = std::fs::read_to_string(users_file(&dir)).unwrap();
+        for line in handout.lines() {
+            let (_, password) = line.split_once('\t').expect("name<TAB>password");
+            assert!(
+                !users_text.contains(password),
+                "a generated password reached users.json"
+            );
         }
     }
 
@@ -2064,7 +2218,7 @@ fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), St
         );
     }
     let advisory = if args.passwords {
-        crate::project::users::bulk_password_advisory(role).ok_or_else(|| {
+        crate::project::users::bulk_risk_advisory(role).ok_or_else(|| {
             "Administrator accounts must be created with one-time invite links, not shared passwords."
                 .to_string()
         })?
@@ -2113,11 +2267,28 @@ fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), St
                 Ok(())
             })
             .map_err(|e| e.to_string())?;
-            println!("{advisory}");
-            println!("These passwords are shown once; they are not stored in plaintext.");
-            for (name, password) in generated {
-                println!("{name}\t{password}");
+            // Written to a file rather than echoed: a terminal is a log, and
+            // standard output is routinely captured. The file is the
+            // handout, and the operator deletes it after distributing.
+            let mut handout = String::new();
+            for (name, password) in &generated {
+                handout.push_str(name.as_str());
+                handout.push('\t');
+                handout.push_str(password);
+                handout.push('\n');
             }
+            std::fs::write(&args.out, handout)
+                .map_err(|e| format!("could not write {}: {e}", args.out.display()))?;
+            println!("{advisory}");
+            println!(
+                "Wrote {} generated passwords to {}.",
+                generated.len(),
+                args.out.display()
+            );
+            println!(
+                "Hand them out, then delete that file: it is as sensitive as the \
+                 passwords themselves and is not stored anywhere else."
+            );
             return Ok(());
         }
     }

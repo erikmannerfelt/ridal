@@ -198,8 +198,13 @@ impl Role {
 }
 
 /// The warning shown when an administrator chooses shared, pre-generated
-/// passwords instead of one-time invite links.
-pub fn bulk_password_advisory(role: Role) -> Option<&'static str> {
+/// credentials instead of one-time invite links.
+///
+/// Named for the risk it describes rather than the secret it is about: it
+/// returns advice, not a credential, and a name containing "password" made
+/// CodeQL's name-based sensitive-data heuristic treat every advisory string
+/// as a secret (#224).
+pub fn bulk_risk_advisory(role: Role) -> Option<&'static str> {
     match role {
         Role::Viewer => Some("This is suboptimal, but acceptable for a small teaching session."),
         Role::Picker => Some("Next time, please consider invite links: they are less prone to issues."),
@@ -210,8 +215,7 @@ pub fn bulk_password_advisory(role: Role) -> Option<&'static str> {
     }
 }
 
-/// Generate deterministic, readable account names for a batch.
-/// Generate a batch beginning at `start`, inclusive.
+/// Generate a batch of zero-padded names beginning at `start`, inclusive.
 pub fn bulk_names_after(
     prefix: &str,
     count: usize,
@@ -847,11 +851,9 @@ mod tests {
 
     #[test]
     fn bulk_passwords_are_disallowed_for_admins() {
-        assert!(bulk_password_advisory(Role::Admin).is_none());
-        assert!(bulk_password_advisory(Role::Viewer).is_some());
-        assert!(bulk_password_advisory(Role::Picker)
-            .unwrap()
-            .contains("invite"));
+        assert!(bulk_risk_advisory(Role::Admin).is_none());
+        assert!(bulk_risk_advisory(Role::Viewer).is_some());
+        assert!(bulk_risk_advisory(Role::Picker).unwrap().contains("invite"));
     }
 
     #[test]

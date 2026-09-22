@@ -475,6 +475,61 @@ async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn bulk_requests_validate_the_role_and_the_size() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let admin = sign_in(&app, "erik").await;
+
+    let bad_role = post(
+        &app,
+        "/api/v1/users/bulk/invites",
+        &json!({"prefix":"student","count":1,"role":"wizard"}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(
+        bad_role.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_role.text
+    );
+
+    let bad_download = post(
+        &app,
+        "/api/v1/users/bulk/invites",
+        &json!({"prefix":"student","count":1,"role":"viewer","download":"everything"}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(
+        bad_download.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_download.text
+    );
+
+    let too_many = post(
+        &app,
+        "/api/v1/users/bulk/invites",
+        &json!({"prefix":"student","count":users::MAX_BULK_ACCOUNTS + 1,"role":"viewer"}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(
+        too_many.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        too_many.text
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_expired_invite_is_refused() {
     let hash = users::hash_password(password()).unwrap();
     let mut stale = activated("student", Role::Picker, DownloadScope::All, &hash);
