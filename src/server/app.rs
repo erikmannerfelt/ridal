@@ -990,6 +990,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::routes::dataset_axes),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/traces/{trace}",
+            get(super::routes::dataset_trace),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/views/topo/geometry",
             get(super::routes::dataset_topo_geometry),
         )
@@ -1265,6 +1269,30 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND);
             let json: Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(json["error"]["code"], "image_chunk_not_found");
+
+            // One amplitude trace (#181). The fixture's data is
+            // `(row*300 + col) % 100`, so with 300 columns every column is
+            // constant and trace 7 is a column of 7.0 across all 20 rows.
+            let (status, body) = get(&app, "/api/v1/datasets/route-test-a/traces/7").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["trace"], 7);
+            assert_eq!(json["n_samples"], 20);
+            let amplitude = json["amplitude"].as_array().unwrap();
+            assert_eq!(amplitude.len(), 20);
+            assert!(amplitude.iter().all(|v| v.as_f64() == Some(7.0)));
+
+            // Structurally invalid trace index -> 400.
+            let (status, body) = get(&app, "/api/v1/datasets/route-test-a/traces/abc").await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"]["code"], "invalid_trace_index");
+
+            // Well-formed but out-of-range trace index -> 404.
+            let (status, body) = get(&app, "/api/v1/datasets/route-test-a/traces/300").await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"]["code"], "trace_not_found");
 
             // Pages: index and viewer.
             let (status, body) = get(&app, "/").await;

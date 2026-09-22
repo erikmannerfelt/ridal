@@ -98,6 +98,7 @@ window.RIDAL_TO_INDEX = function (latlng) {
 function redrawOverlays() {
   if (window.RIDAL_REDRAW_PICKS) window.RIDAL_REDRAW_PICKS();
   if (window.RIDAL_REDRAW_DERIVED) window.RIDAL_REDRAW_DERIVED();
+  if (window.RIDAL_REDRAW_TRACE) window.RIDAL_REDRAW_TRACE();
 }
 
 /* A short alias onto the one geometry object, not a copy: `G.nCols` etc.
@@ -320,67 +321,93 @@ document.getElementById('xscale-select').addEventListener('change', (event) => {
 // that follows the viewer cursor (#121's cursor-sync feature). ---
 const overviewMap = RIDAL.basemap(L.map('overview-map'), 'overview-map');
 
-// --- Resizable split between the radargram and overview map. Only
-// meaningful when the two are actually laid out side by side --
-// `.layout` is flex-wrap: wrap, so on a narrow screen they stack, at
-// which point a horizontal drag handle makes no sense and is hidden.
-// Detected exactly (offsetTop equality), not guessed via a media-query
-// breakpoint, since the wrap point depends on both panes' flex-basis. ---
-(function setupSplitResizer() {
+// --- The viewer's two drag handles ----------------------------------------
+//
+// `#split-resizer` sizes the radargram region against the overview map, and
+// `#trace-resizer` (inside the region) sizes the radargram against the trace
+// panel. Both are plain pointer-drag handles with keyboard and double-click
+// support.
+//
+// `.layout` is `flex-wrap: nowrap` and stacks only through the narrow-screen
+// media query, so a handle can never be hidden by the state its own drag
+// created -- the feedback loop that made #199 unrecoverable, including after
+// a browser zoom out.
+
+// Leaflet does not re-lay its tiles when its container is resized by
+// something other than a window resize event it listens for itself -- it
+// has to be told. Throttled to one call per frame since pointermove fires
+// far more often than the browser can usefully repaint.
+let invalidateQueued = false;
+function scheduleInvalidate() {
+  if (invalidateQueued) return;
+  invalidateQueued = true;
+  requestAnimationFrame(() => {
+    invalidateQueued = false;
+    // `pan: false` is load-bearing on a phone. The default re-centres the
+    // map to keep the previous centre visible, which reads as the viewer
+    // jumping -- and it fires exactly when a first tap collapses the
+    // browser's address bar and changes the 70vh map height. The picks
+    // stay put either way; only the view was moving.
+    map.invalidateSize({ pan: false });
+    overviewMap.invalidateSize({ pan: false });
+  });
+}
+
+const splitResizer = (function setupSplitResizer() {
   const layout = document.getElementById('viewer-layout');
   const resizer = document.getElementById('split-resizer');
-  const mapEl = document.getElementById('map');
+  // The resizer sizes the whole radargram region (radargram + optional
+  // trace panel, #181) against the overview map, not `#map` alone -- so
+  // toggling the trace panel never changes what the drag means.
+  const radarEl = document.getElementById('radar-region');
   const overviewEl = document.getElementById('overview-map');
-  const MIN_PANE_PX = 200;
+  // The two panes' `min-width`s in app.css.
+  const MAP_MIN_PX = 200;
+  const OVERVIEW_MIN_PX = 80;
   const KEYBOARD_STEP_PX = 24;
+  // The last width a drag set, so a layout resize (a browser zoom, a
+  // window resize) can re-clamp it instead of leaving it overflowing.
+  let draggedPx = null;
 
-  function isSideBySide() {
-    return mapEl.offsetTop === overviewEl.offsetTop;
+  // Read the real gutter rather than assuming `--space-4`: the clamp has
+  // to leave room for both gaps on the side-by-side line.
+  function layoutGapPx() {
+    const gap = parseFloat(getComputedStyle(layout).columnGap);
+    return Number.isFinite(gap) ? gap : 16;
   }
 
-  // Leaflet does not re-lay its tiles when its container is resized by
-  // something other than a window resize event it listens for itself --
-  // it has to be told. Throttled to one call per frame since pointermove
-  // fires far more often than the browser can usefully repaint.
-  let invalidateQueued = false;
-  function scheduleInvalidate() {
-    if (invalidateQueued) return;
-    invalidateQueued = true;
-    requestAnimationFrame(() => {
-      invalidateQueued = false;
-      // `pan: false` is load-bearing on a phone. The default re-centres the
-      // map to keep the previous centre visible, which reads as the viewer
-      // jumping -- and it fires exactly when a first tap collapses the
-      // browser's address bar and changes the 70vh map height. The picks
-      // stay put either way; only the view was moving.
-      map.invalidateSize({ pan: false });
-      overviewMap.invalidateSize({ pan: false });
-    });
-  }
-
-  function updateSideBySideState() {
-    const sideBySide = isSideBySide();
-    // `.is-hidden` only flips visibility, never `display` -- see the
-    // rule in app.css for why removing the handle from flow makes the
-    // layout oscillate across the wrap threshold.
-    resizer.classList.toggle('is-hidden', !sideBySide);
-    if (!sideBySide) {
-      // Clear the override so the CSS defaults resume when the layout
-      // wraps back to stacked -- otherwise a resize made while wide
-      // would stick around, meaninglessly, once stacked.
-      mapEl.style.flex = '';
-    }
+  // The region's own minimum, from CSS: 200px of radargram, or the sum of
+  // radargram, trace handle, trace panel and gutters when the trace is
+  // open. Reading it back is what keeps the drag from shrinking the region
+  // past the point where the trace would be pushed onto its own row.
+  function radarMinPx() {
+    const min = parseFloat(getComputedStyle(radarEl).minWidth);
+    return Number.isFinite(min) ? min : MAP_MIN_PX;
   }
 
   function setMapBasisPx(px) {
     const layoutWidth = layout.getBoundingClientRect().width;
     const resizerWidth = resizer.getBoundingClientRect().width;
-    const maxPx = Math.max(MIN_PANE_PX, layoutWidth - resizerWidth - MIN_PANE_PX);
-    const clamped = Math.min(Math.max(px, MIN_PANE_PX), maxPx);
+    const minPx = radarMinPx();
+    // What the drag may leave for the radargram region: everything except
+    // the resizer, the overview pane's minimum, and the two gutters that
+    // separate the three items. The overview's *outer* minimum is used,
+    // not its `min-width`: with the default `box-sizing: content-box` its
+    // 1px border sits outside the flex-basis, and that unaccounted 2px was
+    // exactly enough to push a full-right drag across the old wrap
+    // threshold (#199's bug). The trailing `- 1` is a sub-pixel guard.
+    const overviewOuter =
+      OVERVIEW_MIN_PX + Math.max(0, overviewEl.offsetWidth - overviewEl.clientWidth);
+    const maxPx = Math.max(
+      minPx,
+      layoutWidth - resizerWidth - overviewOuter - 2 * layoutGapPx() - 1,
+    );
+    const clamped = Math.min(Math.max(px, minPx), maxPx);
+    draggedPx = clamped;
     // `0 0 <px>` (not just flex-basis) zeroes out grow/shrink on this
     // pane specifically, so the drag result is exactly what was set --
     // the overview pane's own flex:1 absorbs whatever space is left.
-    mapEl.style.flex = `0 0 ${clamped}px`;
+    radarEl.style.flex = `0 0 ${clamped}px`;
     resizer.setAttribute(
       'aria-valuenow',
       Math.round((clamped / (layoutWidth - resizerWidth)) * 100),
@@ -390,7 +417,6 @@ const overviewMap = RIDAL.basemap(L.map('overview-map'), 'overview-map');
 
   let dragging = false;
   resizer.addEventListener('pointerdown', (event) => {
-    if (!isSideBySide()) return;
     dragging = true;
     resizer.setPointerCapture(event.pointerId);
   });
@@ -404,8 +430,7 @@ const overviewMap = RIDAL.basemap(L.map('overview-map'), 'overview-map');
   });
 
   resizer.addEventListener('keydown', (event) => {
-    if (!isSideBySide()) return;
-    const currentPx = mapEl.getBoundingClientRect().width;
+    const currentPx = radarEl.getBoundingClientRect().width;
     if (event.key === 'ArrowLeft') {
       setMapBasisPx(currentPx - KEYBOARD_STEP_PX);
       event.preventDefault();
@@ -415,18 +440,144 @@ const overviewMap = RIDAL.basemap(L.map('overview-map'), 'overview-map');
     }
   });
 
-  updateSideBySideState();
+  // The way back to the default split.
+  resizer.addEventListener('dblclick', () => {
+    draggedPx = null;
+    radarEl.style.flex = '';
+    scheduleInvalidate();
+  });
+
+  // When the layout stacks (narrow screen), a fixed region width would
+  // overflow; drop it and restore it if the layout widens again.
+  const narrowQuery = window.matchMedia('(max-width: 40rem)');
+  function applyNarrowState() {
+    if (narrowQuery.matches) {
+      radarEl.style.flex = '';
+    } else if (draggedPx !== null) {
+      setMapBasisPx(draggedPx);
+    }
+  }
+  narrowQuery.addEventListener('change', applyNarrowState);
+
   new ResizeObserver(() => {
-    updateSideBySideState();
+    applyNarrowState();
     scheduleInvalidate();
   }).observe(layout);
 
-  // The map pane gets its own observer, deliberately not the one above:
-  // that callback writes `mapEl.style.flex`, so pointing it at `mapEl`
-  // would let it feed itself. This one only tells Leaflet the pane
-  // resized, which is what a phone's address bar hiding does.
-  new ResizeObserver(() => scheduleInvalidate()).observe(mapEl);
+  return {
+    // Re-clamp the stored width after the region's own minimum changed
+    // (the trace panel opening or closing), so the drag state and the
+    // rendered width agree.
+    reclamp() {
+      if (draggedPx !== null) setMapBasisPx(draggedPx);
+    },
+  };
 })();
+
+// The handle between the radargram and the trace panel. It keeps its 8px in
+// the flex line when hidden (`.is-hidden` uses `visibility`), so hiding it
+// cannot change whether the trace panel wraps below the radargram.
+const traceResizer = (function setupTraceResizer() {
+  const region = document.getElementById('radar-region');
+  const resizer = document.getElementById('trace-resizer');
+  const mapEl = document.getElementById('map');
+  const traceEl = document.getElementById('trace-view');
+  const MAP_MIN_PX = 200;
+  const TRACE_MIN_PX = 160;
+  const KEYBOARD_STEP_PX = 24;
+  let draggedPx = null;
+
+  function gapPx() {
+    const gap = parseFloat(getComputedStyle(region).columnGap);
+    return Number.isFinite(gap) ? gap : 16;
+  }
+
+  // True when the region is too narrow for map and trace side by side, so
+  // the trace has dropped below and a horizontal handle makes no sense.
+  function wrapped() {
+    return mapEl.offsetTop !== traceEl.offsetTop;
+  }
+
+  function refresh() {
+    resizer.classList.toggle('is-hidden', traceEl.hidden || wrapped());
+  }
+
+  function setMapPx(px) {
+    const regionWidth = region.getBoundingClientRect().width;
+    const resizerWidth = resizer.getBoundingClientRect().width;
+    // Both panes' *outer* minima: each has a 1px border that
+    // `box-sizing: content-box` keeps outside the flex-basis, so the line
+    // is 2px wider on each side than the basis suggests. Missing that was
+    // what wrapped the trace below the radargram at the drag's limit.
+    const traceOuter =
+      TRACE_MIN_PX + Math.max(0, traceEl.offsetWidth - traceEl.clientWidth);
+    const mapOuter = Math.max(0, mapEl.offsetWidth - mapEl.clientWidth);
+    const maxPx = Math.max(
+      MAP_MIN_PX,
+      regionWidth - resizerWidth - traceOuter - mapOuter - 2 * gapPx() - 1,
+    );
+    const clamped = Math.min(Math.max(px, MAP_MIN_PX), maxPx);
+    draggedPx = clamped;
+    mapEl.style.flex = `0 0 ${clamped}px`;
+    resizer.setAttribute(
+      'aria-valuenow',
+      Math.round((clamped / Math.max(1, regionWidth - resizerWidth)) * 100),
+    );
+    scheduleInvalidate();
+  }
+
+  let dragging = false;
+  resizer.addEventListener('pointerdown', (event) => {
+    dragging = true;
+    resizer.setPointerCapture(event.pointerId);
+  });
+  resizer.addEventListener('pointermove', (event) => {
+    if (!dragging) return;
+    setMapPx(event.clientX - region.getBoundingClientRect().left);
+  });
+  resizer.addEventListener('pointerup', (event) => {
+    dragging = false;
+    resizer.releasePointerCapture(event.pointerId);
+  });
+
+  resizer.addEventListener('keydown', (event) => {
+    const currentPx = mapEl.getBoundingClientRect().width;
+    if (event.key === 'ArrowLeft') {
+      setMapPx(currentPx - KEYBOARD_STEP_PX);
+      event.preventDefault();
+    } else if (event.key === 'ArrowRight') {
+      setMapPx(currentPx + KEYBOARD_STEP_PX);
+      event.preventDefault();
+    }
+  });
+
+  resizer.addEventListener('dblclick', () => {
+    draggedPx = null;
+    mapEl.style.flex = '';
+    scheduleInvalidate();
+  });
+
+  new ResizeObserver(() => {
+    if (draggedPx !== null && !wrapped()) setMapPx(draggedPx);
+    refresh();
+    scheduleInvalidate();
+  }).observe(region);
+  refresh();
+
+  return {
+    // Called by the trace panel's own toggle, which is the only thing that
+    // decides whether there is a trace to resize against.
+    setEnabled(on) {
+      resizer.hidden = !on;
+      refresh();
+    },
+  };
+})();
+
+// The radargram's own size can change without the region's (a phone's
+// address bar hiding changes its height, not the region's width), and
+// Leaflet has to be told about any of it.
+new ResizeObserver(() => scheduleInvalidate()).observe(document.getElementById('map'));
 
 let ownTrack = null;
 const cursorMarker = L.circleMarker([0, 0], {
@@ -547,6 +698,409 @@ function axisValue(array, index) {
   return array[i];
 }
 
+// --- Trace view (#181) ----------------------------------------------------
+//
+// One source trace beside the radargram. Rendering is treated as expensive,
+// which is the issue's explicit choice: the panel does not follow the
+// cursor, so clicking the radargram selects the trace under the click and
+// that single column is fetched and drawn. The horizontal cursor line still
+// follows the mouse -- that is a cheap canvas overlay, not a re-read, and
+// is what makes a reflection in the radargram relatable to a point on the
+// trace.
+//
+// The vertical axis is the radargram's own visible TWTT range. Each canvas
+// row is converted to a *source* sample through `shiftAt` at the selected
+// trace, so the panel stays aligned in the topographically corrected view
+// instead of being disabled there (#181's preferred outcome). No unit is
+// put on the amplitude axis: the processed amplitudes are gain-dependent.
+const traceView = (() => {
+  const toggle = document.getElementById('trace-toggle');
+  const panel = document.getElementById('trace-view');
+  const canvas = document.getElementById('trace-canvas');
+  const label = document.getElementById('trace-label');
+  const hint = document.getElementById('trace-hint');
+  const zoomIn = document.getElementById('trace-zoom-in');
+  const zoomOut = document.getElementById('trace-zoom-out');
+  const mapEl = document.getElementById('map');
+  const regionEl = document.getElementById('radar-region');
+  const ctx = canvas.getContext('2d');
+
+  // Trace index -> column. Bounded so a long session clicking across a
+  // 12000-trace radargram does not accumulate every column it read; the
+  // least-recently used is dropped.
+  const CACHE_LIMIT = 24;
+  const columns = new Map();
+
+  const AMPLITUDE_STEP = 1.25;
+  // Matches Leaflet's own CSS zoom transition, so the trace lands with the
+  // radargram rather than snapping into place after it.
+  const ZOOM_ANIMATION_MS = 250;
+
+  let on = false;
+  let selected = null;
+  let column = null;
+  // The selected column's largest |amplitude|. The drawing scale is
+  // anchored to this, not to whatever is currently on screen, so panning
+  // and vertical zooming do not rescale the trace -- changing the width is
+  // an explicit act (the scroll wheel or the +/- buttons).
+  let columnPeak = 1;
+  // The raster row the cursor is on, not the source sample: in the
+  // corrected view the two differ per trace, and the line should mark the
+  // same *screen* height in both panels.
+  let cursorRow = null;
+  let amplitudeZoom = 1;
+  // Bumped per selection so a slow fetch cannot overwrite a newer one.
+  let pending = 0;
+  let cursorQueued = false;
+  let drawQueued = false;
+  let animationRaf = 0;
+
+  toggle.hidden = false;
+
+  // A vertical marker on the radargram at the selected trace, so it is
+  // obvious where the trace panel is reading from. It lives in a pane of
+  // its own, above the radargram images and the pick lines.
+  map.createPane('radargram-trace').style.zIndex = 403;
+  let traceLine = null;
+  function updateTraceLine() {
+    if (!on || selected === null) {
+      if (traceLine) {
+        map.removeLayer(traceLine);
+        traceLine = null;
+      }
+      return;
+    }
+    // A constant longitude spans every raster row; `rasterHeight` and the
+    // vertical scale are read live so the line follows the topographic
+    // shear and the horizontal-scale change.
+    const lng = selected * G.rasterScale * (window.RIDAL_XSCALE || 1);
+    const latlngs = [
+      L.latLng(0, lng),
+      L.latLng(-G.rasterHeight * G.verticalRasterScale, lng),
+    ];
+    if (traceLine) {
+      traceLine.setLatLngs(latlngs);
+    } else {
+      traceLine = L.polyline(latlngs, {
+        color: '#000',
+        weight: 2,
+        opacity: 0.85,
+        interactive: false,
+        pane: 'radargram-trace',
+      }).addTo(map);
+    }
+  }
+  // Called by `redrawOverlays` after a topographic or horizontal-scale
+  // change, so the marker is re-projected through the new geometry.
+  window.RIDAL_REDRAW_TRACE = updateTraceLine;
+
+  function setOn(value) {
+    on = value;
+    panel.hidden = !on;
+    // The region's own minimum changes with the trace panel: without the
+    // class, the split resizer could shrink the region to the radargram's
+    // minimum alone and push the trace onto its own row.
+    regionEl.classList.toggle('has-trace', on);
+    splitResizer.reclamp();
+    toggle.setAttribute('aria-pressed', String(on));
+    toggle.textContent = on ? 'Hide trace view' : 'Trace view';
+    traceResizer.setEnabled(on);
+    updateTraceLine();
+    // The radargram's width changes when the panel appears and Leaflet has
+    // to be told. The region's observer would catch it a frame later, which
+    // can leave a gutter of stale tiles.
+    map.invalidateSize({ pan: false });
+    if (on) draw();
+  }
+
+  toggle.addEventListener('click', () => setOn(!on));
+  zoomIn.addEventListener('click', () => {
+    amplitudeZoom *= AMPLITUDE_STEP;
+    draw();
+  });
+  zoomOut.addEventListener('click', () => {
+    amplitudeZoom /= AMPLITUDE_STEP;
+    draw();
+  });
+  canvas.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    amplitudeZoom *= event.deltaY < 0 ? AMPLITUDE_STEP : 1 / AMPLITUDE_STEP;
+    draw();
+  }, { passive: false });
+
+  // Dragging the trace pans the radargram vertically, so the two stay
+  // synced while the user looks up and down the trace.
+  let panning = null;
+  canvas.addEventListener('pointerdown', (event) => {
+    if (!on || selected === null || !column) return;
+    panning = { y: event.clientY };
+    canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    if (!panning) return;
+    const dy = event.clientY - panning.y;
+    if (dy === 0) return;
+    panning.y = event.clientY;
+    // Negative offset: the content follows the drag (drag down reveals
+    // earlier samples), which is what a map's own drag does.
+    map.panBy([0, -dy], { animate: false });
+  });
+  canvas.addEventListener('pointerup', (event) => {
+    if (!panning) return;
+    panning = null;
+    if (canvas.hasPointerCapture(event.pointerId)) {
+      canvas.releasePointerCapture(event.pointerId);
+    }
+  });
+
+  function columnFor(trace) {
+    if (columns.has(trace)) {
+      const value = columns.get(trace);
+      // Refresh recency.
+      columns.delete(trace);
+      columns.set(trace, value);
+      return Promise.resolve(value);
+    }
+    const url = RIDAL.apiPath("datasets", RADARGRAM_ID, "traces", trace);
+    return RIDAL.fetchJson(url)
+      .catch((error) => {
+        // A GET is idempotent, and a transport-level failure (no HTTP
+        // status) can be transient -- a browser stretched thin by the
+        // radargram's own tile requests, for instance. Retry once after a
+        // short pause; an HTTP status is the server's answer and is not
+        // retried.
+        if (error.status !== undefined) throw error;
+        return new Promise((resolve) => setTimeout(resolve, 250)).then(() =>
+          RIDAL.fetchJson(url),
+        );
+      })
+      .then((data) => {
+        const value = Float32Array.from(data.amplitude);
+        columns.set(trace, value);
+        if (columns.size > CACHE_LIMIT) {
+          columns.delete(columns.keys().next().value);
+        }
+        return value;
+      });
+  }
+
+  function clearError() {
+    panel.querySelectorAll('.error-overlay').forEach((box) => box.remove());
+  }
+
+  function peakOf(values) {
+    let peak = 0;
+    for (let i = 0; i < values.length; i++) {
+      const a = Math.abs(values[i]);
+      if (a > peak) peak = a;
+    }
+    return peak > 0 ? peak : 1;
+  }
+
+  function select(trace) {
+    selected = Math.max(0, Math.min(SOURCE_WIDTH - 1, Math.round(trace)));
+    cursorRow = null;
+    hint.hidden = true;
+    clearError();
+    label.textContent = `trace: ${selected}`;
+    updateTraceLine();
+    const token = ++pending;
+    columnFor(selected)
+      .then((value) => {
+        // A later click may have landed while this fetch was in flight.
+        if (token !== pending) return;
+        column = value;
+        columnPeak = peakOf(value);
+        draw();
+      })
+      .catch((error) => {
+        if (token !== pending) return;
+        RIDAL.reportError('trace-view', `Could not load trace ${selected}: ${error.message}`);
+      });
+  }
+
+  // The source-sample span the radargram currently shows, over the
+  // selected trace. `rasterRow = sample + shiftAt(trace)`, so inverting at
+  // one trace gives an exact window even in the corrected view.
+  function visibleSampleRange() {
+    const bounds = map.getBounds();
+    const rows = [
+      -bounds.getNorth() / G.verticalRasterScale,
+      -bounds.getSouth() / G.verticalRasterScale,
+    ];
+    const shift = shiftAt(selected);
+    return [Math.min(rows[0], rows[1]) - shift, Math.max(rows[0], rows[1]) - shift];
+  }
+
+  // The range the radargram will show once the in-flight zoom finishes.
+  // Leaflet fires `zoomanim` at the *start* of the CSS transition and
+  // `zoomend` at the end, so the target has to be projected from the
+  // event's own centre/zoom rather than read from `getBounds()`.
+  function targetRangeForZoom(event) {
+    const size = map.getSize();
+    const centerPx = map.project(event.center, event.zoom);
+    const half = size.divideBy(2);
+    const nw = map.unproject(centerPx.subtract(half), event.zoom);
+    const se = map.unproject(centerPx.add(half), event.zoom);
+    const shift = shiftAt(selected);
+    const rows = [-nw.lat / G.verticalRasterScale, -se.lat / G.verticalRasterScale];
+    return [Math.min(rows[0], rows[1]) - shift, Math.max(rows[0], rows[1]) - shift];
+  }
+
+  function stopAnimation() {
+    if (animationRaf) {
+      cancelAnimationFrame(animationRaf);
+      animationRaf = 0;
+    }
+  }
+
+  map.on('zoomanim', (event) => {
+    if (!on || selected === null || !column) return;
+    const from = visibleSampleRange();
+    const to = targetRangeForZoom(event);
+    stopAnimation();
+    const start = performance.now();
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / ZOOM_ANIMATION_MS);
+      // Smoothstep, close enough to Leaflet's ease that the two arrive
+      // together without a visible lag.
+      const s = t * t * (3 - 2 * t);
+      draw([from[0] + (to[0] - from[0]) * s, from[1] + (to[1] - from[1]) * s]);
+      animationRaf = t < 1 ? requestAnimationFrame(step) : 0;
+    };
+    animationRaf = requestAnimationFrame(step);
+  });
+
+  function fitCanvas() {
+    const ratio = window.devicePixelRatio || 1;
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    if (canvas.width !== Math.round(width * ratio) ||
+        canvas.height !== Math.round(height * ratio)) {
+      canvas.width = Math.round(width * ratio);
+      canvas.height = Math.round(height * ratio);
+    }
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    return { width, height };
+  }
+
+  // `rangeOverride` is used by the zoom animation, which draws an
+  // interpolated window; every other caller lets it read the live one.
+  function draw(rangeOverride) {
+    if (!on || selected === null || !column) return;
+    const { width, height } = fitCanvas();
+    if (width <= 0 || height <= 0) return;
+    ctx.clearRect(0, 0, width, height);
+
+    const [sampleTop, sampleBottom] = rangeOverride || visibleSampleRange();
+    const span = sampleBottom - sampleTop;
+    if (!(span > 0)) return;
+
+    const first = Math.max(0, Math.floor(sampleTop));
+    const last = Math.min(column.length - 1, Math.ceil(sampleBottom));
+    if (last < first) return;
+
+    // Fixed scale, anchored to the whole trace: the largest |amplitude| of
+    // the *selected column* maps to half the canvas width, times the user's
+    // zoom. Deliberately not the visible window's peak -- that made the
+    // trace breathe wider and narrower as the user panned.
+    const half = (width / 2) * amplitudeZoom;
+    const xOf = (amplitude) => width / 2 + (amplitude / columnPeak) * half;
+    const yOf = (sample) => ((sample - sampleTop) / span) * height;
+
+    const accent =
+      getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() ||
+      '#1f6f8b';
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, width, height);
+    ctx.clip();
+
+    // Zero line.
+    ctx.strokeStyle = 'rgba(127, 127, 127, 0.5)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(width / 2, 0);
+    ctx.lineTo(width / 2, height);
+    ctx.stroke();
+
+    // The trace itself.
+    ctx.strokeStyle = accent;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(xOf(column[first]), yOf(first));
+    for (let s = first + 1; s <= last; s++) {
+      ctx.lineTo(xOf(column[s]), yOf(s));
+    }
+    ctx.stroke();
+    ctx.restore();
+
+    // Where on the trace the cursor is. Converted through the selected
+    // trace's own shift, so the line sits at the same height as the
+    // cursor in the radargram.
+    if (cursorRow !== null) {
+      const cursorSample = cursorRow - shiftAt(selected);
+      if (cursorSample >= sampleTop && cursorSample <= sampleBottom) {
+        ctx.strokeStyle = accent;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(0, yOf(cursorSample));
+        ctx.lineTo(width, yOf(cursorSample));
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // Clicking the radargram chooses the trace. Picking owns clicks while it
+  // is active, so selecting a trace then would silently move the trace
+  // panel instead of placing a vertex.
+  map.on('click', (event) => {
+    if (!on || mapEl.classList.contains('picking')) return;
+    const [trace, sample] = RIDAL_TO_INDEX(event.latlng);
+    if (trace < 0 || trace >= SOURCE_WIDTH) return;
+    // The corrected view's no-data wedge is not a trace position.
+    if (sample < 0 || sample > G.sourceHeight) return;
+    select(trace);
+  });
+
+  // A pan, zoom, topo toggle or scale change moves the visible sample
+  // window, so the panel has to be redrawn to stay in sync. `move` covers
+  // the continuous part of a pan (and the trace panel's own drag-to-pan);
+  // the end events settle the final, authoritative window and cancel any
+  // zoom animation still running.
+  map.on('move', () => {
+    if (animationRaf || !on || selected === null) return;
+    if (drawQueued) return;
+    drawQueued = true;
+    requestAnimationFrame(() => {
+      drawQueued = false;
+      draw();
+    });
+  });
+  map.on('moveend zoomend', () => {
+    stopAnimation();
+    draw();
+  });
+  window.addEventListener('resize', () => {
+    if (on) draw();
+  });
+
+  function setCursorRow(row) {
+    cursorRow = row;
+    if (!on || selected === null || cursorQueued) return;
+    cursorQueued = true;
+    requestAnimationFrame(() => {
+      cursorQueued = false;
+      draw();
+    });
+  }
+
+  return { setCursorRow };
+})();
+
 const readout = document.getElementById('cursor-readout');
 // Seeded, and never blanked below, so the readout always occupies exactly
 // one line. An empty readout used to take no width, sit on the controls
@@ -572,6 +1126,10 @@ map.on('mousemove', (event) => {
   // row in the corrected view has to invert the shear first -- the
   // cursor-sync twin of `toIndex` in picker.js.
   const sampleIndex = rasterRow - shiftAt(traceIndex);
+
+  // Mark the same screen height in the trace panel. The row, not the
+  // sample: the panel re-applies its own trace's shift (#181).
+  traceView.setCursorRow(rasterRow);
 
   let text = `trace ${Math.round(traceIndex)} / ${SOURCE_WIDTH}`;
   if (axes) {

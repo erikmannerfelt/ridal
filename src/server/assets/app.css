@@ -488,15 +488,22 @@ section.group {
 
 /* ---------- viewer ---------- */
 
+/* The radargram region and the overview map never wrap on their own: a
+ * wrap here was what stranded the resizer (#199), because once wrapped the
+ * handle hid itself and the stacked layout kept the measurement "not side
+ * by side", so it could never come back -- including after a browser zoom
+ * out. Stacking is instead decided by the fixed breakpoint in the narrow
+ * screen media query, which re-evaluates on zoom and is recoverable. */
 .layout {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--space-4);
   align-items: flex-start;
 }
 
 #map {
   flex: 2 1 500px;
+  min-width: 200px;
   height: var(--map-height-viewer);
   min-height: var(--map-min-height);
   background: var(--color-viewer-bg);
@@ -514,8 +521,13 @@ section.group {
   background: rgb(96, 96, 96);
 }
 
+/* The drag clamp in viewer.js reserves this pane's minimum plus its 1px
+ * border (which `box-sizing: content-box` keeps outside the flex-basis) and
+ * both gutters, so dragging cannot push the overview past the point where
+ * it stops shrinking (#199). */
 #overview-map {
-  flex: 1 1 260px;
+  flex: 1 1 80px;
+  min-width: 80px;
   height: var(--map-height-viewer);
   min-height: var(--map-min-height);
   background: var(--color-surface-sunken);
@@ -523,45 +535,138 @@ section.group {
   border-radius: var(--radius-md);
 }
 
-/* Drag handle between #map and #overview-map -- only shown when they're
- * actually side by side (JS toggles .is-hidden when .layout wraps them
- * to stacked, where a horizontal resize handle makes no sense). */
-#split-resizer {
+/* The two drag handles: #split-resizer between the radargram region and the
+ * overview map, #trace-resizer between the radargram and the trace panel.
+ * Both are plain col-resize handles; the narrow-screen media query removes
+ * #split-resizer when the layout stacks.
+ *
+ * `touch-action: none` is what makes them work on a touchscreen: without
+ * it the browser claims the drag for scrolling and the pointer events the
+ * handlers rely on stop arriving. The `::before` widens the hit area from
+ * 8px to 24px for a finger, without changing the 8px the layout sees. */
+#split-resizer,
+#trace-resizer {
+  position: relative;
   flex: 0 0 8px;
   align-self: stretch;
   cursor: col-resize;
+  touch-action: none;
   background: var(--color-border);
   border-radius: var(--radius-sm);
 }
 
+#split-resizer::before,
+#trace-resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0 -8px;
+}
+
 #split-resizer:hover,
-#split-resizer:focus-visible {
+#split-resizer:focus-visible,
+#trace-resizer:hover,
+#trace-resizer:focus-visible {
   background: var(--color-accent);
 }
 
-/* `visibility`, deliberately not `display: none`. Hiding the handle with
- * `display` removes its 8px from the flex line, which frees exactly
- * enough room for the two panes to fit side by side again -- so the
- * layout un-wraps, the handle comes back, its 8px re-wraps the layout,
- * and it hides again. That feedback loop made the viewer flicker rapidly
- * right at the wrap threshold. Keeping the box in flow makes the
- * measurement the ResizeObserver takes independent of the toggle. */
-/* When stacked, the handle takes a whole row of zero height rather than 8px
- * of the overview map's row. Hidden with `visibility` it still occupied its
- * flex slot plus a gap, which left the overview map 24px right of the
- * radargram with their right edges aligned -- visibly askew.
- *
- * `display: none` is still the wrong fix, for the reason the note above
- * gives: it shortens the row, which can let the two maps fit side by side
- * again, which re-shows the handle, which lengthens the row. Taking a full
- * row instead *reinforces* the stacked state, so it settles immediately. */
-#split-resizer.is-hidden {
+/* `visibility`, deliberately not `display: none`: the trace handle must
+ * keep its 8px in the flex line so hiding it cannot change whether the
+ * trace panel wraps below the radargram (the same feedback loop the old
+ * split handle suffered from). */
+#trace-resizer.is-hidden {
   visibility: hidden;
   pointer-events: none;
-  flex-basis: 100%;
-  height: 0;
+}
+
+/* The radargram and the trace panel, one flex box (#181). On a wide screen
+ * the two never wrap: the region has a minimum that includes both panes, so
+ * dragging the split resizer can only shrink the trace to its minimum, not
+ * push it onto a row of its own with the handle. Only the narrow-screen
+ * media query stacks it. `min-width` is the sum of the two panes' outer
+ * minimums (their content minimum plus the 1px border `box-sizing:
+ * content-box` keeps outside the flex-basis), the trace handle, and both
+ * gutters; `#split-resizer`'s clamp reads it back so its drag agrees with
+ * what the layout will actually do. */
+.radar-region {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--space-4);
+  align-items: flex-start;
+  flex: 2 1 500px;
+  min-width: calc(200px + 2px);
+}
+
+.radar-region.has-trace {
+  min-width: calc(200px + 2px + 8px + 160px + 2px + 2 * var(--space-4));
+}
+
+/* Inside `.radar-region`, `#map` no longer competes with `#overview-map`,
+ * so its base size is the region's own share rather than the page's. */
+.radar-region > #map {
+  flex: 1 1 400px;
+}
+
+/* The panel's own `display: flex` is overridden by the global
+ * `[hidden] { display: none !important }` below, so `hidden` really hides
+ * it. `flex-basis` equals `min-width` for the same reason as
+ * `#overview-map`: the trace resizer's clamp reserves the basis, and a
+ * larger basis would wrap the trace below the radargram before the drag
+ * reached its limit. */
+#trace-view {
+  flex: 1 1 160px;
+  min-width: 160px;
+  height: var(--map-height-viewer);
+  min-height: var(--map-min-height);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.trace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-zoom {
+  display: flex;
+  gap: 2px;
+}
+
+.trace-zoom button {
+  line-height: 1;
+  padding: 0 var(--space-2);
+}
+
+#trace-canvas {
+  flex: 1 1 auto;
+  display: block;
+  width: 100%;
   min-height: 0;
-  align-self: auto;
+  /* Dragging the trace pans the radargram vertically (the two are synced),
+   * so it gets the same grab affordance as a map. `touch-action: none` is
+   * what lets the drag reach the pointer handlers on a touchscreen instead
+   * of the browser scrolling the page. */
+  cursor: grab;
+  touch-action: none;
+}
+
+#trace-canvas:active {
+  cursor: grabbing;
+}
+
+.trace-hint {
+  margin: 0;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+  color: var(--color-text-muted);
+  font-size: 0.85em;
 }
 
 /* ---------- Leaflet popup ---------- */
@@ -1326,6 +1431,23 @@ button.danger:disabled {
   #overview-map {
     height: 30svh;
     min-height: 180px;
+  }
+
+  /* Stack the radargram region above the overview map, and drop the
+   * horizontal handle that would then make no sense. The trace panel
+   * stacks within the region too, which is why both minimums go. */
+  .layout {
+    flex-wrap: wrap;
+  }
+
+  #split-resizer {
+    display: none;
+  }
+
+  .radar-region,
+  .radar-region.has-trace {
+    flex-wrap: wrap;
+    min-width: 0;
   }
 
   .picker-controls {

@@ -762,10 +762,18 @@ const RENDER_PERMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// `Retry-After` value on the `render_busy` 503, in seconds.
 const RENDER_BUSY_RETRY_AFTER_SECS: u64 = 5;
 
-/// Run one render on a blocking thread, under a permit from
-/// `AppState::render_permits`.
+/// Run one piece of work against a radargram's [`RenderService`] on a
+/// blocking thread, under a permit from `AppState::render_permits`.
 ///
-/// Two things this buys, in order of importance:
+/// Named for the renders that make up almost all of its use, but not every
+/// caller draws a picture: `dataset_trace` reads one amplitude column
+/// through the same service (#181). The reason it belongs here is the
+/// service's single `SourceReader`, and `netcdf-c` is not thread-safe --
+/// going around the permit and the `Mutex` to open a second handle would
+/// reintroduce exactly the contention the read side is serialized to
+/// avoid.
+///
+/// Two things the permit buys, in order of importance:
 ///
 /// 1. **Rendering leaves the async executor.** It is CPU-bound work that
 ///    previously ran directly on a tokio worker while holding the
@@ -785,15 +793,16 @@ const RENDER_BUSY_RETRY_AFTER_SECS: u64 = 5;
 /// landing mid-request must not let a render run against a different
 /// generation's service than the one whose shape built its grid. See
 /// [`resolve_view_height`].
-async fn render_under_permit<F>(
+async fn with_render_service<R, F>(
     state: Arc<AppState>,
     radargram: Arc<super::app::OpenRadargram>,
     render: F,
-) -> Result<Vec<u8>, ApiError>
+) -> Result<R, ApiError>
 where
-    F: FnOnce(&mut crate::server::render_service::RenderService) -> Result<Vec<u8>, ApiError>
+    F: FnOnce(&mut crate::server::render_service::RenderService) -> Result<R, ApiError>
         + Send
         + 'static,
+    R: Send + 'static,
 {
     let permit = tokio::time::timeout(
         RENDER_PERMIT_TIMEOUT,
@@ -947,7 +956,7 @@ pub async fn overview_image(
     let spec = OverviewSpec::new(width, height, 512);
     let render_profile = profile.clone();
 
-    let bytes = render_under_permit(state.clone(), radargram, move |service| {
+    let bytes = with_render_service(state.clone(), radargram, move |service| {
         service
             .get_or_render_overview(&spec, dataset_view, &render_profile, elevation_range)
             .map_err(|e| ApiError::internal("render_failed", e))
@@ -1011,7 +1020,7 @@ pub async fn chunk_image(
     })?;
     let render_profile = profile.clone();
 
-    let bytes = render_under_permit(state.clone(), radargram, move |service| {
+    let bytes = with_render_service(state.clone(), radargram, move |service| {
         service
             .get_or_render_chunk(&chunk, dataset_view, &render_profile, elevation_range)
             .map_err(|e| ApiError::internal("render_failed", e))
@@ -1631,7 +1640,7 @@ pub async fn dataset_image(
     );
     let render_profile = profile.clone();
 
-    let bytes = render_under_permit(state.clone(), radargram, move |service| {
+    let bytes = with_render_service(state.clone(), radargram, move |service| {
         service
             .get_or_render_overview(&spec, dataset_view, &render_profile, elevation_range)
             .map_err(|e| ApiError::internal("render_failed", e))
@@ -2293,6 +2302,68 @@ pub async fn dataset_axes(
         twtt: super::track::read_f64_variable(&file, "twtt").ok(),
         depth: super::track::read_f64_variable(&file, "depth").ok(),
         elevation: super::track::read_f64_variable(&file, "elevation").ok(),
+    }))
+}
+
+/// One source trace for the viewer's trace panel (#181).
+///
+/// The panel plots `data[:, trace]` directly rather than a rendered image:
+/// a single column is cheap to read and lets the browser scale it and
+/// label its vertical axis with the TWTT values `/axes` already provides,
+/// neither of which an encoded PNG could do.
+///
+/// Read through the render service's already-open handle, under the same
+/// permit as a render -- see [`with_render_service`] for why. A
+/// structurally invalid index is a 400 and a well-formed but out-of-range
+/// one a 404, the same distinction `chunk_image` draws between its two
+/// coordinates.
+#[derive(serde::Serialize)]
+struct TraceJson {
+    trace: usize,
+    n_samples: usize,
+    amplitude: Vec<f32>,
+}
+
+pub async fn dataset_trace(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, trace_raw)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiError> {
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
+    let trace: usize = trace_raw.parse().map_err(|_| {
+        ApiError::bad_request(
+            "invalid_trace_index",
+            format!("Invalid trace index: '{trace_raw}'"),
+        )
+    })?;
+    // From the same snapshot the entry came out of, so the service and the
+    // entry describe one generation of the catalog.
+    let radargram = catalog
+        .radargram(entry.radargram_id.as_str())
+        .ok_or_else(|| {
+            ApiError::internal(
+                "dataset_unavailable",
+                "Dataset is cataloged but its render service failed to initialize.",
+            )
+        })?;
+
+    let column = with_render_service(state.clone(), radargram, move |service| {
+        service
+            .read_trace(trace)
+            .map_err(|e| ApiError::internal("trace_read_failed", e))
+    })
+    .await?
+    .ok_or_else(|| {
+        ApiError::not_found(
+            "trace_not_found",
+            "The requested trace index is outside the radargram bounds.",
+        )
+    })?;
+
+    Ok(Json(TraceJson {
+        trace,
+        n_samples: column.len(),
+        amplitude: column,
     }))
 }
 

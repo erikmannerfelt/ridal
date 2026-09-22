@@ -433,6 +433,28 @@ impl RenderService {
         self.cache.insert(key, bytes.clone());
         Ok(bytes)
     }
+
+    /// One source trace: the `data[:, trace]` column, as stored.
+    ///
+    /// The trace view plots this directly rather than a rendered image
+    /// (#181). A single column is cheap to read and lets the browser scale
+    /// and label it, which an encoded image could not. Display gain is
+    /// already part of the processed `data` variable, so no render profile
+    /// is applied -- deliberately, since a profile's `AbsLog`/`Positive`
+    /// transform describes how amplitude maps to colour, not the waveform.
+    ///
+    /// `Ok(None)` for an index outside the radargram rather than a clamped
+    /// column, so the route can answer 404 instead of silently serving an
+    /// edge trace.
+    pub fn read_trace(&self, trace: usize) -> Result<Option<Vec<f32>>, String> {
+        use crate::source::AmplitudeSource;
+        let (n_samples, n_traces) = self.reader.shape();
+        if trace >= n_traces {
+            return Ok(None);
+        }
+        let column = self.reader.read_window(0, n_samples, trace, trace + 1)?;
+        Ok(Some(column.iter().copied().collect()))
+    }
 }
 
 #[cfg(test)]
@@ -558,6 +580,38 @@ mod tests {
             })
             .collect();
         var.put_values(&data, ..).unwrap();
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn read_trace_returns_the_stored_column_and_rejects_out_of_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.nc");
+        let (height, width) = (20usize, 300usize);
+        write_test_nc(&path, height, width);
+        let reader = SourceReader::open(&path).unwrap();
+        let service = RenderService::new(
+            reader,
+            RevisionId::fingerprint_v1(
+                &RadargramId::new("trace-test").unwrap(),
+                "2020-01-01T00:00:00Z",
+            ),
+            &RenderServiceConfig::default(),
+        );
+
+        let trace = 7usize;
+        let column = service
+            .read_trace(trace)
+            .unwrap()
+            .expect("trace is in range");
+        assert_eq!(column.len(), height);
+        let expected: Vec<f32> = (0..height)
+            .map(|row| ((row * width + trace) % 1000) as f32)
+            .collect();
+        assert_eq!(column, expected);
+
+        assert!(service.read_trace(width).unwrap().is_none());
     }
 
     #[test]
