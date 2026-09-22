@@ -273,6 +273,44 @@ structured error envelope (`{"error": {"code", "message"}}`) instead of
 a bare `.then(r => r.json())` silently proceeding with a malformed
 object on failure.
 
+**The trace view (#181)** is a canvas beside the radargram, toggled by
+`#trace-toggle` and fed by `GET /api/v1/datasets/{id}/traces/{trace}`,
+which returns the raw `data[:, trace]` column (no render profile — the
+processed amplitudes already carry their gain). Rendering was treated as
+expensive, so the panel is click-driven: a click on the radargram selects
+the trace under it, and the panel does not follow the cursor. Its vertical
+axis is the radargram's *visible* sample window, converted per row through
+`shiftAt` at the selected trace, so it stays aligned in the topographically
+corrected view rather than being disabled there. A black vertical line is
+drawn on the radargram at the selected trace (in its own
+`radargram-trace` pane) so it is obvious where the panel is reading from;
+it is removed when the panel closes and re-projected through
+`RIDAL_REDRAW_TRACE` after a topographic or horizontal-scale change. Two
+behaviours keep the panel feeling attached to the map: a zoom animates its
+sample window over the same 250 ms as Leaflet's own CSS zoom (from the
+`zoomanim` event's target centre/zoom, since `getBounds()` is still the old
+view until `zoomend`), and dragging the canvas pans the radargram
+vertically so the two scroll together.
+
+**The viewer's two drag handles (#199).** `#map` and `#trace-view` share
+`.radar-region`; `#trace-resizer` sizes them against each other, and
+`#split-resizer` sizes the whole region against `#overview-map`. Both
+`.layout` and `.radar-region` are `flex-wrap: nowrap` on a wide screen and
+stack only through the narrow-screen media query, so a handle can never be
+hidden by the state its own drag created — the feedback loop that made #199
+unrecoverable, including after a browser zoom out. `.radar-region` carries
+a CSS `min-width` (the radargram alone, or radargram + trace handle + trace
+panel + gutters when the trace is open) that `#split-resizer`'s clamp reads
+back, so shrinking the region can only take the trace to its minimum and
+never push it onto a row of its own. Each clamp reserves the panes' minimums
+plus the 1px borders that `box-sizing: content-box` keeps outside the
+flex-basis, and both flex gaps; a double-click resets that handle's split.
+Both handles set `touch-action: none` (and a widened `::before` hit area),
+without which a touchscreen claims the drag for scrolling and the pointer
+events never arrive. `#trace-resizer` keeps its 8px in flow when hidden
+(`visibility`, not `display`) so hiding it cannot change whether the trace
+panel wraps below the radargram.
+
 ## Known constraints and gaps
 
 Durable, load-bearing decisions rather than oversights:

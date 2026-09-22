@@ -52,6 +52,13 @@
         nothing. The state persists for the session in sessionStorage. -#}
     <button id="panel-visibility" type="button" hidden
             title="Show or hide the layer panel over the radargram.">Layers</button>
+    {#- The trace view (#181). A plain toggle button for now: the
+        interaction (click the radargram to choose the trace) is the part
+        that was decided, while how the panel should present itself is
+        explicitly a prototype to refine. Hidden until viewer.js wires it,
+        so a page without JavaScript does not offer a dead control. -#}
+    <button id="trace-toggle" type="button" aria-pressed="false" hidden
+            title="Show a single trace beside the radargram. Click the radargram to choose which trace.">Trace view</button>
     {#- A menu rather than a button: there are five things to download and
         they are not variations of one another. Lives in this row, not the
         picking toolbar, because a radargram, its track and an image are
@@ -302,8 +309,32 @@
     </p>
   </dialog>
 
+  {#- The radargram and the trace panel share one flex box (#181), so the
+      trace can sit beside the radargram on a wide screen and drop below it
+      when there is no room. The split resizer stays between this box and
+      the overview map, so it still means "radargram area vs map" and the
+      trace's presence does not disturb the wrap bookkeeping the #199 clamp
+      relies on. -#}
   <div class="layout" id="viewer-layout">
-    <div id="map"></div>
+    <div class="radar-region" id="radar-region">
+      <div id="map"></div>
+      <div id="trace-resizer" role="separator" aria-orientation="vertical"
+           aria-label="Resize radargram and trace panels"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="60" tabindex="0" hidden></div>
+      <div id="trace-view" hidden>
+        <div class="trace-header">
+          <span id="trace-label">trace: &ndash;</span>
+          <span class="trace-zoom">
+            <button type="button" id="trace-zoom-out"
+                    title="Narrower trace (smaller amplitude)">&minus;</button>
+            <button type="button" id="trace-zoom-in"
+                    title="Wider trace (larger amplitude)">+</button>
+          </span>
+        </div>
+        <canvas id="trace-canvas"></canvas>
+        <p class="trace-hint" id="trace-hint">Click the radargram to choose a trace.</p>
+      </div>
+    </div>
     <div id="split-resizer" role="separator" aria-orientation="vertical"
          aria-label="Resize radargram and map panels"
          aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" tabindex="0"></div>
