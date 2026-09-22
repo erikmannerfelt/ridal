@@ -302,6 +302,7 @@ impl RenderService {
         let sampled = match profile.limits {
             AmplitudeLimits::Percentile { low, high } => Some(sampled_amplitude_limits(
                 &self.reader,
+                profile.source_transform,
                 profile.transform,
                 crate::render::stats::SAMPLE_SEED,
                 low,
@@ -474,9 +475,10 @@ mod tests {
         // so the two estimated amplitude limits from different traces and
         // disagreed by a shade.
         //
-        // Checked for the Lanczos profiles as well as the default, since
-        // those are also the ones whose banding had to be fixed for this
-        // to hold at all.
+        // Checked for every built-in profile, including the ones whose
+        // resampling reaches past a band's own rows (the Lanczos-based
+        // `positive`, `abslog` and `siglog-positive`), since those are the
+        // profiles whose banding had to be fixed for this to hold at all.
         use crate::render::oneshot::{render_path_to_file, RenderRequest};
 
         // Amplitudes that vary sharply *between* traces, which is what
@@ -490,7 +492,14 @@ mod tests {
         let path = dir.path().join("t.nc");
         write_trace_varying_nc(&path, 400, 4096);
 
-        for name in ["default", "positive", "abslog"] {
+        for name in [
+            "default",
+            "positive",
+            "abslog",
+            "siglog-default",
+            "siglog-positive",
+            "siglog-high-contrast",
+        ] {
             let profile = RenderProfile {
                 format: crate::render::profile::ImageFormat::Png,
                 ..RenderProfile::by_name(name).expect("built-in profile")
@@ -630,6 +639,7 @@ mod tests {
         let limits = |seed| {
             crate::render::stats::sampled_amplitude_limits(
                 &reader,
+                crate::render::profile::SourceTransform::None,
                 crate::render::profile::AmplitudeTransform::Linear,
                 seed,
                 1.0,

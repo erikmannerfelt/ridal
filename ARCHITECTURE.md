@@ -103,8 +103,9 @@ rules ever change, grep for these sentinels first.
 ## Render pipeline
 
 Fixed order, enforced by module structure rather than just convention:
-**source amplitude → dataset view → resample → normalize → colormap →
-encode.** Everything lives under `src/server/render/`.
+**source amplitude → dataset view → source transform → resample →
+normalize → colormap → encode.** Everything lives under
+`src/server/render/`.
 
 - **Geometry** (`grid.rs`) is pure, with no I/O: `ViewerRaster` is the
   source array at 1:1 — **the viewer does not resample** — `ChunkGrid`
@@ -166,16 +167,46 @@ encode.** Everything lives under `src/server/render/`.
     or it will reproduce that bug.
 - **Profiles** (`profile.rs`) are the one server-defined, non-free-form
   configuration surface — never client-defined, per the explicit
-  warning against unbounded client-driven render work. Four built-ins:
+  warning against unbounded client-driven render work. Seven built-ins,
+  each `siglog-*` sitting next to the profile it is the log view of:
 
-  | Profile | Transform | Resampling | Notes |
-  |---|---|---|---|
-  | `default` | Linear | Mean | 1–99% quantile |
-  | `positive` | Positive (asymmetric) | LanczosRectified | biases toward positive returns, clips negative toward black |
-  | `abslog` | `log10\|A\|` | LanczosRectified | sign-agnostic by construction, so rectifying changes nothing about what it means |
-  | `high-contrast` | Linear | Mean | 5–95% quantile |
+  | Profile | Source transform | Display transform | Resampling | Notes |
+  |---|---|---|---|---|
+  | `default` | None | Linear | Mean | 1–99% quantile |
+  | `siglog-default` | SigLog | Linear | Mean | the `default` view on log-compressed source |
+  | `positive` | None | Positive (asymmetric) | LanczosRectified | biases toward positive returns, clips negative toward black |
+  | `siglog-positive` | SigLog | Positive | LanczosRectified | `positive`'s tuning on log-compressed source; it displays the rectified envelope, so it keeps `positive`'s reducer |
+  | `abslog` | None | `log10\|A\|` | LanczosRectified | sign-agnostic by construction, so rectifying changes nothing about what it means |
+  | `high-contrast` | None | Linear | Mean | 5–95% quantile |
+  | `siglog-high-contrast` | SigLog | Linear | Mean | the `high-contrast` view on log-compressed source |
 
-  `positive`'s asymmetry is why `RenderProfile`'s amplitude transform is
+  A profile has **two** transforms, and their order is the reason
+  `siglog-*` needs no new resampler. `source_transform` is applied to
+  each source sample *before* resampling; `transform` maps the already
+  resampled value into the display domain afterwards. The `siglog-*`
+  profiles set `SourceTransform::SigLog` — the processing step's own
+  `(log10|A| − offset).max(0)·sign(A)` — so the compression happens
+  before whatever the base profile's reducer does, exactly reproducing
+  the order a `siglog` processing step would have. Each `siglog-*` also
+  keeps its base profile's resampling method, and that is load-bearing
+  for `siglog-positive`: `positive` displays the rectified envelope, so
+  it filters `|siglog(A)|` with `LanczosRectified`. Reducing that with
+  `Mean` would average the signed siglog values back toward zero, which
+  `Positive`'s black level then clips to an almost entirely black
+  overview — while "run `siglog`, then render with `positive`" looks
+  right, because it rectifies.
+
+  Compressing *before* the reducer is what keeps an overview meaningful;
+  a post-resample log would compute `siglog(mean(A))`, and a downsampled
+  footprint of oscillating signed data averages toward zero, which the
+  log then truncates to a flat image. The same split is why limits are
+  sampled in the source-transform domain (`stats.rs`).
+
+  There is deliberately no `siglog-abslog`: `abslog` is already a log
+  transform, so its siglog view would be a log of a log rather than a
+  distinct picture.
+
+  `positive`'s asymmetry is why `RenderProfile`'s display transform is
   an enum rather than a boolean: it needs a different domain for
   *statistics* (percentile bounds from `|x|`) than for *display* (the
   signed value, so negatives can clip). `colormap.rs`'s

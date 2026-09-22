@@ -8,7 +8,10 @@
 use image::{ColorType, GrayImage, ImageEncoder};
 use ndarray::Array2;
 
-use super::profile::{AmplitudeLimits, AmplitudeTransform, ImageFormat, RenderProfile};
+use super::profile::{
+    AmplitudeLimits, AmplitudeTransform, ImageFormat, RenderProfile, SourceTransform,
+};
+use crate::filters;
 
 /// `NaN`-safe, infinite-safe cleanup shared by both domain functions below.
 ///
@@ -37,6 +40,30 @@ fn log_abs(v: f32) -> f32 {
     }
 }
 
+/// Apply a profile's [`SourceTransform`] to one **source** sample, before
+/// resampling.
+///
+/// `None` is the identity, so a profile with no source preprocessing reads
+/// exactly as it did before this stage existed. `SigLog` reproduces the
+/// `siglog` processing step's `(log10|v| - offset).max(0) * sign(v)` via
+/// [`filters::siglog_value`], at the step's own default offset.
+///
+/// `NaN` (the "no data" signal the resampler must keep seeing) passes
+/// through. A literal infinite value is sanitized to zero first, matching
+/// [`to_display_domain`], so the resampler never sees an infinity it would
+/// propagate across a whole footprint.
+pub fn to_source_domain(v: f32, transform: SourceTransform) -> f32 {
+    match transform {
+        SourceTransform::None => v,
+        SourceTransform::SigLog => {
+            if v.is_nan() {
+                return v;
+            }
+            filters::siglog_value(sanitize(v), filters::DEFAULT_SIGLOG_MINVAL_LOG10)
+        }
+    }
+}
+
 /// Transform a resampled amplitude value into the domain that the pixel
 /// value actually normalized and painted lives in.
 ///
@@ -57,9 +84,9 @@ pub fn to_display_domain(v: f32, transform: AmplitudeTransform) -> f32 {
     }
 }
 
-/// Transform a resampled amplitude value into the domain percentile limits
-/// are estimated in (`stats.rs`). See [`to_display_domain`] for why this
-/// differs from it for `Positive`.
+/// Transform a value into the domain percentile limits are estimated in
+/// (`stats.rs`). See [`to_display_domain`] for why this differs from it for
+/// `Positive`.
 pub fn to_stats_domain(v: f32, transform: AmplitudeTransform) -> f32 {
     if v.is_nan() {
         return v;
@@ -185,6 +212,73 @@ mod tests {
     }
 
     #[test]
+    fn source_domain_siglog_keeps_the_sign_and_truncates_small_magnitudes() {
+        // offset = -1, so magnitudes below 10^-1 == 0.1 truncate to zero.
+        // 1000 -> log10(1000) + 1 == 4, and the sign survives.
+        assert!((to_source_domain(1000.0, SourceTransform::SigLog) - 4.0).abs() < 1e-6);
+        assert!((to_source_domain(-1000.0, SourceTransform::SigLog) + 4.0).abs() < 1e-6);
+        assert!((to_source_domain(1.0, SourceTransform::SigLog) - 1.0).abs() < 1e-6);
+        assert!((to_source_domain(-1.0, SourceTransform::SigLog) + 1.0).abs() < 1e-6);
+        // Below the offset: zero, not a small negative log.
+        assert_eq!(to_source_domain(0.05, SourceTransform::SigLog), 0.0);
+        assert_eq!(to_source_domain(-0.05, SourceTransform::SigLog), 0.0);
+        assert_eq!(to_source_domain(0.0, SourceTransform::SigLog), 0.0);
+    }
+
+    #[test]
+    fn source_domain_siglog_matches_the_processing_filter() {
+        // The render must reproduce the `siglog` step, so pin it against
+        // the filter's own scalar and confirm the offset arithmetic and
+        // the sign together.
+        let offset = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
+        for v in [1000.0f32, 1.0, -1000.0, -1.0, 0.05, -0.05, 0.0] {
+            let expected = (v.abs().log10() - offset).max(0.0) * v.signum();
+            let got = to_source_domain(v, SourceTransform::SigLog);
+            assert!(
+                (got - expected).abs() < 1e-6,
+                "siglog({v}) = {got}, expected {expected}"
+            );
+            assert_eq!(got.signum(), v.signum(), "sign differs for {v}");
+        }
+    }
+
+    #[test]
+    fn source_domain_none_is_the_identity() {
+        // A profile with no source preprocessing must read exactly as it
+        // did before the stage existed, NaN and infinity included.
+        for v in [
+            3.0f32,
+            -3.0,
+            0.0,
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ] {
+            let got = to_source_domain(v, SourceTransform::None);
+            assert!(
+                got == v || (got.is_nan() && v.is_nan()),
+                "None changed {v} to {got}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_domain_siglog_preserves_nan_and_sanitizes_infinity() {
+        // NaN is the resampler's "no data" signal and must survive so the
+        // footprint is dropped, not averaged in as zero. An infinity is a
+        // data anomaly, sanitized to zero like the display domain does.
+        assert!(to_source_domain(f32::NAN, SourceTransform::SigLog).is_nan());
+        assert_eq!(
+            to_source_domain(f32::INFINITY, SourceTransform::SigLog),
+            0.0
+        );
+        assert_eq!(
+            to_source_domain(f32::NEG_INFINITY, SourceTransform::SigLog),
+            0.0
+        );
+    }
+
+    #[test]
     fn display_domain_positive_keeps_the_sign() {
         // Unlike stats domain (tested below), display domain for `Positive`
         // is the whole point of the profile: the signed value survives so
@@ -216,6 +310,8 @@ mod tests {
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::Linear).is_nan());
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::AbsLog).is_nan());
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::Positive).is_nan());
+        assert!(to_source_domain(f32::NAN, SourceTransform::SigLog).is_nan());
+        assert!(to_source_domain(f32::NAN, SourceTransform::None).is_nan());
     }
 
     #[test]

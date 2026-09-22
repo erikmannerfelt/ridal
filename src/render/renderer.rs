@@ -13,7 +13,7 @@ use ndarray::Array2;
 
 use super::colormap::{self, encode};
 use super::grid::{Chunk, OverviewSpec, SourceWindow};
-use super::profile::RenderProfile;
+use super::profile::{RenderProfile, SourceTransform};
 use super::resample::resample;
 use crate::source::AmplitudeSource;
 
@@ -51,7 +51,9 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
         profile: &RenderProfile,
         limits: (f32, f32),
     ) -> Result<Vec<u8>, String> {
-        let source = self.read_source_for_window(&chunk.source_window, super::grid::CHUNK_SIZE)?;
+        let mut source =
+            self.read_source_for_window(&chunk.source_window, super::grid::CHUNK_SIZE)?;
+        apply_source_transform(&mut source, profile);
         // Resample into the chunk's *valid* extent, which for a
         // rightmost/bottommost chunk is smaller than CHUNK_SIZE. Rendering
         // straight into a full CHUNK_SIZE output stretched that chunk's
@@ -184,7 +186,8 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
             // which is correct -- those edges are real.
             let read_row0 = (window.row0.floor() as usize).saturating_sub(halo);
             let read_row1 = ((window.row1.ceil() as usize) + halo).min(src_h);
-            let source = self.reader.read_window(read_row0, read_row1, 0, src_w)?;
+            let mut source = self.reader.read_window(read_row0, read_row1, 0, src_w)?;
+            apply_source_transform(&mut source, profile);
             let local = SourceWindow {
                 row0: window.row0 - read_row0 as f64,
                 row1: window.row1 - read_row0 as f64,
@@ -236,6 +239,20 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
             col1: window.col1 - col0_floor,
         }
     }
+}
+
+/// Apply a profile's [`SourceTransform`] to a freshly read source window or
+/// band, before it is resampled.
+///
+/// Pointwise and `NaN`-preserving, so banding is unaffected: an output row
+/// sees exactly the transformed samples it would in a whole-array render.
+/// The `None` early-return keeps every profile without source preprocessing
+/// on its previous code path.
+fn apply_source_transform(data: &mut Array2<f32>, profile: &RenderProfile) {
+    if profile.source_transform == SourceTransform::None {
+        return;
+    }
+    data.mapv_inplace(|v| colormap::to_source_domain(v, profile.source_transform));
 }
 
 #[cfg(test)]
@@ -640,6 +657,95 @@ mod tests {
         );
     }
 
+    #[test]
+    fn siglog_profile_is_the_siglog_step_then_the_base_profile() {
+        // The claim this design rests on: every `siglog-*` is exactly "run
+        // the siglog processing step, then render with the base profile" --
+        // compress *before* resampling, and keep the base profile's own
+        // reducer. Byte-identical and with no NetCDF: one render applies the
+        // source transform on the way out, the other is handed an array
+        // that was already transformed.
+        //
+        // Parameterised over all three pairs rather than pinned to
+        // `siglog-default`. The `positive` pair is the one that caught a
+        // real bug: overriding its reducer to `Mean` left the signed mean
+        // of oscillating siglog values near zero, which `Positive`'s black
+        // level then clipped to an almost entirely black overview, while
+        // "siglog step then `positive`" (which rectifies) looked right.
+        let raw = ndarray::Array2::from_shape_fn((40, 60), |(r, c)| {
+            let v = (r as f32 * 0.9).sin() * 30.0 + (c as f32 * 0.2).cos() * 10.0;
+            if (r + c) % 7 == 0 {
+                -v
+            } else {
+                v
+            }
+        });
+        let mut pre = raw.clone();
+        crate::filters::siglog(&mut pre, crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10);
+
+        let limits = (-2.5f32, 3.0f32);
+        let with_explicit_limits = |base: RenderProfile| RenderProfile {
+            format: super::super::profile::ImageFormat::Png,
+            limits: AmplitudeLimits::Explicit {
+                min: limits.0,
+                max: limits.1,
+            },
+            ..base
+        };
+
+        let raw_source = crate::source::ArraySource::new(raw.view());
+        let pre_source = crate::source::ArraySource::new(pre.view());
+        let spec = OverviewSpec::new(60, 40, 30);
+        let grid = ViewerRaster::new(60, 40).grid();
+        let chunk = grid.chunk(0, 0).unwrap();
+
+        let pairs: &[(&str, RenderProfile, RenderProfile)] = &[
+            (
+                "siglog-default",
+                RenderProfile::siglog_default_profile(),
+                RenderProfile::default_profile(),
+            ),
+            (
+                "siglog-positive",
+                RenderProfile::siglog_positive_profile(),
+                RenderProfile::positive_profile(),
+            ),
+            (
+                "siglog-high-contrast",
+                RenderProfile::siglog_high_contrast_profile(),
+                RenderProfile::high_contrast_profile(),
+            ),
+        ];
+        for (name, siglog_base, plain_base) in pairs {
+            let siglog_profile = with_explicit_limits(siglog_base.clone());
+            let plain_profile = with_explicit_limits(plain_base.clone());
+
+            // Overview path (banded/haloed reads).
+            let overview_from_raw = Renderer::new(&raw_source)
+                .render_overview(&spec, &siglog_profile, limits)
+                .unwrap();
+            let overview_from_pre = Renderer::new(&pre_source)
+                .render_overview(&spec, &plain_profile, limits)
+                .unwrap();
+            assert_eq!(
+                overview_from_raw, overview_from_pre,
+                "'{name}' must equal the siglog step plus its base profile"
+            );
+
+            // Chunk path, which reads its window through a different call.
+            let chunk_from_raw = Renderer::new(&raw_source)
+                .render_chunk(&chunk, &siglog_profile, limits)
+                .unwrap();
+            let chunk_from_pre = Renderer::new(&pre_source)
+                .render_chunk(&chunk, &plain_profile, limits)
+                .unwrap();
+            assert_eq!(
+                chunk_from_raw, chunk_from_pre,
+                "the '{name}' chunk path must preprocess the same way the overview does"
+            );
+        }
+    }
+
     /// Opt-in integration check against a real processed asset, writing
     /// its outputs to disk for visual inspection. Not run by default
     /// (`cargo test -- --ignored` to run it) since it depends on
@@ -683,6 +789,7 @@ mod tests {
         let seed = 0;
         let (low, high) = super::super::stats::sampled_amplitude_limits(
             &reader,
+            profile.source_transform,
             profile.transform,
             seed,
             0.01,

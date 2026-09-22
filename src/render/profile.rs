@@ -105,6 +105,33 @@ pub enum AmplitudeTransform {
     Positive,
 }
 
+/// A transform applied to each **source** sample *before* resampling, as
+/// distinct from [`AmplitudeTransform`], which maps the already-resampled
+/// value to the display domain afterwards. Order matters.
+///
+/// The motivating case is `siglog`: the processing step compresses each
+/// sample before anything averages traces, so `mean(siglog(raw))` stays
+/// meaningful at every scale. Folding the compression into the display
+/// transform instead would leave it until *after* resampling, i.e.
+/// `siglog(mean(raw))`, and the footprint mean of oscillating signed data
+/// collapses toward zero, which the log then truncates to a flat overview.
+/// Doing it here reproduces the processing order at render time and needs
+/// no special resampler.
+///
+/// Pointwise and `NaN`-preserving, so it can be applied to a read window or
+/// an overview band without affecting banding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum SourceTransform {
+    /// The sample unchanged.
+    #[default]
+    None,
+    /// `(log10(|amplitude|) - offset).max(0) * sign(amplitude)`: the
+    /// sign-corrected log transform `gpr.rs`'s `siglog` processing step
+    /// applies, at its default offset
+    /// ([`crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10`]).
+    SigLog,
+}
+
 /// How amplitude limits are determined for normalization.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum AmplitudeLimits {
@@ -138,6 +165,11 @@ pub enum DatasetView {
 pub struct RenderProfile {
     pub name: String,
     pub view: DatasetView,
+    /// Applied to each source sample before resampling. `#[serde(default)]`
+    /// (`None`) so profile files written before this field existed keep
+    /// loading.
+    #[serde(default)]
+    pub source_transform: SourceTransform,
     pub transform: AmplitudeTransform,
     pub limits: AmplitudeLimits,
     pub resampling: ResamplingMethod,
@@ -162,6 +194,7 @@ impl RenderProfile {
         Self {
             name: "default".to_string(),
             view: DatasetView::Standard,
+            source_transform: SourceTransform::None,
             transform: AmplitudeTransform::Linear,
             limits: AmplitudeLimits::Percentile {
                 low: 0.01,
@@ -233,13 +266,76 @@ impl RenderProfile {
         }
     }
 
+    /// `siglog-default`: the `default` profile with the `siglog` source
+    /// preprocessing step in front of it. The siglog version of a plain
+    /// linear radargram.
+    ///
+    /// The compression is a [`SourceTransform`], applied to every sample
+    /// *before* resampling, exactly as the processing step is. That is the
+    /// whole point: `Mean` then computes `mean(siglog(raw))`, which stays
+    /// meaningful at overview scale, whereas leaving the compression to a
+    /// post-resample display transform would compute `siglog(mean(raw))`
+    /// and flatten the overview (a downsampled footprint of oscillating
+    /// signed data averages toward zero, which the log then truncates).
+    ///
+    /// Resampling is inherited from `default` (`Mean`) rather than set
+    /// here: every `siglog-*` is exactly its base profile plus the source
+    /// step, so it uses whatever reducer the base profile already settled
+    /// on.
+    pub fn siglog_default_profile() -> Self {
+        Self {
+            name: "siglog-default".to_string(),
+            source_transform: SourceTransform::SigLog,
+            ..Self::default_profile()
+        }
+    }
+
+    /// `siglog-positive`: the `positive` profile with the `siglog` source
+    /// preprocessing step in front of it.
+    ///
+    /// The display transform stays [`AmplitudeTransform::Positive`], so
+    /// limits are estimated from `|siglog(raw)|` and the *signed* siglog
+    /// value is stretched against them -- the faithful "positive view of
+    /// siglog". Resampling is inherited from `positive`
+    /// ([`ResamplingMethod::LanczosRectified`]), and that is load-bearing:
+    /// `positive` displays the *rectified* envelope, so filtering
+    /// `|siglog(raw)|` is the right reducer and exactly reproduces "run the
+    /// `siglog` step, then render with `positive`". Using `Mean` here would
+    /// average the signed siglog values back toward zero, and `Positive`'s
+    /// black level would clip that to an almost entirely black overview.
+    pub fn siglog_positive_profile() -> Self {
+        Self {
+            name: "siglog-positive".to_string(),
+            source_transform: SourceTransform::SigLog,
+            ..Self::positive_profile()
+        }
+    }
+
+    /// `siglog-high-contrast`: the `high-contrast` profile's 5-95%
+    /// quantile with the `siglog` source preprocessing step in front of it.
+    pub fn siglog_high_contrast_profile() -> Self {
+        Self {
+            name: "siglog-high-contrast".to_string(),
+            source_transform: SourceTransform::SigLog,
+            ..Self::high_contrast_profile()
+        }
+    }
+
     /// The server-defined profiles offered in v1 (#121's dropdown).
+    ///
+    /// Each `siglog-*` sits next to the profile it is the log view of.
+    /// There is deliberately no `siglog-abslog` (#182): `abslog` is
+    /// already a log transform, so the siglog view of it would be a log
+    /// of a log, not a distinct useful picture.
     pub fn built_in_profiles() -> Vec<Self> {
         vec![
             Self::default_profile(),
+            Self::siglog_default_profile(),
             Self::positive_profile(),
-            Self::abslog_profile(),
+            Self::siglog_positive_profile(),
             Self::high_contrast_profile(),
+            Self::siglog_high_contrast_profile(),
+            Self::abslog_profile(),
         ]
     }
 
@@ -282,12 +378,16 @@ impl RenderProfile {
 
     /// Read a profile from a TOML file.
     ///
-    /// Every field is required. Profiles that inherit from a built-in and
-    /// override a field or two are the obvious next step and deliberately
-    /// not guessed at here -- whether that is a `base = "default"` key, a
-    /// separate `--render-profile-override`, or serde defaults changes
-    /// what a file means, and getting it wrong later would silently
-    /// re-interpret files people had already written.
+    /// Every field is required except `source_transform`, which
+    /// `#[serde(default)]`s to `None` so profile files written before that
+    /// field existed keep loading unchanged; omitting it can only mean
+    /// "no source preprocessing", which is what those files did. Profiles
+    /// that inherit from a built-in and override a field or two are the
+    /// obvious next step and deliberately not guessed at here -- whether
+    /// that is a `base = "default"` key, a separate
+    /// `--render-profile-override`, or a broader set of serde defaults
+    /// changes what a file means, and getting it wrong later would
+    /// silently re-interpret files people had already written.
     pub fn from_toml_file(path: &std::path::Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("Could not read render profile {}: {e}", path.display()))?;
@@ -309,8 +409,9 @@ impl RenderProfile {
             ImageFormat::Png => "png".to_string(),
         };
         format!(
-            "{:?}|{:?}|{}|{:?}|{}|{}|{}|{}",
+            "{:?}|{:?}|{:?}|{}|{:?}|{}|{}|{}|{}",
             self.view,
+            self.source_transform,
             self.transform,
             limits,
             self.resampling,
@@ -402,12 +503,103 @@ mod tests {
         assert!(RenderProfile::by_name("positive").is_some());
         assert!(RenderProfile::by_name("abslog").is_some());
         assert!(RenderProfile::by_name("high-contrast").is_some());
+        assert!(RenderProfile::by_name("siglog-default").is_some());
+        assert!(RenderProfile::by_name("siglog-positive").is_some());
+        assert!(RenderProfile::by_name("siglog-high-contrast").is_some());
+        // A siglog view of abslog would be a log of a log (#182).
+        assert!(RenderProfile::by_name("siglog-abslog").is_none());
         assert!(RenderProfile::by_name("nonexistent").is_none());
         // The comparison profiles this settled from no longer exist.
         assert!(RenderProfile::by_name("positive-lanczos").is_none());
         assert!(RenderProfile::by_name("positive-lanczos-rect").is_none());
         assert!(RenderProfile::by_name("default-lanczos").is_none());
         assert!(RenderProfile::by_name("default-lanczos-rect").is_none());
+    }
+
+    #[test]
+    fn siglog_profiles_are_their_base_profile_plus_the_source_step() {
+        // Each `siglog-*` is exactly the base profile with the `siglog`
+        // *source* preprocessing step in front of it (#182): same display
+        // transform (so `siglog-positive` keeps the asymmetric positive
+        // stretch on signed siglog values) and same resampler, which is
+        // load-bearing -- `positive` displays the rectified envelope, so
+        // it must keep `LanczosRectified`, not fall back to `Mean`.
+        let cases: &[(&str, RenderProfile)] = &[
+            ("siglog-default", RenderProfile::default_profile()),
+            ("siglog-positive", RenderProfile::positive_profile()),
+            (
+                "siglog-high-contrast",
+                RenderProfile::high_contrast_profile(),
+            ),
+        ];
+        for (name, base) in cases {
+            let siglog = RenderProfile::by_name(name).unwrap();
+            assert_eq!(
+                siglog.source_transform,
+                SourceTransform::SigLog,
+                "{name} source transform"
+            );
+            assert_eq!(siglog.transform, base.transform, "{name} transform");
+            assert_eq!(siglog.resampling, base.resampling, "{name} resampling");
+            assert_eq!(siglog.limits, base.limits, "{name} limits");
+            assert_eq!(siglog.contrast, base.contrast, "{name} contrast");
+            assert_eq!(siglog.black_level, base.black_level, "{name} black level");
+            assert_eq!(
+                siglog.stats_skip_first_samples, base.stats_skip_first_samples,
+                "{name} stats skip"
+            );
+        }
+        // `siglog-positive` specifically must keep the rectified reducer:
+        // `Mean` averages the signed siglog values back toward zero and
+        // `Positive`'s black level clips that to a black overview.
+        assert_eq!(
+            RenderProfile::siglog_positive_profile().resampling,
+            ResamplingMethod::LanczosRectified
+        );
+        // And the base profiles keep no source preprocessing of their own.
+        for name in ["default", "positive", "abslog", "high-contrast"] {
+            assert_eq!(
+                RenderProfile::by_name(name).unwrap().source_transform,
+                SourceTransform::None,
+                "{name} should not preprocess the source"
+            );
+        }
+    }
+
+    #[test]
+    fn a_profile_file_without_source_transform_still_loads_as_none() {
+        // Files written before the field existed must keep working, and
+        // omitting it can only mean "no preprocessing".
+        let text = r#"
+name = "legacy"
+view = "Standard"
+transform = "Linear"
+limits = { Percentile = { low = 0.01, high = 0.99 } }
+resampling = "Mean"
+format = "Png"
+contrast = 1.0
+black_level = 0.0
+stats_skip_first_samples = 0
+"#;
+        let profile: RenderProfile = toml::from_str(text).unwrap();
+        assert_eq!(profile.source_transform, SourceTransform::None);
+        // A file that does set it round-trips to `SigLog`.
+        let text = text.replace(
+            "view = \"Standard\"",
+            "view = \"Standard\"\nsource_transform = \"SigLog\"",
+        );
+        let profile: RenderProfile = toml::from_str(&text).unwrap();
+        assert_eq!(profile.source_transform, SourceTransform::SigLog);
+    }
+
+    #[test]
+    fn changing_only_the_source_transform_changes_the_cache_key() {
+        // Two views that draw different pixels must not share a cached
+        // render: `default` on raw data and `default` on siglog'd data.
+        let mut a = RenderProfile::default_profile();
+        let b = a.clone();
+        a.source_transform = SourceTransform::SigLog;
+        assert_ne!(a.cache_key_fragment(), b.cache_key_fragment());
     }
 
     #[test]
@@ -420,6 +612,13 @@ mod tests {
             ("positive", ResamplingMethod::LanczosRectified),
             ("abslog", ResamplingMethod::LanczosRectified),
             ("high-contrast", ResamplingMethod::Mean),
+            // The `siglog-*` profiles preprocess the source, so they use
+            // their base profile's reducer: `Mean` for the linear views,
+            // the rectified envelope filter for `positive` (whose display
+            // is already rectified).
+            ("siglog-default", ResamplingMethod::Mean),
+            ("siglog-positive", ResamplingMethod::LanczosRectified),
+            ("siglog-high-contrast", ResamplingMethod::Mean),
         ];
         for (name, method) in expected {
             let profile = RenderProfile::by_name(name).unwrap();

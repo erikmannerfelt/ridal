@@ -20,7 +20,6 @@ const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
 const DEFAULT_BANDPASS_LOW_CUTOFF: f32 = 0.1;
 const DEFAULT_BANDPASS_HIGH_CUTOFF: f32 = 0.9;
 const DEFAULT_BANDPASS_Q: f32 = 0.707;
-const DEFAULT_SIGLOG_MINVAL_LOG10: f32 = -1.;
 
 /// Metadata associated with a GPR dataset
 ///
@@ -560,8 +559,8 @@ impl GPR {
         } else if step_name.contains("abslog") {
             self.abslog()
         } else if step_name.contains("siglog") {
-            let minval =
-                tools::parse_option::<f32>(step_name, 0)?.unwrap_or(DEFAULT_SIGLOG_MINVAL_LOG10);
+            let minval = tools::parse_option::<f32>(step_name, 0)?
+                .unwrap_or(crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10);
             self.siglog(minval);
         } else if step_name.contains("correct_topography") {
             self.correct_topography();
