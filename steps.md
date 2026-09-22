@@ -41,3 +41,5 @@ Make a copy of the data and topographically correct it. In the output, the data 
 ## correct_antenna_separation
 Correct for the separation between the antenna transmitter and receiver. The consequence of antenna separation is that depths are slightly exaggerated at low return-times before correction. This step averages samples so that each sample represents a consistent depth interval.
 Afterwards, `twtt` is the travel time a coincident transmitter and receiver would have recorded rather than the travel time between the pair, and the output declares that with `twtt:anchor_name = "twtt_normal_incidence"` and `antenna_separation_effective = 0`.
+## multiply
+Multiply all values by a constant factor. This is useful e.g. for standardizing data between sensors and antenna frequencies. Example: `multiply(5)`.
