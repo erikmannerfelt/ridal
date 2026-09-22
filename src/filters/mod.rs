@@ -23,8 +23,27 @@ pub fn abslog<T: Float>(data: &mut Array2<T>) {
     data.mapv_inplace(|v| (v + minval).log10());
 }
 
+/// The `siglog` step's default magnitude offset (`minval_log10`).
+///
+/// Shared with the render layer's `source_transform = SigLog`, so
+/// `--render-profile siglog-default` and a `siglog` processing step at its
+/// default strength show the same picture.
+pub const DEFAULT_SIGLOG_MINVAL_LOG10: f32 = -1.0;
+
+/// The scalar `siglog` transform: `(log10|v| - minval_log10).max(0) *
+/// sign(v)`, the sign-corrected log compression.
+///
+/// A scalar rather than only the array-wide [`siglog`] below because the
+/// renderer applies it a value at a time before resampling, and must keep
+/// doing exactly what the processing step does. `NaN` passes through
+/// (`NaN`'s sign is `NaN`, so the result stays `NaN`) -- the renderer's
+/// "no data" signal must survive the transform.
+pub fn siglog_value<T: Float>(v: T, minval_log10: T) -> T {
+    (v.abs().log10() - minval_log10).max(T::zero()) * v.signum()
+}
+
 pub fn siglog<T: Float, D: ndarray::Dimension>(data: &mut Array<T, D>, minval_log10: T) {
-    data.mapv_inplace(|v| (v.abs().log10() - minval_log10).max(T::zero()) * v.signum());
+    data.mapv_inplace(|v| siglog_value(v, minval_log10));
 }
 
 pub fn average_traces<T: Float + FromPrimitive>(
