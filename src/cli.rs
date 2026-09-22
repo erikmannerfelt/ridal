@@ -2217,14 +2217,15 @@ fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), St
                 .to_string(),
         );
     }
-    let advisory = if args.passwords {
-        crate::project::users::bulk_risk_advisory(role).ok_or_else(|| {
+    // `bulk_risk_advisory` has no advice for an administrator, because there is
+    // no acceptable way to hand one a shared password: it is a standing key to
+    // the whole project. Refuse before any account is created.
+    if args.passwords && crate::project::users::bulk_risk_advisory(role).is_none() {
+        return Err(
             "Administrator accounts must be created with one-time invite links, not shared passwords."
-                .to_string()
-        })?
-    } else {
-        "Invite links let each person set their own password."
-    };
+                .to_string(),
+        );
+    }
 
     if args.passwords {
         #[cfg(not(feature = "server"))]
@@ -2279,7 +2280,10 @@ fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), St
             }
             std::fs::write(&args.out, handout)
                 .map_err(|e| format!("could not write {}: {e}", args.out.display()))?;
-            println!("{advisory}");
+            // `None` is unreachable: administrators were refused above.
+            if let Some(advisory) = crate::project::users::bulk_risk_advisory(role) {
+                println!("{advisory}");
+            }
             println!(
                 "Wrote {} generated passwords to {}.",
                 generated.len(),
@@ -2329,7 +2333,7 @@ fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), St
         Ok(())
     })
     .map_err(|e| e.to_string())?;
-    println!("{advisory}");
+    println!("Invite links let each person set their own password.");
     for (name, token, invite) in minted {
         print_invite(name.as_str(), &token, invite.expires);
     }
