@@ -658,29 +658,10 @@ async function main() {
     panel.querySelector("summary").click();
     await sleep(200);
     result.rowHiddenAfterClose = firstRow ? !visible(firstRow) : null;
-    // S1: hideable entirely, and the state survives a redraw.
-    const toggle = doc.querySelector("#panel-visibility");
-    toggle.click();
-    await sleep(200);
-    result.panelHidden = panel.hidden;
-    // A layer toggle redraws; the hidden state must survive it.
-    const anyLayer = findRow(doc, "Glacier bed");
-    anyLayer.querySelector("input").click();
-    await sleep(200);
-    result.panelStillHidden = panel.hidden;
-    anyLayer.querySelector("input").click();
-    await sleep(200);
-    try {
-      result.panelHiddenStored = frame.contentWindow.sessionStorage.getItem(
-        "ridal.layer-panel.hidden",
-      );
-    } catch (error) {
-      result.panelHiddenStored = null;
-    }
-    toggle.click();
-    await sleep(200);
 
-    // Clicking elsewhere in the viewer closes the open disclosure.
+    // Clicking elsewhere in the viewer closes the open disclosure. This is
+    // the only way the panel gets out of the way -- the button that used to
+    // hide the control outright was removed as a redundant second mechanism.
     panel.querySelector("summary").click();
     await sleep(200);
     doc.querySelector("#map").dispatchEvent(
@@ -1140,9 +1121,6 @@ def assert_s1(operator: dict) -> None:
     assert operator["rowHiddenWhenClosed"] is True, "closed rows must not be visible"
     assert operator["rowShownWhenOpen"] is True, "opening must reveal the rows"
     assert operator["rowHiddenAfterClose"] is True, "closing must hide them again"
-    assert operator["panelHidden"] is True, "the hide toggle must hide the control"
-    assert operator["panelStillHidden"] is True, "a redraw must not un-hide it"
-    assert operator["panelHiddenStored"] == "1", "the choice must persist for the session"
 
 
 def assert_manage(operator: dict) -> None:

@@ -390,11 +390,9 @@
   //
   // A `<details>` disclosure, closed by default. `<details>` opens and closes
   // with no JavaScript and is keyboard-accessible for free -- the same pattern
-  // the header menu uses. Unlike `.site-menu`, it deliberately does NOT close
-  // on an outside click: the map is the thing being looked at while toggling
-  // layers, so a click there must not fold the panel away mid-task.
-
-  const PANEL_HIDDEN_KEY = "ridal.layer-panel.hidden";
+  // the header menu uses, including folding away on a click outside it (see
+  // the listener below). Folding is the only way the panel gets out of the
+  // way: there is deliberately no second control that hides it outright.
 
   function checkbox(container, { checked, label, title, onChange, swatch = true }) {
     const row = document.createElement("label");
@@ -475,36 +473,6 @@
     },
     true,
   );
-
-  const panelToggle = document.getElementById("panel-visibility");
-
-  function applyPanelHidden(hidden) {
-    if (panelControl._container) panelControl._container.hidden = hidden;
-    if (panelToggle) {
-      panelToggle.textContent = hidden ? "Show layers" : "Hide layers";
-      panelToggle.setAttribute("aria-pressed", String(!hidden));
-    }
-  }
-
-  let panelHidden = false;
-  try {
-    panelHidden = sessionStorage.getItem(PANEL_HIDDEN_KEY) === "1";
-  } catch (error) {
-    // A browser that blocks storage just does not remember the choice.
-  }
-  applyPanelHidden(panelHidden);
-  if (panelToggle) {
-    panelToggle.hidden = false;
-    panelToggle.addEventListener("click", () => {
-      panelHidden = !panelHidden;
-      try {
-        sessionStorage.setItem(PANEL_HIDDEN_KEY, panelHidden ? "1" : "0");
-      } catch (error) {
-        // As above.
-      }
-      applyPanelHidden(panelHidden);
-    });
-  }
 
   function derivedLabel(item) {
     // The label says when a project-wide definition is being read as a
