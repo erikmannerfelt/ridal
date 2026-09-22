@@ -47,6 +47,13 @@
       Recentre
     </button>
     <button id="metadata-button" type="button">Metadata</button>
+    {#- Hide the radargram image, leaving the picks, derived layers and
+        fills over the empty map (#230). A pick in a colour close to the
+        reflector it follows is hard to see against it, and this is the
+        cheapest way to check one. Hidden until viewer.js wires it, so a
+        page without JavaScript does not offer a dead control. -#}
+    <button id="radargram-toggle" type="button" aria-pressed="true" hidden
+            title="Hide the radargram image so only picks and derived layers are drawn.">Hide radargram</button>
     {#- The trace view (#181). A plain toggle button for now: the
         interaction (click the radargram to choose the trace) is the part
         that was decided, while how the panel should present itself is

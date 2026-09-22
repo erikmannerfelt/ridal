@@ -237,14 +237,32 @@ function chunksInView(scale) {
 let chunkLayers = [];
 const chunksAdded = new Set();
 
+/* Whether the radargram image itself is drawn (#230).
+ *
+ * Opacity rather than removing the layers: a hidden chunk stays loaded, so
+ * toggling back is instant and re-fetches nothing, which is the same reason
+ * chunks are kept rather than evicted above. Read by `addChunksInView`, not
+ * only applied to the chunks already placed -- chunks arrive lazily as the
+ * view reaches them, so without this, panning while hidden would bring the
+ * radargram back one chunk at a time.
+ */
+let radargramVisible = true;
+
 function addChunksInView(profile, scale) {
   for (const [x, y] of chunksInView(scale)) {
     const key = `${x},${y}`;
     if (chunksAdded.has(key)) continue;
     chunksAdded.add(key);
-    const layer = L.imageOverlay(chunkImage(x, y, profile), chunkBounds(x, y, scale)).addTo(map);
+    const layer = L.imageOverlay(chunkImage(x, y, profile), chunkBounds(x, y, scale), {
+      opacity: radargramVisible ? 1 : 0,
+    }).addTo(map);
     chunkLayers.push(layer);
   }
+}
+
+function setRadargramVisible(visible) {
+  radargramVisible = visible;
+  chunkLayers.forEach((layer) => layer.setOpacity(visible ? 1 : 0));
 }
 
 /* Full rebuild: the profile or the horizontal scale changed, so every
@@ -1440,6 +1458,32 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     // `G.view`, not a fixed "standard": the downloaded image matches
     // whatever is on screen, corrected view included (#168).
     go(`${datasetUrl}/views/${G.view}/image?${params}`);
+  });
+})();
+
+/* --- Hide the radargram (#230) --------------------------------------------
+ *
+ * Picks, derived layers and fills live in their own Leaflet panes above the
+ * image chunks, so making the chunks transparent leaves exactly them. Useful
+ * where a line runs along the reflector it follows in a similar colour and
+ * disappears into it.
+ *
+ * Deliberately not persisted: this is a momentary "let me see my lines"
+ * action, and a viewer that opened with no radargram and no explanation
+ * would read as a broken render.
+ */
+(function setupRadargramToggle() {
+  const toggle = document.getElementById('radargram-toggle');
+  if (!toggle) return;
+
+  toggle.hidden = false;
+  toggle.addEventListener('click', () => {
+    // `radargramVisible` is the one copy of this state, because
+    // `addChunksInView` reads it too; a second flag here could disagree
+    // with what a newly placed chunk is given.
+    setRadargramVisible(!radargramVisible);
+    toggle.textContent = radargramVisible ? 'Hide radargram' : 'Show radargram';
+    toggle.setAttribute('aria-pressed', String(radargramVisible));
   });
 })();
 
