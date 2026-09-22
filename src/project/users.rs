@@ -64,6 +64,13 @@ pub const INVITE_TTL_DAYS: i64 = 7;
 /// both stronger and easier to remember. Argon2id does the rest.
 pub const MIN_PASSWORD_LEN: usize = 10;
 
+/// The largest account batch accepted by the browser and command line.
+pub const MAX_BULK_ACCOUNTS: usize = 100;
+
+/// Generated passwords avoid characters that are easy to confuse on paper.
+const GENERATED_PASSWORD_ALPHABET: &[u8] =
+    b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+
 /// What someone may do. Each level includes the ones below it.
 ///
 /// The ordering is the ladder, so a permission check is `role >= required`.
@@ -113,6 +120,64 @@ impl Role {
                 )
             })
     }
+}
+
+/// The warning shown when an administrator chooses shared, pre-generated
+/// passwords instead of one-time invite links.
+pub fn bulk_password_advisory(role: Role) -> Option<&'static str> {
+    match role {
+        Role::Viewer => Some("This is suboptimal, but acceptable for a small teaching session."),
+        Role::Picker => Some("Next time, please consider invite links: they are less prone to issues."),
+        Role::Operator => Some(
+            "This is generally ill-advised: anyone who gets this list can download or delete real data.",
+        ),
+        Role::Admin => None,
+    }
+}
+
+/// Generate deterministic, readable account names for a batch.
+/// Generate a batch beginning at `start`, inclusive.
+pub fn bulk_names_after(
+    prefix: &str,
+    count: usize,
+    start: usize,
+) -> Result<Vec<UserId>, UserError> {
+    if count == 0 || count > MAX_BULK_ACCOUNTS {
+        return Err(UserError::Rejected(format!(
+            "A bulk operation must contain between 1 and {MAX_BULK_ACCOUNTS} accounts."
+        )));
+    }
+    let width = count.to_string().len().max(2);
+    if start == 0 {
+        return Err(UserError::Rejected(
+            "A bulk account sequence must start at 1.".to_string(),
+        ));
+    }
+    (start..start + count)
+        .map(|index| UserId::new(format!("{prefix}-{index:0width$}")).map_err(UserError::Rejected))
+        .collect()
+}
+
+/// Generate one printable password without ambiguous look-alike characters.
+pub fn generate_password() -> Result<String, UserError> {
+    let mut password = String::with_capacity(MIN_PASSWORD_LEN);
+    let alphabet_len = GENERATED_PASSWORD_ALPHABET.len();
+    let limit = (256 / alphabet_len) * alphabet_len;
+    while password.len() < MIN_PASSWORD_LEN {
+        let mut bytes = [0u8; 32];
+        getrandom::fill(&mut bytes)
+            .map_err(|e| UserError::Hash(format!("could not read system randomness: {e}")))?;
+        for byte in bytes {
+            if byte as usize >= limit {
+                continue;
+            }
+            password.push(GENERATED_PASSWORD_ALPHABET[byte as usize % alphabet_len] as char);
+            if password.len() == MIN_PASSWORD_LEN {
+                break;
+            }
+        }
+    }
+    Ok(password)
 }
 
 impl fmt::Display for Role {
@@ -327,6 +392,21 @@ impl UserSet {
             .iter()
             .any(|u| u.role == Role::Admin && &u.name != excluding)
     }
+}
+
+/// Return the first suffix not below an existing batch for `prefix`.
+pub fn next_bulk_start(set: &UserSet, prefix: &str) -> usize {
+    set.users
+        .iter()
+        .filter_map(|user| {
+            user.name
+                .as_str()
+                .strip_prefix(&format!("{prefix}-"))
+                .and_then(|suffix| suffix.parse::<usize>().ok())
+        })
+        .max()
+        .unwrap_or(0)
+        + 1
 }
 
 #[derive(Debug)]
@@ -595,6 +675,46 @@ mod tests {
         assert!(Role::Operator > Role::Picker);
         assert!(Role::Picker > Role::Viewer);
         assert!(Role::Admin >= Role::Admin);
+    }
+
+    #[test]
+    fn bulk_names_are_zero_padded_and_bounded() {
+        let names = bulk_names_after("student", 3, 1).unwrap();
+        assert_eq!(
+            names.iter().map(UserId::as_str).collect::<Vec<_>>(),
+            ["student-01", "student-02", "student-03"]
+        );
+        assert!(bulk_names_after("student", 0, 1).is_err());
+        assert!(bulk_names_after("student", MAX_BULK_ACCOUNTS + 1, 1).is_err());
+        assert_eq!(
+            bulk_names_after("student", 2, 4)
+                .unwrap()
+                .iter()
+                .map(UserId::as_str)
+                .collect::<Vec<_>>(),
+            ["student-04", "student-05"]
+        );
+    }
+
+    #[test]
+    fn generated_passwords_are_readable_and_valid() {
+        let first = generate_password().unwrap();
+        let second = generate_password().unwrap();
+        assert_eq!(first.len(), MIN_PASSWORD_LEN);
+        assert!(first
+            .chars()
+            .all(|c| { GENERATED_PASSWORD_ALPHABET.contains(&(c as u8)) }));
+        assert_ne!(first, second);
+        check_password(&first).unwrap();
+    }
+
+    #[test]
+    fn bulk_passwords_are_disallowed_for_admins() {
+        assert!(bulk_password_advisory(Role::Admin).is_none());
+        assert!(bulk_password_advisory(Role::Viewer).is_some());
+        assert!(bulk_password_advisory(Role::Picker)
+            .unwrap()
+            .contains("invite"));
     }
 
     #[test]

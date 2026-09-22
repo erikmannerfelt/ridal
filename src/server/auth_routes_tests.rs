@@ -337,6 +337,92 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn bulk_invites_are_atomic_and_store_only_token_hashes() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let admin = sign_in(&app, "erik").await;
+    let created = post(
+        &app,
+        "/api/v1/users/bulk/invites",
+        &json!({"prefix":"student","count":3,"role":"picker","download":"all"}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.body["users"].as_array().unwrap().len(), 3);
+
+    let listed = get(&app, "/api/v1/users", Some(&admin)).await;
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.body["users"].as_array().unwrap().len(), 4);
+    assert!(listed.text.contains("student-01"));
+    assert!(!listed.text.contains("token_hash"));
+
+    let continued = post(
+        &app,
+        "/api/v1/users/bulk/invites",
+        &json!({"prefix":"student","count":2,"role":"picker"}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(continued.status, StatusCode::CREATED, "{}", continued.text);
+    assert_eq!(continued.body["users"][0]["name"], "student-04");
+    assert_eq!(continued.body["users"][1]["name"], "student-05");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let admin = sign_in(&app, "erik").await;
+    let missing = post(
+        &app,
+        "/api/v1/users/bulk/passwords",
+        &json!({"prefix":"student","count":2,"role":"viewer","acknowledge_risk":false}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST);
+
+    let forbidden = post(
+        &app,
+        "/api/v1/users/bulk/passwords",
+        &json!({"prefix":"admin","count":1,"role":"admin","acknowledge_risk":true}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(forbidden.status, StatusCode::BAD_REQUEST);
+
+    let created = post(
+        &app,
+        "/api/v1/users/bulk/passwords",
+        &json!({"prefix":"student","count":2,"role":"viewer","acknowledge_risk":true}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+    let users = created.body["users"].as_array().unwrap();
+    assert_eq!(users.len(), 2);
+    assert!(users[0]["password"].as_str().unwrap().len() >= users::MIN_PASSWORD_LEN);
+
+    let listed = get(&app, "/api/v1/users", Some(&admin)).await;
+    for user in users {
+        assert!(!listed.text.contains(user["password"].as_str().unwrap()));
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_expired_invite_is_refused() {
     let hash = users::hash_password(password()).unwrap();
     let mut stale = activated("student", Role::Picker, DownloadScope::All, &hash);

@@ -73,6 +73,61 @@
   --thumb-aspect: 5 / 2;
 }
 
+.bulk-users {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-sunken);
+}
+
+.bulk-users summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.bulk-risk {
+  margin-top: 1rem;
+}
+
+.bulk-result {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+}
+
+.bulk-table {
+  width: 100%;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  #bulk-result,
+  #bulk-result * {
+    visibility: visible;
+  }
+
+  #bulk-result {
+    position: absolute;
+    inset: 0;
+    border: 0;
+  }
+
+  #bulk-result .bulk-actions {
+    display: none;
+  }
+}
+
 /* A phone's address bar hides on the first interaction, which grows `vh`
    and therefore the map, which re-lays the radargram under the finger that
    caused it -- the "jump" on placing a first vertex. `svh` is resolved

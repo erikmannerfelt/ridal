@@ -334,7 +334,15 @@ Durable, load-bearing decisions rather than oversights:
   `ridal server start` keeps the key in `ridal_data/session.key`;
   `ridal gui` generates one at startup and never writes it down, so an
   offline session ends with the server and a survey directory that is
-  zipped and shared carries no secret out with it (#187).
+   zipped and shared carries no secret out with it (#187).
+- **Bulk teaching accounts have two deliberately different paths.** Invite
+  batches create one single-use link per account, so each student chooses a
+  password without the administrator knowing it. A second batch mode can create
+  random passwords for small workshops, but it requires an explicit per-request
+  acknowledgement, warns more strongly for picker and operator accounts, and
+  refuses administrator accounts. Generated passwords are returned once and
+  only their Argon2id hashes are stored; the browser's print/CSV result is the
+  administrator's responsibility to protect (#202).
 - **A project's state is one directory, and `ridal.toml` is not in
   it.** Everything Ridal owns lives under `ridal_data/`; the marker
   stays at the project root so the project root remains the directory

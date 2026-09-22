@@ -109,6 +109,8 @@ pub struct ProjectUserArgs {
 pub enum ProjectUserCommand {
     /// Create an account and print a one-time invite link
     Add(ProjectUserAddArgs),
+    /// Create several accounts and print their invite links or passwords
+    AddBulk(ProjectUserAddBulkArgs),
     /// List the accounts and what each may do
     List(ProjectUserListArgs),
     /// Change someone's role or download scope
@@ -133,6 +135,37 @@ pub struct ProjectUserAddArgs {
     /// What they may download: none, picks, derived or all.
     #[arg(long, default_value = "all")]
     pub download: String,
+
+    /// A path inside the project. The project is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProjectUserAddBulkArgs {
+    /// Generate names as prefix-01, prefix-02, and so on.
+    #[arg(long, default_value = "student")]
+    pub prefix: String,
+
+    /// Number of accounts to create.
+    #[arg(long)]
+    pub count: usize,
+
+    /// What they may do: viewer, picker, operator or admin.
+    #[arg(long, default_value = "picker")]
+    pub role: String,
+
+    /// What they may download: none, picks, derived or all.
+    #[arg(long, default_value = "all")]
+    pub download: String,
+
+    /// Generate shared passwords instead of one-time invite links.
+    #[arg(long)]
+    pub passwords: bool,
+
+    /// Required acknowledgement for generated shared passwords.
+    #[arg(long)]
+    pub i_know_what_i_am_doing: bool,
 
     /// A path inside the project. The project is found by searching upwards.
     #[arg(long, default_value = ".")]
@@ -679,6 +712,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
             ProjectCommand::Migrate(args) => project_migrate_command(&args),
             ProjectCommand::User(args) => match args.command {
                 ProjectUserCommand::Add(args) => project_user_add_command(&args),
+                ProjectUserCommand::AddBulk(args) => project_user_add_bulk_command(&args),
                 ProjectUserCommand::List(args) => project_user_list_command(&args),
                 ProjectUserCommand::Set(args) => project_user_set_command(&args),
                 ProjectUserCommand::Reset(args) => project_user_reset_command(&args),
@@ -1452,6 +1486,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bulk_user_command_parses_its_safety_flag() {
+        let args = Args::parse_from([
+            "ridal",
+            "project",
+            "user",
+            "add-bulk",
+            "--count",
+            "3",
+            "--prefix",
+            "student",
+            "--passwords",
+            "--i-know-what-i-am-doing",
+        ]);
+        match args.command {
+            Commands::Project(project) => match project.command {
+                ProjectCommand::User(user) => match user.command {
+                    ProjectUserCommand::AddBulk(bulk) => {
+                        assert_eq!(bulk.count, 3);
+                        assert!(bulk.passwords);
+                        assert!(bulk.i_know_what_i_am_doing);
+                    }
+                    _ => panic!("expected add-bulk"),
+                },
+                _ => panic!("expected project user add-bulk"),
+            },
+            _ => panic!("expected project user add-bulk"),
+        }
+    }
+
     #[cfg(feature = "server")]
     #[test]
     fn n_workers_zero_is_rejected_not_silently_clamped() {
@@ -1965,6 +2029,126 @@ fn project_user_add_command(args: &ProjectUserAddArgs) -> Result<(), String> {
             "A server already running on this project picks that up on its next \
              request; there is nothing to restart."
         );
+    }
+    Ok(())
+}
+
+fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), String> {
+    let project = open_project(&args.path)?;
+    let existing = crate::project::users::read(project.documents())
+        .map_err(|e| e.to_string())?
+        .map(|(set, _)| set)
+        .unwrap_or_default();
+    let start = crate::project::users::next_bulk_start(&existing, &args.prefix);
+    let names = crate::project::users::bulk_names_after(&args.prefix, args.count, start)
+        .map_err(|e| e.to_string())?;
+    let role = parse_role(&args.role)?;
+    let download = parse_download(&args.download)?;
+
+    if args.passwords && !args.i_know_what_i_am_doing {
+        return Err(
+            "Generated passwords are shared secrets. Re-run with --i-know-what-i-am-doing, or use invite links instead."
+                .to_string(),
+        );
+    }
+    let advisory = if args.passwords {
+        crate::project::users::bulk_password_advisory(role).ok_or_else(|| {
+            "Administrator accounts must be created with one-time invite links, not shared passwords."
+                .to_string()
+        })?
+    } else {
+        "Invite links let each person set their own password."
+    };
+
+    if args.passwords {
+        #[cfg(not(feature = "server"))]
+        return Err("Password mode is unavailable in a CLI-only build.".to_string());
+
+        #[cfg(feature = "server")]
+        {
+            let generated = names
+                .iter()
+                .map(|name| {
+                    crate::project::users::generate_password()
+                        .map(|password| (name.clone(), password))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            let hashed = generated
+                .iter()
+                .map(|(name, password)| {
+                    crate::project::users::hash_password(password).map(|hash| (name.clone(), hash))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            crate::project::users::update(project.documents(), |set| {
+                if !set.users.iter().any(|user| user.role == crate::project::users::Role::Admin) {
+                    return Err(crate::project::users::UserError::Rejected(
+                        "Create an administrator first with `ridal project user add <name> --role admin`."
+                            .to_string(),
+                    ));
+                }
+                if let Some((name, _)) = hashed.iter().find(|(name, _)| set.get(name).is_some()) {
+                    return Err(crate::project::users::UserError::Duplicate(
+                        name.to_string(),
+                    ));
+                }
+                for ((name, _), (_, hash)) in generated.iter().zip(&hashed) {
+                    let mut user = crate::project::users::User::new(name.clone(), role, download);
+                    user.password_hash = Some(hash.clone());
+                    set.users.push(user);
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string())?;
+            println!("{advisory}");
+            println!("These passwords are shown once; they are not stored in plaintext.");
+            for (name, password) in generated {
+                println!("{name}\t{password}");
+            }
+            return Ok(());
+        }
+    }
+
+    let minted = names
+        .iter()
+        .map(|name| {
+            crate::project::users::mint_invite(chrono::Utc::now().timestamp())
+                .map(|(token, invite)| (name.clone(), token, invite))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    crate::project::users::update(project.documents(), |set| {
+        if !set
+            .users
+            .iter()
+            .any(|user| user.role == crate::project::users::Role::Admin)
+        {
+            return Err(crate::project::users::UserError::Rejected(
+                "Create an administrator first with `ridal project user add <name> --role admin`."
+                    .to_string(),
+            ));
+        }
+        if set.users.iter().any(|user| names.contains(&user.name)) {
+            let name = names
+                .iter()
+                .find(|name| set.get(name).is_some())
+                .expect("the collision was just found");
+            return Err(crate::project::users::UserError::Duplicate(
+                name.to_string(),
+            ));
+        }
+        for (name, _, invite) in &minted {
+            let mut user = crate::project::users::User::new(name.clone(), role, download);
+            user.invite = Some(invite.clone());
+            set.users.push(user);
+        }
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    println!("{advisory}");
+    for (name, token, invite) in minted {
+        print_invite(name.as_str(), &token, invite.expires);
     }
     Ok(())
 }

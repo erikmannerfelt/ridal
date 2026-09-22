@@ -832,6 +832,14 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::auth_routes::list_users).post(super::auth_routes::create_user),
         )
         .route(
+            "/api/v1/users/bulk/invites",
+            axum::routing::post(super::auth_routes::create_bulk_invites),
+        )
+        .route(
+            "/api/v1/users/bulk/passwords",
+            axum::routing::post(super::auth_routes::create_bulk_passwords),
+        )
+        .route(
             "/api/v1/users/{name}",
             axum::routing::put(super::auth_routes::update_user)
                 .delete(super::auth_routes::delete_user),
