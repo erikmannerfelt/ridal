@@ -670,6 +670,29 @@ async function main() {
     await sleep(200);
     result.panelClosesOnOutsideClick = panel.open === false;
 
+    // #230: hiding the radargram makes every image chunk transparent, and
+    // showing it again restores every one of them.
+    //
+    // The lazily-added case (a chunk placed while hidden must arrive
+    // transparent) is deliberately not exercised here: panning far enough
+    // to place new chunks starts image fetches that deadlock chromium's
+    // virtual-time budget, which is the same limitation the window-size
+    // comment in `chromium()` describes.
+    const chunkOpacities = () =>
+      Array.from(doc.querySelectorAll("#map img.leaflet-image-layer")).map(
+        (img) => img.style.opacity,
+      );
+    const radargramToggle = doc.querySelector("#radargram-toggle");
+    result.radargramOpacityShown = chunkOpacities();
+    radargramToggle.click();
+    await sleep(200);
+    result.radargramOpacityHidden = chunkOpacities();
+    result.radargramToggleLabel = radargramToggle.textContent.trim();
+    radargramToggle.click();
+    await sleep(200);
+    result.radargramOpacityRestored = chunkOpacities();
+    result.radargramToggleLabelBack = radargramToggle.textContent.trim();
+
     // The download menu renames picked points and adds derived points.
     const pickedButton = doc.querySelector("#dl-points");
     const derivedButton = doc.querySelector("#dl-derived-points");
@@ -985,7 +1008,11 @@ def result_from_dom(dom: str) -> dict:
         raise SystemExit("the harness left no <pre id=\"result\">")
     import html
 
-    return json.loads(html.unescape(dom[start + len('<pre id="result">') : end]))
+    blob = html.unescape(dom[start + len('<pre id="result">') : end])
+    try:
+        return json.loads(blob)
+    except json.JSONDecodeError:
+        raise SystemExit(f"harness left a non-JSON result: {blob[:500]!r}") from None
 
 
 def assert_q1(operator: dict, picker: dict) -> None:
@@ -1005,6 +1032,22 @@ def assert_q1(operator: dict, picker: dict) -> None:
     assert operator["newButtonBeforeContributors"] is True, (
         "'New expression' must sit in the Derived layers section"
     )
+    assert all(
+        o in ("", "1") for o in operator["radargramOpacityShown"]
+    ), f"chunks should start opaque, saw {operator['radargramOpacityShown']}"
+    assert operator["radargramOpacityHidden"], "no image chunks were found to hide"
+    assert all(
+        o == "0" for o in operator["radargramOpacityHidden"]
+    ), f"hiding must make every chunk transparent, saw {operator['radargramOpacityHidden']}"
+    assert (
+        operator["radargramToggleLabel"] == "Show radargram"
+    ), "the button must offer the way back"
+    assert all(
+        o == "1" for o in operator["radargramOpacityRestored"]
+    ), f"showing again must restore every chunk, saw {operator['radargramOpacityRestored']}"
+    assert (
+        operator["radargramToggleLabelBack"] == "Hide radargram"
+    ), "the button must return to offering the hide"
     assert operator["panelClosesOnOutsideClick"] is True, (
         "the panel must close when the viewer is clicked"
     )
