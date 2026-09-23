@@ -436,6 +436,14 @@ async function layersMode(doc, frame, result) {
   result.editorHasNoPreview = dlg.querySelector("#derived-editor-hint").textContent.includes(
     "no live preview",
   );
+  /* #236: the range-target dropdown is populated for an item that has no
+   * fill yet. The viewer's range test passes either way, because its item
+   * already has a `fill_to` and `buildTargets` keeps an existing target as an
+   * option so a save cannot drop it -- only a fresh item shows whether the
+   * dropdown was built at all. This editor is already open on one. */
+  result.fillTargetOptions = Array.from(
+    dlg.querySelectorAll("#derived-range-target option"),
+  ).map((option) => option.value);
   dlg.querySelector("#derived-name").value = "From the layers page";
   dlg.querySelector("#derived-name").dispatchEvent(new Event("input", { bubbles: true }));
   dlg.querySelector("#derived-id").value = "from_layers";
@@ -1317,6 +1325,16 @@ def assert_q3(operator: dict) -> None:
 
 
 def assert_layers(layers: dict) -> None:
+    offered = layers["fillTargetOptions"]
+    assert "band_top" in offered and "crossing_top" in offered, (
+        "a new item must be offered every layer item as a range target -- this "
+        f"is #236, where the dropdown was empty. Offered: {offered}"
+    )
+    assert "bed_count" not in offered, (
+        "an attribute has no position to fill toward, so it must not be "
+        f"offered: {offered}"
+    )
+
     assert layers.get("error") is None, layers
     assert layers["canAdd"] is True, "an operator must be able to add on /layers"
     assert layers["buttonStyleMatches"] is True, "Edit and Delete must share one style"
