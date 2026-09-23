@@ -67,7 +67,7 @@
   });
 
   const showError = (message) => {
-    errorBox.textContent = message;
+    RIDAL.setMessage(errorBox, message);
     errorBox.hidden = false;
   };
   const clearError = () => {
@@ -90,7 +90,7 @@
     const parsed = await response.json().catch(() => null);
     if (!response.ok) {
       throw new Error(
-        parsed?.error?.message || `Request failed (${response.status}).`,
+        parsed?.error?.message || RIDAL.upstreamMessage(response.status),
       );
     }
     return parsed;

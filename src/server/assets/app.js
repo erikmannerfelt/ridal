@@ -98,6 +98,96 @@ const RIDAL = Object.freeze({
     }
   })(),
 
+  /** Put `message` into `element`, honouring blank-line paragraph breaks.
+   *
+   * `element.textContent = message` is right for a sentence and wrong for
+   * anything longer: a blank line between paragraphs collapses to a single
+   * space, so a message written to hold apart what happened, who can fix it,
+   * and what the reader should do next arrives as one undifferentiated block
+   * (#248). Assigning `innerHTML` instead would mean trusting every caller's
+   * message as markup, and several carry a server-supplied string.
+   *
+   * A single paragraph sets one text node, exactly as before, so this is a
+   * no-op for the short messages that make up nearly every call.
+   *
+   * The host must be able to hold block children -- `.warning` as a <div>,
+   * not as a <p>. A <p> cannot legally contain one. */
+  setMessage(element, message) {
+    element.replaceChildren();
+    const text = message == null ? "" : String(message);
+    const paragraphs = text.split("\n\n");
+    if (paragraphs.length === 1) {
+      element.textContent = text;
+      return;
+    }
+    for (const paragraph of paragraphs) {
+      const line = document.createElement("p");
+      line.textContent = paragraph;
+      element.appendChild(line);
+    }
+  },
+
+  /** The message for an error response that Ridal did not write.
+   *
+   * Every Ridal route answers a failure with the same envelope (#120), so a
+   * failure carrying no envelope came from something *between* the browser
+   * and Ridal. That is almost always the reverse proxy the README recommends
+   * putting in front of a served project, and the status says which way it
+   * went wrong:
+   *
+   * - 413: the proxy's own request body limit is below the size of a
+   *   radargram, so the upload was refused before Ridal saw a byte of it
+   *   (#248). nginx defaults this to 1 MB, which every radargram exceeds.
+   * - 502/503/504: the proxy is answering, but Ridal behind it is not.
+   *
+   * Whoever hits this is typically someone uploading a radargram, with no
+   * reason to know what a reverse proxy is. "Could not add it (413)." sends
+   * them to every wrong conclusion available -- that the file is corrupt,
+   * that it needs re-exporting, trimming, or simply retrying -- and none of
+   * those can resolve it, because nothing about the request was wrong.
+   *
+   * So the message names the one action that does resolve it: hand it to
+   * whoever runs the server. The administrator's jargon is kept, since they
+   * need it to act, but it is quarantined in its own paragraph addressed to
+   * them. Read without that paragraph, the first and last still carry the
+   * whole thing -- this is the server's setup rather than anything you did,
+   * and here is whether trying again is worth your time. */
+  upstreamMessage(status) {
+    // The third element is the closing advice, which cannot be shared: a
+    // 413 is settled until somebody changes the configuration, while a 502
+    // is often a restart in progress and worth another try in a minute.
+    // Telling someone to stop retrying something that would succeed on the
+    // next attempt is its own wrong answer.
+    const [what, fix, next] =
+      status === 413
+        ? [
+            "rejected it as too large",
+            "the maximum request body size is smaller than a radargram and " +
+              "needs raising (in nginx, client_max_body_size)",
+            "Retrying, re-exporting or shrinking the file will not help.",
+          ]
+        : status === 502 || status === 503 || status === 504
+          ? [
+              "could not reach Ridal itself",
+              "Ridal is not answering the proxy. It may be stopped or " +
+                "restarting, or the address the proxy forwards to may be wrong",
+              "This one may be temporary, so it is worth trying again in a " +
+                "minute. If it keeps happening, it needs fixing on the server.",
+            ]
+          : [
+              `refused it (HTTP ${status})`,
+              "it is rejecting requests before they reach Ridal",
+              "Trying again is unlikely to help until that is changed.",
+            ];
+    return (
+      "This is a problem with how this Ridal server is set up, not with " +
+      `anything you did. The web server in front of Ridal ${what}, so your ` +
+      "request never reached Ridal.\n\n" +
+      "Please pass this on to whoever administers this Ridal server: " +
+      `${fix}.\n\n${next}`
+    );
+  },
+
   /** Fetch JSON, turning a non-2xx response into a rejection carrying
    * the server's own message.
    *
@@ -127,7 +217,13 @@ const RIDAL = Object.freeze({
       // A non-JSON body is itself the problem when the status is bad;
       // when the status is fine it means the route broke its contract.
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        // Ridal always answers a failure with an envelope, so a bad status
+        // that did not parse as JSON was written by something in front of
+        // it rather than by a route here (#248).
+        const error = new Error(RIDAL.upstreamMessage(response.status));
+        error.code = 'upstream';
+        error.status = response.status;
+        throw error;
       }
       throw new Error('response was not valid JSON');
     }
