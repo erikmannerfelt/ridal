@@ -610,6 +610,78 @@ async fn a_layer_that_allows_overhangs_accepts_one() {
     assert_eq!(status, StatusCode::CREATED);
 }
 
+fn overlapping_document() -> Value {
+    serde_json::json!({
+        "key": RADARGRAM,
+        "features": [
+            {"type": "Feature",
+             "geometry": {"type": "LineString", "coordinates": [[0.0, 100.0], [500.0, 120.0]]},
+             "properties": {"id": "f-a", "label": "bed"}},
+            {"type": "Feature",
+             "geometry": {"type": "LineString", "coordinates": [[250.0, 400.0], [750.0, 420.0]]},
+             "properties": {"id": "f-b", "label": "bed"}}
+        ]
+    })
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn two_lines_over_the_same_traces_are_refused() {
+    // Different depths and no shared vertex, so the per-vertex duplicate
+    // check alone would let this through.
+    let (_dir, app) = project_app(true);
+    let (status, _, body) = put(&app, URI, &overlapping_document(), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "violation");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("overlapping"), "{message}");
+    assert!(message.contains("bed"), "{message}");
+    assert!(message.contains("f-a"), "{message}");
+    assert!(message.contains("f-b"), "{message}");
+
+    let (status, _, _) = get(&app, URI).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a refused save must not have stored anything"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_layer_that_allows_overhangs_or_duplicates_accepts_an_overlap() {
+    let (_dir, app) = project_app(true);
+    // A multi-valued layer: warn_on_duplicates off is how it says so.
+    put(
+        &app,
+        "/api/v1/layers",
+        &serde_json::json!([
+            {"id": "bed", "name": "Bed", "warn_on_duplicates": false}
+        ]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        put(&app, URI, &overlapping_document(), None).await.0,
+        StatusCode::CREATED
+    );
+
+    let (_dir2, app2) = project_app(true);
+    put(
+        &app2,
+        "/api/v1/layers",
+        &serde_json::json!([
+            {"id": "bed", "name": "Bed", "allow_overhangs": true}
+        ]),
+        None,
+    )
+    .await;
+    assert_eq!(
+        put(&app2, URI, &overlapping_document(), None).await.0,
+        StatusCode::CREATED
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn turning_the_guardrail_off_and_on_again_changes_what_is_accepted() {

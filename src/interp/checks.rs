@@ -47,6 +47,16 @@ use gprinterp::{Document, Geometry, Position};
 /// by accident.
 pub const TOUCH_TOLERANCE_SAMPLES: f64 = 1.0;
 
+/// How much two features' trace spans may overlap before it is a violation
+/// (#207).
+///
+/// One trace is allowed: a hand-drawn junction is rarely exact, and a shared
+/// endpoint trace belongs to both lines. More than that means the layer has
+/// two values over a range of positions, which is the thing a reducer exists
+/// to resolve for a layer that has opted out of the warning -- not something
+/// to leave for every layer that has not.
+pub const OVERLAP_TOLERANCE_TRACES: f64 = 1.0;
+
 /// A rule an interpretation breaks.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Violation {
@@ -70,6 +80,19 @@ pub enum Violation {
         trace: f64,
         samples: Vec<f64>,
         feature_indices: Vec<usize>,
+    },
+    /// Two features of one layer cover the same traces (#207).
+    ///
+    /// The span form of the rule `DuplicateValue` enforces at single traces.
+    /// Two lines drawn over the same horizon rarely put a vertex on the exact
+    /// same trace, so the per-vertex check stays silent while the layer has
+    /// two values at every position between them -- which is why this exists.
+    Overlap {
+        layer: String,
+        feature_indices: [usize; 2],
+        feature_ids: [Option<String>; 2],
+        from_trace: f64,
+        to_trace: f64,
     },
 }
 
@@ -112,6 +135,28 @@ impl std::fmt::Display for Violation {
                     samples.len(),
                     rendered.join(", "),
                     feature_indices
+                )
+            }
+            Violation::Overlap {
+                layer,
+                feature_indices,
+                feature_ids,
+                from_trace,
+                to_trace,
+            } => {
+                let which = |index: usize, id: &Option<String>| {
+                    id.as_deref()
+                        .map(|id| format!("feature '{id}'"))
+                        .unwrap_or_else(|| format!("feature {index}"))
+                };
+                write!(
+                    f,
+                    "layer '{layer}' has overlapping lines: {} and {} both cover \
+                     traces {from_trace:.1} to {to_trace:.1}. One user may have one \
+                     value per layer per position; split or shorten them so only one \
+                     line covers a trace.",
+                    which(feature_indices[0], &feature_ids[0]),
+                    which(feature_indices[1], &feature_ids[1]),
                 )
             }
         }
@@ -223,6 +268,81 @@ pub fn check(
         }
     }
     violations.extend(duplicate_values(document, warns_on_duplicates));
+    violations.extend(overlapping_spans(
+        document,
+        allows_overhangs,
+        warns_on_duplicates,
+    ));
+    violations
+}
+
+/// Find pairs of features on one layer whose trace spans overlap (#207).
+///
+/// The overhang check is per-feature and the duplicate check is per-vertex;
+/// this is the span between them, and the one that actually catches a
+/// duplicated horizon. A span is `[min trace, max trace]`, which is exactly
+/// the covered traces for a line that does not double back -- so layers that
+/// permit overhangs, or have opted out of duplicate warnings, are skipped
+/// rather than compared on a span that overstates what they cover.
+fn overlapping_spans(
+    document: &Document,
+    allows_overhangs: &dyn Fn(Option<&str>) -> bool,
+    warns_on_duplicates: &dyn Fn(Option<&str>) -> bool,
+) -> Vec<Violation> {
+    use std::collections::BTreeMap;
+
+    // layer -> (feature_index, min trace, max trace), one per line.
+    let mut per_layer: BTreeMap<Option<&str>, Vec<(usize, f64, f64)>> = BTreeMap::new();
+    for (feature_index, feature) in document.features.iter().enumerate() {
+        let layer = feature.label();
+        if allows_overhangs(layer) || !warns_on_duplicates(layer) {
+            continue;
+        }
+        let Geometry::LineString(positions) = &feature.geometry else {
+            continue;
+        };
+        let mut traces = positions.iter().filter_map(|p| p.x());
+        let Some(first) = traces.next() else {
+            continue;
+        };
+        let (mut min, mut max) = (first, first);
+        for trace in traces {
+            min = min.min(trace);
+            max = max.max(trace);
+        }
+        per_layer
+            .entry(layer)
+            .or_default()
+            .push((feature_index, min, max));
+    }
+
+    let mut violations = Vec::new();
+    for (layer, spans) in per_layer {
+        let mut spans = spans;
+        spans.sort_by(|a, b| a.1.total_cmp(&b.1));
+        for i in 0..spans.len() {
+            for j in (i + 1)..spans.len() {
+                // Sorted by start: once one begins past this one's end there
+                // is nothing further to compare it with.
+                if spans[j].1 >= spans[i].2 - OVERLAP_TOLERANCE_TRACES {
+                    break;
+                }
+                let from_trace = spans[j].1;
+                let to_trace = spans[i].2.min(spans[j].2);
+                if to_trace - from_trace <= OVERLAP_TOLERANCE_TRACES {
+                    continue;
+                }
+                let id = |index: usize| document.features[index].id().map(str::to_string);
+                violations.push(Violation::Overlap {
+                    layer: layer.unwrap_or("<unlabelled>").to_string(),
+                    feature_indices: [spans[i].0, spans[j].0],
+                    feature_ids: [id(spans[i].0), id(spans[j].0)],
+                    from_trace,
+                    to_trace,
+                });
+            }
+        }
+    }
     violations
 }
 
@@ -370,8 +490,10 @@ mod tests {
 
     #[test]
     fn checking_a_document_reports_the_feature_and_its_layer() {
+        // The first line is on another layer, so its span does not also make
+        // this an overlap and the overhang is the only violation.
         let doc = document(&[
-            ("bed", &[[0.0, 10.0], [100.0, 20.0]]),
+            ("cts", &[[0.0, 10.0], [100.0, 20.0]]),
             ("bed", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]]),
         ]);
         let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
@@ -512,6 +634,91 @@ mod tests {
             ("bed", &[[500.0, 140.0], [900.0, 110.0]]),
         ]);
         assert!(duplicates(&check(&crossed, &enforce_everywhere, &tolerates)).is_empty());
+    }
+
+    fn overlaps(violations: &[Violation]) -> Vec<&Violation> {
+        violations
+            .iter()
+            .filter(|v| matches!(v, Violation::Overlap { .. }))
+            .collect()
+    }
+
+    #[test]
+    fn two_features_covering_the_same_traces_are_an_overlap() {
+        // Different depths and no shared vertex: the case the per-vertex
+        // duplicate check misses, and the one that made this check necessary.
+        let doc = document(&[
+            ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
+            ("bed", &[[250.0, 400.0], [750.0, 420.0]]),
+        ]);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let found = overlaps(&violations);
+        assert_eq!(found.len(), 1, "{violations:?}");
+        match found[0] {
+            Violation::Overlap {
+                layer,
+                feature_indices,
+                from_trace,
+                to_trace,
+                ..
+            } => {
+                assert_eq!(layer, "bed");
+                assert_eq!(feature_indices, &[0, 1]);
+                assert_eq!(*from_trace, 250.0);
+                assert_eq!(*to_trace, 500.0);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_overlap_of_one_trace_or_less_is_allowed() {
+        // A hand-drawn junction is rarely exact; only a shared span is a
+        // second value over a range of positions.
+        let touching = document(&[
+            ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
+            ("bed", &[[500.0, 400.0], [750.0, 420.0]]),
+        ]);
+        assert!(overlaps(&check(&touching, &enforce_everywhere, &warn_everywhere)).is_empty());
+
+        let barely = document(&[
+            ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
+            ("bed", &[[499.0, 400.0], [750.0, 420.0]]),
+        ]);
+        assert!(overlaps(&check(&barely, &enforce_everywhere, &warn_everywhere)).is_empty());
+    }
+
+    #[test]
+    fn overlaps_are_per_layer() {
+        let doc = document(&[
+            ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
+            ("cts", &[[250.0, 400.0], [750.0, 420.0]]),
+        ]);
+        assert!(overlaps(&check(&doc, &enforce_everywhere, &warn_everywhere)).is_empty());
+    }
+
+    #[test]
+    fn a_layer_that_allows_overhangs_or_duplicates_is_skipped_for_overlaps() {
+        let doc = document(&[
+            ("crevasse", &[[0.0, 100.0], [500.0, 120.0]]),
+            ("crevasse", &[[250.0, 400.0], [750.0, 420.0]]),
+        ]);
+        let allows = |layer: Option<&str>| layer == Some("crevasse");
+        assert!(overlaps(&check(&doc, &allows, &warn_everywhere)).is_empty());
+
+        let tolerates = |_: Option<&str>| false;
+        assert!(overlaps(&check(&doc, &enforce_everywhere, &tolerates)).is_empty());
+    }
+
+    #[test]
+    fn three_overlapping_lines_report_each_pair() {
+        let doc = document(&[
+            ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
+            ("bed", &[[250.0, 400.0], [750.0, 420.0]]),
+            ("bed", &[[400.0, 300.0], [900.0, 320.0]]),
+        ]);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        assert_eq!(overlaps(&violations).len(), 3, "{violations:?}");
     }
 
     #[test]
