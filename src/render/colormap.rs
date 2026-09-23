@@ -1,17 +1,181 @@
-//! Normalization, colormapping and image encoding (#118, #119).
+//! Normalization, colormapping and image encoding (#118, #119, #246).
 //!
-//! Grayscale only in v1 -- every built-in profile in `profile.rs` uses
-//! linear or log-transformed amplitude mapped straight to a single
-//! channel. A named colormap field is a natural v2 extension but is not
-//! implemented here, since nothing in the current profile set needs it.
+//! Two rendering paths: a profile without a [`Colormap`] normalizes
+//! straight to a single [`GrayImage`] channel (the original v1 path,
+//! kept byte-identical for every grayscale profile), and one with a
+//! colormap normalizes to a byte that indexes a 256-entry RGB LUT.
+//!
+//! The LUT is built once per render. Interpolation between stops is a
+//! straight sRGB lerp on the 0--255 values, matching
+//! `matplotlib.colors.LinearSegmentedColormap` and QGIS's gradient
+//! editor; a perceptual space such as Oklab would ramp more evenly but
+//! would no longer reproduce their output.
+//!
+//! Purple at overview zoom is expected, not a bug. The `seismic` ramp
+//! contains no purple -- every entry is a blue, a white, a pink or a
+//! red. But radar traces oscillate about zero, so adjacent samples land
+//! on opposite sides of the white midpoint and red sits beside blue at
+//! pixel scale, and anything that averages *pixels* blends them:
+//! `avg(#ff0000, #0000ff) == #7f007f`. That happens in browser-side
+//! scaling of the image chunks when zoomed out, in JPEG 4:2:0 chroma
+//! subsampling, and optically. It does not come from the resampler:
+//! `Mean` averages amplitude before colormapping, and +/- amplitude
+//! averages toward zero, which is correctly white.
 
-use image::{ColorType, GrayImage, ImageEncoder};
+use image::{ColorType, GrayImage, ImageEncoder, Rgb, RgbImage};
 use ndarray::Array2;
 
 use super::profile::{
     AmplitudeLimits, AmplitudeTransform, ImageFormat, RenderProfile, SourceTransform,
 };
 use crate::filters;
+
+/// One colour stop: a position in `[0, 1]` and its 8-bit sRGB colour.
+///
+/// Positions are explicit even though the built-in ramp is evenly
+/// spaced, so a future editor (#183) is a UI problem rather than a
+/// data-model migration.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ColorStop {
+    pub position: f32,
+    pub color: [u8; 3],
+}
+
+/// A named gradient as a list of stops, linearly interpolated in sRGB.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Colormap {
+    pub name: String,
+    pub stops: Vec<ColorStop>,
+}
+
+impl Colormap {
+    /// `seismic`: matplotlib's diverging blue--white--red ramp with
+    /// darkened tails, at its five evenly spaced stops. The dark navy and
+    /// maroon ends let a clipped extreme stay distinguishable from a
+    /// merely strong one, which is why this is preferred over a plain
+    /// `bwr` ramp.
+    pub fn seismic() -> Self {
+        Self {
+            name: "seismic".to_string(),
+            stops: vec![
+                ColorStop {
+                    position: 0.0,
+                    color: [0x00, 0x00, 0x4c],
+                },
+                ColorStop {
+                    position: 0.25,
+                    color: [0x00, 0x00, 0xff],
+                },
+                ColorStop {
+                    position: 0.5,
+                    color: [0xff, 0xff, 0xff],
+                },
+                ColorStop {
+                    position: 0.75,
+                    color: [0xff, 0x00, 0x00],
+                },
+                ColorStop {
+                    position: 1.0,
+                    color: [0x80, 0x00, 0x00],
+                },
+            ],
+        }
+    }
+
+    /// The colour at position `t`, linearly interpolated between the
+    /// surrounding stops. Positions outside the stop range clamp to the
+    /// first/last colour.
+    pub fn sample(&self, t: f32) -> [u8; 3] {
+        let first = self.stops[0];
+        if t <= first.position {
+            return first.color;
+        }
+        for pair in self.stops.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            if t <= b.position {
+                let span = b.position - a.position;
+                let u = if span == 0.0 {
+                    0.0
+                } else {
+                    (t - a.position) / span
+                };
+                return [
+                    lerp_u8(a.color[0], b.color[0], u),
+                    lerp_u8(a.color[1], b.color[1], u),
+                    lerp_u8(a.color[2], b.color[2], u),
+                ];
+            }
+        }
+        self.stops[self.stops.len() - 1].color
+    }
+
+    /// The 256-entry lookup table for this colormap: entry `i` is the
+    /// colour at position `i / 255`, so the normalized byte
+    /// [`normalize_to_u8`] already produces indexes it directly.
+    pub fn lut(&self) -> [[u8; 3]; 256] {
+        let mut lut = [[0u8; 3]; 256];
+        for (i, entry) in lut.iter_mut().enumerate() {
+            *entry = self.sample(i as f32 / 255.0);
+        }
+        lut
+    }
+
+    /// Check the invariants [`sample`](Self::sample) and
+    /// [`lut`](Self::lut) rely on, so a hand-written profile file fails
+    /// with a contextual error instead of an index panic.
+    ///
+    /// Validated at the file boundary (`RenderProfile::from_toml_file`),
+    /// not inside the render path: the built-ins are constructed valid.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.stops.is_empty() {
+            return Err(format!("colormap '{}' has no stops", self.name));
+        }
+        let mut previous = f32::NEG_INFINITY;
+        for stop in &self.stops {
+            if !(0.0..=1.0).contains(&stop.position) {
+                return Err(format!(
+                    "colormap '{}' has a stop at position {}; positions must be in [0, 1]",
+                    self.name, stop.position
+                ));
+            }
+            if stop.position <= previous {
+                return Err(format!(
+                    "colormap '{}' stops must be strictly increasing; \
+                     {} follows {previous}",
+                    self.name, stop.position
+                ));
+            }
+            previous = stop.position;
+        }
+        Ok(())
+    }
+
+    /// A stable string identifying everything about this colormap that
+    /// affects rendered pixels, for folding into the profile cache key.
+    /// The stops are included, not just the name: a hand-written profile
+    /// file can call any gradient `seismic`.
+    pub fn cache_key_fragment(&self) -> String {
+        let stops: Vec<String> = self
+            .stops
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}:{},{},{}",
+                    s.position, s.color[0], s.color[1], s.color[2]
+                )
+            })
+            .collect();
+        format!("cm:{}:{}", self.name, stops.join(";"))
+    }
+}
+
+/// A straight sRGB lerp between two 8-bit channel values, rounded to the
+/// nearest byte.
+fn lerp_u8(a: u8, b: u8, u: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * u)
+        .round()
+        .clamp(0.0, 255.0) as u8
+}
 
 /// `NaN`-safe, infinite-safe cleanup shared by both domain functions below.
 ///
@@ -104,18 +268,28 @@ pub fn to_stats_domain(v: f32, transform: AmplitudeTransform) -> f32 {
 /// (#119). Both branches reject a degenerate `min >= max` (explicit) or
 /// `low == high` (estimated) with an error rather than producing a
 /// division-by-zero NaN-everywhere image.
+///
+/// `symmetric` forces the resolved bounds to `(-vmax, vmax)` with
+/// `vmax = max(|low|, |high|)`, applied after estimation so it composes
+/// with both limit kinds. A diverging colormap means something only if
+/// its midpoint colour sits at a meaningful value -- for signed
+/// amplitude, zero -- and the default 1--99% estimate is asymmetric, so
+/// without this the white point would land wherever the midpoint of
+/// `[min, max]` happens to fall and the ramp would look diverging while
+/// meaning nothing.
 pub fn resolve_limits(
     limits: &AmplitudeLimits,
     sampled: Option<(f32, f32)>,
+    symmetric: bool,
 ) -> Result<(f32, f32), String> {
-    match *limits {
+    let resolved = match *limits {
         AmplitudeLimits::Explicit { min, max } => {
             if min >= max {
                 return Err(format!(
                     "invalid explicit amplitude limits: min ({min}) must be < max ({max})"
                 ));
             }
-            Ok((min, max))
+            (min, max)
         }
         AmplitudeLimits::Percentile { .. } => {
             let (low, high) = sampled
@@ -125,9 +299,14 @@ pub fn resolve_limits(
                     "degenerate estimated amplitude limits: low == high == {low}"
                 ));
             }
-            Ok((low, high))
+            (low, high)
         }
+    };
+    if !symmetric {
+        return Ok(resolved);
     }
+    let vmax = resolved.0.abs().max(resolved.1.abs());
+    Ok((-vmax, vmax))
 }
 
 /// Map one already-display-domain value to a grayscale byte, or `None` for
@@ -177,6 +356,42 @@ pub fn render_grayscale(
     image
 }
 
+/// Render a resampled amplitude array to a colormapped RGB image of the
+/// same dimensions, using a LUT built once by the caller
+/// ([`Colormap::lut`]).
+///
+/// `pad_color` fills pixels with no valid source data, and is deliberately
+/// a literal colour rather than `lut[PAD_VALUE]`: pushing the pad grey
+/// through the colormap would paint no-data as mid-amplitude white and
+/// make an empty footprint indistinguishable from a real zero crossing.
+pub fn render_colormapped(
+    data: &Array2<f32>,
+    profile: &RenderProfile,
+    limits: (f32, f32),
+    lut: &[[u8; 3]; 256],
+    pad_color: [u8; 3],
+) -> RgbImage {
+    let (height, width) = (data.shape()[0], data.shape()[1]);
+    let mut image = RgbImage::new(width as u32, height as u32);
+    for y in 0..height {
+        for x in 0..width {
+            let raw = data[[y, x]];
+            let displayed = to_display_domain(raw, profile.transform);
+            let color = normalize_to_u8(
+                displayed,
+                limits.0,
+                limits.1,
+                profile.contrast,
+                profile.black_level,
+            )
+            .map(|byte| lut[byte as usize])
+            .unwrap_or(pad_color);
+            image.put_pixel(x as u32, y as u32, Rgb(color));
+        }
+    }
+    image
+}
+
 /// Encode a grayscale image per the profile's [`ImageFormat`].
 pub fn encode(image: &GrayImage, format: ImageFormat) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
@@ -189,6 +404,30 @@ pub fn encode(image: &GrayImage, format: ImageFormat) -> Result<Vec<u8>, String>
         ImageFormat::Png => {
             image::codecs::png::PngEncoder::new(&mut out)
                 .write_image(image, image.width(), image.height(), ColorType::L8)
+                .map_err(|e| format!("PNG encoding failed: {e}"))?;
+        }
+    }
+    Ok(out)
+}
+
+/// Encode an RGB image per the profile's [`ImageFormat`].
+///
+/// The colormapped counterpart to [`encode`], kept separate rather than
+/// generic over the pixel type so the grayscale path's byte-for-byte
+/// output and its `ColorType::L8` JPEG (a genuinely one-component JPEG,
+/// which is markedly smaller than a replicated grey RGB one) are
+/// untouched.
+pub fn encode_rgb(image: &RgbImage, format: ImageFormat) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    match format {
+        ImageFormat::Jpeg { quality } => {
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
+                .encode(image, image.width(), image.height(), ColorType::Rgb8)
+                .map_err(|e| format!("JPEG encoding failed: {e}"))?;
+        }
+        ImageFormat::Png => {
+            image::codecs::png::PngEncoder::new(&mut out)
+                .write_image(image, image.width(), image.height(), ColorType::Rgb8)
                 .map_err(|e| format!("PNG encoding failed: {e}"))?;
         }
     }
@@ -329,9 +568,24 @@ mod tests {
 
     #[test]
     fn resolve_limits_explicit_rejects_min_gte_max() {
-        assert!(resolve_limits(&AmplitudeLimits::Explicit { min: 5.0, max: 1.0 }, None).is_err());
-        assert!(resolve_limits(&AmplitudeLimits::Explicit { min: 1.0, max: 1.0 }, None).is_err());
-        assert!(resolve_limits(&AmplitudeLimits::Explicit { min: 1.0, max: 5.0 }, None).is_ok());
+        assert!(resolve_limits(
+            &AmplitudeLimits::Explicit { min: 5.0, max: 1.0 },
+            None,
+            false
+        )
+        .is_err());
+        assert!(resolve_limits(
+            &AmplitudeLimits::Explicit { min: 1.0, max: 1.0 },
+            None,
+            false
+        )
+        .is_err());
+        assert!(resolve_limits(
+            &AmplitudeLimits::Explicit { min: 1.0, max: 5.0 },
+            None,
+            false
+        )
+        .is_ok());
     }
 
     #[test]
@@ -340,12 +594,230 @@ mod tests {
             low: 0.01,
             high: 0.99,
         };
-        assert!(resolve_limits(&limits, None).is_err());
-        assert!(resolve_limits(&limits, Some((1.0, 1.0))).is_err());
+        assert!(resolve_limits(&limits, None, false).is_err());
+        assert!(resolve_limits(&limits, Some((1.0, 1.0)), false).is_err());
         assert_eq!(
-            resolve_limits(&limits, Some((1.0, 5.0))).unwrap(),
+            resolve_limits(&limits, Some((1.0, 5.0)), false).unwrap(),
             (1.0, 5.0)
         );
+    }
+
+    #[test]
+    fn resolve_limits_symmetric_puts_zero_at_the_white_point() {
+        // The whole reason a diverging colormap can be used on signed
+        // amplitude: whatever the asymmetric estimate says, the midpoint
+        // of the limits must be zero. Composes with both limit kinds, and
+        // the larger absolute bound wins.
+        assert_eq!(
+            resolve_limits(
+                &AmplitudeLimits::Percentile {
+                    low: 0.01,
+                    high: 0.99,
+                },
+                Some((2.0, 10.0)),
+                true,
+            )
+            .unwrap(),
+            (-10.0, 10.0)
+        );
+        assert_eq!(
+            resolve_limits(
+                &AmplitudeLimits::Percentile {
+                    low: 0.01,
+                    high: 0.99,
+                },
+                Some((-10.0, 2.0)),
+                true,
+            )
+            .unwrap(),
+            (-10.0, 10.0)
+        );
+        assert_eq!(
+            resolve_limits(
+                &AmplitudeLimits::Explicit {
+                    min: -3.0,
+                    max: 5.0,
+                },
+                None,
+                true,
+            )
+            .unwrap(),
+            (-5.0, 5.0)
+        );
+        // And `false` is the untouched path.
+        assert_eq!(
+            resolve_limits(
+                &AmplitudeLimits::Explicit {
+                    min: -3.0,
+                    max: 5.0,
+                },
+                None,
+                false,
+            )
+            .unwrap(),
+            (-3.0, 5.0)
+        );
+    }
+
+    #[test]
+    fn seismic_lut_matches_matplotlib_at_eighths() {
+        // Reference bytes sampled from matplotlib 3.10.5's `seismic`
+        // (matplotlib.colors.LinearSegmentedColormap). The index rule is
+        // matplotlib's own: a float x indexes its 256-entry LUT at
+        // `int(x * N)`, clamped to 255 -- not at `(x * 255).round()`,
+        // which is a different entry for some positions (0.625 -> 159 vs
+        // 160). This test pins the LUT's interpolation against matplotlib;
+        // the render path indexes the LUT by the normalized byte
+        // `normalize_to_u8` produces, which is at most one entry away.
+        let lut = Colormap::seismic().lut();
+        let references: &[(f32, [u8; 3])] = &[
+            (0.000, [0x00, 0x00, 0x4c]),
+            (0.125, [0x00, 0x00, 0xa6]),
+            (0.250, [0x01, 0x01, 0xff]),
+            (0.375, [0x81, 0x81, 0xff]),
+            (0.500, [0xff, 0xfd, 0xfd]),
+            (0.625, [0xff, 0x7d, 0x7d]),
+            (0.750, [0xfe, 0x00, 0x00]),
+            (0.875, [0xbe, 0x00, 0x00]),
+            (1.000, [0x80, 0x00, 0x00]),
+        ];
+        for (t, expected) in references {
+            let index = ((t * 256.0) as usize).min(255);
+            assert_eq!(lut[index], *expected, "seismic at {t} (LUT index {index})");
+        }
+        // The tail colours are the reason `seismic` is kept over `bwr`:
+        // the ramp darkens rather than saturating.
+        assert_eq!(lut[0], [0x00, 0x00, 0x4c]);
+        assert_eq!(lut[255], [0x80, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn colormap_interpolates_stops_as_a_straight_srgb_lerp() {
+        let cmap = Colormap {
+            name: "test".to_string(),
+            stops: vec![
+                ColorStop {
+                    position: 0.0,
+                    color: [0, 0, 0],
+                },
+                ColorStop {
+                    position: 1.0,
+                    color: [255, 128, 64],
+                },
+            ],
+        };
+        assert_eq!(cmap.sample(0.0), [0, 0, 0]);
+        assert_eq!(cmap.sample(0.5), [128, 64, 32]);
+        assert_eq!(cmap.sample(1.0), [255, 128, 64]);
+        // Outside the stop range, clamp to the end colours.
+        assert_eq!(cmap.sample(-1.0), [0, 0, 0]);
+        assert_eq!(cmap.sample(2.0), [255, 128, 64]);
+    }
+
+    #[test]
+    fn colormap_validate_rejects_structures_sample_cannot_handle() {
+        // The built-ins must pass their own validation.
+        Colormap::seismic().validate().unwrap();
+        // A single stop is fine: a constant colour, clamped everywhere.
+        let constant = Colormap {
+            name: "constant".to_string(),
+            stops: vec![ColorStop {
+                position: 0.5,
+                color: [1, 2, 3],
+            }],
+        };
+        constant.validate().unwrap();
+        assert_eq!(constant.lut()[0], [1, 2, 3]);
+
+        let empty = Colormap {
+            name: "empty".to_string(),
+            stops: vec![],
+        };
+        assert!(empty.validate().unwrap_err().contains("no stops"));
+
+        let out_of_range = Colormap {
+            name: "range".to_string(),
+            stops: vec![
+                ColorStop {
+                    position: 0.0,
+                    color: [0, 0, 0],
+                },
+                ColorStop {
+                    position: 1.5,
+                    color: [255, 255, 255],
+                },
+            ],
+        };
+        assert!(out_of_range.validate().unwrap_err().contains("[0, 1]"));
+
+        let unordered = Colormap {
+            name: "unordered".to_string(),
+            stops: vec![
+                ColorStop {
+                    position: 0.75,
+                    color: [0, 0, 0],
+                },
+                ColorStop {
+                    position: 0.25,
+                    color: [255, 255, 255],
+                },
+            ],
+        };
+        assert!(unordered.validate().unwrap_err().contains("increasing"));
+    }
+
+    #[test]
+    fn colormap_cache_key_fragment_covers_the_stops_not_just_the_name() {
+        // A hand-written profile file can call any gradient `seismic`, so
+        // two profiles with the same name and different stops must not
+        // share a key.
+        let mut a = Colormap::seismic();
+        let b = Colormap::seismic();
+        assert_eq!(a.cache_key_fragment(), b.cache_key_fragment());
+        a.stops[0].color = [1, 2, 3];
+        assert_ne!(a.cache_key_fragment(), b.cache_key_fragment());
+    }
+
+    #[test]
+    fn colormapped_render_fills_nan_with_the_literal_pad_color() {
+        // Never `lut[PAD_VALUE]`: a no-data pixel must not be painted as
+        // mid-amplitude white, indistinguishable from a real zero
+        // crossing.
+        let data = ndarray::array![[f32::NAN, 5.0]];
+        let profile = RenderProfile::seismic_profile();
+        let lut = Colormap::seismic().lut();
+        let image = render_colormapped(&data, &profile, (0.0, 10.0), &lut, [96, 96, 96]);
+        assert_eq!(image.get_pixel(0, 0).0, [96, 96, 96]);
+        assert_ne!(image.get_pixel(1, 0).0, [96, 96, 96]);
+    }
+
+    #[test]
+    fn colormapped_render_puts_zero_at_the_white_midpoint() {
+        // With symmetric limits the normalized midpoint is white, so a
+        // zero-amplitude sample reads as the colormap's midpoint rather
+        // than wherever the asymmetric estimate happened to place it.
+        let data = ndarray::array![[0.0f32, 5.0, -5.0]];
+        let profile = RenderProfile::seismic_profile();
+        let lut = Colormap::seismic().lut();
+        let image = render_colormapped(&data, &profile, (-5.0, 5.0), &lut, [96, 96, 96]);
+        assert_eq!(image.get_pixel(0, 0).0, lut[128]);
+        assert_eq!(image.get_pixel(1, 0).0, lut[255]);
+        assert_eq!(image.get_pixel(2, 0).0, lut[0]);
+    }
+
+    #[test]
+    fn rgb_jpeg_and_png_encoding_round_trip_dimensions() {
+        let mut image = RgbImage::new(4, 3);
+        for (x, y, px) in image.enumerate_pixels_mut() {
+            *px = Rgb([(x * 10) as u8, (y * 10) as u8, 0]);
+        }
+        for format in [ImageFormat::Jpeg { quality: 85 }, ImageFormat::Png] {
+            let bytes = encode_rgb(&image, format).unwrap();
+            let decoded = image::load_from_memory(&bytes).unwrap();
+            assert_eq!(decoded.width(), 4);
+            assert_eq!(decoded.height(), 3);
+            assert_eq!(decoded.color(), image::ColorType::Rgb8);
+        }
     }
 
     #[test]

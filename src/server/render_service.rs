@@ -311,7 +311,7 @@ impl RenderService {
             )?),
             AmplitudeLimits::Explicit { .. } => None,
         };
-        let limits = colormap::resolve_limits(&profile.limits, sampled)?;
+        let limits = colormap::resolve_limits(&profile.limits, sampled, profile.symmetric_limits)?;
         self.limits_cache.insert(key, limits);
         Ok(limits)
     }
@@ -499,6 +499,11 @@ mod tests {
             "siglog-default",
             "siglog-positive",
             "siglog-high-contrast",
+            // The colormapped pair (#246): one grayscale-equivalent
+            // pipeline on the outside, an RGB encoder (and a symmetric
+            // limit pass) on the inside.
+            "seismic",
+            "siglog-seismic",
         ] {
             let profile = RenderProfile {
                 format: crate::render::profile::ImageFormat::Png,

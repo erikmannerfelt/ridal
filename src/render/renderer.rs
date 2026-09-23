@@ -11,7 +11,7 @@
 
 use ndarray::Array2;
 
-use super::colormap::{self, encode};
+use super::colormap;
 use super::grid::{Chunk, OverviewSpec, SourceWindow};
 use super::profile::{RenderProfile, SourceTransform};
 use super::resample::resample;
@@ -22,6 +22,14 @@ use crate::source::AmplitudeSource;
 /// "no data" without the visual harshness of pure black or white against
 /// real radargram content.
 const PAD_VALUE: u8 = 96;
+
+/// [`PAD_VALUE`] as the three channels the RGB path needs.
+///
+/// Deliberately the literal pad grey, never `lut[PAD_VALUE]`: pushing the
+/// pad through the colormap would paint no-data as mid-amplitude white
+/// and make an empty footprint indistinguishable from a real zero
+/// crossing.
+const PAD_COLOR: [u8; 3] = [PAD_VALUE, PAD_VALUE, PAD_VALUE];
 
 /// Ceiling on how much source an overview render reads at once. An
 /// overview is small (~512 px wide) but its *input* is the whole
@@ -74,8 +82,7 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
             chunk.valid_height,
             profile.resampling,
         );
-        let image = colormap::render_grayscale(&resampled, profile, limits, PAD_VALUE);
-        encode(&image, profile.format)
+        render_and_encode(&resampled, profile, limits)
     }
 
     /// Render a full-radargram overview to encoded image bytes.
@@ -207,8 +214,7 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
             oy0 = oy1;
         }
 
-        let image = colormap::render_grayscale(&resampled, profile, limits, PAD_VALUE);
-        encode(&image, profile.format)
+        render_and_encode(&resampled, profile, limits)
     }
 
     /// Read exactly the (integer-rounded) source region a window touches,
@@ -237,6 +243,34 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
             row1: window.row1 - row0_floor,
             col0: window.col0 - col0_floor,
             col1: window.col1 - col0_floor,
+        }
+    }
+}
+
+/// Colormap (if any) and encode a resampled chunk or band.
+///
+/// `None` takes the original grayscale path unchanged -- the same
+/// functions, producing the same bytes, so every grayscale profile's
+/// cached renders stay valid. `Some` builds the 256-entry LUT once for
+/// this render and takes the RGB path, which is the point of keeping the
+/// two apart: a greyscale JPEG is a genuinely one-component JPEG and a
+/// greyscale PNG is markedly smaller than an RGB one, so re-encoding
+/// every render with a replicated grey channel would triple the lossless
+/// downloads for no visual difference.
+fn render_and_encode(
+    resampled: &Array2<f32>,
+    profile: &RenderProfile,
+    limits: (f32, f32),
+) -> Result<Vec<u8>, String> {
+    match &profile.colormap {
+        None => {
+            let image = colormap::render_grayscale(resampled, profile, limits, PAD_VALUE);
+            colormap::encode(&image, profile.format)
+        }
+        Some(cmap) => {
+            let lut = cmap.lut();
+            let image = colormap::render_colormapped(resampled, profile, limits, &lut, PAD_COLOR);
+            colormap::encode_rgb(&image, profile.format)
         }
     }
 }
@@ -744,6 +778,45 @@ mod tests {
                 "the '{name}' chunk path must preprocess the same way the overview does"
             );
         }
+    }
+
+    #[test]
+    fn a_colormapped_render_encodes_as_rgb_and_grayscale_as_l8() {
+        // The branch `render_and_encode` exists for: a profile with a
+        // colormap produces a real RGB image (so PNG does not have to
+        // store a replicated grey channel), and one without still
+        // produces the single-channel image it always did.
+        let raw = ndarray::Array2::from_shape_fn((40, 60), |(r, c)| {
+            ((r as f32 * 0.7).sin() * 30.0) + ((c as f32 * 0.3).cos() * 5.0)
+        });
+        let source = crate::source::ArraySource::new(raw.view());
+        let renderer = Renderer::new(&source);
+        let spec = OverviewSpec::new(60, 40, 30);
+
+        let colormapped = RenderProfile {
+            format: super::super::profile::ImageFormat::Png,
+            ..RenderProfile::seismic_profile()
+        };
+        let decoded = image::load_from_memory(
+            &renderer
+                .render_overview(&spec, &colormapped, (-35.0, 35.0))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.color(), image::ColorType::Rgb8);
+        assert_eq!((decoded.width(), decoded.height()), (30, 20));
+
+        let grayscale = RenderProfile {
+            format: super::super::profile::ImageFormat::Png,
+            ..RenderProfile::default_profile()
+        };
+        let decoded = image::load_from_memory(
+            &renderer
+                .render_overview(&spec, &grayscale, (-35.0, 35.0))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded.color(), image::ColorType::L8);
     }
 
     /// Opt-in integration check against a real processed asset, writing

@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::colormap::Colormap;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ResamplingMethod {
     /// Area-weighted mean over source-pixel footprints (#118).
@@ -181,6 +183,22 @@ pub struct RenderProfile {
     /// contrast multiplier: `0.0` (the default profile's value) leaves the
     /// plain min-max stretch untouched.
     pub black_level: f32,
+    /// Optional named gradient (#246). `None` (the default, and every
+    /// grayscale profile) renders through the original single-channel
+    /// path, byte-identical to before this field existed; `Some` maps the
+    /// normalized byte through the colormap's 256-entry RGB LUT.
+    ///
+    /// `#[serde(default)]` so profile files written before the field
+    /// existed keep loading, and omitting it can only mean "grayscale".
+    #[serde(default)]
+    pub colormap: Option<Colormap>,
+    /// Force the resolved limits to `(-vmax, vmax)` after estimation, so
+    /// a diverging colormap's midpoint sits at zero amplitude. See
+    /// [`super::colormap::resolve_limits`] for why this composes with
+    /// both limit kinds. `false` for every grayscale profile, which is
+    /// also what a file without the field means.
+    #[serde(default)]
+    pub symmetric_limits: bool,
     /// Sample rows dropped from the top of every trace before estimating
     /// percentile limits (`stats.rs`), excluding the direct-wave band from
     /// the estimate. `0` (the default profile's value) samples whole
@@ -204,6 +222,8 @@ impl RenderProfile {
             format: ImageFormat::Jpeg { quality: 85 },
             contrast: 1.0,
             black_level: 0.0,
+            colormap: None,
+            symmetric_limits: false,
             stats_skip_first_samples: 0,
         }
     }
@@ -321,7 +341,53 @@ impl RenderProfile {
         }
     }
 
-    /// The server-defined profiles offered in v1 (#121's dropdown).
+    /// `seismic`: the diverging blue--white--red ramp, for signed
+    /// amplitude. The white midpoint is only meaningful at zero
+    /// amplitude, so `symmetric_limits` forces it there.
+    ///
+    /// Three couplings exist so the *sign* reaching the colormap is the
+    /// sign of the data, and none is inherited by accident:
+    ///
+    /// - Resampling stays [`ResamplingMethod::Mean`] (the `default`
+    ///   profile's). `LanczosRectified`, which `positive` uses, filters
+    ///   `|amplitude|` and destroys the sign the ramp is meant to show.
+    ///   `Mean` averages amplitude before colormapping, so `+` and `-`
+    ///   average toward zero -- correctly white -- rather than blending
+    ///   into purple.
+    /// - `transform` is [`AmplitudeTransform::Linear`], not `AbsLog` or
+    ///   `Positive`, both of which have already discarded or folded the
+    ///   sign.
+    /// - `contrast` and `black_level` stay neutral (1.0 / 0.0);
+    ///   `black_level` shifts the normalized value and would walk the
+    ///   white point off centre.
+    pub fn seismic_profile() -> Self {
+        Self {
+            name: "seismic".to_string(),
+            colormap: Some(Colormap::seismic()),
+            symmetric_limits: true,
+            ..Self::default_profile()
+        }
+    }
+
+    /// `siglog-seismic`: the `seismic` ramp on `siglog`-compressed
+    /// source, exactly as the other `siglog-*` relate to their bases.
+    ///
+    /// The pairing is not a box-ticking variant: `siglog` compresses
+    /// magnitude while *preserving* sign, which is precisely what the
+    /// diverging ramp needs, so weak and strong returns on both sides of
+    /// zero stay on their own side of the white midpoint. Resampling is
+    /// inherited from `seismic` (`Mean`), as `siglog-default` inherits
+    /// from `default`.
+    pub fn siglog_seismic_profile() -> Self {
+        Self {
+            name: "siglog-seismic".to_string(),
+            source_transform: SourceTransform::SigLog,
+            ..Self::seismic_profile()
+        }
+    }
+
+    /// The server-defined profiles (#121's dropdown; #246 added the
+    /// colormapped pair).
     ///
     /// Each `siglog-*` sits next to the profile it is the log view of.
     /// There is deliberately no `siglog-abslog` (#182): `abslog` is
@@ -336,6 +402,8 @@ impl RenderProfile {
             Self::high_contrast_profile(),
             Self::siglog_high_contrast_profile(),
             Self::abslog_profile(),
+            Self::seismic_profile(),
+            Self::siglog_seismic_profile(),
         ]
     }
 
@@ -378,12 +446,15 @@ impl RenderProfile {
 
     /// Read a profile from a TOML file.
     ///
-    /// Every field is required except `source_transform`, which
-    /// `#[serde(default)]`s to `None` so profile files written before that
-    /// field existed keep loading unchanged; omitting it can only mean
-    /// "no source preprocessing", which is what those files did. Profiles
-    /// that inherit from a built-in and override a field or two are the
-    /// obvious next step and deliberately not guessed at here -- whether
+    /// Every field is required except `source_transform`, `colormap` and
+    /// `symmetric_limits`, which `#[serde(default)]` so profile files
+    /// written before each field existed keep loading unchanged; omitting
+    /// them can only mean "no source preprocessing", "grayscale" and
+    /// "asymmetric", which is what those files did. A `colormap` that is
+    /// present is checked by [`Colormap::validate`], since that is the
+    /// only field with structural invariants the type cannot express.
+    /// Profiles that inherit from a built-in and override a field or two
+    /// are the obvious next step and deliberately not guessed at here -- whether
     /// that is a `base = "default"` key, a separate
     /// `--render-profile-override`, or a broader set of serde defaults
     /// changes what a file means, and getting it wrong later would
@@ -391,14 +462,27 @@ impl RenderProfile {
     pub fn from_toml_file(path: &std::path::Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("Could not read render profile {}: {e}", path.display()))?;
-        toml::from_str(&text)
-            .map_err(|e| format!("Could not parse render profile {}: {e}", path.display()))
+        let profile: Self = toml::from_str(&text)
+            .map_err(|e| format!("Could not parse render profile {}: {e}", path.display()))?;
+        // The colormap is the one part of a profile with structural
+        // invariants the type cannot express, so a malformed file is
+        // rejected here rather than panicking in the render path.
+        if let Some(colormap) = &profile.colormap {
+            colormap
+                .validate()
+                .map_err(|e| format!("Could not use render profile {}: {e}", path.display()))?;
+        }
+        Ok(profile)
     }
 
     /// A stable string identifying everything about this profile that
     /// affects rendered pixels, for folding into the render variant ID
     /// (M5). Deliberately excludes nothing display-affecting and includes
     /// nothing identity-affecting (e.g. no display name).
+    ///
+    /// The colormap and symmetric-limit fields are appended only when
+    /// set, so every grayscale profile's fragment stays byte-identical to
+    /// what it was before #246 and no cached render is mass-invalidated.
     pub fn cache_key_fragment(&self) -> String {
         let limits = match self.limits {
             AmplitudeLimits::Explicit { min, max } => format!("explicit:{min}:{max}"),
@@ -408,7 +492,7 @@ impl RenderProfile {
             ImageFormat::Jpeg { quality } => format!("jpeg:{quality}"),
             ImageFormat::Png => "png".to_string(),
         };
-        format!(
+        let mut fragment = format!(
             "{:?}|{:?}|{:?}|{}|{:?}|{}|{}|{}|{}",
             self.view,
             self.source_transform,
@@ -419,7 +503,15 @@ impl RenderProfile {
             self.contrast,
             self.black_level,
             self.stats_skip_first_samples
-        )
+        );
+        if let Some(colormap) = &self.colormap {
+            fragment.push('|');
+            fragment.push_str(&colormap.cache_key_fragment());
+        }
+        if self.symmetric_limits {
+            fragment.push_str("|sym");
+        }
+        fragment
     }
 }
 
@@ -469,6 +561,34 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_file_with_a_malformed_colormap_is_rejected() {
+        // A hand-written file is the only way an invalid gradient can
+        // enter, and it must fail here rather than panic in `sample` when
+        // the render reaches the LUT.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.toml");
+        let text = r#"
+name = "broken"
+view = "Standard"
+transform = "Linear"
+limits = { Percentile = { low = 0.01, high = 0.99 } }
+resampling = "Mean"
+format = "Png"
+contrast = 1.0
+black_level = 0.0
+stats_skip_first_samples = 0
+colormap = { name = "none", stops = [] }
+"#;
+        std::fs::write(&path, text).unwrap();
+        let error = RenderProfile::resolve(path.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("no stops"), "{error}");
+        assert!(
+            error.contains("broken.toml"),
+            "should name the file: {error}"
+        );
+    }
+
+    #[test]
     fn resolve_says_both_things_it_looked_for() {
         // "No such profile" and "no such file" are the same mistake from
         // the user's side, and they will not know which one they made.
@@ -506,6 +626,8 @@ mod tests {
         assert!(RenderProfile::by_name("siglog-default").is_some());
         assert!(RenderProfile::by_name("siglog-positive").is_some());
         assert!(RenderProfile::by_name("siglog-high-contrast").is_some());
+        assert!(RenderProfile::by_name("seismic").is_some());
+        assert!(RenderProfile::by_name("siglog-seismic").is_some());
         // A siglog view of abslog would be a log of a log (#182).
         assert!(RenderProfile::by_name("siglog-abslog").is_none());
         assert!(RenderProfile::by_name("nonexistent").is_none());
@@ -531,6 +653,7 @@ mod tests {
                 "siglog-high-contrast",
                 RenderProfile::high_contrast_profile(),
             ),
+            ("siglog-seismic", RenderProfile::seismic_profile()),
         ];
         for (name, base) in cases {
             let siglog = RenderProfile::by_name(name).unwrap();
@@ -544,6 +667,11 @@ mod tests {
             assert_eq!(siglog.limits, base.limits, "{name} limits");
             assert_eq!(siglog.contrast, base.contrast, "{name} contrast");
             assert_eq!(siglog.black_level, base.black_level, "{name} black level");
+            assert_eq!(siglog.colormap, base.colormap, "{name} colormap");
+            assert_eq!(
+                siglog.symmetric_limits, base.symmetric_limits,
+                "{name} symmetric limits"
+            );
             assert_eq!(
                 siglog.stats_skip_first_samples, base.stats_skip_first_samples,
                 "{name} stats skip"
@@ -567,6 +695,37 @@ mod tests {
     }
 
     #[test]
+    fn seismic_profiles_keep_the_sign_and_neutral_tuning() {
+        // The couplings from #246, pinned so a later edit cannot quietly
+        // give `seismic` the `positive` tuning: sign must survive
+        // resampling (`Mean`, not `LanczosRectified`), the display
+        // transform must not have discarded the sign (`Linear`), and
+        // contrast/black level must stay neutral or `black_level` walks
+        // the white point off centre. `symmetric_limits` is what puts the
+        // midpoint at zero at all.
+        for name in ["seismic", "siglog-seismic"] {
+            let profile = RenderProfile::by_name(name).unwrap();
+            assert_eq!(profile.colormap, Some(Colormap::seismic()), "{name}");
+            assert!(profile.symmetric_limits, "{name}");
+            assert_eq!(profile.transform, AmplitudeTransform::Linear, "{name}");
+            assert_eq!(profile.resampling, ResamplingMethod::Mean, "{name}");
+            assert_eq!(profile.contrast, 1.0, "{name}");
+            assert_eq!(profile.black_level, 0.0, "{name}");
+        }
+        assert_eq!(
+            RenderProfile::seismic_profile().source_transform,
+            SourceTransform::None
+        );
+        assert_eq!(
+            RenderProfile::siglog_seismic_profile().source_transform,
+            SourceTransform::SigLog
+        );
+        // The base profile itself stays grayscale and asymmetric.
+        assert_eq!(RenderProfile::default_profile().colormap, None);
+        assert!(!RenderProfile::default_profile().symmetric_limits);
+    }
+
+    #[test]
     fn a_profile_file_without_source_transform_still_loads_as_none() {
         // Files written before the field existed must keep working, and
         // omitting it can only mean "no preprocessing".
@@ -583,13 +742,21 @@ stats_skip_first_samples = 0
 "#;
         let profile: RenderProfile = toml::from_str(text).unwrap();
         assert_eq!(profile.source_transform, SourceTransform::None);
-        // A file that does set it round-trips to `SigLog`.
+        // Same for the #246 fields: absent means grayscale and asymmetric.
+        assert_eq!(profile.colormap, None);
+        assert!(!profile.symmetric_limits);
+        // A file that does set them round-trips.
         let text = text.replace(
             "view = \"Standard\"",
-            "view = \"Standard\"\nsource_transform = \"SigLog\"",
+            "view = \"Standard\"\nsource_transform = \"SigLog\"\nsymmetric_limits = true\n\
+             colormap = { name = \"seismic\", stops = [\
+             { position = 0.0, color = [0, 0, 76] },\
+             { position = 1.0, color = [128, 0, 0] }] }",
         );
         let profile: RenderProfile = toml::from_str(&text).unwrap();
         assert_eq!(profile.source_transform, SourceTransform::SigLog);
+        assert!(profile.symmetric_limits);
+        assert_eq!(profile.colormap.unwrap().stops.len(), 2);
     }
 
     #[test]
@@ -619,6 +786,12 @@ stats_skip_first_samples = 0
             ("siglog-default", ResamplingMethod::Mean),
             ("siglog-positive", ResamplingMethod::LanczosRectified),
             ("siglog-high-contrast", ResamplingMethod::Mean),
+            // `seismic` displays *signed* amplitude (that is what the
+            // diverging ramp shows) and `siglog-seismic` its
+            // sign-preserving compression, so both must keep the plain
+            // area-weighted mean -- rectifying would destroy the sign.
+            ("seismic", ResamplingMethod::Mean),
+            ("siglog-seismic", ResamplingMethod::Mean),
         ];
         for (name, method) in expected {
             let profile = RenderProfile::by_name(name).unwrap();
@@ -653,5 +826,55 @@ stats_skip_first_samples = 0
         let b = a.clone();
         a.format = ImageFormat::Jpeg { quality: 50 };
         assert_ne!(a.cache_key_fragment(), b.cache_key_fragment());
+    }
+
+    #[test]
+    fn grayscale_profiles_keep_their_pre_colormap_cache_key_fragment() {
+        // #246 appends the colormap and symmetric-limit fields only when
+        // set, so every grayscale profile's fragment is byte-identical to
+        // what it was before the change and no cached render is
+        // invalidated. Pinned literally: the format machinery is shared,
+        // so this pins it for all seven.
+        assert_eq!(
+            RenderProfile::default_profile().cache_key_fragment(),
+            "Standard|None|Linear|pct:0.01:0.99|Mean|jpeg:85|1|0|0"
+        );
+        for name in [
+            "default",
+            "positive",
+            "abslog",
+            "high-contrast",
+            "siglog-default",
+            "siglog-positive",
+            "siglog-high-contrast",
+        ] {
+            let fragment = RenderProfile::by_name(name).unwrap().cache_key_fragment();
+            assert!(
+                !fragment.contains("|cm:") && !fragment.contains("|sym"),
+                "{name}'s fragment gained a colormap field: {fragment}"
+            );
+        }
+    }
+
+    #[test]
+    fn adding_a_colormap_or_symmetry_changes_the_cache_key() {
+        let plain = RenderProfile::default_profile();
+
+        let mut colormapped = plain.clone();
+        colormapped.colormap = Some(Colormap::seismic());
+        assert_ne!(plain.cache_key_fragment(), colormapped.cache_key_fragment());
+
+        let mut symmetric = plain.clone();
+        symmetric.symmetric_limits = true;
+        assert_ne!(plain.cache_key_fragment(), symmetric.cache_key_fragment());
+
+        // The two new fields are independent, so a symmetric grayscale
+        // profile cannot collide with the colormapped one.
+        let mut symmetric_colormapped = colormapped.clone();
+        symmetric_colormapped.symmetric_limits = true;
+        assert_ne!(
+            colormapped.cache_key_fragment(),
+            symmetric_colormapped.cache_key_fragment()
+        );
     }
 }

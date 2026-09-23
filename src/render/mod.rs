@@ -30,8 +30,10 @@
 //!    configuration type threading through all of this: it picks the
 //!    [`profile::AmplitudeTransform`] (linear / log / asymmetric-positive),
 //!    the [`profile::ResamplingMethod`], and the normalization and contrast
-//!    settings. [`colormap`] applies the transform and the percentile
-//!    stretch and produces the final grayscale bytes; [`stats`] is what
+//!    settings, plus an optional [`colormap::Colormap`] and the
+//!    `symmetric_limits` flag that puts a diverging ramp's midpoint at
+//!    zero. [`colormap`] applies the transform and the percentile stretch
+//!    and produces the final grayscale or colormapped bytes; [`stats`] is what
 //!    estimates the percentile bounds in the first place, once per
 //!    revision+profile from a fixed-seed sample, never per chunk -- doing
 //!    it per chunk would make adjacent chunks normalize differently and
