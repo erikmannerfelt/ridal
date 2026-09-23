@@ -599,6 +599,175 @@ async function main() {
     return;
   }
 
+  if (MODE === "split") {
+    /* #226: splitting a line asks first.
+     *
+     * The split is reached the way a person reaches it -- click a drawn line
+     * to select it, then click an interior vertex handle -- because the whole
+     * point of the change is what a *click* does. Picking mode is left off: a
+     * line can only be selected while it is off.
+     */
+    const result = { who: WHO, mode: MODE };
+    try {
+      // Every fixture line has two vertices, so none of them has an interior
+      // vertex to split at. Lay down one three-vertex line first. Safe to
+      // rewrite the stored picks here because `split` is the last mode to
+      // run, and each mode captured its own results in its own browser.
+      const documentUrl = "/api/v1/datasets/%(radargram)s/interpretations/" + WHO;
+      const original = await fetch(documentUrl).then((r) => r.json());
+      const threeVertex = JSON.parse(JSON.stringify(original));
+      threeVertex.features = [
+        {
+          type: "Feature",
+          geometry: {
+            type: "LineString",
+            // Increasing in trace, so it is not an overhang.
+            coordinates: [[10.0, 20.0], [50.0, 25.0], [90.0, 30.0]],
+          },
+          properties: { id: "f-split", label: "bed" },
+        },
+      ];
+      result.putStatus = (
+        await fetch(documentUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(threeVertex),
+        })
+      ).status;
+      frame.contentWindow.location.reload();
+      await sleep(3500);
+      const reloaded = frame.contentDocument;
+
+      const click = (el) =>
+        el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      // The visible polyline is non-interactive, so the clickable element is
+      // its wide invisible companion (`.hit-line`) in the picker's own pane
+      // -- one per stored feature.
+      const linePaths = () =>
+        reloaded.querySelectorAll(".leaflet-radargram-lines-pane path.hit-line");
+      result.lineCount = linePaths().length;
+
+      click(linePaths()[0]);
+      await sleep(300);
+      result.selectionShown = !reloaded.querySelector("#pick-selection").hidden;
+
+      const interior = () => reloaded.querySelectorAll(".pick-handle-interior");
+      result.interiorHandles = interior().length;
+      click(interior()[0]);
+      await sleep(300);
+
+      // The prompt is up and nothing has been split yet.
+      result.promptShown = Boolean(reloaded.querySelector("#pick-split-confirm"));
+      result.linesWhilePrompted = linePaths().length;
+
+      // Cancel leaves the line alone.
+      click(reloaded.querySelector("#pick-split-cancel"));
+      await sleep(300);
+      result.promptGoneAfterCancel = !reloaded.querySelector("#pick-split-confirm");
+      result.linesAfterCancel = linePaths().length;
+
+      // Confirming splits it: one line becomes two.
+      click(interior()[0]);
+      await sleep(300);
+      result.promptShownAgain = Boolean(reloaded.querySelector("#pick-split-confirm"));
+      click(reloaded.querySelector("#pick-split-confirm"));
+      await sleep(400);
+      result.linesAfterSplit = linePaths().length;
+
+      /* Joining asks in exactly the same way, and the split just set the
+       * case up: the two halves share the vertex they were split at, so one
+       * half's end sits on top of the other's. Dragging it a few pixels and
+       * dropping is well inside the snap radius.
+       *
+       * The drag is synthesised the way Leaflet listens for it -- mousedown
+       * on the handle, mousemove on the document, mouseup -- and has to
+       * exceed L.Draggable's 3px click tolerance to count as a drag at all.
+       */
+      const centre = (el) => {
+        const box = el.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      };
+      const mouse = (target, type, at) =>
+        target.dispatchEvent(
+          new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: at.x,
+            clientY: at.y,
+          }),
+        );
+
+      // Select one half so its end handles are drawn.
+      click(linePaths()[0]);
+      await sleep(300);
+      const ends = Array.from(reloaded.querySelectorAll(".pick-handle-end"));
+      result.endHandles = ends.length;
+      // The shared vertex is the rightmost of this half's two ends: the
+      // split line ran left to right.
+      const shared = ends.sort((a, b) => centre(b).x - centre(a).x)[0];
+      const from = centre(shared);
+      const to = { x: from.x + 6, y: from.y + 6 };
+      /* The move and release are dispatched at the map element rather than
+       * at the document. Leaflet takes `event.target` as the drag target and
+       * adds a class to it; a Document has no `className`, so the class call
+       * throws inside `_onMove`, `finishDrag` throws again on the way out
+       * before it can fire `dragend`, and `Draggable._dragging` is left set
+       * so no later drag starts either. The events still bubble to the
+       * document listener Leaflet actually registered.
+       *
+       * The steps are also spread over a few frames, the way a real drag
+       * arrives, rather than fired in one tick. */
+      const mapEl = reloaded.querySelector("#map");
+      const drag = async (handle, at, target) => {
+        mouse(handle, "mousedown", at);
+        await sleep(60);
+        mouse(mapEl, "mousemove", { x: at.x + 3, y: at.y + 3 });
+        await sleep(60);
+        mouse(mapEl, "mousemove", target);
+        await sleep(60);
+        mouse(mapEl, "mouseup", target);
+        await sleep(300);
+      };
+      const geometry = () =>
+        Array.from(linePaths()).map((n) => n.getAttribute("d")).join("|");
+      await drag(shared, from, to);
+
+      result.joinPromptShown = Boolean(reloaded.querySelector("#pick-join-confirm"));
+      result.linesWhileJoinPrompted = linePaths().length;
+
+      // Cancelling leaves two lines, and puts the dragged end back.
+      click(reloaded.querySelector("#pick-join-cancel"));
+      await sleep(300);
+      result.linesAfterJoinCancel = linePaths().length;
+
+      // Confirming merges them back into one.
+      // `redraw` replaces every handle, so the element dragged the first
+      // time is detached by now and a second drag of it would go nowhere.
+      const endsAgain = Array.from(reloaded.querySelectorAll(".pick-handle-end"));
+      const sharedAgain = endsAgain.sort((a, b) => centre(b).x - centre(a).x)[0];
+      const fromAgain = centre(sharedAgain);
+      await drag(sharedAgain, fromAgain, {
+        x: fromAgain.x + 6,
+        y: fromAgain.y + 6,
+      });
+      result.joinPromptShownAgain = Boolean(
+        reloaded.querySelector("#pick-join-confirm"),
+      );
+      click(reloaded.querySelector("#pick-join-confirm"));
+      await sleep(400);
+      result.linesAfterJoin = linePaths().length;
+
+      finish(result);
+      return;
+    } catch (error) {
+      // Report how far it got: the top-level catch keeps only the
+      // exception, which does not say which step broke.
+      result.error = String(error);
+      finish(result);
+      return;
+    }
+  }
+
   if (MODE === "narrow") {
     const result = { who: WHO, mode: MODE };
     const panel = doc.querySelector("#layer-panel");
@@ -1189,6 +1358,47 @@ def assert_refresh(refresh: dict) -> None:
     )
 
 
+def assert_split(split: dict) -> None:
+    assert split.get("error") is None, split
+    assert split["putStatus"] == 200, f"laying down the test line failed: {split}"
+    assert split["lineCount"] == 1, f"expected the one line just written, got {split}"
+    assert split["selectionShown"] is True, "clicking a line must select it"
+    assert split["interiorHandles"] > 0, "a selected line must show interior handles"
+    assert split["promptShown"] is True, (
+        "tapping an interior vertex must ask before splitting -- this is #226, "
+        "and without it the line is split on the spot"
+    )
+    assert (
+        split["linesWhilePrompted"] == split["lineCount"]
+    ), "nothing may be split while the prompt is still up"
+    assert split["promptGoneAfterCancel"] is True, "Cancel must dismiss the prompt"
+    assert (
+        split["linesAfterCancel"] == split["lineCount"]
+    ), "Cancel must leave the line whole"
+    assert split["promptShownAgain"] is True, "the prompt must come back on a second tap"
+    assert split["linesAfterSplit"] == split["lineCount"] + 1, (
+        "confirming must split one line into two, got "
+        f"{split['linesAfterSplit']} from {split['lineCount']}"
+    )
+    assert split["endHandles"] == 2, f"a split half must show two ends, got {split}"
+    assert split["joinPromptShown"] is True, (
+        "dropping an end onto another line's end must ask before joining -- "
+        "this is the other half of #226"
+    )
+    assert (
+        split["linesWhileJoinPrompted"] == 2
+    ), "nothing may be joined while the prompt is still up"
+    assert (
+        split["linesAfterJoinCancel"] == 2
+    ), "cancelling must leave both lines alone"
+    assert split["joinPromptShownAgain"] is True, (
+        "the join prompt must come back on a second drop"
+    )
+    assert (
+        split["linesAfterJoin"] == 1
+    ), f"confirming must join the two halves back into one, got {split['linesAfterJoin']}"
+
+
 def assert_narrow(narrow: dict) -> None:
     assert narrow.get("error") is None, narrow
     assert narrow["panelFits"] is True, narrow
@@ -1326,6 +1536,7 @@ def main() -> None:
         picker = run("picker", "panel")
         narrow = run("op", "narrow")
         refresh = run("op", "refresh")
+        split = run("op", "split")
 
         external = [path for path in all_requests if "://" in path]
         print(
@@ -1336,6 +1547,7 @@ def main() -> None:
                     "layers": layers,
                     "narrow": narrow,
                     "refresh": refresh,
+                    "split": split,
                 },
                 indent=2,
             )
@@ -1350,6 +1562,7 @@ def main() -> None:
         assert_layers(layers)
         assert_narrow(narrow)
         assert_refresh(refresh)
+        assert_split(split)
         assert not external, external
         print("PANEL HARNESS: all assertions passed")
     finally:
