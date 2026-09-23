@@ -24,7 +24,7 @@
 
   const show = (errorBox, message) => {
     if (!errorBox) return;
-    errorBox.textContent = message;
+    RIDAL.setMessage(errorBox, message);
     errorBox.hidden = false;
   };
   const clear = (errorBox) => {
@@ -49,7 +49,7 @@
     const parsed = await response.json().catch(() => null);
     if (!response.ok) {
       throw new Error(
-        parsed?.error?.message || `Request failed (${response.status}).`,
+        parsed?.error?.message || RIDAL.upstreamMessage(response.status),
       );
     }
     return parsed;

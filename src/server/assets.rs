@@ -243,6 +243,111 @@ mod tests {
         }
     }
 
+    /// No page script may render an error Ridal did not write as though
+    /// it had (#248).
+    ///
+    /// Every route answers a failure with the same envelope (#120), so a
+    /// failure carrying no envelope came from in front of Ridal -- in a
+    /// served deployment, the reverse proxy the README recommends. The
+    /// fallbacks used to read `Could not add it (${response.status}).`,
+    /// which is how a proxy's 1 MB body limit reached a user as four
+    /// characters and no way to act on them.
+    ///
+    /// A test rather than a comment because the failure is silent and the
+    /// shape is easy to reintroduce: the next `||` fallback written by hand
+    /// looks perfectly reasonable beside the others, and nothing breaks
+    /// until somebody deploys behind a proxy and cannot say why.
+    #[test]
+    fn no_page_script_falls_back_to_a_bare_status_code() {
+        for (name, js) in [
+            ("index.js", include_str!("assets/index.js")),
+            ("viewer.js", include_str!("assets/viewer.js")),
+            ("picker.js", include_str!("assets/picker.js")),
+            ("panel.js", include_str!("assets/panel.js")),
+            ("layers.js", include_str!("assets/layers.js")),
+            ("settings.js", include_str!("assets/settings.js")),
+            ("login.js", include_str!("assets/login.js")),
+        ] {
+            // The envelope-or-fallback shape. What follows `||` must be
+            // the shared message, not a hand-written status string.
+            //
+            // Scanned by byte offset rather than line by line: the operand
+            // often wraps onto the next line, and a per-line check silently
+            // passes over exactly the ones that do.
+            for (offset, _) in js.match_indices("error?.message ||") {
+                let tail = &js[offset..];
+                let operand = &tail[..tail.len().min(120)];
+                assert!(
+                    operand.contains("RIDAL.upstreamMessage"),
+                    "{name}:{} falls back to its own message instead of \
+                     RIDAL.upstreamMessage, so a failure written by a proxy \
+                     in front of Ridal would be shown as if Ridal wrote it: \
+                     {operand:?}",
+                    js[..offset].lines().count()
+                );
+            }
+        }
+    }
+
+    /// `upstreamMessage` has to stay legible to the person who cannot fix
+    /// it (#248).
+    ///
+    /// Whoever hits this is uploading a radargram and has no reason to know
+    /// what a reverse proxy is, so the message carries three things that are
+    /// easy to lose while editing the wording: that it is the server's setup
+    /// and not their file, who to take it to, and the setting that person
+    /// has to change. Without the last one the administrator gets a report
+    /// they cannot act on either, which is the same dead end one step along.
+    #[test]
+    fn the_upstream_message_points_at_an_administrator() {
+        let js = include_str!("assets/app.js");
+        let start = js
+            .find("upstreamMessage(status)")
+            .expect("app.js must define RIDAL.upstreamMessage");
+        let body = &js[start..];
+        let body = &body[..body.find("\n  },").expect("unterminated method")];
+
+        // The message is built by concatenating literals across several
+        // lines, so no phrase in it is contiguous in the source. Joining the
+        // literal contents is what lets the assertions below be about the
+        // wording a user reads rather than about where the lines happen to
+        // wrap -- otherwise reflowing the source breaks the test without
+        // changing the message.
+        let mut spoken = String::new();
+        let mut quote: Option<char> = None;
+        let mut previous = '\0';
+        for character in body.chars() {
+            match quote {
+                Some(open) if character == open && previous != '\\' => quote = None,
+                Some(_) => spoken.push(character),
+                None if character == '"' || character == '`' => quote = Some(character),
+                None => {}
+            }
+            previous = character;
+        }
+        let spoken = spoken.as_str();
+
+        for expected in [
+            // Not your fault. The helper is reached from saves and deletes
+            // as well as uploads, so this cannot be phrased about a file.
+            "not with anything you did",
+            // Who can actually fix it.
+            "administers this Ridal server",
+            // What that person has to change -- nginx's 1 MB default is the
+            // whole of #248.
+            "client_max_body_size",
+            // And, for the 413, that the obvious retries are a waste of
+            // time. The 502 branch deliberately says the opposite, so this
+            // must not be asserted for every status.
+            "will not help",
+        ] {
+            assert!(
+                spoken.contains(expected),
+                "RIDAL.upstreamMessage no longer mentions {expected:?}"
+            );
+        }
+    }
+
     /// The dark palette is written twice -- once for `prefers-color-scheme`
     /// and once for an explicit `data-theme="dark"` (#141) -- because CSS
     /// cannot share a declaration block between a media query and an
@@ -415,6 +520,10 @@ mod tests {
             (
                 "settings",
                 vec![app, ("settings.js", include_str!("assets/settings.js"))],
+            ),
+            (
+                "login",
+                vec![app, ("login.js", include_str!("assets/login.js"))],
             ),
         ]
     }

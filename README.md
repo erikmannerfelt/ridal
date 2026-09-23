@@ -156,6 +156,39 @@ ridal project user add erik --role admin
 This prints a single-use invite link to send to that person, which is where they set their own password.
 Ridal does not encrypt anything itself, so serving a project beyond your own machine means leaving it on `127.0.0.1` and putting a reverse proxy in front of it.
 
+The proxy needs two settings that its defaults get wrong for radargrams (#248).
+With nginx:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+
+    # nginx refuses a request body over 1 MB by default, which every
+    # radargram exceeds. It does so before Ridal sees the upload, so what
+    # reaches the browser is nginx's 413 rather than anything Ridal can
+    # explain. Ridal already caps uploads itself, against `max_bytes` under
+    # `[radargrams]` in ridal.toml, and says what it refused and why -- so
+    # removing the limit here leaves one cap rather than two, and the one
+    # that can describe itself.
+    client_max_body_size 0;
+
+    # Ridal checks an upload against that cap as the bytes arrive. Left on,
+    # nginx buffers the whole file to its own disk before passing on a
+    # byte, so an over-cap upload costs a full transfer and a second copy on
+    # the proxy before anything refuses it.
+    proxy_request_buffering off;
+
+    # A radargram takes longer to upload than the default 60s.
+    client_body_timeout 300s;
+    proxy_read_timeout 300s;
+    proxy_send_timeout 300s;
+}
+```
+
+Ridal cannot detect or work around a limit imposed in front of it, so if an
+upload fails with a message about the web server in front of Ridal, this is
+the section to check.
+
 
 ## Papers using Ridal
 

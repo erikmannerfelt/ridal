@@ -344,7 +344,7 @@
     let picksVisible = CFG.showPicks !== false;
 
     const showError = (message) => {
-      errorBox.textContent = message;
+      RIDAL.setMessage(errorBox, message);
       errorBox.classList.remove("toast-info");
       errorBox.hidden = false;
     };
@@ -1743,7 +1743,7 @@
         if (!response.ok) {
           const failure = await response.json().catch(() => null);
           showError(
-            failure?.error?.message || `Could not adopt these picks (${response.status}).`,
+            failure?.error?.message || RIDAL.upstreamMessage(response.status),
           );
           return;
         }
@@ -1872,7 +1872,7 @@
         if (!response.ok) {
           const failure = await response.json().catch(() => null);
           showError(
-            failure?.error?.message || `Could not save (${response.status}).`,
+            failure?.error?.message || RIDAL.upstreamMessage(response.status),
           );
           return;
         }
@@ -2010,8 +2010,7 @@
         if (!response.ok) {
           const failure = await response.json().catch(() => null);
           showError(
-            failure?.error?.message ||
-              `Could not load picks (${response.status}).`,
+            failure?.error?.message || RIDAL.upstreamMessage(response.status),
           );
           return;
         }

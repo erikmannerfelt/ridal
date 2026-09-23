@@ -72,6 +72,66 @@ mod tests {
         }
     }
 
+    /// A `.warning` box that a script writes into must be a <div> (#248).
+    ///
+    /// `RIDAL.setMessage` renders a blank-line-separated message as one <p>
+    /// per paragraph, so that the line naming what an administrator has to
+    /// change is held apart from the line telling the reader it is not their
+    /// fault. A <p> cannot legally contain a <p>: the host has to be a
+    /// container.
+    ///
+    /// A test rather than a comment because nothing visibly breaks. The DOM
+    /// permits what the parser would not, so the nested paragraphs render --
+    /// near enough correctly that this survives review, and the invalid
+    /// markup surfaces later as a spacing oddity nobody traces back here.
+    #[test]
+    fn scripted_warning_boxes_can_hold_paragraphs() {
+        for (name, html) in [
+            (
+                "index.html.jinja",
+                include_str!("templates/index.html.jinja"),
+            ),
+            (
+                "layers.html.jinja",
+                include_str!("templates/layers.html.jinja"),
+            ),
+            (
+                "settings.html.jinja",
+                include_str!("templates/settings.html.jinja"),
+            ),
+            (
+                "login.html.jinja",
+                include_str!("templates/login.html.jinja"),
+            ),
+            (
+                "invite.html.jinja",
+                include_str!("templates/invite.html.jinja"),
+            ),
+            (
+                "viewer.html.jinja",
+                include_str!("templates/viewer.html.jinja"),
+            ),
+        ] {
+            for (number, line) in html.lines().enumerate() {
+                let trimmed = line.trim();
+                // An empty element carrying an id is one a script fills in;
+                // a `.warning` written out in the template is static prose
+                // and never receives a message.
+                if !trimmed.starts_with("<p ")
+                    || !trimmed.contains("id=")
+                    || !trimmed.contains(r#"class="warning""#)
+                {
+                    continue;
+                }
+                panic!(
+                    "{name}:{} is a <p>, so RIDAL.setMessage cannot put \
+                     paragraphs in it. Make it a <div>: {trimmed}",
+                    number + 1
+                );
+            }
+        }
+    }
+
     #[test]
     fn interpolated_values_are_html_escaped() {
         // Load-bearing, and not obvious from the filenames: minijinja

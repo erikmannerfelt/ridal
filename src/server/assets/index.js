@@ -216,7 +216,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
   let radargramId = null;
 
   const showError = (message) => {
-    errorBox.textContent = message;
+    RIDAL.setMessage(errorBox, message);
     errorBox.hidden = !message;
   };
 
@@ -368,9 +368,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       );
       if (!response.ok) {
         const envelope = await response.json().catch(() => null);
-        showError(
-          envelope?.error?.message || `Could not save properties (${response.status}).`,
-        );
+        showError(envelope?.error?.message || RIDAL.upstreamMessage(response.status));
         return;
       }
     } catch (error) {
@@ -409,7 +407,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
   let groupId = null;
 
   const showError = (message) => {
-    errorBox.textContent = message;
+    RIDAL.setMessage(errorBox, message);
     errorBox.hidden = !message;
   };
 
@@ -459,7 +457,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       });
       if (!response.ok) {
         const envelope = await response.json().catch(() => null);
-        showError(envelope?.error?.message || `Could not save the group (${response.status}).`);
+        showError(envelope?.error?.message || RIDAL.upstreamMessage(response.status));
         return;
       }
     } catch (error) {
@@ -495,9 +493,14 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const say = (message, tone) => {
     status.replaceChildren();
     if (!message) return;
-    const box = document.createElement('p');
+    // A <div> rather than the <p> this used to build: `.warning` draws one
+    // box, and a multi-paragraph message has to nest its paragraphs inside
+    // that box rather than produce three boxes that read as three separate
+    // failures. A `.warning` holding block children is the established
+    // shape -- see the no-accounts notice in login.html.jinja.
+    const box = document.createElement('div');
     box.className = tone === 'problem' ? 'warning' : 'hint';
-    box.textContent = message;
+    RIDAL.setMessage(box, message);
     status.appendChild(box);
   };
 
@@ -530,7 +533,10 @@ document.querySelectorAll('.group-map').forEach((el) => {
       );
       if (!response.ok) {
         const envelope = await response.json().catch(() => null);
-        say(envelope?.error?.message || `Could not add it (${response.status}).`, 'problem');
+        say(
+          envelope?.error?.message || RIDAL.upstreamMessage(response.status),
+          'problem',
+        );
         return;
       }
       const added = await response.json().catch(() => null);
@@ -613,8 +619,10 @@ document.querySelectorAll('.group-map').forEach((el) => {
       });
       if (!response.ok) {
         const envelope = await response.json().catch(() => null);
-        errorBox.textContent =
-          envelope?.error?.message || `Could not remove it (${response.status}).`;
+        RIDAL.setMessage(
+          errorBox,
+          envelope?.error?.message || RIDAL.upstreamMessage(response.status),
+        );
         errorBox.hidden = false;
         return;
       }
@@ -669,7 +677,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
   };
 
   const fail = (message) => {
-    errorBox.textContent = message;
+    RIDAL.setMessage(errorBox, message);
     errorBox.hidden = false;
   };
 
@@ -814,7 +822,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       const body = await response.json().catch(() => null);
       if (!response.ok) {
         status.textContent = 'Choose another file, or cancel.';
-        fail(body?.error?.message || `Could not read it (${response.status}).`);
+        fail(body?.error?.message || RIDAL.upstreamMessage(response.status));
         return;
       }
       token = body.token;
@@ -857,7 +865,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         status.textContent = '';
-        fail(body?.error?.message || `Could not replace it (${response.status}).`);
+        fail(body?.error?.message || RIDAL.upstreamMessage(response.status));
         committing = false;
         setBusy(false);
         confirm.disabled = false;

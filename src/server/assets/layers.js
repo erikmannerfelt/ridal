@@ -21,7 +21,7 @@ let etag = null;
 let usage = { counts: {}, undefined: {} };
 
 function showError(message) {
-  errorBox.textContent = message;
+  RIDAL.setMessage(errorBox, message);
   errorBox.hidden = false;
 }
 
@@ -187,7 +187,7 @@ async function save() {
     }
     if (!response.ok) {
       const body = await response.json().catch(() => null);
-      showError(body?.error?.message || `Could not save layers (${response.status}).`);
+      showError(body?.error?.message || RIDAL.upstreamMessage(response.status));
       // Re-read so the page shows what is actually stored rather than the
       // rejected edit.
       await load();
@@ -220,7 +220,7 @@ async function load() {
     const response = await fetch("/api/v1/layers");
     if (!response.ok) {
       const body = await response.json().catch(() => null);
-      showError(body?.error?.message || `Could not load layers (${response.status}).`);
+      showError(body?.error?.message || RIDAL.upstreamMessage(response.status));
       return;
     }
     etag = response.headers.get("ETag") || null;

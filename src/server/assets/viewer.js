@@ -1537,7 +1537,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
       if (!response.ok) {
         const failure = await response.json().catch(() => null);
         const reason =
-          failure?.error?.message || `Could not check availability (${response.status}).`;
+          failure?.error?.message || RIDAL.upstreamMessage(response.status);
         const recoverable = failure?.error?.code === 'topo_window_invalid';
         toggle.checked = false;
         // A bad window stays *enabled*: the fix is in the catalog's
