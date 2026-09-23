@@ -512,12 +512,24 @@
           redraw();
           return;
         }
+        // A line that is already illegal must stay editable, or the only way
+        // to fix an overlap is to delete the line: while it still overlaps
+        // anything, every corrective move is itself a move onto an overlap.
+        // So an edit to a line that already overlaps is allowed to remain
+        // overlapping; a clean line is still refused a move that creates one.
+        const wasOverlapping =
+          featureIndex !== undefined &&
+          featureIndex !== null &&
+          firstOverlap(label, coordinates, featureIndex) !== null;
+
         // Preserve any third element GeoJSON allows, rather than truncating
         // a position this viewer did not author.
         coordinates[index] = [newTrace, newSample, ...before.slice(2)];
 
         const overlap =
-          featureIndex === undefined || featureIndex === null
+          wasOverlapping ||
+          featureIndex === undefined ||
+          featureIndex === null
             ? null
             : firstOverlap(label, coordinates, featureIndex);
         if (!allowsOverhangs(label) && overhangIndices(coordinates).length > 0) {
@@ -685,6 +697,11 @@
 
       marker.on("dragend", () => {
         const [trace, sample] = toIndex(marker.getLatLng());
+        // Inserting the midpoint on dragstart cannot change the span, so the
+        // line's overlap status here is the one it had before the drag. An
+        // already-overlapping line stays editable; see `makeHandle`.
+        const wasOverlapping =
+          firstOverlap(label, coordinates, selected) !== null;
         coordinates[index + 1] = [trace, sample];
         if (!allowsOverhangs(label) && overhangIndices(coordinates).length > 0) {
           coordinates.splice(index + 1, 1);
@@ -692,7 +709,7 @@
             "A vertex there would make the line double back, so it would have " +
               "two depths at one position. Nothing was added.",
           );
-        } else if (firstOverlap(label, coordinates, selected)) {
+        } else if (!wasOverlapping && firstOverlap(label, coordinates, selected)) {
           coordinates.splice(index + 1, 1);
           showError(
             "A vertex there would put this line over traces where " +
@@ -800,8 +817,14 @@
 
       // The merged line must not cover traces a third line of the layer
       // already covers. The two being joined are ignored, since they are
-      // replaced.
-      if (firstOverlap(label, merged, [featureIndex, target.index])) {
+      // replaced -- and either one already being illegal grandfathers the
+      // merge, for the same reason a drag is grandfathered: otherwise there
+      // is no way to fix an overlap except deleting a line.
+      const ignore = [featureIndex, target.index];
+      const wasOverlapping =
+        firstOverlap(label, source.geometry.coordinates, ignore) !== null ||
+        firstOverlap(label, other.geometry.coordinates, ignore) !== null;
+      if (!wasOverlapping && firstOverlap(label, merged, ignore)) {
         showError(
           "Joining those two lines would leave one line over traces where " +
             `"${layerName(label)}" already has one. One user may have one ` +
@@ -1543,8 +1566,8 @@
      * over the map, so showing it moves nothing by construction. It also
      * reads right: the panel acts on a line on the map.
      *
-     * `bottomleft`: the layer panel is top right, the zoom control top left
-     * and the attribution bottom right. */
+     * `bottomleft`: the layer panel is top right and the zoom control top
+     * left. The error toast takes bottom right, below. */
     const SelectionPanel = L.Control.extend({
       options: { position: "bottomleft" },
       onAdd() {
@@ -1556,6 +1579,37 @@
       },
     });
     map.addControl(new SelectionPanel());
+
+    /* The error toast is the other bottom corner.
+     *
+     * Fixed to the viewport bottom it sat under the selection panel: the
+     * panel is wide on a wide screen (the editing help is expanded) and the
+     * toast was centred, so the panel covered it. As a control in the map's
+     * other bottom corner it shares the panel's row and the two are left and
+     * right by construction. `attributionControl` is off, so the corner is
+     * free. */
+    const ErrorToast = L.Control.extend({
+      options: { position: "bottomright" },
+      onAdd() {
+        L.DomEvent.disableClickPropagation(errorBox);
+        L.DomEvent.disableScrollPropagation(errorBox);
+        return errorBox;
+      },
+    });
+    map.addControl(new ErrorToast());
+
+    /* The two bottom controls share the map's bottom row, so each is capped
+     * to half the map and they cannot meet. `vw` cannot express this: the
+     * radargram map is narrower than the viewport (the overview map shares
+     * the row) and how much narrower depends on the split, so it is measured
+     * from the map itself and kept current on resize. */
+    function fitBottomControlsToMap() {
+      const half = Math.max(120, map.getSize().x / 2 - 12);
+      selectionBox.style.maxWidth = `${half}px`;
+      errorBox.style.maxWidth = `${half}px`;
+    }
+    map.on("resize", fitBottomControlsToMap);
+    fitBottomControlsToMap();
 
     /* The editing help is a disclosure, open by default on a wide screen and
      * closed on a narrow one, where it would wrap to several lines and cover

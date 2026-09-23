@@ -953,6 +953,46 @@ async function main() {
       result.reasonShown = !toast.hidden;
       result.reason = toast.textContent;
 
+      /* A line that already overlaps stays editable. Without the
+       * grandfather, moving a vertex off an overlap is itself a move onto
+       * an overlap, so the line can only be fixed by deleting it. */
+      const click = (el) =>
+        el.dispatchEvent(
+          new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+        );
+      const centre = (el) => {
+        const box = el.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      };
+      const mouse = (target, type, at) =>
+        target.dispatchEvent(
+          new win.MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: at.x,
+            clientY: at.y,
+          }),
+        );
+      const drag = async (handle, at, target) => {
+        mouse(handle, "mousedown", at);
+        await sleep(60);
+        mouse(mapEl, "mousemove", { x: at.x + 3, y: at.y + 3 });
+        await sleep(60);
+        mouse(mapEl, "mousemove", target);
+        await sleep(60);
+        mouse(mapEl, "mouseup", target);
+        await sleep(300);
+      };
+      click(linePaths()[0]);
+      await sleep(250);
+      const ends = Array.from(doc.querySelectorAll(".pick-handle-end"));
+      result.grandfatherEnds = ends.length;
+      const from = centre(ends[0]);
+      await drag(ends[0], from, { x: from.x + 25, y: from.y + 5 });
+      const moved = centre(doc.querySelectorAll(".pick-handle-end")[0]);
+      result.grandfathered =
+        Math.hypot(moved.x - from.x, moved.y - from.y) > 5;
+
       // Drawing over an existing line is allowed; finishing it is not.
       const latlng = (t, s) =>
         win.L.latLng(-s * G.verticalRasterScale, t * G.rasterScale * xscale);
@@ -981,6 +1021,24 @@ async function main() {
       result.refusedStatus = doc.getElementById("pick-status").textContent;
       result.lineCountAfter = linePaths().length;
       result.refusedReason = toast.textContent;
+
+      // The toast and the selection panel share the map's bottom row and
+      // must not overlap. Both are forced visible so the rectangles can be
+      // measured whatever the interaction left behind.
+      const panelEl = doc.getElementById("pick-selection");
+      panelEl.hidden = false;
+      toast.textContent =
+        "This line covers traces 853.2 to 1039.2, where Bed already has one.";
+      toast.hidden = false;
+      await sleep(100);
+      const panelRect = panelEl.getBoundingClientRect();
+      const toastRect = toast.getBoundingClientRect();
+      result.panelToastOverlap = !(
+        panelRect.right <= toastRect.left ||
+        toastRect.right <= panelRect.left ||
+        panelRect.bottom <= toastRect.top ||
+        toastRect.bottom <= panelRect.top
+      );
       finish(result);
     } catch (error) {
       result.error = String(error);
@@ -993,6 +1051,26 @@ async function main() {
     const result = { who: WHO, mode: MODE };
     // Narrow frame: the editing help must start collapsed, not cover the map.
     result.selectionHelpOpen = doc.getElementById("pick-selection-help").open;
+    // The bottom-right toast and the bottom-left selection panel must still
+    // not meet on a phone, where each is capped to just under half the
+    // viewport. Forced visible with a long message so the cap is exercised.
+    const selectionEl = doc.getElementById("pick-selection");
+    const errorEl = doc.getElementById("pick-error");
+    selectionEl.hidden = false;
+    errorEl.textContent =
+      "This line covers traces 853.2 to 1039.2, where Bed already has one.";
+    errorEl.hidden = false;
+    await sleep(150);
+    const selectionRect = selectionEl.getBoundingClientRect();
+    const errorRect = errorEl.getBoundingClientRect();
+    result.bottomControlsOverlap = !(
+      selectionRect.right <= errorRect.left ||
+      errorRect.right <= selectionRect.left ||
+      selectionRect.bottom <= errorRect.top ||
+      errorRect.bottom <= selectionRect.top
+    );
+    selectionEl.hidden = true;
+    errorEl.hidden = true;
     const panel = doc.querySelector("#layer-panel");
     panel.querySelector("summary").click();
     await sleep(300);
@@ -1713,12 +1791,24 @@ def assert_overlap(overlap: dict) -> None:
         overlap["lineCountAfter"] == overlap["lineCountBefore"]
     ), "an overlapping line must not be committed"
     assert "already has one" in overlap["refusedReason"], overlap["refusedReason"]
+    assert overlap["grandfatherEnds"] == 2, overlap["grandfatherEnds"]
+    assert overlap["grandfathered"] is True, (
+        "an already-overlapping line must stay editable, or it can only be "
+        "fixed by deleting it"
+    )
+    assert overlap["panelToastOverlap"] is False, (
+        "the error toast and the selection panel must not share space"
+    )
 
 
 def assert_narrow(narrow: dict) -> None:
     assert narrow.get("error") is None, narrow
     assert narrow["selectionHelpOpen"] is False, (
         "the editing help must start collapsed on a narrow screen"
+    )
+    assert narrow["bottomControlsOverlap"] is False, (
+        "the error toast and the selection panel must not share space on a "
+        "narrow screen either"
     )
     assert narrow["panelFits"] is True, narrow
     assert narrow["panelWithinMap"] is True, "the panel must not run past the map"

@@ -1378,10 +1378,20 @@ button.danger:disabled {
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
   box-sizing: border-box;
-  /* Bounded by the viewport rather than `100%`: an absolutely positioned
-   * Leaflet corner has no width of its own to take a percentage of. */
+  /* A fallback only: picker.js caps this and the toast to half the map, which
+   * `vw` cannot express because the map is narrower than the viewport. */
   max-width: min(44rem, calc(100vw - 2rem));
   box-shadow: 0 1px 5px rgb(0 0 0 / 25%);
+}
+
+/* The layer select must be able to shrink inside that cap rather than push
+ * the panel past it; a long option name would otherwise set its width. */
+.picker-selection label {
+  min-width: 0;
+}
+
+.picker-selection select {
+  max-width: 100%;
 }
 
 /* The editing help, collapsed on a phone. Its own row in the flex panel so
@@ -1509,9 +1519,11 @@ button.danger:disabled {
   .picker-selection button {
     min-height: 2.75rem;
   }
+
 }
 
-/* The picking error is a fixed toast rather than a block in the flow.
+/* The picking error is a Leaflet control in the map's bottom right, not a
+ * block in the flow.
  *
  * In flow it changed the page height every time it appeared or cleared,
  * which on a phone moves the map and the toolbar under the finger that
@@ -1519,18 +1531,13 @@ button.danger:disabled {
  * refused tap. Taking it out of the flow means no picking interaction can
  * reflow the page at all.
  *
- * Bottom rather than top: on a phone the top of the screen is the furthest
- * point from the thumb, and the toolbar it refers to is at the bottom of
- * the controls anyway. */
+ * Bottom right, the selection panel's opposite corner, so the two share the
+ * map's bottom row instead of the toast sitting under a panel that is wide
+ * on a wide screen. Leaflet supplies the corner's margin; `box-sizing` and
+ * `max-width` keep a long message inside the map. */
 #pick-error {
-  position: fixed;
-  left: var(--space-3);
-  right: var(--space-3);
-  bottom: var(--space-3);
-  z-index: 1000;
-  margin: 0;
-  max-width: 44rem;
-  margin-inline: auto;
+  box-sizing: border-box;
+  max-width: min(44rem, calc(100vw - 2rem));
   box-shadow: 0 2px 12px rgb(0 0 0 / 30%);
 }
 
