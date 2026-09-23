@@ -893,6 +893,35 @@ async function main() {
     return;
   }
 
+  if (MODE === "duplicates") {
+    /* #238: a duplicate value is marked like an overhang, but with its own
+     * shape, and its reason is reachable by clicking rather than only on
+     * hover. The duplicate document is written to disk before this browser
+     * starts, because the save route refuses one. */
+    const result = { who: WHO, mode: MODE };
+    try {
+      result.duplicateMarkers = doc.querySelectorAll(".pick-duplicate").length;
+      result.overhangMarkers = doc.querySelectorAll(".pick-overhang").length;
+      const marker = doc.querySelector(".pick-duplicate");
+      const toast = doc.getElementById("pick-error");
+      result.toastHiddenBefore = toast.hidden;
+      marker.dispatchEvent(
+        new frame.contentWindow.MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await sleep(200);
+      result.reasonShown = !toast.hidden;
+      result.reason = toast.textContent;
+      finish(result);
+    } catch (error) {
+      result.error = String(error);
+      finish(result);
+    }
+    return;
+  }
+
   if (MODE === "narrow") {
     const result = { who: WHO, mode: MODE };
     // Narrow frame: the editing help must start collapsed, not cover the map.
@@ -1570,6 +1599,25 @@ def assert_picking(picking: dict) -> None:
     )
 
 
+def assert_duplicates(duplicates: dict) -> None:
+    assert duplicates.get("error") is None, duplicates
+    assert duplicates["duplicateMarkers"] == 2, (
+        "both vertices sharing a trace must be marked, got "
+        f"{duplicates['duplicateMarkers']}"
+    )
+    assert duplicates["overhangMarkers"] == 0, (
+        "neither line doubles back, so no overhang may be marked: "
+        f"{duplicates['overhangMarkers']}"
+    )
+    assert duplicates["toastHiddenBefore"] is True, duplicates
+    assert duplicates["reasonShown"] is True, (
+        "clicking a duplicate marker must show its reason -- hover is "
+        "unreachable on a touch screen (#238)"
+    )
+    assert "Glacier bed" in duplicates["reason"], duplicates["reason"]
+    assert "2 values" in duplicates["reason"], duplicates["reason"]
+
+
 def assert_narrow(narrow: dict) -> None:
     assert narrow.get("error") is None, narrow
     assert narrow["selectionHelpOpen"] is False, (
@@ -1712,6 +1760,40 @@ def main() -> None:
         refresh = run("op", "refresh")
         picking = run("op", "picking")
         split = run("op", "split")
+        # #238: a duplicate document, written straight to disk because the
+        # save route refuses one. Written just before the mode that reads it,
+        # since the refresh and split modes rewrite op's picks.
+        duplicate_path = (
+            workdir / "ridal_data" / "interpretations" / RADARGRAM / "op.gprinterp.json"
+        )
+        duplicate_path.write_text(
+            json.dumps(
+                {
+                    "key": RADARGRAM,
+                    "source": {"revision_id": revision},
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[10.0, 20.0], [50.0, 30.0]],
+                            },
+                            "properties": {"id": "f-dup-a", "label": "bed"},
+                        },
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[50.0, 60.0], [90.0, 40.0]],
+                            },
+                            "properties": {"id": "f-dup-b", "label": "bed"},
+                        },
+                    ],
+                },
+                indent=2,
+            )
+        )
+        duplicates = run("op", "duplicates")
 
         external = [path for path in all_requests if "://" in path]
         print(
@@ -1724,6 +1806,7 @@ def main() -> None:
                     "refresh": refresh,
                     "picking": picking,
                     "split": split,
+                    "duplicates": duplicates,
                 },
                 indent=2,
             )
@@ -1740,6 +1823,7 @@ def main() -> None:
         assert_refresh(refresh)
         assert_picking(picking)
         assert_split(split)
+        assert_duplicates(duplicates)
         assert not external, external
         print("PANEL HARNESS: all assertions passed")
     finally:

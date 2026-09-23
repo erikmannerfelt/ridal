@@ -1453,6 +1453,19 @@ button.danger:disabled {
   background: rgb(224 178 60 / 22%);
 }
 
+/* A duplicate is a different rule from an overhang (#207), so it gets a
+ * different shape: a diamond, where an overhang is a circle. Shape rather
+ * than colour alone, because colour alone does not survive a colour-blind
+ * reader or a small screen. `rotate` is about the icon's centre, so the
+ * anchor Leaflet derived from the size stays put. */
+.pick-duplicate {
+  box-sizing: border-box;
+  border: 3px solid #7c3aed;
+  background: rgb(124 58 237 / 22%);
+  transform: rotate(45deg);
+  pointer-events: auto;
+}
+
 /* Marker sizes are set in picker.js, not here: Leaflet derives each icon's
  * anchor from its size, and overriding the size in CSS left the anchor
  * behind -- every handle sat a few pixels below its line. */

@@ -583,7 +583,7 @@ async fn an_overhanging_line_is_refused_by_default() {
     let (_dir, app) = project_app(true);
     let (status, _, body) = put(&app, URI, &overhanging_document(), None).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "overhang");
+    assert_eq!(body["error"]["code"], "violation");
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains("f-0001"), "{message}");
     assert!(message.contains("bed"), "{message}");

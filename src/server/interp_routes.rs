@@ -462,7 +462,7 @@ pub async fn promote_interpretation(
     );
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
-        return Err(ApiError::bad_request("overhang", joined.join("; ")));
+        return Err(ApiError::bad_request("violation", joined.join("; ")));
     }
 
     // Whether what arrived is the carry as derived, or the carry as
@@ -633,7 +633,7 @@ pub async fn put_interpretation(
     );
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
-        return Err(ApiError::bad_request("overhang", joined.join("; ")));
+        return Err(ApiError::bad_request("violation", joined.join("; ")));
     }
 
     let existed = interpretations::read(project.documents(), &radargram, &user)

@@ -104,6 +104,66 @@
     return offending;
   }
 
+  /** How close two samples at one trace must be to count as lines that
+   * merely touch rather than a genuine duplicate (#207).
+   *
+   * The client-side twin of `TOUCH_TOLERANCE_SAMPLES` in
+   * `src/interp/checks.rs`. */
+  const TOUCH_TOLERANCE_SAMPLES = 1.0;
+
+  /** Every vertex that shares its trace with another value on the same
+   * layer (#207).
+   *
+   * The client-side twin of `duplicate_values` in `src/interp/checks.rs`,
+   * which is the authority; this exists so the offending vertices can be
+   * marked as they are drawn, the way `overhangIndices` marks an overhang.
+   *
+   * `lines` is `[{ coordinates, label }]`, and `warnsOnDuplicates(label)`
+   * decides whether a layer participates. Two features that merely touch at
+   * a shared endpoint are allowed -- their samples are within rounding --
+   * but a single feature repeating a trace, or samples further apart than
+   * `TOUCH_TOLERANCE_SAMPLES`, is a genuine second depth. Returns one entry
+   * per offending vertex, so each can be marked.
+   */
+  function duplicateValues(lines, warnsOnDuplicates) {
+    const byLayer = new Map();
+    lines.forEach((line, lineIndex) => {
+      if (!warnsOnDuplicates(line.label)) return;
+      line.coordinates.forEach(([trace, sample], vertexIndex) => {
+        if (typeof trace !== "number" || typeof sample !== "number") return;
+        if (!byLayer.has(line.label)) byLayer.set(line.label, []);
+        byLayer.get(line.label).push({ lineIndex, vertexIndex, trace, sample });
+      });
+    });
+
+    const offending = [];
+    for (const vertices of byLayer.values()) {
+      const byTrace = new Map();
+      for (const vertex of vertices) {
+        if (!byTrace.has(vertex.trace)) byTrace.set(vertex.trace, []);
+        byTrace.get(vertex.trace).push(vertex);
+      }
+      for (const [trace, group] of byTrace) {
+        if (group.length < 2) continue;
+        const oneFeature = group.every(
+          (vertex) => vertex.lineIndex === group[0].lineIndex,
+        );
+        const samples = group.map((vertex) => vertex.sample);
+        const spread = Math.max(...samples) - Math.min(...samples);
+        if (!oneFeature && spread <= TOUCH_TOLERANCE_SAMPLES) continue;
+        for (const vertex of group) {
+          offending.push({
+            lineIndex: vertex.lineIndex,
+            vertexIndex: vertex.vertexIndex,
+            trace,
+            samples,
+          });
+        }
+      }
+    }
+    return offending;
+  }
+
   if (CFG.writable) {
     initPicker();
   }
@@ -161,6 +221,7 @@
     let draftLine = null;
     let handles = [];
     let overhangMarkers = [];
+    let duplicateMarkers = [];
     let nextId = 1;
     /** Whether the stored lines are drawn at all (#143).
      *
@@ -257,6 +318,12 @@
     const colorFor = (label) => (layerFor(label) || {}).color || DEFAULT_COLOR;
     const allowsOverhangs = (label) =>
       Boolean((layerFor(label) || {}).allow_overhangs);
+    /** Whether more than one value at one trace is worth pointing out on
+     * `label`. Absent means on: `warn_on_duplicates` defaults to true and is
+     * only serialized when false, so `!== false` is the test, not truthiness.
+     * An undefined layer has not opted out of anything. */
+    const warnsOnDuplicates = (label) =>
+      (layerFor(label) || {}).warn_on_duplicates !== false;
 
     /** What to call a layer in the interface.
      *
@@ -383,7 +450,7 @@
      * anchor from the size, which is the only way the two stay consistent. */
     const HANDLE_PX = COARSE_POINTER ? 24 : 16;
     const MIDPOINT_PX = COARSE_POINTER ? 36 : 26;
-    const OVERHANG_PX = COARSE_POINTER ? 26 : 18;
+    const VIOLATION_PX = COARSE_POINTER ? 26 : 18;
 
     /** A segment shorter than this on screen gets no midpoint handle.
      *
@@ -799,7 +866,7 @@
         drawnLines.push(hit, line);
       });
       redrawHandles();
-      redrawOverhangs();
+      redrawMarkers();
       updateSelectionPanel();
       updateStatus();
     }
@@ -838,7 +905,7 @@
             draft.splice(index, 1);
             clearError();
             redrawHandles();
-            redrawOverhangs();
+            redrawMarkers();
             updateStatus();
           }),
         );
@@ -891,51 +958,103 @@
       }
     }
 
-    /** A marker at every vertex where a line doubles back.
+    /** A marker for one geometry violation, carrying its reason.
      *
-     * Drawn for *all* lines, including layers that allow overhangs: an
-     * intentional overhang is still worth seeing, and a line saved before
+     * A click handler as well as a tooltip: there is no hover on a touch
+     * screen, so a tooltip alone leaves the reason unreachable on a phone,
+     * and that gap gets worse once a marker can mean more than one thing.
+     * Clicking shows the same text in the toast. */
+    function violationMarker(trace, sample, className, reason) {
+      const marker = L.marker(toLatLng(trace, sample), {
+        keyboard: false,
+        icon: L.divIcon({
+          className,
+          iconSize: [VIOLATION_PX, VIOLATION_PX],
+          iconAnchor: [VIOLATION_PX / 2, VIOLATION_PX / 2],
+        }),
+      }).addTo(map);
+      marker.bindTooltip(document.createTextNode(reason));
+      marker.on("click", (event) => {
+        L.DomEvent.stopPropagation(event);
+        showInfo(reason);
+      });
+      return marker;
+    }
+
+    /** The lines a violation marker is drawn for.
+     *
+     * Hidden means hidden (#143): a marker and its tooltip left floating
+     * over a radargram whose picks were switched off is exactly the view the
+     * toggle exists to give. The draft is not a stored pick and is always
+     * marked -- and starting to draw one reveals the rest anyway. */
+    function markerLines() {
+      const lines = (picksVisible ? features : []).map((f) => ({
+        coordinates: f.geometry.coordinates,
+        label: (f.properties && f.properties.label) || null,
+      }));
+      if (draft && draft.length) {
+        lines.push({ coordinates: draft, label: layerSelect.value || null });
+      }
+      return lines;
+    }
+
+    /** A marker at every vertex where a line doubles back, and at every
+     * vertex that shares its trace with another value on its layer (#207).
+     *
+     * Overhangs are drawn for *all* lines, including layers that allow them:
+     * an intentional overhang is still worth seeing, and a line saved before
      * the rule existed would otherwise look fine while quietly failing to
-     * export at even spacing. */
-    function redrawOverhangs() {
+     * export at even spacing.
+     *
+     * Each kind has its own shape -- a circle for an overhang, a diamond for
+     * a duplicate -- because a marker that says where but not what has to be
+     * opened to find out. */
+    function redrawMarkers() {
       overhangMarkers.forEach((marker) => map.removeLayer(marker));
       overhangMarkers = [];
+      duplicateMarkers.forEach((marker) => map.removeLayer(marker));
+      duplicateMarkers = [];
 
-      // Hidden means hidden (#143): a marker and its tooltip left floating
-      // over a radargram whose picks were switched off is exactly the view
-      // the toggle exists to give. The draft is not a stored pick and is
-      // always marked -- and starting to draw one reveals the rest anyway.
-      const lines = (picksVisible ? features : []).map((f) => [
-        f.geometry.coordinates,
-        (f.properties && f.properties.label) || null,
-      ]);
-      if (draft && draft.length) lines.push([draft, layerSelect.value]);
+      const lines = markerLines();
 
-      for (const [coordinates, label] of lines) {
+      for (const { coordinates, label } of lines) {
         const allowed = allowsOverhangs(label);
         for (const index of overhangIndices(coordinates)) {
           const [trace, sample] = coordinates[index];
           overhangMarkers.push(
-            L.marker(toLatLng(trace, sample), {
-              keyboard: false,
-              icon: L.divIcon({
-                className: `pick-overhang${allowed ? " pick-overhang-allowed" : ""}`,
-                iconSize: [OVERHANG_PX, OVERHANG_PX],
-                iconAnchor: [OVERHANG_PX / 2, OVERHANG_PX / 2],
-              }),
-            })
-              .addTo(map)
-              .bindTooltip(
-                document.createTextNode(
-                  allowed
-                    ? `Overhang at vertex ${index}, allowed on "${label}". This ` +
-                        "layer exports as picked vertices, not evenly spaced."
-                    : `Overhang at vertex ${index}: the line doubles back here, ` +
-                        "so it has two depths at one position.",
-                ),
-              ),
+            violationMarker(
+              trace,
+              sample,
+              `pick-overhang${allowed ? " pick-overhang-allowed" : ""}`,
+              allowed
+                ? `Overhang at vertex ${index}, allowed on ` +
+                    `"${layerName(label)}". This layer exports as picked ` +
+                    "vertices, not evenly spaced."
+                : `Overhang at vertex ${index}: the line doubles back here, ` +
+                    "so it has two depths at one position.",
+            ),
           );
         }
+      }
+
+      // Duplicates last, so where one lands on the same vertex as an overhang
+      // -- a vertical segment is both -- its own shape is the one seen.
+      for (const violation of duplicateValues(lines, warnsOnDuplicates)) {
+        const { coordinates, label } = lines[violation.lineIndex];
+        const [trace, sample] = coordinates[violation.vertexIndex];
+        const samples = violation.samples.map((s) => s.toFixed(1)).join(", ");
+        duplicateMarkers.push(
+          violationMarker(
+            trace,
+            sample,
+            "pick-duplicate",
+            `Layer '${layerName(label)}' has ${violation.samples.length} ` +
+              `values at trace ${violation.trace}: samples ${samples}. One ` +
+              "user may have one value per layer per position; set a reducer " +
+              "to choose between them, or turn off duplicate warnings on " +
+              "this layer.",
+          ),
+        );
       }
     }
 
@@ -1112,7 +1231,7 @@
       clearError();
       draft = candidate;
       redrawHandles();
-      redrawOverhangs();
+      redrawMarkers();
       updateStatus();
     });
 
@@ -1137,7 +1256,7 @@
         event.preventDefault();
         draft.pop();
         redrawHandles();
-        redrawOverhangs();
+        redrawMarkers();
         updateStatus();
       }
       if (event.key === "s" && (event.ctrlKey || event.metaKey)) {
@@ -1220,7 +1339,7 @@
         draft.pop();
         clearError();
         redrawHandles();
-        redrawOverhangs();
+        redrawMarkers();
         updateStatus();
       }
     });
@@ -1228,7 +1347,7 @@
     layerSelect.addEventListener("change", () => {
       paintSwatch(layerSwatch, layerSelect.value);
       redrawHandles();
-      redrawOverhangs();
+      redrawMarkers();
       updateStatus();
     });
     deleteButton.addEventListener("click", deleteSelected);
