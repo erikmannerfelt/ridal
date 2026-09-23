@@ -116,7 +116,6 @@
     const layerSelect = document.getElementById("pick-layer");
     const toggleButton = document.getElementById("pick-toggle");
     const undoButton = document.getElementById("pick-undo");
-    const finishButton = document.getElementById("pick-finish");
     const saveButton = document.getElementById("pick-save");
     const statusEl = document.getElementById("pick-status");
     const errorBox = document.getElementById("pick-error");
@@ -138,9 +137,15 @@
      * silently on the first browser edit. */
     let loaded = null;
     let layers = [];
-    let picking = false;
     let dirty = false;
-    /** The line being drawn: array of [trace, sample], or null. */
+    /** The line being drawn: array of [trace, sample], or null.
+     *
+     * `null` means no line is in progress, which is the whole of the drawing
+     * state: there is no separate "picking" mode. Pressing Add line sets this
+     * to an empty array, and every tap extends it until Finish line commits
+     * it and returns to selection. A tap over an existing line is ignored
+     * only while this is set, so lines are holes in the drawing surface only
+     * mid-line, not for the whole session. */
     let draft = null;
     /** Index into `features` of the selected line, or null. */
     let selected = null;
@@ -759,9 +764,10 @@
           ),
         );
         hit.on("click", (event) => {
-          // While picking, a tap over an existing line is still a new
-          // vertex -- lines must not become holes in the drawing surface.
-          if (picking) return;
+          // While a line is in progress, a tap over an existing line is
+          // still a new vertex -- lines must not become holes in the drawing
+          // surface. Outside that, a tap selects the line it lands on.
+          if (draft) return;
           L.DomEvent.stopPropagation(event);
           select(index === selected ? null : index);
         });
@@ -793,7 +799,10 @@
       handles.forEach((handle) => map.removeLayer(handle));
       handles = [];
 
-      if (draft && draft.length) {
+      // `draft` rather than `draft.length`: an empty draft is still a line in
+      // progress (the button says Finish line), and it must not fall through
+      // to drawing the selected line's handles underneath it.
+      if (draft) {
         const label = layerSelect.value;
         if (draft.length > 1) {
           draftLine = L.polyline(
@@ -970,16 +979,25 @@
       saveButton.disabled = !dirty && !adoptable;
       saveButton.textContent = adoptable && !dirty ? "Adopt to this version…" : "Save";
       undoButton.disabled = !draft || draft.length === 0;
-      finishButton.disabled = !draft || draft.length < 2;
       // Read by the download menu in viewer.js, which owns downloading now:
       // a level 2 export is derived from what is *saved*, so offering one
       // over unsaved edits would hand back the wrong thing silently.
       window.RIDAL_PICKS_DIRTY = dirty;
-      // Naming the count ties the button to the line in progress. "Finish
-      // line" on its own reads as a mode switch, which is what made it
-      // hard to guess what it would do.
-      finishButton.textContent =
-        draft && draft.length ? `Finish line (${draft.length})` : "Finish line";
+
+      // One button, whose label is the state: there is no mode to be in, only
+      // a line part-way through. Naming the count ties it to that line, which
+      // "Finish line" on its own does not.
+      const drawing = draft !== null;
+      toggleButton.textContent = drawing
+        ? draft.length
+          ? `Finish line (${draft.length})`
+          : "Finish line"
+        : "Add line";
+      toggleButton.setAttribute("aria-pressed", String(drawing));
+      document.getElementById("map").classList.toggle("picking", drawing);
+      // A double-click finishes the line, so it must not also zoom the map.
+      if (drawing) map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
     }
 
     function markDirty() {
@@ -1012,33 +1030,28 @@
       if (!picksVisible) setPicksVisible(true);
     }
 
-    function setPicking(on) {
-      if (on) revealPicks();
-      picking = on;
-      toggleButton.textContent = on ? "Stop picking" : "Start picking";
-      toggleButton.setAttribute("aria-pressed", String(on));
-      document.getElementById("map").classList.toggle("picking", on);
-      if (on) {
-        deselect();
-        // Every tap extends the *same* line until it is finished, which is
-        // not guessable from a toolbar of buttons. Said once, when it
-        // becomes relevant, and cleared by the first tap.
-        showInfo(
-          "Tap the radargram to add points to one line. Finish line ends it, " +
-            "so the next tap starts a separate line.",
-        );
-      } else {
-        finishLine();
-        clearError();
-      }
+    /** Start a new line. The next tap on the radargram is its first vertex.
+     *
+     * There is no picking mode to leave: Add line arms the next tap, and
+     * Finish line (or a double-click) commits the line and returns to
+     * selection. A selection is cleared, because while a line is in progress
+     * every tap is a vertex rather than a way to pick an existing line. */
+    function startLine() {
+      revealPicks();
+      deselect();
+      draft = [];
+      clearError();
+      redraw();
     }
 
     function finishLine() {
-      if (!draft || draft.length < 2) {
+      if (!draft) return;
+      if (draft.length < 2) {
+        // Not a line yet. Drop it rather than storing something that cannot
+        // be exported; the button was the only way to be here.
         draft = null;
-        redrawHandles();
-        redrawOverhangs();
-        updateStatus();
+        clearError();
+        redraw();
         return;
       }
       features.push(newFeature(draft, layerSelect.value));
@@ -1048,10 +1061,14 @@
     }
 
     map.on("click", (event) => {
-      if (!picking) {
+      if (!draft) {
         deselect();
         return;
       }
+      // The second click of a double-click lands on the same point as the
+      // first and arrives just before `dblclick`, which finishes the line.
+      // Adding it would leave a duplicate vertex behind, so it is dropped.
+      if (event.originalEvent && event.originalEvent.detail > 1) return;
       if (!layerSelect.value) {
         showError("Choose a layer before picking.");
         return;
@@ -1063,9 +1080,7 @@
       // previous one. Direction is a property of the line as a whole, and
       // checking pairwise let one stray vertex flip the perceived direction
       // and then reject every later point as an overhang.
-      const candidate = draft
-        ? draft.concat([[trace, sample]])
-        : [[trace, sample]];
+      const candidate = draft.concat([[trace, sample]]);
       if (
         !allowsOverhangs(layerSelect.value) &&
         overhangIndices(candidate).length > 0
@@ -1078,8 +1093,6 @@
         );
         return;
       }
-      // Clears the "how this works" hint too, on the first tap that proves
-      // it was read.
       clearError();
       draft = candidate;
       redrawHandles();
@@ -1087,9 +1100,16 @@
       updateStatus();
     });
 
+    // A double-click finishes the line, matching Leaflet.Draw. The second
+    // click is suppressed above; `doubleClickZoom` is disabled while a line
+    // is in progress (see `updateStatus`), so this does not also zoom.
+    map.on("dblclick", () => {
+      if (draft) finishLine();
+    });
+
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        if (picking) finishLine();
+        if (draft) finishLine();
         else deselect();
       }
       if (
@@ -1140,7 +1160,10 @@
     visibilityButton.textContent = picksVisible ? "Hide picks" : "Show picks";
     visibilityButton.setAttribute("aria-pressed", String(picksVisible));
     visibilityButton.addEventListener("click", () => setPicksVisible(!picksVisible));
-    toggleButton.addEventListener("click", () => setPicking(!picking));
+    toggleButton.addEventListener("click", () => {
+      if (draft) finishLine();
+      else startLine();
+    });
     undoButton.addEventListener("click", () => {
       if (draft && draft.length) {
         draft.pop();
@@ -1150,7 +1173,6 @@
         updateStatus();
       }
     });
-    finishButton.addEventListener("click", finishLine);
     saveButton.addEventListener("click", save);
     layerSelect.addEventListener("change", () => {
       paintSwatch(layerSwatch, layerSelect.value);

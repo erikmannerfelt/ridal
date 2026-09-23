@@ -776,6 +776,95 @@ async function main() {
     }
   }
 
+  if (MODE === "picking") {
+    /* #240: the line-drawing gesture.
+     *
+     * One button starts a line and finishes it, and a double-click on the
+     * last point is the second way to finish. The map is clicked through the
+     * same geometry the picker uses, so a synthetic click lands where a real
+     * one would. */
+    const result = { who: WHO, mode: MODE };
+    try {
+      const win = frame.contentWindow;
+      const map = win.RIDAL_MAP;
+      const G = win.RIDAL_GEOMETRY;
+      const xscale = win.RIDAL_XSCALE || 1;
+      const button = doc.getElementById("pick-toggle");
+      const mapEl = doc.getElementById("map");
+      const mapRect = mapEl.getBoundingClientRect();
+      const linePaths = () =>
+        doc.querySelectorAll(".leaflet-radargram-lines-pane path.hit-line");
+      result.lineCountBefore = linePaths().length;
+      result.startLabel = button.textContent.trim();
+      result.startPressed = button.getAttribute("aria-pressed");
+
+      const latlng = (t, s) =>
+        win.L.latLng(-s * G.verticalRasterScale, t * G.rasterScale * xscale);
+      const clickMap = (t, s, detail) => {
+        const p = map.latLngToContainerPoint(latlng(t, s));
+        mapEl.dispatchEvent(
+          new win.MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            clientX: mapRect.left + p.x,
+            clientY: mapRect.top + p.y,
+            detail: detail || 1,
+          }),
+        );
+      };
+
+      button.click();
+      await sleep(200);
+      result.drawingLabel = button.textContent.trim();
+      result.drawingPressed = button.getAttribute("aria-pressed");
+      result.mapHasPicking = mapEl.classList.contains("picking");
+
+      // Spaced well beyond the double-click interval: two clicks inside it
+      // are seen as a double-click by the browser and finish the line.
+      clickMap(20, 30, 1);
+      await sleep(600);
+      clickMap(60, 40, 1);
+      await sleep(600);
+      result.draftHandles = doc.querySelectorAll(".pick-handle-draft").length;
+      result.drawingStatus = doc.getElementById("pick-status").textContent;
+
+      // Double-click on a new point: the first click places the last vertex,
+      // the second is suppressed, and dblclick finishes the line.
+      clickMap(90, 50, 1);
+      await sleep(80);
+      clickMap(90, 50, 2);
+      await sleep(80);
+      mapEl.dispatchEvent(
+        new win.MouseEvent("dblclick", {
+          bubbles: true,
+          cancelable: true,
+          clientX: mapRect.left,
+          clientY: mapRect.top,
+          detail: 2,
+        }),
+      );
+      await sleep(300);
+      result.afterFinishLabel = button.textContent.trim();
+      result.afterFinishPressed = button.getAttribute("aria-pressed");
+      result.draftHandlesAfter = doc.querySelectorAll(".pick-handle-draft").length;
+      result.lineCount = linePaths().length;
+
+      // With no line in progress, the new line is selectable like any other.
+      const paths = linePaths();
+      paths[paths.length - 1].dispatchEvent(
+        new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+      await sleep(200);
+      result.selectionShown = !doc.getElementById("pick-selection").hidden;
+
+      finish(result);
+    } catch (error) {
+      result.error = String(error);
+      finish(result);
+    }
+    return;
+  }
+
   if (MODE === "narrow") {
     const result = { who: WHO, mode: MODE };
     const panel = doc.querySelector("#layer-panel");
@@ -1417,6 +1506,27 @@ def assert_split(split: dict) -> None:
     ), f"confirming must join the two halves back into one, got {split['linesAfterJoin']}"
 
 
+def assert_picking(picking: dict) -> None:
+    assert picking.get("error") is None, picking
+    assert picking["startLabel"] == "Add line", picking["startLabel"]
+    assert picking["startPressed"] == "false", picking["startPressed"]
+    assert picking["drawingLabel"].startswith("Finish line"), picking["drawingLabel"]
+    assert picking["drawingPressed"] == "true", picking["drawingPressed"]
+    assert picking["mapHasPicking"] is True, "the crosshair must follow the line"
+    assert picking["draftHandles"] == 2, (
+        f"two taps must leave two draft handles, got {picking['draftHandles']}"
+    )
+    assert picking["afterFinishLabel"] == "Add line", picking["afterFinishLabel"]
+    assert picking["afterFinishPressed"] == "false", picking["afterFinishPressed"]
+    assert picking["draftHandlesAfter"] == 0, picking["draftHandlesAfter"]
+    assert (
+        picking["lineCount"] == picking["lineCountBefore"] + 1
+    ), f"the double-click must commit one line, got {picking}"
+    assert picking["selectionShown"] is True, (
+        "finishing must return to selection, so the new line can be picked"
+    )
+
+
 def assert_narrow(narrow: dict) -> None:
     assert narrow.get("error") is None, narrow
     assert narrow["panelFits"] is True, narrow
@@ -1554,6 +1664,7 @@ def main() -> None:
         picker = run("picker", "panel")
         narrow = run("op", "narrow")
         refresh = run("op", "refresh")
+        picking = run("op", "picking")
         split = run("op", "split")
 
         external = [path for path in all_requests if "://" in path]
@@ -1565,6 +1676,7 @@ def main() -> None:
                     "layers": layers,
                     "narrow": narrow,
                     "refresh": refresh,
+                    "picking": picking,
                     "split": split,
                 },
                 indent=2,
@@ -1580,6 +1692,7 @@ def main() -> None:
         assert_layers(layers)
         assert_narrow(narrow)
         assert_refresh(refresh)
+        assert_picking(picking)
         assert_split(split)
         assert not external, external
         print("PANEL HARNESS: all assertions passed")

@@ -140,10 +140,14 @@
               aria-pressed="{% if show_picks %}true{% else %}false{% endif %}"
               title="Show or hide the picked lines over the radargram. Starting to pick shows them again."
         >{% if show_picks %}Hide picks{% else %}Show picks{% endif %}</button>
-      <button id="pick-toggle" type="button" aria-pressed="false">Start picking</button>
+      {#- One button for the whole line-drawing gesture (#240). It starts a
+          line, becomes Finish line while one is in progress, and finishing
+          returns to selection. There is no picking mode to enter or leave,
+          so there is nothing for the label to fail to explain. Double-click
+          the last point is the second way to finish, hence the title. -#}
+      <button id="pick-toggle" type="button" aria-pressed="false"
+              title="Add a new line. While drawing, Finish line (or a double-click on the last point) completes it.">Add line</button>
       <button id="pick-undo" type="button" disabled>Undo vertex</button>
-      <button id="pick-finish" type="button" disabled
-              title="Complete the line you are drawing. The next tap starts a separate line instead of extending this one.">Finish line</button>
       <button id="pick-save" type="button" disabled>Save</button>
       <span id="pick-status" class="pick-status"></span>
     {% else %}
