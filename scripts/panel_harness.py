@@ -819,17 +819,19 @@ async function main() {
       result.drawingPressed = button.getAttribute("aria-pressed");
       result.mapHasPicking = mapEl.classList.contains("picking");
 
+      // In the 40..70 trace gap between the fixture's two bed lines, so the
+      // new line does not overlap either and the span rule lets it finish.
       // Spaced well beyond the double-click interval: two clicks inside it
       // are seen as a double-click by the browser and finish the line.
-      clickMap(20, 30, 1);
+      clickMap(45, 30, 1);
       await sleep(600);
-      clickMap(60, 40, 1);
+      clickMap(55, 40, 1);
       await sleep(600);
       result.draftHandles = doc.querySelectorAll(".pick-handle-draft").length;
       result.drawingStatus = doc.getElementById("pick-status").textContent;
 
       // Double-click on a new point: the first click places the last vertex.
-      clickMap(90, 50, 1);
+      clickMap(65, 50, 1);
       await sleep(80);
       // The second click lands on the handle the first click just created --
       // the same element a real double-click hits. Dispatching it at the map
@@ -914,6 +916,71 @@ async function main() {
       await sleep(200);
       result.reasonShown = !toast.hidden;
       result.reason = toast.textContent;
+      finish(result);
+    } catch (error) {
+      result.error = String(error);
+      finish(result);
+    }
+    return;
+  }
+
+  if (MODE === "overlap") {
+    /* #207: two lines covering the same traces are a violation, not only two
+     * vertices on one trace. The overlap document is written to disk before
+     * this browser starts, because the save route refuses it. */
+    const result = { who: WHO, mode: MODE };
+    try {
+      const win = frame.contentWindow;
+      const map = win.RIDAL_MAP;
+      const G = win.RIDAL_GEOMETRY;
+      const xscale = win.RIDAL_XSCALE || 1;
+      const mapEl = doc.getElementById("map");
+      const mapRect = mapEl.getBoundingClientRect();
+      const button = doc.getElementById("pick-toggle");
+      const toast = doc.getElementById("pick-error");
+      const linePaths = () =>
+        doc.querySelectorAll(".leaflet-radargram-lines-pane path.hit-line");
+      result.bands = doc.querySelectorAll(".pick-overlap-band").length;
+      result.markers = doc.querySelectorAll(".pick-overlap").length;
+      result.duplicateMarkers = doc.querySelectorAll(".pick-duplicate").length;
+      result.lineCountBefore = linePaths().length;
+
+      const marker = doc.querySelector(".pick-overlap");
+      marker.dispatchEvent(
+        new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+      await sleep(200);
+      result.reasonShown = !toast.hidden;
+      result.reason = toast.textContent;
+
+      // Drawing over an existing line is allowed; finishing it is not.
+      const latlng = (t, s) =>
+        win.L.latLng(-s * G.verticalRasterScale, t * G.rasterScale * xscale);
+      const clickMap = (t, s) => {
+        const p = map.latLngToContainerPoint(latlng(t, s));
+        mapEl.dispatchEvent(
+          new win.MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            clientX: mapRect.left + p.x,
+            clientY: mapRect.top + p.y,
+            detail: 1,
+          }),
+        );
+      };
+      button.click();
+      await sleep(150);
+      clickMap(40, 100);
+      await sleep(600);
+      clickMap(60, 110);
+      await sleep(600);
+      result.draftLabelBeforeFinish = button.textContent.trim();
+      button.click();
+      await sleep(250);
+      result.refusedLabel = button.textContent.trim();
+      result.refusedStatus = doc.getElementById("pick-status").textContent;
+      result.lineCountAfter = linePaths().length;
+      result.refusedReason = toast.textContent;
       finish(result);
     } catch (error) {
       result.error = String(error);
@@ -1618,6 +1685,36 @@ def assert_duplicates(duplicates: dict) -> None:
     assert "2 values" in duplicates["reason"], duplicates["reason"]
 
 
+def assert_overlap(overlap: dict) -> None:
+    assert overlap.get("error") is None, overlap
+    assert overlap["bands"] == 2, (
+        "a pair of overlapping lines needs a band on each, got "
+        f"{overlap['bands']}"
+    )
+    assert overlap["markers"] == 1, (
+        f"one pair means one reason marker, got {overlap['markers']}"
+    )
+    assert overlap["duplicateMarkers"] == 0, (
+        "no vertex is shared, so this must not be marked as a duplicate: "
+        f"{overlap['duplicateMarkers']}"
+    )
+    assert overlap["reasonShown"] is True, (
+        "clicking an overlap marker must show its reason"
+    )
+    assert "same traces" in overlap["reason"], overlap["reason"]
+    assert overlap["draftLabelBeforeFinish"].startswith("Finish line"), overlap[
+        "draftLabelBeforeFinish"
+    ]
+    assert overlap["refusedLabel"].startswith("Finish line"), (
+        "a refused finish must leave the draft in progress, got "
+        f"{overlap['refusedLabel']!r}"
+    )
+    assert (
+        overlap["lineCountAfter"] == overlap["lineCountBefore"]
+    ), "an overlapping line must not be committed"
+    assert "already has one" in overlap["refusedReason"], overlap["refusedReason"]
+
+
 def assert_narrow(narrow: dict) -> None:
     assert narrow.get("error") is None, narrow
     assert narrow["selectionHelpOpen"] is False, (
@@ -1794,6 +1891,36 @@ def main() -> None:
             )
         )
         duplicates = run("op", "duplicates")
+        # #207: two lines covering the same traces, also written straight to
+        # disk because the save route refuses it.
+        duplicate_path.write_text(
+            json.dumps(
+                {
+                    "key": RADARGRAM,
+                    "source": {"revision_id": revision},
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[0.0, 50.0], [99.0, 60.0]],
+                            },
+                            "properties": {"id": "f-ov-a", "label": "bed"},
+                        },
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[30.0, 150.0], [90.0, 160.0]],
+                            },
+                            "properties": {"id": "f-ov-b", "label": "bed"},
+                        },
+                    ],
+                },
+                indent=2,
+            )
+        )
+        overlap = run("op", "overlap")
 
         external = [path for path in all_requests if "://" in path]
         print(
@@ -1807,6 +1934,7 @@ def main() -> None:
                     "picking": picking,
                     "split": split,
                     "duplicates": duplicates,
+                    "overlap": overlap,
                 },
                 indent=2,
             )
@@ -1824,6 +1952,7 @@ def main() -> None:
         assert_picking(picking)
         assert_split(split)
         assert_duplicates(duplicates)
+        assert_overlap(overlap)
         assert not external, external
         print("PANEL HARNESS: all assertions passed")
     finally:

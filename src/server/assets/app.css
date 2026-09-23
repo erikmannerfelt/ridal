@@ -1466,6 +1466,18 @@ button.danger:disabled {
   pointer-events: auto;
 }
 
+/* An overlap is a span, not a point (#207): picker.js draws a translucent
+ * band along the shared traces and this square marks its middle, so the
+ * reason is still reachable. A third shape -- square where a duplicate is a
+ * diamond and an overhang a circle -- so the kinds are told apart at a
+ * glance. */
+.pick-overlap {
+  box-sizing: border-box;
+  border: 3px solid #e8590c;
+  background: rgb(232 89 12 / 22%);
+  pointer-events: auto;
+}
+
 /* Marker sizes are set in picker.js, not here: Leaflet derives each icon's
  * anchor from its size, and overriding the size in CSS left the anchor
  * behind -- every handle sat a few pixels below its line. */
