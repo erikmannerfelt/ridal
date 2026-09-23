@@ -1367,10 +1367,21 @@ button.danger:disabled {
   padding: var(--space-1) var(--space-2);
 }
 
+/* An overlay on the map (#239), so it needs an opaque surface and an edge
+ * to read against the radargram -- the in-flow version could rely on the
+ * page behind it. It keeps the `controls` class for the flex row and the
+ * button/select styling, and Leaflet's own `.leaflet-bottom .leaflet-control`
+ * rule supplies the margin from the map edge. */
 .picker-selection {
-  background: var(--color-surface-sunken);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
+  box-sizing: border-box;
+  /* Bounded by the viewport rather than `100%`: an absolutely positioned
+   * Leaflet corner has no width of its own to take a percentage of. */
+  max-width: min(44rem, calc(100vw - 2rem));
+  box-shadow: 0 1px 5px rgb(0 0 0 / 25%);
 }
 
 /* --- Vertex handles and overhang markers ---------------------------------

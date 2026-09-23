@@ -184,7 +184,13 @@
   {#- Appears when a stored line is clicked. A sibling of the toolbar rather
       than a child: it acts on one existing line rather than on the drawing
       session, and showing it only when relevant is what makes "click a line
-      to edit it" discoverable. -#}
+      to edit it" discoverable.
+
+      picker.js moves this into a Leaflet control over the map (#239). In
+      flow it grew the controls block the moment a line was selected and
+      shrank it on deselect, which shifted the radargram under the pointer.
+      Rendered here rather than built in JS so a page without JavaScript
+      still has the markup, hidden, in its place. -#}
   {% if writable %}
   <div class="controls picker-selection" id="pick-selection" hidden>
     <strong>Selected line</strong>

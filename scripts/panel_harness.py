@@ -862,12 +862,21 @@ async function main() {
       result.lineCount = linePaths().length;
 
       // With no line in progress, the new line is selectable like any other.
+      // The panel it opens must overlay the map, not push it down (#239).
+      result.mapTopBeforeSelect = mapEl.getBoundingClientRect().top;
       const paths = linePaths();
       paths[paths.length - 1].dispatchEvent(
         new win.MouseEvent("click", { bubbles: true, cancelable: true }),
       );
       await sleep(200);
-      result.selectionShown = !doc.getElementById("pick-selection").hidden;
+      const selection = doc.getElementById("pick-selection");
+      result.selectionShown = !selection.hidden;
+      result.mapTopAfterSelect = mapEl.getBoundingClientRect().top;
+      const selectionRect = selection.getBoundingClientRect();
+      const mapRectAfter = mapEl.getBoundingClientRect();
+      result.selectionWithinMap =
+        selectionRect.top >= mapRectAfter.top - 1 &&
+        selectionRect.bottom <= mapRectAfter.bottom + 1;
       // Three taps went in (two singles and the final double-click), so the
       // committed line must have three vertices, not two.
       result.selectedHandles = doc.querySelectorAll(
@@ -1545,6 +1554,12 @@ def assert_picking(picking: dict) -> None:
     assert picking["selectedHandles"] == 3, (
         "the double-click must keep the vertex it placed, not remove it: "
         f"got {picking['selectedHandles']} handles"
+    )
+    assert (
+        picking["mapTopAfterSelect"] == picking["mapTopBeforeSelect"]
+    ), "opening the selection panel must not move the radargram (#239)"
+    assert picking["selectionWithinMap"] is True, (
+        "the selection panel must overlay the map, not sit past its edge"
     )
 
 

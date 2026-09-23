@@ -1168,6 +1168,29 @@
     // both wasteful and visibly jumpy.
     map.on("moveend zoomend", redrawHandles);
 
+    /* The "Selected line" panel lives over the map, not in the controls
+     * stack above it (#239).
+     *
+     * In flow it took vertical space the moment a line was selected, pushing
+     * the radargram down and giving it back on deselect -- so a fixed point
+     * on the data moved under the pointer. A Leaflet control is positioned
+     * over the map, so showing it moves nothing by construction. It also
+     * reads right: the panel acts on a line on the map.
+     *
+     * `bottomleft`: the layer panel is top right, the zoom control top left
+     * and the attribution bottom right. */
+    const SelectionPanel = L.Control.extend({
+      options: { position: "bottomleft" },
+      onAdd() {
+        // Interacting with the panel must not reach the map: a tap on the
+        // layer select would otherwise also deselect the line it is about.
+        L.DomEvent.disableClickPropagation(selectionBox);
+        L.DomEvent.disableScrollPropagation(selectionBox);
+        return selectionBox;
+      },
+    });
+    map.addControl(new SelectionPanel());
+
     // The template renders the label and `aria-pressed` from the same
     // setting this reads, so the page is never briefly wrong -- including
     // with JavaScript disabled. Re-applied here anyway, because that
