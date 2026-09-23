@@ -252,6 +252,17 @@
     const allowsOverhangs = (label) =>
       Boolean((layerFor(label) || {}).allow_overhangs);
 
+    /** What to call a layer in the interface.
+     *
+     * Picks store the layer *id* -- `bed_no_temperate` -- while the person
+     * reads `name`. Falls back to the id for a label the vocabulary does not
+     * define, which is a real case: `allowsOverhangs` treats it as one, and a
+     * document can name a layer this project has since removed. */
+    const layerName = (label) => {
+      const layer = layerFor(label);
+      return (layer && layer.name) || label || "unlabelled";
+    };
+
     function newFeature(coordinates, label) {
       return {
         type: "Feature",
@@ -444,7 +455,7 @@
       // Hover-only affordance: on a touch screen the tooltip opens on the
       // same tap that adds the vertex, so it is noise at best.
       if (!COARSE_POINTER) {
-        marker.bindTooltip("Tap to add a vertex here, or drag to place one");
+        marker.bindTooltip("Add vertex here");
       }
 
       // Inserted on `dragstart` so the drag is already moving a real
@@ -454,6 +465,12 @@
       let dragging = false;
       marker.on("dragstart", () => {
         dragging = true;
+        // The tooltip sits exactly where the vertex is being aimed, so it
+        // is hidden for the duration. Closing it is not enough: Leaflet
+        // reopens a bound tooltip on `mouseover` and the pointer stays over
+        // the marker for the whole drag, so it is unbound instead. `redraw`
+        // on `dragend` rebuilds the marker, tooltip and all.
+        marker.unbindTooltip();
         coordinates.splice(index + 1, 0, midpoint.slice());
       });
 
@@ -734,9 +751,11 @@
         const hit = RIDAL.hitLine(points, "radargram-lines").addTo(map);
         // A text node, not a string: Leaflet assigns a string tooltip with
         // innerHTML, and `label` is free text from the stored document.
+        // `layerName` rather than `label` so a line in `bed_no_temperate`
+        // reads as "Glacier bed", the way the layer dropdown names it.
         hit.bindTooltip(
           document.createTextNode(
-            `${label || "unlabelled"} (${feature.geometry.coordinates.length} vertices)`,
+            `${layerName(label)} (${feature.geometry.coordinates.length} vertices)`,
           ),
         );
         hit.on("click", (event) => {
@@ -819,8 +838,14 @@
           selected,
         );
         handle.bindTooltip(
-          interior ? "Drag to move, tap to split here" : "Drag to move",
+          interior ? "Drag to move, tap to split" : "Drag to move",
         );
+        // Once the handle is being dragged the tooltip sits exactly where
+        // the vertex is being aimed, and what is happening is already
+        // obvious. Unbound rather than closed for the same reason as the
+        // midpoint: `mouseover` would reopen it mid-drag. `dragend` calls
+        // `redraw`, which rebuilds every handle with its tooltip.
+        handle.on("dragstart", () => handle.unbindTooltip());
         return handle;
       });
 
