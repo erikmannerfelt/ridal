@@ -673,6 +673,90 @@ async function main() {
       click(reloaded.querySelector("#pick-split-confirm"));
       await sleep(400);
       result.linesAfterSplit = linePaths().length;
+
+      /* Joining asks in exactly the same way, and the split just set the
+       * case up: the two halves share the vertex they were split at, so one
+       * half's end sits on top of the other's. Dragging it a few pixels and
+       * dropping is well inside the snap radius.
+       *
+       * The drag is synthesised the way Leaflet listens for it -- mousedown
+       * on the handle, mousemove on the document, mouseup -- and has to
+       * exceed L.Draggable's 3px click tolerance to count as a drag at all.
+       */
+      const centre = (el) => {
+        const box = el.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      };
+      const mouse = (target, type, at) =>
+        target.dispatchEvent(
+          new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: at.x,
+            clientY: at.y,
+          }),
+        );
+
+      // Select one half so its end handles are drawn.
+      click(linePaths()[0]);
+      await sleep(300);
+      const ends = Array.from(reloaded.querySelectorAll(".pick-handle-end"));
+      result.endHandles = ends.length;
+      // The shared vertex is the rightmost of this half's two ends: the
+      // split line ran left to right.
+      const shared = ends.sort((a, b) => centre(b).x - centre(a).x)[0];
+      const from = centre(shared);
+      const to = { x: from.x + 6, y: from.y + 6 };
+      /* The move and release are dispatched at the map element rather than
+       * at the document. Leaflet takes `event.target` as the drag target and
+       * adds a class to it; a Document has no `className`, so the class call
+       * throws inside `_onMove`, `finishDrag` throws again on the way out
+       * before it can fire `dragend`, and `Draggable._dragging` is left set
+       * so no later drag starts either. The events still bubble to the
+       * document listener Leaflet actually registered.
+       *
+       * The steps are also spread over a few frames, the way a real drag
+       * arrives, rather than fired in one tick. */
+      const mapEl = reloaded.querySelector("#map");
+      const drag = async (handle, at, target) => {
+        mouse(handle, "mousedown", at);
+        await sleep(60);
+        mouse(mapEl, "mousemove", { x: at.x + 3, y: at.y + 3 });
+        await sleep(60);
+        mouse(mapEl, "mousemove", target);
+        await sleep(60);
+        mouse(mapEl, "mouseup", target);
+        await sleep(300);
+      };
+      const geometry = () =>
+        Array.from(linePaths()).map((n) => n.getAttribute("d")).join("|");
+      await drag(shared, from, to);
+
+      result.joinPromptShown = Boolean(reloaded.querySelector("#pick-join-confirm"));
+      result.linesWhileJoinPrompted = linePaths().length;
+
+      // Cancelling leaves two lines, and puts the dragged end back.
+      click(reloaded.querySelector("#pick-join-cancel"));
+      await sleep(300);
+      result.linesAfterJoinCancel = linePaths().length;
+
+      // Confirming merges them back into one.
+      // `redraw` replaces every handle, so the element dragged the first
+      // time is detached by now and a second drag of it would go nowhere.
+      const endsAgain = Array.from(reloaded.querySelectorAll(".pick-handle-end"));
+      const sharedAgain = endsAgain.sort((a, b) => centre(b).x - centre(a).x)[0];
+      const fromAgain = centre(sharedAgain);
+      await drag(sharedAgain, fromAgain, {
+        x: fromAgain.x + 6,
+        y: fromAgain.y + 6,
+      });
+      result.joinPromptShownAgain = Boolean(
+        reloaded.querySelector("#pick-join-confirm"),
+      );
+      click(reloaded.querySelector("#pick-join-confirm"));
+      await sleep(400);
+      result.linesAfterJoin = linePaths().length;
+
       finish(result);
       return;
     } catch (error) {
@@ -1213,6 +1297,23 @@ def assert_split(split: dict) -> None:
         "confirming must split one line into two, got "
         f"{split['linesAfterSplit']} from {split['lineCount']}"
     )
+    assert split["endHandles"] == 2, f"a split half must show two ends, got {split}"
+    assert split["joinPromptShown"] is True, (
+        "dropping an end onto another line's end must ask before joining -- "
+        "this is the other half of #226"
+    )
+    assert (
+        split["linesWhileJoinPrompted"] == 2
+    ), "nothing may be joined while the prompt is still up"
+    assert (
+        split["linesAfterJoinCancel"] == 2
+    ), "cancelling must leave both lines alone"
+    assert split["joinPromptShownAgain"] is True, (
+        "the join prompt must come back on a second drop"
+    )
+    assert (
+        split["linesAfterJoin"] == 1
+    ), f"confirming must join the two halves back into one, got {split['linesAfterJoin']}"
 
 
 def assert_narrow(narrow: dict) -> None:

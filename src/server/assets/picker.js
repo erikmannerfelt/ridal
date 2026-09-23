@@ -301,7 +301,7 @@
         if (featureIndex !== undefined && featureIndex !== null && isEnd) {
           const target = findJoinTarget(featureIndex, dropped);
           if (target) {
-            joinWith(featureIndex, index === 0, target);
+            confirmJoinWith(featureIndex, index === 0, target, dropped);
             return;
           }
         }
@@ -574,47 +574,87 @@
       redraw();
     }
 
-    /** Ask before splitting, anchored at the vertex that was tapped.
+    /** The confirmation both destructive line edits ask for.
      *
-     * A split is triggered by a tap on a vertex someone may well have been
-     * aiming to *drag*, and the way back is to drag one half's end onto the
-     * other's -- fiddly on a long horizon, and easy not to notice on a
-     * radargram with many lines. So it asks first.
+     * Splitting and joining are each triggered by a gesture aimed at a
+     * vertex -- a tap that could have been the start of a drag, or a drop
+     * that could have been a plain move -- and each is awkward to undo by
+     * hand on a long horizon. So both ask, and they ask identically.
      *
-     * A popup on the marker rather than a prompt in the selection panel
-     * above the map: the tap landed here, and a question that appears above
-     * the radargram is a question that gets answered without being read.
-     * Not `window.confirm`, which blocks the Chromium harness and reads as a
-     * browser dialog rather than part of the page -- the same reason the
-     * layer panel builds its delete confirmation by hand. */
-    function confirmSplitAt(vertexIndex, marker) {
+     * A popup at the vertex rather than a prompt in the selection panel
+     * above the map: the gesture landed here, and a question that appears
+     * above the radargram is a question that gets answered without being
+     * read. Not `window.confirm`, which blocks the Chromium harness and
+     * reads as a browser dialog rather than part of the page -- the same
+     * reason the layer panel builds its delete confirmation by hand.
+     *
+     * A standalone popup, not `marker.bindPopup`: binding also installs
+     * Leaflet's own click-to-toggle on the marker, so a second tap on a
+     * handle closed the popup this had just opened and the prompt never
+     * reappeared. `openOn` also closes any popup already up, so two vertices
+     * cannot both be asking at once.
+     *
+     * `onDismiss` runs whenever the popup goes away without the action being
+     * taken -- Cancel, a click on the map, Escape. The join needs it: its
+     * drag has already moved the marker while `coordinates` still holds the
+     * old position, so anything short of a confirmation has to put it back.
+     */
+    function confirmAt(latlng, { name, question, verb, onConfirm, onDismiss }) {
+      let confirmed = false;
       const content = document.createElement("div");
       content.className = "pick-confirm";
-      const question = document.createElement("span");
-      question.textContent = "Split the line here?";
+      const text = document.createElement("span");
+      text.textContent = question;
       const yes = document.createElement("button");
       yes.type = "button";
-      yes.id = "pick-split-confirm";
-      yes.textContent = "Split";
+      yes.id = `pick-${name}-confirm`;
+      yes.textContent = verb;
       yes.addEventListener("click", () => {
+        confirmed = true;
         map.closePopup();
-        splitSelectedAt(vertexIndex);
+        onConfirm();
       });
       const no = document.createElement("button");
       no.type = "button";
-      no.id = "pick-split-cancel";
+      no.id = `pick-${name}-cancel`;
       no.textContent = "Cancel";
       no.addEventListener("click", () => map.closePopup());
-      content.append(question, yes, no);
-      // A standalone popup positioned at the marker, not `marker.bindPopup`:
-      // binding also installs Leaflet's own click-to-toggle on the marker, so
-      // the second tap on a handle closed the popup this handler had just
-      // opened and the prompt never reappeared. `openOn` also closes any
-      // popup already up, so two handles cannot both be asking at once.
-      L.popup({ closeButton: false, autoPan: false })
-        .setLatLng(marker.getLatLng())
+      content.append(text, yes, no);
+      const popup = L.popup({ closeButton: false, autoPan: false })
+        .setLatLng(latlng)
         .setContent(content)
         .openOn(map);
+      if (onDismiss) {
+        popup.on("remove", () => {
+          if (!confirmed) onDismiss();
+        });
+      }
+    }
+
+    /** Ask before splitting, anchored at the vertex that was tapped. */
+    function confirmSplitAt(vertexIndex, marker) {
+      confirmAt(marker.getLatLng(), {
+        name: "split",
+        question: "Split the line here?",
+        verb: "Split",
+        onConfirm: () => splitSelectedAt(vertexIndex),
+      });
+    }
+
+    /** Ask before joining, anchored where the end was dropped.
+     *
+     * Nothing has been written when this is called -- the dragged vertex's
+     * new position is not stored until the move is applied, and a join
+     * replaces both lines outright -- so dismissing only has to redraw for
+     * the marker to snap back to where it came from. */
+    function confirmJoinWith(featureIndex, draggedAtStart, target, droppedAt) {
+      confirmAt(droppedAt, {
+        name: "join",
+        question: "Join these two lines?",
+        verb: "Join",
+        onConfirm: () => joinWith(featureIndex, draggedAtStart, target),
+        onDismiss: redraw,
+      });
     }
 
     /** Replace the selected line with the two halves of a split.
