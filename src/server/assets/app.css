@@ -1367,10 +1367,51 @@ button.danger:disabled {
   padding: var(--space-1) var(--space-2);
 }
 
+/* An overlay on the map (#239), so it needs an opaque surface and an edge
+ * to read against the radargram -- the in-flow version could rely on the
+ * page behind it. It keeps the `controls` class for the flex row and the
+ * button/select styling, and Leaflet's own `.leaflet-bottom .leaflet-control`
+ * rule supplies the margin from the map edge. */
 .picker-selection {
-  background: var(--color-surface-sunken);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   padding: var(--space-2) var(--space-3);
+  box-sizing: border-box;
+  /* A fallback only: picker.js caps this and the toast to half the map, which
+   * `vw` cannot express because the map is narrower than the viewport. */
+  max-width: min(44rem, calc(100vw - 2rem));
+  box-shadow: 0 1px 5px rgb(0 0 0 / 25%);
+}
+
+/* The layer select must be able to shrink inside that cap rather than push
+ * the panel past it; a long option name would otherwise set its width. */
+.picker-selection label {
+  min-width: 0;
+}
+
+.picker-selection select {
+  max-width: 100%;
+}
+
+/* The editing help, collapsed on a phone. Its own row in the flex panel so
+ * the long text cannot widen the buttons beside it. */
+.picker-selection-help {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.picker-selection-help > summary {
+  cursor: pointer;
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.picker-selection-help .pick-status {
+  display: block;
+  margin-top: var(--space-1);
 }
 
 /* --- Vertex handles and overhang markers ---------------------------------
@@ -1422,6 +1463,31 @@ button.danger:disabled {
   background: rgb(224 178 60 / 22%);
 }
 
+/* A duplicate is a different rule from an overhang (#207), so it gets a
+ * different shape: a diamond, where an overhang is a circle. Shape rather
+ * than colour alone, because colour alone does not survive a colour-blind
+ * reader or a small screen. `rotate` is about the icon's centre, so the
+ * anchor Leaflet derived from the size stays put. */
+.pick-duplicate {
+  box-sizing: border-box;
+  border: 3px solid #7c3aed;
+  background: rgb(124 58 237 / 22%);
+  transform: rotate(45deg);
+  pointer-events: auto;
+}
+
+/* An overlap is a span, not a point (#207): picker.js draws a translucent
+ * band along the shared traces and this square marks its middle, so the
+ * reason is still reachable. A third shape -- square where a duplicate is a
+ * diamond and an overhang a circle -- so the kinds are told apart at a
+ * glance. */
+.pick-overlap {
+  box-sizing: border-box;
+  border: 3px solid #e8590c;
+  background: rgb(232 89 12 / 22%);
+  pointer-events: auto;
+}
+
 /* Marker sizes are set in picker.js, not here: Leaflet derives each icon's
  * anchor from its size, and overriding the size in CSS left the anchor
  * behind -- every handle sat a few pixels below its line. */
@@ -1453,9 +1519,11 @@ button.danger:disabled {
   .picker-selection button {
     min-height: 2.75rem;
   }
+
 }
 
-/* The picking error is a fixed toast rather than a block in the flow.
+/* The picking error is a Leaflet control in the map's bottom right, not a
+ * block in the flow.
  *
  * In flow it changed the page height every time it appeared or cleared,
  * which on a phone moves the map and the toolbar under the finger that
@@ -1463,18 +1531,13 @@ button.danger:disabled {
  * refused tap. Taking it out of the flow means no picking interaction can
  * reflow the page at all.
  *
- * Bottom rather than top: on a phone the top of the screen is the furthest
- * point from the thumb, and the toolbar it refers to is at the bottom of
- * the controls anyway. */
+ * Bottom right, the selection panel's opposite corner, so the two share the
+ * map's bottom row instead of the toast sitting under a panel that is wide
+ * on a wide screen. Leaflet supplies the corner's margin; `box-sizing` and
+ * `max-width` keep a long message inside the map. */
 #pick-error {
-  position: fixed;
-  left: var(--space-3);
-  right: var(--space-3);
-  bottom: var(--space-3);
-  z-index: 1000;
-  margin: 0;
-  max-width: 44rem;
-  margin-inline: auto;
+  box-sizing: border-box;
+  max-width: min(44rem, calc(100vw - 2rem));
   box-shadow: 0 2px 12px rgb(0 0 0 / 30%);
 }
 

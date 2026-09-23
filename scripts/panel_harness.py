@@ -776,8 +776,301 @@ async function main() {
     }
   }
 
+  if (MODE === "picking") {
+    /* #240: the line-drawing gesture.
+     *
+     * One button starts a line and finishes it, and a double-click on the
+     * last point is the second way to finish. The map is clicked through the
+     * same geometry the picker uses, so a synthetic click lands where a real
+     * one would. */
+    const result = { who: WHO, mode: MODE };
+    try {
+      const win = frame.contentWindow;
+      const map = win.RIDAL_MAP;
+      const G = win.RIDAL_GEOMETRY;
+      const xscale = win.RIDAL_XSCALE || 1;
+      const button = doc.getElementById("pick-toggle");
+      const mapEl = doc.getElementById("map");
+      const mapRect = mapEl.getBoundingClientRect();
+      const linePaths = () =>
+        doc.querySelectorAll(".leaflet-radargram-lines-pane path.hit-line");
+      result.lineCountBefore = linePaths().length;
+      result.startLabel = button.textContent.trim();
+      result.startPressed = button.getAttribute("aria-pressed");
+
+      const latlng = (t, s) =>
+        win.L.latLng(-s * G.verticalRasterScale, t * G.rasterScale * xscale);
+      const clickMap = (t, s, detail) => {
+        const p = map.latLngToContainerPoint(latlng(t, s));
+        mapEl.dispatchEvent(
+          new win.MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            clientX: mapRect.left + p.x,
+            clientY: mapRect.top + p.y,
+            detail: detail || 1,
+          }),
+        );
+      };
+
+      button.click();
+      await sleep(200);
+      result.drawingLabel = button.textContent.trim();
+      result.drawingPressed = button.getAttribute("aria-pressed");
+      result.mapHasPicking = mapEl.classList.contains("picking");
+
+      // In the 40..70 trace gap between the fixture's two bed lines, so the
+      // new line does not overlap either and the span rule lets it finish.
+      // Spaced well beyond the double-click interval: two clicks inside it
+      // are seen as a double-click by the browser and finish the line.
+      clickMap(45, 30, 1);
+      await sleep(600);
+      clickMap(55, 40, 1);
+      await sleep(600);
+      result.draftHandles = doc.querySelectorAll(".pick-handle-draft").length;
+      result.drawingStatus = doc.getElementById("pick-status").textContent;
+
+      // Double-click on a new point: the first click places the last vertex.
+      clickMap(65, 50, 1);
+      await sleep(80);
+      // The second click lands on the handle the first click just created --
+      // the same element a real double-click hits. Dispatching it at the map
+      // instead would miss the bug where that handle's tap-to-remove eats
+      // the vertex.
+      const placed = doc.querySelectorAll(".pick-handle-draft");
+      const target = placed[placed.length - 1];
+      const targetRect = target.getBoundingClientRect();
+      const targetAt = {
+        x: targetRect.left + targetRect.width / 2,
+        y: targetRect.top + targetRect.height / 2,
+      };
+      const atTarget = (type) =>
+        target.dispatchEvent(
+          new win.MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: targetAt.x,
+            clientY: targetAt.y,
+            detail: 2,
+          }),
+        );
+      atTarget("click");
+      await sleep(80);
+      atTarget("dblclick");
+      await sleep(300);
+      result.afterFinishLabel = button.textContent.trim();
+      result.afterFinishPressed = button.getAttribute("aria-pressed");
+      result.draftHandlesAfter = doc.querySelectorAll(".pick-handle-draft").length;
+      result.lineCount = linePaths().length;
+
+      // With no line in progress, the new line is selectable like any other.
+      // The panel it opens must overlay the map, not push it down (#239).
+      result.mapTopBeforeSelect = mapEl.getBoundingClientRect().top;
+      const paths = linePaths();
+      paths[paths.length - 1].dispatchEvent(
+        new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+      await sleep(200);
+      const selection = doc.getElementById("pick-selection");
+      result.selectionShown = !selection.hidden;
+      // Wide frame: the editing help starts expanded.
+      result.selectionHelpOpen = doc.getElementById("pick-selection-help").open;
+      result.mapTopAfterSelect = mapEl.getBoundingClientRect().top;
+      const selectionRect = selection.getBoundingClientRect();
+      const mapRectAfter = mapEl.getBoundingClientRect();
+      result.selectionWithinMap =
+        selectionRect.top >= mapRectAfter.top - 1 &&
+        selectionRect.bottom <= mapRectAfter.bottom + 1;
+      // Three taps went in (two singles and the final double-click), so the
+      // committed line must have three vertices, not two.
+      result.selectedHandles = doc.querySelectorAll(
+        ".pick-handle-interior, .pick-handle-end",
+      ).length;
+
+      finish(result);
+    } catch (error) {
+      result.error = String(error);
+      finish(result);
+    }
+    return;
+  }
+
+  if (MODE === "duplicates") {
+    /* #238: a duplicate value is marked like an overhang, but with its own
+     * shape, and its reason is reachable by clicking rather than only on
+     * hover. The duplicate document is written to disk before this browser
+     * starts, because the save route refuses one. */
+    const result = { who: WHO, mode: MODE };
+    try {
+      result.duplicateMarkers = doc.querySelectorAll(".pick-duplicate").length;
+      result.overhangMarkers = doc.querySelectorAll(".pick-overhang").length;
+      const marker = doc.querySelector(".pick-duplicate");
+      const toast = doc.getElementById("pick-error");
+      result.toastHiddenBefore = toast.hidden;
+      marker.dispatchEvent(
+        new frame.contentWindow.MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await sleep(200);
+      result.reasonShown = !toast.hidden;
+      result.reason = toast.textContent;
+      finish(result);
+    } catch (error) {
+      result.error = String(error);
+      finish(result);
+    }
+    return;
+  }
+
+  if (MODE === "overlap") {
+    /* #207: two lines covering the same traces are a violation, not only two
+     * vertices on one trace. The overlap document is written to disk before
+     * this browser starts, because the save route refuses it. */
+    const result = { who: WHO, mode: MODE };
+    try {
+      const win = frame.contentWindow;
+      const map = win.RIDAL_MAP;
+      const G = win.RIDAL_GEOMETRY;
+      const xscale = win.RIDAL_XSCALE || 1;
+      const mapEl = doc.getElementById("map");
+      const mapRect = mapEl.getBoundingClientRect();
+      const button = doc.getElementById("pick-toggle");
+      const toast = doc.getElementById("pick-error");
+      const linePaths = () =>
+        doc.querySelectorAll(".leaflet-radargram-lines-pane path.hit-line");
+      result.bands = doc.querySelectorAll(".pick-overlap-band").length;
+      result.markers = doc.querySelectorAll(".pick-overlap").length;
+      result.duplicateMarkers = doc.querySelectorAll(".pick-duplicate").length;
+      result.lineCountBefore = linePaths().length;
+
+      const marker = doc.querySelector(".pick-overlap");
+      marker.dispatchEvent(
+        new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+      );
+      await sleep(200);
+      result.reasonShown = !toast.hidden;
+      result.reason = toast.textContent;
+
+      /* A line that already overlaps stays editable. Without the
+       * grandfather, moving a vertex off an overlap is itself a move onto
+       * an overlap, so the line can only be fixed by deleting it. */
+      const click = (el) =>
+        el.dispatchEvent(
+          new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+        );
+      const centre = (el) => {
+        const box = el.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      };
+      const mouse = (target, type, at) =>
+        target.dispatchEvent(
+          new win.MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: at.x,
+            clientY: at.y,
+          }),
+        );
+      const drag = async (handle, at, target) => {
+        mouse(handle, "mousedown", at);
+        await sleep(60);
+        mouse(mapEl, "mousemove", { x: at.x + 3, y: at.y + 3 });
+        await sleep(60);
+        mouse(mapEl, "mousemove", target);
+        await sleep(60);
+        mouse(mapEl, "mouseup", target);
+        await sleep(300);
+      };
+      click(linePaths()[0]);
+      await sleep(250);
+      const ends = Array.from(doc.querySelectorAll(".pick-handle-end"));
+      result.grandfatherEnds = ends.length;
+      const from = centre(ends[0]);
+      await drag(ends[0], from, { x: from.x + 25, y: from.y + 5 });
+      const moved = centre(doc.querySelectorAll(".pick-handle-end")[0]);
+      result.grandfathered =
+        Math.hypot(moved.x - from.x, moved.y - from.y) > 5;
+
+      // Drawing over an existing line is allowed; finishing it is not.
+      const latlng = (t, s) =>
+        win.L.latLng(-s * G.verticalRasterScale, t * G.rasterScale * xscale);
+      const clickMap = (t, s) => {
+        const p = map.latLngToContainerPoint(latlng(t, s));
+        mapEl.dispatchEvent(
+          new win.MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            clientX: mapRect.left + p.x,
+            clientY: mapRect.top + p.y,
+            detail: 1,
+          }),
+        );
+      };
+      button.click();
+      await sleep(150);
+      clickMap(40, 100);
+      await sleep(600);
+      clickMap(60, 110);
+      await sleep(600);
+      result.draftLabelBeforeFinish = button.textContent.trim();
+      button.click();
+      await sleep(250);
+      result.refusedLabel = button.textContent.trim();
+      result.refusedStatus = doc.getElementById("pick-status").textContent;
+      result.lineCountAfter = linePaths().length;
+      result.refusedReason = toast.textContent;
+
+      // The toast and the selection panel share the map's bottom row and
+      // must not overlap. Both are forced visible so the rectangles can be
+      // measured whatever the interaction left behind.
+      const panelEl = doc.getElementById("pick-selection");
+      panelEl.hidden = false;
+      toast.textContent =
+        "This line covers traces 853.2 to 1039.2, where Bed already has one.";
+      toast.hidden = false;
+      await sleep(100);
+      const panelRect = panelEl.getBoundingClientRect();
+      const toastRect = toast.getBoundingClientRect();
+      result.panelToastOverlap = !(
+        panelRect.right <= toastRect.left ||
+        toastRect.right <= panelRect.left ||
+        panelRect.bottom <= toastRect.top ||
+        toastRect.bottom <= panelRect.top
+      );
+      finish(result);
+    } catch (error) {
+      result.error = String(error);
+      finish(result);
+    }
+    return;
+  }
+
   if (MODE === "narrow") {
     const result = { who: WHO, mode: MODE };
+    // Narrow frame: the editing help must start collapsed, not cover the map.
+    result.selectionHelpOpen = doc.getElementById("pick-selection-help").open;
+    // The bottom-right toast and the bottom-left selection panel must still
+    // not meet on a phone, where each is capped to just under half the
+    // viewport. Forced visible with a long message so the cap is exercised.
+    const selectionEl = doc.getElementById("pick-selection");
+    const errorEl = doc.getElementById("pick-error");
+    selectionEl.hidden = false;
+    errorEl.textContent =
+      "This line covers traces 853.2 to 1039.2, where Bed already has one.";
+    errorEl.hidden = false;
+    await sleep(150);
+    const selectionRect = selectionEl.getBoundingClientRect();
+    const errorRect = errorEl.getBoundingClientRect();
+    result.bottomControlsOverlap = !(
+      selectionRect.right <= errorRect.left ||
+      errorRect.right <= selectionRect.left ||
+      selectionRect.bottom <= errorRect.top ||
+      errorRect.bottom <= selectionRect.top
+    );
+    selectionEl.hidden = true;
+    errorEl.hidden = true;
     const panel = doc.querySelector("#layer-panel");
     panel.querySelector("summary").click();
     await sleep(300);
@@ -1417,8 +1710,106 @@ def assert_split(split: dict) -> None:
     ), f"confirming must join the two halves back into one, got {split['linesAfterJoin']}"
 
 
+def assert_picking(picking: dict) -> None:
+    assert picking.get("error") is None, picking
+    assert picking["startLabel"] == "Add line", picking["startLabel"]
+    assert picking["startPressed"] == "false", picking["startPressed"]
+    assert picking["drawingLabel"].startswith("Finish line"), picking["drawingLabel"]
+    assert picking["drawingPressed"] == "true", picking["drawingPressed"]
+    assert picking["mapHasPicking"] is True, "the crosshair must follow the line"
+    assert picking["draftHandles"] == 2, (
+        f"two taps must leave two draft handles, got {picking['draftHandles']}"
+    )
+    assert picking["afterFinishLabel"] == "Add line", picking["afterFinishLabel"]
+    assert picking["afterFinishPressed"] == "false", picking["afterFinishPressed"]
+    assert picking["draftHandlesAfter"] == 0, picking["draftHandlesAfter"]
+    assert (
+        picking["lineCount"] == picking["lineCountBefore"] + 1
+    ), f"the double-click must commit one line, got {picking}"
+    assert picking["selectionShown"] is True, (
+        "finishing must return to selection, so the new line can be picked"
+    )
+    assert picking["selectedHandles"] == 3, (
+        "the double-click must keep the vertex it placed, not remove it: "
+        f"got {picking['selectedHandles']} handles"
+    )
+    assert (
+        picking["mapTopAfterSelect"] == picking["mapTopBeforeSelect"]
+    ), "opening the selection panel must not move the radargram (#239)"
+    assert picking["selectionWithinMap"] is True, (
+        "the selection panel must overlay the map, not sit past its edge"
+    )
+    assert picking["selectionHelpOpen"] is True, (
+        "the editing help must start expanded on a wide screen"
+    )
+
+
+def assert_duplicates(duplicates: dict) -> None:
+    assert duplicates.get("error") is None, duplicates
+    assert duplicates["duplicateMarkers"] == 2, (
+        "both vertices sharing a trace must be marked, got "
+        f"{duplicates['duplicateMarkers']}"
+    )
+    assert duplicates["overhangMarkers"] == 0, (
+        "neither line doubles back, so no overhang may be marked: "
+        f"{duplicates['overhangMarkers']}"
+    )
+    assert duplicates["toastHiddenBefore"] is True, duplicates
+    assert duplicates["reasonShown"] is True, (
+        "clicking a duplicate marker must show its reason -- hover is "
+        "unreachable on a touch screen (#238)"
+    )
+    assert "Glacier bed" in duplicates["reason"], duplicates["reason"]
+    assert "2 values" in duplicates["reason"], duplicates["reason"]
+
+
+def assert_overlap(overlap: dict) -> None:
+    assert overlap.get("error") is None, overlap
+    assert overlap["bands"] == 2, (
+        "a pair of overlapping lines needs a band on each, got "
+        f"{overlap['bands']}"
+    )
+    assert overlap["markers"] == 1, (
+        f"one pair means one reason marker, got {overlap['markers']}"
+    )
+    assert overlap["duplicateMarkers"] == 0, (
+        "no vertex is shared, so this must not be marked as a duplicate: "
+        f"{overlap['duplicateMarkers']}"
+    )
+    assert overlap["reasonShown"] is True, (
+        "clicking an overlap marker must show its reason"
+    )
+    assert "same traces" in overlap["reason"], overlap["reason"]
+    assert overlap["draftLabelBeforeFinish"].startswith("Finish line"), overlap[
+        "draftLabelBeforeFinish"
+    ]
+    assert overlap["refusedLabel"].startswith("Finish line"), (
+        "a refused finish must leave the draft in progress, got "
+        f"{overlap['refusedLabel']!r}"
+    )
+    assert (
+        overlap["lineCountAfter"] == overlap["lineCountBefore"]
+    ), "an overlapping line must not be committed"
+    assert "already has one" in overlap["refusedReason"], overlap["refusedReason"]
+    assert overlap["grandfatherEnds"] == 2, overlap["grandfatherEnds"]
+    assert overlap["grandfathered"] is True, (
+        "an already-overlapping line must stay editable, or it can only be "
+        "fixed by deleting it"
+    )
+    assert overlap["panelToastOverlap"] is False, (
+        "the error toast and the selection panel must not share space"
+    )
+
+
 def assert_narrow(narrow: dict) -> None:
     assert narrow.get("error") is None, narrow
+    assert narrow["selectionHelpOpen"] is False, (
+        "the editing help must start collapsed on a narrow screen"
+    )
+    assert narrow["bottomControlsOverlap"] is False, (
+        "the error toast and the selection panel must not share space on a "
+        "narrow screen either"
+    )
     assert narrow["panelFits"] is True, narrow
     assert narrow["panelWithinMap"] is True, "the panel must not run past the map"
     assert narrow["bodyScrollable"] is True, "the panel body must scroll, not clip"
@@ -1554,7 +1945,72 @@ def main() -> None:
         picker = run("picker", "panel")
         narrow = run("op", "narrow")
         refresh = run("op", "refresh")
+        picking = run("op", "picking")
         split = run("op", "split")
+        # #238: a duplicate document, written straight to disk because the
+        # save route refuses one. Written just before the mode that reads it,
+        # since the refresh and split modes rewrite op's picks.
+        duplicate_path = (
+            workdir / "ridal_data" / "interpretations" / RADARGRAM / "op.gprinterp.json"
+        )
+        duplicate_path.write_text(
+            json.dumps(
+                {
+                    "key": RADARGRAM,
+                    "source": {"revision_id": revision},
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[10.0, 20.0], [50.0, 30.0]],
+                            },
+                            "properties": {"id": "f-dup-a", "label": "bed"},
+                        },
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[50.0, 60.0], [90.0, 40.0]],
+                            },
+                            "properties": {"id": "f-dup-b", "label": "bed"},
+                        },
+                    ],
+                },
+                indent=2,
+            )
+        )
+        duplicates = run("op", "duplicates")
+        # #207: two lines covering the same traces, also written straight to
+        # disk because the save route refuses it.
+        duplicate_path.write_text(
+            json.dumps(
+                {
+                    "key": RADARGRAM,
+                    "source": {"revision_id": revision},
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[0.0, 50.0], [99.0, 60.0]],
+                            },
+                            "properties": {"id": "f-ov-a", "label": "bed"},
+                        },
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[30.0, 150.0], [90.0, 160.0]],
+                            },
+                            "properties": {"id": "f-ov-b", "label": "bed"},
+                        },
+                    ],
+                },
+                indent=2,
+            )
+        )
+        overlap = run("op", "overlap")
 
         external = [path for path in all_requests if "://" in path]
         print(
@@ -1565,7 +2021,10 @@ def main() -> None:
                     "layers": layers,
                     "narrow": narrow,
                     "refresh": refresh,
+                    "picking": picking,
                     "split": split,
+                    "duplicates": duplicates,
+                    "overlap": overlap,
                 },
                 indent=2,
             )
@@ -1580,7 +2039,10 @@ def main() -> None:
         assert_layers(layers)
         assert_narrow(narrow)
         assert_refresh(refresh)
+        assert_picking(picking)
         assert_split(split)
+        assert_duplicates(duplicates)
+        assert_overlap(overlap)
         assert not external, external
         print("PANEL HARNESS: all assertions passed")
     finally:

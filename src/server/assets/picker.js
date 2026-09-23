@@ -104,19 +104,184 @@
     return offending;
   }
 
+  /** How close two samples at one trace must be to count as lines that
+   * merely touch rather than a genuine duplicate (#207).
+   *
+   * The client-side twin of `TOUCH_TOLERANCE_SAMPLES` in
+   * `src/interp/checks.rs`. */
+  const TOUCH_TOLERANCE_SAMPLES = 1.0;
+
+  /** Every vertex that shares its trace with another value on the same
+   * layer (#207).
+   *
+   * The client-side twin of `duplicate_values` in `src/interp/checks.rs`,
+   * which is the authority; this exists so the offending vertices can be
+   * marked as they are drawn, the way `overhangIndices` marks an overhang.
+   *
+   * `lines` is `[{ coordinates, label }]`, and `warnsOnDuplicates(label)`
+   * decides whether a layer participates. Two features that merely touch at
+   * a shared endpoint are allowed -- their samples are within rounding --
+   * but a single feature repeating a trace, or samples further apart than
+   * `TOUCH_TOLERANCE_SAMPLES`, is a genuine second depth. Returns one entry
+   * per offending vertex, so each can be marked.
+   */
+  function duplicateValues(lines, warnsOnDuplicates) {
+    const byLayer = new Map();
+    lines.forEach((line, lineIndex) => {
+      if (!warnsOnDuplicates(line.label)) return;
+      line.coordinates.forEach(([trace, sample], vertexIndex) => {
+        if (typeof trace !== "number" || typeof sample !== "number") return;
+        if (!byLayer.has(line.label)) byLayer.set(line.label, []);
+        byLayer.get(line.label).push({ lineIndex, vertexIndex, trace, sample });
+      });
+    });
+
+    const offending = [];
+    for (const vertices of byLayer.values()) {
+      const byTrace = new Map();
+      for (const vertex of vertices) {
+        if (!byTrace.has(vertex.trace)) byTrace.set(vertex.trace, []);
+        byTrace.get(vertex.trace).push(vertex);
+      }
+      for (const [trace, group] of byTrace) {
+        if (group.length < 2) continue;
+        const oneFeature = group.every(
+          (vertex) => vertex.lineIndex === group[0].lineIndex,
+        );
+        const samples = group.map((vertex) => vertex.sample);
+        const spread = Math.max(...samples) - Math.min(...samples);
+        if (!oneFeature && spread <= TOUCH_TOLERANCE_SAMPLES) continue;
+        for (const vertex of group) {
+          offending.push({
+            lineIndex: vertex.lineIndex,
+            vertexIndex: vertex.vertexIndex,
+            trace,
+            samples,
+          });
+        }
+      }
+    }
+    return offending;
+  }
+
+  /** How much two features' trace spans may overlap before it is a violation
+   * (#207).
+   *
+   * The client-side twin of `OVERLAP_TOLERANCE_TRACES` in
+   * `src/interp/checks.rs`. One trace is allowed: a hand-drawn junction is
+   * rarely exact, and a shared endpoint trace belongs to both lines. */
+  const OVERLAP_TOLERANCE_TRACES = 1.0;
+
+  /** Pairs of lines on one layer that cover the same traces (#207).
+   *
+   * The client-side twin of `overlapping_spans` in `src/interp/checks.rs`.
+   * `duplicateValues` compares picked *vertices*; two lines drawn over the
+   * same horizon rarely put a vertex on the exact same trace, so it stays
+   * silent while the layer has two values over a range of positions. This
+   * compares spans instead, which is the case that actually happens.
+   *
+   * `lines` is `[{ coordinates, label }]`, and `participates(label)` decides
+   * whether a layer is subject to the rule. Returns one entry per offending
+   * pair: `{ lineIndexA, lineIndexB, fromTrace, toTrace }`.
+   */
+  function overlappingSpans(lines, participates) {
+    const byLayer = new Map();
+    lines.forEach((line, lineIndex) => {
+      if (!participates(line.label)) return;
+      let min = Infinity;
+      let max = -Infinity;
+      for (const coordinate of line.coordinates) {
+        const trace = coordinate[0];
+        if (typeof trace !== "number") continue;
+        if (trace < min) min = trace;
+        if (trace > max) max = trace;
+      }
+      if (min > max) return;
+      if (!byLayer.has(line.label)) byLayer.set(line.label, []);
+      byLayer.get(line.label).push({ lineIndex, min, max });
+    });
+
+    const offending = [];
+    for (const spans of byLayer.values()) {
+      spans.sort((a, b) => a.min - b.min);
+      for (let i = 0; i < spans.length; i++) {
+        for (let j = i + 1; j < spans.length; j++) {
+          // Sorted by start: once one begins past this one's end there is
+          // nothing further to compare it with.
+          if (spans[j].min >= spans[i].max - OVERLAP_TOLERANCE_TRACES) break;
+          const fromTrace = spans[j].min;
+          const toTrace = Math.min(spans[i].max, spans[j].max);
+          if (toTrace - fromTrace <= OVERLAP_TOLERANCE_TRACES) continue;
+          offending.push({
+            lineIndexA: spans[i].lineIndex,
+            lineIndexB: spans[j].lineIndex,
+            fromTrace,
+            toTrace,
+          });
+        }
+      }
+    }
+    return offending;
+  }
+
+  /** The sample a line has at `trace`, interpolated along the segment that
+   * spans it, or null. */
+  function sampleAtTrace(coordinates, trace) {
+    for (let i = 0; i < coordinates.length - 1; i++) {
+      const [t0, s0] = coordinates[i];
+      const [t1, s1] = coordinates[i + 1];
+      if (typeof t0 !== "number" || typeof t1 !== "number") continue;
+      if (trace < Math.min(t0, t1) || trace > Math.max(t0, t1)) continue;
+      if (t1 === t0) return (s0 + s1) / 2;
+      return s0 + ((trace - t0) / (t1 - t0)) * (s1 - s0);
+    }
+    return null;
+  }
+
+  /** The part of a line between two traces, as `[trace, sample]` points.
+   *
+   * Segment by segment, so a line that doubles back contributes each piece
+   * it has in the range rather than one wrong interpolation across the whole
+   * span. Endpoints are interpolated so the drawn band starts and ends
+   * exactly at `from` and `to`. */
+  function clipToTrace(coordinates, from, to) {
+    const clipped = [];
+    for (let i = 0; i < coordinates.length - 1; i++) {
+      const [t0] = coordinates[i];
+      const [t1] = coordinates[i + 1];
+      if (typeof t0 !== "number" || typeof t1 !== "number") continue;
+      const low = Math.min(t0, t1);
+      const high = Math.max(t0, t1);
+      if (high < from || low > to) continue;
+      const start = Math.max(low, from);
+      const end = Math.min(high, to);
+      const forward = t0 <= t1;
+      const first = forward ? start : end;
+      const last = forward ? end : start;
+      for (const trace of [first, last]) {
+        const sample = sampleAtTrace(coordinates.slice(i, i + 2), trace);
+        if (sample === null) continue;
+        clipped.push([trace, sample]);
+      }
+    }
+    return clipped;
+  }
+
   if (CFG.writable) {
     initPicker();
   }
 
   function initPicker() {
     const DEFAULT_COLOR = "#ffcc00";
+    /** The overlap band and its marker. Distinct from the overhang red and
+     * the duplicate violet, since it is a third kind of violation. */
+    const OVERLAP_COLOR = "#e8590c";
 
     const map = window.RIDAL_MAP;
 
     const layerSelect = document.getElementById("pick-layer");
     const toggleButton = document.getElementById("pick-toggle");
     const undoButton = document.getElementById("pick-undo");
-    const finishButton = document.getElementById("pick-finish");
     const saveButton = document.getElementById("pick-save");
     const statusEl = document.getElementById("pick-status");
     const errorBox = document.getElementById("pick-error");
@@ -124,6 +289,7 @@
     const selectedLayer = document.getElementById("pick-selected-layer");
     const deleteButton = document.getElementById("pick-delete");
     const selectionHint = document.getElementById("pick-selection-hint");
+    const selectionHelp = document.getElementById("pick-selection-help");
     const layerSwatch = document.getElementById("pick-layer-swatch");
     const selectedSwatch = document.getElementById("pick-selected-swatch");
     const visibilityButton = document.getElementById("pick-visibility");
@@ -138,9 +304,15 @@
      * silently on the first browser edit. */
     let loaded = null;
     let layers = [];
-    let picking = false;
     let dirty = false;
-    /** The line being drawn: array of [trace, sample], or null. */
+    /** The line being drawn: array of [trace, sample], or null.
+     *
+     * `null` means no line is in progress, which is the whole of the drawing
+     * state: there is no separate "picking" mode. Pressing Add line sets this
+     * to an empty array, and every tap extends it until Finish line commits
+     * it and returns to selection. A tap over an existing line is ignored
+     * only while this is set, so lines are holes in the drawing surface only
+     * mid-line, not for the whole session. */
     let draft = null;
     /** Index into `features` of the selected line, or null. */
     let selected = null;
@@ -155,6 +327,9 @@
     let draftLine = null;
     let handles = [];
     let overhangMarkers = [];
+    let duplicateMarkers = [];
+    let overlapBands = [];
+    let overlapMarkers = [];
     let nextId = 1;
     /** Whether the stored lines are drawn at all (#143).
      *
@@ -251,6 +426,30 @@
     const colorFor = (label) => (layerFor(label) || {}).color || DEFAULT_COLOR;
     const allowsOverhangs = (label) =>
       Boolean((layerFor(label) || {}).allow_overhangs);
+    /** Whether more than one value at one trace is worth pointing out on
+     * `label`. Absent means on: `warn_on_duplicates` defaults to true and is
+     * only serialized when false, so `!== false` is the test, not truthiness.
+     * An undefined layer has not opted out of anything. */
+    const warnsOnDuplicates = (label) =>
+      (layerFor(label) || {}).warn_on_duplicates !== false;
+    /** Whether a layer's lines must not cover the same traces (#207).
+     *
+     * A layer that is multi-valued (warn_on_duplicates off) or whose lines
+     * may double back (allow_overhangs) is exempt, exactly as the server's
+     * `overlapping_spans` skips it. */
+    const participatesInOverlap = (label) =>
+      warnsOnDuplicates(label) && !allowsOverhangs(label);
+
+    /** What to call a layer in the interface.
+     *
+     * Picks store the layer *id* -- `bed_no_temperate` -- while the person
+     * reads `name`. Falls back to the id for a label the vocabulary does not
+     * define, which is a real case: `allowsOverhangs` treats it as one, and a
+     * document can name a layer this project has since removed. */
+    const layerName = (label) => {
+      const layer = layerFor(label);
+      return (layer && layer.name) || label || "unlabelled";
+    };
 
     function newFeature(coordinates, label) {
       return {
@@ -313,16 +512,40 @@
           redraw();
           return;
         }
+        // A line that is already illegal must stay editable, or the only way
+        // to fix an overlap is to delete the line: while it still overlaps
+        // anything, every corrective move is itself a move onto an overlap.
+        // So an edit to a line that already overlaps is allowed to remain
+        // overlapping; a clean line is still refused a move that creates one.
+        const wasOverlapping =
+          featureIndex !== undefined &&
+          featureIndex !== null &&
+          firstOverlap(label, coordinates, featureIndex) !== null;
+
         // Preserve any third element GeoJSON allows, rather than truncating
         // a position this viewer did not author.
         coordinates[index] = [newTrace, newSample, ...before.slice(2)];
 
+        const overlap =
+          wasOverlapping ||
+          featureIndex === undefined ||
+          featureIndex === null
+            ? null
+            : firstOverlap(label, coordinates, featureIndex);
         if (!allowsOverhangs(label) && overhangIndices(coordinates).length > 0) {
           coordinates[index] = before;
           showError(
             "Moving that vertex there would make the line double back, so it " +
               "would have two depths at one position. Move it somewhere the " +
               "line keeps advancing, or allow overhangs on this layer.",
+          );
+        } else if (overlap) {
+          coordinates[index] = before;
+          showError(
+            `Moving that vertex there would put this line over traces ` +
+              `${overlap.fromTrace.toFixed(1)} to ${overlap.toTrace.toFixed(1)}, ` +
+              `where "${layerName(label)}" already has one. One user may have ` +
+              "one value per layer per position.",
           );
         } else {
           clearError();
@@ -333,6 +556,15 @@
 
       marker.on("click", (event) => {
         L.DomEvent.stopPropagation(event);
+        // The second click of a double-click finishes the line. It lands on
+        // the handle the first click just placed, and a Leaflet marker does
+        // not bubble mouse events to the map, so the map's own `dblclick`
+        // handler never sees it -- the handle has to act. On a stored line
+        // there is no draft and `finishLine` does nothing.
+        if (event.originalEvent && event.originalEvent.detail > 1) {
+          finishLine();
+          return;
+        }
         onTap();
       });
       return marker;
@@ -357,7 +589,7 @@
      * anchor from the size, which is the only way the two stay consistent. */
     const HANDLE_PX = COARSE_POINTER ? 24 : 16;
     const MIDPOINT_PX = COARSE_POINTER ? 36 : 26;
-    const OVERHANG_PX = COARSE_POINTER ? 26 : 18;
+    const VIOLATION_PX = COARSE_POINTER ? 26 : 18;
 
     /** A segment shorter than this on screen gets no midpoint handle.
      *
@@ -444,7 +676,7 @@
       // Hover-only affordance: on a touch screen the tooltip opens on the
       // same tap that adds the vertex, so it is noise at best.
       if (!COARSE_POINTER) {
-        marker.bindTooltip("Tap to add a vertex here, or drag to place one");
+        marker.bindTooltip("Add vertex here");
       }
 
       // Inserted on `dragstart` so the drag is already moving a real
@@ -454,17 +686,34 @@
       let dragging = false;
       marker.on("dragstart", () => {
         dragging = true;
+        // The tooltip sits exactly where the vertex is being aimed, so it
+        // is hidden for the duration. Closing it is not enough: Leaflet
+        // reopens a bound tooltip on `mouseover` and the pointer stays over
+        // the marker for the whole drag, so it is unbound instead. `redraw`
+        // on `dragend` rebuilds the marker, tooltip and all.
+        marker.unbindTooltip();
         coordinates.splice(index + 1, 0, midpoint.slice());
       });
 
       marker.on("dragend", () => {
         const [trace, sample] = toIndex(marker.getLatLng());
+        // Inserting the midpoint on dragstart cannot change the span, so the
+        // line's overlap status here is the one it had before the drag. An
+        // already-overlapping line stays editable; see `makeHandle`.
+        const wasOverlapping =
+          firstOverlap(label, coordinates, selected) !== null;
         coordinates[index + 1] = [trace, sample];
         if (!allowsOverhangs(label) && overhangIndices(coordinates).length > 0) {
           coordinates.splice(index + 1, 1);
           showError(
             "A vertex there would make the line double back, so it would have " +
               "two depths at one position. Nothing was added.",
+          );
+        } else if (!wasOverlapping && firstOverlap(label, coordinates, selected)) {
+          coordinates.splice(index + 1, 1);
+          showError(
+            "A vertex there would put this line over traces where " +
+              `"${layerName(label)}" already has one. Nothing was added.`,
           );
         } else {
           clearError();
@@ -479,6 +728,12 @@
         // Leaflet can fire a click after a drag; the drag already did the
         // work.
         if (dragging) return;
+        // The second click of a double-click finishes, exactly as on a
+        // vertex handle; without this it would add a vertex instead.
+        if (event.originalEvent && event.originalEvent.detail > 1) {
+          finishLine();
+          return;
+        }
         coordinates.splice(index + 1, 0, midpoint.slice());
         clearError();
         markDirty();
@@ -555,6 +810,25 @@
           "Joining those two lines would double back, so the result would have " +
             "two depths at one position. They probably need joining at their " +
             "other ends, or they overlap along the profile.",
+        );
+        redraw();
+        return;
+      }
+
+      // The merged line must not cover traces a third line of the layer
+      // already covers. The two being joined are ignored, since they are
+      // replaced -- and either one already being illegal grandfathers the
+      // merge, for the same reason a drag is grandfathered: otherwise there
+      // is no way to fix an overlap except deleting a line.
+      const ignore = [featureIndex, target.index];
+      const wasOverlapping =
+        firstOverlap(label, source.geometry.coordinates, ignore) !== null ||
+        firstOverlap(label, other.geometry.coordinates, ignore) !== null;
+      if (!wasOverlapping && firstOverlap(label, merged, ignore)) {
+        showError(
+          "Joining those two lines would leave one line over traces where " +
+            `"${layerName(label)}" already has one. One user may have one ` +
+            "value per layer per position.",
         );
         redraw();
         return;
@@ -734,15 +1008,18 @@
         const hit = RIDAL.hitLine(points, "radargram-lines").addTo(map);
         // A text node, not a string: Leaflet assigns a string tooltip with
         // innerHTML, and `label` is free text from the stored document.
+        // `layerName` rather than `label` so a line in `bed_no_temperate`
+        // reads as "Glacier bed", the way the layer dropdown names it.
         hit.bindTooltip(
           document.createTextNode(
-            `${label || "unlabelled"} (${feature.geometry.coordinates.length} vertices)`,
+            `${layerName(label)} (${feature.geometry.coordinates.length} vertices)`,
           ),
         );
         hit.on("click", (event) => {
-          // While picking, a tap over an existing line is still a new
-          // vertex -- lines must not become holes in the drawing surface.
-          if (picking) return;
+          // While a line is in progress, a tap over an existing line is
+          // still a new vertex -- lines must not become holes in the drawing
+          // surface. Outside that, a tap selects the line it lands on.
+          if (draft) return;
           L.DomEvent.stopPropagation(event);
           select(index === selected ? null : index);
         });
@@ -758,7 +1035,7 @@
         drawnLines.push(hit, line);
       });
       redrawHandles();
-      redrawOverhangs();
+      redrawMarkers();
       updateSelectionPanel();
       updateStatus();
     }
@@ -774,7 +1051,10 @@
       handles.forEach((handle) => map.removeLayer(handle));
       handles = [];
 
-      if (draft && draft.length) {
+      // `draft` rather than `draft.length`: an empty draft is still a line in
+      // progress (the button says Finish line), and it must not fall through
+      // to drawing the selected line's handles underneath it.
+      if (draft) {
         const label = layerSelect.value;
         if (draft.length > 1) {
           draftLine = L.polyline(
@@ -794,7 +1074,7 @@
             draft.splice(index, 1);
             clearError();
             redrawHandles();
-            redrawOverhangs();
+            redrawMarkers();
             updateStatus();
           }),
         );
@@ -819,8 +1099,14 @@
           selected,
         );
         handle.bindTooltip(
-          interior ? "Drag to move, tap to split here" : "Drag to move",
+          interior ? "Drag to move, tap to split" : "Drag to move",
         );
+        // Once the handle is being dragged the tooltip sits exactly where
+        // the vertex is being aimed, and what is happening is already
+        // obvious. Unbound rather than closed for the same reason as the
+        // midpoint: `mouseover` would reopen it mid-drag. `dragend` calls
+        // `redraw`, which rebuilds every handle with its tooltip.
+        handle.on("dragstart", () => handle.unbindTooltip());
         return handle;
       });
 
@@ -841,51 +1127,177 @@
       }
     }
 
-    /** A marker at every vertex where a line doubles back.
+    /** A marker for one geometry violation, carrying its reason.
      *
-     * Drawn for *all* lines, including layers that allow overhangs: an
-     * intentional overhang is still worth seeing, and a line saved before
+     * A click handler as well as a tooltip: there is no hover on a touch
+     * screen, so a tooltip alone leaves the reason unreachable on a phone,
+     * and that gap gets worse once a marker can mean more than one thing.
+     * Clicking shows the same text in the toast. */
+    function violationMarker(trace, sample, className, reason) {
+      const marker = L.marker(toLatLng(trace, sample), {
+        keyboard: false,
+        icon: L.divIcon({
+          className,
+          iconSize: [VIOLATION_PX, VIOLATION_PX],
+          iconAnchor: [VIOLATION_PX / 2, VIOLATION_PX / 2],
+        }),
+      }).addTo(map);
+      marker.bindTooltip(document.createTextNode(reason));
+      marker.on("click", (event) => {
+        L.DomEvent.stopPropagation(event);
+        showInfo(reason);
+      });
+      return marker;
+    }
+
+    /** The lines a violation marker is drawn for.
+     *
+     * Hidden means hidden (#143): a marker and its tooltip left floating
+     * over a radargram whose picks were switched off is exactly the view the
+     * toggle exists to give. The draft is not a stored pick and is always
+     * marked -- and starting to draw one reveals the rest anyway. */
+    function markerLines() {
+      const lines = (picksVisible ? features : []).map((f) => ({
+        coordinates: f.geometry.coordinates,
+        label: (f.properties && f.properties.label) || null,
+      }));
+      if (draft && draft.length) {
+        lines.push({ coordinates: draft, label: layerSelect.value || null });
+      }
+      return lines;
+    }
+
+    /** The first overlap `coordinates` would create on `label`, or null.
+     *
+     * `ignore` is one feature index or a list of them to leave out -- the
+     * line being edited, and for a join the two it replaces. Uses the same
+     * span rule as the marker: more than one trace of overlap is a second
+     * value over a range of positions. */
+    function firstOverlap(label, coordinates, ignore = []) {
+      const ignored = Array.isArray(ignore) ? ignore : [ignore];
+      const lines = [{ coordinates, label: label || null }];
+      features.forEach((feature, index) => {
+        if (ignored.includes(index)) return;
+        lines.push({
+          coordinates: feature.geometry.coordinates,
+          label: (feature.properties && feature.properties.label) || null,
+        });
+      });
+      return (
+        overlappingSpans(lines, participatesInOverlap).find(
+          (overlap) => overlap.lineIndexA === 0 || overlap.lineIndexB === 0,
+        ) || null
+      );
+    }
+
+    /** A marker at every vertex where a line doubles back, and at every
+     * vertex that shares its trace with another value on its layer (#207).
+     *
+     * Overhangs are drawn for *all* lines, including layers that allow them:
+     * an intentional overhang is still worth seeing, and a line saved before
      * the rule existed would otherwise look fine while quietly failing to
-     * export at even spacing. */
-    function redrawOverhangs() {
+     * export at even spacing.
+     *
+     * Each kind has its own shape -- a circle for an overhang, a diamond for
+     * a duplicate -- because a marker that says where but not what has to be
+     * opened to find out. */
+    function redrawMarkers() {
       overhangMarkers.forEach((marker) => map.removeLayer(marker));
       overhangMarkers = [];
+      duplicateMarkers.forEach((marker) => map.removeLayer(marker));
+      duplicateMarkers = [];
+      overlapBands.forEach((band) => map.removeLayer(band));
+      overlapBands = [];
+      overlapMarkers.forEach((marker) => map.removeLayer(marker));
+      overlapMarkers = [];
 
-      // Hidden means hidden (#143): a marker and its tooltip left floating
-      // over a radargram whose picks were switched off is exactly the view
-      // the toggle exists to give. The draft is not a stored pick and is
-      // always marked -- and starting to draw one reveals the rest anyway.
-      const lines = (picksVisible ? features : []).map((f) => [
-        f.geometry.coordinates,
-        (f.properties && f.properties.label) || null,
-      ]);
-      if (draft && draft.length) lines.push([draft, layerSelect.value]);
+      const lines = markerLines();
 
-      for (const [coordinates, label] of lines) {
+      for (const { coordinates, label } of lines) {
         const allowed = allowsOverhangs(label);
         for (const index of overhangIndices(coordinates)) {
           const [trace, sample] = coordinates[index];
           overhangMarkers.push(
-            L.marker(toLatLng(trace, sample), {
-              keyboard: false,
-              icon: L.divIcon({
-                className: `pick-overhang${allowed ? " pick-overhang-allowed" : ""}`,
-                iconSize: [OVERHANG_PX, OVERHANG_PX],
-                iconAnchor: [OVERHANG_PX / 2, OVERHANG_PX / 2],
-              }),
-            })
-              .addTo(map)
-              .bindTooltip(
-                document.createTextNode(
-                  allowed
-                    ? `Overhang at vertex ${index}, allowed on "${label}". This ` +
-                        "layer exports as picked vertices, not evenly spaced."
-                    : `Overhang at vertex ${index}: the line doubles back here, ` +
-                        "so it has two depths at one position.",
-                ),
-              ),
+            violationMarker(
+              trace,
+              sample,
+              `pick-overhang${allowed ? " pick-overhang-allowed" : ""}`,
+              allowed
+                ? `Overhang at vertex ${index}, allowed on ` +
+                    `"${layerName(label)}". This layer exports as picked ` +
+                    "vertices, not evenly spaced."
+                : `Overhang at vertex ${index}: the line doubles back here, ` +
+                    "so it has two depths at one position.",
+            ),
           );
         }
+      }
+
+      // Duplicates last, so where one lands on the same vertex as an overhang
+      // -- a vertical segment is both -- its own shape is the one seen.
+      for (const violation of duplicateValues(lines, warnsOnDuplicates)) {
+        const { coordinates, label } = lines[violation.lineIndex];
+        const [trace, sample] = coordinates[violation.vertexIndex];
+        const samples = violation.samples.map((s) => s.toFixed(1)).join(", ");
+        duplicateMarkers.push(
+          violationMarker(
+            trace,
+            sample,
+            "pick-duplicate",
+            `Layer '${layerName(label)}' has ${violation.samples.length} ` +
+              `values at trace ${violation.trace}: samples ${samples}. One ` +
+              "user may have one value per layer per position; set a reducer " +
+              "to choose between them, or turn off duplicate warnings on " +
+              "this layer.",
+          ),
+        );
+      }
+
+      // A span, not a point: the band shows the extent of the shared traces,
+      // on both lines, and one marker in the middle carries the reason. The
+      // band is non-interactive so it cannot swallow a tap aimed at the
+      // radargram underneath.
+      for (const overlap of overlappingSpans(lines, participatesInOverlap)) {
+        const label = lines[overlap.lineIndexA].label;
+        for (const lineIndex of [overlap.lineIndexA, overlap.lineIndexB]) {
+          const points = clipToTrace(
+            lines[lineIndex].coordinates,
+            overlap.fromTrace,
+            overlap.toTrace,
+          );
+          if (points.length < 2) continue;
+          overlapBands.push(
+            L.polyline(
+              points.map(([trace, sample]) => toLatLng(trace, sample)),
+              {
+                color: OVERLAP_COLOR,
+                weight: 8,
+                opacity: 0.45,
+                interactive: false,
+                className: "pick-overlap-band",
+                pane: "radargram-lines",
+              },
+            ).addTo(map),
+          );
+        }
+        const mid = (overlap.fromTrace + overlap.toTrace) / 2;
+        const sample = sampleAtTrace(
+          lines[overlap.lineIndexA].coordinates,
+          mid,
+        );
+        if (sample === null) continue;
+        overlapMarkers.push(
+          violationMarker(
+            mid,
+            sample,
+            "pick-overlap",
+            `Layer '${layerName(label)}' has two lines over the same traces, ` +
+              `from trace ${overlap.fromTrace.toFixed(1)} to ` +
+              `${overlap.toTrace.toFixed(1)}. One user may have one value per ` +
+              "layer per position; split or shorten them so only one line " +
+              "covers a trace.",
+          ),
+        );
       }
     }
 
@@ -945,16 +1357,25 @@
       saveButton.disabled = !dirty && !adoptable;
       saveButton.textContent = adoptable && !dirty ? "Adopt to this version…" : "Save";
       undoButton.disabled = !draft || draft.length === 0;
-      finishButton.disabled = !draft || draft.length < 2;
       // Read by the download menu in viewer.js, which owns downloading now:
       // a level 2 export is derived from what is *saved*, so offering one
       // over unsaved edits would hand back the wrong thing silently.
       window.RIDAL_PICKS_DIRTY = dirty;
-      // Naming the count ties the button to the line in progress. "Finish
-      // line" on its own reads as a mode switch, which is what made it
-      // hard to guess what it would do.
-      finishButton.textContent =
-        draft && draft.length ? `Finish line (${draft.length})` : "Finish line";
+
+      // One button, whose label is the state: there is no mode to be in, only
+      // a line part-way through. Naming the count ties it to that line, which
+      // "Finish line" on its own does not.
+      const drawing = draft !== null;
+      toggleButton.textContent = drawing
+        ? draft.length
+          ? `Finish line (${draft.length})`
+          : "Finish line"
+        : "Add line";
+      toggleButton.setAttribute("aria-pressed", String(drawing));
+      document.getElementById("map").classList.toggle("picking", drawing);
+      // A double-click finishes the line, so it must not also zoom the map.
+      if (drawing) map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
     }
 
     function markDirty() {
@@ -987,46 +1408,69 @@
       if (!picksVisible) setPicksVisible(true);
     }
 
-    function setPicking(on) {
-      if (on) revealPicks();
-      picking = on;
-      toggleButton.textContent = on ? "Stop picking" : "Start picking";
-      toggleButton.setAttribute("aria-pressed", String(on));
-      document.getElementById("map").classList.toggle("picking", on);
-      if (on) {
-        deselect();
-        // Every tap extends the *same* line until it is finished, which is
-        // not guessable from a toolbar of buttons. Said once, when it
-        // becomes relevant, and cleared by the first tap.
-        showInfo(
-          "Tap the radargram to add points to one line. Finish line ends it, " +
-            "so the next tap starts a separate line.",
-        );
-      } else {
-        finishLine();
-        clearError();
-      }
+    /** Start a new line. The next tap on the radargram is its first vertex.
+     *
+     * There is no picking mode to leave: Add line arms the next tap, and
+     * Finish line (or a double-click) commits the line and returns to
+     * selection. A selection is cleared, because while a line is in progress
+     * every tap is a vertex rather than a way to pick an existing line. */
+    function startLine() {
+      revealPicks();
+      deselect();
+      draft = [];
+      clearError();
+      redraw();
     }
 
+    /** Commit the draft, or refuse if it would overlap another line.
+     *
+     * Returns false only for that refusal, so `save` can stop rather than
+     * write the stored picks while a draft it could not finish is still on
+     * screen. A shared endpoint is allowed; only a shared *span* is not. */
     function finishLine() {
-      if (!draft || draft.length < 2) {
+      if (!draft) return true;
+      if (draft.length < 2) {
+        // Not a line yet. Drop it rather than storing something that cannot
+        // be exported; the button was the only way to be here.
         draft = null;
-        redrawHandles();
-        redrawOverhangs();
-        updateStatus();
-        return;
+        clearError();
+        redraw();
+        return true;
+      }
+      const overlap = firstOverlap(layerSelect.value, draft);
+      if (overlap) {
+        showError(
+          `This line covers traces ${overlap.fromTrace.toFixed(1)} to ` +
+            `${overlap.toTrace.toFixed(1)}, where ` +
+            `"${layerName(layerSelect.value)}" already has one. One user may ` +
+            "have one value per layer per position; split or shorten it so " +
+            "only one line covers a trace.",
+        );
+        return false;
       }
       features.push(newFeature(draft, layerSelect.value));
       draft = null;
       markDirty();
       redraw();
+      return true;
+    }
+
+    /** Throw the draft away without storing it. */
+    function discardDraft() {
+      draft = null;
+      clearError();
+      redraw();
     }
 
     map.on("click", (event) => {
-      if (!picking) {
+      if (!draft) {
         deselect();
         return;
       }
+      // The second click of a double-click lands on the same point as the
+      // first and arrives just before `dblclick`, which finishes the line.
+      // Adding it would leave a duplicate vertex behind, so it is dropped.
+      if (event.originalEvent && event.originalEvent.detail > 1) return;
       if (!layerSelect.value) {
         showError("Choose a layer before picking.");
         return;
@@ -1038,9 +1482,7 @@
       // previous one. Direction is a property of the line as a whole, and
       // checking pairwise let one stray vertex flip the perceived direction
       // and then reject every later point as an overhang.
-      const candidate = draft
-        ? draft.concat([[trace, sample]])
-        : [[trace, sample]];
+      const candidate = draft.concat([[trace, sample]]);
       if (
         !allowsOverhangs(layerSelect.value) &&
         overhangIndices(candidate).length > 0
@@ -1053,18 +1495,25 @@
         );
         return;
       }
-      // Clears the "how this works" hint too, on the first tap that proves
-      // it was read.
       clearError();
       draft = candidate;
       redrawHandles();
-      redrawOverhangs();
+      redrawMarkers();
       updateStatus();
+    });
+
+    // A double-click finishes the line, matching Leaflet.Draw. The second
+    // click is suppressed above; `doubleClickZoom` is disabled while a line
+    // is in progress (see `updateStatus`), so this does not also zoom.
+    map.on("dblclick", () => {
+      if (draft) finishLine();
     });
 
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
-        if (picking) finishLine();
+        // Escape abandons the draft rather than finishing it: a draft that
+        // cannot be finished because it overlaps must still be escapable.
+        if (draft) discardDraft();
         else deselect();
       }
       if (
@@ -1076,7 +1525,7 @@
         event.preventDefault();
         draft.pop();
         redrawHandles();
-        redrawOverhangs();
+        redrawMarkers();
         updateStatus();
       }
       if (event.key === "s" && (event.ctrlKey || event.metaKey)) {
@@ -1108,6 +1557,72 @@
     // both wasteful and visibly jumpy.
     map.on("moveend zoomend", redrawHandles);
 
+    /* The "Selected line" panel lives over the map, not in the controls
+     * stack above it (#239).
+     *
+     * In flow it took vertical space the moment a line was selected, pushing
+     * the radargram down and giving it back on deselect -- so a fixed point
+     * on the data moved under the pointer. A Leaflet control is positioned
+     * over the map, so showing it moves nothing by construction. It also
+     * reads right: the panel acts on a line on the map.
+     *
+     * `bottomleft`: the layer panel is top right and the zoom control top
+     * left. The error toast takes bottom right, below. */
+    const SelectionPanel = L.Control.extend({
+      options: { position: "bottomleft" },
+      onAdd() {
+        // Interacting with the panel must not reach the map: a tap on the
+        // layer select would otherwise also deselect the line it is about.
+        L.DomEvent.disableClickPropagation(selectionBox);
+        L.DomEvent.disableScrollPropagation(selectionBox);
+        return selectionBox;
+      },
+    });
+    map.addControl(new SelectionPanel());
+
+    /* The error toast is the other bottom corner.
+     *
+     * Fixed to the viewport bottom it sat under the selection panel: the
+     * panel is wide on a wide screen (the editing help is expanded) and the
+     * toast was centred, so the panel covered it. As a control in the map's
+     * other bottom corner it shares the panel's row and the two are left and
+     * right by construction. `attributionControl` is off, so the corner is
+     * free. */
+    const ErrorToast = L.Control.extend({
+      options: { position: "bottomright" },
+      onAdd() {
+        L.DomEvent.disableClickPropagation(errorBox);
+        L.DomEvent.disableScrollPropagation(errorBox);
+        return errorBox;
+      },
+    });
+    map.addControl(new ErrorToast());
+
+    /* The two bottom controls share the map's bottom row, so each is capped
+     * to half the map and they cannot meet. `vw` cannot express this: the
+     * radargram map is narrower than the viewport (the overview map shares
+     * the row) and how much narrower depends on the split, so it is measured
+     * from the map itself and kept current on resize. */
+    function fitBottomControlsToMap() {
+      const half = Math.max(120, map.getSize().x / 2 - 12);
+      selectionBox.style.maxWidth = `${half}px`;
+      errorBox.style.maxWidth = `${half}px`;
+    }
+    map.on("resize", fitBottomControlsToMap);
+    fitBottomControlsToMap();
+
+    /* The editing help is a disclosure, open by default on a wide screen and
+     * closed on a narrow one, where it would wrap to several lines and cover
+     * the map. `open` is a property, not a style, so the breakpoint is read
+     * here rather than expressed in CSS. Kept in step with the stylesheet's
+     * `40rem` so the layout and this agree on what "narrow" means. */
+    const NARROW_SCREEN = window.matchMedia("(max-width: 40rem)");
+    const syncSelectionHelp = () => {
+      selectionHelp.open = !NARROW_SCREEN.matches;
+    };
+    NARROW_SCREEN.addEventListener("change", syncSelectionHelp);
+    syncSelectionHelp();
+
     // The template renders the label and `aria-pressed` from the same
     // setting this reads, so the page is never briefly wrong -- including
     // with JavaScript disabled. Re-applied here anyway, because that
@@ -1115,28 +1630,44 @@
     visibilityButton.textContent = picksVisible ? "Hide picks" : "Show picks";
     visibilityButton.setAttribute("aria-pressed", String(picksVisible));
     visibilityButton.addEventListener("click", () => setPicksVisible(!picksVisible));
-    toggleButton.addEventListener("click", () => setPicking(!picking));
+    toggleButton.addEventListener("click", () => {
+      if (draft) finishLine();
+      else startLine();
+    });
     undoButton.addEventListener("click", () => {
       if (draft && draft.length) {
         draft.pop();
         clearError();
         redrawHandles();
-        redrawOverhangs();
+        redrawMarkers();
         updateStatus();
       }
     });
-    finishButton.addEventListener("click", finishLine);
     saveButton.addEventListener("click", save);
     layerSelect.addEventListener("change", () => {
       paintSwatch(layerSwatch, layerSelect.value);
       redrawHandles();
-      redrawOverhangs();
+      redrawMarkers();
       updateStatus();
     });
     deleteButton.addEventListener("click", deleteSelected);
     selectedLayer.addEventListener("change", () => {
       if (selected === null) return;
-      features[selected].properties.label = selectedLayer.value;
+      const feature = features[selected];
+      const previous = (feature.properties && feature.properties.label) || null;
+      const next = selectedLayer.value || null;
+      // Relabelling into a layer that already covers these traces would give
+      // that layer two values at one position, so it is refused like any
+      // other overlap and the select is put back where it was.
+      if (next !== previous && firstOverlap(next, feature.geometry.coordinates, selected)) {
+        showError(
+          `"${layerName(next)}" already has a line over these traces, so ` +
+            "moving this one there would give it two values at one position.",
+        );
+        selectedLayer.value = previous || "";
+        return;
+      }
+      feature.properties.label = selectedLayer.value;
       paintSwatch(selectedSwatch, selectedLayer.value);
       markDirty();
       redraw();
@@ -1287,7 +1818,9 @@
     }
 
     async function save() {
-      finishLine();
+      // A draft that cannot be finished must not be dropped on the floor by a
+      // save that writes the stored picks without it.
+      if (!finishLine()) return;
       clearError();
 
       // Adopting comes first, and not only because a carried document
