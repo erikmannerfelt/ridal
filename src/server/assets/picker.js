@@ -349,6 +349,15 @@
 
       marker.on("click", (event) => {
         L.DomEvent.stopPropagation(event);
+        // The second click of a double-click finishes the line. It lands on
+        // the handle the first click just placed, and a Leaflet marker does
+        // not bubble mouse events to the map, so the map's own `dblclick`
+        // handler never sees it -- the handle has to act. On a stored line
+        // there is no draft and `finishLine` does nothing.
+        if (event.originalEvent && event.originalEvent.detail > 1) {
+          finishLine();
+          return;
+        }
         onTap();
       });
       return marker;
@@ -501,6 +510,12 @@
         // Leaflet can fire a click after a drag; the drag already did the
         // work.
         if (dragging) return;
+        // The second click of a double-click finishes, exactly as on a
+        // vertex handle; without this it would add a vertex instead.
+        if (event.originalEvent && event.originalEvent.detail > 1) {
+          finishLine();
+          return;
+        }
         coordinates.splice(index + 1, 0, midpoint.slice());
         clearError();
         markDirty();

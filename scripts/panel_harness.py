@@ -828,21 +828,33 @@ async function main() {
       result.draftHandles = doc.querySelectorAll(".pick-handle-draft").length;
       result.drawingStatus = doc.getElementById("pick-status").textContent;
 
-      // Double-click on a new point: the first click places the last vertex,
-      // the second is suppressed, and dblclick finishes the line.
+      // Double-click on a new point: the first click places the last vertex.
       clickMap(90, 50, 1);
       await sleep(80);
-      clickMap(90, 50, 2);
+      // The second click lands on the handle the first click just created --
+      // the same element a real double-click hits. Dispatching it at the map
+      // instead would miss the bug where that handle's tap-to-remove eats
+      // the vertex.
+      const placed = doc.querySelectorAll(".pick-handle-draft");
+      const target = placed[placed.length - 1];
+      const targetRect = target.getBoundingClientRect();
+      const targetAt = {
+        x: targetRect.left + targetRect.width / 2,
+        y: targetRect.top + targetRect.height / 2,
+      };
+      const atTarget = (type) =>
+        target.dispatchEvent(
+          new win.MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: targetAt.x,
+            clientY: targetAt.y,
+            detail: 2,
+          }),
+        );
+      atTarget("click");
       await sleep(80);
-      mapEl.dispatchEvent(
-        new win.MouseEvent("dblclick", {
-          bubbles: true,
-          cancelable: true,
-          clientX: mapRect.left,
-          clientY: mapRect.top,
-          detail: 2,
-        }),
-      );
+      atTarget("dblclick");
       await sleep(300);
       result.afterFinishLabel = button.textContent.trim();
       result.afterFinishPressed = button.getAttribute("aria-pressed");
@@ -856,6 +868,11 @@ async function main() {
       );
       await sleep(200);
       result.selectionShown = !doc.getElementById("pick-selection").hidden;
+      // Three taps went in (two singles and the final double-click), so the
+      // committed line must have three vertices, not two.
+      result.selectedHandles = doc.querySelectorAll(
+        ".pick-handle-interior, .pick-handle-end",
+      ).length;
 
       finish(result);
     } catch (error) {
@@ -1524,6 +1541,10 @@ def assert_picking(picking: dict) -> None:
     ), f"the double-click must commit one line, got {picking}"
     assert picking["selectionShown"] is True, (
         "finishing must return to selection, so the new line can be picked"
+    )
+    assert picking["selectedHandles"] == 3, (
+        "the double-click must keep the vertex it placed, not remove it: "
+        f"got {picking['selectedHandles']} handles"
     )
 
 
