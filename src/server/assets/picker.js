@@ -123,6 +123,7 @@
     const selectedLayer = document.getElementById("pick-selected-layer");
     const deleteButton = document.getElementById("pick-delete");
     const selectionHint = document.getElementById("pick-selection-hint");
+    const selectionHelp = document.getElementById("pick-selection-help");
     const layerSwatch = document.getElementById("pick-layer-swatch");
     const selectedSwatch = document.getElementById("pick-selected-swatch");
     const visibilityButton = document.getElementById("pick-visibility");
@@ -1190,6 +1191,18 @@
       },
     });
     map.addControl(new SelectionPanel());
+
+    /* The editing help is a disclosure, open by default on a wide screen and
+     * closed on a narrow one, where it would wrap to several lines and cover
+     * the map. `open` is a property, not a style, so the breakpoint is read
+     * here rather than expressed in CSS. Kept in step with the stylesheet's
+     * `40rem` so the layout and this agree on what "narrow" means. */
+    const NARROW_SCREEN = window.matchMedia("(max-width: 40rem)");
+    const syncSelectionHelp = () => {
+      selectionHelp.open = !NARROW_SCREEN.matches;
+    };
+    NARROW_SCREEN.addEventListener("change", syncSelectionHelp);
+    syncSelectionHelp();
 
     // The template renders the label and `aria-pressed` from the same
     // setting this reads, so the page is never briefly wrong -- including

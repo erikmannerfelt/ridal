@@ -871,6 +871,8 @@ async function main() {
       await sleep(200);
       const selection = doc.getElementById("pick-selection");
       result.selectionShown = !selection.hidden;
+      // Wide frame: the editing help starts expanded.
+      result.selectionHelpOpen = doc.getElementById("pick-selection-help").open;
       result.mapTopAfterSelect = mapEl.getBoundingClientRect().top;
       const selectionRect = selection.getBoundingClientRect();
       const mapRectAfter = mapEl.getBoundingClientRect();
@@ -893,6 +895,8 @@ async function main() {
 
   if (MODE === "narrow") {
     const result = { who: WHO, mode: MODE };
+    // Narrow frame: the editing help must start collapsed, not cover the map.
+    result.selectionHelpOpen = doc.getElementById("pick-selection-help").open;
     const panel = doc.querySelector("#layer-panel");
     panel.querySelector("summary").click();
     await sleep(300);
@@ -1561,10 +1565,16 @@ def assert_picking(picking: dict) -> None:
     assert picking["selectionWithinMap"] is True, (
         "the selection panel must overlay the map, not sit past its edge"
     )
+    assert picking["selectionHelpOpen"] is True, (
+        "the editing help must start expanded on a wide screen"
+    )
 
 
 def assert_narrow(narrow: dict) -> None:
     assert narrow.get("error") is None, narrow
+    assert narrow["selectionHelpOpen"] is False, (
+        "the editing help must start collapsed on a narrow screen"
+    )
     assert narrow["panelFits"] is True, narrow
     assert narrow["panelWithinMap"] is True, "the panel must not run past the map"
     assert narrow["bodyScrollable"] is True, "the panel body must scroll, not clip"

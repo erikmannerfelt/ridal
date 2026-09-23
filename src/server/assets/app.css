@@ -1384,6 +1384,26 @@ button.danger:disabled {
   box-shadow: 0 1px 5px rgb(0 0 0 / 25%);
 }
 
+/* The editing help, collapsed on a phone. Its own row in the flex panel so
+ * the long text cannot widen the buttons beside it. */
+.picker-selection-help {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+
+.picker-selection-help > summary {
+  cursor: pointer;
+  padding: var(--space-1) 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.picker-selection-help .pick-status {
+  display: block;
+  margin-top: var(--space-1);
+}
+
 /* --- Vertex handles and overhang markers ---------------------------------
  *
  * Handles are Leaflet divIcons, so they are styled here rather than through

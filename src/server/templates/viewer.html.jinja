@@ -200,7 +200,15 @@
       <select id="pick-selected-layer"></select>
     </label>
     <button id="pick-delete" type="button" class="danger">Delete line</button>
-    <span id="pick-selection-hint" class="pick-status"></span>
+    {#- The instructions wrap to several lines on a phone, where the overlay
+        would otherwise cover much of the map. A disclosure: open by default
+        on a wide screen, closed on a narrow one, so a phone shows only the
+        summary until asked. picker.js sets `open` from the same breakpoint
+        the stylesheet uses. -#}
+    <details id="pick-selection-help" class="picker-selection-help">
+      <summary>Editing help</summary>
+      <span id="pick-selection-hint" class="pick-status"></span>
+    </details>
   </div>
   {% endif %}
 
