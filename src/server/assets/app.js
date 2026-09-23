@@ -1144,8 +1144,12 @@ const RIDAL = Object.freeze({
     }
 
     function buildTargets(current) {
+      // `"layer"` is what `Kind` serialises to -- an item that is a line on
+      // the radargram, as opposed to an `"attribute"`, which has no position
+      // to fill toward. There has never been a `"position"`, so this filter
+      // used to match nothing and the dropdown offered only `None`.
       const targets = options.items.filter(
-        (item) => item.kind === "position" && item.id !== editingId,
+        (item) => item.kind === "layer" && item.id !== editingId,
       );
       const choices = [["", "None"]].concat(
         targets.map((item) => [item.id, item.name || item.id]),
