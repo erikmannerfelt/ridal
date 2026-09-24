@@ -1177,7 +1177,12 @@
           iconAnchor: [VIOLATION_PX / 2, VIOLATION_PX / 2],
         }),
       }).addTo(map);
-      marker.bindTooltip(document.createTextNode(reason));
+      // A reason is a sentence or three, and one naming two exclusive layers
+      // is longer still; Leaflet's tooltips never wrap, so without the class
+      // it ran off the map and could not be read (#208).
+      marker.bindTooltip(document.createTextNode(reason), {
+        className: "violation-tooltip",
+      });
       marker.on("click", (event) => {
         L.DomEvent.stopPropagation(event);
         showInfo(reason);

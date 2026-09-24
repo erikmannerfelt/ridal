@@ -1146,6 +1146,30 @@ async function main() {
       await sleep(200);
       result.reason = toast.textContent;
 
+      /* The reason names two layers and runs to three sentences; Leaflet's
+       * tooltips never wrap, so it used to run off the map. */
+      doc
+        .querySelector(".pick-overlap")
+        .dispatchEvent(new win.MouseEvent("mouseover", { bubbles: true }));
+      await sleep(200);
+      const tip = doc.querySelector(".leaflet-tooltip.violation-tooltip");
+      result.tooltipShown = Boolean(tip);
+      if (tip) {
+        const box = tip.getBoundingClientRect();
+        const lineHeight = parseFloat(win.getComputedStyle(tip).lineHeight) || 16;
+        result.tooltipWidth = box.width;
+        result.tooltipLines = Math.round(box.height / lineHeight);
+        result.tooltipInsideMap =
+          box.left >= mapRect.left &&
+          box.right <= mapRect.right &&
+          box.top >= mapRect.top &&
+          box.bottom <= mapRect.bottom;
+      }
+      doc
+        .querySelector(".pick-overlap")
+        .dispatchEvent(new win.MouseEvent("mouseout", { bubbles: true }));
+      await sleep(100);
+
       const latlng = (t, s) =>
         win.L.latLng(-s * G.verticalRasterScale, t * G.rasterScale * xscale);
       const clickMap = (t, s) => {
@@ -1975,6 +1999,13 @@ def assert_exclusive(exclusive: dict) -> None:
     )
     assert exclusive["bands"] == 2, exclusive["bands"]
     assert "mutually exclusive" in exclusive["reason"], exclusive["reason"]
+    assert exclusive["tooltipShown"] is True, exclusive
+    assert exclusive["tooltipLines"] > 1, (
+        f"the reason must wrap rather than run on one line: {exclusive}"
+    )
+    assert exclusive["tooltipInsideMap"] is True, (
+        f"the reason must stay readable inside the map: {exclusive}"
+    )
     assert exclusive["refusedLabel"].startswith("Finish line"), (
         "a refused finish must leave the draft in progress, got "
         f"{exclusive['refusedLabel']!r}"
