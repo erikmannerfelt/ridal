@@ -312,7 +312,7 @@ impl RenderService {
             )?),
             AmplitudeLimits::Explicit { .. } => None,
         };
-        let limits = colormap::resolve_limits(&profile.limits, sampled, profile.symmetric_limits)?;
+        let limits = colormap::resolve_limits(profile, sampled)?;
         self.limits_cache.insert(key, limits);
         Ok(limits)
     }

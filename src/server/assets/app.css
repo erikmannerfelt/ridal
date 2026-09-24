@@ -285,16 +285,19 @@ code {
  * here" rather than "the request failed". RIDAL.reportError overlays
  * this on the element that would otherwise be mysteriously empty, so the
  * explanation is where the user is already looking. Above Leaflet's own
- * panes (z-index 400-700) and its controls (800), below its popups. */
+ * panes (z-index 400-700) and its controls (800), below its popups.
+ *
+ * Bottom right, the picking toast's corner (see `#pick-error`), because
+ * the top of a map is spoken for: the zoom control top left, the layer
+ * panel top right. This was a bar spanning the top, indented past the
+ * zoom control -- written before the layer panel existed, and since then
+ * the panel covered its right end and the message with it. The two bottom
+ * corners are the selection panel's and the toast's, and a render failure
+ * means there is nothing under this box to read anyway. */
 .error-overlay {
   position: absolute;
   z-index: 900;
-  top: var(--space-2);
-  /* Clears Leaflet's top-left zoom control (30px wide plus its own 10px
-   * margin), which both current hosts have and which otherwise sits on
-   * top of the first few characters of every line. A non-map host just
-   * gets a slightly indented box. */
-  left: 52px;
+  bottom: var(--space-2);
   right: var(--space-2);
   display: flex;
   align-items: flex-start;
@@ -305,6 +308,17 @@ code {
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
   font-size: var(--text-sm);
+  /* Shrink-wraps its message now that it no longer spans the host, so it
+   * needs its own ceiling: never wider than the thing it sits over. */
+  max-width: calc(100% - 2 * var(--space-2));
+}
+
+/* Both messages that float in a map corner lift off it the same way, and
+ * neither may outgrow the box its own width is set on. */
+.error-overlay,
+#pick-error {
+  box-sizing: border-box;
+  box-shadow: 0 2px 12px rgb(0 0 0 / 30%);
 }
 
 .error-overlay-dismiss {
@@ -1533,12 +1547,11 @@ button.danger:disabled {
  *
  * Bottom right, the selection panel's opposite corner, so the two share the
  * map's bottom row instead of the toast sitting under a panel that is wide
- * on a wide screen. Leaflet supplies the corner's margin; `box-sizing` and
- * `max-width` keep a long message inside the map. */
+ * on a wide screen. Leaflet supplies the corner's margin; the `max-width`
+ * here and the `box-sizing` it shares with `.error-overlay` keep a long
+ * message inside the map. */
 #pick-error {
-  box-sizing: border-box;
   max-width: min(44rem, calc(100vw - 2rem));
-  box-shadow: 0 2px 12px rgb(0 0 0 / 30%);
 }
 
 /* The invisible companion that makes a line tappable -- picked reflectors

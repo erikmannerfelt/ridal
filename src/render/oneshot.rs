@@ -146,11 +146,7 @@ pub fn render_to_file_with_stats_source(
         )?),
         AmplitudeLimits::Explicit { .. } => None,
     };
-    let limits = colormap::resolve_limits(
-        &request.profile.limits,
-        sampled,
-        request.profile.symmetric_limits,
-    )?;
+    let limits = colormap::resolve_limits(request.profile, sampled)?;
 
     // The profile carries a format of its own, which `format_for` may have
     // overridden from the output extension. The renderer must be told the

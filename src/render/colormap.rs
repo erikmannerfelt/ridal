@@ -272,20 +272,22 @@ pub fn to_stats_domain(v: f32, transform: AmplitudeTransform) -> f32 {
 /// `low == high` (estimated) with an error rather than producing a
 /// division-by-zero NaN-everywhere image.
 ///
-/// `symmetric` forces the resolved bounds to `(-vmax, vmax)` with
-/// `vmax = max(|low|, |high|)`, applied after estimation so it composes
-/// with both limit kinds. A diverging colormap means something only if
-/// its midpoint colour sits at a meaningful value -- for signed
-/// amplitude, zero -- and the default 1--99% estimate is asymmetric, so
-/// without this the white point would land wherever the midpoint of
-/// `[min, max]` happens to fall and the ramp would look diverging while
-/// meaning nothing.
+/// The profile's `symmetric_limits` forces the resolved bounds to
+/// `(-vmax, vmax)` with `vmax = max(|low|, |high|)`, applied after
+/// estimation so it composes with both limit kinds. A diverging colormap
+/// means something only if its midpoint colour sits at a meaningful value
+/// -- for signed amplitude, zero -- and the default 1--99% estimate is
+/// asymmetric, so without this the white point would land wherever the
+/// midpoint of `[min, max]` happens to fall and the ramp would look
+/// diverging while meaning nothing.
+///
+/// Takes the whole profile rather than its three limit-related fields
+/// because the degenerate case has to name the profile that produced it.
 pub fn resolve_limits(
-    limits: &AmplitudeLimits,
+    profile: &RenderProfile,
     sampled: Option<(f32, f32)>,
-    symmetric: bool,
 ) -> Result<(f32, f32), String> {
-    let resolved = match *limits {
+    let resolved = match profile.limits {
         AmplitudeLimits::Explicit { min, max } => {
             if min >= max {
                 return Err(format!(
@@ -298,18 +300,49 @@ pub fn resolve_limits(
             let (low, high) = sampled
                 .ok_or("percentile amplitude limits requested but no sample was supplied")?;
             if low == high {
-                return Err(format!(
-                    "degenerate estimated amplitude limits: low == high == {low}"
-                ));
+                return Err(degenerate_limits_message(profile, low));
             }
             (low, high)
         }
     };
-    if !symmetric {
+    if !profile.symmetric_limits {
         return Ok(resolved);
     }
     let vmax = resolved.0.abs().max(resolved.1.abs());
     Ok((-vmax, vmax))
+}
+
+/// Why every sampled amplitude came out the same, said to someone who can
+/// act on it rather than as a statement about quantiles.
+///
+/// The reachable way to hit this with a built-in profile is a `siglog`
+/// strength at or above the data's largest magnitude in log10: every
+/// sample truncates to zero and the percentiles collapse. The commonest
+/// cause is rendering a radargram the `siglog` processing step has already
+/// been run on -- its values are log magnitudes a handful of units wide,
+/// so `siglog-seismic`'s strength of 1 (`10^1`) flattens all of it. The
+/// profile is the thing to change, and a bare "degenerate estimated
+/// amplitude limits" sent the reader to inspect their data instead.
+fn degenerate_limits_message(profile: &RenderProfile, value: f32) -> String {
+    // `0.0 * sign(v)` leaves a negative zero, and "every value is -0" reads
+    // like a bug in the message rather than a fact about the data.
+    let value = if value == 0.0 { 0.0 } else { value };
+    let mut message = format!(
+        "Render profile '{}' found no amplitude range to stretch: \
+         every sampled value is {value}.",
+        profile.name
+    );
+    if profile.source_transform == SourceTransform::SigLog {
+        let strength = profile.siglog_minval_log10;
+        message.push_str(&format!(
+            " Its siglog strength of {strength} truncates every magnitude below \
+             10^{strength} to zero, which is what rendering already \
+             siglog-compressed data looks like. Render it with a profile that has \
+             no siglog source transform, such as '{}'.",
+            profile.name.strip_prefix("siglog-").unwrap_or("default")
+        ));
+    }
+    message
 }
 
 /// Map one already-display-domain value to a grayscale byte, or `None` for
@@ -585,38 +618,37 @@ mod tests {
         );
     }
 
+    /// A profile differing from `default` only in the fields
+    /// `resolve_limits` reads.
+    fn limits_profile(limits: AmplitudeLimits, symmetric: bool) -> RenderProfile {
+        RenderProfile {
+            limits,
+            symmetric_limits: symmetric,
+            ..RenderProfile::default_profile()
+        }
+    }
+
     #[test]
     fn resolve_limits_explicit_rejects_min_gte_max() {
-        assert!(resolve_limits(
-            &AmplitudeLimits::Explicit { min: 5.0, max: 1.0 },
-            None,
-            false
-        )
-        .is_err());
-        assert!(resolve_limits(
-            &AmplitudeLimits::Explicit { min: 1.0, max: 1.0 },
-            None,
-            false
-        )
-        .is_err());
-        assert!(resolve_limits(
-            &AmplitudeLimits::Explicit { min: 1.0, max: 5.0 },
-            None,
-            false
-        )
-        .is_ok());
+        let explicit = |min, max| limits_profile(AmplitudeLimits::Explicit { min, max }, false);
+        assert!(resolve_limits(&explicit(5.0, 1.0), None).is_err());
+        assert!(resolve_limits(&explicit(1.0, 1.0), None).is_err());
+        assert!(resolve_limits(&explicit(1.0, 5.0), None).is_ok());
     }
 
     #[test]
     fn resolve_limits_percentile_requires_sample_and_rejects_degenerate() {
-        let limits = AmplitudeLimits::Percentile {
-            low: 0.01,
-            high: 0.99,
-        };
-        assert!(resolve_limits(&limits, None, false).is_err());
-        assert!(resolve_limits(&limits, Some((1.0, 1.0)), false).is_err());
+        let profile = limits_profile(
+            AmplitudeLimits::Percentile {
+                low: 0.01,
+                high: 0.99,
+            },
+            false,
+        );
+        assert!(resolve_limits(&profile, None).is_err());
+        assert!(resolve_limits(&profile, Some((1.0, 1.0))).is_err());
         assert_eq!(
-            resolve_limits(&limits, Some((1.0, 5.0)), false).unwrap(),
+            resolve_limits(&profile, Some((1.0, 5.0))).unwrap(),
             (1.0, 5.0)
         );
     }
@@ -627,55 +659,64 @@ mod tests {
         // amplitude: whatever the asymmetric estimate says, the midpoint
         // of the limits must be zero. Composes with both limit kinds, and
         // the larger absolute bound wins.
+        let percentile = limits_profile(
+            AmplitudeLimits::Percentile {
+                low: 0.01,
+                high: 0.99,
+            },
+            true,
+        );
         assert_eq!(
-            resolve_limits(
-                &AmplitudeLimits::Percentile {
-                    low: 0.01,
-                    high: 0.99,
-                },
-                Some((2.0, 10.0)),
-                true,
-            )
-            .unwrap(),
+            resolve_limits(&percentile, Some((2.0, 10.0))).unwrap(),
             (-10.0, 10.0)
         );
         assert_eq!(
-            resolve_limits(
-                &AmplitudeLimits::Percentile {
-                    low: 0.01,
-                    high: 0.99,
-                },
-                Some((-10.0, 2.0)),
-                true,
-            )
-            .unwrap(),
+            resolve_limits(&percentile, Some((-10.0, 2.0))).unwrap(),
             (-10.0, 10.0)
         );
-        assert_eq!(
-            resolve_limits(
-                &AmplitudeLimits::Explicit {
+        let explicit = |symmetric| {
+            limits_profile(
+                AmplitudeLimits::Explicit {
                     min: -3.0,
                     max: 5.0,
                 },
-                None,
-                true,
+                symmetric,
             )
-            .unwrap(),
-            (-5.0, 5.0)
-        );
+        };
+        assert_eq!(resolve_limits(&explicit(true), None).unwrap(), (-5.0, 5.0));
         // And `false` is the untouched path.
-        assert_eq!(
-            resolve_limits(
-                &AmplitudeLimits::Explicit {
-                    min: -3.0,
-                    max: 5.0,
-                },
-                None,
-                false,
-            )
-            .unwrap(),
-            (-3.0, 5.0)
+        assert_eq!(resolve_limits(&explicit(false), None).unwrap(), (-3.0, 5.0));
+    }
+
+    #[test]
+    fn degenerate_limits_name_the_profile_and_its_siglog_strength() {
+        // The case this message was written for: rendering a radargram the
+        // `siglog` processing step has already been run on. Its values are
+        // log magnitudes a few units wide, `siglog-seismic`'s strength of 1
+        // truncates everything below 10^1 to zero, and both percentiles
+        // come back -0. The reader has to be sent to the profile; the data
+        // is fine.
+        let error = resolve_limits(&RenderProfile::siglog_seismic_profile(), Some((-0.0, 0.0)))
+            .unwrap_err();
+        assert!(error.contains("siglog-seismic"), "{error}");
+        assert!(error.contains("strength of 1"), "{error}");
+        assert!(error.contains("10^1"), "{error}");
+        assert!(
+            error.contains("every sampled value is 0"),
+            "a negative zero reads as a bug in the message: {error}"
         );
+        assert!(
+            error.contains("'seismic'"),
+            "should name the profile to use instead: {error}"
+        );
+
+        // A profile with no siglog gets the plain statement and none of
+        // the advice, which would not apply to it.
+        let error =
+            resolve_limits(&RenderProfile::default_profile(), Some((3.0, 3.0))).unwrap_err();
+        assert!(error.contains("'default'"), "{error}");
+        assert!(error.contains("every sampled value is 3"), "{error}");
+        assert!(!error.contains("siglog"), "{error}");
     }
 
     #[test]

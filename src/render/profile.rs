@@ -507,6 +507,22 @@ impl RenderProfile {
                 .validate()
                 .map_err(|e| format!("Could not use render profile {}: {e}", path.display()))?;
         }
+        // The strength is inert without the transform it is the strength
+        // *of*, so a file setting one and not the other renders at no
+        // compression and says nothing. Two fields that must agree is the
+        // cost of keeping `source_transform = "SigLog"` parsing as it
+        // always has; refusing the disagreement is what stops that cost
+        // being paid silently by whoever wrote the file.
+        if profile.source_transform == SourceTransform::None
+            && profile.siglog_minval_log10 != default_siglog_minval_log10()
+        {
+            return Err(format!(
+                "Could not use render profile {}: siglog_minval_log10 is set to {} \
+                 but source_transform is not SigLog, so the strength would do nothing.",
+                path.display(),
+                profile.siglog_minval_log10
+            ));
+        }
         Ok(profile)
     }
 
@@ -630,6 +646,52 @@ colormap = { name = "none", stops = [] }
             error.contains("broken.toml"),
             "should name the file: {error}"
         );
+    }
+
+    #[test]
+    fn a_profile_file_setting_an_inert_siglog_strength_is_rejected() {
+        // The strength only means something with the transform it belongs
+        // to, and the two are separate fields, so the disagreement has to
+        // be caught rather than rendered at the default strength in
+        // silence.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("inert.toml");
+        let text = r#"
+name = "inert"
+view = "Standard"
+transform = "Linear"
+limits = { Percentile = { low = 0.01, high = 0.99 } }
+resampling = "Mean"
+format = "Png"
+contrast = 1.0
+black_level = 0.0
+stats_skip_first_samples = 0
+siglog_minval_log10 = 2.0
+"#;
+        std::fs::write(&path, text).unwrap();
+        let error = RenderProfile::resolve(path.to_str().unwrap()).unwrap_err();
+        assert!(error.contains("source_transform is not SigLog"), "{error}");
+        assert!(
+            error.contains("inert.toml"),
+            "should name the file: {error}"
+        );
+
+        // The same strength with the transform present is fine, and so is
+        // the default strength on its own -- that is every file written
+        // before the field existed.
+        let with_transform = text.replace(
+            "view = \"Standard\"",
+            "view = \"Standard\"\nsource_transform = \"SigLog\"",
+        );
+        std::fs::write(&path, &with_transform).unwrap();
+        assert_eq!(
+            RenderProfile::resolve(path.to_str().unwrap())
+                .unwrap()
+                .siglog_minval_log10,
+            2.0
+        );
+        std::fs::write(&path, text.replace("siglog_minval_log10 = 2.0", "")).unwrap();
+        assert!(RenderProfile::resolve(path.to_str().unwrap()).is_ok());
     }
 
     #[test]
