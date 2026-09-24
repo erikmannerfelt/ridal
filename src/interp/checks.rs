@@ -94,6 +94,20 @@ pub enum Violation {
         from_trace: f64,
         to_trace: f64,
     },
+    /// Two features on mutually exclusive layers cover the same traces
+    /// (#208).
+    ///
+    /// The cross-layer form of `Overlap`: layers that share an exclusivity
+    /// group say one user may have at most one of them at a position, so a
+    /// shared span is a contradiction the derive step can only resolve by
+    /// discarding both.
+    ExclusiveOverlap {
+        layers: [String; 2],
+        feature_indices: [usize; 2],
+        feature_ids: [Option<String>; 2],
+        from_trace: f64,
+        to_trace: f64,
+    },
 }
 
 impl std::fmt::Display for Violation {
@@ -155,6 +169,30 @@ impl std::fmt::Display for Violation {
                      traces {from_trace:.1} to {to_trace:.1}. One user may have one \
                      value per layer per position; split or shorten them so only one \
                      line covers a trace.",
+                    which(feature_indices[0], &feature_ids[0]),
+                    which(feature_indices[1], &feature_ids[1]),
+                )
+            }
+            Violation::ExclusiveOverlap {
+                layers,
+                feature_indices,
+                feature_ids,
+                from_trace,
+                to_trace,
+            } => {
+                let which = |index: usize, id: &Option<String>| {
+                    id.as_deref()
+                        .map(|id| format!("feature '{id}'"))
+                        .unwrap_or_else(|| format!("feature {index}"))
+                };
+                write!(
+                    f,
+                    "layers '{}' and '{}' are mutually exclusive, but {} and {} both \
+                     cover traces {from_trace:.1} to {to_trace:.1}. One user may have \
+                     only one layer of an exclusivity group at a position; shorten one \
+                     of them, or change its layer.",
+                    layers[0],
+                    layers[1],
                     which(feature_indices[0], &feature_ids[0]),
                     which(feature_indices[1], &feature_ids[1]),
                 )
@@ -241,10 +279,15 @@ pub fn overhang_at(positions: &[Position]) -> Option<(usize, f64)> {
 /// A feature with no label, or one naming a layer the vocabulary does not
 /// define, is checked: the guardrail is the default, and an undefined layer
 /// has not opted out of anything.
+///
+/// `exclusive` says whether two distinct layers share an exclusivity group
+/// (#208). Unlabelled lines belong to no group, so it is only asked about
+/// two labels.
 pub fn check(
     document: &Document,
     allows_overhangs: &dyn Fn(Option<&str>) -> bool,
     warns_on_duplicates: &dyn Fn(Option<&str>) -> bool,
+    exclusive: &dyn Fn(&str, &str) -> bool,
 ) -> Vec<Violation> {
     let mut violations = Vec::new();
     for (feature_index, feature) in document.features.iter().enumerate() {
@@ -272,32 +315,36 @@ pub fn check(
         document,
         allows_overhangs,
         warns_on_duplicates,
+        exclusive,
     ));
     violations
 }
 
-/// Find pairs of features on one layer whose trace spans overlap (#207).
+/// Find pairs of features whose trace spans overlap where only one of them
+/// may cover a trace: two lines on one layer (#207), or two lines on
+/// mutually exclusive layers (#208).
 ///
 /// The overhang check is per-feature and the duplicate check is per-vertex;
 /// this is the span between them, and the one that actually catches a
 /// duplicated horizon. A span is `[min trace, max trace]`, which is exactly
-/// the covered traces for a line that does not double back -- so layers that
-/// permit overhangs, or have opted out of duplicate warnings, are skipped
-/// rather than compared on a span that overstates what they cover.
+/// the covered traces for a line that does not double back -- so for the
+/// same-layer rule, layers that permit overhangs, or have opted out of
+/// duplicate warnings, are skipped rather than compared on a span that
+/// overstates how many values they have.
+///
+/// Exclusivity is about *which* layer covers a trace, not how many values it
+/// has there, and a continuous line covers every trace between its extremes
+/// whether or not it doubles back. So it applies to every line on a layer in
+/// a group, whatever that layer's overhang and duplicate settings.
 fn overlapping_spans(
     document: &Document,
     allows_overhangs: &dyn Fn(Option<&str>) -> bool,
     warns_on_duplicates: &dyn Fn(Option<&str>) -> bool,
+    exclusive: &dyn Fn(&str, &str) -> bool,
 ) -> Vec<Violation> {
-    use std::collections::BTreeMap;
-
-    // layer -> (feature_index, min trace, max trace), one per line.
-    let mut per_layer: BTreeMap<Option<&str>, Vec<(usize, f64, f64)>> = BTreeMap::new();
+    // (feature_index, layer, min trace, max trace), one per line.
+    let mut spans: Vec<(usize, Option<&str>, f64, f64)> = Vec::new();
     for (feature_index, feature) in document.features.iter().enumerate() {
-        let layer = feature.label();
-        if allows_overhangs(layer) || !warns_on_duplicates(layer) {
-            continue;
-        }
         let Geometry::LineString(positions) = &feature.geometry else {
             continue;
         };
@@ -310,36 +357,49 @@ fn overlapping_spans(
             min = min.min(trace);
             max = max.max(trace);
         }
-        per_layer
-            .entry(layer)
-            .or_default()
-            .push((feature_index, min, max));
+        spans.push((feature_index, feature.label(), min, max));
     }
+    spans.sort_by(|a, b| a.2.total_cmp(&b.2));
 
+    let id = |index: usize| document.features[index].id().map(str::to_string);
     let mut violations = Vec::new();
-    for (layer, spans) in per_layer {
-        let mut spans = spans;
-        spans.sort_by(|a, b| a.1.total_cmp(&b.1));
-        for i in 0..spans.len() {
-            for j in (i + 1)..spans.len() {
-                // Sorted by start: once one begins past this one's end there
-                // is nothing further to compare it with.
-                if spans[j].1 >= spans[i].2 - OVERLAP_TOLERANCE_TRACES {
-                    break;
+    for i in 0..spans.len() {
+        for j in (i + 1)..spans.len() {
+            // Sorted by start: once one begins past this one's end there is
+            // nothing further to compare it with.
+            if spans[j].2 >= spans[i].3 - OVERLAP_TOLERANCE_TRACES {
+                break;
+            }
+            let from_trace = spans[j].2;
+            let to_trace = spans[i].3.min(spans[j].3);
+            if to_trace - from_trace <= OVERLAP_TOLERANCE_TRACES {
+                continue;
+            }
+            let feature_indices = [spans[i].0, spans[j].0];
+            let feature_ids = [id(spans[i].0), id(spans[j].0)];
+            match (spans[i].1, spans[j].1) {
+                (a, b) if a == b => {
+                    if allows_overhangs(a) || !warns_on_duplicates(a) {
+                        continue;
+                    }
+                    violations.push(Violation::Overlap {
+                        layer: a.unwrap_or("<unlabelled>").to_string(),
+                        feature_indices,
+                        feature_ids,
+                        from_trace,
+                        to_trace,
+                    });
                 }
-                let from_trace = spans[j].1;
-                let to_trace = spans[i].2.min(spans[j].2);
-                if to_trace - from_trace <= OVERLAP_TOLERANCE_TRACES {
-                    continue;
+                (Some(a), Some(b)) if exclusive(a, b) => {
+                    violations.push(Violation::ExclusiveOverlap {
+                        layers: [a.to_string(), b.to_string()],
+                        feature_indices,
+                        feature_ids,
+                        from_trace,
+                        to_trace,
+                    });
                 }
-                let id = |index: usize| document.features[index].id().map(str::to_string);
-                violations.push(Violation::Overlap {
-                    layer: layer.unwrap_or("<unlabelled>").to_string(),
-                    feature_indices: [spans[i].0, spans[j].0],
-                    feature_ids: [id(spans[i].0), id(spans[j].0)],
-                    from_trace,
-                    to_trace,
-                });
+                _ => {}
             }
         }
     }
@@ -450,6 +510,10 @@ mod tests {
         true
     }
 
+    fn no_groups(_: &str, _: &str) -> bool {
+        false
+    }
+
     #[test]
     fn a_rising_line_is_fine() {
         assert_eq!(
@@ -496,7 +560,7 @@ mod tests {
             ("cts", &[[0.0, 10.0], [100.0, 20.0]]),
             ("bed", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]]),
         ]);
-        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups);
         assert_eq!(violations.len(), 1);
         match &violations[0] {
             Violation::Overhang {
@@ -519,8 +583,11 @@ mod tests {
     fn a_layer_that_allows_overhangs_is_skipped() {
         let doc = document(&[("crevasse", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]])]);
         let allows = |layer: Option<&str>| layer == Some("crevasse");
-        assert!(check(&doc, &allows, &warn_everywhere).is_empty());
-        assert_eq!(check(&doc, &enforce_everywhere, &warn_everywhere).len(), 1);
+        assert!(check(&doc, &allows, &warn_everywhere, &no_groups).is_empty());
+        assert_eq!(
+            check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups).len(),
+            1
+        );
     }
 
     #[test]
@@ -532,7 +599,7 @@ mod tests {
             &[[0.0, 1.0], [5.0, 2.0], [3.0, 3.0]],
         )]);
         let allows = |layer: Option<&str>| layer == Some("crevasse");
-        assert_eq!(check(&doc, &allows, &warn_everywhere).len(), 1);
+        assert_eq!(check(&doc, &allows, &warn_everywhere, &no_groups).len(), 1);
 
         let unlabelled: Document = serde_json::from_value(serde_json::json!({
             "key": "line-01",
@@ -542,7 +609,10 @@ mod tests {
             }]
         }))
         .unwrap();
-        assert_eq!(check(&unlabelled, &allows, &warn_everywhere).len(), 1);
+        assert_eq!(
+            check(&unlabelled, &allows, &warn_everywhere, &no_groups).len(),
+            1
+        );
     }
 
     #[test]
@@ -559,7 +629,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert!(check(&doc, &enforce_everywhere, &warn_everywhere).is_empty());
+        assert!(check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups).is_empty());
     }
 
     fn duplicates(violations: &[Violation]) -> Vec<&Violation> {
@@ -572,7 +642,7 @@ mod tests {
     #[test]
     fn one_feature_with_two_vertices_on_a_trace_is_a_duplicate() {
         let doc = document(&[("bed", &[[500.0, 100.0], [500.0, 140.0]])]);
-        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups);
         let found = duplicates(&violations);
         assert_eq!(found.len(), 1, "{violations:?}");
         match found[0] {
@@ -597,7 +667,7 @@ mod tests {
             ("bed", &[[0.0, 100.0], [500.0, 100.0]]),
             ("bed", &[[500.0, 100.5], [900.0, 110.0]]),
         ]);
-        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups);
         assert!(duplicates(&violations).is_empty(), "{violations:?}");
     }
 
@@ -607,7 +677,7 @@ mod tests {
             ("bed", &[[0.0, 100.0], [500.0, 100.0]]),
             ("bed", &[[500.0, 140.0], [900.0, 110.0]]),
         ]);
-        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups);
         let found = duplicates(&violations);
         assert_eq!(found.len(), 1, "{violations:?}");
         match found[0] {
@@ -627,13 +697,21 @@ mod tests {
     fn a_layer_that_allows_duplicates_reports_none() {
         let tolerates = |_: Option<&str>| false;
         let single = document(&[("bed", &[[500.0, 100.0], [500.0, 140.0]])]);
-        assert!(duplicates(&check(&single, &enforce_everywhere, &tolerates)).is_empty());
+        assert!(
+            duplicates(&check(&single, &enforce_everywhere, &tolerates, &no_groups)).is_empty()
+        );
 
         let crossed = document(&[
             ("bed", &[[0.0, 100.0], [500.0, 100.0]]),
             ("bed", &[[500.0, 140.0], [900.0, 110.0]]),
         ]);
-        assert!(duplicates(&check(&crossed, &enforce_everywhere, &tolerates)).is_empty());
+        assert!(duplicates(&check(
+            &crossed,
+            &enforce_everywhere,
+            &tolerates,
+            &no_groups
+        ))
+        .is_empty());
     }
 
     fn overlaps(violations: &[Violation]) -> Vec<&Violation> {
@@ -651,7 +729,7 @@ mod tests {
             ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
             ("bed", &[[250.0, 400.0], [750.0, 420.0]]),
         ]);
-        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups);
         let found = overlaps(&violations);
         assert_eq!(found.len(), 1, "{violations:?}");
         match found[0] {
@@ -679,13 +757,25 @@ mod tests {
             ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
             ("bed", &[[500.0, 400.0], [750.0, 420.0]]),
         ]);
-        assert!(overlaps(&check(&touching, &enforce_everywhere, &warn_everywhere)).is_empty());
+        assert!(overlaps(&check(
+            &touching,
+            &enforce_everywhere,
+            &warn_everywhere,
+            &no_groups
+        ))
+        .is_empty());
 
         let barely = document(&[
             ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
             ("bed", &[[499.0, 400.0], [750.0, 420.0]]),
         ]);
-        assert!(overlaps(&check(&barely, &enforce_everywhere, &warn_everywhere)).is_empty());
+        assert!(overlaps(&check(
+            &barely,
+            &enforce_everywhere,
+            &warn_everywhere,
+            &no_groups
+        ))
+        .is_empty());
     }
 
     #[test]
@@ -694,7 +784,13 @@ mod tests {
             ("bed", &[[0.0, 100.0], [500.0, 120.0]]),
             ("cts", &[[250.0, 400.0], [750.0, 420.0]]),
         ]);
-        assert!(overlaps(&check(&doc, &enforce_everywhere, &warn_everywhere)).is_empty());
+        assert!(overlaps(&check(
+            &doc,
+            &enforce_everywhere,
+            &warn_everywhere,
+            &no_groups
+        ))
+        .is_empty());
     }
 
     #[test]
@@ -704,10 +800,10 @@ mod tests {
             ("crevasse", &[[250.0, 400.0], [750.0, 420.0]]),
         ]);
         let allows = |layer: Option<&str>| layer == Some("crevasse");
-        assert!(overlaps(&check(&doc, &allows, &warn_everywhere)).is_empty());
+        assert!(overlaps(&check(&doc, &allows, &warn_everywhere, &no_groups)).is_empty());
 
         let tolerates = |_: Option<&str>| false;
-        assert!(overlaps(&check(&doc, &enforce_everywhere, &tolerates)).is_empty());
+        assert!(overlaps(&check(&doc, &enforce_everywhere, &tolerates, &no_groups)).is_empty());
     }
 
     #[test]
@@ -717,8 +813,137 @@ mod tests {
             ("bed", &[[250.0, 400.0], [750.0, 420.0]]),
             ("bed", &[[400.0, 300.0], [900.0, 320.0]]),
         ]);
-        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups);
         assert_eq!(overlaps(&violations).len(), 3, "{violations:?}");
+    }
+
+    fn exclusive_overlaps(violations: &[Violation]) -> Vec<&Violation> {
+        violations
+            .iter()
+            .filter(|v| matches!(v, Violation::ExclusiveOverlap { .. }))
+            .collect()
+    }
+
+    /// The Svalbard groups from #208: `bed` and `bed_no_temperate` are
+    /// exclusive, `bed_no_temperate` and `cts` are exclusive, and `bed` and
+    /// `cts` coexist.
+    fn svalbard_groups(a: &str, b: &str) -> bool {
+        let groups: [&[&str]; 2] = [&["bed", "bed_no_temperate"], &["bed_no_temperate", "cts"]];
+        groups
+            .iter()
+            .any(|members| members.contains(&a) && members.contains(&b))
+    }
+
+    #[test]
+    fn lines_on_exclusive_layers_covering_the_same_traces_are_a_violation() {
+        // The spans a user drew to test #208 on dronbreen-20250327: a
+        // bed_no_temperate line reaching into a bed line, and a cts line
+        // lying across the bed_no_temperate line. Neither pair shares a
+        // layer, so the same-layer overlap rule never saw them.
+        let doc = document(&[
+            ("bed", &[[707.0, 340.2], [788.0, 331.2]]),
+            ("bed_no_temperate", &[[641.0, 368.1], [726.0, 287.5]]),
+            ("cts", &[[640.5, 259.2], [716.5, 214.5]]),
+        ]);
+        let violations = check(
+            &doc,
+            &enforce_everywhere,
+            &warn_everywhere,
+            &svalbard_groups,
+        );
+        assert!(overlaps(&violations).is_empty(), "{violations:?}");
+        let found = exclusive_overlaps(&violations);
+        assert_eq!(found.len(), 2, "{violations:?}");
+
+        let mut pairs: Vec<(Vec<&str>, f64, f64)> = found
+            .iter()
+            .map(|v| match v {
+                Violation::ExclusiveOverlap {
+                    layers,
+                    from_trace,
+                    to_trace,
+                    ..
+                } => {
+                    let mut layers: Vec<&str> = layers.iter().map(String::as_str).collect();
+                    layers.sort_unstable();
+                    (layers, *from_trace, *to_trace)
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        pairs.sort_by(|a, b| a.1.total_cmp(&b.1));
+        assert_eq!(pairs[0], (vec!["bed_no_temperate", "cts"], 641.0, 716.5));
+        assert_eq!(pairs[1], (vec!["bed", "bed_no_temperate"], 707.0, 726.0));
+    }
+
+    #[test]
+    fn exclusivity_is_not_transitive() {
+        // bed and cts share no group, so a CTS above a bed is the normal
+        // case, not a violation.
+        let doc = document(&[
+            ("bed", &[[0.0, 400.0], [500.0, 420.0]]),
+            ("cts", &[[0.0, 100.0], [500.0, 120.0]]),
+        ]);
+        let violations = check(
+            &doc,
+            &enforce_everywhere,
+            &warn_everywhere,
+            &svalbard_groups,
+        );
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn exclusive_layers_may_meet_at_a_junction() {
+        // The same one-trace tolerance as within a layer: a bed that turns
+        // into a cold bed is drawn as two lines meeting at one trace.
+        let doc = document(&[
+            ("bed", &[[0.0, 400.0], [500.0, 420.0]]),
+            ("bed_no_temperate", &[[499.0, 420.0], [900.0, 430.0]]),
+        ]);
+        let violations = check(
+            &doc,
+            &enforce_everywhere,
+            &warn_everywhere,
+            &svalbard_groups,
+        );
+        assert!(violations.is_empty(), "{violations:?}");
+    }
+
+    #[test]
+    fn exclusivity_ignores_the_same_layer_exemptions() {
+        // Allowing overhangs or duplicates is about how many values one layer
+        // has at a trace. Exclusivity is about which layer is there at all,
+        // so opting out of the first does not opt out of the second.
+        let doc = document(&[
+            ("bed", &[[0.0, 400.0], [500.0, 420.0]]),
+            ("bed_no_temperate", &[[250.0, 420.0], [900.0, 430.0]]),
+        ]);
+        let allows = |_: Option<&str>| true;
+        let tolerates = |_: Option<&str>| false;
+        let violations = check(&doc, &allows, &tolerates, &svalbard_groups);
+        assert_eq!(exclusive_overlaps(&violations).len(), 1, "{violations:?}");
+    }
+
+    #[test]
+    fn the_exclusive_overlap_message_names_both_layers() {
+        let doc = document(&[
+            ("bed", &[[0.0, 400.0], [500.0, 420.0]]),
+            ("bed_no_temperate", &[[250.0, 420.0], [900.0, 430.0]]),
+        ]);
+        let message = check(
+            &doc,
+            &enforce_everywhere,
+            &warn_everywhere,
+            &svalbard_groups,
+        )[0]
+        .to_string();
+        assert!(
+            message.contains("'bed' and 'bed_no_temperate'"),
+            "{message}"
+        );
+        assert!(message.contains("mutually exclusive"), "{message}");
+        assert!(message.contains("250.0 to 500.0"), "{message}");
     }
 
     #[test]
@@ -729,7 +954,7 @@ mod tests {
             ("bed", &[[0.0, 10.0], [100.0, 20.0]]),
             ("bed", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]]),
         ]);
-        let violations = check(&doc, &enforce_everywhere, &warn_everywhere);
+        let violations = check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups);
         assert!(duplicates(&violations).is_empty(), "{violations:?}");
         assert!(violations
             .iter()
@@ -739,7 +964,7 @@ mod tests {
     #[test]
     fn the_message_names_what_to_do_about_it() {
         let doc = document(&[("bed", &[[0.0, 10.0], [50.0, 12.0], [30.0, 14.0]])]);
-        let message = check(&doc, &enforce_everywhere, &warn_everywhere)[0].to_string();
+        let message = check(&doc, &enforce_everywhere, &warn_everywhere, &no_groups)[0].to_string();
         assert!(message.contains("f-0"), "{message}");
         assert!(message.contains("bed"), "{message}");
         assert!(

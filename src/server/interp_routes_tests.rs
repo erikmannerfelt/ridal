@@ -649,6 +649,58 @@ async fn two_lines_over_the_same_traces_are_refused() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn lines_on_exclusive_layers_over_the_same_traces_are_refused() {
+    // #208 declared groups and derive honoured them, but the save path only
+    // compared lines within one layer, so this was stored without a word.
+    let (_dir, app) = project_app(true);
+    let layers = serde_json::json!({
+        "layers": [
+            {"id": "bed", "name": "Glacier bed"},
+            {"id": "bed_no_temperate", "name": "Cold bed"},
+            {"id": "cts", "name": "CTS"},
+        ],
+        "groups": [
+            {"id": "g1", "name": "One", "members": ["bed", "bed_no_temperate"]},
+            {"id": "g2", "name": "Two", "members": ["bed_no_temperate", "cts"]},
+        ],
+    });
+    assert_eq!(
+        put(&app, "/api/v1/layers", &layers, None).await.0,
+        StatusCode::OK
+    );
+
+    let document = |second: &str| {
+        serde_json::json!({
+            "key": RADARGRAM,
+            "features": [
+                {"type": "Feature",
+                 "geometry": {"type": "LineString", "coordinates": [[0.0, 100.0], [500.0, 120.0]]},
+                 "properties": {"id": "f-a", "label": "bed"}},
+                {"type": "Feature",
+                 "geometry": {"type": "LineString", "coordinates": [[250.0, 400.0], [750.0, 420.0]]},
+                 "properties": {"id": "f-b", "label": second}}
+            ]
+        })
+    };
+
+    let (status, _, body) = put(&app, URI, &document("bed_no_temperate"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "violation");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("mutually exclusive"), "{message}");
+    assert!(message.contains("f-a"), "{message}");
+    assert!(message.contains("f-b"), "{message}");
+    assert_eq!(get(&app, URI).await.0, StatusCode::NOT_FOUND);
+
+    // bed and cts share no group: a CTS over a bed is the ordinary case.
+    assert_eq!(
+        put(&app, URI, &document("cts"), None).await.0,
+        StatusCode::CREATED
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_layer_that_allows_overhangs_or_duplicates_accepts_an_overlap() {
     let (_dir, app) = project_app(true);
     // A multi-valued layer: warn_on_duplicates off is how it says so.

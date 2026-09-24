@@ -1613,6 +1613,16 @@ button.danger:disabled {
   pointer-events: auto;
 }
 
+/* A violation's reason is a paragraph, not a label. Leaflet sets every
+ * tooltip to `nowrap`, which ran the longer reasons off the map. The tooltip
+ * sits in a zero-width pane, so `normal` alone would shrink it to one word
+ * per line: `max-content` sizes it to the text, and `max-width` wraps it. */
+.leaflet-tooltip.violation-tooltip {
+  white-space: normal;
+  width: max-content;
+  max-width: min(22rem, 70vw);
+}
+
 /* Marker sizes are set in picker.js, not here: Leaflet derives each icon's
  * anchor from its size, and overriding the size in CSS left the anchor
  * behind -- every handle sat a few pixels below its line. */

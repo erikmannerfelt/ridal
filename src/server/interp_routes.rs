@@ -459,6 +459,7 @@ pub async fn promote_interpretation(
         &document,
         &|label| layer_set.allows_overhangs(label),
         &|label| layer_set.warns_on_duplicates(label),
+        &|a, b| layer_set.conflicts(a, b),
     );
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();
@@ -630,6 +631,7 @@ pub async fn put_interpretation(
         &document,
         &|label| layer_set.allows_overhangs(label),
         &|label| layer_set.warns_on_duplicates(label),
+        &|a, b| layer_set.conflicts(a, b),
     );
     if !violations.is_empty() {
         let joined: Vec<String> = violations.iter().map(|v| v.to_string()).collect();

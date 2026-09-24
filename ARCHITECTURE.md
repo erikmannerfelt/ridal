@@ -570,6 +570,14 @@ two conflicting layers at a position, *every* layer involved becomes NaN for
 that user there, so group evaluation order cannot matter. A group naming an
 undefined layer is reported, never dropped.
 
+That NaN rule is the fallback for picks that already conflict. New ones are
+stopped earlier: `interp::checks` refuses a save in which two lines on
+conflicting layers share more than one trace of span (`ExclusiveOverlap`),
+with the same tolerance as two lines on one layer, and `picker.js` marks and
+refuses the same thing while drawing. Unlike the same-layer rule it ignores
+`allow_overhangs` and `warn_on_duplicates`: those say how many values one
+layer may have, not which layer may be present.
+
 ### Units
 
 Every layer value is converted into the expression's unit (`meters`,

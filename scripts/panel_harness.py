@@ -1117,6 +1117,96 @@ async function main() {
     return;
   }
 
+  if (MODE === "exclusive") {
+    /* #208: lines on two layers that share an exclusivity group are marked
+     * and refused like two lines on one layer. By now the groups mode has
+     * built the Svalbard arrangement, so bed and temperate_ice share no
+     * group and the document's temperate_ice line is the control. */
+    const result = { who: WHO, mode: MODE };
+    try {
+      const win = frame.contentWindow;
+      const map = win.RIDAL_MAP;
+      const G = win.RIDAL_GEOMETRY;
+      const xscale = win.RIDAL_XSCALE || 1;
+      const mapEl = doc.getElementById("map");
+      const mapRect = mapEl.getBoundingClientRect();
+      const button = doc.getElementById("pick-toggle");
+      const toast = doc.getElementById("pick-error");
+      const linePaths = () =>
+        doc.querySelectorAll(".leaflet-radargram-lines-pane path.hit-line");
+      result.bands = doc.querySelectorAll(".pick-overlap-band").length;
+      result.markers = doc.querySelectorAll(".pick-overlap").length;
+      result.lineCountBefore = linePaths().length;
+
+      doc
+        .querySelector(".pick-overlap")
+        .dispatchEvent(
+          new win.MouseEvent("click", { bubbles: true, cancelable: true }),
+        );
+      await sleep(200);
+      result.reason = toast.textContent;
+
+      /* The reason names two layers and runs to three sentences; Leaflet's
+       * tooltips never wrap, so it used to run off the map. */
+      doc
+        .querySelector(".pick-overlap")
+        .dispatchEvent(new win.MouseEvent("mouseover", { bubbles: true }));
+      await sleep(200);
+      const tip = doc.querySelector(".leaflet-tooltip.violation-tooltip");
+      result.tooltipShown = Boolean(tip);
+      if (tip) {
+        const box = tip.getBoundingClientRect();
+        const lineHeight = parseFloat(win.getComputedStyle(tip).lineHeight) || 16;
+        result.tooltipWidth = box.width;
+        result.tooltipLines = Math.round(box.height / lineHeight);
+        result.tooltipInsideMap =
+          box.left >= mapRect.left &&
+          box.right <= mapRect.right &&
+          box.top >= mapRect.top &&
+          box.bottom <= mapRect.bottom;
+      }
+      doc
+        .querySelector(".pick-overlap")
+        .dispatchEvent(new win.MouseEvent("mouseout", { bubbles: true }));
+      await sleep(100);
+
+      const latlng = (t, s) =>
+        win.L.latLng(-s * G.verticalRasterScale, t * G.rasterScale * xscale);
+      const clickMap = (t, s) => {
+        const p = map.latLngToContainerPoint(latlng(t, s));
+        mapEl.dispatchEvent(
+          new win.MouseEvent("click", {
+            bubbles: true,
+            cancelable: true,
+            clientX: mapRect.left + p.x,
+            clientY: mapRect.top + p.y,
+            detail: 1,
+          }),
+        );
+      };
+      const layerSelect = doc.getElementById("pick-layer");
+      layerSelect.value = "bed_no_temperate";
+      layerSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(150);
+      button.click();
+      await sleep(150);
+      clickMap(5, 180);
+      await sleep(600);
+      clickMap(20, 185);
+      await sleep(600);
+      button.click();
+      await sleep(250);
+      result.refusedLabel = button.textContent.trim();
+      result.lineCountAfter = linePaths().length;
+      result.refusedReason = toast.textContent;
+      finish(result);
+    } catch (error) {
+      result.error = String(error);
+      finish(result);
+    }
+    return;
+  }
+
   if (MODE === "narrow") {
     const result = { who: WHO, mode: MODE };
     // Narrow frame: the editing help must start collapsed, not cover the map.
@@ -1901,6 +1991,33 @@ def assert_overlap(overlap: dict) -> None:
     )
 
 
+def assert_exclusive(exclusive: dict) -> None:
+    assert exclusive.get("error") is None, exclusive
+    assert exclusive["markers"] == 1, (
+        "bed and bed_no_temperate share a group and overlap; temperate_ice "
+        f"overlaps bed but shares no group with it. Got {exclusive['markers']}"
+    )
+    assert exclusive["bands"] == 2, exclusive["bands"]
+    assert "mutually exclusive" in exclusive["reason"], exclusive["reason"]
+    assert exclusive["tooltipShown"] is True, exclusive
+    assert exclusive["tooltipLines"] > 1, (
+        f"the reason must wrap rather than run on one line: {exclusive}"
+    )
+    assert exclusive["tooltipInsideMap"] is True, (
+        f"the reason must stay readable inside the map: {exclusive}"
+    )
+    assert exclusive["refusedLabel"].startswith("Finish line"), (
+        "a refused finish must leave the draft in progress, got "
+        f"{exclusive['refusedLabel']!r}"
+    )
+    assert exclusive["lineCountAfter"] == exclusive["lineCountBefore"], (
+        "a line over an exclusive layer must not be committed"
+    )
+    assert "mutually exclusive" in exclusive["refusedReason"], exclusive[
+        "refusedReason"
+    ]
+
+
 def assert_narrow(narrow: dict) -> None:
     assert narrow.get("error") is None, narrow
     assert narrow["selectionHelpOpen"] is False, (
@@ -2118,6 +2235,43 @@ def main() -> None:
             )
         )
         overlap = run("op", "overlap")
+        # #208: the same, across two layers that share an exclusivity group.
+        duplicate_path.write_text(
+            json.dumps(
+                {
+                    "key": RADARGRAM,
+                    "source": {"revision_id": revision},
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[0.0, 50.0], [99.0, 60.0]],
+                            },
+                            "properties": {"id": "f-ex-a", "label": "bed"},
+                        },
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[30.0, 150.0], [90.0, 160.0]],
+                            },
+                            "properties": {"id": "f-ex-b", "label": "bed_no_temperate"},
+                        },
+                        {
+                            "type": "Feature",
+                            "geometry": {
+                                "type": "LineString",
+                                "coordinates": [[0.0, 20.0], [25.0, 25.0]],
+                            },
+                            "properties": {"id": "f-ex-c", "label": "temperate_ice"},
+                        },
+                    ],
+                },
+                indent=2,
+            )
+        )
+        exclusive = run("op", "exclusive")
 
         external = [path for path in all_requests if "://" in path]
         print(
@@ -2133,6 +2287,7 @@ def main() -> None:
                     "split": split,
                     "duplicates": duplicates,
                     "overlap": overlap,
+                    "exclusive": exclusive,
                 },
                 indent=2,
             )
@@ -2152,6 +2307,7 @@ def main() -> None:
         assert_split(split)
         assert_duplicates(duplicates)
         assert_overlap(overlap)
+        assert_exclusive(exclusive)
         assert not external, external
         print("PANEL HARNESS: all assertions passed")
     finally:
