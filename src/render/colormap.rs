@@ -328,6 +328,20 @@ fn normalize_to_u8(v: f32, min: f32, max: f32, contrast: f32, black_level: f32) 
     Some((t * 255.0).round() as u8)
 }
 
+/// One pixel's normalized byte: the display transform and the contrast
+/// stretch that both render paths share, `None` where there was no valid
+/// source data. The paths differ only in what they make of the byte and
+/// of that `None`.
+fn normalized_pixel(raw: f32, profile: &RenderProfile, limits: (f32, f32)) -> Option<u8> {
+    normalize_to_u8(
+        to_display_domain(raw, profile.transform),
+        limits.0,
+        limits.1,
+        profile.contrast,
+        profile.black_level,
+    )
+}
+
 /// Render a resampled amplitude array (as produced by
 /// [`super::resample::resample_area_weighted_mean`]) to a grayscale image
 /// of the same dimensions. `pad_value` fills pixels with no valid source
@@ -343,16 +357,7 @@ pub fn render_grayscale(
     let mut image = GrayImage::new(width as u32, height as u32);
     for y in 0..height {
         for x in 0..width {
-            let raw = data[[y, x]];
-            let displayed = to_display_domain(raw, profile.transform);
-            let byte = normalize_to_u8(
-                displayed,
-                limits.0,
-                limits.1,
-                profile.contrast,
-                profile.black_level,
-            )
-            .unwrap_or(pad_value);
+            let byte = normalized_pixel(data[[y, x]], profile, limits).unwrap_or(pad_value);
             image.put_pixel(x as u32, y as u32, image::Luma([byte]));
         }
     }
@@ -378,17 +383,9 @@ pub fn render_colormapped(
     let mut image = RgbImage::new(width as u32, height as u32);
     for y in 0..height {
         for x in 0..width {
-            let raw = data[[y, x]];
-            let displayed = to_display_domain(raw, profile.transform);
-            let color = normalize_to_u8(
-                displayed,
-                limits.0,
-                limits.1,
-                profile.contrast,
-                profile.black_level,
-            )
-            .map(|byte| lut[byte as usize])
-            .unwrap_or(pad_color);
+            let color = normalized_pixel(data[[y, x]], profile, limits)
+                .map(|byte| lut[byte as usize])
+                .unwrap_or(pad_color);
             image.put_pixel(x as u32, y as u32, Rgb(color));
         }
     }

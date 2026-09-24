@@ -30,8 +30,13 @@ pub fn abslog<T: Float>(data: &mut Array2<T>) {
 /// step at its default strength show the same picture.
 ///
 /// `0` means magnitudes below `10^0 == 1` truncate to zero, i.e. the
-/// transform is `log10|v|` above one. A render profile can override the
-/// strength for its own data scale (`RenderProfile::siglog_minval_log10`);
+/// transform is `log10|v|` above one. It is the offset the published
+/// processing used (doi:10.31223/X5P19C), and it reads better on
+/// mV-scale amplitude than the previous `-1`, which truncated only
+/// below 0.1 mV and so compressed almost nothing.
+///
+/// A render profile can override the strength for its own data scale
+/// (`RenderProfile::siglog_minval_log10`);
 /// the `siglog-seismic` pair does, because a linear colour ramp needs the
 /// noise floor near white and this default does not truncate enough of it
 /// on high-dynamic-range data.
