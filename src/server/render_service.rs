@@ -303,6 +303,7 @@ impl RenderService {
             AmplitudeLimits::Percentile { low, high } => Some(sampled_amplitude_limits(
                 &self.reader,
                 profile.source_transform,
+                profile.siglog_minval_log10,
                 profile.transform,
                 crate::render::stats::SAMPLE_SEED,
                 low,
@@ -645,6 +646,7 @@ mod tests {
             crate::render::stats::sampled_amplitude_limits(
                 &reader,
                 crate::render::profile::SourceTransform::None,
+                crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
                 crate::render::profile::AmplitudeTransform::Linear,
                 seed,
                 1.0,

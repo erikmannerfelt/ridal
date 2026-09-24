@@ -23,12 +23,19 @@ pub fn abslog<T: Float>(data: &mut Array2<T>) {
     data.mapv_inplace(|v| (v + minval).log10());
 }
 
-/// The `siglog` step's default magnitude offset (`minval_log10`).
+/// The `siglog` step's default magnitude offset (`minval_log10`), and the
+/// default strength of the render layer's `source_transform = SigLog`.
 ///
-/// Shared with the render layer's `source_transform = SigLog`, so
-/// `--render-profile siglog-default` and a `siglog` processing step at its
-/// default strength show the same picture.
-pub const DEFAULT_SIGLOG_MINVAL_LOG10: f32 = -1.0;
+/// Shared so `--render-profile siglog-default` and a `siglog` processing
+/// step at its default strength show the same picture.
+///
+/// `0` means magnitudes below `10^0 == 1` truncate to zero, i.e. the
+/// transform is `log10|v|` above one. A render profile can override the
+/// strength for its own data scale (`RenderProfile::siglog_minval_log10`);
+/// the `siglog-seismic` pair does, because a linear colour ramp needs the
+/// noise floor near white and this default does not truncate enough of it
+/// on high-dynamic-range data.
+pub const DEFAULT_SIGLOG_MINVAL_LOG10: f32 = 0.0;
 
 /// The scalar `siglog` transform: `(log10|v| - minval_log10).max(0) *
 /// sign(v)`, the sign-corrected log compression.

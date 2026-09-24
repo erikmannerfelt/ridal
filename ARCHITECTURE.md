@@ -180,7 +180,7 @@ normalize → colormap → encode.** Everything lives under
   | `high-contrast` | None | Linear | Mean | 5–95% quantile |
   | `siglog-high-contrast` | SigLog | Linear | Mean | the `high-contrast` view on log-compressed source |
   | `seismic` | None | Linear | Mean | diverging `seismic` colormap, symmetric limits (white at zero amplitude) |
-  | `siglog-seismic` | SigLog | Linear | Mean | `seismic` on log-compressed source; sign-preserving tone compression for a diverging ramp |
+  | `siglog-seismic` | SigLog (strength 1) | Linear | Mean | `seismic` on log-compressed source; sign-preserving tone compression for a diverging ramp |
 
   A profile has **two** transforms, and their order is the reason
   `siglog-*` needs no new resampler. `source_transform` is applied to
@@ -207,6 +207,21 @@ normalize → colormap → encode.** Everything lives under
   There is deliberately no `siglog-abslog`: `abslog` is already a log
   transform, so its siglog view would be a log of a log rather than a
   distinct picture.
+
+  Each profile also carries the `siglog` **strength**
+  (`siglog_minval_log10`), the exponent the compression truncates below,
+  defaulting to `filters::DEFAULT_SIGLOG_MINVAL_LOG10`. The three older
+  `siglog-*` profiles use the shared default, so they stay the exact
+  preview of a default `siglog` step. `siglog-seismic` overrides it to
+  `1`: a grayscale `siglog-*` view reads fine at the default because
+  black and white both read strongly, but a linear colour ramp encodes
+  magnitude as distance from white, and on high-dynamic-range data the
+  default leaves the noise floor at ~60% of the 1/99 percentile range,
+  so the image is all saturated colour and no white. Measured on
+  `dat_0130_b1` (a ~55 mV noise floor against a 1/99 limit of 4.4): 5%
+  of pixels near white at the default, 32% at strength 1. The strength
+  is part of the cache key for every `SigLog` profile, so changing the
+  shared default re-keys them rather than serving stale pixels.
 
   **Colormaps** (#246) are an optional `Option<Colormap>` on the
   profile: `None` keeps the original single-channel grayscale path, byte

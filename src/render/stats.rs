@@ -28,7 +28,10 @@ const TRACES_PER_RUN: usize = 16;
 /// `source_transform` is applied to each sampled source value first, before
 /// `transform`, exactly as the renderer applies it before resampling -- so
 /// a `SourceTransform::SigLog` profile's limits are percentiles of
-/// `siglog(raw)` rather than of raw amplitude.
+/// `siglog(raw)` rather than of raw amplitude, and `siglog_minval_log10`
+/// must be the same strength the renderer will use
+/// (`RenderProfile::siglog_minval_log10`). It is ignored for
+/// `SourceTransform::None`.
 ///
 /// `seed` should be derived from the revision ID, not the clock, so limits
 /// are reproducible across restarts and identical between the CLI and the
@@ -56,9 +59,15 @@ const TRACES_PER_RUN: usize = 16;
 /// difference between the profiles and nothing else.
 pub const SAMPLE_SEED: u64 = 0x5249_4441_4c00_0001;
 
+// Eight positional parameters, each a scalar the caller already has to
+// hand (a profile's fields, or a test's literals). A parameter struct
+// would only relocate the verbosity, and the two adjacent transform
+// arguments are the pair `to_source_domain` takes.
+#[allow(clippy::too_many_arguments)]
 pub fn sampled_amplitude_limits(
     reader: &impl AmplitudeSource,
     source_transform: SourceTransform,
+    siglog_minval_log10: f32,
     transform: AmplitudeTransform,
     seed: u64,
     low_pct: f32,
@@ -75,7 +84,12 @@ pub fn sampled_amplitude_limits(
     let samples = reader.sample_trace_runs(N_RUNS, TRACES_PER_RUN, offset, skip_first_samples)?;
     let mut transformed: Vec<f32> = samples
         .into_iter()
-        .map(|v| to_stats_domain(to_source_domain(v, source_transform), transform))
+        .map(|v| {
+            to_stats_domain(
+                to_source_domain(v, source_transform, siglog_minval_log10),
+                transform,
+            )
+        })
         .filter(|v| v.is_finite())
         .collect();
     if transformed.is_empty() {
@@ -129,6 +143,7 @@ mod tests {
         let (low, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             0,
             0.01,
@@ -161,6 +176,7 @@ mod tests {
         let (low_a, high_a) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             1,
             0.01,
@@ -171,6 +187,7 @@ mod tests {
         let (low_b, high_b) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             999,
             0.01,
@@ -194,6 +211,7 @@ mod tests {
         let a = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -204,6 +222,7 @@ mod tests {
         let b = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -228,6 +247,7 @@ mod tests {
         let (low_lin, high_lin) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             7,
             0.01,
@@ -238,6 +258,7 @@ mod tests {
         let (low_log, high_log) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::AbsLog,
             7,
             0.01,
@@ -276,6 +297,7 @@ mod tests {
         let from_raw = sampled_amplitude_limits(
             &raw_source,
             SourceTransform::SigLog,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -286,6 +308,7 @@ mod tests {
         let from_transformed = sampled_amplitude_limits(
             &transformed_source,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -300,6 +323,7 @@ mod tests {
         let plain = sampled_amplitude_limits(
             &raw_source,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -308,6 +332,47 @@ mod tests {
         )
         .unwrap();
         assert_ne!(from_raw, plain);
+    }
+
+    #[test]
+    fn a_custom_siglog_strength_changes_the_estimated_limits() {
+        // The strength the renderer applies must be the strength the
+        // sampler estimates with, or `siglog-seismic`'s chunks and its
+        // overview would normalize differently. No NetCDF.
+        let raw = ndarray::Array2::from_shape_fn((10, 200), |(r, c)| {
+            let v = (r as f32 * 0.7 + c as f32 * 0.13).sin() * 100.0 + 10.0;
+            if (r + c) % 17 == 0 {
+                -v
+            } else {
+                v
+            }
+        });
+        let raw_source = crate::source::ArraySource::new(raw.view());
+        let limits = |strength| {
+            sampled_amplitude_limits(
+                &raw_source,
+                SourceTransform::SigLog,
+                strength,
+                AmplitudeTransform::Linear,
+                42,
+                0.01,
+                0.99,
+                0,
+            )
+            .unwrap()
+        };
+        let (low_default, high_default) = limits(crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10);
+        let (low_strong, high_strong) = limits(1.0);
+        assert_ne!((low_default, high_default), (low_strong, high_strong));
+        // A higher strength truncates more, so the range only shrinks.
+        assert!(
+            low_strong >= low_default - 1e-6,
+            "{low_strong} < {low_default}"
+        );
+        assert!(
+            high_strong <= high_default + 1e-6,
+            "{high_strong} > {high_default}"
+        );
     }
 
     #[test]
@@ -327,6 +392,7 @@ mod tests {
         let (low, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Positive,
             7,
             0.01,
@@ -362,6 +428,7 @@ mod tests {
         let (_, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
+            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             0,
             0.01,

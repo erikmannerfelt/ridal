@@ -286,7 +286,9 @@ fn apply_source_transform(data: &mut Array2<f32>, profile: &RenderProfile) {
     if profile.source_transform == SourceTransform::None {
         return;
     }
-    data.mapv_inplace(|v| colormap::to_source_domain(v, profile.source_transform));
+    data.mapv_inplace(|v| {
+        colormap::to_source_domain(v, profile.source_transform, profile.siglog_minval_log10)
+    });
 }
 
 #[cfg(test)]
@@ -694,18 +696,21 @@ mod tests {
     #[test]
     fn siglog_profile_is_the_siglog_step_then_the_base_profile() {
         // The claim this design rests on: every `siglog-*` is exactly "run
-        // the siglog processing step, then render with the base profile" --
-        // compress *before* resampling, and keep the base profile's own
-        // reducer. Byte-identical and with no NetCDF: one render applies the
-        // source transform on the way out, the other is handed an array
-        // that was already transformed.
+        // the siglog processing step at that profile's own strength, then
+        // render with the base profile" -- compress *before* resampling,
+        // and keep the base profile's own reducer. Byte-identical and with
+        // no NetCDF: one render applies the source transform on the way
+        // out, the other is handed an array that was already transformed.
         //
-        // Parameterised over all three pairs rather than pinned to
+        // Parameterised over every pair rather than pinned to
         // `siglog-default`. The `positive` pair is the one that caught a
         // real bug: overriding its reducer to `Mean` left the signed mean
         // of oscillating siglog values near zero, which `Positive`'s black
         // level then clipped to an almost entirely black overview, while
         // "siglog step then `positive`" (which rectifies) looked right.
+        // `siglog-seismic` is in the list precisely because it overrides
+        // the shared strength: the equivalence must hold at strength 1, not
+        // at the default.
         let raw = ndarray::Array2::from_shape_fn((40, 60), |(r, c)| {
             let v = (r as f32 * 0.9).sin() * 30.0 + (c as f32 * 0.2).cos() * 10.0;
             if (r + c) % 7 == 0 {
@@ -714,8 +719,6 @@ mod tests {
                 v
             }
         });
-        let mut pre = raw.clone();
-        crate::filters::siglog(&mut pre, crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10);
 
         let limits = (-2.5f32, 3.0f32);
         let with_explicit_limits = |base: RenderProfile| RenderProfile {
@@ -728,7 +731,6 @@ mod tests {
         };
 
         let raw_source = crate::source::ArraySource::new(raw.view());
-        let pre_source = crate::source::ArraySource::new(pre.view());
         let spec = OverviewSpec::new(60, 40, 30);
         let grid = ViewerRaster::new(60, 40).grid();
         let chunk = grid.chunk(0, 0).unwrap();
@@ -749,10 +751,20 @@ mod tests {
                 RenderProfile::siglog_high_contrast_profile(),
                 RenderProfile::high_contrast_profile(),
             ),
+            (
+                "siglog-seismic",
+                RenderProfile::siglog_seismic_profile(),
+                RenderProfile::seismic_profile(),
+            ),
         ];
         for (name, siglog_base, plain_base) in pairs {
             let siglog_profile = with_explicit_limits(siglog_base.clone());
             let plain_profile = with_explicit_limits(plain_base.clone());
+
+            // The "already ran the step" array, at this profile's strength.
+            let mut pre = raw.clone();
+            crate::filters::siglog(&mut pre, siglog_base.siglog_minval_log10);
+            let pre_source = crate::source::ArraySource::new(pre.view());
 
             // Overview path (banded/haloed reads).
             let overview_from_raw = Renderer::new(&raw_source)
@@ -863,6 +875,7 @@ mod tests {
         let (low, high) = super::super::stats::sampled_amplitude_limits(
             &reader,
             profile.source_transform,
+            profile.siglog_minval_log10,
             profile.transform,
             seed,
             0.01,

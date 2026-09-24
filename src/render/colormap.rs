@@ -210,20 +210,23 @@ fn log_abs(v: f32) -> f32 {
 /// `None` is the identity, so a profile with no source preprocessing reads
 /// exactly as it did before this stage existed. `SigLog` reproduces the
 /// `siglog` processing step's `(log10|v| - offset).max(0) * sign(v)` via
-/// [`filters::siglog_value`], at the step's own default offset.
+/// [`filters::siglog_value`], at `siglog_minval_log10` -- the profile's
+/// own strength, defaulting to
+/// [`filters::DEFAULT_SIGLOG_MINVAL_LOG10`]. `siglog_minval_log10` is
+/// ignored for `None`.
 ///
 /// `NaN` (the "no data" signal the resampler must keep seeing) passes
 /// through. A literal infinite value is sanitized to zero first, matching
 /// [`to_display_domain`], so the resampler never sees an infinity it would
 /// propagate across a whole footprint.
-pub fn to_source_domain(v: f32, transform: SourceTransform) -> f32 {
+pub fn to_source_domain(v: f32, transform: SourceTransform, siglog_minval_log10: f32) -> f32 {
     match transform {
         SourceTransform::None => v,
         SourceTransform::SigLog => {
             if v.is_nan() {
                 return v;
             }
-            filters::siglog_value(sanitize(v), filters::DEFAULT_SIGLOG_MINVAL_LOG10)
+            filters::siglog_value(sanitize(v), siglog_minval_log10)
         }
     }
 }
@@ -452,16 +455,31 @@ mod tests {
 
     #[test]
     fn source_domain_siglog_keeps_the_sign_and_truncates_small_magnitudes() {
-        // offset = -1, so magnitudes below 10^-1 == 0.1 truncate to zero.
-        // 1000 -> log10(1000) + 1 == 4, and the sign survives.
-        assert!((to_source_domain(1000.0, SourceTransform::SigLog) - 4.0).abs() < 1e-6);
-        assert!((to_source_domain(-1000.0, SourceTransform::SigLog) + 4.0).abs() < 1e-6);
-        assert!((to_source_domain(1.0, SourceTransform::SigLog) - 1.0).abs() < 1e-6);
-        assert!((to_source_domain(-1.0, SourceTransform::SigLog) + 1.0).abs() < 1e-6);
-        // Below the offset: zero, not a small negative log.
-        assert_eq!(to_source_domain(0.05, SourceTransform::SigLog), 0.0);
-        assert_eq!(to_source_domain(-0.05, SourceTransform::SigLog), 0.0);
-        assert_eq!(to_source_domain(0.0, SourceTransform::SigLog), 0.0);
+        // The default offset is 0, so magnitudes below 10^0 == 1 truncate
+        // to zero. 1000 -> log10(1000) == 3, and the sign survives.
+        let d = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
+        assert!((to_source_domain(1000.0, SourceTransform::SigLog, d) - 3.0).abs() < 1e-6);
+        assert!((to_source_domain(-1000.0, SourceTransform::SigLog, d) + 3.0).abs() < 1e-6);
+        assert!((to_source_domain(10.0, SourceTransform::SigLog, d) - 1.0).abs() < 1e-6);
+        assert!((to_source_domain(-10.0, SourceTransform::SigLog, d) + 1.0).abs() < 1e-6);
+        // At and below the offset: zero, not a small negative log.
+        assert_eq!(to_source_domain(1.0, SourceTransform::SigLog, d), 0.0);
+        assert_eq!(to_source_domain(0.05, SourceTransform::SigLog, d), 0.0);
+        assert_eq!(to_source_domain(-0.05, SourceTransform::SigLog, d), 0.0);
+        assert_eq!(to_source_domain(0.0, SourceTransform::SigLog, d), 0.0);
+    }
+
+    #[test]
+    fn source_domain_siglog_honours_a_custom_strength() {
+        // `siglog-seismic` overrides the shared default: strength 1
+        // truncates below 10^1 == 10, which is what lifts a high-amplitude
+        // noise floor out of a colour ramp's saturated region.
+        assert!((to_source_domain(1000.0, SourceTransform::SigLog, 1.0) - 2.0).abs() < 1e-6);
+        assert!((to_source_domain(-1000.0, SourceTransform::SigLog, 1.0) + 2.0).abs() < 1e-6);
+        assert_eq!(to_source_domain(10.0, SourceTransform::SigLog, 1.0), 0.0);
+        assert_eq!(to_source_domain(5.0, SourceTransform::SigLog, 1.0), 0.0);
+        // `None` ignores the strength entirely.
+        assert_eq!(to_source_domain(5.0, SourceTransform::None, 1.0), 5.0);
     }
 
     #[test]
@@ -472,7 +490,7 @@ mod tests {
         let offset = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
         for v in [1000.0f32, 1.0, -1000.0, -1.0, 0.05, -0.05, 0.0] {
             let expected = (v.abs().log10() - offset).max(0.0) * v.signum();
-            let got = to_source_domain(v, SourceTransform::SigLog);
+            let got = to_source_domain(v, SourceTransform::SigLog, offset);
             assert!(
                 (got - expected).abs() < 1e-6,
                 "siglog({v}) = {got}, expected {expected}"
@@ -484,7 +502,9 @@ mod tests {
     #[test]
     fn source_domain_none_is_the_identity() {
         // A profile with no source preprocessing must read exactly as it
-        // did before the stage existed, NaN and infinity included.
+        // did before the stage existed, NaN and infinity included, and the
+        // strength is ignored.
+        let d = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
         for v in [
             3.0f32,
             -3.0,
@@ -493,7 +513,7 @@ mod tests {
             f32::INFINITY,
             f32::NEG_INFINITY,
         ] {
-            let got = to_source_domain(v, SourceTransform::None);
+            let got = to_source_domain(v, SourceTransform::None, d);
             assert!(
                 got == v || (got.is_nan() && v.is_nan()),
                 "None changed {v} to {got}"
@@ -506,13 +526,14 @@ mod tests {
         // NaN is the resampler's "no data" signal and must survive so the
         // footprint is dropped, not averaged in as zero. An infinity is a
         // data anomaly, sanitized to zero like the display domain does.
-        assert!(to_source_domain(f32::NAN, SourceTransform::SigLog).is_nan());
+        let d = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
+        assert!(to_source_domain(f32::NAN, SourceTransform::SigLog, d).is_nan());
         assert_eq!(
-            to_source_domain(f32::INFINITY, SourceTransform::SigLog),
+            to_source_domain(f32::INFINITY, SourceTransform::SigLog, d),
             0.0
         );
         assert_eq!(
-            to_source_domain(f32::NEG_INFINITY, SourceTransform::SigLog),
+            to_source_domain(f32::NEG_INFINITY, SourceTransform::SigLog, d),
             0.0
         );
     }
@@ -546,11 +567,12 @@ mod tests {
 
     #[test]
     fn display_domain_nan_passes_through_untouched() {
+        let d = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::Linear).is_nan());
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::AbsLog).is_nan());
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::Positive).is_nan());
-        assert!(to_source_domain(f32::NAN, SourceTransform::SigLog).is_nan());
-        assert!(to_source_domain(f32::NAN, SourceTransform::None).is_nan());
+        assert!(to_source_domain(f32::NAN, SourceTransform::SigLog, d).is_nan());
+        assert!(to_source_domain(f32::NAN, SourceTransform::None, d).is_nan());
     }
 
     #[test]
