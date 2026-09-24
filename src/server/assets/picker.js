@@ -172,7 +172,9 @@
    * rarely exact, and a shared endpoint trace belongs to both lines. */
   const OVERLAP_TOLERANCE_TRACES = 1.0;
 
-  /** Pairs of lines on one layer that cover the same traces (#207).
+  /** Pairs of lines that cover the same traces where only one of them may:
+   * two lines on one layer (#207), or two lines on mutually exclusive layers
+   * (#208).
    *
    * The client-side twin of `overlapping_spans` in `src/interp/checks.rs`.
    * `duplicateValues` compares picked *vertices*; two lines drawn over the
@@ -180,14 +182,17 @@
    * silent while the layer has two values over a range of positions. This
    * compares spans instead, which is the case that actually happens.
    *
-   * `lines` is `[{ coordinates, label }]`, and `participates(label)` decides
-   * whether a layer is subject to the rule. Returns one entry per offending
-   * pair: `{ lineIndexA, lineIndexB, fromTrace, toTrace }`.
+   * `lines` is `[{ coordinates, label }]`. `participates(label)` decides
+   * whether a layer is subject to the same-layer rule, and `exclusive(a, b)`
+   * whether two distinct layers share an exclusivity group. The latter
+   * ignores `participates`, as the server does: exclusivity is about which
+   * layer covers a trace, not how many values it has there. Returns one entry
+   * per offending pair: `{ lineIndexA, lineIndexB, fromTrace, toTrace,
+   * exclusive }`, where `exclusive` says which rule it broke.
    */
-  function overlappingSpans(lines, participates) {
-    const byLayer = new Map();
+  function overlappingSpans(lines, participates, exclusive) {
+    const spans = [];
     lines.forEach((line, lineIndex) => {
-      if (!participates(line.label)) return;
       let min = Infinity;
       let max = -Infinity;
       for (const coordinate of line.coordinates) {
@@ -197,28 +202,36 @@
         if (trace > max) max = trace;
       }
       if (min > max) return;
-      if (!byLayer.has(line.label)) byLayer.set(line.label, []);
-      byLayer.get(line.label).push({ lineIndex, min, max });
+      spans.push({ lineIndex, label: line.label, min, max });
     });
 
     const offending = [];
-    for (const spans of byLayer.values()) {
-      spans.sort((a, b) => a.min - b.min);
-      for (let i = 0; i < spans.length; i++) {
-        for (let j = i + 1; j < spans.length; j++) {
-          // Sorted by start: once one begins past this one's end there is
-          // nothing further to compare it with.
-          if (spans[j].min >= spans[i].max - OVERLAP_TOLERANCE_TRACES) break;
-          const fromTrace = spans[j].min;
-          const toTrace = Math.min(spans[i].max, spans[j].max);
-          if (toTrace - fromTrace <= OVERLAP_TOLERANCE_TRACES) continue;
-          offending.push({
-            lineIndexA: spans[i].lineIndex,
-            lineIndexB: spans[j].lineIndex,
-            fromTrace,
-            toTrace,
-          });
+    spans.sort((a, b) => a.min - b.min);
+    for (let i = 0; i < spans.length; i++) {
+      for (let j = i + 1; j < spans.length; j++) {
+        // Sorted by start: once one begins past this one's end there is
+        // nothing further to compare it with.
+        if (spans[j].min >= spans[i].max - OVERLAP_TOLERANCE_TRACES) break;
+        const fromTrace = spans[j].min;
+        const toTrace = Math.min(spans[i].max, spans[j].max);
+        if (toTrace - fromTrace <= OVERLAP_TOLERANCE_TRACES) continue;
+        const [a, b] = [spans[i].label, spans[j].label];
+        let isExclusive;
+        if (a === b) {
+          if (!participates(a)) continue;
+          isExclusive = false;
+        } else if (a && b && exclusive(a, b)) {
+          isExclusive = true;
+        } else {
+          continue;
         }
+        offending.push({
+          lineIndexA: spans[i].lineIndex,
+          lineIndexB: spans[j].lineIndex,
+          fromTrace,
+          toTrace,
+          exclusive: isExclusive,
+        });
       }
     }
     return offending;
@@ -304,6 +317,9 @@
      * silently on the first browser edit. */
     let loaded = null;
     let layers = [];
+    /** Mutually exclusive layer groups (#208), as `/api/v1/layers` serves
+     * them. */
+    let groups = [];
     let dirty = false;
     /** The line being drawn: array of [trace, sample], or null.
      *
@@ -439,6 +455,23 @@
      * `overlapping_spans` skips it. */
     const participatesInOverlap = (label) =>
       warnsOnDuplicates(label) && !allowsOverhangs(label);
+    /** The exclusivity groups a layer is in (#208), from both `group.members`
+     * and the layer's own `groups` list, as `LayerSet::groups_of` reads them.
+     * A group may name a layer the vocabulary does not define, so this does
+     * not require `label` to be one. */
+    const groupsOf = (label) => {
+      const ids = new Set((layerFor(label) || {}).groups || []);
+      for (const group of groups) {
+        if ((group.members || []).includes(label)) ids.add(group.id);
+      }
+      return ids;
+    };
+    /** Whether two layers share an exclusivity group (#208). Not transitive:
+     * sharing a group is the whole test, as in `LayerSet::conflicts`. */
+    const exclusiveLayers = (a, b) => {
+      const ofB = groupsOf(b);
+      return [...groupsOf(a)].some((id) => ofB.has(id));
+    };
 
     /** What to call a layer in the interface.
      *
@@ -544,8 +577,7 @@
           showError(
             `Moving that vertex there would put this line over traces ` +
               `${overlap.fromTrace.toFixed(1)} to ${overlap.toTrace.toFixed(1)}, ` +
-              `where "${layerName(label)}" already has one. One user may have ` +
-              "one value per layer per position.",
+              `where ${takenBy(label, overlap)}. ${ruleFor(overlap)}`,
           );
         } else {
           clearError();
@@ -703,17 +735,20 @@
         const wasOverlapping =
           firstOverlap(label, coordinates, selected) !== null;
         coordinates[index + 1] = [trace, sample];
+        const overlap = wasOverlapping
+          ? null
+          : firstOverlap(label, coordinates, selected);
         if (!allowsOverhangs(label) && overhangIndices(coordinates).length > 0) {
           coordinates.splice(index + 1, 1);
           showError(
             "A vertex there would make the line double back, so it would have " +
               "two depths at one position. Nothing was added.",
           );
-        } else if (!wasOverlapping && firstOverlap(label, coordinates, selected)) {
+        } else if (overlap) {
           coordinates.splice(index + 1, 1);
           showError(
             "A vertex there would put this line over traces where " +
-              `"${layerName(label)}" already has one. Nothing was added.`,
+              `${takenBy(label, overlap)}. Nothing was added.`,
           );
         } else {
           clearError();
@@ -815,8 +850,8 @@
         return;
       }
 
-      // The merged line must not cover traces a third line of the layer
-      // already covers. The two being joined are ignored, since they are
+      // The merged line must not cover traces a third line of the layer, or
+      // of a layer exclusive with it, already covers. The two being joined are ignored, since they are
       // replaced -- and either one already being illegal grandfathers the
       // merge, for the same reason a drag is grandfathered: otherwise there
       // is no way to fix an overlap except deleting a line.
@@ -824,11 +859,11 @@
       const wasOverlapping =
         firstOverlap(label, source.geometry.coordinates, ignore) !== null ||
         firstOverlap(label, other.geometry.coordinates, ignore) !== null;
-      if (!wasOverlapping && firstOverlap(label, merged, ignore)) {
+      const overlap = wasOverlapping ? null : firstOverlap(label, merged, ignore);
+      if (overlap) {
         showError(
           "Joining those two lines would leave one line over traces where " +
-            `"${layerName(label)}" already has one. One user may have one ` +
-            "value per layer per position.",
+            `${takenBy(label, overlap)}. ${ruleFor(overlap)}`,
         );
         redraw();
         return;
@@ -1172,7 +1207,9 @@
      * `ignore` is one feature index or a list of them to leave out -- the
      * line being edited, and for a join the two it replaces. Uses the same
      * span rule as the marker: more than one trace of overlap is a second
-     * value over a range of positions. */
+     * value over a range of positions, on this layer or on one exclusive
+     * with it. The result also carries `otherLabel`, the layer of the line
+     * it collides with. */
     function firstOverlap(label, coordinates, ignore = []) {
       const ignored = Array.isArray(ignore) ? ignore : [ignore];
       const lines = [{ coordinates, label: label || null }];
@@ -1183,11 +1220,31 @@
           label: (feature.properties && feature.properties.label) || null,
         });
       });
-      return (
-        overlappingSpans(lines, participatesInOverlap).find(
-          (overlap) => overlap.lineIndexA === 0 || overlap.lineIndexB === 0,
-        ) || null
-      );
+      const overlap = overlappingSpans(
+        lines,
+        participatesInOverlap,
+        exclusiveLayers,
+      ).find((overlap) => overlap.lineIndexA === 0 || overlap.lineIndexB === 0);
+      if (!overlap) return null;
+      const other = overlap.lineIndexA === 0 ? overlap.lineIndexB : overlap.lineIndexA;
+      return { ...overlap, otherLabel: lines[other].label };
+    }
+
+    /** Who already covers the traces `overlap` names, as the end of a
+     * sentence: "where <this> ...". `label` is the layer being drawn, and
+     * `overlap` is what `firstOverlap` returned for it. */
+    function takenBy(label, overlap) {
+      return overlap.exclusive
+        ? `"${layerName(overlap.otherLabel)}" is already there, and it is ` +
+            `mutually exclusive with "${layerName(label)}"`
+        : `"${layerName(label)}" already has one`;
+    }
+
+    /** The rule `overlap` breaks, as a sentence. */
+    function ruleFor(overlap) {
+      return overlap.exclusive
+        ? "One user may have only one layer of an exclusivity group at a position."
+        : "One user may have one value per layer per position.";
     }
 
     /** A marker at every vertex where a line doubles back, and at every
@@ -1257,8 +1314,13 @@
       // on both lines, and one marker in the middle carries the reason. The
       // band is non-interactive so it cannot swallow a tap aimed at the
       // radargram underneath.
-      for (const overlap of overlappingSpans(lines, participatesInOverlap)) {
+      for (const overlap of overlappingSpans(
+        lines,
+        participatesInOverlap,
+        exclusiveLayers,
+      )) {
         const label = lines[overlap.lineIndexA].label;
+        const otherLabel = lines[overlap.lineIndexB].label;
         for (const lineIndex of [overlap.lineIndexA, overlap.lineIndexB]) {
           const points = clipToTrace(
             lines[lineIndex].coordinates,
@@ -1291,11 +1353,18 @@
             mid,
             sample,
             "pick-overlap",
-            `Layer '${layerName(label)}' has two lines over the same traces, ` +
-              `from trace ${overlap.fromTrace.toFixed(1)} to ` +
-              `${overlap.toTrace.toFixed(1)}. One user may have one value per ` +
-              "layer per position; split or shorten them so only one line " +
-              "covers a trace.",
+            overlap.exclusive
+              ? `Layers '${layerName(label)}' and '${layerName(otherLabel)}' ` +
+                  "are mutually exclusive, but both have a line from trace " +
+                  `${overlap.fromTrace.toFixed(1)} to ` +
+                  `${overlap.toTrace.toFixed(1)}. One user may have only one ` +
+                  "layer of an exclusivity group at a position; shorten one " +
+                  "of them, or change its layer."
+              : `Layer '${layerName(label)}' has two lines over the same traces, ` +
+                  `from trace ${overlap.fromTrace.toFixed(1)} to ` +
+                  `${overlap.toTrace.toFixed(1)}. One user may have one value per ` +
+                  "layer per position; split or shorten them so only one line " +
+                  "covers a trace.",
           ),
         );
       }
@@ -1442,9 +1511,8 @@
         showError(
           `This line covers traces ${overlap.fromTrace.toFixed(1)} to ` +
             `${overlap.toTrace.toFixed(1)}, where ` +
-            `"${layerName(layerSelect.value)}" already has one. One user may ` +
-            "have one value per layer per position; split or shorten it so " +
-            "only one line covers a trace.",
+            `${takenBy(layerSelect.value, overlap)}. ${ruleFor(overlap)} ` +
+            "Shorten it so it does not cover those traces.",
         );
         return false;
       }
@@ -1657,12 +1725,21 @@
       const previous = (feature.properties && feature.properties.label) || null;
       const next = selectedLayer.value || null;
       // Relabelling into a layer that already covers these traces would give
-      // that layer two values at one position, so it is refused like any
-      // other overlap and the select is put back where it was.
-      if (next !== previous && firstOverlap(next, feature.geometry.coordinates, selected)) {
+      // that layer two values at one position, and relabelling into one
+      // exclusive with a layer that covers them would contradict it, so both
+      // are refused like any other overlap and the select is put back.
+      const overlap =
+        next !== previous
+          ? firstOverlap(next, feature.geometry.coordinates, selected)
+          : null;
+      if (overlap) {
         showError(
-          `"${layerName(next)}" already has a line over these traces, so ` +
-            "moving this one there would give it two values at one position.",
+          overlap.exclusive
+            ? `"${layerName(overlap.otherLabel)}" already has a line over ` +
+                `these traces, and it is mutually exclusive with ` +
+                `"${layerName(next)}".`
+            : `"${layerName(next)}" already has a line over these traces, so ` +
+                "moving this one there would give it two values at one position.",
         );
         selectedLayer.value = previous || "";
         return;
@@ -2067,9 +2144,11 @@
       try {
         const body = await RIDAL.fetchJson("/api/v1/layers");
         layers = body.layers || [];
+        groups = body.groups || [];
       } catch (error) {
         console.warn(`Could not load layers: ${error.message}`);
         layers = [];
+        groups = [];
       }
       // Plain text, deliberately. Putting the colour inside the list was
       // tried and reverted: an `<option>` cannot contain markup, so the
