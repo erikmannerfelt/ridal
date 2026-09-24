@@ -524,6 +524,69 @@ async function layersMode(doc, frame, result) {
   }
 }
 
+/* Mutually exclusive groups (#247) on the /layers page. The seeded group
+ * already holds bed + bed_no_temperate; this builds the non-transitive
+ * Svalbard arrangement by adding a second group with bed_no_temperate +
+ * temperate_ice. The conflict outcomes are invisible in the DOM, so they are
+ * asserted in Python from the stored document, not here. */
+async function groupsMode(doc, frame, result) {
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const cards = () => Array.from(doc.querySelectorAll("#groups-list .group-card"));
+  // A group card's first field is its name; the second is its (read-only) id.
+  const cardByName = (name) =>
+    cards().find((card) => {
+      const input = card.querySelector(".add-layer-fields input");
+      return input && input.value.includes(name);
+    });
+
+  await wait(800);
+  result.seedCards = cards().length;
+  const seed = cardByName("Bed and cold bed");
+  result.seedChips = seed
+    ? Array.from(seed.querySelectorAll(".group-chip")).map((chip) =>
+        chip.textContent.trim(),
+      )
+    : null;
+
+  doc.querySelector("#group-new").click();
+  await wait(250);
+  const draft = doc.querySelector("#groups-list .group-draft");
+  result.draftShown = Boolean(draft);
+  const [nameInput, idInput] = draft.querySelectorAll(".add-layer-fields input");
+  nameInput.value = "Temperate ice present";
+  nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+  await wait(200);
+  // The id autofills from the name and is hand-editable: keep the autofilled
+  // value on the record, then override it and confirm the override is stored.
+  result.draftId = idInput.value;
+  result.draftIdEditable = !idInput.readOnly;
+  idInput.value = "cold_and_temperate";
+  idInput.dispatchEvent(new Event("input", { bubbles: true }));
+  draft.querySelector("#group-draft-create").click();
+  await wait(1000);
+
+  result.secondGroupShown = Boolean(cardByName("Temperate ice present"));
+  // Add both members through the new group's own dropdown. Re-query each
+  // time: every save re-renders the cards, so the previous node is detached.
+  for (const layerId of ["bed_no_temperate", "temperate_ice"]) {
+    const select = cardByName("Temperate ice present").querySelector(".group-add");
+    select.value = layerId;
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    await wait(1000);
+  }
+  const second = cardByName("Temperate ice present");
+  result.secondChips = Array.from(second.querySelectorAll(".group-chip")).map(
+    (chip) => chip.textContent.trim(),
+  );
+
+  // The layer table reports multiplicity, which is what hides the shared
+  // member: bed_no_temperate belongs to two groups.
+  const row = Array.from(doc.querySelectorAll("#layers-table tbody tr")).find(
+    (candidate) => candidate.textContent.includes("bed_no_temperate"),
+  );
+  result.groupsCell = row ? row.children[5].textContent.trim() : null;
+}
+
 /* Fixed sleeps only. Under Chromium's virtual time a poll loop keeps a timer
  * pending forever and hangs the run (AGENTS.md). Panel interactions and the
  * editor's fetch are run in separate chromium invocations: combining them
@@ -542,7 +605,10 @@ async function main() {
   frame.id = FRAME_ID;
   frame.width = MODE === "narrow" ? "360" : "1200";
   frame.height = "800";
-  frame.src = MODE === "layers" ? "/layers" : "/view/%(radargram)s";
+  frame.src =
+    MODE === "layers" || MODE === "groups"
+      ? "/layers"
+      : "/view/%(radargram)s";
   document.body.appendChild(frame);
 
   await sleep(3500);
@@ -552,9 +618,13 @@ async function main() {
     return;
   }
 
-  if (MODE === "layers") {
+  if (MODE === "layers" || MODE === "groups") {
     const result = { who: WHO, mode: MODE };
-    await layersMode(doc, frame, result);
+    if (MODE === "layers") {
+      await layersMode(doc, frame, result);
+    } else {
+      await groupsMode(doc, frame, result);
+    }
     finish(result);
     return;
   }
@@ -1499,7 +1569,7 @@ def chromium(proxy_port: int, who: str, mode: str = "panel") -> str:
         # radargram chunks that virtual time deadlocks on the editor's preview
         # fetch. The panel tests do not need a specific size.
         f"--user-data-dir={profile}",
-        "--virtual-time-budget=" + ("25000" if mode == "layers" else "15000"),
+        "--virtual-time-budget=" + ("25000" if mode in ("layers", "groups") else "15000"),
         "--dump-dom",
         f"http://127.0.0.1:{proxy_port}/harness.html?who={who}&mode={mode}",
     ]
@@ -1655,6 +1725,36 @@ def assert_layers(layers: dict) -> None:
     assert layers["layerAdded"] is True, layers
     assert layers["derivedAfterLayerSave"] is True, "a layer save must not lose derived items"
     assert layers["layerGone"] is True, layers
+
+
+def assert_groups(groups: dict) -> None:
+    assert groups.get("error") is None, groups
+    assert groups["seedCards"] == 1, groups
+    assert groups["draftShown"] is True, groups
+    assert groups["draftId"] == "temperate_ice_present", groups["draftId"]
+    assert groups["draftIdEditable"] is True, (
+        "the id must be hand-editable, not only generated"
+    )
+    assert groups["secondGroupShown"] is True, groups
+    assert any(
+        "Glacier bed (no temperate ice above)" in chip for chip in groups["secondChips"]
+    ), groups["secondChips"]
+    # bed_no_temperate is now in the seeded group and the new one.
+    assert groups["groupsCell"] == "2 groups", groups["groupsCell"]
+
+    stored = groups["stored"]
+    by_id = {group["id"]: set(group.get("members", [])) for group in stored["groups"]}
+    assert "cold_and_temperate" in by_id, (
+        "the hand-typed id must be what is stored, not the generated one: "
+        f"{sorted(by_id)}"
+    )
+
+    def conflicts(a: str, b: str) -> bool:
+        return any(a in members and b in members for members in by_id.values())
+
+    assert conflicts("bed", "bed_no_temperate"), by_id
+    assert conflicts("bed_no_temperate", "temperate_ice"), by_id
+    assert not conflicts("bed", "temperate_ice"), by_id
 
 
 def assert_refresh(refresh: dict) -> None:
@@ -1941,6 +2041,13 @@ def main() -> None:
         # Before `manage`, which deletes a dependent item; the /layers used-by
         # counter is checked while the dependency still exists.
         layers = run("op", "layers")
+        groups = run("op", "groups")
+        # #247: read the stored document the UI just wrote, so the conflict
+        # outcomes are asserted against what is persisted, not what the DOM
+        # happens to show.
+        groups["stored"] = json.loads(
+            (workdir / "ridal_data" / "layers" / "layers.json").read_text()
+        )
         operator.update(run("op", "manage"))
         picker = run("picker", "panel")
         narrow = run("op", "narrow")
@@ -2019,6 +2126,7 @@ def main() -> None:
                     "operator": operator,
                     "picker": picker,
                     "layers": layers,
+                    "groups": groups,
                     "narrow": narrow,
                     "refresh": refresh,
                     "picking": picking,
@@ -2037,6 +2145,7 @@ def main() -> None:
         assert_s1(operator)
         assert_manage(operator)
         assert_layers(layers)
+        assert_groups(groups)
         assert_narrow(narrow)
         assert_refresh(refresh)
         assert_picking(picking)

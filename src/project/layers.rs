@@ -182,6 +182,21 @@ impl Default for LayerSet {
     }
 }
 
+/// The subset of a [`LayerSet`] the GUI edits and carries back.
+///
+/// Deserialization-only, and merged onto the stored document rather than
+/// replacing it. The GUI never has the envelope -- `default_reducer`, schema
+/// fields, anything a future version adds -- and making it reconstruct those
+/// would let an edit drop them silently. Both collections are optional so a
+/// caller can send only the one it changed.
+#[derive(Debug, Deserialize)]
+pub struct PartialLayerSet {
+    #[serde(default)]
+    pub layers: Option<Vec<Layer>>,
+    #[serde(default)]
+    pub groups: Option<Vec<ExclusivityGroup>>,
+}
+
 impl LayerSet {
     pub fn get(&self, id: &str) -> Option<&Layer> {
         self.layers.iter().find(|l| l.id == id)
@@ -263,11 +278,10 @@ impl LayerSet {
     /// Reported rather than dropped: a group is a statement about layers that
     /// may be added later, and silently removing an unknown member would erase
     /// an edit. This never fails validation for the same reason.
-    #[allow(
-        dead_code,
-        reason = "surfaced by the server's layer-warning path (P6); the read \
-                  side already reports them, this is the write/UI hook"
-    )]
+    ///
+    /// Surfaced by `ridal project info`; the GUI reports the same fact from
+    /// the document it already renders, so it does not need this over HTTP.
+    #[cfg_attr(not(feature = "cli"), allow(dead_code))]
     pub fn group_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         for group in &self.groups {

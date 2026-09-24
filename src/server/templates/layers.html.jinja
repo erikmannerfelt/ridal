@@ -53,6 +53,7 @@
         {#- The guardrail is off by default, so the column asks the question
             in the direction the answer is usually "no". -#}
         <th scope="col" title="Allow a line in this layer to double back, so it has more than one depth at a position. Such a layer is exported as its picked vertices rather than at even spacing.">Overhangs</th>
+        <th scope="col" title="How many mutually exclusive groups this layer belongs to. A layer may be in several.">Groups</th>
         <th scope="col">Used by</th>
         <th scope="col"><span class="visually-hidden">Actions</span></th>
       </tr>
@@ -105,6 +106,22 @@
     </p>
     <ul id="undefined-list"></ul>
   </div>
+
+  {#- Mutually exclusive layer groups (#208, #247). Modelled and used by the
+      derive step; this is the only place they can be created. -#}
+  <section id="groups-section">
+    <h2>Exclusivity groups</h2>
+    <p class="lede">
+      Layers in an exclusive group can by design not co-exist at the same
+      position. Such a group is useful for example when multiple layers map
+      the same thing but characterize it differently (e.g.
+      &ldquo;Reflector X (clear)&rdquo;, &ldquo;Reflector X
+      (unclear)&rdquo;, etc.)
+    </p>
+    <div id="groups-list"></div>
+    <p id="groups-empty" class="empty" hidden>No exclusivity groups defined.</p>
+    <div id="groups-actions"></div>
+  </section>
 
   {#- Derived items (#209). The viewer's layer panel is the main place to
       author these; this is the other place, so a project can be managed

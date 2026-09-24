@@ -1230,6 +1230,9 @@ button.danger {
  * afterthought. The other dialogs were consistent only because neither of
  * their buttons was styled at all. */
 .add-layer button,
+#groups-actions button,
+#derived-actions button,
+.group-draft button,
 dialog > p > button,
 button.danger {
   padding: var(--space-2) var(--space-3);
@@ -1242,6 +1245,9 @@ button.danger {
 }
 
 .add-layer button:hover:not(:disabled),
+#groups-actions button:hover:not(:disabled),
+#derived-actions button:hover:not(:disabled),
+.group-draft button:hover:not(:disabled),
 dialog > p > button:hover:not(:disabled),
 button.danger:hover:not(:disabled) {
   border-color: var(--color-accent);
@@ -1256,6 +1262,9 @@ button.danger:hover:not(:disabled) {
  * nothing happen. `.controls button` had this rule all along; the dialog
  * actions did not. */
 .add-layer button:disabled,
+#groups-actions button:disabled,
+#derived-actions button:disabled,
+.group-draft button:disabled,
 dialog > p > button:disabled,
 dialog button:disabled,
 button.danger:disabled {
@@ -1303,6 +1312,108 @@ button.danger:disabled {
   border-color: var(--color-warning-border);
   color: var(--color-warning-text);
   background: var(--color-warning-bg);
+}
+
+/* Exclusivity groups (#208, #247). One card per group: a name and id field
+ * row, the member chips, then the add-layer dropdown and the delete action.
+ * The section is sized to membership rather than to the number of layers a
+ * project defines, so it reads the same with 300 layers as with 5 -- which
+ * is why it is chips and a dropdown, not a grid. */
+#groups-section {
+  margin-top: var(--space-6);
+}
+
+.group-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+/* The id is referenced by `layer.groups` and does not move once the group
+ * exists, so it reads as inert rather than as a second editable field. */
+.group-card input[readonly] {
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+}
+
+.group-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+
+.group-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-sunken);
+  font-size: var(--text-sm);
+}
+
+/* The chip's own colour dot is smaller than a table swatch. */
+.group-chip .layer-swatch {
+  width: 0.75rem;
+  height: 0.75rem;
+}
+
+.group-chip-unknown {
+  color: var(--color-warning-text);
+}
+
+.group-chip-remove {
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-base);
+  line-height: 1;
+  padding: 0 var(--space-1);
+  cursor: pointer;
+}
+
+.group-chip-remove:hover {
+  color: var(--color-warning-text);
+}
+
+.group-warning {
+  color: var(--color-warning-text);
+  font-size: var(--text-sm);
+  margin: var(--space-1) 0;
+}
+
+.group-note {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-1) 0;
+}
+
+.group-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.group-add {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+
+#groups-actions {
+  margin-top: var(--space-3);
 }
 
 /* Per-row confirmation that a select applied. These save on change, so
