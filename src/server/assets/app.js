@@ -14,6 +14,58 @@
  * either page theme, so they must not follow prefers-color-scheme.
  */
 
+/* Rhai keywords and expression built-ins, from `src/identity.rs`. Shared
+ * between the expression highlighter and `sanitizeIdentifier` so a derived
+ * item and a generated id agree on what needs a suffix. */
+const IDENTIFIER_KEYWORDS = ["if", "else", "true", "false", "NaN"];
+const IDENTIFIER_BUILTINS = [
+  "count", "median", "mean", "std", "nmad", "percentile",
+  "min", "max", "concatenate", "shallowest",
+  "deepest", "clamp", "where",
+];
+
+/** Turn a human display name into a valid, non-colliding identifier.
+ *
+ * The client-side twin of `sanitize_to_identifier` in `src/identity.rs`:
+ * lowercase, letters transliterated, every run of punctuation or whitespace
+ * collapsed to `_`, leading/trailing `_` trimmed, `l_` prefixed when the
+ * result is empty or starts with a digit, `_layer` appended for a keyword or
+ * expression built-in, and `_2`, `_3`, ... appended until the result is not
+ * in `taken`.
+ *
+ * Here rather than on the server because it is shown while typing. Group ids
+ * use it with the group ids already in use as `taken`; like layer ids, a
+ * group id is immutable once written, because `layer.groups` refers to it. */
+function sanitizeIdentifier(name, taken = []) {
+  const translit = { ø: "o", å: "a", ä: "a", ö: "o", æ: "ae", é: "e" };
+  let out = "";
+  let lastSep = false;
+  for (const character of String(name).toLowerCase()) {
+    if (translit[character] !== undefined) {
+      out += translit[character];
+      lastSep = false;
+    } else if (/[a-z0-9]/.test(character)) {
+      out += character;
+      lastSep = false;
+    } else if (/[\x00-\x7f]/.test(character) && !lastSep && out) {
+      out += "_";
+      lastSep = true;
+    }
+  }
+  out = out.replace(/_+$/, "");
+  if (!out || /^[0-9]/.test(out)) out = `l_${out}`;
+  if (IDENTIFIER_BUILTINS.includes(out) || IDENTIFIER_KEYWORDS.includes(out)) {
+    out += "_layer";
+  }
+  if (taken.includes(out)) {
+    const base = out;
+    let n = 2;
+    while (taken.includes(`${base}_${n}`)) n += 1;
+    out = `${base}_${n}`;
+  }
+  return out;
+}
+
 const RIDAL = Object.freeze({
   // A radargram's own track, on the index group maps and the viewer.
   trackColor: "#e63",
@@ -435,6 +487,11 @@ const RIDAL = Object.freeze({
     }
     return out.replace(/^[-_]+/, "").replace(/[-_]+$/, "");
   },
+
+  /** `sanitizeIdentifier` is the one the group editor and the derived-item
+   * editor share; exposed here so per-page scripts reach it the same way they
+   * reach every other helper. */
+  sanitizeIdentifier,
 
   /** Text as HTML, for the two places Leaflet insists on markup.
    *
@@ -961,13 +1018,10 @@ const RIDAL = Object.freeze({
    */
   derivedEditor: (function () {
     // Must match `interp::derive`'s registered functions, or the highlighter
-    // colours a name the evaluator does not know.
-    const BUILTINS = [
-      "count", "median", "mean", "std", "nmad", "percentile",
-      "min", "max", "concatenate", "shallowest",
-      "deepest", "clamp", "where",
-    ];
-    const KEYWORDS = ["if", "else", "true", "false", "NaN"];
+    // colours a name the evaluator does not know. Shared with
+    // `sanitizeIdentifier` so both agree on what needs a `_layer` suffix.
+    const BUILTINS = IDENTIFIER_BUILTINS;
+    const KEYWORDS = IDENTIFIER_KEYWORDS;
     // What the colour picker shows for an item that has none of its own.
     // Mirrors the `value` in the markup below rather than interpolating into
     // it: that block is deliberately static so it is trivial to audit, and
@@ -1069,7 +1123,7 @@ const RIDAL = Object.freeze({
       };
 
       fields.name.addEventListener("input", () => {
-        if (!editingId) fields.id.value = sanitizeId(fields.name.value);
+        if (!editingId) fields.id.value = RIDAL.sanitizeIdentifier(fields.name.value);
       });
       fields.color.addEventListener("input", () => {
         if (HEX_COLOR.test(fields.color.value.trim())) {
@@ -1126,28 +1180,6 @@ const RIDAL = Object.freeze({
       fields.rangeColor.disabled = !on;
       fields.rangePicker.disabled = !on;
       fields.rangeOpacity.disabled = !on;
-    }
-
-    function sanitizeId(name) {
-      const translit = { ø: "o", å: "a", ä: "a", ö: "o", æ: "ae", é: "e" };
-      let out = "";
-      let lastSep = false;
-      for (const character of name.toLowerCase()) {
-        if (translit[character] !== undefined) {
-          out += translit[character];
-          lastSep = false;
-        } else if (/[a-z0-9]/.test(character)) {
-          out += character;
-          lastSep = false;
-        } else if (/[\x00-\x7f]/.test(character) && !lastSep && out) {
-          out += "_";
-          lastSep = true;
-        }
-      }
-      out = out.replace(/_+$/, "");
-      if (!out || /^[0-9]/.test(out)) out = `l_${out}`;
-      if (BUILTINS.includes(out) || KEYWORDS.includes(out)) out += "_layer";
-      return out;
     }
 
     function highlight(expression) {
@@ -1337,7 +1369,7 @@ const RIDAL = Object.freeze({
 
     function editorItem() {
       const name = fields.name.value.trim();
-      const id = (fields.id.value.trim() || sanitizeId(name)).trim();
+      const id = (fields.id.value.trim() || RIDAL.sanitizeIdentifier(name)).trim();
       const noColor = fields.noColor.checked;
       const color = noColor ? null : fields.color.value.trim() || null;
       const fill =

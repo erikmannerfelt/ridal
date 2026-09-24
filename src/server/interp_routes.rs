@@ -713,6 +713,7 @@ pub async fn get_layers(
             [(header::ETAG, String::new())],
             Json(serde_json::json!({
                 "layers": [],
+                "groups": [],
                 "writable": false,
             })),
         ));
@@ -726,6 +727,10 @@ pub async fn get_layers(
         [(header::ETAG, etag)],
         Json(serde_json::json!({
             "layers": set.layers,
+            // Mutually exclusive layer groups (#208). Read here so the
+            // management page can show and edit them; the derive step already
+            // consumes them from the same document.
+            "groups": set.groups,
             // Readable by a viewer, changeable by an operator: a picker
             // *uses* layers but does not get to invent them, or a project
             // accumulates `bed`, `Bed` and `bedrock` within a week.
@@ -1655,15 +1660,30 @@ pub async fn put_layers(
         "change the layer vocabulary",
     )?;
 
-    // Accept either a bare array of layers or the full document. The GUI
-    // only ever has the list; requiring it to reconstruct the envelope would
-    // be ceremony with no benefit.
+    // Accept either a bare array of layers, the full document, or the GUI's
+    // partial overlay of the two editable collections. The GUI only ever has
+    // those two, and requiring it to reconstruct the envelope would be
+    // ceremony with no benefit -- and a way to drop `default_reducer` or a
+    // field a future version adds.
     let set: layers::LayerSet = if body.is_array() {
         let (existing, _) = layers::read(project.documents()).map_err(layer_error)?;
         let parsed: Vec<layers::Layer> = serde_json::from_value(body)
             .map_err(|e| ApiError::bad_request("invalid_layers", e.to_string()))?;
         layers::LayerSet {
             layers: parsed,
+            ..existing
+        }
+    } else if body.get("schema").is_none() {
+        // No `schema` means this is the partial overlay, not a full document
+        // (`LayerSet` always serializes `schema`). Whatever it omits is kept
+        // from the stored document, for the same reason the bare-array path
+        // merges.
+        let (existing, _) = layers::read(project.documents()).map_err(layer_error)?;
+        let partial: layers::PartialLayerSet = serde_json::from_value(body)
+            .map_err(|e| ApiError::bad_request("invalid_layers", e.to_string()))?;
+        layers::LayerSet {
+            layers: partial.layers.unwrap_or(existing.layers),
+            groups: partial.groups.unwrap_or(existing.groups),
             ..existing
         }
     } else {
@@ -1679,6 +1699,7 @@ pub async fn put_layers(
         [(header::ETAG, format!("\"{version}\""))],
         Json(serde_json::json!({
             "layers": set.layers,
+            "groups": set.groups,
             "version": version.as_str(),
         })),
     ))

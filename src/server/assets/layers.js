@@ -16,7 +16,19 @@ const table = document.querySelector("#layers-table tbody");
 const emptyNote = document.getElementById("layers-empty");
 const errorBox = document.getElementById("layers-error");
 
+const groupsList = document.getElementById("groups-list");
+const groupsEmpty = document.getElementById("groups-empty");
+const groupsActions = document.getElementById("groups-actions");
+
 let layers = [];
+// Mutually exclusive layer groups (#208). Membership is the union of a
+// group's own `members` and every layer that lists the group in `layer.groups`
+// -- a hand-edited file can express it either way, and the UI must show both.
+let groups = [];
+// The in-progress new group, if the user clicked "Add group". Kept out of
+// `groups` until it has a name, because its id is generated from that name
+// and is immutable afterwards.
+let draftGroup = null;
 let etag = null;
 let usage = { counts: {}, undefined: {} };
 
@@ -28,6 +40,367 @@ function showError(message) {
 function clearError() {
   errorBox.hidden = true;
   errorBox.textContent = "";
+}
+
+function layerById(id) {
+  return layers.find((layer) => layer.id === id);
+}
+
+/** Every layer in a group, from both representations (#208).
+ *
+ * `group.members` and `layer.groups` are two views of one relation, and a
+ * hand-edited file may use either. Reading the union is what stops a layer
+ * set from the layer side looking absent from a group it is in. */
+function membersOf(group) {
+  const members = [...(group.members || [])];
+  for (const layer of layers) {
+    if ((layer.groups || []).includes(group.id) && !members.includes(layer.id)) {
+      members.push(layer.id);
+    }
+  }
+  return members;
+}
+
+/** How many groups a layer is in, counting both representations. */
+function groupCount(layer) {
+  const ids = new Set(layer.groups || []);
+  for (const group of groups) {
+    if (membersOf(group).includes(layer.id)) ids.add(group.id);
+  }
+  return ids.size;
+}
+
+function addMember(group, layerId) {
+  const members = membersOf(group);
+  if (!members.includes(layerId)) {
+    group.members = [...members, layerId];
+  }
+  render();
+  save();
+}
+
+/** Remove a member from a group, clearing both representations.
+ *
+ * Clearing only `group.members` would leave `layer.groups` behind, and the
+ * union read would put the chip straight back -- the `×` would silently do
+ * nothing on a hand-edited file. */
+function removeMember(group, layerId) {
+  group.members = membersOf(group).filter((id) => id !== layerId);
+  for (const layer of layers) {
+    if (layer.groups) {
+      layer.groups = layer.groups.filter((id) => id !== group.id);
+      if (layer.groups.length === 0) delete layer.groups;
+    }
+  }
+  render();
+  save();
+}
+
+function addGroup() {
+  draftGroup = { name: "", id: "", idEdited: false };
+  renderGroups();
+  const input = groupsList.querySelector(".group-draft input");
+  if (input) input.focus();
+}
+
+function commitDraft() {
+  const name = draftGroup.name.trim();
+  if (name === "") {
+    cancelDraft();
+    return;
+  }
+  const taken = groups.map((group) => group.id);
+  // The id autofills from the name but is hand-editable; sanitise it either
+  // way so a stray capital or space cannot produce an awkward identifier.
+  const typed = draftGroup.id.trim();
+  const id = RIDAL.sanitizeIdentifier(typed === "" ? name : typed, taken);
+  groups.push({ id, name, members: [] });
+  draftGroup = null;
+  render();
+  save();
+}
+
+function cancelDraft() {
+  draftGroup = null;
+  renderGroups();
+}
+
+function confirmDeleteGroup(group, actionCell) {
+  actionCell.replaceChildren();
+  const prompt = document.createElement("span");
+  prompt.className = "layer-panel-confirm";
+  prompt.textContent = `Delete '${group.name || group.id}'?`;
+  const yes = document.createElement("button");
+  yes.type = "button";
+  yes.className = "danger";
+  yes.textContent = "Delete";
+  yes.addEventListener("click", () => deleteGroup(group));
+  const no = document.createElement("button");
+  no.type = "button";
+  no.textContent = "Cancel";
+  no.addEventListener("click", renderGroups);
+  prompt.append(yes, no);
+  actionCell.appendChild(prompt);
+}
+
+function deleteGroup(group) {
+  groups = groups.filter((existing) => existing.id !== group.id);
+  // Drop the id from every layer that referenced it, or the group would live
+  // on as a dangling `layer.groups` entry that still creates conflicts.
+  for (const layer of layers) {
+    if (layer.groups) {
+      layer.groups = layer.groups.filter((id) => id !== group.id);
+      if (layer.groups.length === 0) delete layer.groups;
+    }
+  }
+  render();
+  save();
+}
+
+function renderChip(group, memberId) {
+  const chip = document.createElement("span");
+  chip.className = "group-chip";
+  const layer = layerById(memberId);
+  if (layer) {
+    const dot = document.createElement("span");
+    dot.className = "layer-swatch";
+    dot.style.background = layer.color || "#888888";
+    chip.appendChild(dot);
+    const label = document.createElement("span");
+    label.textContent = layer.name || layer.id;
+    chip.appendChild(label);
+  } else {
+    // A group is a statement about layers that may be added later, so a
+    // member with no definition is reported, not dropped.
+    const unknown = document.createElement("span");
+    unknown.className = "group-chip-unknown";
+    unknown.textContent = `⚠ ${memberId}`;
+    chip.appendChild(unknown);
+  }
+  if (WRITABLE) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "group-chip-remove";
+    remove.setAttribute(
+      "aria-label",
+      `Remove ${layer ? layer.name : memberId} from ${group.name || group.id}`,
+    );
+    remove.textContent = "×";
+    remove.addEventListener("click", () => removeMember(group, memberId));
+    chip.appendChild(remove);
+  }
+  return chip;
+}
+
+function addLayerControl(group) {
+  const select = document.createElement("select");
+  select.className = "group-add";
+  select.setAttribute("aria-label", `Add a layer to ${group.name || group.id}`);
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Add layer";
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  select.appendChild(placeholder);
+  const members = membersOf(group);
+  const available = layers.filter((layer) => !members.includes(layer.id));
+  for (const layer of available) {
+    const option = document.createElement("option");
+    option.value = layer.id;
+    option.textContent = layer.name || layer.id;
+    select.appendChild(option);
+  }
+  select.disabled = !WRITABLE || available.length === 0;
+  select.addEventListener("change", () => {
+    if (select.value) addMember(group, select.value);
+  });
+  return select;
+}
+
+/** One labelled field in a group card, matching the add-layer form's row. */
+function groupField(labelText, input) {
+  const label = document.createElement("label");
+  label.append(labelText);
+  label.appendChild(input);
+  return label;
+}
+
+function renderGroup(group) {
+  const card = document.createElement("div");
+  card.className = "group-card";
+
+  const fields = document.createElement("div");
+  fields.className = "add-layer-fields";
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.value = group.name || "";
+  nameInput.setAttribute("aria-label", `Name for ${group.id}`);
+  nameInput.addEventListener("change", () => {
+    const value = nameInput.value.trim();
+    if (value !== "" && value !== group.name) {
+      group.name = value;
+      save();
+    } else {
+      nameInput.value = group.name || "";
+    }
+  });
+  fields.appendChild(groupField("Name", nameInput));
+
+  // Read-only, not disabled: it is shown and copyable, but the id is what
+  // `layer.groups` refers to, so it does not move once the group exists.
+  const idInput = document.createElement("input");
+  idInput.type = "text";
+  idInput.value = group.id;
+  idInput.readOnly = true;
+  idInput.setAttribute("aria-label", `ID for ${group.id}`);
+  fields.appendChild(groupField("ID", idInput));
+
+  card.appendChild(fields);
+
+  const members = membersOf(group);
+  const chips = document.createElement("div");
+  chips.className = "group-chips";
+  for (const memberId of members) chips.appendChild(renderChip(group, memberId));
+  card.appendChild(chips);
+
+  const definedCount = members.filter((id) => layerById(id)).length;
+  if (definedCount !== members.length) {
+    const warning = document.createElement("p");
+    warning.className = "group-warning";
+    warning.textContent = "⚠ This group names a layer that is not defined.";
+    card.appendChild(warning);
+  }
+  if (definedCount < 2) {
+    const note = document.createElement("p");
+    note.className = "group-note";
+    note.textContent = "A group needs at least two layers to mean anything.";
+    card.appendChild(note);
+  }
+
+  const footer = document.createElement("div");
+  footer.className = "group-footer";
+  footer.appendChild(addLayerControl(group));
+  if (WRITABLE) {
+    const actions = document.createElement("span");
+    actions.className = "row-actions";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => confirmDeleteGroup(group, actions));
+    actions.appendChild(remove);
+    footer.appendChild(actions);
+  }
+  card.appendChild(footer);
+  return card;
+}
+
+function renderDraft() {
+  const card = document.createElement("div");
+  card.className = "group-card group-draft";
+
+  const fields = document.createElement("div");
+  fields.className = "add-layer-fields";
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "Group name";
+  nameInput.value = draftGroup.name;
+  nameInput.setAttribute("aria-label", "Name for the new exclusivity group");
+
+  const idInput = document.createElement("input");
+  idInput.type = "text";
+  idInput.placeholder = "group_id";
+  idInput.value = draftGroup.id;
+  idInput.setAttribute("aria-label", "ID for the new exclusivity group");
+
+  // The id follows the name until it is edited by hand, the same way a new
+  // derived item's id does.
+  nameInput.addEventListener("input", () => {
+    draftGroup.name = nameInput.value;
+    if (!draftGroup.idEdited) {
+      draftGroup.id = RIDAL.sanitizeIdentifier(
+        draftGroup.name,
+        groups.map((group) => group.id),
+      );
+      idInput.value = draftGroup.id;
+    }
+  });
+  idInput.addEventListener("input", () => {
+    draftGroup.idEdited = true;
+    draftGroup.id = idInput.value;
+  });
+  const onKey = (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitDraft();
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      cancelDraft();
+    }
+  };
+  nameInput.addEventListener("keydown", onKey);
+  idInput.addEventListener("keydown", onKey);
+
+  fields.append(groupField("Name", nameInput), groupField("ID", idInput));
+  card.appendChild(fields);
+
+  const footer = document.createElement("div");
+  footer.className = "group-footer";
+  const create = document.createElement("button");
+  create.type = "button";
+  create.id = "group-draft-create";
+  create.textContent = "Add group";
+  create.addEventListener("click", commitDraft);
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.id = "group-draft-cancel";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", cancelDraft);
+  footer.append(create, cancel);
+  card.appendChild(footer);
+  return card;
+}
+
+function renderGroups() {
+  if (!groupsList) return;
+  const cards = groups.map(renderGroup);
+  if (draftGroup) cards.push(renderDraft());
+  groupsList.replaceChildren(...cards);
+  groupsEmpty.hidden = groups.length > 0 || draftGroup !== null;
+  groupsActions.replaceChildren();
+  if (WRITABLE) {
+    const add = document.createElement("button");
+    add.type = "button";
+    add.id = "group-new";
+    add.textContent = "Add group";
+    add.addEventListener("click", addGroup);
+    groupsActions.appendChild(add);
+  }
+}
+
+/** Membership moved onto `group.members`, which is the canonical form.
+ *
+ * A reference to a group id with no group object is kept rather than dropped:
+ * it is a relation the file expressed deliberately, and erasing it would
+ * change which layers conflict. */
+function normalizedLayers() {
+  const defined = new Set(groups.map((group) => group.id));
+  return layers.map((layer) => {
+    const copy = { ...layer };
+    const dangling = (layer.groups || []).filter((id) => !defined.has(id));
+    if (dangling.length > 0) {
+      copy.groups = dangling;
+    } else {
+      delete copy.groups;
+    }
+    return copy;
+  });
+}
+
+function normalizedGroups() {
+  return groups.map((group) => ({ ...group, members: membersOf(group) }));
 }
 
 /** Build one row. Text goes in via textContent, never innerHTML: layer
@@ -78,6 +451,14 @@ function renderRow(layer, index) {
   overhangCell.appendChild(toggle);
   row.appendChild(overhangCell);
 
+  // Static text, deliberately: naming the groups here would push the column
+  // past the section directly below it, which already lists every member.
+  const groupsCell = document.createElement("td");
+  const groupTotal = groupCount(layer);
+  groupsCell.textContent =
+    groupTotal === 0 ? "—" : groupTotal === 1 ? "1 group" : `${groupTotal} groups`;
+  row.appendChild(groupsCell);
+
   const usageCell = document.createElement("td");
   const count = usage.counts[layer.id] || 0;
   usageCell.textContent = count === 1 ? "1 feature" : `${count} features`;
@@ -121,6 +502,7 @@ function editableCell(layer, index, field, label) {
 function render() {
   table.replaceChildren(...layers.map(renderRow));
   emptyNote.hidden = layers.length > 0;
+  renderGroups();
 
   const undefinedNames = Object.keys(usage.undefined);
   const section = document.getElementById("undefined-labels");
@@ -156,7 +538,16 @@ function deleteLayer(index) {
   if (!window.confirm(`Delete the layer "${layer.id}"?\n\n${consequence}`)) {
     return;
   }
+  const removedId = layer.id;
   layers.splice(index, 1);
+  // A deleted layer must not linger as a dangling group member: the warning
+  // exists for hand-edited files, not for something the UI just did.
+  for (const group of groups) {
+    if (group.members) {
+      group.members = group.members.filter((id) => id !== removedId);
+    }
+  }
+  render();
   save();
 }
 
@@ -176,7 +567,13 @@ async function save() {
     const response = await fetch("/api/v1/layers", {
       method: "PUT",
       headers,
-      body: JSON.stringify(layers),
+      // A partial overlay, not a bare array: the server merges it onto the
+      // stored document, so `default_reducer` and any field this page does
+      // not know survive an edit.
+      body: JSON.stringify({
+        layers: normalizedLayers(),
+        groups: normalizedGroups(),
+      }),
     });
     if (response.status === 412) {
       showError(
@@ -196,6 +593,7 @@ async function save() {
     etag = response.headers.get("ETag");
     const body = await response.json();
     layers = body.layers;
+    groups = body.groups || [];
     await loadUsage();
     render();
   } catch (error) {
@@ -226,6 +624,7 @@ async function load() {
     etag = response.headers.get("ETag") || null;
     const body = await response.json();
     layers = body.layers || [];
+    groups = body.groups || [];
     await loadUsage();
     render();
   } catch (error) {

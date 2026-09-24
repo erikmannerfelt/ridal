@@ -775,6 +775,130 @@ async fn duplicate_layer_ids_are_rejected() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn groups_round_trip_through_the_api() {
+    // #247: the /layers page reads and writes the groups beside the layers.
+    let (_dir, app) = project_app(true);
+
+    // A fresh vocabulary has no groups, and is told so rather than having to
+    // treat an absent key as empty.
+    let (status, _, body) = get(&app, "/api/v1/layers").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["groups"], serde_json::json!([]));
+
+    let layers = serde_json::json!({
+        "layers": [
+            {"id": "bed", "name": "Glacier bed"},
+            {"id": "bed_no_temperate", "name": "Cold bed"},
+            {"id": "temperate_ice", "name": "Temperate ice"},
+        ],
+        "groups": [
+            {"id": "g1", "name": "Bed and cold bed",
+             "members": ["bed", "bed_no_temperate"]},
+            {"id": "g2", "name": "Cold bed and temperate ice",
+             "members": ["bed_no_temperate", "temperate_ice"]},
+        ],
+    });
+    let (status, _, body) = put(&app, "/api/v1/layers", &layers, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["groups"].as_array().unwrap().len(), 2);
+
+    let (_, _, body) = get(&app, "/api/v1/layers").await;
+    assert_eq!(body["groups"][0]["id"], "g1");
+    assert_eq!(body["groups"][1]["members"][1], "temperate_ice");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_partial_save_preserves_the_envelope() {
+    // The GUI carries only `layers` and `groups`; everything else in the
+    // document must survive, or editing a layer would silently reset a
+    // reducer the project set by hand.
+    let (dir, app) = project_app(true);
+    let full = serde_json::json!({
+        "schema": "ridal-layers",
+        "schema_version": "1",
+        "layers": [{"id": "bed", "name": "Bed"}],
+        "default_reducer": "median",
+        "groups": [{"id": "g1", "name": "One", "members": ["bed"]}],
+    });
+    assert_eq!(
+        put(&app, "/api/v1/layers", &full, None).await.0,
+        StatusCode::OK
+    );
+
+    // No `schema`, so this is the partial overlay and merges.
+    let partial = serde_json::json!({
+        "layers": [{"id": "bed", "name": "Bed renamed"}],
+        "groups": [],
+    });
+    assert_eq!(
+        put(&app, "/api/v1/layers", &partial, None).await.0,
+        StatusCode::OK
+    );
+
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let (set, _) = crate::project::layers::read(project.documents()).unwrap();
+    assert_eq!(set.layers[0].name, "Bed renamed");
+    assert!(set.groups.is_empty());
+    assert_eq!(
+        set.default_reducer,
+        Some(crate::project::layers::Reducer::Median)
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_bare_array_save_preserves_groups() {
+    // The GUI used to send only the layer list; that path must keep working
+    // and must not drop groups a hand-edited file set up.
+    let (_dir, app) = project_app(true);
+    let seeded = serde_json::json!({
+        "layers": [{"id": "bed", "name": "Bed"}],
+        "groups": [{"id": "g1", "name": "One", "members": ["bed"]}],
+    });
+    put(&app, "/api/v1/layers", &seeded, None).await;
+
+    let layers = serde_json::json!([{"id": "bed", "name": "Bed"}]);
+    assert_eq!(
+        put(&app, "/api/v1/layers", &layers, None).await.0,
+        StatusCode::OK
+    );
+
+    let (_, _, body) = get(&app, "/api/v1/layers").await;
+    assert_eq!(body["groups"][0]["id"], "g1");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn exclusivity_is_not_transitive_across_groups() {
+    // The case #208 was designed around: two groups share a member, so the
+    // end layers conflict through it but not with each other.
+    let (dir, app) = project_app(true);
+    let layers = serde_json::json!({
+        "layers": [
+            {"id": "bed", "name": "Glacier bed"},
+            {"id": "bed_no_temperate", "name": "Cold bed"},
+            {"id": "temperate_ice", "name": "Temperate ice"},
+        ],
+        "groups": [
+            {"id": "g1", "name": "One", "members": ["bed", "bed_no_temperate"]},
+            {"id": "g2", "name": "Two", "members": ["bed_no_temperate", "temperate_ice"]},
+        ],
+    });
+    assert_eq!(
+        put(&app, "/api/v1/layers", &layers, None).await.0,
+        StatusCode::OK
+    );
+
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let (set, _) = crate::project::layers::read(project.documents()).unwrap();
+    assert!(set.conflicts("bed", "bed_no_temperate"));
+    assert!(set.conflicts("bed_no_temperate", "temperate_ice"));
+    assert!(!set.conflicts("bed", "temperate_ice"));
+}
+
 async fn page(app: &Router, uri: &str) -> (StatusCode, String) {
     let response = app
         .clone()

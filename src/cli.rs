@@ -1989,6 +1989,12 @@ fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
     for layer in &layers.layers {
         println!("  {} ({})", layer.id, layer.name);
     }
+    // An exclusivity group that names a layer nobody defined still removes
+    // values at evaluation time, so it is worth saying out loud -- the same
+    // reason undefined labels are reported below.
+    for warning in layers.group_warnings() {
+        println!("  warning: {warning}");
+    }
 
     // Listed from the interpretations directory rather than from the
     // catalog: an interpretation whose radargram is missing is exactly the
