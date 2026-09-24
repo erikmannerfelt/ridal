@@ -303,6 +303,7 @@ impl RenderService {
             AmplitudeLimits::Percentile { low, high } => Some(sampled_amplitude_limits(
                 &self.reader,
                 profile.source_transform,
+                profile.siglog_minval_log10,
                 profile.transform,
                 crate::render::stats::SAMPLE_SEED,
                 low,
@@ -311,7 +312,7 @@ impl RenderService {
             )?),
             AmplitudeLimits::Explicit { .. } => None,
         };
-        let limits = colormap::resolve_limits(&profile.limits, sampled)?;
+        let limits = colormap::resolve_limits(profile, sampled)?;
         self.limits_cache.insert(key, limits);
         Ok(limits)
     }
@@ -499,6 +500,11 @@ mod tests {
             "siglog-default",
             "siglog-positive",
             "siglog-high-contrast",
+            // The colormapped pair (#246): one grayscale-equivalent
+            // pipeline on the outside, an RGB encoder (and a symmetric
+            // limit pass) on the inside.
+            "seismic",
+            "siglog-seismic",
         ] {
             let profile = RenderProfile {
                 format: crate::render::profile::ImageFormat::Png,
@@ -640,6 +646,7 @@ mod tests {
             crate::render::stats::sampled_amplitude_limits(
                 &reader,
                 crate::render::profile::SourceTransform::None,
+                crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
                 crate::render::profile::AmplitudeTransform::Linear,
                 seed,
                 1.0,

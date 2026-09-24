@@ -137,6 +137,7 @@ pub fn render_to_file_with_stats_source(
         AmplitudeLimits::Percentile { low, high } => Some(stats::sampled_amplitude_limits(
             stats_source,
             request.profile.source_transform,
+            request.profile.siglog_minval_log10,
             request.profile.transform,
             SAMPLE_SEED,
             low,
@@ -145,7 +146,7 @@ pub fn render_to_file_with_stats_source(
         )?),
         AmplitudeLimits::Explicit { .. } => None,
     };
-    let limits = colormap::resolve_limits(&request.profile.limits, sampled)?;
+    let limits = colormap::resolve_limits(request.profile, sampled)?;
 
     // The profile carries a format of its own, which `format_for` may have
     // overridden from the output extension. The renderer must be told the

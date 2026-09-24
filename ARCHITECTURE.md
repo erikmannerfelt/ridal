@@ -105,7 +105,7 @@ rules ever change, grep for these sentinels first.
 Fixed order, enforced by module structure rather than just convention:
 **source amplitude → dataset view → source transform → resample →
 normalize → colormap → encode.** Everything lives under
-`src/server/render/`.
+`src/render/`.
 
 - **Geometry** (`grid.rs`) is pure, with no I/O: `ViewerRaster` is the
   source array at 1:1 — **the viewer does not resample** — `ChunkGrid`
@@ -167,7 +167,7 @@ normalize → colormap → encode.** Everything lives under
     or it will reproduce that bug.
 - **Profiles** (`profile.rs`) are the one server-defined, non-free-form
   configuration surface — never client-defined, per the explicit
-  warning against unbounded client-driven render work. Seven built-ins,
+  warning against unbounded client-driven render work. Nine built-ins,
   each `siglog-*` sitting next to the profile it is the log view of:
 
   | Profile | Source transform | Display transform | Resampling | Notes |
@@ -179,6 +179,8 @@ normalize → colormap → encode.** Everything lives under
   | `abslog` | None | `log10\|A\|` | LanczosRectified | sign-agnostic by construction, so rectifying changes nothing about what it means |
   | `high-contrast` | None | Linear | Mean | 5–95% quantile |
   | `siglog-high-contrast` | SigLog | Linear | Mean | the `high-contrast` view on log-compressed source |
+  | `seismic` | None | Linear | Mean | diverging `seismic` colormap, symmetric limits (white at zero amplitude) |
+  | `siglog-seismic` | SigLog (strength 1) | Linear | Mean | `seismic` on log-compressed source; sign-preserving tone compression for a diverging ramp |
 
   A profile has **two** transforms, and their order is the reason
   `siglog-*` needs no new resampler. `source_transform` is applied to
@@ -205,6 +207,47 @@ normalize → colormap → encode.** Everything lives under
   There is deliberately no `siglog-abslog`: `abslog` is already a log
   transform, so its siglog view would be a log of a log rather than a
   distinct picture.
+
+  Each profile also carries the `siglog` **strength**
+  (`siglog_minval_log10`), the exponent the compression truncates below,
+  defaulting to `filters::DEFAULT_SIGLOG_MINVAL_LOG10`. The three older
+  `siglog-*` profiles use the shared default, so they stay the exact
+  preview of a default `siglog` step. `siglog-seismic` overrides it to
+  `1`: a grayscale `siglog-*` view reads fine at the default because
+  black and white both read strongly, but a linear colour ramp encodes
+  magnitude as distance from white, and on high-dynamic-range data the
+  default leaves the noise floor at ~60% of the 1/99 percentile range,
+  so the image is all saturated colour and no white. Measured on
+  `dat_0130_b1` (a ~55 mV noise floor against a 1/99 limit of 4.4): 5%
+  of pixels near white at the default, 32% at strength 1. The strength
+  is part of the cache key for every `SigLog` profile, so changing the
+  shared default re-keys them rather than serving stale pixels.
+
+  **Colormaps** (#246) are an optional `Option<Colormap>` on the
+  profile: `None` keeps the original single-channel grayscale path, byte
+  for byte, and `Some` maps the normalized byte through a 256-entry RGB
+  LUT built once per render. Interpolation between stops is a straight
+  sRGB lerp, matching matplotlib's `LinearSegmentedColormap` and QGIS's
+  gradient editor, since reproducing their output is the point; a
+  perceptual space would ramp more evenly but no longer match. The LUT
+  test pins the `seismic` ramp against matplotlib's own output at
+  eighths.
+
+  A diverging ramp only means something if its midpoint colour sits at a
+  meaningful value — zero amplitude for signed data — so the profile
+  carries a `symmetric_limits` flag that `resolve_limits` applies after
+  estimation (`vmax = max(|low|, |high|)`, `vmin = -vmax`), composing
+  with both explicit and percentile limits. The `seismic` pair also
+  pins the three couplings that keep the sign intact: resampling stays
+  `Mean` (never `LanczosRectified`, which filters `|amplitude|`),
+  `transform` stays `Linear`, and `contrast`/`black_level` stay neutral.
+
+  Purple at overview zoom is **not** a bug: the ramp contains no purple,
+  but adjacent samples land on opposite sides of the white midpoint and
+  anything that averages pixels (browser scaling, JPEG 4:2:0 chroma
+  subsampling, the eye) blends red and blue. `Mean` averages amplitude
+  before colormapping, so ± values average toward zero and correctly
+  stay white.
 
   `positive`'s asymmetry is why `RenderProfile`'s display transform is
   an enum rather than a boolean: it needs a different domain for

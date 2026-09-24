@@ -188,8 +188,42 @@ function chunkImage(x, y, profile) {
   img.loading = 'lazy';
   img.decoding = 'async';
   img.alt = '';
+  img.addEventListener('error', () => explainChunkFailure(img.src));
   img.src = chunkUrl(x, y, profile);
   return img;
+}
+
+/* Say why the tiles are blank.
+ *
+ * A chunk that cannot be rendered is a 500 carrying #120's envelope, but
+ * an <img> reports only that it failed, so the viewer used to show an
+ * empty radargram and no reason at all -- the catalog degrades to "no
+ * preview" for exactly this case, and here the whole view can be blank.
+ * The reason is worth fetching: a profile whose siglog strength flattens
+ * the data names itself and the profile to use instead.
+ *
+ * Once per viewer, not once per tile. Such a failure is a property of the
+ * radargram and the profile, so every chunk in the grid fails identically
+ * and forty overlays saying so is not forty times the information. */
+let chunkFailureExplained = false;
+async function explainChunkFailure(url) {
+  if (chunkFailureExplained) return;
+  chunkFailureExplained = true;
+  let reason;
+  try {
+    const response = await fetch(url);
+    if (response.ok) {
+      // Transient: the retry worked, so there is nothing to explain and
+      // the next failure should still get its turn.
+      chunkFailureExplained = false;
+      return;
+    }
+    const failure = await response.json().catch(() => null);
+    reason = failure?.error?.message || RIDAL.upstreamMessage(response.status);
+  } catch (networkError) {
+    reason = `network request failed (${networkError.message})`;
+  }
+  RIDAL.reportError('map', `Could not render this radargram: ${reason}`);
 }
 
 /* Which chunks the current view touches, padded by one chunk so a small
