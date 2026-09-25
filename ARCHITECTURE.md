@@ -173,21 +173,21 @@ normalize → colormap → encode.** Everything lives under
   | Profile | Source transform | Display transform | Resampling | Notes |
   |---|---|---|---|---|
   | `default` | None | Linear | Mean | 1–99% quantile |
-  | `siglog-default` | SigLog | Linear | Mean | the `default` view on log-compressed source |
+  | `siglog-default` | AdaptiveSigLog (−1.7) | Linear | Mean | the `default` view on log-compressed source |
   | `positive` | None | Positive (asymmetric) | LanczosRectified | biases toward positive returns, clips negative toward black |
-  | `siglog-positive` | SigLog | Positive | LanczosRectified | `positive`'s tuning on log-compressed source; it displays the rectified envelope, so it keeps `positive`'s reducer |
+  | `siglog-positive` | AdaptiveSigLog (−1.7) | Positive | LanczosRectified | `positive`'s tuning on log-compressed source; it displays the rectified envelope, so it keeps `positive`'s reducer |
   | `abslog` | None | `log10\|A\|` | LanczosRectified | sign-agnostic by construction, so rectifying changes nothing about what it means |
   | `high-contrast` | None | Linear | Mean | 5–95% quantile |
-  | `siglog-high-contrast` | SigLog | Linear | Mean | the `high-contrast` view on log-compressed source |
+  | `siglog-high-contrast` | AdaptiveSigLog (−1.7) | Linear | Mean | the `high-contrast` view on log-compressed source |
   | `seismic` | None | Linear | Mean | diverging `seismic` colormap, symmetric limits (white at zero amplitude) |
-  | `siglog-seismic` | SigLog (strength 1) | Linear | Mean | `seismic` on log-compressed source; sign-preserving tone compression for a diverging ramp |
+  | `siglog-seismic` | AdaptiveSigLog (−0.2) | Linear | Mean | `seismic` on log-compressed source; sign-preserving tone compression for a diverging ramp |
 
   A profile has **two** transforms, and their order is the reason
   `siglog-*` needs no new resampler. `source_transform` is applied to
   each source sample *before* resampling; `transform` maps the already
   resampled value into the display domain afterwards. The `siglog-*`
-  profiles set `SourceTransform::SigLog` — the processing step's own
-  `(log10|A| − offset).max(0)·sign(A)` — so the compression happens
+  profiles set `SourceTransform::AdaptiveSigLog` — the processing step's
+  own `(log10|A| − strength).max(0)·sign(A)` — so the compression happens
   before whatever the base profile's reducer does, exactly reproducing
   the order a `siglog` processing step would have. Each `siglog-*` also
   keeps its base profile's resampling method, and that is load-bearing
@@ -208,20 +208,42 @@ normalize → colormap → encode.** Everything lives under
   transform, so its siglog view would be a log of a log rather than a
   distinct picture.
 
-  Each profile also carries the `siglog` **strength**
-  (`siglog_minval_log10`), the exponent the compression truncates below,
-  defaulting to `filters::DEFAULT_SIGLOG_MINVAL_LOG10`. The three older
-  `siglog-*` profiles use the shared default, so they stay the exact
-  preview of a default `siglog` step. `siglog-seismic` overrides it to
-  `1`: a grayscale `siglog-*` view reads fine at the default because
-  black and white both read strongly, but a linear colour ramp encodes
-  magnitude as distance from white, and on high-dynamic-range data the
-  default leaves the noise floor at ~60% of the 1/99 percentile range,
-  so the image is all saturated colour and no white. Measured on
-  `dat_0130_b1` (a ~55 mV noise floor against a 1/99 limit of 4.4): 5%
-  of pixels near white at the default, 32% at strength 1. The strength
-  is part of the cache key for every `SigLog` profile, so changing the
-  shared default re-keys them rather than serving stale pixels.
+  The `siglog-*` profiles are **adaptive** (#254): the strength is
+  `log10(noise floor) + offset`, not a fixed exponent, because a fixed one
+  only suits data on one amplitude scale — `siglog(0)` sits well below
+  the noise of mV-scale 25 MHz data but truncates everything in data
+  whose amplitudes are all below one. The noise floor is the
+  median `log10|A|` over the whole radargram (zeros excluded;
+  `filters::siglog::noise_floor_log10`), with no depth window: noise is
+  most of any record that runs past the ice, and on the lines tested it
+  sat 0.08–0.10 below a median taken only below the bed. The offset lives
+  in `siglog_noise_offset`; `siglog_minval_log10` is still the fixed
+  strength a `SourceTransform::SigLog` profile file may set, and each
+  field is rejected under the other transform.
+
+  The offset is per profile. The grayscale `siglog-*` use −1.7
+  (`DEFAULT_ADAPTIVE_SIGLOG_OFFSET`, also the `adaptive_siglog` step's
+  default), which reproduces the old `siglog(0)` look on 25/100 MHz data:
+  grayscale shows noise as neutral texture and wants a strength well
+  below it. `siglog-seismic` uses −0.2
+  (`DIVERGING_ADAPTIVE_SIGLOG_OFFSET`): a diverging ramp draws zero as
+  white and magnitude as colour, so noise left above the truncation is
+  saturated red/blue speckle, and the strength has to sit just below the
+  noise. Widening that profile's limits instead was tried and does not
+  work — it rescales noise and signal together.
+
+  The strength depends on the data, so an adaptive profile cannot be
+  rendered as-is. Every render entry point (`RenderService::resolve_limits`,
+  `oneshot`) first calls `stats::pin_profile`, which estimates the noise
+  floor from the same fixed-seed trace runs as the limits (whole traces,
+  independent of the profile) and turns the profile into a fixed-strength
+  `SigLog` one via `RenderProfile::pin_siglog_strength`; the limits and
+  the renderer both use that pinned profile, and the server caches it
+  with the limits. Cache keys are computed from the requested profile, so
+  they carry the offset (`|siglog-adaptive:…`) and never the resolved
+  strength, which is a function of the revision the key already names.
+  Rendering an unpinned adaptive profile panics in `to_source_domain`
+  rather than silently using whatever `siglog_minval_log10` holds.
 
   **Colormaps** (#246) are an optional `Option<Colormap>` on the
   profile: `None` keeps the original single-channel grayscale path, byte

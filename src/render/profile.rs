@@ -131,8 +131,19 @@ pub enum SourceTransform {
     /// sign-corrected log transform `gpr.rs`'s `siglog` processing step
     /// applies. The offset is the profile's
     /// [`siglog_minval_log10`](RenderProfile::siglog_minval_log10),
-    /// defaulting to [`crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10`].
+    /// defaulting to [`crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`].
     SigLog,
+    /// [`SigLog`](Self::SigLog) at a strength set from the radargram's own
+    /// noise floor: `log10(noise) + offset`, with the offset from
+    /// [`siglog_noise_offset`](RenderProfile::siglog_noise_offset) --
+    /// what the `adaptive_siglog` processing step does (#254).
+    ///
+    /// The strength depends on the data, so a profile carrying this cannot
+    /// be rendered as-is. The render entry points estimate the noise floor
+    /// once per radargram, next to the percentile limits, and
+    /// [`RenderProfile::pin_siglog_strength`] turns it into a fixed
+    /// `SigLog` profile that the renderer and the limit estimate share.
+    AdaptiveSigLog,
 }
 
 /// How amplitude limits are determined for normalization.
@@ -167,7 +178,13 @@ pub enum DatasetView {
 /// Serde default for [`RenderProfile::siglog_minval_log10`]: the shared
 /// `siglog` step default.
 fn default_siglog_minval_log10() -> f32 {
-    crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10
+    crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10
+}
+
+/// Serde default for [`RenderProfile::siglog_noise_offset`]: the shared
+/// `adaptive_siglog` step default.
+fn default_siglog_noise_offset() -> f32 {
+    crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,7 +200,7 @@ pub struct RenderProfile {
     /// exponent below which magnitudes truncate to zero. Ignored when
     /// `source_transform` is not `SigLog`.
     ///
-    /// Defaults to [`crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10`], the
+    /// Defaults to [`crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`], the
     /// same default the `siglog` processing step uses, so a profile
     /// reproduces the step without stating a strength. A profile can
     /// override it for its data's scale; `siglog-seismic` does, because a
@@ -195,6 +212,20 @@ pub struct RenderProfile {
     /// field existed keep loading at the default strength.
     #[serde(default = "default_siglog_minval_log10")]
     pub siglog_minval_log10: f32,
+    /// Offset of [`SourceTransform::AdaptiveSigLog`] from the noise floor,
+    /// in log10 units: the strength is `log10(noise) + offset`. Ignored
+    /// when `source_transform` is not `AdaptiveSigLog`.
+    ///
+    /// Defaults to
+    /// [`crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET`], the
+    /// `adaptive_siglog` step's default and the grayscale profiles'
+    /// value. `siglog-seismic` overrides it with
+    /// [`crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET`].
+    ///
+    /// `#[serde(default = ...)]` so profile files written before the
+    /// field existed keep loading.
+    #[serde(default = "default_siglog_noise_offset")]
+    pub siglog_noise_offset: f32,
     pub transform: AmplitudeTransform,
     pub limits: AmplitudeLimits,
     pub resampling: ResamplingMethod,
@@ -237,6 +268,7 @@ impl RenderProfile {
             view: DatasetView::Standard,
             source_transform: SourceTransform::None,
             siglog_minval_log10: default_siglog_minval_log10(),
+            siglog_noise_offset: default_siglog_noise_offset(),
             transform: AmplitudeTransform::Linear,
             limits: AmplitudeLimits::Percentile {
                 low: 0.01,
@@ -310,9 +342,10 @@ impl RenderProfile {
         }
     }
 
-    /// `siglog-default`: the `default` profile with the `siglog` source
-    /// preprocessing step in front of it. The siglog version of a plain
-    /// linear radargram.
+    /// `siglog-default`: the `default` profile with the `adaptive_siglog`
+    /// source preprocessing step in front of it, at the default offset
+    /// from the noise floor. The siglog version of a plain linear
+    /// radargram.
     ///
     /// The compression is a [`SourceTransform`], applied to every sample
     /// *before* resampling, exactly as the processing step is. That is the
@@ -329,7 +362,7 @@ impl RenderProfile {
     pub fn siglog_default_profile() -> Self {
         Self {
             name: "siglog-default".to_string(),
-            source_transform: SourceTransform::SigLog,
+            source_transform: SourceTransform::AdaptiveSigLog,
             ..Self::default_profile()
         }
     }
@@ -350,7 +383,7 @@ impl RenderProfile {
     pub fn siglog_positive_profile() -> Self {
         Self {
             name: "siglog-positive".to_string(),
-            source_transform: SourceTransform::SigLog,
+            source_transform: SourceTransform::AdaptiveSigLog,
             ..Self::positive_profile()
         }
     }
@@ -360,7 +393,7 @@ impl RenderProfile {
     pub fn siglog_high_contrast_profile() -> Self {
         Self {
             name: "siglog-high-contrast".to_string(),
-            source_transform: SourceTransform::SigLog,
+            source_transform: SourceTransform::AdaptiveSigLog,
             ..Self::high_contrast_profile()
         }
     }
@@ -401,21 +434,23 @@ impl RenderProfile {
     /// Resampling is inherited from `seismic` (`Mean`), as
     /// `siglog-default` inherits from `default`.
     ///
-    /// **Strength 1, not the default.** A grayscale `siglog-*` view reads
-    /// fine with a weak truncation because high-contrast black and white
-    /// both read strongly, but a linear colour ramp encodes magnitude as
-    /// distance from white, so a noise floor that siglog leaves at ~60%
-    /// of the percentile range fills the image with saturated colour and
-    /// leaves no white at all. Measured on `dat_0130_b1` (a ~55 mV noise
-    /// floor against a 1/99 limit of 4.4): at the default strength 5% of
-    /// pixels sit near white and 54% in the outer quarters; at strength 1
-    /// that becomes 32% near white and 21% vivid. The override is what
-    /// makes this profile usable on high-dynamic-range data.
+    /// **Its own offset from the noise floor, not the grayscale one.** A
+    /// grayscale `siglog-*` view reads fine with a strength far below the
+    /// noise because it shows noise as neutral texture, but a diverging
+    /// ramp encodes magnitude as distance from white, so any noise left
+    /// above the truncation fills the image with saturated red/blue
+    /// speckle and leaves no white at all. Widening the limits does not
+    /// help: it rescales noise and signal alike. The strength therefore
+    /// sits just below the noise floor
+    /// ([`crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET`]),
+    /// adaptively, because the fixed strength 1 this profile first used
+    /// suited one radargram's amplitude scale and not the next (#251,
+    /// #254).
     pub fn siglog_seismic_profile() -> Self {
         Self {
             name: "siglog-seismic".to_string(),
-            source_transform: SourceTransform::SigLog,
-            siglog_minval_log10: 1.0,
+            source_transform: SourceTransform::AdaptiveSigLog,
+            siglog_noise_offset: crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET,
             ..Self::seismic_profile()
         }
     }
@@ -481,11 +516,11 @@ impl RenderProfile {
     /// Read a profile from a TOML file.
     ///
     /// Every field is required except `source_transform`, `colormap`,
-    /// `symmetric_limits` and `siglog_minval_log10`, which
-    /// `#[serde(default)]` so profile files written before each field
+    /// `symmetric_limits`, `siglog_minval_log10` and `siglog_noise_offset`,
+    /// which `#[serde(default)]` so profile files written before each field
     /// existed keep loading unchanged; omitting them can only mean "no
     /// source preprocessing", "grayscale", "asymmetric" and the shared
-    /// siglog default, which is what those files did. A `colormap` that is
+    /// siglog defaults, which is what those files did. A `colormap` that is
     /// present is checked by [`Colormap::validate`], since that is the
     /// only field with structural invariants the type cannot express.
     /// Profiles that inherit from a built-in and override a field or two
@@ -513,7 +548,9 @@ impl RenderProfile {
         // cost of keeping `source_transform = "SigLog"` parsing as it
         // always has; refusing the disagreement is what stops that cost
         // being paid silently by whoever wrote the file.
-        if profile.source_transform == SourceTransform::None
+        // The same holds for the adaptive offset, and each of the two
+        // fields belongs to exactly one of the two siglog transforms.
+        if profile.source_transform != SourceTransform::SigLog
             && profile.siglog_minval_log10 != default_siglog_minval_log10()
         {
             return Err(format!(
@@ -521,6 +558,16 @@ impl RenderProfile {
                  but source_transform is not SigLog, so the strength would do nothing.",
                 path.display(),
                 profile.siglog_minval_log10
+            ));
+        }
+        if profile.source_transform != SourceTransform::AdaptiveSigLog
+            && profile.siglog_noise_offset != default_siglog_noise_offset()
+        {
+            return Err(format!(
+                "Could not use render profile {}: siglog_noise_offset is set to {} \
+                 but source_transform is not AdaptiveSigLog, so the offset would do nothing.",
+                path.display(),
+                profile.siglog_noise_offset
             ));
         }
         Ok(profile)
@@ -537,7 +584,7 @@ impl RenderProfile {
     ///
     /// The siglog strength is appended for every `SigLog` profile,
     /// default included, so a change to
-    /// [`crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10`] re-keys those
+    /// [`crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`] re-keys those
     /// profiles rather than serving renders of the old strength from
     /// cache. Grayscale profiles still carry no siglog fragment.
     pub fn cache_key_fragment(&self) -> String {
@@ -568,10 +615,42 @@ impl RenderProfile {
         if self.symmetric_limits {
             fragment.push_str("|sym");
         }
-        if self.source_transform == SourceTransform::SigLog {
-            fragment.push_str(&format!("|siglog:{}", self.siglog_minval_log10));
+        match self.source_transform {
+            SourceTransform::None => {}
+            SourceTransform::SigLog => {
+                fragment.push_str(&format!("|siglog:{}", self.siglog_minval_log10));
+            }
+            // The strength this resolves to is a function of the revision's
+            // data, which the render variant ID already keys on, so the
+            // offset is all that identifies the pixels.
+            SourceTransform::AdaptiveSigLog => {
+                fragment.push_str(&format!("|siglog-adaptive:{}", self.siglog_noise_offset));
+            }
         }
         fragment
+    }
+
+    /// Pin an [`AdaptiveSigLog`](SourceTransform::AdaptiveSigLog) profile
+    /// to the fixed [`SigLog`](SourceTransform::SigLog) strength
+    /// `noise_floor_log10 + siglog_noise_offset`, which is what the
+    /// renderer and the limit estimate then both use. Any other profile is
+    /// returned unchanged.
+    ///
+    /// The result is for rendering only. Keys and cache entries are always
+    /// computed from the profile as requested, so its pinned strength never
+    /// becomes part of a render's identity.
+    pub fn pin_siglog_strength(&self, noise_floor_log10: f32) -> Self {
+        if self.source_transform != SourceTransform::AdaptiveSigLog {
+            return self.clone();
+        }
+        Self {
+            source_transform: SourceTransform::SigLog,
+            siglog_minval_log10: crate::filters::siglog::adaptive_strength(
+                noise_floor_log10,
+                self.siglog_noise_offset,
+            ),
+            ..self.clone()
+        }
     }
 }
 
@@ -695,6 +774,71 @@ siglog_minval_log10 = 2.0
     }
 
     #[test]
+    fn a_profile_file_mixing_up_the_two_siglog_fields_is_rejected() {
+        // Each siglog field belongs to one transform: an adaptive offset
+        // under a fixed `SigLog`, or a fixed strength under
+        // `AdaptiveSigLog`, would do nothing in silence.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed.toml");
+        let base = r#"
+name = "mixed"
+view = "Standard"
+transform = "Linear"
+limits = { Percentile = { low = 0.01, high = 0.99 } }
+resampling = "Mean"
+format = "Png"
+contrast = 1.0
+black_level = 0.0
+stats_skip_first_samples = 0
+"#;
+        let write = |extra: &str| std::fs::write(&path, format!("{base}{extra}\n")).unwrap();
+        let resolve = || RenderProfile::resolve(path.to_str().unwrap());
+
+        write("source_transform = \"SigLog\"\nsiglog_noise_offset = -0.5");
+        let error = resolve().unwrap_err();
+        assert!(
+            error.contains("source_transform is not AdaptiveSigLog"),
+            "{error}"
+        );
+
+        write("source_transform = \"AdaptiveSigLog\"\nsiglog_minval_log10 = 2.0");
+        let error = resolve().unwrap_err();
+        assert!(error.contains("source_transform is not SigLog"), "{error}");
+
+        write("source_transform = \"AdaptiveSigLog\"\nsiglog_noise_offset = -0.5");
+        let profile = resolve().unwrap();
+        assert_eq!(profile.source_transform, SourceTransform::AdaptiveSigLog);
+        assert_eq!(profile.siglog_noise_offset, -0.5);
+    }
+
+    #[test]
+    fn pinning_fixes_an_adaptive_strength_and_leaves_others_alone() {
+        let pinned = RenderProfile::siglog_seismic_profile().pin_siglog_strength(1.5);
+        assert_eq!(pinned.source_transform, SourceTransform::SigLog);
+        assert!(
+            (pinned.siglog_minval_log10
+                - (1.5 + crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET))
+                .abs()
+                < 1e-6
+        );
+        // Everything but the transform and its strength is untouched.
+        assert_eq!(
+            pinned.colormap,
+            RenderProfile::siglog_seismic_profile().colormap
+        );
+        for profile in [
+            RenderProfile::default_profile(),
+            RenderProfile {
+                source_transform: SourceTransform::SigLog,
+                siglog_minval_log10: 2.0,
+                ..RenderProfile::default_profile()
+            },
+        ] {
+            assert_eq!(profile.pin_siglog_strength(1.5), profile);
+        }
+    }
+
+    #[test]
     fn resolve_says_both_things_it_looked_for() {
         // "No such profile" and "no such file" are the same mistake from
         // the user's side, and they will not know which one they made.
@@ -765,7 +909,7 @@ siglog_minval_log10 = 2.0
             let siglog = RenderProfile::by_name(name).unwrap();
             assert_eq!(
                 siglog.source_transform,
-                SourceTransform::SigLog,
+                SourceTransform::AdaptiveSigLog,
                 "{name} source transform"
             );
             assert_eq!(siglog.transform, base.transform, "{name} transform");
@@ -790,15 +934,15 @@ siglog_minval_log10 = 2.0
             RenderProfile::siglog_positive_profile().resampling,
             ResamplingMethod::LanczosRectified
         );
-        // The three older `siglog-*` profiles use the shared default
-        // strength, which is what keeps them the exact preview of a
-        // default `siglog` step. `siglog-seismic` is the deliberate
+        // The three grayscale `siglog-*` profiles use the shared default
+        // offset, which is what keeps them the exact preview of a default
+        // `adaptive_siglog` step. `siglog-seismic` is the deliberate
         // exception and is pinned by its own test.
         for name in ["siglog-default", "siglog-positive", "siglog-high-contrast"] {
             assert_eq!(
-                RenderProfile::by_name(name).unwrap().siglog_minval_log10,
-                crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
-                "{name} should use the shared default siglog strength"
+                RenderProfile::by_name(name).unwrap().siglog_noise_offset,
+                crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET,
+                "{name} should use the shared default adaptive offset"
             );
         }
         // And the base profiles keep no source preprocessing of their own.
@@ -835,20 +979,20 @@ siglog_minval_log10 = 2.0
         );
         assert_eq!(
             RenderProfile::siglog_seismic_profile().source_transform,
-            SourceTransform::SigLog
+            SourceTransform::AdaptiveSigLog
         );
         // `siglog-seismic` is the one built-in that overrides the shared
-        // siglog strength: a linear colour ramp needs the noise floor near
-        // white, which the default does not truncate enough of. See the
-        // constructor for the measurement behind the value.
+        // adaptive offset: a diverging ramp needs the noise floor near
+        // white, which the grayscale offset leaves far above the
+        // truncation. See the constructor for why.
         assert_eq!(
-            RenderProfile::siglog_seismic_profile().siglog_minval_log10,
-            1.0
+            RenderProfile::siglog_seismic_profile().siglog_noise_offset,
+            crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET
         );
         assert_eq!(
-            RenderProfile::seismic_profile().siglog_minval_log10,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
-            "the plain seismic profile should not state a strength of its own"
+            RenderProfile::seismic_profile().siglog_noise_offset,
+            crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET,
+            "the plain seismic profile should not state an offset of its own"
         );
         // The base profile itself stays grayscale and asymmetric.
         assert_eq!(RenderProfile::default_profile().colormap, None);
@@ -878,7 +1022,7 @@ stats_skip_first_samples = 0
         assert!(!profile.symmetric_limits);
         assert_eq!(
             profile.siglog_minval_log10,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10
         );
         // A file that does set them round-trips.
         let text = text.replace(
@@ -990,33 +1134,62 @@ stats_skip_first_samples = 0
                 "{name}'s fragment gained a colormap field: {fragment}"
             );
         }
-        // A `SigLog` profile's fragment always states its strength, the
+        // An adaptive profile's fragment always states its offset, the
         // shared default included, so changing that default re-keys those
         // profiles rather than serving stale pixels from cache.
-        let default_strength = format!("|siglog:{}", crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10);
+        let default_offset = format!(
+            "|siglog-adaptive:{}",
+            crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET
+        );
         for name in ["siglog-default", "siglog-positive", "siglog-high-contrast"] {
             let fragment = RenderProfile::by_name(name).unwrap().cache_key_fragment();
             assert!(
-                fragment.contains(&default_strength),
-                "{name}'s fragment lost its strength: {fragment}"
+                fragment.contains(&default_offset),
+                "{name}'s fragment lost its offset: {fragment}"
             );
         }
         assert!(
             RenderProfile::siglog_seismic_profile()
                 .cache_key_fragment()
-                .contains("|siglog:1"),
+                .contains(&format!(
+                    "|siglog-adaptive:{}",
+                    crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET
+                )),
             "siglog-seismic's override must be part of its key"
         );
     }
 
     #[test]
     fn changing_the_siglog_strength_changes_the_cache_key() {
-        let a = RenderProfile::siglog_default_profile();
+        let a = RenderProfile {
+            source_transform: SourceTransform::SigLog,
+            ..RenderProfile::siglog_default_profile()
+        };
         let b = RenderProfile {
             siglog_minval_log10: a.siglog_minval_log10 + 1.0,
             ..a.clone()
         };
         assert_ne!(a.cache_key_fragment(), b.cache_key_fragment());
+
+        // Likewise the adaptive offset, and each field is inert under the
+        // other transform.
+        let adaptive = RenderProfile::siglog_default_profile();
+        let other_offset = RenderProfile {
+            siglog_noise_offset: adaptive.siglog_noise_offset + 1.0,
+            ..adaptive.clone()
+        };
+        assert_ne!(
+            adaptive.cache_key_fragment(),
+            other_offset.cache_key_fragment()
+        );
+        let adaptive_with_strength = RenderProfile {
+            siglog_minval_log10: 5.0,
+            ..adaptive.clone()
+        };
+        assert_eq!(
+            adaptive.cache_key_fragment(),
+            adaptive_with_strength.cache_key_fragment()
+        );
 
         // The strength is inert for a profile that does not use SigLog, so
         // it must not fragment the key.

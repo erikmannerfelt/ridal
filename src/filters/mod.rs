@@ -1,9 +1,10 @@
 use crate::tools;
-use ndarray::{Array, Array2};
+use ndarray::Array2;
 use num::{Float, FromPrimitive};
 
 pub mod bandpass;
 pub mod coordinates;
+pub mod siglog;
 
 pub fn abslog<T: Float>(data: &mut Array2<T>) {
     data.mapv_inplace(|v| v.abs());
@@ -21,41 +22,6 @@ pub fn abslog<T: Float>(data: &mut Array2<T>) {
         }
     }
     data.mapv_inplace(|v| (v + minval).log10());
-}
-
-/// The `siglog` step's default magnitude offset (`minval_log10`), and the
-/// default strength of the render layer's `source_transform = SigLog`.
-///
-/// Shared so `--render-profile siglog-default` and a `siglog` processing
-/// step at its default strength show the same picture.
-///
-/// `0` means magnitudes below `10^0 == 1` truncate to zero, i.e. the
-/// transform is `log10|v|` above one. It is the offset the published
-/// processing used (doi:10.31223/X5P19C), and it reads better on
-/// mV-scale amplitude than the previous `-1`, which truncated only
-/// below 0.1 mV and so compressed almost nothing.
-///
-/// A render profile can override the strength for its own data scale
-/// (`RenderProfile::siglog_minval_log10`);
-/// the `siglog-seismic` pair does, because a linear colour ramp needs the
-/// noise floor near white and this default does not truncate enough of it
-/// on high-dynamic-range data.
-pub const DEFAULT_SIGLOG_MINVAL_LOG10: f32 = 0.0;
-
-/// The scalar `siglog` transform: `(log10|v| - minval_log10).max(0) *
-/// sign(v)`, the sign-corrected log compression.
-///
-/// A scalar rather than only the array-wide [`siglog`] below because the
-/// renderer applies it a value at a time before resampling, and must keep
-/// doing exactly what the processing step does. `NaN` passes through
-/// (`NaN`'s sign is `NaN`, so the result stays `NaN`) -- the renderer's
-/// "no data" signal must survive the transform.
-pub fn siglog_value<T: Float>(v: T, minval_log10: T) -> T {
-    (v.abs().log10() - minval_log10).max(T::zero()) * v.signum()
-}
-
-pub fn siglog<T: Float, D: ndarray::Dimension>(data: &mut Array<T, D>, minval_log10: T) {
-    data.mapv_inplace(|v| siglog_value(v, minval_log10));
 }
 
 pub fn average_traces<T: Float + FromPrimitive>(
@@ -144,7 +110,7 @@ pub fn window_subset_vec<T>(mut v: Vec<T>, window: usize) -> Vec<T> {
 
 #[cfg(test)]
 mod tests {
-    use ndarray::{Array2, AssignElem};
+    use ndarray::Array2;
 
     #[test]
     fn test_abslog() {
@@ -166,22 +132,6 @@ mod tests {
         assert!(new_minval < 1.);
         assert!(new_maxval < 2.1);
         assert!(new_maxval > 1.9);
-    }
-
-    #[test]
-    fn test_siglog() {
-        let arr = ndarray::arr1(&[1000_f32, -1000_f32, 0_f32]);
-        let mut arr0 = arr.clone();
-        super::siglog(&mut arr0, 0.);
-        assert_eq!(arr0, ndarray::arr1(&[3., -3., 0.]));
-        let mut arr1 = arr.clone();
-        arr1[2].assign_elem(0.0001);
-        super::siglog(&mut arr1, 0.);
-        assert_eq!(arr1, ndarray::arr1(&[3., -3., 0.]));
-        let mut arr2 = arr.clone();
-        arr2[2].assign_elem(0.1);
-        super::siglog(&mut arr2, -2.);
-        assert_eq!(arr2, ndarray::arr1(&[5., -5., 1.]));
     }
 
     #[test]

@@ -34,6 +34,8 @@ Migrate sample magnitudes in the horizontal and vertical distance dimension to c
 Run a log10 operation on the absolute values (log10(abs(data))), converting it to a logarithmic scale. This is useful for visualization. Before conversion, the data are added with the 1st percentile (absolute) value in the dataset to avoid log10(0) == inf.
 ## siglog
 Run a log10 operation on absolute values and then account for the sign. Values smaller than the set minimum magnitude are truncated to zero. E.g. with an exponent offset of 0: 1000 -> 3, -1000 -> -3, 0.001 -> 0. The argument specifies the exponent offset to apply to allow for values smaller than +-1 (e.g. 10e-1). Default: 0
+## adaptive_siglog
+Run `siglog` at a strength set from the data's own noise floor instead of a fixed one: the strength is `log10(noise) + offset`, where the noise floor is the median `log10|value|` over the whole radargram (zeros excluded). The same offset therefore gives the same result regardless of the recording's amplitude scale, which a fixed `siglog` strength cannot. The argument is the offset in log10 units; more negative keeps more weak signal (and noise). The resolved strength is written to the processing log. Example: `adaptive_siglog(-1.7)`. Default: -1.7
 ## unphase
 Combine the positive and negative phases of the signal into one positive magntiude. The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly.
 ## correct_topography

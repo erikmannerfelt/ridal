@@ -558,9 +558,15 @@ impl GPR {
             self.unphase();
         } else if step_name.contains("abslog") {
             self.abslog()
+        } else if step_name.contains("adaptive_siglog") {
+            // Before the `siglog` branch: step names match by substring, and
+            // "adaptive_siglog" contains "siglog".
+            let offset = tools::parse_option::<f32>(step_name, 0)?
+                .unwrap_or(crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET);
+            self.adaptive_siglog(offset)?;
         } else if step_name.contains("siglog") {
             let minval = tools::parse_option::<f32>(step_name, 0)?
-                .unwrap_or(crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10);
+                .unwrap_or(crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10);
             self.siglog(minval);
         } else if step_name.contains("correct_topography") {
             self.correct_topography();
@@ -1181,10 +1187,26 @@ impl GPR {
         self.log_event("abslog", "Ran abslog (log10(abs(data))", start_time);
     }
 
+    pub fn adaptive_siglog(&mut self, offset: f32) -> Result<(), String> {
+        let start_time = SystemTime::now();
+
+        let strength = filters::siglog::adaptive_siglog(&mut self.data, offset)?;
+        self.log_event(
+            "adaptive_siglog",
+            &format!(
+                "Ran adaptive siglog (noise floor: log10 {:.3}; offset: {offset}; resolved \
+                 strength: {strength:.3})",
+                strength - offset
+            ),
+            start_time,
+        );
+        Ok(())
+    }
+
     pub fn siglog(&mut self, minval_log10: f32) {
         let start_time = SystemTime::now();
 
-        filters::siglog(&mut self.data, minval_log10);
+        filters::siglog::siglog(&mut self.data, minval_log10);
         self.log_event(
             "siglog",
             &format!(
@@ -3642,6 +3664,41 @@ pub mod tests {
         gpr.remove_empty_traces(1.).unwrap();
 
         assert_eq!(gpr.width(), 17);
+    }
+
+    #[test]
+    fn adaptive_siglog_is_its_own_step() -> Result<(), Box<dyn std::error::Error>> {
+        // Steps are matched by substring, and "adaptive_siglog" contains
+        // "siglog": each name must still reach its own step.
+        let noisy = |row: usize, col: usize| ((row * 31 + col * 17) % 200) as f32 - 100.0;
+        let make = || {
+            let mut gpr = make_dummy_gpr(20, 30, None);
+            gpr.data = ndarray::Array2::from_shape_fn(gpr.data.dim(), |(r, c)| noisy(r, c));
+            gpr
+        };
+        let mut adaptive = make();
+        let mut fixed = make();
+
+        adaptive.process("adaptive_siglog(-0.5)")?;
+        let log = adaptive.log.last().unwrap();
+        assert!(log.starts_with("adaptive_siglog "), "{log}");
+        assert!(log.contains("offset: -0.5"), "{log}");
+        let mut expected = fixed.data.clone();
+        let strength = crate::filters::siglog::adaptive_siglog(&mut expected, -0.5)?;
+        assert!(
+            log.contains(&format!("resolved strength: {strength:.3}")),
+            "{log}"
+        );
+        assert_eq!(adaptive.data, expected);
+
+        fixed.process("siglog(1)")?;
+        assert!(fixed.log.last().unwrap().starts_with("siglog "));
+
+        super::validate_steps(&[
+            "adaptive_siglog".to_string(),
+            "adaptive_siglog(-1)".to_string(),
+        ])?;
+        Ok(())
     }
 
     #[test]

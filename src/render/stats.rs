@@ -9,7 +9,7 @@
 //! drawn.
 
 use super::colormap::{to_source_domain, to_stats_domain};
-use super::profile::{AmplitudeTransform, SourceTransform};
+use super::profile::{AmplitudeTransform, RenderProfile, SourceTransform};
 use crate::source::AmplitudeSource;
 
 /// Spread across the profile. 128 well-separated locations is ample for a
@@ -102,6 +102,50 @@ pub fn sampled_amplitude_limits(
     Ok((low, high))
 }
 
+/// Estimate a radargram's noise floor in log10 amplitude units, for
+/// [`SourceTransform::AdaptiveSigLog`], from the same fixed-seed trace
+/// runs [`sampled_amplitude_limits`] reads.
+///
+/// Whole traces, always: unlike the limits, the noise floor is a property
+/// of the data rather than of a profile, so a profile's
+/// `stats_skip_first_samples` does not apply, and every `siglog-*` profile
+/// of one radargram (and the `adaptive_siglog` processing step, within
+/// sampling error) resolves the same noise floor.
+pub fn sampled_noise_floor_log10(reader: &impl AmplitudeSource, seed: u64) -> Result<f32, String> {
+    let n_traces = reader.shape().1;
+    if n_traces == 0 {
+        return Err("cannot estimate a noise floor: radargram has zero traces".to_string());
+    }
+    let step = (n_traces / N_RUNS).max(1);
+    let offset = (seed as usize) % step;
+    let samples = reader.sample_trace_runs(N_RUNS, TRACES_PER_RUN, offset, 0)?;
+    crate::filters::siglog::noise_floor_log10(samples).ok_or_else(|| {
+        "cannot estimate a noise floor for adaptive siglog: every sampled amplitude is zero or \
+         missing"
+            .to_string()
+    })
+}
+
+/// The profile to actually render with: an
+/// [`AdaptiveSigLog`](SourceTransform::AdaptiveSigLog) profile pinned to
+/// this radargram's noise floor
+/// ([`RenderProfile::pin_siglog_strength`]), or any other profile
+/// unchanged, without reading the source.
+///
+/// Every render entry point calls this before estimating limits, and
+/// passes the result both to [`sampled_amplitude_limits`] and to the
+/// renderer, so the two agree on the strength.
+pub fn pin_profile(
+    reader: &impl AmplitudeSource,
+    profile: &RenderProfile,
+    seed: u64,
+) -> Result<RenderProfile, String> {
+    if profile.source_transform != SourceTransform::AdaptiveSigLog {
+        return Ok(profile.clone());
+    }
+    Ok(profile.pin_siglog_strength(sampled_noise_floor_log10(reader, seed)?))
+}
+
 fn percentile(sorted: &[f32], p: f32) -> f32 {
     let p = p.clamp(0.0, 1.0);
     let idx = (((sorted.len() - 1) as f32) * p).round() as usize;
@@ -143,7 +187,7 @@ mod tests {
         let (low, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             0,
             0.01,
@@ -176,7 +220,7 @@ mod tests {
         let (low_a, high_a) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             1,
             0.01,
@@ -187,7 +231,7 @@ mod tests {
         let (low_b, high_b) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             999,
             0.01,
@@ -211,7 +255,7 @@ mod tests {
         let a = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -222,7 +266,7 @@ mod tests {
         let b = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -247,7 +291,7 @@ mod tests {
         let (low_lin, high_lin) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             7,
             0.01,
@@ -258,7 +302,7 @@ mod tests {
         let (low_log, high_log) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::AbsLog,
             7,
             0.01,
@@ -286,9 +330,9 @@ mod tests {
             }
         });
         let mut transformed = raw.clone();
-        crate::filters::siglog(
+        crate::filters::siglog::siglog(
             &mut transformed,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
         );
 
         let raw_source = crate::source::ArraySource::new(raw.view());
@@ -297,7 +341,7 @@ mod tests {
         let from_raw = sampled_amplitude_limits(
             &raw_source,
             SourceTransform::SigLog,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -308,7 +352,7 @@ mod tests {
         let from_transformed = sampled_amplitude_limits(
             &transformed_source,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -323,7 +367,7 @@ mod tests {
         let plain = sampled_amplitude_limits(
             &raw_source,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -361,7 +405,8 @@ mod tests {
             )
             .unwrap()
         };
-        let (low_default, high_default) = limits(crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10);
+        let (low_default, high_default) =
+            limits(crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10);
         let (low_strong, high_strong) = limits(1.0);
         assert_ne!((low_default, high_default), (low_strong, high_strong));
         // A higher strength truncates more, so the range only shrinks.
@@ -392,7 +437,7 @@ mod tests {
         let (low, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Positive,
             7,
             0.01,
@@ -428,7 +473,7 @@ mod tests {
         let (_, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             0,
             0.01,
@@ -437,5 +482,69 @@ mod tests {
         )
         .unwrap();
         assert!(high < 10.0, "high={high} should exclude the skipped spike");
+    }
+
+    /// Deterministic noise of magnitude ~`scale` with a strong reflector
+    /// band, so the noise floor is well defined and signal is a minority.
+    fn noisy_radargram(height: usize, width: usize, scale: f32) -> ndarray::Array2<f32> {
+        ndarray::Array2::from_shape_fn((height, width), |(row, col)| {
+            let hash = (row * 7919 + col * 104_729) % 1000;
+            let noise = (hash as f32 / 500.0 - 1.0) * scale;
+            let bed = if row.abs_diff(height * 2 / 3) < 3 {
+                400.0 * scale
+            } else {
+                0.0
+            };
+            noise + bed
+        })
+    }
+
+    #[test]
+    fn the_sampled_noise_floor_tracks_the_whole_array() {
+        // The render path estimates from sampled trace runs; the processing
+        // step from the whole array. They must agree closely or
+        // `siglog-*` stops being a preview of `adaptive_siglog`.
+        let data = noisy_radargram(300, 4000, 50.0);
+        let source = crate::source::ArraySource::new(data.view());
+        let sampled = sampled_noise_floor_log10(&source, SAMPLE_SEED).unwrap();
+        let whole = crate::filters::siglog::noise_floor_log10(data.iter().copied()).unwrap();
+        assert!(
+            (sampled - whole).abs() < 0.02,
+            "sampled {sampled} vs whole-array {whole}"
+        );
+    }
+
+    #[test]
+    fn pin_profile_resolves_only_adaptive_profiles() {
+        let data = noisy_radargram(100, 500, 50.0);
+        let source = crate::source::ArraySource::new(data.view());
+        let noise = sampled_noise_floor_log10(&source, SAMPLE_SEED).unwrap();
+
+        let adaptive = RenderProfile::siglog_seismic_profile();
+        let pinned = pin_profile(&source, &adaptive, SAMPLE_SEED).unwrap();
+        assert_eq!(pinned, adaptive.pin_siglog_strength(noise));
+
+        for profile in [
+            RenderProfile::default_profile(),
+            RenderProfile::seismic_profile(),
+        ] {
+            assert_eq!(
+                pin_profile(&source, &profile, SAMPLE_SEED).unwrap(),
+                profile
+            );
+        }
+    }
+
+    #[test]
+    fn a_radargram_without_a_noise_floor_is_a_clear_error() {
+        let data = ndarray::Array2::<f32>::zeros((20, 30));
+        let source = crate::source::ArraySource::new(data.view());
+        let error = pin_profile(
+            &source,
+            &RenderProfile::siglog_default_profile(),
+            SAMPLE_SEED,
+        )
+        .unwrap_err();
+        assert!(error.contains("noise floor"), "{error}");
     }
 }

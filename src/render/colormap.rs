@@ -210,10 +210,16 @@ fn log_abs(v: f32) -> f32 {
 /// `None` is the identity, so a profile with no source preprocessing reads
 /// exactly as it did before this stage existed. `SigLog` reproduces the
 /// `siglog` processing step's `(log10|v| - offset).max(0) * sign(v)` via
-/// [`filters::siglog_value`], at `siglog_minval_log10` -- the profile's
+/// [`filters::siglog::siglog_value`], at `siglog_minval_log10` -- the profile's
 /// own strength, defaulting to
-/// [`filters::DEFAULT_SIGLOG_MINVAL_LOG10`]. `siglog_minval_log10` is
+/// [`filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`]. `siglog_minval_log10` is
 /// ignored for `None`.
+///
+/// `AdaptiveSigLog` has no strength until the radargram's noise floor is
+/// known, so it must be pinned to `SigLog` first
+/// ([`RenderProfile::pin_siglog_strength`]); reaching this function
+/// unpinned is a bug in the caller and panics rather than silently
+/// rendering at whatever `siglog_minval_log10` happens to hold.
 ///
 /// `NaN` (the "no data" signal the resampler must keep seeing) passes
 /// through. A literal infinite value is sanitized to zero first, matching
@@ -226,8 +232,12 @@ pub fn to_source_domain(v: f32, transform: SourceTransform, siglog_minval_log10:
             if v.is_nan() {
                 return v;
             }
-            filters::siglog_value(sanitize(v), siglog_minval_log10)
+            filters::siglog::siglog_value(sanitize(v), siglog_minval_log10)
         }
+        SourceTransform::AdaptiveSigLog => panic!(
+            "an AdaptiveSigLog profile must be pinned with \
+             RenderProfile::pin_siglog_strength before it is rendered"
+        ),
     }
 }
 
@@ -319,8 +329,11 @@ pub fn resolve_limits(
 /// strength at or above the data's largest magnitude in log10: every
 /// sample truncates to zero and the percentiles collapse. The commonest
 /// cause is rendering a radargram the `siglog` processing step has already
-/// been run on -- its values are log magnitudes a handful of units wide,
-/// so `siglog-seismic`'s strength of 1 (`10^1`) flattens all of it. The
+/// been run on with a fixed-strength profile -- its values are log
+/// magnitudes a handful of units wide, so a strength of 1 (`10^1`)
+/// flattens all of it. (The built-in `siglog-*` profiles are adaptive and
+/// resolve a strength below such data's own median, so they do not hit
+/// this; a profile file with a fixed `SigLog` strength still can.) The
 /// profile is the thing to change, and a bare "degenerate estimated
 /// amplitude limits" sent the reader to inspect their data instead.
 fn degenerate_limits_message(profile: &RenderProfile, value: f32) -> String {
@@ -487,7 +500,7 @@ mod tests {
     fn source_domain_siglog_keeps_the_sign_and_truncates_small_magnitudes() {
         // The default offset is 0, so magnitudes below 10^0 == 1 truncate
         // to zero. 1000 -> log10(1000) == 3, and the sign survives.
-        let d = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let d = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         assert!((to_source_domain(1000.0, SourceTransform::SigLog, d) - 3.0).abs() < 1e-6);
         assert!((to_source_domain(-1000.0, SourceTransform::SigLog, d) + 3.0).abs() < 1e-6);
         assert!((to_source_domain(10.0, SourceTransform::SigLog, d) - 1.0).abs() < 1e-6);
@@ -517,7 +530,7 @@ mod tests {
         // The render must reproduce the `siglog` step, so pin it against
         // the filter's own scalar and confirm the offset arithmetic and
         // the sign together.
-        let offset = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let offset = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         for v in [1000.0f32, 1.0, -1000.0, -1.0, 0.05, -0.05, 0.0] {
             let expected = (v.abs().log10() - offset).max(0.0) * v.signum();
             let got = to_source_domain(v, SourceTransform::SigLog, offset);
@@ -534,7 +547,7 @@ mod tests {
         // A profile with no source preprocessing must read exactly as it
         // did before the stage existed, NaN and infinity included, and the
         // strength is ignored.
-        let d = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let d = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         for v in [
             3.0f32,
             -3.0,
@@ -556,7 +569,7 @@ mod tests {
         // NaN is the resampler's "no data" signal and must survive so the
         // footprint is dropped, not averaged in as zero. An infinity is a
         // data anomaly, sanitized to zero like the display domain does.
-        let d = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let d = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         assert!(to_source_domain(f32::NAN, SourceTransform::SigLog, d).is_nan());
         assert_eq!(
             to_source_domain(f32::INFINITY, SourceTransform::SigLog, d),
@@ -597,7 +610,7 @@ mod tests {
 
     #[test]
     fn display_domain_nan_passes_through_untouched() {
-        let d = filters::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let d = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::Linear).is_nan());
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::AbsLog).is_nan());
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::Positive).is_nan());
@@ -689,15 +702,24 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "pin_siglog_strength")]
+    fn an_unpinned_adaptive_profile_refuses_to_render() {
+        // Rendering an adaptive profile without resolving its strength
+        // would silently use whatever `siglog_minval_log10` holds.
+        to_source_domain(10.0, SourceTransform::AdaptiveSigLog, 0.0);
+    }
+
+    #[test]
     fn degenerate_limits_name_the_profile_and_its_siglog_strength() {
         // The case this message was written for: rendering a radargram the
-        // `siglog` processing step has already been run on. Its values are
-        // log magnitudes a few units wide, `siglog-seismic`'s strength of 1
-        // truncates everything below 10^1 to zero, and both percentiles
-        // come back -0. The reader has to be sent to the profile; the data
-        // is fine.
-        let error = resolve_limits(&RenderProfile::siglog_seismic_profile(), Some((-0.0, 0.0)))
-            .unwrap_err();
+        // `siglog` processing step has already been run on at a fixed
+        // strength. Its values are log magnitudes a few units wide, a
+        // strength of 1 truncates everything below 10^1 to zero, and both
+        // percentiles come back -0. The reader has to be sent to the
+        // profile; the data is fine. Pinned the way the render entry
+        // points pin, so the message reports the strength actually used.
+        let pinned = RenderProfile::siglog_seismic_profile().pin_siglog_strength(1.2);
+        let error = resolve_limits(&pinned, Some((-0.0, 0.0))).unwrap_err();
         assert!(error.contains("siglog-seismic"), "{error}");
         assert!(error.contains("strength of 1"), "{error}");
         assert!(error.contains("10^1"), "{error}");

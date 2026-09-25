@@ -238,7 +238,10 @@ pub struct RenderService {
     reader: SourceReader,
     revision_id: RevisionId,
     cache: ByteBoundedCache,
-    limits_cache: HashMap<RenderVariantId, (f32, f32)>,
+    /// Per profile: the profile to render with (an adaptive siglog
+    /// strength pinned to this revision's noise floor, see
+    /// [`crate::render::stats::pin_profile`]) and its amplitude limits.
+    limits_cache: HashMap<RenderVariantId, (RenderProfile, (f32, f32))>,
     /// The topographic geometry resolved for the most recently requested
     /// elevation range, memoized so a burst of chunk/overview requests for
     /// the same range resolves it once. Constructed lazily -- never at
@@ -279,6 +282,10 @@ impl RenderService {
     /// first use. Never recomputed per chunk (#119) -- every chunk and the
     /// overview for one profile share the same call's result.
     ///
+    /// Returns the profile to render with alongside: for an adaptive
+    /// siglog profile, pinned to the strength the limits were estimated
+    /// at, which is also resolved once here and never per chunk.
+    ///
     /// Always sampled from the standard source, regardless of which view
     /// was actually requested (#168): the amplitude *distribution* a
     /// topographic shear relocates is unchanged by relocating it, so
@@ -289,32 +296,40 @@ impl RenderService {
     /// always computed as if the view were [`DatasetView::Standard`] and
     /// the elevation range [`ElevationRange::NONE`], so a toggle between
     /// views (or an elevation-range edit) never invalidates it.
-    fn resolve_limits(&mut self, profile: &RenderProfile) -> Result<(f32, f32), String> {
+    fn resolve_limits(
+        &mut self,
+        profile: &RenderProfile,
+    ) -> Result<(RenderProfile, (f32, f32)), String> {
         let key = RenderVariantId::compute(
             &self.revision_id,
             DatasetView::Standard,
             profile,
             ElevationRange::NONE,
         );
-        if let Some(&limits) = self.limits_cache.get(&key) {
-            return Ok(limits);
+        if let Some(resolved) = self.limits_cache.get(&key) {
+            return Ok(resolved.clone());
         }
-        let sampled = match profile.limits {
+        let pinned = crate::render::stats::pin_profile(
+            &self.reader,
+            profile,
+            crate::render::stats::SAMPLE_SEED,
+        )?;
+        let sampled = match pinned.limits {
             AmplitudeLimits::Percentile { low, high } => Some(sampled_amplitude_limits(
                 &self.reader,
-                profile.source_transform,
-                profile.siglog_minval_log10,
-                profile.transform,
+                pinned.source_transform,
+                pinned.siglog_minval_log10,
+                pinned.transform,
                 crate::render::stats::SAMPLE_SEED,
                 low,
                 high,
-                profile.stats_skip_first_samples,
+                pinned.stats_skip_first_samples,
             )?),
             AmplitudeLimits::Explicit { .. } => None,
         };
-        let limits = colormap::resolve_limits(profile, sampled)?;
-        self.limits_cache.insert(key, limits);
-        Ok(limits)
+        let limits = colormap::resolve_limits(&pinned, sampled)?;
+        self.limits_cache.insert(key, (pinned.clone(), limits));
+        Ok((pinned, limits))
     }
 
     /// Resolve (and memoize) the topographic geometry for `range`. Reads
@@ -388,15 +403,15 @@ impl RenderService {
         if let Some(bytes) = self.cache.get(&key) {
             return Ok(bytes);
         }
-        let limits = self.resolve_limits(profile)?;
+        let (pinned, limits) = self.resolve_limits(profile)?;
         let bytes = match view {
             DatasetView::Standard => {
-                Renderer::new(&self.reader).render_chunk(chunk, profile, limits)?
+                Renderer::new(&self.reader).render_chunk(chunk, &pinned, limits)?
             }
             DatasetView::Topographic => {
                 let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
                 let source = TopoSource::new(&self.reader, &geometry);
-                Renderer::new(&source).render_chunk(chunk, profile, limits)?
+                Renderer::new(&source).render_chunk(chunk, &pinned, limits)?
             }
         };
         self.cache.insert(key, bytes.clone());
@@ -421,15 +436,15 @@ impl RenderService {
         if let Some(bytes) = self.cache.get(&key) {
             return Ok(bytes);
         }
-        let limits = self.resolve_limits(profile)?;
+        let (pinned, limits) = self.resolve_limits(profile)?;
         let bytes = match view {
             DatasetView::Standard => {
-                Renderer::new(&self.reader).render_overview(spec, profile, limits)?
+                Renderer::new(&self.reader).render_overview(spec, &pinned, limits)?
             }
             DatasetView::Topographic => {
                 let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
                 let source = TopoSource::new(&self.reader, &geometry);
-                Renderer::new(&source).render_overview(spec, profile, limits)?
+                Renderer::new(&source).render_overview(spec, &pinned, limits)?
             }
         };
         self.cache.insert(key, bytes.clone());
@@ -646,7 +661,7 @@ mod tests {
             crate::render::stats::sampled_amplitude_limits(
                 &reader,
                 crate::render::profile::SourceTransform::None,
-                crate::filters::DEFAULT_SIGLOG_MINVAL_LOG10,
+                crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
                 crate::render::profile::AmplitudeTransform::Linear,
                 seed,
                 1.0,
