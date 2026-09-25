@@ -18,10 +18,23 @@
  * between the expression highlighter and `sanitizeIdentifier` so a derived
  * item and a generated id agree on what needs a suffix. */
 const IDENTIFIER_KEYWORDS = ["if", "else", "true", "false", "NaN"];
+/** Functions that collapse every contributor into one value per position, the
+ * "reduce" class (#241). `median(bed) - median(surface)` and
+ * `median(bed - surface)` are different quantities, so the editor colours
+ * these separately from the element-wise functions. Must match the
+ * `UserArray -> f64` registrations in `interp::derive`. */
+const IDENTIFIER_REDUCERS = [
+  "count", "median", "mean", "std", "nmad",
+  "min", "max", "percentile",
+];
+/** Every built-in, for autocomplete and for keeping a generated id from
+ * shadowing one. `concatenate` is deliberately not a reducer: it pools two
+ * layers' contributors and stays per-contributor. `abs` and `is_nan` come
+ * from Rhai's standard library; they are functions like the rest and must
+ * be coloured as such rather than as layer ids. */
 const IDENTIFIER_BUILTINS = [
-  "count", "median", "mean", "std", "nmad", "percentile",
-  "min", "max", "concatenate", "shallowest",
-  "deepest", "clamp", "where",
+  ...IDENTIFIER_REDUCERS,
+  "concatenate", "shallowest", "deepest", "clamp", "where", "abs", "is_nan",
 ];
 
 /** Turn a human display name into a valid, non-colliding identifier.
@@ -37,7 +50,11 @@ const IDENTIFIER_BUILTINS = [
  * use it with the group ids already in use as `taken`; like layer ids, a
  * group id is immutable once written, because `layer.groups` refers to it. */
 function sanitizeIdentifier(name, taken = []) {
-  const translit = { ø: "o", å: "a", ä: "a", ö: "o", æ: "ae", é: "e" };
+  const translit = {
+    ø: "o", å: "a", ä: "a", ö: "o", æ: "ae", ü: "u", ß: "ss",
+    é: "e", è: "e", ê: "e", à: "a", á: "a", ô: "o", ó: "o",
+    í: "i", ñ: "n", ç: "c",
+  };
   let out = "";
   let lastSep = false;
   for (const character of String(name).toLowerCase()) {
@@ -83,6 +100,15 @@ const RIDAL = Object.freeze({
   // Weight while a sibling's track is hovered or its popup is open --
   // mirrors trackFocusWeight's role for the index page's own tracks.
   siblingFocusWeight: 5,
+
+  // An unlisted radargram, which only an operator or admin sees (#192). It
+  // is drawn muted and dashed, and does not define the map bounds, so it
+  // reads as "still here, but out of focus" rather than as a peer of the
+  // listed tracks.
+  unlistedColor: "#8899aa",
+  unlistedWeight: 2,
+  unlistedOpacity: 0.6,
+  unlistedDashArray: "4 6",
 
   // Marker tracking the cursor's trace position along the track.
   cursorColor: "#ff3b30",
@@ -459,23 +485,27 @@ const RIDAL = Object.freeze({
    * filename.
    *
    * The client-side twin of `sanitize_to_slug` in `src/identity.rs`, and
-   * deliberately the same rules: lowercase, Nordic letters transliterated
-   * (Drønbreen -> dronbreen, which matters in the places this tool is used),
-   * runs of anything else collapsed to `-`, separators trimmed off both
-   * ends. An all-punctuation name gives `""`, which the caller must treat as
-   * "no id could be derived" rather than as an id.
+   * deliberately the same rules: lowercase, accented Latin letters
+   * transliterated (Drønbreen -> dronbreen, München -> munchen), runs of
+   * anything else collapsed to `-`, separators trimmed off both ends. An
+   * all-punctuation name gives `""`, which the caller must treat as "no id
+   * could be derived" rather than as an id.
    *
    * Here rather than on the server because it is shown while typing: the
    * settings page puts the derived id in the id box's placeholder, so what
    * gets stored is what was on screen. `no_two_scripts_on_a_page_declare_
    * the_same_global` in assets.rs keeps this from colliding with anything. */
   slugify(name) {
-    const nordic = { "ø": "o", "æ": "ae", "å": "aa" };
+    const latin = {
+      "ø": "o", "æ": "ae", "å": "aa", "ä": "a", "ö": "o", "ü": "u",
+      "ß": "ss", "é": "e", "è": "e", "ê": "e", "à": "a", "á": "a",
+      "ô": "o", "ó": "o", "í": "i", "ñ": "n", "ç": "c",
+    };
     let out = "";
     let lastWasSeparator = false;
     for (const character of String(name).toLowerCase()) {
-      if (nordic[character]) {
-        out += nordic[character];
+      if (latin[character]) {
+        out += latin[character];
         lastWasSeparator = false;
       } else if (/[a-z0-9_-]/.test(character)) {
         out += character;
@@ -892,6 +922,58 @@ const RIDAL = Object.freeze({
     return `/api/v1/${segments.map((s) => encodeURIComponent(s)).join("/")}`;
   },
 
+  /** A byte count as something a person reads. `null`/`undefined` is an
+   * ellipsis rather than "NaN B". */
+  formatBytes(bytes) {
+    if (bytes === null || bytes === undefined) return "\u2026";
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let value = Number(bytes);
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    const digits = unit === 0 ? 0 : value >= 100 ? 0 : value >= 10 ? 1 : 2;
+    return `${value.toFixed(digits)} ${units[unit]}`;
+  },
+
+  /** POST one file with upload progress and cancellation (#175).
+   *
+   * `fetch` cannot observe request-body progress, so this uses XHR. Returns
+   * `{ promise, abort }`: `promise` resolves with `{ status, ok, json }`,
+   * leaving the caller's existing status and error-envelope handling
+   * unchanged, and rejects on a transport failure or after `abort()`.
+   * `onProgress(loaded, total)` is called as bytes go out. */
+  postFile(url, file, onProgress) {
+    const xhr = new XMLHttpRequest();
+    const promise = new Promise((resolve, reject) => {
+      xhr.open("POST", url);
+      xhr.setRequestHeader("Content-Type", "application/octet-stream");
+      xhr.upload.addEventListener("progress", (event) => {
+        if (event.lengthComputable && onProgress) {
+          onProgress(event.loaded, event.total);
+        }
+      });
+      xhr.addEventListener("load", () => {
+        let json = null;
+        try {
+          json = JSON.parse(xhr.responseText);
+        } catch (error) {
+          json = null;
+        }
+        resolve({
+          status: xhr.status,
+          ok: xhr.status >= 200 && xhr.status < 300,
+          json,
+        });
+      });
+      xhr.addEventListener("error", () => reject(new Error("network error")));
+      xhr.addEventListener("abort", () => reject(new Error("upload cancelled")));
+      xhr.send(file);
+    });
+    return { promise, abort: () => xhr.abort() };
+  },
+
   /** Build a track popup as DOM nodes rather than an HTML string.
    *
    * Leaflet assigns a string popup with `innerHTML` and appends an element
@@ -1021,6 +1103,7 @@ const RIDAL = Object.freeze({
     // colours a name the evaluator does not know. Shared with
     // `sanitizeIdentifier` so both agree on what needs a `_layer` suffix.
     const BUILTINS = IDENTIFIER_BUILTINS;
+    const REDUCERS = IDENTIFIER_REDUCERS;
     const KEYWORDS = IDENTIFIER_KEYWORDS;
     // What the colour picker shows for an item that has none of its own.
     // Mirrors the `value` in the markup below rather than interpolating into
@@ -1056,7 +1139,7 @@ const RIDAL = Object.freeze({
         <p class="hint" id="derived-editor-hint"></p>
         <div class="add-layer-fields">
           <label>Name <input id="derived-name" type="text" autocomplete="off"></label>
-          <label>Id <input id="derived-id" type="text" autocomplete="off" spellcheck="false"></label>
+          <label>ID (from the name) <input id="derived-id" type="text" autocomplete="off" spellcheck="false"></label>
           <label>Unit <select id="derived-unit">${UNITS.map(
             ([value, label]) => `<option value="${value}">${label}</option>`,
           ).join("")}</select></label>
@@ -1069,6 +1152,11 @@ const RIDAL = Object.freeze({
                     list="derived-suggestions" autocomplete="off"></textarea>
           <datalist id="derived-suggestions"></datalist>
         </div>
+        <p class="editor-legend">
+          <span class="tok-reduce">Highlighted functions</span> combine every
+          contributor into one number; the rest work on each contributor
+          separately.
+        </p>
         <p class="editor-status" id="derived-status" role="status" aria-live="polite"></p>
         <p class="editor-warning" id="derived-unusable" hidden></p>
         <div class="add-layer-fields">
@@ -1189,11 +1277,13 @@ const RIDAL = Object.freeze({
       while ((match = token.exec(expression)) !== null) {
         const [text, identifier, number, operator] = match;
         if (identifier) {
-          const kind = BUILTINS.includes(identifier)
-            ? "tok-builtin"
-            : KEYWORDS.includes(identifier)
-              ? "tok-keyword"
-              : "tok-layer";
+          const kind = REDUCERS.includes(identifier)
+            ? "tok-reduce"
+            : BUILTINS.includes(identifier)
+              ? "tok-builtin"
+              : KEYWORDS.includes(identifier)
+                ? "tok-keyword"
+                : "tok-layer";
           out += `<span class="${kind}">${RIDAL.escapeHtml(identifier)}</span>`;
         } else if (number) {
           out += `<span class="tok-number">${RIDAL.escapeHtml(number)}</span>`;
@@ -1253,7 +1343,16 @@ const RIDAL = Object.freeze({
       if (generation !== previewGeneration) return;
       fields.status.classList.remove("editor-error");
       const kindLabel = body.kind === "layer" ? "layer (a line)" : "attribute";
-      fields.status.textContent = `${kindLabel} · ${body.unit || "no unit"}`;
+      // The contributor count answers "does this combine everyone?" where the
+      // expression is being read (#241). A preview evaluated over no
+      // contributors shows nothing rather than "over 0 contributors".
+      const contributors =
+        Number.isInteger(body.contributors) && body.contributors > 0
+          ? ` · over ${body.contributors} ${
+              body.contributors === 1 ? "contributor" : "contributors"
+            }`
+          : "";
+      fields.status.textContent = `${kindLabel} · ${body.unit || "no unit"}${contributors}`;
     }
 
     function buildSuggestions() {

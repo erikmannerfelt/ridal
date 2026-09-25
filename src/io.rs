@@ -1760,6 +1760,42 @@ mod tests {
         }
     }
 
+    // A user-supplied non-ASCII display or group name must survive the
+    // write/read round trip byte for byte (#256). Ridal writes it as UTF-8
+    // in an `NC_CHAR` attribute; its own reader must return exactly what
+    // went in, even though readers that trust the HDF5 `H5T_CSET_ASCII`
+    // flag (xarray with `h5netcdf`, `h5dump`) will garble it. Ridal must
+    // neither transliterate nor reject it.
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn test_unicode_display_and_group_names_survive_the_netcdf_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unicode.nc");
+
+        let mut gpr = crate::gpr::tests::make_dummy_gpr(20, 10, Some(1.));
+        gpr.identity.display_name =
+            crate::identity::DisplayName::from_input("Drønbreen line 2 \u{1f6f7}");
+        gpr.identity.group_name = crate::identity::GroupName::from_input("Ålesund / Ærø");
+        gpr.export(&path).unwrap();
+
+        match super::inspect_ridal_netcdf(&path).unwrap() {
+            super::RidalNetcdfKind::Supported(meta) => {
+                assert_eq!(
+                    meta.display_name.map(|name| name.to_string()),
+                    Some("Drønbreen line 2 \u{1f6f7}".to_string()),
+                    "the display name must be written and read back unchanged"
+                );
+                assert_eq!(
+                    meta.group_name.map(|name| name.to_string()),
+                    Some("Ålesund / Ærø".to_string()),
+                    "the group name must be written and read back unchanged"
+                );
+            }
+            other => panic!("expected Supported, got {other:?}"),
+        }
+    }
+
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]

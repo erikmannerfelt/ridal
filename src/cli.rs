@@ -300,8 +300,9 @@ pub struct InterpExportArgs {
     #[arg(long)]
     pub crs: Option<String>,
 
-    /// The author recorded on every exported point. Ridal has no
-    /// multi-user support yet, so this is a label rather than an identity.
+    /// The author recorded on every exported point. This command is not
+    /// tied to a server account, so it is a label rather than an
+    /// authenticated identity.
     #[arg(long, default_value = crate::interp::level2::DEFAULT_USER)]
     pub user: String,
 }
@@ -325,6 +326,11 @@ pub struct GuiArgs {
     /// Serve a project without accepting any writes.
     #[arg(long)]
     pub read_only: bool,
+
+    /// Open a browser after starting (off by default, matching
+    /// `ridal server start`).
+    #[arg(long)]
+    pub open_browser: bool,
 }
 
 #[cfg(feature = "server")]
@@ -348,7 +354,9 @@ pub struct ServerStartArgs {
     pub path: PathBuf,
 
     /// Bind address. Loopback by default; binding elsewhere is explicit
-    /// because this milestone implements no authentication (#120).
+    /// because Ridal does not terminate TLS, so a non-loopback bind needs
+    /// a TLS-terminating reverse proxy in front of it (see
+    /// `--allow-insecure-login`).
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 
@@ -477,9 +485,12 @@ pub struct ProcessArgs {
     pub display_name: Option<String>,
 
     /// Human-readable name of the group this radargram belongs to (survey,
-    /// campaign, location; Unicode is fine), for catalog grouping. A stable
-    /// URL/filesystem-safe id is derived from this automatically unless
-    /// --group-id overrides it. `--group` is a supported alias.
+    /// campaign, location), for catalog grouping. Non-ASCII is accepted and
+    /// written unchanged. Ridal writes everything it generates itself as
+    /// ASCII, but some NetCDF readers (for example xarray with the h5netcdf
+    /// engine) will garble a non-ASCII value. A stable URL/filesystem-safe id
+    /// is derived from this automatically unless --group-id overrides it.
+    /// `--group` is a supported alias.
     #[arg(long = "group-name", alias = "group")]
     pub group: Option<String>,
 
@@ -577,10 +588,11 @@ pub struct BatchProcessArgs {
     pub metadata: Vec<String>,
 
     /// Human-readable name of the group all outputs in this batch belong to
-    /// (survey, campaign, location; Unicode is fine), for catalog grouping.
-    /// Applied uniformly; radargram IDs and display names are still derived
-    /// per-output since an explicit single value would collide. `--group`
-    /// is a supported alias.
+    /// (survey, campaign, location), for catalog grouping. Non-ASCII is
+    /// accepted and written unchanged; see `ridal process --help` for the
+    /// reader caveat. Applied uniformly; radargram IDs and display names are
+    /// still derived per-output since an explicit single value would collide.
+    /// `--group` is a supported alias.
     #[arg(long = "group-name", alias = "group")]
     pub group: Option<String>,
 
@@ -761,7 +773,7 @@ fn render_service_config(
 fn gui_command(args: GuiArgs) -> Result<(), String> {
     let config = render_service_config(args.cache_memory_mb, args.n_workers)?;
     let path = gui_root(args.path.as_deref());
-    crate::server::launch::run_gui(&path, args.read_only, config)
+    crate::server::launch::run_gui(&path, args.read_only, args.open_browser, config)
 }
 
 /// What `ridal gui` serves when it was given no path.
@@ -1674,6 +1686,25 @@ mod tests {
                 !users_text.contains(password),
                 "a generated password reached users.json"
             );
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn gui_does_not_open_a_browser_unless_asked() {
+        // Opening a browser by default under `ssh`, a container, or any
+        // environment without a display is a regression (#200); the URL is
+        // printed either way, and `--open-browser` is opt-in.
+        let args = Args::try_parse_from(["ridal", "gui"]).unwrap();
+        match args.command {
+            Commands::Gui(gui) => assert!(!gui.open_browser),
+            other => panic!("expected the gui command, got {other:?}"),
+        }
+
+        let args = Args::try_parse_from(["ridal", "gui", "--open-browser"]).unwrap();
+        match args.command {
+            Commands::Gui(gui) => assert!(gui.open_browser),
+            other => panic!("expected the gui command, got {other:?}"),
         }
     }
 

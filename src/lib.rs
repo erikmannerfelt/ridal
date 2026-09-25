@@ -275,14 +275,21 @@ pub mod ridal {
     ///     digits, ``-``, ``_``). Defaults to the output file stem when omitted.
     /// radargram_name : str, optional
     ///     Human-readable display label for the output radargram. Purely
-    ///     cosmetic: it carries no identity semantics.
+    ///     cosmetic: it carries no identity semantics. Non-ASCII is accepted
+    ///     and written to the NetCDF unchanged; see `group_name` for the
+    ///     reader caveat.
     /// group_id : str, optional
     ///     Explicit identifier for the group the output belongs to, overriding
     ///     the id derived from `group_name`.
     /// group_name : str, optional
     ///     Human-readable name of the group the output belongs to (survey,
-    ///     campaign, location; Unicode is fine), used for catalog grouping. An
-    ///     id is derived from it automatically unless `group_id` is given.
+    ///     campaign, location), used for catalog grouping. Non-ASCII is
+    ///     accepted and written unchanged. Ridal writes every attribute it
+    ///     generates itself as ASCII; a value from here is the only thing that
+    ///     can make the file non-ASCII, and some readers (for example xarray
+    ///     with the h5netcdf engine) will garble it, because the attribute is
+    ///     stored as ASCII-tagged bytes. An id is derived from it
+    ///     automatically unless `group_id` is given.
     /// return_dataset_format : str, default "xarray_dict"
     ///     Format used when `return_dataset=True`.
     ///
@@ -723,8 +730,9 @@ pub mod ridal {
     ///     overriding the id derived from `group_name`.
     /// group_name : str, optional
     ///     Human-readable name of the group all outputs in this batch belong to
-    ///     (survey, campaign, location; Unicode is fine), used for catalog
-    ///     grouping. Applied uniformly to the whole batch; radargram IDs and
+    ///     (survey, campaign, location), used for catalog grouping. Non-ASCII
+    ///     is accepted and written unchanged; see `process` for the reader
+    ///     caveat. Applied uniformly to the whole batch; radargram IDs and
     ///     display names are still derived per output.
     ///
     /// Returns

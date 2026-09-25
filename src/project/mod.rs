@@ -1061,6 +1061,25 @@ impl Project {
         })
     }
 
+    /// Set or clear the project's upload cap (#173).
+    ///
+    /// `None` removes the key, restoring [`DEFAULT_MAX_PROJECT_BYTES`]. The
+    /// value lives under `[radargrams] max_bytes`; the enforcement already
+    /// existed, this is the admin-facing way to change it.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn set_max_bytes(&self, max_bytes: Option<u64>) -> Result<(), ProjectError> {
+        self.edit_marker(|document| {
+            // TOML integers are i64; a byte cap above that is not a real
+            // request, so an out-of-range value clears the key rather than
+            // wrapping negative.
+            let item = max_bytes
+                .and_then(|bytes| i64::try_from(bytes).ok())
+                .map(toml_edit::value);
+            set_or_clear(document, "radargrams", "max_bytes", item);
+            Ok(())
+        })
+    }
+
     /// The point spacing the download dialogs should open on (#166).
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn default_spacing(&self) -> Option<String> {
@@ -1616,6 +1635,32 @@ mod tests {
         std::fs::write(radargrams.join("deep/b.nc"), vec![0u8; 2000]).unwrap();
 
         assert_eq!(project.size_bytes(), before + 3000);
+    }
+
+    #[test]
+    fn the_upload_cap_round_trips_through_ridal_toml() {
+        // The enforcement existed; #173 is about being able to set it from
+        // the settings page. Everything goes through `[radargrams] max_bytes`
+        // so a hand-edited file and a saved setting agree.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        assert_eq!(project.max_bytes(), DEFAULT_MAX_PROJECT_BYTES);
+
+        project.set_max_bytes(Some(123_456_789)).unwrap();
+        assert_eq!(project.max_bytes(), 123_456_789);
+
+        // On disk for the next process, not only in the live config.
+        let reopened = Project::open(dir.path()).unwrap();
+        assert_eq!(reopened.max_bytes(), 123_456_789);
+
+        // Clearing restores the built-in default and removes the key.
+        reopened.set_max_bytes(None).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        assert!(!text.contains("max_bytes"), "{text}");
+        assert_eq!(
+            Project::open(dir.path()).unwrap().max_bytes(),
+            DEFAULT_MAX_PROJECT_BYTES
+        );
     }
 
     #[test]

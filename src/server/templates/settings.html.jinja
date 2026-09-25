@@ -212,6 +212,37 @@
       </p>
     </section>
 
+    {#- The project's size and its cap (#173). Shown to operators, who may
+        see how full the project is; only an administrator may change the
+        limit, and the server enforces that separately. -#}
+    {% if can_edit_project %}
+      <section class="settings-section" id="storage-section">
+        <h2>Storage</h2>
+        <p>
+          This project is using <strong id="storage-used">&hellip;</strong>
+          of its <strong id="storage-cap">&hellip;</strong> limit.
+        </p>
+        {% if can_edit_access %}
+          <form id="storage-form" class="settings-form" novalidate>
+            <label class="settings-field">
+              <span class="settings-label">Project size limit (GiB)</span>
+              <input id="storage-max" type="number" min="0" step="1"
+                     autocomplete="off">
+              <span class="hint">
+                Uploads are refused once the project reaches this size. Leave
+                it empty for Ridal's built-in default (50&nbsp;GiB). Changing
+                it needs the <code>admin</code> role.
+              </span>
+            </label>
+            <button type="submit">Save size limit</button>
+            <span id="storage-status" class="pick-status"></span>
+          </form>
+        {% else %}
+          <p class="hint">An administrator can change the limit.</p>
+        {% endif %}
+      </section>
+    {% endif %}
+
     {#- Section two and a half: the basemaps every map draws on (#177). Its
         own section rather than two more fields in the one above, because it
         is a list rather than a value, and because the thing it configures is
@@ -263,7 +294,7 @@
                      placeholder="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
                      autocomplete="off" autocapitalize="none" spellcheck="false">
             </label>
-            <label>Id <span class="hint">(from the name)</span>
+            <label>ID (from the name)
               <input type="text" name="id" pattern="[a-z0-9_\-]+"
                      placeholder="osm" autocomplete="off"
                      autocapitalize="none" spellcheck="false">
@@ -338,7 +369,7 @@
                      placeholder="https://example.org/shapes/catchments.geojson"
                      autocomplete="off" autocapitalize="none" spellcheck="false">
             </label>
-            <label>Id <span class="hint">(from the name)</span>
+            <label>ID (from the name)
               <input type="text" name="id" pattern="[a-z0-9_\-]+"
                      placeholder="catchments" autocomplete="off"
                      autocapitalize="none" spellcheck="false">

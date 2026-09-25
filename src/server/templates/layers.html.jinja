@@ -71,16 +71,16 @@
     <form id="add-layer" class="add-layer" novalidate>
       <h2>Add a layer</h2>
       <p class="hint">
-        The id cannot be changed afterwards, because existing picks refer to
+        The ID cannot be changed afterwards, because existing picks refer to
         it. Lowercase letters, digits, <code>-</code> and <code>_</code>.
       </p>
       <div class="add-layer-fields">
-        <label>ID
-          <input type="text" name="id" required pattern="[a-z0-9_\-]+"
-                 placeholder="bed" autocomplete="off">
-        </label>
         <label>Name
           <input type="text" name="name" required placeholder="Bed" autocomplete="off">
+        </label>
+        <label>ID (from the name)
+          <input type="text" name="id" required pattern="[a-z0-9_\-]+"
+                 placeholder="bed" autocomplete="off">
         </label>
         <label>Colour
           <input type="color" name="color" value="#e6194b">

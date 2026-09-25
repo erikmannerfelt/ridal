@@ -407,6 +407,16 @@ events never arrive. `#trace-resizer` keeps its 8px in flow when hidden
 (`visibility`, not `display`) so hiding it cannot change whether the trace
 panel wraps below the radargram.
 
+**Operator-only affordances (#173, #175, #192).** The settings page shows a
+project's current size and its upload cap to `operator` and above; only an
+`admin` may change the cap, and `PUT /api/v1/project/settings` enforces that
+separately from the operator gate that lets the request in. Uploads report
+progress through `RIDAL.postFile`, an XHR wrapper, because `fetch` cannot
+observe request-body progress. An unlisted radargram is drawn muted and
+dashed for an operator on the index group maps and the viewer overview, and
+does not define the map bounds; `listable` still removes it entirely for
+everyone below `operator`, so the flag never reaches a picker.
+
 ## Known constraints and gaps
 
 Durable, load-bearing decisions rather than oversights:
@@ -683,6 +693,15 @@ an ordinary picker only their own picks. Defining a project-wide item needs
 the operator role; a private item belongs to one user and any signed-in user
 may keep one. Results have their own download scope, separate from picks.
 
+The **interpretation documents** follow the same visibility, not only the
+routes that advertise a download (#212). `GET /interpretations/{user}` and
+`.../carried` return the same document as `.../raw`, so all three take a
+`Caller`: a caller may always read their own picks — a picker whose download
+scope sits below `Picks` still has to open their own document to work — and
+reading another contributor's requires `DownloadScope::Picks`. A route on
+this resource added without a `Caller` extractor fails closed, and a
+route-level test pins the below-`Picks` and anonymous cases.
+
 A worked example — the layers, exclusivity group and seven expressions used
 to reproduce the Mannerfelt et al. (2026) consensus — is in
 `assets/examples/dronbreen-20250327-DAT_0066_A1_1/`.
@@ -736,6 +755,17 @@ autocomplete is a `<datalist>` fed from the layer vocabulary and the built-in
 list. `layers_unusable_in_expressions` is shown beside it: a legacy id with a
 hyphen parses as a minus and would otherwise fail with no hint that the id
 was the problem.
+
+The built-ins are **two classes, coloured apart** (#241). The reducers
+(`count`, `median`, `mean`, `std`, `nmad`, `min`, `max`, `percentile`) collapse
+every contributor into one value per position; the rest are element-wise.
+`median(bed) - median(surface)` and `median(bed - surface)` are different
+quantities, so the editor colours reducers with `.tok-reduce` and element-wise
+builtins with `.tok-builtin`, and a one-line legend under the editor says which
+is which. The `IDENTIFIER_REDUCERS` list must match the `UserArray -> f64`
+registrations in `interp::derive`. The preview response also carries
+`contributors`, and the editor appends "over N contributors" to the preview
+line, so the count is visible where the expression is read.
 
 `scripts/panel_harness.py` drives these through headless Chromium and a
 same-origin iframe harness; see its module doc for the virtual-time and

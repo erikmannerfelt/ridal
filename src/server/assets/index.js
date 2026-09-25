@@ -38,10 +38,24 @@ document.querySelectorAll('.group-map').forEach((el) => {
 
   RIDAL.fetchJson(RIDAL.apiPath("groups", el.dataset.group, "tracks"))
     .then((members) => {
-      const allPoints = [];
+      // Unlisted radargrams are shown to operators and admins but do not
+      // define the view: an unlisted outlier should not stretch the map
+      // away from the tracks that are in focus (#192).
+      const listedPoints = [];
+      const unlistedPoints = [];
       for (const [radargramId, info] of Object.entries(members)) {
+        const unlisted = info.unlisted === true;
+        const points = unlisted ? unlistedPoints : listedPoints;
+        const style = unlisted
+          ? {
+              color: RIDAL.unlistedColor,
+              weight: RIDAL.unlistedWeight,
+              opacity: RIDAL.unlistedOpacity,
+              dashArray: RIDAL.unlistedDashArray,
+            }
+          : { color: RIDAL.trackColor, weight: RIDAL.trackWeight };
         const pairs = RIDAL.trackToLatLngs(info.track).map((latlngs) => {
-          allPoints.push(...latlngs);
+          points.push(...latlngs);
           // The wide companion goes down first and carries the popup, so a
           // track is as easy to hit as it is to see.
           const hit = RIDAL.hitLine(latlngs)
@@ -57,8 +71,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
             )
             .addTo(map);
           const visible = L.polyline(latlngs, {
-            color: RIDAL.trackColor,
-            weight: RIDAL.trackWeight,
+            ...style,
             interactive: false,
           }).addTo(map);
           return { visible, hit };
@@ -66,10 +79,16 @@ document.querySelectorAll('.group-map').forEach((el) => {
         // Two-way highlight with the matching catalog card (#121
         // planning round item 7): hovering either one highlights both.
         const card = document.getElementById(`card-${radargramId}`);
-        RIDAL.bindTrackHighlight(pairs, card, RIDAL.trackWeight, RIDAL.trackFocusWeight);
+        RIDAL.bindTrackHighlight(
+          pairs,
+          card,
+          style.weight,
+          unlisted ? style.weight : RIDAL.trackFocusWeight,
+        );
       }
-      if (allPoints.length > 0) {
-        map.fitBounds(allPoints);
+      const boundsPoints = listedPoints.length > 0 ? listedPoints : unlistedPoints;
+      if (boundsPoints.length > 0) {
+        map.fitBounds(boundsPoints);
       } else {
         map.setView([0, 0], 2);
       }
@@ -488,7 +507,17 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const button = document.getElementById('add-radargram');
   const picker = document.getElementById('add-radargram-file');
   const status = document.getElementById('add-radargram-status');
+  const cancel = document.getElementById('add-radargram-cancel');
   if (!button || !picker) return;
+
+  // The in-flight upload, so the cancel button can abort it. `RIDAL.postFile`
+  // returns the handle with the promise precisely for this.
+  let upload = null;
+  if (cancel) {
+    cancel.addEventListener('click', () => {
+      if (upload) upload.abort();
+    });
+  }
 
   const say = (message, tone) => {
     status.replaceChildren();
@@ -525,21 +554,35 @@ document.querySelectorAll('.group-map').forEach((el) => {
     if (!file) return;
 
     button.disabled = true;
+    if (cancel) cancel.hidden = false;
     say(`Uploading ${file.name}…`);
-    try {
-      const response = await fetch(
-        `${RIDAL.apiPath('datasets')}?filename=${encodeURIComponent(file.name)}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file },
+    // Repaint only when the whole percent changes: an XHR progress event
+    // fires many times a second and `say` rebuilds the box each call (#175).
+    let lastPercent = -1;
+    const onProgress = (loaded, total) => {
+      const percent = Math.round((loaded / total) * 100);
+      if (percent === lastPercent) return;
+      lastPercent = percent;
+      say(
+        `Uploading ${file.name}… ${percent}% ` +
+          `(${RIDAL.formatBytes(loaded)} of ${RIDAL.formatBytes(total)})`,
       );
+    };
+    try {
+      upload = RIDAL.postFile(
+        `${RIDAL.apiPath('datasets')}?filename=${encodeURIComponent(file.name)}`,
+        file,
+        onProgress,
+      );
+      const response = await upload.promise;
       if (!response.ok) {
-        const envelope = await response.json().catch(() => null);
         say(
-          envelope?.error?.message || RIDAL.upstreamMessage(response.status),
+          response.json?.error?.message || RIDAL.upstreamMessage(response.status),
           'problem',
         );
         return;
       }
-      const added = await response.json().catch(() => null);
+      const added = response.json;
       const archived = added?.archived_interpretations || 0;
       if (archived > 0) {
         // Said, not asked. The picks are in the archive and nothing attaches
@@ -556,10 +599,17 @@ document.querySelectorAll('.group-map').forEach((el) => {
         );
       }
     } catch (error) {
-      say(`Could not add it (${error.message}).`, 'problem');
+      // An abort is a choice, not a failure; say so without the warning tone.
+      if (error.message === 'upload cancelled') {
+        say('Upload cancelled.');
+      } else {
+        say(`Could not add it (${error.message}).`, 'problem');
+      }
       return;
     } finally {
       button.disabled = false;
+      upload = null;
+      if (cancel) cancel.hidden = true;
     }
     // Reloaded rather than patched: a new radargram may create a group
     // section, which is most of the page.
@@ -813,13 +863,23 @@ document.querySelectorAll('.group-map').forEach((el) => {
     // file of this size that is nearly all of the wait. Saying only
     // "Checking" made a transfer look like a hang.
     status.textContent = `Uploading and checking ${file.name}…`;
+    let lastPercent = -1;
+    const onProgress = (loaded, total) => {
+      const percent = Math.round((loaded / total) * 100);
+      if (percent === lastPercent) return;
+      lastPercent = percent;
+      status.textContent =
+        `Uploading and checking ${file.name}… ${percent}% ` +
+        `(${RIDAL.formatBytes(loaded)} of ${RIDAL.formatBytes(total)})`;
+    };
     try {
-      const response = await fetch(
+      const response = await RIDAL.postFile(
         `${RIDAL.apiPath('datasets', radargramId, 'replace')}` +
           `?filename=${encodeURIComponent(file.name)}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file },
-      );
-      const body = await response.json().catch(() => null);
+        file,
+        onProgress,
+      ).promise;
+      const body = response.json;
       if (!response.ok) {
         status.textContent = 'Choose another file, or cancel.';
         fail(body?.error?.message || RIDAL.upstreamMessage(response.status));

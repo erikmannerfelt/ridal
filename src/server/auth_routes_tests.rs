@@ -1240,6 +1240,85 @@ async fn an_anonymous_reader_downloads_what_the_project_allows_them() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn interpretation_documents_are_not_readable_below_the_picks_scope() {
+    // #212: the plain and carried routes returned the same document as
+    // `/raw` to anyone who could reach the server, so a caller below the
+    // `Picks` download scope could read every contributor's picks around the
+    // download-scope ladder. Own picks stay readable regardless -- otherwise
+    // a picker with a restricted download scope could not open their own
+    // document to work.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_set(UserSet {
+        anonymous_download: DownloadScope::Results,
+        users: vec![
+            activated("alice", Role::Picker, DownloadScope::Results, &hash),
+            activated("bob", Role::Picker, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+
+    let bob = sign_in(&app, "bob").await;
+    assert_eq!(
+        put(
+            &app,
+            &interpretation_uri("bob"),
+            &document(RADARGRAM),
+            Some(&bob)
+        )
+        .await
+        .status,
+        StatusCode::CREATED
+    );
+
+    // A `Results`-scope caller cannot read Bob's picks through either
+    // wrapping; `/raw` refuses her for the same reason, so the three agree.
+    let alice = sign_in(&app, "alice").await;
+    let bob_uri = interpretation_uri("bob");
+    for uri in [
+        bob_uri.clone(),
+        format!("{bob_uri}/carried"),
+        format!("{bob_uri}/raw"),
+    ] {
+        let refused = get(&app, &uri, Some(&alice)).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(
+            refused.body["error"]["code"], "download_not_permitted",
+            "{uri}"
+        );
+    }
+
+    // Alice's own document is her own data, so the same scope neither gates
+    // reading it nor writing it.
+    assert_eq!(
+        put(
+            &app,
+            &interpretation_uri("alice"),
+            &document(RADARGRAM),
+            Some(&alice)
+        )
+        .await
+        .status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        get(&app, &interpretation_uri("alice"), Some(&alice))
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // Anonymous is below `Picks` here and gets 401 rather than 403, because
+    // signing in is a thing that might help. This is also the route-level
+    // guard: a handler that forgot its `Caller` extractor would never reach
+    // the scope check and would answer 200 instead.
+    for uri in [bob_uri.clone(), format!("{bob_uri}/carried")] {
+        let refused = get(&app, &uri, None).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn requiring_a_login_to_read_hides_everything_but_the_way_in() {
     let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with_set(UserSet {
@@ -2823,12 +2902,16 @@ async fn an_unlisted_radargram_is_off_the_group_map_too() {
         "the unlisted member must not be drawn: {}",
         seen.text
     );
+    assert_eq!(seen.body["line-01"]["unlisted"], json!(false));
 
-    // The operator, who can change it, still sees it.
+    // The operator, who can change it, still sees it -- and the payload
+    // carries the flag the maps style by (#192).
     let seen = get(&app, "/api/v1/groups/shared/tracks", Some(&erik)).await;
     let mut ids = named(&seen.body);
     ids.sort();
     assert_eq!(ids, vec!["line-01", "line-02"]);
+    assert_eq!(seen.body["line-01"]["unlisted"], json!(false));
+    assert_eq!(seen.body["line-02"]["unlisted"], json!(true));
 }
 
 #[tokio::test]
@@ -3282,6 +3365,79 @@ async fn post_bytes(app: &Router, uri: &str, body: Vec<u8>, session: Option<&str
             .unwrap(),
     )
     .await
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn only_an_admin_may_change_the_project_size_limit() {
+    // #173: the cap is operator-visible but admin-editable. An operator who
+    // submits it anyway is refused -- the server, not the hidden control, is
+    // the gate.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("op", Role::Operator, DownloadScope::All, &hash),
+        activated("admin", Role::Admin, DownloadScope::All, &hash),
+    ]);
+
+    let op = sign_in(&app, "op").await;
+    let settings = get(&app, "/api/v1/project/settings", Some(&op)).await;
+    assert_eq!(settings.status, StatusCode::OK);
+    assert_eq!(settings.body["can_edit_project"], true);
+    assert_eq!(settings.body["can_edit_access"], false);
+    // An operator sees the current size and the effective cap.
+    assert!(settings.body["size_bytes"].is_u64(), "{}", settings.text);
+    assert_eq!(
+        settings.body["max_bytes"],
+        json!(crate::project::DEFAULT_MAX_PROJECT_BYTES)
+    );
+
+    // The page shows the size to the operator but hides the admin control.
+    let page = get(&app, "/settings", Some(&op)).await;
+    assert!(
+        page.text.contains(r#"id="storage-section""#),
+        "{}",
+        page.text
+    );
+    assert!(page.text.contains(r#"id="storage-used""#));
+    assert!(!page.text.contains(r#"id="storage-max""#), "{}", page.text);
+
+    let refused = put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"max_bytes": 1024u64}),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["error"]["code"], "insufficient_role");
+
+    let admin = sign_in(&app, "admin").await;
+    let page = get(&app, "/settings", Some(&admin)).await;
+    assert!(page.text.contains(r#"id="storage-max""#), "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"max_bytes": 2048u64}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["max_bytes"], json!(2048));
+
+    // `null` clears it, restoring the built-in default.
+    let cleared = put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"max_bytes": null}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert_eq!(
+        cleared.body["max_bytes"],
+        json!(crate::project::DEFAULT_MAX_PROJECT_BYTES)
+    );
 }
 
 #[tokio::test]

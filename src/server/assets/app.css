@@ -2481,6 +2481,14 @@ button.danger:disabled {
   outline-offset: -1px;
 }
 
+/* Functions that combine every contributor into one value (#241). Coloured
+   apart from `.tok-builtin`, which are the element-wise ones; the one-line
+   legend under the editor says which is which. */
+.tok-reduce {
+  color: #c2185b;
+  font-weight: 600;
+}
+
 .tok-builtin {
   color: var(--color-accent);
   font-weight: 600;
@@ -2501,6 +2509,12 @@ button.danger:disabled {
 
 .tok-op {
   color: var(--color-text-muted);
+}
+
+.editor-legend {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  margin: var(--space-1) 0 0;
 }
 
 .editor-status {

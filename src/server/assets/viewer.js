@@ -673,6 +673,22 @@ if (GROUP) {
     .then((siblings) => {
       for (const [siblingId, info] of Object.entries(siblings)) {
         if (siblingId === RADARGRAM_ID) continue;
+        // An unlisted sibling is shown to operators and admins but drawn
+        // muted and dashed, so it is clearly present yet out of focus
+        // (#192). It is context either way and never defines the bounds.
+        const unlisted = info.unlisted === true;
+        const style = unlisted
+          ? {
+              color: RIDAL.unlistedColor,
+              weight: RIDAL.unlistedWeight,
+              opacity: RIDAL.unlistedOpacity,
+              dashArray: RIDAL.unlistedDashArray,
+            }
+          : {
+              color: RIDAL.siblingColor,
+              weight: RIDAL.siblingWeight,
+              opacity: RIDAL.siblingOpacity,
+            };
         const pairs = trackToLatLngs(info.track).map((latlngs) => {
           const hit = RIDAL.hitLine(latlngs)
             // A function, not a string: the profile select changes the
@@ -683,14 +699,17 @@ if (GROUP) {
             )
             .addTo(overviewMap);
           const visible = L.polyline(latlngs, {
-            color: RIDAL.siblingColor,
-            weight: RIDAL.siblingWeight,
-            opacity: RIDAL.siblingOpacity,
+            ...style,
             interactive: false,
           }).addTo(overviewMap);
           return { visible, hit };
         });
-        RIDAL.bindTrackHighlight(pairs, null, RIDAL.siblingWeight, RIDAL.siblingFocusWeight);
+        RIDAL.bindTrackHighlight(
+          pairs,
+          null,
+          style.weight,
+          unlisted ? style.weight : RIDAL.siblingFocusWeight,
+        );
       }
     })
     .catch((error) => {
