@@ -3138,6 +3138,31 @@ pub mod tests {
         }
     }
 
+    /// Every attribute Ridal generates on its own must be ASCII (#256).
+    ///
+    /// A non-ASCII `NC_CHAR` attribute is flagged `H5T_CSET_ASCII` by HDF5,
+    /// so readers that trust the flag -- xarray with the `h5netcdf` engine,
+    /// `h5dump` -- garble the UTF-8 bytes. Ridal's own output must therefore
+    /// never be the source of the problem. A user-supplied display or group
+    /// name is the one deliberate exception, covered by the NetCDF
+    /// round-trip test in `io.rs`.
+    #[test]
+    fn ridal_generated_attributes_are_ascii_by_default() {
+        let gpr = make_exportable_gpr(16, 32);
+        let ds = gpr.export_dataset().unwrap();
+        for (name, value) in &ds.attrs {
+            let text = match value {
+                crate::export::ExportAttr::String(s) => s.clone(),
+                crate::export::ExportAttr::Strings(v) => v.join("\n"),
+                _ => continue,
+            };
+            assert!(
+                text.is_ascii(),
+                "generated attribute '{name}' is not ASCII: {text:?}"
+            );
+        }
+    }
+
     #[test]
     fn the_export_distinguishes_acquired_separation_from_remaining_separation() {
         // Before the correction the two agree, and `twtt` is what the
