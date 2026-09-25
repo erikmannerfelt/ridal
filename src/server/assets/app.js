@@ -29,10 +29,12 @@ const IDENTIFIER_REDUCERS = [
 ];
 /** Every built-in, for autocomplete and for keeping a generated id from
  * shadowing one. `concatenate` is deliberately not a reducer: it pools two
- * layers' contributors and stays per-contributor. */
+ * layers' contributors and stays per-contributor. `abs` and `is_nan` come
+ * from Rhai's standard library; they are functions like the rest and must
+ * be coloured as such rather than as layer ids. */
 const IDENTIFIER_BUILTINS = [
   ...IDENTIFIER_REDUCERS,
-  "concatenate", "shallowest", "deepest", "clamp", "where",
+  "concatenate", "shallowest", "deepest", "clamp", "where", "abs", "is_nan",
 ];
 
 /** Turn a human display name into a valid, non-colliding identifier.
@@ -935,15 +937,16 @@ const RIDAL = Object.freeze({
     return `${value.toFixed(digits)} ${units[unit]}`;
   },
 
-  /** POST one file with upload progress (#175).
+  /** POST one file with upload progress and cancellation (#175).
    *
-   * `fetch` cannot observe request-body progress, so this uses XHR. Resolves
-   * with `{ status, ok, json }`, leaving the caller's existing status and
-   * error-envelope handling unchanged; it rejects only on a transport
-   * failure. `onProgress(loaded, total)` is called as bytes go out. */
+   * `fetch` cannot observe request-body progress, so this uses XHR. Returns
+   * `{ promise, abort }`: `promise` resolves with `{ status, ok, json }`,
+   * leaving the caller's existing status and error-envelope handling
+   * unchanged, and rejects on a transport failure or after `abort()`.
+   * `onProgress(loaded, total)` is called as bytes go out. */
   postFile(url, file, onProgress) {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
+    const xhr = new XMLHttpRequest();
+    const promise = new Promise((resolve, reject) => {
       xhr.open("POST", url);
       xhr.setRequestHeader("Content-Type", "application/octet-stream");
       xhr.upload.addEventListener("progress", (event) => {
@@ -968,6 +971,7 @@ const RIDAL = Object.freeze({
       xhr.addEventListener("abort", () => reject(new Error("upload cancelled")));
       xhr.send(file);
     });
+    return { promise, abort: () => xhr.abort() };
   },
 
   /** Build a track popup as DOM nodes rather than an HTML string.
@@ -1135,7 +1139,7 @@ const RIDAL = Object.freeze({
         <p class="hint" id="derived-editor-hint"></p>
         <div class="add-layer-fields">
           <label>Name <input id="derived-name" type="text" autocomplete="off"></label>
-          <label>ID <span class="hint">(from the name)</span> <input id="derived-id" type="text" autocomplete="off" spellcheck="false"></label>
+          <label>ID (from the name) <input id="derived-id" type="text" autocomplete="off" spellcheck="false"></label>
           <label>Unit <select id="derived-unit">${UNITS.map(
             ([value, label]) => `<option value="${value}">${label}</option>`,
           ).join("")}</select></label>

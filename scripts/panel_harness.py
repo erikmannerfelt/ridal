@@ -490,6 +490,10 @@ async function layersMode(doc, frame, result) {
   // #242: the Name field comes first and the ID autofills from it.
   const labels = form.querySelectorAll(".add-layer-fields > label");
   result.layerNameFirst = Boolean(labels[0]) && labels[0].textContent.includes("Name");
+  // The "ID (from the name)" label must not wrap to an extra line and push
+  // its input below the others.
+  result.layerNameLabelHeight = labels[0].getBoundingClientRect().height;
+  result.layerIdLabelHeight = labels[1].getBoundingClientRect().height;
   const nameField = form.querySelector('input[name="name"]');
   nameField.value = "Test Layer 2";
   nameField.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1481,13 +1485,18 @@ async function main() {
     result.reduceTokens = doc.querySelectorAll("#derived-highlight .tok-reduce").length;
     result.builtinTokens = doc.querySelectorAll("#derived-highlight .tok-builtin").length;
     result.legend = (doc.querySelector(".editor-legend") || {}).textContent || "";
-    expression.value = "clamp(bed)";
+    // `is_nan` is a Rhai standard-library function, not a layer id: it must
+    // be highlighted as a built-in like the ones the module registers.
+    expression.value = "is_nan(bed)";
     expression.dispatchEvent(new Event("input", { bubbles: true }));
     await sleep(100);
-    result.reduceTokensAfterClamp = doc.querySelectorAll("#derived-highlight .tok-reduce").length;
-    result.builtinTokensAfterClamp = doc.querySelectorAll(
+    result.reduceTokensAfterIsNan = doc.querySelectorAll("#derived-highlight .tok-reduce").length;
+    result.builtinTokensAfterIsNan = doc.querySelectorAll(
       "#derived-highlight .tok-builtin",
     ).length;
+    result.isNanToken = Array.from(
+      doc.querySelectorAll("#derived-highlight .tok-builtin"),
+    ).some((token) => token.textContent === "is_nan");
     expression.value = "median(no_such_layer)";
     expression.dispatchEvent(new Event("input", { bubbles: true }));
     await sleep(1500);
@@ -1795,11 +1804,14 @@ def assert_q3(operator: dict) -> None:
         "median() must be highlighted as a contributor-combining function: "
         f"{operator}"
     )
-    assert operator["reduceTokensAfterClamp"] == 0, (
-        "clamp() must not be highlighted as a reducer: " f"{operator}"
+    assert operator["reduceTokensAfterIsNan"] == 0, (
+        "is_nan() must not be highlighted as a reducer: " f"{operator}"
     )
-    assert operator["builtinTokensAfterClamp"] >= 1, (
-        "clamp() must be highlighted as an element-wise builtin: " f"{operator}"
+    assert operator["builtinTokensAfterIsNan"] >= 1, (
+        "is_nan() must be highlighted as an element-wise builtin: " f"{operator}"
+    )
+    assert operator["isNanToken"] is True, (
+        "is_nan() must be coloured as a function, not a layer id: " f"{operator}"
     )
     assert "combine" in operator["legend"], operator["legend"]
     assert operator["previewLines"] > operator["layerToggle"]["afterOn"], operator
@@ -1808,6 +1820,7 @@ def assert_q3(operator: dict) -> None:
     suggestions = operator["suggestions"]
     assert "bed" in suggestions, suggestions
     assert "median" in suggestions, suggestions
+    assert "is_nan" in suggestions, suggestions
 
 
 def assert_layers(layers: dict) -> None:
@@ -1827,6 +1840,10 @@ def assert_layers(layers: dict) -> None:
     assert layers["layerNameFirst"] is True, layers
     assert layers["layerAutoId"] == "test-layer-2", (
         "the layer ID must autofill from the name as a slug: " f"{layers}"
+    )
+    assert abs(layers["layerNameLabelHeight"] - layers["layerIdLabelHeight"]) < 2, (
+        "the ID label must sit on one line like Name, not push its input "
+        f"down: {layers}"
     )
     assert layers["buttonStyleMatches"] is True, "Edit and Delete must share one style"
     assert layers["usedByDepBase"] is not None and "dep_child" not in (

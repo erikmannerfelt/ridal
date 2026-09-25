@@ -507,7 +507,17 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const button = document.getElementById('add-radargram');
   const picker = document.getElementById('add-radargram-file');
   const status = document.getElementById('add-radargram-status');
+  const cancel = document.getElementById('add-radargram-cancel');
   if (!button || !picker) return;
+
+  // The in-flight upload, so the cancel button can abort it. `RIDAL.postFile`
+  // returns the handle with the promise precisely for this.
+  let upload = null;
+  if (cancel) {
+    cancel.addEventListener('click', () => {
+      if (upload) upload.abort();
+    });
+  }
 
   const say = (message, tone) => {
     status.replaceChildren();
@@ -544,6 +554,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
     if (!file) return;
 
     button.disabled = true;
+    if (cancel) cancel.hidden = false;
     say(`Uploading ${file.name}…`);
     // Repaint only when the whole percent changes: an XHR progress event
     // fires many times a second and `say` rebuilds the box each call (#175).
@@ -558,11 +569,12 @@ document.querySelectorAll('.group-map').forEach((el) => {
       );
     };
     try {
-      const response = await RIDAL.postFile(
+      upload = RIDAL.postFile(
         `${RIDAL.apiPath('datasets')}?filename=${encodeURIComponent(file.name)}`,
         file,
         onProgress,
       );
+      const response = await upload.promise;
       if (!response.ok) {
         say(
           response.json?.error?.message || RIDAL.upstreamMessage(response.status),
@@ -587,10 +599,17 @@ document.querySelectorAll('.group-map').forEach((el) => {
         );
       }
     } catch (error) {
-      say(`Could not add it (${error.message}).`, 'problem');
+      // An abort is a choice, not a failure; say so without the warning tone.
+      if (error.message === 'upload cancelled') {
+        say('Upload cancelled.');
+      } else {
+        say(`Could not add it (${error.message}).`, 'problem');
+      }
       return;
     } finally {
       button.disabled = false;
+      upload = null;
+      if (cancel) cancel.hidden = true;
     }
     // Reloaded rather than patched: a new radargram may create a group
     // section, which is most of the page.
@@ -859,7 +878,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
           `?filename=${encodeURIComponent(file.name)}`,
         file,
         onProgress,
-      );
+      ).promise;
       const body = response.json;
       if (!response.ok) {
         status.textContent = 'Choose another file, or cancel.';

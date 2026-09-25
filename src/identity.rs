@@ -225,6 +225,11 @@ const EXPRESSION_BUILTINS: &[&str] = &[
     "deepest",
     "clamp",
     "where",
+    // Rhai's standard library supplies these two on both engines, so a layer
+    // named `abs` or `is_nan` would read as the function rather than as a
+    // variable (#241 follow-up).
+    "abs",
+    "is_nan",
     "nan",
 ];
 
@@ -931,6 +936,10 @@ mod tests {
         assert_eq!(sanitize_to_identifier("if", &[]), "if_layer");
         assert_eq!(sanitize_to_identifier("median", &[]), "median_layer");
         assert_eq!(sanitize_to_identifier("while", &[]), "while_layer");
+        // Rhai's standard-library functions are built-ins too (#241
+        // follow-up): a layer named `is_nan` must not read as the function.
+        assert_eq!(sanitize_to_identifier("is_nan", &[]), "is_nan_layer");
+        assert_eq!(sanitize_to_identifier("abs", &[]), "abs_layer");
     }
 
     #[test]
