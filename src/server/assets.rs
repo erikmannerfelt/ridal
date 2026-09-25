@@ -400,26 +400,36 @@ mod tests {
     /// the table and charset the JavaScript uses by inspection.
     #[test]
     fn the_browsers_slug_rule_mirrors_the_servers() {
-        // The Rust side, by example. Nordic letters are transliterated
+        // The Rust side, by example. Accented letters are transliterated
         // rather than collapsed, which is the part most likely to be
         // dropped by a reimplementation.
-        assert_eq!(
-            crate::identity::RadargramId::from_fallback("Drønbreen ortofoto 2024")
-                .unwrap()
-                .as_str(),
-            "dronbreen-ortofoto-2024"
-        );
-        assert_eq!(
-            crate::identity::RadargramId::from_fallback("Ålesund / Ærø")
-                .unwrap()
-                .as_str(),
-            "aalesund-aero"
-        );
+        for (input, expected) in [
+            ("Drønbreen ortofoto 2024", "dronbreen-ortofoto-2024"),
+            ("Ålesund / Ærø", "aalesund-aero"),
+            ("München Straße", "munchen-strasse"),
+            ("Café Ñoño", "cafe-nono"),
+        ] {
+            assert_eq!(
+                crate::identity::RadargramId::from_fallback(input)
+                    .unwrap()
+                    .as_str(),
+                expected,
+                "the Rust slug rule changed for {input:?}"
+            );
+        }
 
         // And the JavaScript side, by inspection.
         let js = include_str!("assets/app.js");
         assert!(js.contains("slugify"), "app.js must derive ids");
-        for entry in ["\"ø\": \"o\"", "\"æ\": \"ae\"", "\"å\": \"aa\""] {
+        for entry in [
+            "\"ø\": \"o\"",
+            "\"æ\": \"ae\"",
+            "\"å\": \"aa\"",
+            "\"ä\": \"a\"",
+            "\"ü\": \"u\"",
+            "\"ß\": \"ss\"",
+            "\"ñ\": \"n\"",
+        ] {
             assert!(
                 js.contains(entry),
                 "app.js's slug rule must transliterate as identity.rs does, \
@@ -430,6 +440,48 @@ mod tests {
             js.contains("/[a-z0-9_-]/"),
             "app.js's slug rule must keep the same charset as identity.rs"
         );
+    }
+
+    /// The derived-item and group editors derive an *identifier* (not a slug)
+    /// from a display name, through a second `app.js` twin of
+    /// `sanitize_to_identifier`. It had no guard at all before #186 and its
+    /// table had already drifted narrower than the Rust rule.
+    #[test]
+    fn the_browsers_identifier_rule_mirrors_the_servers() {
+        for (input, expected) in [
+            ("Drønbreen", "dronbreen"),
+            ("Ålesund", "alesund"),
+            ("München Straße", "munchen_strasse"),
+            ("Café Ñoño", "cafe_nono"),
+        ] {
+            assert_eq!(
+                crate::identity::sanitize_to_identifier(input, &[]),
+                expected,
+                "the Rust identifier rule changed for {input:?}"
+            );
+        }
+
+        let js = include_str!("assets/app.js");
+        assert!(
+            js.contains("function sanitizeIdentifier"),
+            "app.js must derive identifiers"
+        );
+        for entry in [
+            "å: \"a\"",
+            "ä: \"a\"",
+            "ö: \"o\"",
+            "æ: \"ae\"",
+            "ü: \"u\"",
+            "ß: \"ss\"",
+            "ñ: \"n\"",
+            "ç: \"c\"",
+        ] {
+            assert!(
+                js.contains(entry),
+                "app.js's identifier rule must transliterate as identity.rs \
+                 does, missing {entry}"
+            );
+        }
     }
 
     fn strip_css_comments(css: &str) -> String {

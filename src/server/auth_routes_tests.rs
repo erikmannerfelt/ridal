@@ -2902,12 +2902,16 @@ async fn an_unlisted_radargram_is_off_the_group_map_too() {
         "the unlisted member must not be drawn: {}",
         seen.text
     );
+    assert_eq!(seen.body["line-01"]["unlisted"], json!(false));
 
-    // The operator, who can change it, still sees it.
+    // The operator, who can change it, still sees it -- and the payload
+    // carries the flag the maps style by (#192).
     let seen = get(&app, "/api/v1/groups/shared/tracks", Some(&erik)).await;
     let mut ids = named(&seen.body);
     ids.sort();
     assert_eq!(ids, vec!["line-01", "line-02"]);
+    assert_eq!(seen.body["line-01"]["unlisted"], json!(false));
+    assert_eq!(seen.body["line-02"]["unlisted"], json!(true));
 }
 
 #[tokio::test]
@@ -3361,6 +3365,79 @@ async fn post_bytes(app: &Router, uri: &str, body: Vec<u8>, session: Option<&str
             .unwrap(),
     )
     .await
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn only_an_admin_may_change_the_project_size_limit() {
+    // #173: the cap is operator-visible but admin-editable. An operator who
+    // submits it anyway is refused -- the server, not the hidden control, is
+    // the gate.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("op", Role::Operator, DownloadScope::All, &hash),
+        activated("admin", Role::Admin, DownloadScope::All, &hash),
+    ]);
+
+    let op = sign_in(&app, "op").await;
+    let settings = get(&app, "/api/v1/project/settings", Some(&op)).await;
+    assert_eq!(settings.status, StatusCode::OK);
+    assert_eq!(settings.body["can_edit_project"], true);
+    assert_eq!(settings.body["can_edit_access"], false);
+    // An operator sees the current size and the effective cap.
+    assert!(settings.body["size_bytes"].is_u64(), "{}", settings.text);
+    assert_eq!(
+        settings.body["max_bytes"],
+        json!(crate::project::DEFAULT_MAX_PROJECT_BYTES)
+    );
+
+    // The page shows the size to the operator but hides the admin control.
+    let page = get(&app, "/settings", Some(&op)).await;
+    assert!(
+        page.text.contains(r#"id="storage-section""#),
+        "{}",
+        page.text
+    );
+    assert!(page.text.contains(r#"id="storage-used""#));
+    assert!(!page.text.contains(r#"id="storage-max""#), "{}", page.text);
+
+    let refused = put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"max_bytes": 1024u64}),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["error"]["code"], "insufficient_role");
+
+    let admin = sign_in(&app, "admin").await;
+    let page = get(&app, "/settings", Some(&admin)).await;
+    assert!(page.text.contains(r#"id="storage-max""#), "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"max_bytes": 2048u64}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["max_bytes"], json!(2048));
+
+    // `null` clears it, restoring the built-in default.
+    let cleared = put(
+        &app,
+        "/api/v1/project/settings",
+        &json!({"max_bytes": null}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert_eq!(
+        cleared.body["max_bytes"],
+        json!(crate::project::DEFAULT_MAX_PROJECT_BYTES)
+    );
 }
 
 #[tokio::test]

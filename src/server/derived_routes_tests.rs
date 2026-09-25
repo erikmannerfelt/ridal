@@ -782,6 +782,47 @@ async fn a_picker_cannot_ask_the_preview_route_for_a_cross_user_evaluation() {
     );
 }
 
+/// The preview reports how many contributors it combined (#241).
+///
+/// `median(bed)` over several contributors and a per-contributor line are
+/// different quantities, and the editor surfaces the difference by counting
+/// where the expression is read.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_preview_reports_how_many_contributors_it_combined() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::Results, &hash),
+            activated("bob", Role::Picker, DownloadScope::Results, &hash),
+            activated("op", Role::Operator, DownloadScope::All, &hash),
+        ],
+        &[("alice", 2.0), ("bob", 4.0)],
+    );
+
+    let preview = |session: String| {
+        let app = app.clone();
+        async move {
+            post(
+                &app,
+                &format!("/api/v1/datasets/{RADARGRAM}/derived/preview"),
+                &json!({"expression": "median(bed)", "unit": "meters"}),
+                Some(&session),
+            )
+            .await
+        }
+    };
+
+    let alice = preview(sign_in(&app, "alice").await).await;
+    assert_eq!(alice.status, StatusCode::OK, "{}", alice.text);
+    assert_eq!(alice.body["contributors"], json!(1), "only her own picks");
+
+    // An operator previews over everyone.
+    let op = preview(sign_in(&app, "op").await).await;
+    assert_eq!(op.status, StatusCode::OK, "{}", op.text);
+    assert_eq!(op.body["contributors"], json!(2));
+}
+
 /// Another contributor's picks are raw picks whatever route they leave by.
 ///
 /// `get_interpretation_raw` serves the same bytes behind `DownloadScope::Picks`;

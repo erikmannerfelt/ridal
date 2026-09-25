@@ -535,6 +535,10 @@ pub async fn preview_derived(
         "kind": result.kind,
         "unit": result.unit,
         "values": values,
+        // How many contributors fed the evaluation (#241). The editor shows
+        // it next to the kind so `median(bed)` reading "over 7 contributors"
+        // is visibly a different quantity from a per-contributor line.
+        "contributors": reduced.users.len(),
     })))
 }
 

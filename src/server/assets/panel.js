@@ -54,7 +54,6 @@
     "std",
     "nmad",
     "percentile",
-    "percentile",
     "min",
     "max",
     "concatenate",

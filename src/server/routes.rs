@@ -1907,6 +1907,10 @@ pub async fn group_tracks(
                 entry.radargram_id.to_string(),
                 serde_json::json!({
                     "effective_label": entry.effective_label(),
+                    // Only operator+ ever receives an unlisted entry here
+                    // (`listable` filters them for everyone else), and the
+                    // map uses the flag to draw it as out of focus (#192).
+                    "unlisted": entry.unlisted,
                     "track": track_to_json(&track),
                 }),
             );

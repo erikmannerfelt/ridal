@@ -668,6 +668,19 @@ if (form) {
     return null;
   }
 
+  /* Derive the ID from the name while the name is being typed (#242), the
+   * same way the derived-item and basemap editors do. A layer ID is a slug
+   * (`RIDAL.slugify`), not an expression identifier. Once the ID is edited
+   * by hand it is left alone, so a deliberate choice is never clobbered by
+   * a later tweak to the name. */
+  let idEdited = false;
+  form.elements.id.addEventListener("input", () => {
+    idEdited = true;
+  });
+  form.elements.name.addEventListener("input", () => {
+    if (!idEdited) form.elements.id.value = RIDAL.slugify(form.elements.name.value);
+  });
+
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     const data = new FormData(form);
@@ -692,6 +705,7 @@ if (form) {
       allow_overhangs: data.get("allow_overhangs") === "on",
     });
     form.reset();
+    idEdited = false;
     save();
   });
 }

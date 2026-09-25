@@ -19,7 +19,13 @@
   const projectForm = byId("settings-form");
   const myForm = byId("my-settings-form");
   const accessSection = byId("access-section");
+  const storageForm = byId("storage-form");
   if (!projectForm && !myForm && !accessSection) return; // Not a project.
+
+  const GIB = 1024 ** 3;
+  /* Shared with the upload progress readout so both describe bytes the same
+   * way (#173, #175). */
+  const formatBytes = RIDAL.formatBytes;
 
   const errorBox = byId("settings-error");
 
@@ -256,6 +262,21 @@
     setStatus("settings-status", "");
     setStatus("my-settings-status", "");
 
+    // Storage (#173). `size_bytes`/`max_bytes` are only present for an
+    // operator or above, which is also exactly when the section is rendered.
+    const storageUsed = byId("storage-used");
+    if (storageUsed) storageUsed.textContent = formatBytes(settings.size_bytes);
+    const storageCap = byId("storage-cap");
+    if (storageCap) storageCap.textContent = formatBytes(settings.max_bytes);
+    const storageMax = byId("storage-max");
+    if (storageMax) {
+      storageMax.value =
+        settings.max_bytes === null || settings.max_bytes === undefined
+          ? ""
+          : String(Math.round((settings.max_bytes / GIB) * 100) / 100);
+    }
+    setStatus("storage-status", "");
+
     if (canEditAccess) await loadAccess();
   }
 
@@ -326,6 +347,43 @@
       } catch (error) {
         showError(error.message);
         setStatus("settings-status", "");
+      }
+    });
+  }
+
+  /* The project size cap (#173). Its own form so a save sends only
+   * `max_bytes` and cannot disturb the render defaults the form above is
+   * editing. The server checks `admin` separately; this merely hides the
+   * control from an operator who could not use it. */
+  if (storageForm) {
+    storageForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!canEditAccess) return;
+      clearError();
+      setStatus("storage-status", "Saving\u2026");
+      const raw = byId("storage-max").value.trim();
+      const bytes = raw === "" ? null : Math.round(Number(raw) * GIB);
+      if (bytes !== null && (!Number.isFinite(bytes) || bytes < 0)) {
+        showError(
+          "The size limit must be a number of gigabytes, or empty for the " +
+            "built-in default.",
+        );
+        setStatus("storage-status", "");
+        return;
+      }
+      try {
+        const saved = await send("PUT", "/api/v1/project/settings", {
+          max_bytes: bytes,
+        });
+        byId("storage-used").textContent = formatBytes(saved.size_bytes);
+        byId("storage-cap").textContent = formatBytes(saved.max_bytes);
+        byId("storage-max").value = String(
+          Math.round((saved.max_bytes / GIB) * 100) / 100,
+        );
+        setStatus("storage-status", "Saved to ridal.toml");
+      } catch (error) {
+        showError(error.message);
+        setStatus("storage-status", "");
       }
     });
   }

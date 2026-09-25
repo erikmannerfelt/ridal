@@ -487,6 +487,14 @@ async function layersMode(doc, frame, result) {
   // S4 #3: the vocabulary can still be edited with derived items present, and
   // the derived items survive it.
   const form = doc.querySelector("#add-layer");
+  // #242: the Name field comes first and the ID autofills from it.
+  const labels = form.querySelectorAll(".add-layer-fields > label");
+  result.layerNameFirst = Boolean(labels[0]) && labels[0].textContent.includes("Name");
+  const nameField = form.querySelector('input[name="name"]');
+  nameField.value = "Test Layer 2";
+  nameField.dispatchEvent(new Event("input", { bubbles: true }));
+  await wait(50);
+  result.layerAutoId = form.querySelector('input[name="id"]').value;
   form.querySelector('input[name="id"]').value = "test_layer";
   form.querySelector('input[name="name"]').value = "Test layer";
   form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
@@ -1468,6 +1476,18 @@ async function main() {
     await sleep(1500);
     result.previewStatus = status.textContent;
     result.previewLines = lineCount(doc);
+    // #241: reducers and element-wise builtins are coloured apart, and the
+    // legend says which is which.
+    result.reduceTokens = doc.querySelectorAll("#derived-highlight .tok-reduce").length;
+    result.builtinTokens = doc.querySelectorAll("#derived-highlight .tok-builtin").length;
+    result.legend = (doc.querySelector(".editor-legend") || {}).textContent || "";
+    expression.value = "clamp(bed)";
+    expression.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(100);
+    result.reduceTokensAfterClamp = doc.querySelectorAll("#derived-highlight .tok-reduce").length;
+    result.builtinTokensAfterClamp = doc.querySelectorAll(
+      "#derived-highlight .tok-builtin",
+    ).length;
     expression.value = "median(no_such_layer)";
     expression.dispatchEvent(new Event("input", { bubbles: true }));
     await sleep(1500);
@@ -1769,6 +1789,19 @@ def assert_q2(operator: dict, picker: dict) -> None:
 def assert_q3(operator: dict) -> None:
     assert operator["canEdit"], "an operator must be offered the editor"
     assert "layer" in operator["previewStatus"], operator["previewStatus"]
+    # #241: the preview line names how many contributors were combined.
+    assert "contributors" in operator["previewStatus"], operator["previewStatus"]
+    assert operator["reduceTokens"] >= 1, (
+        "median() must be highlighted as a contributor-combining function: "
+        f"{operator}"
+    )
+    assert operator["reduceTokensAfterClamp"] == 0, (
+        "clamp() must not be highlighted as a reducer: " f"{operator}"
+    )
+    assert operator["builtinTokensAfterClamp"] >= 1, (
+        "clamp() must be highlighted as an element-wise builtin: " f"{operator}"
+    )
+    assert "combine" in operator["legend"], operator["legend"]
     assert operator["previewLines"] > operator["layerToggle"]["afterOn"], operator
     assert operator["invalidStatus"], "an invalid expression must show a message"
     assert operator["previewAfterInvalid"] <= operator["layerToggle"]["afterOn"], operator
@@ -1790,6 +1823,11 @@ def assert_layers(layers: dict) -> None:
 
     assert layers.get("error") is None, layers
     assert layers["canAdd"] is True, "an operator must be able to add on /layers"
+    # #242: Name is the first field, and the ID autofills from it as a slug.
+    assert layers["layerNameFirst"] is True, layers
+    assert layers["layerAutoId"] == "test-layer-2", (
+        "the layer ID must autofill from the name as a slug: " f"{layers}"
+    )
     assert layers["buttonStyleMatches"] is True, "Edit and Delete must share one style"
     assert layers["usedByDepBase"] is not None and "dep_child" not in (
         layers["usedByDepBase"] or ""

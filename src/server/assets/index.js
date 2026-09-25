@@ -38,10 +38,24 @@ document.querySelectorAll('.group-map').forEach((el) => {
 
   RIDAL.fetchJson(RIDAL.apiPath("groups", el.dataset.group, "tracks"))
     .then((members) => {
-      const allPoints = [];
+      // Unlisted radargrams are shown to operators and admins but do not
+      // define the view: an unlisted outlier should not stretch the map
+      // away from the tracks that are in focus (#192).
+      const listedPoints = [];
+      const unlistedPoints = [];
       for (const [radargramId, info] of Object.entries(members)) {
+        const unlisted = info.unlisted === true;
+        const points = unlisted ? unlistedPoints : listedPoints;
+        const style = unlisted
+          ? {
+              color: RIDAL.unlistedColor,
+              weight: RIDAL.unlistedWeight,
+              opacity: RIDAL.unlistedOpacity,
+              dashArray: RIDAL.unlistedDashArray,
+            }
+          : { color: RIDAL.trackColor, weight: RIDAL.trackWeight };
         const pairs = RIDAL.trackToLatLngs(info.track).map((latlngs) => {
-          allPoints.push(...latlngs);
+          points.push(...latlngs);
           // The wide companion goes down first and carries the popup, so a
           // track is as easy to hit as it is to see.
           const hit = RIDAL.hitLine(latlngs)
@@ -57,8 +71,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
             )
             .addTo(map);
           const visible = L.polyline(latlngs, {
-            color: RIDAL.trackColor,
-            weight: RIDAL.trackWeight,
+            ...style,
             interactive: false,
           }).addTo(map);
           return { visible, hit };
@@ -66,10 +79,16 @@ document.querySelectorAll('.group-map').forEach((el) => {
         // Two-way highlight with the matching catalog card (#121
         // planning round item 7): hovering either one highlights both.
         const card = document.getElementById(`card-${radargramId}`);
-        RIDAL.bindTrackHighlight(pairs, card, RIDAL.trackWeight, RIDAL.trackFocusWeight);
+        RIDAL.bindTrackHighlight(
+          pairs,
+          card,
+          style.weight,
+          unlisted ? style.weight : RIDAL.trackFocusWeight,
+        );
       }
-      if (allPoints.length > 0) {
-        map.fitBounds(allPoints);
+      const boundsPoints = listedPoints.length > 0 ? listedPoints : unlistedPoints;
+      if (boundsPoints.length > 0) {
+        map.fitBounds(boundsPoints);
       } else {
         map.setView([0, 0], 2);
       }
@@ -526,20 +545,32 @@ document.querySelectorAll('.group-map').forEach((el) => {
 
     button.disabled = true;
     say(`Uploading ${file.name}…`);
+    // Repaint only when the whole percent changes: an XHR progress event
+    // fires many times a second and `say` rebuilds the box each call (#175).
+    let lastPercent = -1;
+    const onProgress = (loaded, total) => {
+      const percent = Math.round((loaded / total) * 100);
+      if (percent === lastPercent) return;
+      lastPercent = percent;
+      say(
+        `Uploading ${file.name}… ${percent}% ` +
+          `(${RIDAL.formatBytes(loaded)} of ${RIDAL.formatBytes(total)})`,
+      );
+    };
     try {
-      const response = await fetch(
+      const response = await RIDAL.postFile(
         `${RIDAL.apiPath('datasets')}?filename=${encodeURIComponent(file.name)}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file },
+        file,
+        onProgress,
       );
       if (!response.ok) {
-        const envelope = await response.json().catch(() => null);
         say(
-          envelope?.error?.message || RIDAL.upstreamMessage(response.status),
+          response.json?.error?.message || RIDAL.upstreamMessage(response.status),
           'problem',
         );
         return;
       }
-      const added = await response.json().catch(() => null);
+      const added = response.json;
       const archived = added?.archived_interpretations || 0;
       if (archived > 0) {
         // Said, not asked. The picks are in the archive and nothing attaches
@@ -813,13 +844,23 @@ document.querySelectorAll('.group-map').forEach((el) => {
     // file of this size that is nearly all of the wait. Saying only
     // "Checking" made a transfer look like a hang.
     status.textContent = `Uploading and checking ${file.name}…`;
+    let lastPercent = -1;
+    const onProgress = (loaded, total) => {
+      const percent = Math.round((loaded / total) * 100);
+      if (percent === lastPercent) return;
+      lastPercent = percent;
+      status.textContent =
+        `Uploading and checking ${file.name}… ${percent}% ` +
+        `(${RIDAL.formatBytes(loaded)} of ${RIDAL.formatBytes(total)})`;
+    };
     try {
-      const response = await fetch(
+      const response = await RIDAL.postFile(
         `${RIDAL.apiPath('datasets', radargramId, 'replace')}` +
           `?filename=${encodeURIComponent(file.name)}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file },
+        file,
+        onProgress,
       );
-      const body = await response.json().catch(() => null);
+      const body = response.json;
       if (!response.ok) {
         status.textContent = 'Choose another file, or cancel.';
         fail(body?.error?.message || RIDAL.upstreamMessage(response.status));

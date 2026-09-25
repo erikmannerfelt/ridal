@@ -69,30 +69,40 @@ fn validate_slug(kind: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Transliterate the Nordic letters into their conventional ASCII forms.
+/// Transliterate accented Latin letters into their conventional ASCII
+/// forms for use in a slug (#186).
 ///
 /// Without this, the charset filter in [`sanitize_to_slug`] treats them as
 /// unsupported and collapses each to `-`, so "Drønbreen" would become
 /// "dr-nbreen" and "Ålesund" would become "lesund" (the leading separator
-/// is trimmed). That is a poor default for a tool whose domain is Svalbard
-/// and mainland Norwegian glaciology, where these letters are common in
-/// place names.
+/// is trimmed). A tool whose domain is Svalbard and mainland Norwegian
+/// glaciology sees these letters constantly, and the wider European set
+/// below is a short, closed table rather than a dependency.
 ///
-/// Deliberately narrow: only ø/æ/å, the three letters of the Norwegian
-/// alphabet beyond ASCII. Broader Latin-1 folding (ä, ö, é, ñ, ...) would
-/// need either a much longer table or a dependency, and neither is
-/// justified by the data this tool actually sees. #116 permits
-/// slugification as long as the output satisfies the ASCII rules.
-fn transliterate_nordic(c: char) -> Option<&'static str> {
+/// `å` maps to `aa` (the Danish/Norwegian convention) and `ß` to `ss`; the
+/// caller lowercases first, so only the lowercase arms are reachable, but
+/// the uppercase ones are kept so the function is safe on its own. #116
+/// permits slugification as long as the output satisfies the ASCII rules.
+fn transliterate_slug(c: char) -> Option<&'static str> {
     match c {
         'ø' | 'Ø' => Some("o"),
         'æ' | 'Æ' => Some("ae"),
         'å' | 'Å' => Some("aa"),
+        'ä' | 'Ä' => Some("a"),
+        'ö' | 'Ö' => Some("o"),
+        'ü' | 'Ü' => Some("u"),
+        'ß' => Some("ss"),
+        'é' | 'É' | 'è' | 'È' | 'ê' | 'Ê' => Some("e"),
+        'à' | 'À' | 'á' | 'Á' => Some("a"),
+        'ô' | 'Ô' | 'ó' | 'Ó' => Some("o"),
+        'í' | 'Í' => Some("i"),
+        'ñ' | 'Ñ' => Some("n"),
+        'ç' | 'Ç' => Some("c"),
         _ => None,
     }
 }
 
-/// Lowercase `stem`, transliterate Nordic letters, collapse runs of
+/// Lowercase `stem`, transliterate accented Latin letters, collapse runs of
 /// unsupported characters to `-`, and trim leading/trailing separators.
 /// Deterministic: the same stem always produces the same slug. Does not
 /// itself validate the result -- an all-separator or empty stem produces an
@@ -106,7 +116,7 @@ fn sanitize_to_slug(stem: &str) -> String {
         // Transliteration runs before the charset check, so its output
         // ("o", "ae", "aa") is always already valid and never treated as a
         // separator.
-        if let Some(ascii) = transliterate_nordic(c) {
+        if let Some(ascii) = transliterate_slug(c) {
             out.push_str(ascii);
             last_was_sep = false;
         } else if is_valid_slug_char(c) {
@@ -123,7 +133,7 @@ fn sanitize_to_slug(stem: &str) -> String {
 /// Transliterate the letters that have an obvious ASCII mapping for use in an
 /// *expression identifier* (#206).
 ///
-/// Deliberately different from [`transliterate_nordic`], which is the slug
+/// Deliberately different from [`transliterate_slug`], which is the slug
 /// rule: a slug may contain both `-` and `_` and maps `å` to `aa`, while an
 /// identifier must match `^[a-z][a-z0-9_]*$`, so `å` maps to `a` and `æ` to
 /// `ae`. The two tables cannot be shared without one of them becoming wrong.
@@ -137,7 +147,14 @@ fn transliterate_identifier(c: char) -> Option<&'static str> {
         'ä' | 'Ä' => Some("a"),
         'ö' | 'Ö' => Some("o"),
         'æ' | 'Æ' => Some("ae"),
-        'é' | 'É' => Some("e"),
+        'ü' | 'Ü' => Some("u"),
+        'ß' => Some("ss"),
+        'é' | 'É' | 'è' | 'È' | 'ê' | 'Ê' => Some("e"),
+        'à' | 'À' | 'á' | 'Á' => Some("a"),
+        'ô' | 'Ô' | 'ó' | 'Ó' => Some("o"),
+        'í' | 'Í' => Some("i"),
+        'ñ' | 'Ñ' => Some("n"),
+        'ç' | 'Ç' => Some("c"),
         _ => None,
     }
 }
@@ -707,13 +724,54 @@ mod tests {
     }
 
     #[test]
-    fn uppercase_nordic_letters_also_transliterate() {
+    fn uppercase_accented_letters_also_transliterate() {
         // to_lowercase() runs first so these arrive lowercased, but the
         // mapping covers both cases explicitly rather than relying on that.
-        assert_eq!(transliterate_nordic('Ø'), Some("o"));
-        assert_eq!(transliterate_nordic('Æ'), Some("ae"));
-        assert_eq!(transliterate_nordic('Å'), Some("aa"));
-        assert_eq!(transliterate_nordic('a'), None);
+        assert_eq!(transliterate_slug('Ø'), Some("o"));
+        assert_eq!(transliterate_slug('Æ'), Some("ae"));
+        assert_eq!(transliterate_slug('Å'), Some("aa"));
+        assert_eq!(transliterate_slug('Ü'), Some("u"));
+        assert_eq!(transliterate_slug('Ñ'), Some("n"));
+    }
+
+    #[test]
+    fn wider_latin_letters_transliterate_in_slugs() {
+        // #186: the table was deliberately Nordic-only; it now covers the
+        // common accented Latin letters rather than collapsing each to a
+        // separator and leaving "-" behind.
+        for (input, expected) in [
+            ("München", "munchen"),
+            ("Straße", "strasse"),
+            ("Café", "cafe"),
+            ("Ñoño", "nono"),
+            ("Garçon", "garcon"),
+            ("Ångström", "aangstrom"),
+        ] {
+            assert_eq!(
+                RadargramId::from_fallback(input).unwrap().as_str(),
+                expected,
+                "slug rule for {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wider_latin_letters_transliterate_in_identifiers() {
+        // A derived-layer identifier uses its own table (#206, #186): `å` is
+        // `a`, not `aa`, and a separator becomes `_`.
+        for (input, expected) in [
+            ("München Straße", "munchen_strasse"),
+            ("Café Ñoño", "cafe_nono"),
+            ("Ålesund", "alesund"),
+            ("Garçon", "garcon"),
+        ] {
+            assert_eq!(
+                sanitize_to_identifier(input, &[]),
+                expected,
+                "identifier rule for {input:?}"
+            );
+        }
+        assert_eq!(transliterate_identifier('a'), None);
     }
 
     #[test]

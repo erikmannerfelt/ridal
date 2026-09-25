@@ -1024,12 +1024,32 @@ pub async fn get_settings(
         None => None,
     };
 
+    // Project size is shown to operator and above, not every reader: it is
+    // operational information, and walking the tree on each settings load is
+    // work worth not doing for a viewer who cannot change anything (#173).
+    let can_edit_project = caller.may(Role::Operator);
+    let size_bytes = if can_edit_project {
+        project.map(|p| p.size_bytes())
+    } else {
+        None
+    };
+    let max_bytes = if can_edit_project {
+        project.map(|p| p.max_bytes())
+    } else {
+        None
+    };
+
     Ok(Json(serde_json::json!({
         "project": project.is_some(),
         // What each section may do, answered once here rather than inferred
         // in JavaScript from a role string it would have to rank itself.
-        "can_edit_project": caller.may(Role::Operator),
+        "can_edit_project": can_edit_project,
         "can_edit_access": caller.may(Role::Admin),
+        // Current usage and the effective cap, in bytes (#173). An admin may
+        // change the cap; everyone at operator or above may see it.
+        "size_bytes": size_bytes,
+        "max_bytes": max_bytes,
+        "default_max_bytes": crate::project::DEFAULT_MAX_PROJECT_BYTES,
         "user": caller.user.as_ref().map(|u| u.as_str()),
         "role": caller.role.as_str(),
         "download": caller.download.as_str(),
@@ -1120,6 +1140,12 @@ pub struct SettingsUpdate {
     /// empty array removes them all.
     #[serde(default)]
     overlays: Option<Vec<crate::project::overlays::Overlay>>,
+    /// The project's upload cap in bytes (#173). Absent leaves it alone;
+    /// `null` clears it, restoring the built-in default. Changing it needs
+    /// `Role::Admin`, checked in `put_settings` -- the section is visible to
+    /// an operator, who may read the cap but not lower or raise it.
+    #[serde(default, deserialize_with = "present")]
+    max_bytes: Option<Option<u64>>,
 }
 
 /// Tell an absent key from one sent as `null`.
@@ -1319,6 +1345,16 @@ pub async fn put_settings(
             .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
     }
 
+    // The cap is an administrator's decision even though the section it
+    // lives in is operator-visible (#173); `project_for` above already
+    // established operator, so this is the narrower, second gate.
+    if let Some(max_bytes) = update.max_bytes {
+        caller.require(Role::Admin, "change the project size limit")?;
+        project
+            .set_max_bytes(max_bytes)
+            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+    }
+
     let map = project.map_section();
     Ok(Json(serde_json::json!({
         "default_profile": project.default_profile(),
@@ -1329,6 +1365,8 @@ pub async fn put_settings(
         "default_basemap": map.default_basemap,
         "built_in_basemap": map.offers_built_in(),
         "overlays": project.overlays(),
+        "size_bytes": project.size_bytes(),
+        "max_bytes": project.max_bytes(),
     })))
 }
 
