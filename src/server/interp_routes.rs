@@ -135,6 +135,23 @@ fn writing_as(caller: &Caller, path_user: &str) -> Result<UserId, ApiError> {
     Ok(current)
 }
 
+/// May `caller` read the interpretation belonging to `user` (#212)?
+///
+/// Own picks are always readable: they are the caller's own data, and a
+/// picker whose download scope sits below `Picks` still has to open their
+/// own document to work at all. Reading *someone else's* picks is what the
+/// `Picks` download scope gates, exactly as it does on
+/// `/interpretations/{user}/raw`. Without this, the plain route returned the
+/// same document as `/raw` to anyone who could reach the server, defeating
+/// both the download-scope ladder and the visibility the derived-layer
+/// evaluator is careful to respect.
+fn may_read_interpretation(caller: &Caller, user: &UserId) -> Result<(), ApiError> {
+    if caller.user.as_ref() == Some(user) {
+        return Ok(());
+    }
+    caller.require_download(DownloadScope::Picks, "another contributor's picks")
+}
+
 /// Map a store conflict to `412`, everything else to `500`.
 fn store_error(error: &StoreError) -> ApiError {
     match error {
@@ -194,10 +211,12 @@ pub async fn list_interpretations(
 pub async fn get_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
+    caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = readable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
     let user = parse_user(&user)?;
+    may_read_interpretation(&caller, &user)?;
 
     let stored = interpretations::read(project.documents(), &radargram, &user)
         .map_err(interpretation_error)?
@@ -232,10 +251,12 @@ pub async fn get_interpretation(
 pub async fn get_interpretation_carried(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
+    caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = readable_project(&state)?;
     let radargram = parse_radargram(&radargram_id)?;
     let user = parse_user(&user)?;
+    may_read_interpretation(&caller, &user)?;
 
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, radargram.as_str())?;

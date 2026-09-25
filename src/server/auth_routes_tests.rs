@@ -1240,6 +1240,85 @@ async fn an_anonymous_reader_downloads_what_the_project_allows_them() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn interpretation_documents_are_not_readable_below_the_picks_scope() {
+    // #212: the plain and carried routes returned the same document as
+    // `/raw` to anyone who could reach the server, so a caller below the
+    // `Picks` download scope could read every contributor's picks around the
+    // download-scope ladder. Own picks stay readable regardless -- otherwise
+    // a picker with a restricted download scope could not open their own
+    // document to work.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_set(UserSet {
+        anonymous_download: DownloadScope::Results,
+        users: vec![
+            activated("alice", Role::Picker, DownloadScope::Results, &hash),
+            activated("bob", Role::Picker, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+
+    let bob = sign_in(&app, "bob").await;
+    assert_eq!(
+        put(
+            &app,
+            &interpretation_uri("bob"),
+            &document(RADARGRAM),
+            Some(&bob)
+        )
+        .await
+        .status,
+        StatusCode::CREATED
+    );
+
+    // A `Results`-scope caller cannot read Bob's picks through either
+    // wrapping; `/raw` refuses her for the same reason, so the three agree.
+    let alice = sign_in(&app, "alice").await;
+    let bob_uri = interpretation_uri("bob");
+    for uri in [
+        bob_uri.clone(),
+        format!("{bob_uri}/carried"),
+        format!("{bob_uri}/raw"),
+    ] {
+        let refused = get(&app, &uri, Some(&alice)).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(
+            refused.body["error"]["code"], "download_not_permitted",
+            "{uri}"
+        );
+    }
+
+    // Alice's own document is her own data, so the same scope neither gates
+    // reading it nor writing it.
+    assert_eq!(
+        put(
+            &app,
+            &interpretation_uri("alice"),
+            &document(RADARGRAM),
+            Some(&alice)
+        )
+        .await
+        .status,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        get(&app, &interpretation_uri("alice"), Some(&alice))
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // Anonymous is below `Picks` here and gets 401 rather than 403, because
+    // signing in is a thing that might help. This is also the route-level
+    // guard: a handler that forgot its `Caller` extractor would never reach
+    // the scope check and would answer 200 instead.
+    for uri in [bob_uri.clone(), format!("{bob_uri}/carried")] {
+        let refused = get(&app, &uri, None).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{uri}");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn requiring_a_login_to_read_hides_everything_but_the_way_in() {
     let hash = users::hash_password(password()).unwrap();
     let (_dir, app) = app_with_set(UserSet {
