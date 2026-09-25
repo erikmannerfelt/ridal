@@ -696,11 +696,15 @@ mod tests {
     #[test]
     fn siglog_profile_is_the_siglog_step_then_the_base_profile() {
         // The claim this design rests on: every `siglog-*` is exactly "run
-        // the siglog processing step at that profile's own strength, then
-        // render with the base profile" -- compress *before* resampling,
-        // and keep the base profile's own reducer. Byte-identical and with
-        // no NetCDF: one render applies the source transform on the way
-        // out, the other is handed an array that was already transformed.
+        // the adaptive_siglog processing step at that profile's own offset,
+        // then render with the base profile" -- compress *before*
+        // resampling, and keep the base profile's own reducer.
+        // Byte-identical and with no NetCDF: one render applies the source
+        // transform on the way out, the other is handed an array that was
+        // already transformed. The render side is pinned to the whole
+        // array's noise floor, which is what the step estimates on an
+        // array this small; the sampled estimate the render entry points
+        // use is tested against it in `stats.rs`.
         //
         // Parameterised over every pair rather than pinned to
         // `siglog-default`. The `positive` pair is the one that caught a
@@ -709,8 +713,8 @@ mod tests {
         // level then clipped to an almost entirely black overview, while
         // "siglog step then `positive`" (which rectifies) looked right.
         // `siglog-seismic` is in the list precisely because it overrides
-        // the shared strength: the equivalence must hold at strength 1, not
-        // at the default.
+        // the shared offset: the equivalence must hold at its own offset,
+        // not at the default.
         let raw = ndarray::Array2::from_shape_fn((40, 60), |(r, c)| {
             let v = (r as f32 * 0.9).sin() * 30.0 + (c as f32 * 0.2).cos() * 10.0;
             if (r + c) % 7 == 0 {
@@ -757,13 +761,20 @@ mod tests {
                 RenderProfile::seismic_profile(),
             ),
         ];
+        let noise = crate::filters::siglog::noise_floor_log10(raw.iter().copied()).unwrap();
         for (name, siglog_base, plain_base) in pairs {
-            let siglog_profile = with_explicit_limits(siglog_base.clone());
+            let siglog_profile = with_explicit_limits(siglog_base.pin_siglog_strength(noise));
             let plain_profile = with_explicit_limits(plain_base.clone());
 
-            // The "already ran the step" array, at this profile's strength.
+            // The "already ran the step" array, at this profile's offset.
             let mut pre = raw.clone();
-            crate::filters::siglog(&mut pre, siglog_base.siglog_minval_log10);
+            let strength =
+                crate::filters::siglog::adaptive_siglog(&mut pre, siglog_base.siglog_noise_offset)
+                    .unwrap();
+            assert_eq!(
+                strength, siglog_profile.siglog_minval_log10,
+                "'{name}' resolved a different strength than the step"
+            );
             let pre_source = crate::source::ArraySource::new(pre.view());
 
             // Overview path (banded/haloed reads).

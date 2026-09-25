@@ -130,31 +130,33 @@ pub fn render_to_file_with_stats_source(
         }
     }
 
+    // An adaptive siglog strength is resolved from the same source the
+    // limits are, before them, so both see the strength the image is
+    // drawn at.
+    let pinned = stats::pin_profile(stats_source, request.profile, SAMPLE_SEED)?;
+
     // Estimated once for the whole image, exactly as the server does per
     // revision+profile. An explicit-limits profile skips the sampling pass
     // entirely rather than estimating and discarding.
-    let sampled = match request.profile.limits {
+    let sampled = match pinned.limits {
         AmplitudeLimits::Percentile { low, high } => Some(stats::sampled_amplitude_limits(
             stats_source,
-            request.profile.source_transform,
-            request.profile.siglog_minval_log10,
-            request.profile.transform,
+            pinned.source_transform,
+            pinned.siglog_minval_log10,
+            pinned.transform,
             SAMPLE_SEED,
             low,
             high,
-            request.profile.stats_skip_first_samples,
+            pinned.stats_skip_first_samples,
         )?),
         AmplitudeLimits::Explicit { .. } => None,
     };
-    let limits = colormap::resolve_limits(request.profile, sampled)?;
+    let limits = colormap::resolve_limits(&pinned, sampled)?;
 
     // The profile carries a format of its own, which `format_for` may have
     // overridden from the output extension. The renderer must be told the
     // resolved one, not the profile's.
-    let profile = RenderProfile {
-        format,
-        ..request.profile.clone()
-    };
+    let profile = RenderProfile { format, ..pinned };
     let bytes = Renderer::new(source).render_overview(&spec, &profile, limits)?;
 
     if let Some(parent) = output.parent() {
@@ -181,6 +183,7 @@ pub fn sidecar_path(input: &Path, profile: &RenderProfile) -> std::path::PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::profile::SourceTransform;
 
     /// A small radargram with real structure: a bright band near the top
     /// and a sloping reflector, so the amplitude range is not degenerate
@@ -224,6 +227,57 @@ mod tests {
         // asserts that what was written is a readable image of that size.
         assert_eq!(image::image_dimensions(&out).unwrap(), (60, 20));
         assert!(std::fs::metadata(&out).unwrap().len() > 100);
+    }
+
+    #[test]
+    fn an_adaptive_siglog_render_ignores_the_amplitude_scale() {
+        // #254 end to end: the same radargram recorded at a 1000x smaller
+        // amplitude scale renders the same through every adaptive profile.
+        // A fixed strength cannot do this -- at `siglog(0)` the quiet copy
+        // truncates to nothing.
+        let dir = tempfile::tempdir().unwrap();
+        // Taller than `positive`'s 50 skipped rows, so its limit estimate
+        // has samples left.
+        let loud = synthetic(120, 120);
+        let quiet = loud.mapv(|v| v / 1000.0);
+        for profile in RenderProfile::built_in_profiles()
+            .into_iter()
+            .filter(|p| p.source_transform == SourceTransform::AdaptiveSigLog)
+        {
+            let profile = RenderProfile {
+                format: ImageFormat::Png,
+                ..profile
+            };
+            let render = |data: &ndarray::Array2<f32>, name: &str| {
+                let out = dir.path().join(name);
+                render_to_file(
+                    &crate::source::ArraySource::new(data.view()),
+                    &out,
+                    &RenderRequest {
+                        profile: &profile,
+                        width: None,
+                        quality: None,
+                    },
+                )
+                .unwrap();
+                image::open(&out).unwrap().to_rgb8()
+            };
+            let a = render(&loud, "loud.png");
+            let b = render(&quiet, "quiet.png");
+            // Log-domain arithmetic at two scales can round a value across
+            // a byte boundary; anything more is a real difference.
+            let worst = a
+                .pixels()
+                .zip(b.pixels())
+                .flat_map(|(p, q)| (0..3).map(move |i| p.0[i].abs_diff(q.0[i])))
+                .max()
+                .unwrap();
+            assert!(
+                worst <= 1,
+                "{}: pixels differ by up to {worst}",
+                profile.name
+            );
+        }
     }
 
     #[test]
