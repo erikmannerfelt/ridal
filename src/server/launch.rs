@@ -150,10 +150,16 @@ async fn shutdown_signal() {
     println!("Shutting down.");
 }
 
-/// `ridal gui`: local convenience mode. Binds loopback only, selects an
-/// available port, and opens a browser -- a failure to open the browser
-/// is a warning, never a reason to stop the server (#120).
-pub fn run_gui(root: &Path, read_only: bool, config: RenderServiceConfig) -> Result<(), String> {
+/// `ridal gui`: local convenience mode. Binds loopback only and selects an
+/// available port. The URL is always printed; a browser is opened only when
+/// `--open-browser` was passed, and a failure to open it is a warning, never
+/// a reason to stop the server (#120, #200).
+pub fn run_gui(
+    root: &Path,
+    read_only: bool,
+    open_browser: bool,
+    config: RenderServiceConfig,
+) -> Result<(), String> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to start async runtime: {e}"))?;
     runtime.block_on(serve(
@@ -161,7 +167,7 @@ pub fn run_gui(root: &Path, read_only: bool, config: RenderServiceConfig) -> Res
         LaunchOptions {
             host: IpAddr::from([127, 0, 0, 1]),
             port: 0,
-            open_browser: true,
+            open_browser,
             read_only,
             // Always loopback, so neither bind question can arise.
             allow_insecure_login: false,
