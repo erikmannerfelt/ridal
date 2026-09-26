@@ -14,6 +14,7 @@ use crate::{dem, filters, io, tools, user_metadata};
 
 pub(crate) const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
 pub(crate) const DEFAULT_ZERO_CORR_SIGMA: f32 = 5.0;
+pub(crate) const DEFAULT_ZERO_CORR_SMOOTH_WINDOW: u32 = 51;
 pub(crate) const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
 pub(crate) const DEFAULT_DEWOW_WINDOW: u32 = 5;
 const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
@@ -891,15 +892,15 @@ impl GPR {
     /// pick, and the bottom is trimmed to the shortest trace so that none
     /// is padded with zeros (#6). `legacy` goes to
     /// [`GPR::zero_corr_legacy`] and supports only the global scope.
-    pub fn zero_corr(
-        &mut self,
-        method: zero_corr::Method,
-        scope: zero_corr::Scope,
-        factor: f32,
-        sigma: f32,
-        reference: zero_corr::Reference,
-        margin: zero_corr::Margin,
-    ) -> Result<(), String> {
+    pub fn zero_corr(&mut self, settings: &zero_corr::Settings, factor: f32) -> Result<(), String> {
+        let zero_corr::Settings {
+            method,
+            scope,
+            time_zero: reference,
+            margin,
+            window,
+            ..
+        } = *settings;
         if method == zero_corr::Method::Legacy {
             if scope != zero_corr::Scope::Global {
                 return Err("the legacy method only has a global scope".into());
@@ -910,9 +911,7 @@ impl GPR {
         let start_time = SystemTime::now();
         let name = format!("zero_corr({method}, {scope})");
         let step_ns = self.metadata.time_window / self.height() as f32;
-        let Some(picks) =
-            zero_corr::pick(&self.data, method, scope, sigma, reference, margin, step_ns)?
-        else {
+        let Some(picks) = zero_corr::pick(&self.data, settings, step_ns)? else {
             self.log_event(
                 &name,
                 "Every trace is flat; nothing was cropped",
@@ -972,9 +971,15 @@ impl GPR {
                 picks.margin_wanted
             );
         }
+        let smoothed = match scope {
+            zero_corr::Scope::Smooth => {
+                format!("; picks smoothed by a running median over {window} traces")
+            }
+            _ => String::new(),
+        };
         let outliers = match scope {
             zero_corr::Scope::Global => String::new(),
-            zero_corr::Scope::Trace => format!(
+            zero_corr::Scope::Trace | zero_corr::Scope::Smooth => format!(
                 "; {} of {} picks were outliers or failed and were replaced by their neighbours' \
                  median",
                 picks.replaced,
@@ -983,7 +988,7 @@ impl GPR {
         };
         self.log_event(
             &name,
-            &format!("Picked time zero and {removed}{placed}{kept}{outliers}"),
+            &format!("Picked time zero and {removed}{placed}{kept}{outliers}{smoothed}"),
             start_time,
         );
         Ok(())
@@ -3224,12 +3229,15 @@ pub mod tests {
 
     fn per_trace_max_peak(gpr: &mut super::GPR) {
         gpr.zero_corr(
-            super::zero_corr::Method::MaxPeak,
-            super::zero_corr::Scope::Trace,
+            &super::zero_corr::Settings {
+                method: super::zero_corr::Method::MaxPeak,
+                scope: super::zero_corr::Scope::Trace,
+                sigma: 5.,
+                time_zero: super::zero_corr::Reference::Peak,
+                margin: super::zero_corr::Margin::Ns(0.),
+                window: 51,
+            },
             1.,
-            5.,
-            super::zero_corr::Reference::Peak,
-            super::zero_corr::Margin::Ns(0.),
         )
         .unwrap();
     }

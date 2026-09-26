@@ -85,6 +85,11 @@ impl FromStr for Method {
 pub enum Scope {
     Global,
     Trace,
+    /// Per trace, then the running median of the picks over
+    /// [`Settings::window`] traces: for a time zero that drifts slowly,
+    /// where the scatter of single picks is larger than the real
+    /// trace-to-trace change.
+    Smooth,
 }
 
 impl fmt::Display for Scope {
@@ -92,6 +97,7 @@ impl fmt::Display for Scope {
         f.write_str(match self {
             Scope::Global => "global",
             Scope::Trace => "trace",
+            Scope::Smooth => "smooth",
         })
     }
 }
@@ -102,7 +108,8 @@ impl FromStr for Scope {
         match s {
             "global" => Ok(Scope::Global),
             "trace" => Ok(Scope::Trace),
-            _ => Err("expected `global` or `trace`".into()),
+            "smooth" => Ok(Scope::Smooth),
+            _ => Err("expected `global`, `trace` or `smooth`".into()),
         }
     }
 }
@@ -194,6 +201,20 @@ impl FromStr for Reference {
     }
 }
 
+/// How to pick time zero: everything `zero_corr` takes except `legacy`'s
+/// factor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Settings {
+    pub method: Method,
+    pub scope: Scope,
+    /// `first_break`'s threshold, in noise standard deviations.
+    pub sigma: f32,
+    pub time_zero: Reference,
+    pub margin: Margin,
+    /// Traces in the running median of [`Scope::Smooth`].
+    pub window: usize,
+}
+
 /// The result of a pick. Every trace keeps the same number of samples
 /// above its time zero, so that time zero lands on the same row in all of
 /// them and they share one travel-time axis.
@@ -238,16 +259,15 @@ impl Picks {
 /// `data` is `(samples, traces)` with `dt_ns` between samples. `Ok(None)`
 /// when every trace is flat: there is no signal whose time zero could be
 /// wrong.
-#[allow(clippy::too_many_arguments)]
-pub fn pick(
-    data: &Array2<f32>,
-    method: Method,
-    scope: Scope,
-    sigma: f32,
-    reference: Reference,
-    margin: Margin,
-    dt_ns: f32,
-) -> Result<Option<Picks>, String> {
+pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Option<Picks>, String> {
+    let Settings {
+        method,
+        scope,
+        sigma,
+        time_zero: reference,
+        margin,
+        window: smooth_window,
+    } = *settings;
     if method == Method::Legacy {
         return Err("the legacy method is not a picker".into());
     }
@@ -297,7 +317,7 @@ pub fn pick(
                 .map(|o| o as isize - at as isize);
             (vec![at; data.shape()[1]], 0, distance)
         }
-        Scope::Trace => {
+        Scope::Trace | Scope::Smooth => {
             let traces: Vec<ArrayView1<f32>> = data.columns().into_iter().collect();
             let raw: Vec<Option<usize>> = traces
                 .par_iter()
@@ -323,6 +343,10 @@ pub fn pick(
             let (aligned, replaced) =
                 replace_outliers(&raw, &anchors, OUTLIER_HALF_WINDOW, tolerance)
                     .ok_or_else(|| format!("`{method}` found no direct wave in any trace"))?;
+            let aligned = match scope {
+                Scope::Smooth => running_median(&aligned, smooth_window),
+                _ => aligned,
+            };
             (aligned, replaced, distance)
         }
     };
@@ -696,6 +720,18 @@ pub fn replace_outliers(
     Some((out, replaced))
 }
 
+/// The median of the `window` values centred on each one (fewer at the
+/// ends), rounded to a sample.
+fn running_median(values: &[usize], window: usize) -> Vec<usize> {
+    let half = window / 2;
+    (0..values.len())
+        .map(|i| {
+            let near = &values[i.saturating_sub(half)..(i + half + 1).min(values.len())];
+            median(near.iter().map(|&v| v as f32).collect()).round() as usize
+        })
+        .collect()
+}
+
 /// The `q` quantile (0 to 1) by the nearest rank.
 fn percentile(mut values: Vec<f32>, q: f32) -> f32 {
     if values.is_empty() {
@@ -768,6 +804,23 @@ fn synthetic_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings(
+        method: Method,
+        scope: Scope,
+        sigma: f32,
+        time_zero: Reference,
+        margin: Margin,
+    ) -> Settings {
+        Settings {
+            method,
+            scope,
+            sigma,
+            time_zero,
+            margin,
+            window: 51,
+        }
+    }
     use ndarray::Array2;
 
     fn radargram(onsets: &[usize], amplitude: f32) -> Array2<f32> {
@@ -793,11 +846,7 @@ mod tests {
         for method in [Method::Aic, Method::FirstBreak, Method::Coppens] {
             let picks = pick(
                 &data,
-                method,
-                Scope::Trace,
-                5.,
-                Reference::Onset,
-                Margin::Auto,
+                &settings(method, Scope::Trace, 5., Reference::Onset, Margin::Auto),
                 1.,
             )
             .unwrap()
@@ -809,9 +858,13 @@ mod tests {
         // The peak of a sine starting at 40 is a quarter period later.
         for method in [Method::MaxPeak, Method::Coppens] {
             for scope in [Scope::Global, Scope::Trace] {
-                let peaks = pick(&data, method, scope, 5., Reference::Peak, Margin::Auto, 1.)
-                    .unwrap()
-                    .unwrap();
+                let peaks = pick(
+                    &data,
+                    &settings(method, scope, 5., Reference::Peak, Margin::Auto),
+                    1.,
+                )
+                .unwrap()
+                .unwrap();
                 for &p in &peaks.time_zero {
                     assert!((42..=46).contains(&p), "{method}, {scope}: peak at {p}");
                 }
@@ -826,11 +879,13 @@ mod tests {
         let data = radargram(&onsets, 1000.);
         let picks = pick(
             &data,
-            Method::MaxPeak,
-            Scope::Trace,
-            5.,
-            Reference::Onset,
-            Margin::Auto,
+            &settings(
+                Method::MaxPeak,
+                Scope::Trace,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+            ),
             1.,
         )
         .unwrap()
@@ -851,11 +906,7 @@ mod tests {
         for method in [Method::Aic, Method::FirstBreak, Method::Coppens] {
             let base = pick(
                 &data,
-                method,
-                Scope::Trace,
-                5.,
-                Reference::Onset,
-                Margin::Auto,
+                &settings(method, Scope::Trace, 5., Reference::Onset, Margin::Auto),
                 1.,
             )
             .unwrap()
@@ -865,11 +916,7 @@ mod tests {
                 base,
                 pick(
                     &scaled,
-                    method,
-                    Scope::Trace,
-                    5.,
-                    Reference::Onset,
-                    Margin::Auto,
+                    &settings(method, Scope::Trace, 5., Reference::Onset, Margin::Auto),
                     1.
                 )
                 .unwrap()
@@ -879,11 +926,7 @@ mod tests {
             );
             let clip = pick(
                 &clipped,
-                method,
-                Scope::Trace,
-                5.,
-                Reference::Onset,
-                Margin::Auto,
+                &settings(method, Scope::Trace, 5., Reference::Onset, Margin::Auto),
                 1.,
             )
             .unwrap()
@@ -904,11 +947,13 @@ mod tests {
         let data = radargram(&onsets, 1000.);
         let picks = pick(
             &data,
-            Method::Aic,
-            Scope::Trace,
-            5.,
-            Reference::Onset,
-            Margin::Auto,
+            &settings(
+                Method::Aic,
+                Scope::Trace,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+            ),
             1.,
         )
         .unwrap()
@@ -937,9 +982,13 @@ mod tests {
             Method::Coppens,
         ] {
             for scope in [Scope::Global, Scope::Trace] {
-                let picks = pick(&data, method, scope, 5., Reference::Onset, Margin::Auto, 1.)
-                    .unwrap()
-                    .unwrap();
+                let picks = pick(
+                    &data,
+                    &settings(method, scope, 5., Reference::Onset, Margin::Auto),
+                    1.,
+                )
+                .unwrap()
+                .unwrap();
                 assert!(
                     picks.time_zero.iter().all(|&p| p < 60),
                     "{method}, {scope}: {:?}",
@@ -989,11 +1038,7 @@ mod tests {
         for scope in [Scope::Global, Scope::Trace] {
             let peak = pick(
                 &data,
-                Method::MaxPeak,
-                scope,
-                5.,
-                Reference::Peak,
-                Margin::Auto,
+                &settings(Method::MaxPeak, scope, 5., Reference::Peak, Margin::Auto),
                 1.,
             )
             .unwrap()
@@ -1010,11 +1055,13 @@ mod tests {
         // Nothing to keep for a method that already picks the start.
         let start = pick(
             &data,
-            Method::Coppens,
-            Scope::Trace,
-            5.,
-            Reference::Onset,
-            Margin::Auto,
+            &settings(
+                Method::Coppens,
+                Scope::Trace,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+            ),
             1.,
         )
         .unwrap()
@@ -1028,11 +1075,13 @@ mod tests {
         let data = radargram(&[40; 5], 1000.);
         let picks = pick(
             &data,
-            Method::Coppens,
-            Scope::Global,
-            5.,
-            Reference::Onset,
-            Margin::Ns(10.),
+            &settings(
+                Method::Coppens,
+                Scope::Global,
+                5.,
+                Reference::Onset,
+                Margin::Ns(10.),
+            ),
             2.,
         )
         .unwrap()
@@ -1040,11 +1089,13 @@ mod tests {
         assert_eq!(picks.margin, 5, "10 ns at 2 ns per sample");
         let picks = pick(
             &data,
-            Method::Coppens,
-            Scope::Global,
-            5.,
-            Reference::Onset,
-            Margin::Ns(1000.),
+            &settings(
+                Method::Coppens,
+                Scope::Global,
+                5.,
+                Reference::Onset,
+                Margin::Ns(1000.),
+            ),
             1.,
         )
         .unwrap()
@@ -1081,11 +1132,13 @@ mod tests {
         }
         let picks = pick(
             &data,
-            Method::MaxPeak,
-            Scope::Trace,
-            5.,
-            Reference::Peak,
-            Margin::Auto,
+            &settings(
+                Method::MaxPeak,
+                Scope::Trace,
+                5.,
+                Reference::Peak,
+                Margin::Auto,
+            ),
             1.,
         )
         .unwrap()
@@ -1106,11 +1159,13 @@ mod tests {
         let pick_at = |d: &Array2<f32>| {
             pick(
                 d,
-                Method::MaxPeak,
-                Scope::Global,
-                5.,
-                Reference::Peak,
-                Margin::Auto,
+                &settings(
+                    Method::MaxPeak,
+                    Scope::Global,
+                    5.,
+                    Reference::Peak,
+                    Margin::Auto,
+                ),
                 1.,
             )
             .unwrap()
@@ -1120,17 +1175,96 @@ mod tests {
         assert_eq!(pick_at(&data), pick_at(&flipped));
     }
 
+    /// Traces with onsets `onsets` and noise at `noise` of the amplitude.
+    fn noisy_radargram(onsets: &[usize], noise: f32) -> Array2<f32> {
+        let mut data = Array2::<f32>::zeros((200, onsets.len()));
+        for (j, &onset) in onsets.iter().enumerate() {
+            data.column_mut(j).assign(&synthetic_trace(
+                200,
+                onset,
+                1000.,
+                1000. * noise,
+                j as u64 + 7,
+            ));
+        }
+        data
+    }
+
+    fn mean_error(picks: &[usize], truth: &[usize]) -> f32 {
+        picks
+            .iter()
+            .zip(truth)
+            .map(|(p, t)| p.abs_diff(*t) as f32)
+            .sum::<f32>()
+            / picks.len() as f32
+    }
+
+    /// The standard deviation of `picks - truth`: scatter, not a constant
+    /// offset between what a picker calls the onset and the synthetic one.
+    fn scatter(picks: &[usize], truth: &[usize]) -> f32 {
+        let d: Vec<f32> = picks
+            .iter()
+            .zip(truth)
+            .map(|(p, t)| *p as f32 - *t as f32)
+            .collect();
+        let mean = d.iter().sum::<f32>() / d.len() as f32;
+        (d.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / d.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn smoothing_follows_a_slow_drift_more_closely_than_single_picks() {
+        // Time zero drifts by 8 samples over 400 traces, and the noise makes
+        // single picks scatter around it.
+        let onsets: Vec<usize> = (0..400).map(|i| 40 + i * 8 / 400).collect();
+        let data = noisy_radargram(&onsets, 0.6);
+        let error = |scope| {
+            let picks = pick(
+                &data,
+                &settings(Method::Coppens, scope, 5., Reference::Onset, Margin::Auto),
+                1.,
+            )
+            .unwrap()
+            .unwrap();
+            scatter(&picks.time_zero, &onsets)
+        };
+        let (trace, smooth) = (error(Scope::Trace), error(Scope::Smooth));
+        assert!(smooth < 0.8 * trace, "smooth {smooth} vs trace {trace}");
+    }
+
+    #[test]
+    fn smoothing_flattens_real_jumps_between_traces() {
+        // The trade-off, pinned: where every third trace really arrives 8
+        // samples late, `trace` follows it and `smooth` cannot.
+        let onsets: Vec<usize> = (0..120).map(|i| if i % 3 == 2 { 48 } else { 40 }).collect();
+        let data = noisy_radargram(&onsets, 0.01);
+        let picks = |scope| {
+            pick(
+                &data,
+                &settings(Method::Coppens, scope, 5., Reference::Onset, Margin::Auto),
+                1.,
+            )
+            .unwrap()
+            .unwrap()
+            .time_zero
+        };
+        assert!(mean_error(&picks(Scope::Trace), &onsets) <= 1.);
+        let smooth = picks(Scope::Smooth);
+        assert!(smooth.iter().all(|&p| p.abs_diff(40) <= 1), "{smooth:?}");
+    }
+
     #[test]
     fn a_flat_radargram_has_nothing_to_pick() {
         let data = Array2::from_elem((50, 4), 7_f32);
         assert_eq!(
             pick(
                 &data,
-                Method::Aic,
-                Scope::Trace,
-                5.,
-                Reference::Onset,
-                Margin::Auto,
+                &settings(
+                    Method::Aic,
+                    Scope::Trace,
+                    5.,
+                    Reference::Onset,
+                    Margin::Auto
+                ),
                 1.
             ),
             Ok(None)
@@ -1143,11 +1277,7 @@ mod tests {
         for method in [Method::FirstBreak, Method::Coppens] {
             let err = pick(
                 &data,
-                method,
-                Scope::Global,
-                5.,
-                Reference::Onset,
-                Margin::Auto,
+                &settings(method, Scope::Global, 5., Reference::Onset, Margin::Auto),
                 1.,
             )
             .unwrap_err();

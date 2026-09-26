@@ -119,17 +119,21 @@ pub enum Step {
     /// distance between the two over the traces, so every method means the
     /// same time zero by default.
     ///
-    /// `scope` is `global`, one time zero from the mean trace, or `trace`,
-    /// one per trace. Per-trace picks that stray from their neighbours by
-    /// more than three quarters of a period, and whose distance to the
-    /// other end of their own direct wave is also unusual, are replaced,
-    /// and the bottom is trimmed so that no trace is zero-padded.
+    /// `scope` is `global`, one time zero from the mean trace; `trace`, one
+    /// per trace; or `smooth`, one per trace from the running median of the
+    /// per-trace picks over `window` traces, for a time zero that drifts
+    /// slowly and would otherwise gain the scatter of single picks.
+    /// Per-trace picks that stray from their neighbours by more than three
+    /// quarters of a period, and whose distance to the other end of their
+    /// own direct wave is also unusual, are replaced, and the bottom is
+    /// trimmed so that no trace is zero-padded.
     ///
     /// `margin` keeps some record above time zero, the same amount in every
     /// trace, and the travel times of those samples are negative. `auto`
     /// keeps back to where the direct wave starts: nothing with
     /// `time_zero=onset`, and the start of the wavelet with `time_zero=peak`.
     /// Examples: `zero_corr(coppens, trace)`, `zero_corr(max_peak, trace)`,
+    /// `zero_corr(coppens, smooth, window=101)`,
     /// `zero_corr(max_peak, trace, time_zero=peak)`,
     /// `zero_corr(coppens, margin=5)`, `zero_corr(first_break, sigma=4)`,
     /// `zero_corr(legacy, factor=0.9)`.
@@ -156,6 +160,11 @@ pub enum Step {
         /// the direct wave starts, or a number of nanoseconds.
         #[arg(long, default_value = "auto")]
         margin: zero_corr::Margin,
+        /// `smooth` only: how many traces the running median of the picks
+        /// spans.
+        #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_SMOOTH_WINDOW,
+              value_parser = clap::value_parser!(u32).range(2..))]
+        window: u32,
     },
     /// Apply a bandpass Butterworth filter to each trace individually.
     ///
@@ -624,8 +633,9 @@ pub fn resolve(raw: &RawStep) -> Result<ParsedStep, StepError> {
         .subcommand_matches(&raw.name)
         .ok_or_else(|| at_step(format!("clap lost the step `{}`", raw.name)))?;
     step.validate().map_err(at_step)?;
-    let (setting, unused) = step.unused_args().unwrap_or_default();
-    for name in unused {
+    let unused = step.unused_args();
+    for (name, setting) in &unused {
+        let name = *name;
         if sub_matches.value_source(name) == Some(clap::parser::ValueSource::CommandLine) {
             let span = raw
                 .args
@@ -644,7 +654,7 @@ pub fn resolve(raw: &RawStep) -> Result<ParsedStep, StepError> {
     }
     let canonical_args: Vec<String> = arg_names
         .iter()
-        .filter(|name| !unused.contains(&name.as_str()))
+        .filter(|name| !unused.iter().any(|(unused, _)| unused == name))
         .filter_map(|name| {
             let values: Vec<String> = sub_matches
                 .get_raw(name)?
@@ -735,7 +745,7 @@ impl Step {
         match self {
             Step::ZeroCorr {
                 method: zero_corr::Method::Legacy,
-                scope: zero_corr::Scope::Trace,
+                scope: zero_corr::Scope::Trace | zero_corr::Scope::Smooth,
                 ..
             } => Err(
                 "`zero_corr(legacy)` only has a global scope; for a per-trace correction, \
@@ -746,20 +756,27 @@ impl Step {
         }
     }
 
-    /// Arguments that the other arguments make meaningless, and the setting
-    /// responsible. Giving one is an error, and they are left out of the
-    /// canonical form.
-    fn unused_args(&self) -> Option<(String, &'static [&'static str])> {
+    /// Arguments that the other arguments make meaningless, each with the
+    /// setting responsible. Giving one is an error, and they are left out of
+    /// the canonical form.
+    fn unused_args(&self) -> Vec<(&'static str, String)> {
         match self {
-            Step::ZeroCorr { method, .. } => {
-                let unused: &'static [&'static str] = match method {
+            Step::ZeroCorr { method, scope, .. } => {
+                let by_method: &[&'static str] = match method {
                     zero_corr::Method::Legacy => &["sigma", "time_zero", "margin"],
                     zero_corr::Method::FirstBreak => &["factor"],
                     _ => &["factor", "sigma"],
                 };
-                Some((format!("method={method}"), unused))
+                let mut unused: Vec<(&'static str, String)> = by_method
+                    .iter()
+                    .map(|name| (*name, format!("method={method}")))
+                    .collect();
+                if *scope != zero_corr::Scope::Smooth {
+                    unused.push(("window", format!("scope={scope}")));
+                }
+                unused
             }
-            _ => None,
+            _ => Vec::new(),
         }
     }
 
@@ -801,7 +818,18 @@ impl Step {
                 sigma,
                 time_zero,
                 margin,
-            } => gpr.zero_corr(*method, *scope, *factor, *sigma, *time_zero, *margin)?,
+                window,
+            } => gpr.zero_corr(
+                &zero_corr::Settings {
+                    method: *method,
+                    scope: *scope,
+                    sigma: *sigma,
+                    time_zero: *time_zero,
+                    margin: *margin,
+                    window: *window as usize,
+                },
+                *factor,
+            )?,
             Step::Bandpass { low, high, q } => gpr.bandpass(*low, *high, *q, true)?,
             Step::BandpassMhz { low, high, q } => gpr.bandpass(*low, *high, *q, false)?,
             Step::EquidistantTraces { step } => gpr.make_equidistant(*step),
@@ -1139,6 +1167,10 @@ mod tests {
                 "zero_corr(method=legacy, scope=global, factor=1)",
             ),
             (
+                "zero_corr(coppens, smooth, window=101)",
+                "zero_corr(method=coppens, scope=smooth, time_zero=onset, margin=auto, window=101)",
+            ),
+            (
                 "zero_corr(first_break, trace, sigma=3)",
                 "zero_corr(method=first_break, scope=trace, sigma=3, time_zero=onset, margin=auto)",
             ),
@@ -1173,8 +1205,23 @@ mod tests {
                 "only has a global scope",
                 "zero_corr(legacy, trace)",
             ),
-            ("zero_corr(aic, both)", "`global` or `trace`", "both"),
+            (
+                "zero_corr(aic, both)",
+                "`global`, `trace` or `smooth`",
+                "both",
+            ),
             ("zero_corr(margin=-1)", "non-negative", "margin=-1"),
+            (
+                "zero_corr(aic, trace, window=11)",
+                "`window` has no effect with `scope=trace`",
+                "window=11",
+            ),
+            (
+                "zero_corr(legacy, smooth)",
+                "only has a global scope",
+                "zero_corr(legacy, smooth)",
+            ),
+            ("zero_corr(scope=smooth, window=1)", "window", "window=1"),
             (
                 "zero_corr(time_zero=middle)",
                 "`onset` or `peak`",
