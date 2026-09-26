@@ -100,11 +100,12 @@ pub enum Step {
     /// Move time zero to where the direct wave starts, and crop what came
     /// before it.
     ///
-    /// `method` decides what counts as the start. `aic` splits the record
-    /// where it best divides into noise and signal. `first_break` takes the
+    /// `method` decides what counts as the start. `coppens` takes the
+    /// steepest rise of the smoothed energy ratio. `first_break` takes the
     /// first sample more than `sigma` noise standard deviations out of the
-    /// noise. `coppens` takes the steepest rise of the smoothed energy
-    /// ratio. `max_peak` takes the largest value of the direct wave, which
+    /// noise, and mostly agrees with `coppens`. `aic` splits the record
+    /// where it best divides into noise and signal, which puts it at the
+    /// start of a gradual rise, often a sample earlier. `max_peak` takes the largest value of the direct wave, which
     /// is later than its start. `legacy` is the pre-0.7 threshold on the
     /// mean trace, and also subtracts the mean of what it crops. All but
     /// `legacy` look for the direct wave around the first strong arrival,
@@ -114,12 +115,12 @@ pub enum Step {
     /// one per trace. Per-trace picks that stray from their neighbours by
     /// more than a quarter period are replaced by the neighbours' median,
     /// and the bottom is trimmed so that no trace is zero-padded. Examples:
-    /// `zero_corr(aic, trace)`, `zero_corr(max_peak, trace)`,
+    /// `zero_corr(coppens, trace)`, `zero_corr(max_peak, trace)`,
     /// `zero_corr(first_break, sigma=4)`, `zero_corr(legacy, factor=0.9)`.
     #[command(rename_all = "snake_case")]
     ZeroCorr {
-        /// `aic`, `first_break`, `coppens`, `max_peak` or `legacy`.
-        #[arg(long, default_value = "aic")]
+        /// `coppens`, `first_break`, `aic`, `max_peak` or `legacy`.
+        #[arg(long, default_value = "coppens")]
         method: zero_corr::Method,
         /// `global` or `trace`.
         #[arg(long, default_value = "global")]
@@ -715,7 +716,7 @@ impl Step {
                 ..
             } => Err(
                 "`zero_corr(legacy)` only has a global scope; for a per-trace correction, \
-                 use another method, e.g. `zero_corr(aic, trace)`"
+                 use another method, e.g. `zero_corr(coppens, trace)`"
                     .into(),
             ),
             _ => Ok(()),
@@ -1100,7 +1101,7 @@ mod tests {
     #[test]
     fn zero_corr_records_only_the_arguments_its_method_uses() {
         for (source, canonical) in [
-            ("zero_corr", "zero_corr(method=aic, scope=global)"),
+            ("zero_corr", "zero_corr(method=coppens, scope=global)"),
             (
                 "zero_corr(max_peak, trace)",
                 "zero_corr(method=max_peak, scope=trace)",
