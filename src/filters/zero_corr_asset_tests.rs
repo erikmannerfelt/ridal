@@ -8,10 +8,9 @@
 //! interleaved sampling series ran early, and from about trace 450 of the cut
 //! it drifts later by several samples.
 //!
-//! The first 500 traces are hard for every method: the direct wave has two
-//! lobes of similar size, so `max_peak` flips between them, and the onset
-//! methods are thrown by the zig-zag. The last 1000 are where the per-trace
-//! correction plainly works. The bounds sit a little below what was measured
+//! In the first 500 traces, about every third trace arrives ~10 samples
+//! late as a whole, and the zig-zag throws the onset methods; `max_peak`
+//! follows the late traces. In the last 1000 the direct wave drifts. The bounds sit a little below what was measured
 //! when this file was added (noted beside each), so they catch a regression
 //! without pinning noise.
 
@@ -133,8 +132,13 @@ fn per_trace_picks_follow_the_jumps_rather_than_being_smoothed_away() {
 #[test]
 fn max_peak_aligns_the_drift_and_puts_time_zero_at_the_onset() {
     let gpr = processed("zero_corr(max_peak, trace)");
-    // Measured 0.85 over the last 1000 traces, against 0.60 for coppens.
+    // Measured 0.86 over the last 1000 traces, against 0.60 for coppens.
     let score = worst_alignment(&gpr, 120, 500..1500);
+    assert!(score > 0.75, "{score}");
+    // In the first 500, about every third trace arrives ~10 samples late as
+    // a whole. The peaks follow it; an outlier tolerance of a quarter period
+    // replaced those correct picks and left this at 0.29 (now 0.87).
+    let score = worst_alignment(&gpr, 120, 0..500);
     assert!(score > 0.75, "{score}");
 
     // Time zero is at the start of the direct wave, as for the onset

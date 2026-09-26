@@ -114,7 +114,7 @@ const MIN_NOISE_SAMPLES: usize = 4;
 const OUTLIER_HALF_WINDOW: usize = 25;
 
 /// Where the direct wave sits. Shared by every picker except `legacy`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Window {
     /// Samples before this are pre-signal noise (exclusive end).
     pub noise_end: usize,
@@ -126,6 +126,10 @@ pub struct Window {
     /// Pickers look for a trace's direct wave no later than this
     /// (exclusive).
     pub end: usize,
+    /// The sign of the direct wave's largest value in most traces, `1.` or
+    /// `-1.`. The peak is looked for with this sign in every trace, so that
+    /// it cannot jump to an opposite lobe of similar size.
+    pub polarity: f32,
 }
 
 /// How much of the record to keep above time zero.
@@ -310,7 +314,12 @@ pub fn pick(
                 .filter_map(|(p, a)| Some((*a)? as f32 - (*p)? as f32))
                 .collect();
             let distance = (!distances.is_empty()).then(|| median(distances).round() as isize);
-            let tolerance = (window.half_period as f32 / 2.).max(1.);
+            // Three quarters of a period: a real trace-to-trace jump can
+            // be most of a half period (the Scott Turnerbreen asset has
+            // whole traces arriving ~10 samples late, with a half period of
+            // 9), while a pick that slipped a cycle is a full period off.
+            // A quarter period replaced the late traces' correct picks.
+            let tolerance = (1.5 * window.half_period as f32).max(1.);
             let (aligned, replaced) =
                 replace_outliers(&raw, &anchors, OUTLIER_HALF_WINDOW, tolerance)
                     .ok_or_else(|| format!("`{method}` found no direct wave in any trace"))?;
@@ -383,11 +392,34 @@ pub fn find_window(data: &Array2<f32>) -> Result<Option<Window>, String> {
     let peak = median(peaks.clone()).round() as usize;
     let earliest_onset = percentile(onsets, 0.05).round() as usize;
     let latest_peak = percentile(peaks, 0.95).round() as usize;
+    let noise_end = earliest_onset.saturating_sub(half_period).min(peak);
+    let end = (latest_peak + 2 * half_period + 1).min(n);
+
+    // A vote rather than the mean trace's sign, so that a few traces with
+    // a large opposite lobe cannot decide it, and traces that wander do not
+    // cancel out.
+    let positive = traces
+        .par_iter()
+        .filter(|trace| {
+            let dc = median(trace.iter().copied().collect());
+            let largest = trace
+                .slice(ndarray::s![noise_end..end])
+                .iter()
+                .map(|v| v - dc)
+                .fold(0_f32, |a, v| if v.abs() > a.abs() { v } else { a });
+            largest > 0.
+        })
+        .count();
     Ok(Some(Window {
-        noise_end: earliest_onset.saturating_sub(half_period).min(peak),
+        noise_end,
         peak,
         half_period,
-        end: (latest_peak + 2 * half_period + 1).min(n),
+        end,
+        polarity: if 2 * positive >= traces.len() {
+            1.
+        } else {
+            -1.
+        },
     }))
 }
 
@@ -454,13 +486,15 @@ pub fn pick_trace(
     };
     let centred = trace.mapv(|v| v - mean);
 
-    // This trace's own direct-wave peak. `max_by` would return the last of
-    // equal values; the first sample of a clipped plateau is the one wanted.
+    // This trace's own direct-wave peak: the largest value with the
+    // radargram's polarity, so it cannot jump to an opposite lobe of
+    // similar size. `max_by` would return the last of equal values; the
+    // first sample of a clipped plateau is the one wanted.
     let start = window.noise_end.min(n);
     let end = window.end.min(n);
     let mut peak = start;
     for i in start..end {
-        if centred[i].abs() > centred[peak].abs() {
+        if centred[i] * window.polarity > centred[peak] * window.polarity {
             peak = i;
         }
     }
@@ -1032,6 +1066,58 @@ mod tests {
         let (_, found, half_period) = direct_wave(trace.view()).unwrap();
         assert_eq!(found, peak);
         assert!((5..=7).contains(&half_period), "{half_period}");
+    }
+
+    #[test]
+    fn the_peak_keeps_the_polarity_most_traces_have() {
+        // The synthetic wavelet's first lobe is negative and its largest.
+        // In three traces the positive lobe after it is doubled, so it is
+        // their largest absolute value: the peak must still be negative.
+        let mut data = radargram(&[40; 12], 1000.);
+        for j in 0..3 {
+            data.column_mut(j)
+                .slice_mut(ndarray::s![46..53])
+                .mapv_inplace(|v| 3000. + 2. * (v - 3000.));
+        }
+        let picks = pick(
+            &data,
+            Method::MaxPeak,
+            Scope::Trace,
+            5.,
+            Reference::Peak,
+            Margin::Auto,
+            1.,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(picks.window.polarity, -1.);
+        for &p in &picks.time_zero {
+            assert!((42..=44).contains(&p), "peak at {p}");
+        }
+    }
+
+    #[test]
+    fn the_polarity_can_be_negative_or_positive() {
+        let data = radargram(&[40; 5], 1000.);
+        let flipped = data.mapv(|v| 6000. - v);
+        let window = |d: &Array2<f32>| find_window(d).unwrap().unwrap();
+        assert_eq!(window(&data).polarity, -1.);
+        assert_eq!(window(&flipped).polarity, 1.);
+        let pick_at = |d: &Array2<f32>| {
+            pick(
+                d,
+                Method::MaxPeak,
+                Scope::Global,
+                5.,
+                Reference::Peak,
+                Margin::Auto,
+                1.,
+            )
+            .unwrap()
+            .unwrap()
+            .time_zero[0]
+        };
+        assert_eq!(pick_at(&data), pick_at(&flipped));
     }
 
     #[test]

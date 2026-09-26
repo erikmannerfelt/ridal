@@ -106,8 +106,9 @@ pub enum Step {
     /// `sigma` noise standard deviations out of the noise, and mostly agrees
     /// with `coppens`. `aic` splits the record where it best divides into
     /// noise and signal, which puts it at the start of a gradual rise, often
-    /// a sample earlier. `max_peak` takes the direct wave's largest value,
-    /// which survives noisy or corrupted first samples best. `legacy` is the
+    /// a sample earlier. `max_peak` takes the direct wave's largest value
+    /// with the sign that most traces' largest value has, and survives
+    /// noisy or corrupted first samples best. `legacy` is the
     /// pre-0.7 threshold on the mean trace, and also subtracts the mean of
     /// what it crops. All but `legacy` look for the direct wave around the
     /// first strong arrival, and none of them depend on the amplitude scale.
@@ -120,7 +121,8 @@ pub enum Step {
     ///
     /// `scope` is `global`, one time zero from the mean trace, or `trace`,
     /// one per trace. Per-trace picks that stray from their neighbours by
-    /// more than a quarter period are replaced by the neighbours' median,
+    /// more than three quarters of a period, and whose distance to the
+    /// other end of their own direct wave is also unusual, are replaced,
     /// and the bottom is trimmed so that no trace is zero-padded.
     ///
     /// `margin` keeps some record above time zero, the same amount in every
