@@ -4,10 +4,7 @@ use ndarray::{Array1, Array2, ArrayView1};
 use num::Float;
 use rayon::prelude::*;
 /// Miscellaneous functions that are used in other parts of the program
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::path::PathBuf;
 
 /// Parse a provided step list (or filepath to a step list)
 ///
@@ -17,15 +14,7 @@ use std::{
 /// # Returns
 /// Formatted steps either from the string itself or from the parsed file.
 pub fn parse_step_list(steps: &str) -> Result<Vec<String>, String> {
-    let filepath = Path::new(steps);
-    if filepath.is_file() {
-        match crate::tools::read_text(&filepath.to_path_buf()) {
-            Ok(s) => Ok(s),
-            Err(e) => Err(format!("Tried to read step file but failed: {e:?}")),
-        }
-    } else {
-        Ok(steps.split(',').map(|s| s.trim().to_string()).collect())
-    }
+    crate::steps::split_step_list(steps)
 }
 
 /// Read a text file and return all lines as a vec
@@ -181,62 +170,6 @@ pub fn seconds_to_rfc3339(seconds: f64) -> String {
     chrono::DateTime::from_timestamp(seconds as i64, (seconds.fract() * 1e9) as u32)
         .unwrap()
         .to_rfc3339()
-}
-
-/// Parse the options (arguments) of a user-supplied step
-///
-/// # Arguments
-/// - `string`: The string to parse
-/// - `argument_index`: The expected index of the argument
-///
-/// # Examples
-/// ```
-/// assert_eq!(parse_option::<u32>("dewow(5)", 0), Ok(Some(5)));
-/// assert_eq!(parse_option::<f32>("some_fancy_step(1 2.0)", 1), Ok(Some(2.0)));
-/// assert_eq!(parse_option::<f32>("some_fancy_step", 1), Ok(None));
-///
-/// ```
-///
-/// # Returns
-/// - Ok(Some(x)) where x is the successfully parsed argument
-/// - Ok(None) if there is no argument in the string
-/// - Err(e) if the argument could not be parsed
-pub fn parse_option<T: FromStr>(string: &str, argument_index: usize) -> Result<Option<T>, String> {
-    match string.split_once('(') {
-        None => Ok(None),
-        Some((_, first_part)) => {
-            match first_part.split_once(')') {
-                Some((within_parentheses, _)) => {
-                    // Replace has to be run twice, as it may be an odd number of whitespaces:
-                    // "_-_-_" => "_-_" => "_"
-                    let removed_consecutive_whitespace =
-                        within_parentheses.replace("  ", " ").replace("  ", " ");
-
-                    let arguments = removed_consecutive_whitespace
-                        .split(' ')
-                        .collect::<Vec<&str>>();
-
-                    match arguments.get(argument_index) {
-                        Some(s) => match s.trim().parse::<T>() {
-                            Ok(v) => Ok(Some(v)),
-                            Err(_) => Err(format!(
-                                "Could not parse argument {} as value in string {}: {}",
-                                argument_index, string, s
-                            )),
-                        },
-                        None => Err(format!(
-                            "Argument {} out of bounds in string: {}",
-                            argument_index, string
-                        )),
-                    }
-                }
-                None => Err(format!(
-                    "String: {} has opening parenthesis but not closing",
-                    string
-                )),
-            }
-        }
-    }
 }
 
 pub enum Axis2D {
@@ -572,39 +505,6 @@ mod tests {
             super::interpolate_values(time0, &coord0, time1, &coord1, 0.5),
             vec![2.5, 5.0, 7.5]
         )
-    }
-
-    #[test]
-    fn test_parse_option() {
-        assert_eq!(super::parse_option::<u32>("dewow", 0), Ok(None));
-        assert_eq!(super::parse_option::<u32>("dewow(1)", 0), Ok(Some(1_u32)));
-        assert_eq!(
-            super::parse_option::<f32>("dewow(1 2.0)", 1),
-            Ok(Some(2_f32))
-        );
-        assert_eq!(
-            super::parse_option::<i64>("dewow(1  -2)", 1),
-            Ok(Some(-2_i64))
-        );
-        assert_eq!(
-            super::parse_option::<i64>("kirchoff_migration2d    (1    -2)    ", 1),
-            Ok(Some(-2_i64))
-        );
-
-        assert!(super::parse_option::<f32>("dewow(", 0)
-            .unwrap_err()
-            .contains("opening parenthesis but not closing"));
-        assert!(super::parse_option::<f32>("dewow(1)", 1)
-            .unwrap_err()
-            .contains("Argument 1 out of bounds"));
-
-        assert!(super::parse_option::<f32>("dewow(1,1.0)", 1)
-            .unwrap_err()
-            .contains("Argument 1 out of bounds"));
-
-        assert!(super::parse_option::<f32>("dewow(1 1,1)", 1)
-            .unwrap_err()
-            .contains("Could not parse argument 1"));
     }
 
     #[test]

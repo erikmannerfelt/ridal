@@ -26,6 +26,7 @@ mod render;
 #[cfg(feature = "server")]
 mod server;
 mod source;
+mod steps;
 mod tools;
 mod user_metadata;
 
