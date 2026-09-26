@@ -47,7 +47,7 @@ Move time zero to where the direct wave starts, and crop what came before it.
 
 `method` decides how each trace's direct wave is found, and so what the traces are aligned on. `coppens` takes the steepest rise of the smoothed energy ratio. `first_break` takes the first sample more than `sigma` noise standard deviations out of the noise, and mostly agrees with `coppens`. `aic` splits the record where it best divides into noise and signal, which puts it at the start of a gradual rise, often a sample earlier. `max_peak` takes the direct wave's largest value, which survives noisy or corrupted first samples best. `legacy` is the pre-0.7 threshold on the mean trace, and also subtracts the mean of what it crops. All but `legacy` look for the direct wave around the first strong arrival, and none of them depend on the amplitude scale.
 
-`time_zero` says which feature of the direct wave time zero goes on, `onset` or `peak`, whichever method aligned the traces. When the method finds the other feature, the distance between the two is measured once, on the traces stacked on their picks, so every method means the same time zero by default.
+`time_zero` says which feature of the direct wave time zero goes on, `onset` or `peak`, whichever method aligned the traces. When the method finds the other feature, time zero moves by the median distance between the two over the traces, so every method means the same time zero by default.
 
 `scope` is `global`, one time zero from the mean trace, or `trace`, one per trace. Per-trace picks that stray from their neighbours by more than a quarter period are replaced by the neighbours' median, and the bottom is trimmed so that no trace is zero-padded.
 

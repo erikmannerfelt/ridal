@@ -206,9 +206,9 @@ pub struct Picks {
     /// Per-trace picks that disagreed with their neighbours, or failed, and
     /// were replaced by the neighbours' median.
     pub replaced: usize,
-    /// Samples from the feature the traces were aligned on to time zero,
-    /// measured on the aligned stack. Zero when the method picks the
-    /// requested reference itself.
+    /// Samples from the feature the traces were aligned on to time zero:
+    /// the median over the traces of the distance between the two. Zero
+    /// when the method picks the requested reference itself.
     pub shift: isize,
     pub window: Window,
 }
@@ -225,11 +225,11 @@ impl Picks {
 ///
 /// The method's own picks decide the alignment: each trace moves so that its
 /// pick lands on the same row. Time zero is then put on `reference`. When
-/// the method picks another feature -- the peak, for an onset -- the distance
-/// between the two is measured once, on the traces stacked on their picks,
-/// where the direct wave is sharp and the noise has averaged away. So
+/// the method picks the other feature -- the peak, for an onset -- time zero
+/// is moved by the median distance from each trace's pick to that trace's
+/// `reference`, found by the picker the other methods use. So
 /// `zero_corr(max_peak)` aligns on the peaks, which survive noisy onsets,
-/// but still puts time zero where the direct wave starts.
+/// but puts time zero where `zero_corr(coppens)` would, on average.
 ///
 /// `data` is `(samples, traces)` with `dt_ns` between samples. `Ok(None)`
 /// when every trace is flat: there is no signal whose time zero could be
@@ -273,11 +273,25 @@ pub fn pick(
         _ => Reference::Onset,
     };
 
-    let (aligned, replaced) = match scope {
+    // The other feature of the direct wave: its peak for a method that picks
+    // the start, and the start for `max_peak`.
+    let other_method = match picks {
+        Reference::Onset => Method::MaxPeak,
+        Reference::Peak => onset_method,
+    };
+
+    // Also returns the distance from each pick to the other feature, as the
+    // same pickers see it: one number, the median over the traces for the
+    // trace scope. Measuring it on the aligned stack instead found weak
+    // early arrivals that stacking brings out and no single trace shows, so
+    // `max_peak` put time zero at an onset no onset method would pick.
+    let (aligned, replaced, distance) = match scope {
         Scope::Global => {
             let at = pick_trace(stack.view(), method, &window, sigma)
                 .ok_or_else(|| format!("`{method}` found no direct wave in the mean trace"))?;
-            (vec![at; data.shape()[1]], 0)
+            let distance = pick_trace(stack.view(), other_method, &window, sigma)
+                .map(|o| o as isize - at as isize);
+            (vec![at; data.shape()[1]], 0, distance)
         }
         Scope::Trace => {
             let traces: Vec<ArrayView1<f32>> = data.columns().into_iter().collect();
@@ -285,44 +299,36 @@ pub fn pick(
                 .par_iter()
                 .map(|trace| pick_trace(*trace, method, &window, sigma))
                 .collect();
-            // The other end of the direct wave, to check each pick against.
-            let anchor_method = match picks {
-                Reference::Onset => Method::MaxPeak,
-                Reference::Peak => onset_method,
-            };
+            // Also what each pick is checked against.
             let anchors: Vec<Option<usize>> = traces
                 .par_iter()
-                .map(|trace| pick_trace(*trace, anchor_method, &window, sigma))
+                .map(|trace| pick_trace(*trace, other_method, &window, sigma))
                 .collect();
+            let distances: Vec<f32> = raw
+                .iter()
+                .zip(&anchors)
+                .filter_map(|(p, a)| Some((*a)? as f32 - (*p)? as f32))
+                .collect();
+            let distance = (!distances.is_empty()).then(|| median(distances).round() as isize);
             let tolerance = (window.half_period as f32 / 2.).max(1.);
-            replace_outliers(&raw, &anchors, OUTLIER_HALF_WINDOW, tolerance)
-                .ok_or_else(|| format!("`{method}` found no direct wave in any trace"))?
+            let (aligned, replaced) =
+                replace_outliers(&raw, &anchors, OUTLIER_HALF_WINDOW, tolerance)
+                    .ok_or_else(|| format!("`{method}` found no direct wave in any trace"))?;
+            (aligned, replaced, distance)
         }
     };
 
-    // The direct wave's start and peak on the aligned stack, relative to
-    // the row the picks landed on.
-    let (stacked, origin) = aligned_stack(data, &aligned);
-    let stacked = stacked.insert_axis(Axis(1));
-    let stack_window = find_window(&stacked)?.unwrap_or(window);
-    let stacked = stacked.column(0);
-    let locate = |method: Method| {
-        pick_trace(stacked, method, &stack_window, sigma)
-            .map(|at| at as isize - origin as isize)
-            .ok_or_else(|| format!("found no direct wave in the stack aligned by `{method}`"))
+    // From the picks to each feature.
+    let to = |feature: Reference| -> Result<isize, String> {
+        if feature == picks {
+            return Ok(0);
+        }
+        distance.ok_or_else(|| {
+            format!("`{method}` found no direct-wave {feature} to measure time zero from")
+        })
     };
-    let onset = match picks {
-        Reference::Onset => 0,
-        Reference::Peak => locate(onset_method)?,
-    };
-    let peak = match picks {
-        Reference::Peak => 0,
-        Reference::Onset => locate(Method::MaxPeak)?,
-    };
-    let shift = match reference {
-        Reference::Onset => onset,
-        Reference::Peak => peak,
-    };
+    let onset = to(Reference::Onset)?;
+    let shift = to(reference)?;
     // Back to the start of the direct wave.
     let auto = (shift - onset).max(0) as usize;
 
@@ -346,35 +352,6 @@ pub fn pick(
         shift,
         window,
     }))
-}
-
-/// The mean of the traces shifted so that their picks line up, and the row
-/// the picks are on.
-///
-/// Each row averages the traces that have it, so the stack reaches as far
-/// before the picks as the trace with the latest pick does. Stopping where
-/// every trace has data would leave only as much lead-in as the earliest
-/// pick, which can be too little noise for an onset picker to measure.
-fn aligned_stack(data: &Array2<f32>, picks: &[usize]) -> (ndarray::Array1<f32>, usize) {
-    let height = data.shape()[0];
-    let origin = picks.iter().copied().max().unwrap_or(0);
-    let last = picks.iter().copied().min().unwrap_or(0);
-    let length = origin + height - last;
-    let mut sum = vec![0_f64; length];
-    let mut count = vec![0_u32; length];
-    for (trace, &at) in data.columns().into_iter().zip(picks) {
-        let start = origin - at;
-        for (i, v) in trace.iter().enumerate() {
-            sum[start + i] += *v as f64;
-            count[start + i] += 1;
-        }
-    }
-    let mean = sum
-        .iter()
-        .zip(&count)
-        .map(|(s, &c)| if c == 0 { 0. } else { (s / c as f64) as f32 })
-        .collect();
-    (mean, origin)
 }
 
 /// Locate the direct wave from every trace's own first strong lobe.
@@ -1055,20 +1032,6 @@ mod tests {
         let (_, found, half_period) = direct_wave(trace.view()).unwrap();
         assert_eq!(found, peak);
         assert!((5..=7).contains(&half_period), "{half_period}");
-    }
-
-    #[test]
-    fn the_aligned_stack_keeps_the_longest_lead_in() {
-        // Two traces with a spike at rows 2 and 6: aligned, the stack must
-        // reach 6 rows before the spike, not stop at the 2 the first one has.
-        let mut data = Array2::<f32>::zeros((10, 2));
-        data[[2, 0]] = 1.;
-        data[[6, 1]] = 1.;
-        let (stack, origin) = aligned_stack(&data, &[2, 6]);
-        assert_eq!(origin, 6);
-        assert_eq!(stack.len(), 14);
-        assert_eq!(stack[origin], 1.);
-        assert_eq!(stack.iter().filter(|&&v| v != 0.).count(), 1);
     }
 
     #[test]

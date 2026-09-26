@@ -956,7 +956,7 @@ impl GPR {
         } else {
             format!(
                 "; time zero is at the {reference}, {} samples ({:.2} ns) from the traces' \
-                 aligned picks, as measured on their stack",
+                 aligned picks (the median distance over the traces)",
                 picks.shift,
                 picks.shift as f32 * step_ns
             )

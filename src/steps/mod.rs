@@ -114,9 +114,9 @@ pub enum Step {
     ///
     /// `time_zero` says which feature of the direct wave time zero goes on,
     /// `onset` or `peak`, whichever method aligned the traces. When the
-    /// method finds the other feature, the distance between the two is
-    /// measured once, on the traces stacked on their picks, so every method
-    /// means the same time zero by default.
+    /// method finds the other feature, time zero moves by the median
+    /// distance between the two over the traces, so every method means the
+    /// same time zero by default.
     ///
     /// `scope` is `global`, one time zero from the mean trace, or `trace`,
     /// one per trace. Per-trace picks that stray from their neighbours by
