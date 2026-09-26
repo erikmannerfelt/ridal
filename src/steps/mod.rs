@@ -114,8 +114,14 @@ pub enum Step {
     /// `scope` is `global`, one time zero from the mean trace, or `trace`,
     /// one per trace. Per-trace picks that stray from their neighbours by
     /// more than a quarter period are replaced by the neighbours' median,
-    /// and the bottom is trimmed so that no trace is zero-padded. Examples:
+    /// and the bottom is trimmed so that no trace is zero-padded.
+    ///
+    /// `margin` keeps some record above time zero, the same amount in every
+    /// trace, and the travel times of those samples are negative. `auto`
+    /// keeps back to where the direct wave starts: nothing for the methods
+    /// that pick the start, and the whole wavelet for `max_peak`. Examples:
     /// `zero_corr(coppens, trace)`, `zero_corr(max_peak, trace)`,
+    /// `zero_corr(coppens, margin=5)`,
     /// `zero_corr(first_break, sigma=4)`, `zero_corr(legacy, factor=0.9)`.
     #[command(rename_all = "snake_case")]
     ZeroCorr {
@@ -133,6 +139,10 @@ pub enum Step {
         /// signal.
         #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_SIGMA)]
         sigma: f32,
+        /// How much record to keep above time zero: `auto`, back to where
+        /// the direct wave starts, or a number of nanoseconds.
+        #[arg(long, default_value = "auto")]
+        margin: zero_corr::Margin,
     },
     /// Apply a bandpass Butterworth filter to each trace individually.
     ///
@@ -730,7 +740,7 @@ impl Step {
         match self {
             Step::ZeroCorr { method, .. } => {
                 let unused: &'static [&'static str] = match method {
-                    zero_corr::Method::Legacy => &["sigma"],
+                    zero_corr::Method::Legacy => &["sigma", "margin"],
                     zero_corr::Method::FirstBreak => &["factor"],
                     _ => &["factor", "sigma"],
                 };
@@ -776,7 +786,8 @@ impl Step {
                 scope,
                 factor,
                 sigma,
-            } => gpr.zero_corr(*method, *scope, *factor, *sigma)?,
+                margin,
+            } => gpr.zero_corr(*method, *scope, *factor, *sigma, *margin)?,
             Step::Bandpass { low, high, q } => gpr.bandpass(*low, *high, *q, true)?,
             Step::BandpassMhz { low, high, q } => gpr.bandpass(*low, *high, *q, false)?,
             Step::EquidistantTraces { step } => gpr.make_equidistant(*step),
@@ -1101,10 +1112,13 @@ mod tests {
     #[test]
     fn zero_corr_records_only_the_arguments_its_method_uses() {
         for (source, canonical) in [
-            ("zero_corr", "zero_corr(method=coppens, scope=global)"),
             (
-                "zero_corr(max_peak, trace)",
-                "zero_corr(method=max_peak, scope=trace)",
+                "zero_corr",
+                "zero_corr(method=coppens, scope=global, margin=auto)",
+            ),
+            (
+                "zero_corr(max_peak, trace, margin=2.5)",
+                "zero_corr(method=max_peak, scope=trace, margin=2.5)",
             ),
             (
                 "zero_corr(legacy)",
@@ -1112,7 +1126,7 @@ mod tests {
             ),
             (
                 "zero_corr(first_break, trace, sigma=3)",
-                "zero_corr(method=first_break, scope=trace, sigma=3)",
+                "zero_corr(method=first_break, scope=trace, sigma=3, margin=auto)",
             ),
         ] {
             let parsed = one(source).unwrap();
@@ -1146,6 +1160,12 @@ mod tests {
                 "zero_corr(legacy, trace)",
             ),
             ("zero_corr(aic, both)", "`global` or `trace`", "both"),
+            ("zero_corr(margin=-1)", "non-negative", "margin=-1"),
+            (
+                "zero_corr(legacy, margin=2)",
+                "`margin` has no effect with `method=legacy`",
+                "margin=2",
+            ),
         ] {
             let err = one(source).unwrap_err();
             assert!(

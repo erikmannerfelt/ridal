@@ -128,28 +128,78 @@ pub struct Window {
     pub end: usize,
 }
 
-/// The result of a pick: how many samples to remove from the top of each
-/// trace.
+/// How much of the record to keep above time zero.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Margin {
+    /// Back to where the direct wave starts: nothing for the methods that
+    /// pick the start, and the start-to-pick distance for `max_peak`, so
+    /// that the whole wavelet is kept.
+    Auto,
+    /// A fixed margin in nanoseconds.
+    Ns(f32),
+}
+
+impl fmt::Display for Margin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Margin::Auto => f.write_str("auto"),
+            Margin::Ns(ns) => write!(f, "{ns}"),
+        }
+    }
+}
+
+impl FromStr for Margin {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "auto" {
+            return Ok(Margin::Auto);
+        }
+        match s.parse::<f32>() {
+            Ok(ns) if ns >= 0. && ns.is_finite() => Ok(Margin::Ns(ns)),
+            _ => Err("expected `auto` or a non-negative number of nanoseconds".into()),
+        }
+    }
+}
+
+/// The result of a pick. Every trace keeps the same number of samples
+/// above its time zero, so that time zero lands on the same row in all of
+/// them and they share one travel-time axis.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Picks {
-    /// One per trace. Equal throughout for [`Scope::Global`].
-    pub samples: Vec<usize>,
+    /// Time zero, in samples from the top, one per trace. Equal throughout
+    /// for [`Scope::Global`].
+    pub time_zero: Vec<usize>,
+    /// Samples kept above time zero, the same for every trace.
+    pub margin: usize,
+    /// The margin asked for, in samples, when a trace had too little
+    /// record above its time zero to keep all of it.
+    pub margin_wanted: usize,
     /// Per-trace picks that disagreed with their neighbours, or failed, and
     /// were replaced by the neighbours' median.
     pub replaced: usize,
-    pub window: Option<Window>,
+    pub window: Window,
+}
+
+impl Picks {
+    /// Samples to remove from the top of each trace.
+    pub fn crops(&self) -> Vec<usize> {
+        self.time_zero.iter().map(|t| t - self.margin).collect()
+    }
 }
 
 /// Pick time zero with any method but `legacy`, which also changes the
 /// data and so lives with the rest of [`crate::gpr::GPR`].
 ///
-/// `data` is `(samples, traces)`. `Ok(None)` when every trace is flat:
-/// there is no signal whose time zero could be wrong.
+/// `data` is `(samples, traces)` with `dt_ns` between samples. `Ok(None)`
+/// when every trace is flat: there is no signal whose time zero could be
+/// wrong.
 pub fn pick(
     data: &Array2<f32>,
     method: Method,
     scope: Scope,
     sigma: f32,
+    margin: Margin,
+    dt_ns: f32,
 ) -> Result<Option<Picks>, String> {
     if method == Method::Legacy {
         return Err("the legacy method is not a picker".into());
@@ -160,25 +210,34 @@ pub fn pick(
     let Some(window) = find_window(data)? else {
         return Ok(None);
     };
-    if matches!(method, Method::FirstBreak | Method::Coppens)
-        && window.noise_end < MIN_NOISE_SAMPLES
-    {
+    let has_noise = window.noise_end >= MIN_NOISE_SAMPLES;
+    if matches!(method, Method::FirstBreak | Method::Coppens) && !has_noise {
         return Err(format!(
             "`{method}` needs at least {MIN_NOISE_SAMPLES} samples of noise before the direct \
              wave, but it starts {} samples in; try `aic` or `max_peak`",
             window.noise_end
         ));
     }
+    // What `margin=auto` measures back to: the start of the direct wave, by
+    // the default method where it can run.
+    let onset_method = if has_noise {
+        Method::Coppens
+    } else {
+        Method::Aic
+    };
+    let picks_start = !matches!(method, Method::MaxPeak);
 
-    match scope {
+    let (time_zero, replaced, auto) = match scope {
         Scope::Global => {
             let at = pick_trace(stack.view(), method, &window, sigma)
                 .ok_or_else(|| format!("`{method}` found no direct wave in the mean trace"))?;
-            Ok(Some(Picks {
-                samples: vec![at; data.shape()[1]],
-                replaced: 0,
-                window: Some(window),
-            }))
+            let auto = if picks_start {
+                0
+            } else {
+                pick_trace(stack.view(), onset_method, &window, sigma)
+                    .map_or(0, |onset| at.saturating_sub(onset))
+            };
+            (vec![at; data.shape()[1]], 0, auto)
         }
         Scope::Trace => {
             let traces: Vec<ArrayView1<f32>> = data.columns().into_iter().collect();
@@ -186,16 +245,50 @@ pub fn pick(
                 .par_iter()
                 .map(|trace| pick_trace(*trace, method, &window, sigma))
                 .collect();
+            // The other end of the direct wave, to check each pick against.
+            let anchor_method = if picks_start {
+                Method::MaxPeak
+            } else {
+                onset_method
+            };
+            let anchors: Vec<Option<usize>> = traces
+                .par_iter()
+                .map(|trace| pick_trace(*trace, anchor_method, &window, sigma))
+                .collect();
             let tolerance = (window.half_period as f32 / 2.).max(1.);
-            let (samples, replaced) = replace_outliers(&raw, OUTLIER_HALF_WINDOW, tolerance)
-                .ok_or_else(|| format!("`{method}` found no direct wave in any trace"))?;
-            Ok(Some(Picks {
-                samples,
-                replaced,
-                window: Some(window),
-            }))
+            let (time_zero, replaced) =
+                replace_outliers(&raw, &anchors, OUTLIER_HALF_WINDOW, tolerance)
+                    .ok_or_else(|| format!("`{method}` found no direct wave in any trace"))?;
+            let auto = if picks_start {
+                0
+            } else {
+                // A high percentile, so that nearly every trace keeps its
+                // whole wavelet; the few that start earlier lose a sample
+                // or two of it rather than every trace gaining the
+                // longest lead-in.
+                let distances: Vec<f32> = time_zero
+                    .iter()
+                    .zip(&anchors)
+                    .filter_map(|(&t0, onset)| onset.map(|o| t0.saturating_sub(o) as f32))
+                    .collect();
+                percentile(distances, 0.95).round() as usize
+            };
+            (time_zero, replaced, auto)
         }
-    }
+    };
+
+    let margin_wanted = match margin {
+        Margin::Auto => auto,
+        Margin::Ns(ns) => (ns / dt_ns).round() as usize,
+    };
+    let earliest = time_zero.iter().copied().min().unwrap_or(0);
+    Ok(Some(Picks {
+        margin: margin_wanted.min(earliest),
+        margin_wanted,
+        time_zero,
+        replaced,
+        window,
+    }))
 }
 
 /// Locate the direct wave from every trace's own first strong lobe.
@@ -413,47 +506,87 @@ fn edge_preserving_smooth(x: &[f64], w: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Replace per-trace picks that are missing or further than `tolerance`
-/// samples (or three robust standard deviations, if more) from the median
-/// of the `half_window` traces on each side.
+/// The median of the values within `half_window` traces of `i`, and how
+/// far from it a value may be: `tolerance`, or three robust standard
+/// deviations if more. Widens until there is something to compare with, so
+/// a long run of failed picks still gets a value; `None` when nothing is.
+fn neighbourhood(
+    values: &[Option<f32>],
+    i: usize,
+    half_window: usize,
+    tolerance: f32,
+) -> Option<(f32, f32)> {
+    let mut half = half_window;
+    loop {
+        let near: Vec<f32> = values[i.saturating_sub(half)..(i + half + 1).min(values.len())]
+            .iter()
+            .flatten()
+            .copied()
+            .collect();
+        if !near.is_empty() {
+            let centre = median(near.clone());
+            let mad = median(near.iter().map(|v| (v - centre).abs()).collect());
+            return Some((centre, (3. * 1.4826 * mad).max(tolerance)));
+        }
+        if half >= values.len() {
+            return None;
+        }
+        half *= 2;
+    }
+}
+
+/// Replace the per-trace picks that failed or went wrong.
+///
+/// `anchors` is a second feature of the same trace's direct wave -- its
+/// peak for a pick of the start, its start for a pick of the peak. The
+/// timing of the direct wave may jump from trace to trace, which is what a
+/// per-trace correction is for, but its shape does not, so the distance
+/// between the two features stays put. A pick is wrong when it is far from
+/// its neighbours' picks *and* its distance to its own anchor is unlike
+/// theirs; far from its neighbours alone is the jump being corrected. A
+/// wrong or missing pick is rebuilt from its own anchor and the
+/// neighbours' distance, which keeps the trace's jitter, or from the
+/// neighbours' picks when the anchor failed too.
 ///
 /// Returns the picks and how many were replaced, or `None` if every pick
-/// is missing. Only the outliers change: smoothing every pick would erase
-/// the real trace-to-trace jitter a per-trace correction exists to remove.
+/// is missing.
 pub fn replace_outliers(
     picks: &[Option<usize>],
+    anchors: &[Option<usize>],
     half_window: usize,
     tolerance: f32,
 ) -> Option<(Vec<usize>, usize)> {
     if picks.iter().all(Option::is_none) {
         return None;
     }
+    let as_f32 = |v: &Option<usize>| v.map(|p| p as f32);
+    let times: Vec<Option<f32>> = picks.iter().map(as_f32).collect();
+    let distances: Vec<Option<f32>> = picks
+        .iter()
+        .zip(anchors)
+        .map(|(p, a)| Some(as_f32(p)? - as_f32(a)?))
+        .collect();
+
     let mut replaced = 0;
     let out = (0..picks.len())
         .map(|i| {
-            let neighbours = |half: usize| -> Vec<f32> {
-                picks[i.saturating_sub(half)..(i + half + 1).min(picks.len())]
-                    .iter()
-                    .flatten()
-                    .map(|&p| p as f32)
-                    .collect()
+            let (time_centre, time_limit) =
+                neighbourhood(&times, i, half_window, tolerance).unwrap_or_default();
+            let distance = neighbourhood(&distances, i, half_window, tolerance);
+            let shape_is_off = match (distances[i], distance) {
+                (Some(d), Some((centre, limit))) => (d - centre).abs() > limit,
+                _ => true,
             };
-            // Widen until there is something to compare with; a long run
-            // of failed picks still gets a value.
-            let mut half = half_window;
-            let mut values = neighbours(half);
-            while values.is_empty() {
-                half *= 2;
-                values = neighbours(half);
-            }
-            let centre = median(values.clone());
-            let mad = median(values.iter().map(|v| (v - centre).abs()).collect());
-            let limit = (3. * 1.4826 * mad).max(tolerance);
             match picks[i] {
-                Some(p) if (p as f32 - centre).abs() <= limit => p,
+                Some(p) if (p as f32 - time_centre).abs() <= time_limit || !shape_is_off => p,
                 _ => {
                     replaced += 1;
-                    centre.round() as usize
+                    match (anchors[i], distance) {
+                        (Some(anchor), Some((centre, _))) => {
+                            (anchor as f32 + centre).round().max(0.) as usize
+                        }
+                        _ => time_centre.round() as usize,
+                    }
                 }
             }
         })
@@ -556,16 +689,22 @@ mod tests {
     fn onset_pickers_find_the_synthetic_onset() {
         let data = radargram(&[40; 20], 1000.);
         for method in [Method::Aic, Method::FirstBreak, Method::Coppens] {
-            let picks = pick(&data, method, Scope::Trace, 5.).unwrap().unwrap();
-            for &p in &picks.samples {
+            let picks = pick(&data, method, Scope::Trace, 5., Margin::Auto, 1.)
+                .unwrap()
+                .unwrap();
+            for &p in &picks.time_zero {
                 assert!((39..=42).contains(&p), "{method}: picked {p}, onset 40");
             }
         }
         // The peak of a sine starting at 40 is a quarter period later.
-        let peaks = pick(&data, Method::MaxPeak, Scope::Global, 5.)
+        let peaks = pick(&data, Method::MaxPeak, Scope::Global, 5., Margin::Auto, 1.)
             .unwrap()
             .unwrap();
-        assert!((42..=46).contains(&peaks.samples[0]), "{:?}", peaks.samples);
+        assert!(
+            (42..=46).contains(&peaks.time_zero[0]),
+            "{:?}",
+            peaks.time_zero
+        );
     }
 
     #[test]
@@ -575,22 +714,22 @@ mod tests {
         let scaled = data.mapv(|v| v * 1000.);
         let clipped = data.mapv(|v| v.clamp(2.7, 3.3));
         for method in [Method::Aic, Method::FirstBreak, Method::Coppens] {
-            let base = pick(&data, method, Scope::Trace, 5.)
+            let base = pick(&data, method, Scope::Trace, 5., Margin::Auto, 1.)
                 .unwrap()
                 .unwrap()
-                .samples;
+                .time_zero;
             assert_eq!(
                 base,
-                pick(&scaled, method, Scope::Trace, 5.)
+                pick(&scaled, method, Scope::Trace, 5., Margin::Auto, 1.)
                     .unwrap()
                     .unwrap()
-                    .samples,
+                    .time_zero,
                 "{method} moved when scaled"
             );
-            let clip = pick(&clipped, method, Scope::Trace, 5.)
+            let clip = pick(&clipped, method, Scope::Trace, 5., Margin::Auto, 1.)
                 .unwrap()
                 .unwrap()
-                .samples;
+                .time_zero;
             for (a, b) in base.iter().zip(&clip) {
                 assert!(
                     a.abs_diff(*b) <= 1,
@@ -604,8 +743,10 @@ mod tests {
     fn per_trace_picks_follow_the_traces() {
         let onsets: Vec<usize> = (0..30).map(|i| 40 + i % 4).collect();
         let data = radargram(&onsets, 1000.);
-        let picks = pick(&data, Method::Aic, Scope::Trace, 5.).unwrap().unwrap();
-        for (p, o) in picks.samples.iter().zip(&onsets) {
+        let picks = pick(&data, Method::Aic, Scope::Trace, 5., Margin::Auto, 1.)
+            .unwrap()
+            .unwrap();
+        for (p, o) in picks.time_zero.iter().zip(&onsets) {
             assert!(p.abs_diff(*o) <= 1, "picked {p}, onset {o}");
         }
         assert_eq!(picks.replaced, 0);
@@ -629,11 +770,13 @@ mod tests {
             Method::Coppens,
         ] {
             for scope in [Scope::Global, Scope::Trace] {
-                let picks = pick(&data, method, scope, 5.).unwrap().unwrap();
+                let picks = pick(&data, method, scope, 5., Margin::Auto, 1.)
+                    .unwrap()
+                    .unwrap();
                 assert!(
-                    picks.samples.iter().all(|&p| p < 60),
+                    picks.time_zero.iter().all(|&p| p < 60),
                     "{method}, {scope}: {:?}",
-                    picks.samples
+                    picks.time_zero
                 );
             }
         }
@@ -641,16 +784,25 @@ mod tests {
 
     #[test]
     fn outliers_are_replaced_and_jitter_is_kept() {
-        let mut picks: Vec<Option<usize>> = (0..40).map(|i| Some(40 + i % 2)).collect();
+        // Onsets that jump by up to 8 samples, with the peak 5 after each.
+        let onsets: Vec<usize> = (0..40).map(|i| 40 + (i * 7) % 9).collect();
+        let peaks: Vec<Option<usize>> = onsets.iter().map(|o| Some(o + 5)).collect();
+        let mut picks: Vec<Option<usize>> = onsets.iter().map(|&o| Some(o)).collect();
         picks[10] = Some(70);
         picks[20] = None;
-        let (out, replaced) = replace_outliers(&picks, 5, 2.).unwrap();
+        let (out, replaced) = replace_outliers(&picks, &peaks, 5, 2.).unwrap();
         assert_eq!(replaced, 2);
-        assert!((40..=41).contains(&out[10]));
-        assert!((40..=41).contains(&out[20]));
-        // The one-sample jitter survives.
-        assert_eq!(out[0..4], [40, 41, 40, 41]);
-        assert!(replace_outliers(&[None, None], 5, 2.).is_none());
+        // Rebuilt from their own peaks, not from the neighbours.
+        assert_eq!(out[10], onsets[10]);
+        assert_eq!(out[20], onsets[20]);
+        // Every real jump survives.
+        for i in (0..40).filter(|i| ![10, 20].contains(i)) {
+            assert_eq!(out[i], onsets[i], "trace {i}");
+        }
+        // Without an anchor, a pick is judged by its neighbours alone.
+        let (out, _) = replace_outliers(&picks, &[None; 40], 5, 2.).unwrap();
+        assert!((40..=48).contains(&out[10]));
+        assert!(replace_outliers(&[None, None], &[None, None], 5, 2.).is_none());
     }
 
     #[test]
@@ -664,16 +816,72 @@ mod tests {
     }
 
     #[test]
+    fn an_auto_margin_keeps_the_whole_wavelet_above_the_peak() {
+        let onsets: Vec<usize> = (0..30).map(|i| 40 + i % 3).collect();
+        let data = radargram(&onsets, 1000.);
+        for scope in [Scope::Global, Scope::Trace] {
+            let peak = pick(&data, Method::MaxPeak, scope, 5., Margin::Auto, 1.)
+                .unwrap()
+                .unwrap();
+            // A quarter of the 12-sample period between onset and peak.
+            assert!((2..=4).contains(&peak.margin), "{scope}: {}", peak.margin);
+            for (crop, onset) in peak.crops().iter().zip(&onsets) {
+                assert!(
+                    *crop <= onset + 1,
+                    "{scope}: cropped at {crop}, onset {onset}"
+                );
+            }
+        }
+        // Nothing to keep for a method that already picks the start.
+        let start = pick(&data, Method::Coppens, Scope::Trace, 5., Margin::Auto, 1.)
+            .unwrap()
+            .unwrap();
+        assert_eq!(start.margin, 0);
+        assert_eq!(start.crops(), start.time_zero);
+    }
+
+    #[test]
+    fn a_fixed_margin_is_capped_by_the_record_above_time_zero() {
+        let data = radargram(&[40; 5], 1000.);
+        let picks = pick(
+            &data,
+            Method::Coppens,
+            Scope::Global,
+            5.,
+            Margin::Ns(10.),
+            2.,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(picks.margin, 5, "10 ns at 2 ns per sample");
+        let picks = pick(
+            &data,
+            Method::Coppens,
+            Scope::Global,
+            5.,
+            Margin::Ns(1000.),
+            1.,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(picks.margin, picks.time_zero[0]);
+        assert_eq!(picks.margin_wanted, 1000);
+    }
+
+    #[test]
     fn a_flat_radargram_has_nothing_to_pick() {
         let data = Array2::from_elem((50, 4), 7_f32);
-        assert_eq!(pick(&data, Method::Aic, Scope::Trace, 5.), Ok(None));
+        assert_eq!(
+            pick(&data, Method::Aic, Scope::Trace, 5., Margin::Auto, 1.),
+            Ok(None)
+        );
     }
 
     #[test]
     fn noise_based_methods_refuse_a_record_without_noise() {
         let data = radargram(&[1; 5], 1000.);
         for method in [Method::FirstBreak, Method::Coppens] {
-            let err = pick(&data, method, Scope::Global, 5.).unwrap_err();
+            let err = pick(&data, method, Scope::Global, 5., Margin::Auto, 1.).unwrap_err();
             assert!(err.contains("samples of noise"), "{err}");
         }
     }

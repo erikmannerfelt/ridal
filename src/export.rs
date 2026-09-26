@@ -473,10 +473,9 @@ impl GPR {
         // latitude / longitude (x) as auxiliary coordinates derived from native CRS
 
         // twtt (y) [ns]
-        let twtt: Vec<f32> = {
-            let step = self.vertical_resolution_ns();
-            (0..height).map(|i| i as f32 * step).collect()
-        };
+        // Travel time from time zero, so it starts below zero when a margin
+        // was kept above time zero and above zero after a further crop.
+        let twtt: Vec<f32> = self.twtt_ns().to_vec();
         coords.insert(
             "twtt".into(),
             ExportVariable {
@@ -544,13 +543,13 @@ impl GPR {
                     (mn.min(v), mx.max(v))
                 });
 
-            let max_depth = self
-                .depths()
-                .iter()
-                .cloned()
-                .fold(f32::NEG_INFINITY, f32::max) as f64;
+            let depths = self.depths();
+            let max_depth = depths.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
+            // The first row is at depth `depths[0]`, above the surface when
+            // a margin was kept above time zero.
+            let min_depth = depths.first().copied().unwrap_or(0.) as f64;
 
-            let start = max_alt;
+            let start = max_alt - min_depth;
             let end = min_alt - max_depth;
             let topo_el: Vec<f64> = if topo_height == 1 {
                 vec![start]
@@ -634,8 +633,8 @@ impl GPR {
                          much of the front of the record was cropped away, by a zero \
                          correction or by subsetting. Provenance about what was \
                          discarded. After a zero correction this equals \
-                         twtt_time_zero, because sample 0 is then the transmitted \
-                         pulse. See twtt_time_zero for where time zero is."
+                         twtt_time_zero minus the margin it kept above time zero. See \
+                         twtt_time_zero for where time zero is."
                             .into(),
                     ),
                 ]
@@ -661,10 +660,10 @@ impl GPR {
                         "comment".into(),
                         "Where the transmitted pulse left the antenna, on the original \
                          recording's clock -- the SAME clock as twtt_crop, not an \
-                         offset from sample 0. A zero correction therefore sets this \
-                         EQUAL to twtt_crop rather than to zero: sample 0 becomes the \
-                         pulse, so the travel time of sample 0 is zero. The travel \
-                         time of sample i is twtt[i] + twtt_crop - twtt_time_zero. \
+                         offset from sample 0. The travel time of sample 0 is \
+                         twtt_crop - twtt_time_zero, and the twtt coordinate already \
+                         includes it: zero when a zero correction cropped exactly at \
+                         time zero, negative when it kept a margin above it. \
                          A value of exactly zero means time zero has NEVER BEEN \
                          LOCATED, which is the case for a radargram no zero correction \
                          has run on: its times are counted from whenever the instrument \

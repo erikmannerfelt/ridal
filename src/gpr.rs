@@ -897,6 +897,7 @@ impl GPR {
         scope: zero_corr::Scope,
         factor: f32,
         sigma: f32,
+        margin: zero_corr::Margin,
     ) -> Result<(), String> {
         if method == zero_corr::Method::Legacy {
             if scope != zero_corr::Scope::Global {
@@ -907,7 +908,9 @@ impl GPR {
         }
         let start_time = SystemTime::now();
         let name = format!("zero_corr({method}, {scope})");
-        let Some(picks) = zero_corr::pick(&self.data, method, scope, sigma)? else {
+        let step_ns = self.metadata.time_window / self.height() as f32;
+        let Some(picks) = zero_corr::pick(&self.data, method, scope, sigma, margin, step_ns)?
+        else {
             self.log_event(
                 &name,
                 "Every trace is flat; nothing was cropped",
@@ -915,26 +918,28 @@ impl GPR {
             );
             return Ok(());
         };
-        let min = picks.samples.iter().copied().min().unwrap_or(0);
-        let max = picks.samples.iter().copied().max().unwrap_or(0);
+        let crops = picks.crops();
 
-        // Accumulated, not assigned, because a pipeline may crop more than
-        // once; computed before `update_data` so `time_window` and
-        // `height()` still describe the record the picks were made in.
-        let step_ns = self.metadata.time_window / self.height() as f32;
-        for ((crop, time_zero), pick) in self
+        // Both on the recording clock. The crop is accumulated because a
+        // pipeline may crop more than once; time zero is a position and is
+        // assigned. Computed before `update_data`, so `step_ns` is still
+        // the interval the picks were made at.
+        for (((crop, time_zero), removed), t0) in self
             .crop_ns
             .iter_mut()
             .zip(self.time_zero_ns.iter_mut())
-            .zip(picks.samples.iter())
+            .zip(crops.iter())
+            .zip(picks.time_zero.iter())
         {
-            *crop += *pick as f32 * step_ns;
-            // The crop landed on time zero, which unlike the crop is an
-            // absolute position: assigned rather than accumulated.
-            *time_zero = *crop;
+            *time_zero = *crop + *t0 as f32 * step_ns;
+            *crop += *removed as f32 * step_ns;
         }
-        self.update_data(zero_corr::apply_shifts(&self.data, &picks.samples));
+        self.update_data(zero_corr::apply_shifts(&self.data, &crops));
 
+        let (min, max) = (
+            crops.iter().copied().min().unwrap_or(0),
+            crops.iter().copied().max().unwrap_or(0),
+        );
         let removed = if min == max {
             format!("removed the first {min} rows")
         } else {
@@ -944,18 +949,29 @@ impl GPR {
                 max - min
             )
         };
+        let mut kept = format!(
+            "; kept {} rows ({:.2} ns) above time zero (margin={margin})",
+            picks.margin,
+            picks.margin as f32 * step_ns
+        );
+        if picks.margin < picks.margin_wanted {
+            kept += &format!(
+                ", not {}, because a trace has no more record above its time zero",
+                picks.margin_wanted
+            );
+        }
         let outliers = match scope {
             zero_corr::Scope::Global => String::new(),
             zero_corr::Scope::Trace => format!(
                 "; {} of {} picks were outliers or failed and were replaced by their neighbours' \
                  median",
                 picks.replaced,
-                picks.samples.len()
+                picks.time_zero.len()
             ),
         };
         self.log_event(
             &name,
-            &format!("Picked time zero and {removed}{outliers}"),
+            &format!("Picked time zero and {removed}{kept}{outliers}"),
             start_time,
         );
         Ok(())
@@ -1061,11 +1077,11 @@ impl GPR {
         altitudes -= altitudes.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         altitudes *= -1.;
 
-        let max_depth = tools::return_time_to_depth(
-            self.metadata.time_window,
-            self.metadata.medium_velocity,
-            self.metadata.antenna_separation,
-        );
+        // The same depths the exported `depth` axis has, so the grid and
+        // the elevation axis written for it agree, including a first sample
+        // above time zero.
+        let depths = self.depths();
+        let max_depth = depths[depths.len() - 1] - depths[0];
 
         let sample_per_meter = self.height() as f32 / max_depth;
 
@@ -1741,20 +1757,52 @@ impl GPR {
         io::export_netcdf(&ds, nc_filepath)
     }
 
+    /// Travel time of the first sample, in nanoseconds.
+    ///
+    /// `crop - time_zero`: zero right after a zero correction that crops
+    /// exactly at time zero, negative when it kept a margin above time
+    /// zero, and positive once something crops further. One number for the
+    /// whole radargram, because every trace is aligned on its own time zero
+    /// and so has the same difference; the mean guards the export against
+    /// a pipeline that breaks that.
+    pub fn twtt_first_sample_ns(&self) -> f32 {
+        if self.crop_ns.is_empty() {
+            return 0.;
+        }
+        self.crop_ns
+            .iter()
+            .zip(&self.time_zero_ns)
+            .map(|(crop, time_zero)| crop - time_zero)
+            .sum::<f32>()
+            / self.crop_ns.len() as f32
+    }
+
+    /// Travel time of every sample, in nanoseconds.
+    pub fn twtt_ns(&self) -> Array1<f32> {
+        let first = self.twtt_first_sample_ns();
+        let step = self.vertical_resolution_ns();
+        Array1::from_iter((0..self.height()).map(|i| first + i as f32 * step))
+    }
+
+    /// Depth of every sample, in metres. Samples above time zero (a margin
+    /// kept by `zero_corr`) get negative depths, as a straight path through
+    /// the medium, so the axis keeps increasing.
     pub fn depths(&self) -> Array1<f32> {
-        let time_windows = (Array1::<f32>::range(0., self.height() as f32, 1.)
-            / self.height() as f32)
-            * self.metadata.time_window;
+        let time_windows = self.twtt_ns();
         let corr_antenna_separation = (self.antenna_separation_effective.powi(2)
             - (self.twtt_time_zero_mean_ns() * self.metadata.medium_velocity).powi(2))
         .max(0.)
         .sqrt();
         time_windows.mapv(|time| {
-            tools::return_time_to_depth(
-                time,
-                self.metadata.medium_velocity,
-                corr_antenna_separation,
-            )
+            if time < 0. {
+                time * self.metadata.medium_velocity / 2.
+            } else {
+                tools::return_time_to_depth(
+                    time,
+                    self.metadata.medium_velocity,
+                    corr_antenna_separation,
+                )
+            }
         })
     }
 
@@ -3046,6 +3094,34 @@ pub mod tests {
     }
 
     #[test]
+    fn a_margin_above_time_zero_has_negative_travel_times_and_depths() {
+        let mut gpr = make_gpr_with_first_break(16, 512);
+        let step = gpr.vertical_resolution_ns();
+        gpr.process(&format!("zero_corr(max_peak, margin={})", 4. * step))
+            .unwrap();
+
+        let crop = gpr.twtt_crop_uniform_ns().unwrap();
+        let time_zero = gpr.twtt_time_zero_uniform_ns().unwrap();
+        assert!((time_zero - crop - 4. * step).abs() < 1e-3);
+        // Row 4 is time zero, and the rows above it are before it.
+        let twtt = gpr.twtt_ns();
+        assert!((twtt[0] + 4. * step).abs() < 1e-3, "{}", twtt[0]);
+        assert!(twtt[4].abs() < 1e-3, "{}", twtt[4]);
+        let depths = gpr.depths();
+        assert!(depths[0] < 0. && depths[3] < 0., "{depths:?}");
+        assert!(depths.windows(2).into_iter().all(|w| w[1] >= w[0]));
+
+        // And the file says the same.
+        let exported = gpr.export_dataset().unwrap();
+        match &exported.coords["twtt"].data {
+            crate::export::ExportArray::F32Owned1D(values) => {
+                assert!((values[0] + 4. * step).abs() < 1e-3, "{}", values[0])
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
     fn subsetting_away_leading_samples_adds_to_the_crop() {
         // `subset(0 -1 <n> -1)` crops the front of every trace exactly as a
         // zero correction does, so it has to report the same way. Reporting
@@ -3140,6 +3216,7 @@ pub mod tests {
             super::zero_corr::Scope::Trace,
             1.,
             5.,
+            super::zero_corr::Margin::Ns(0.),
         )
         .unwrap();
     }
