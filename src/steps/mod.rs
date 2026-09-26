@@ -27,6 +27,7 @@ use std::str::FromStr;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, FromArgMatches, Parser};
 
+use crate::filters::zero_corr;
 use crate::gpr::GPR;
 use parse::{RawStep, Span};
 
@@ -96,22 +97,41 @@ pub enum Step {
         #[arg(long)]
         window: usize,
     },
-    /// Shift the location of the zero return time by finding the maximum row
-    /// value.
+    /// Move time zero to where the direct wave starts, and crop what came
+    /// before it.
     ///
-    /// The peak is found for each trace individually.
-    #[command(rename_all = "snake_case")]
-    ZeroCorrMaxPeak,
-    /// Shift the location of the zero return time by finding the first row
-    /// where data appear.
+    /// `method` decides what counts as the start. `aic` splits the record
+    /// where it best divides into noise and signal. `first_break` takes the
+    /// first sample more than `sigma` noise standard deviations out of the
+    /// noise. `coppens` takes the steepest rise of the smoothed energy
+    /// ratio. `max_peak` takes the largest value of the direct wave, which
+    /// is later than its start. `legacy` is the pre-0.7 threshold on the
+    /// mean trace, and also subtracts the mean of what it crops. All but
+    /// `legacy` look for the direct wave around the first strong arrival,
+    /// and none of them depend on the amplitude scale.
     ///
-    /// The correction can be tweaked to allow more or less data, e.g.
-    /// `zero_corr(0.9)`.
+    /// `scope` is `global`, one time zero from the mean trace, or `trace`,
+    /// one per trace. Per-trace picks that stray from their neighbours by
+    /// more than a quarter period are replaced by the neighbours' median,
+    /// and the bottom is trimmed so that no trace is zero-padded. Examples:
+    /// `zero_corr(aic, trace)`, `zero_corr(max_peak, trace)`,
+    /// `zero_corr(first_break, sigma=4)`, `zero_corr(legacy, factor=0.9)`.
     #[command(rename_all = "snake_case")]
     ZeroCorr {
-        /// Multiplier on the first-rise threshold; lower picks earlier.
+        /// `aic`, `first_break`, `coppens`, `max_peak` or `legacy`.
+        #[arg(long, default_value = "aic")]
+        method: zero_corr::Method,
+        /// `global` or `trace`.
+        #[arg(long, default_value = "global")]
+        scope: zero_corr::Scope,
+        /// `legacy` only: multiplier on the first-rise threshold; lower
+        /// picks earlier.
         #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER)]
-        threshold_multiplier: f32,
+        factor: f32,
+        /// `first_break` only: how many noise standard deviations count as
+        /// signal.
+        #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_SIGMA)]
+        sigma: f32,
     },
     /// Apply a bandpass Butterworth filter to each trace individually.
     ///
@@ -465,6 +485,9 @@ impl fmt::Display for StepError {
 
 impl Error for StepError {}
 
+/// Step names that no longer exist, and what replaces them.
+const RETIRED: &[(&str, &str)] = &[("zero_corr_max_peak", "zero_corr(max_peak, trace)")];
+
 /// Whether `name` is a registered step.
 #[cfg(test)]
 fn is_registered(name: &str) -> bool {
@@ -489,6 +512,12 @@ pub fn resolve(raw: &RawStep) -> Result<ParsedStep, StepError> {
     };
 
     let Some(command) = root.find_subcommand(&raw.name) else {
+        if let Some((_, replacement)) = RETIRED.iter().find(|(old, _)| *old == raw.name) {
+            return Err(at_step(format!(
+                "`{}` was retired; use `{replacement}`",
+                raw.name
+            )));
+        }
         // Hand the name to clap anyway, only for its "did you mean".
         let suggestion = StepCommand::try_parse_from([raw.name.as_str()])
             .err()
@@ -570,8 +599,28 @@ pub fn resolve(raw: &RawStep) -> Result<ParsedStep, StepError> {
     let sub_matches = matches
         .subcommand_matches(&raw.name)
         .ok_or_else(|| at_step(format!("clap lost the step `{}`", raw.name)))?;
+    step.validate().map_err(at_step)?;
+    let (setting, unused) = step.unused_args().unwrap_or_default();
+    for name in unused {
+        if sub_matches.value_source(name) == Some(clap::parser::ValueSource::CommandLine) {
+            let span = raw
+                .args
+                .iter()
+                .enumerate()
+                .find(|(i, a)| {
+                    a.key.as_deref() == Some(name)
+                        || (a.key.is_none() && arg_names.get(*i).map(String::as_str) == Some(name))
+                })
+                .map_or(raw.span, |(_, a)| a.span);
+            return Err(StepError {
+                message: format!("`{name}` has no effect with `{setting}`"),
+                span,
+            });
+        }
+    }
     let canonical_args: Vec<String> = arg_names
         .iter()
+        .filter(|name| !unused.contains(&name.as_str()))
         .filter_map(|name| {
             let values: Vec<String> = sub_matches
                 .get_raw(name)?
@@ -657,6 +706,39 @@ fn translate(error: &clap::Error, raw: &RawStep) -> StepError {
 }
 
 impl Step {
+    /// Reject argument combinations that clap cannot express.
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Step::ZeroCorr {
+                method: zero_corr::Method::Legacy,
+                scope: zero_corr::Scope::Trace,
+                ..
+            } => Err(
+                "`zero_corr(legacy)` only has a global scope; for a per-trace correction, \
+                 use another method, e.g. `zero_corr(aic, trace)`"
+                    .into(),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    /// Arguments that the other arguments make meaningless, and the setting
+    /// responsible. Giving one is an error, and they are left out of the
+    /// canonical form.
+    fn unused_args(&self) -> Option<(String, &'static [&'static str])> {
+        match self {
+            Step::ZeroCorr { method, .. } => {
+                let unused: &'static [&'static str] = match method {
+                    zero_corr::Method::Legacy => &["sigma"],
+                    zero_corr::Method::FirstBreak => &["factor"],
+                    _ => &["factor", "sigma"],
+                };
+                Some((format!("method={method}"), unused))
+            }
+            _ => None,
+        }
+    }
+
     /// Run the step on `gpr`.
     ///
     /// Arguments are already typed and range-checked here; what is left to
@@ -688,10 +770,12 @@ impl Step {
             }
             Step::RemoveEmptyTraces { strength } => gpr.remove_empty_traces(*strength)?,
             Step::AverageTraces { window } => gpr.average_traces(*window)?,
-            Step::ZeroCorrMaxPeak => gpr.zero_corr_max_peak(),
             Step::ZeroCorr {
-                threshold_multiplier,
-            } => gpr.zero_corr(Some(*threshold_multiplier)),
+                method,
+                scope,
+                factor,
+                sigma,
+            } => gpr.zero_corr(*method, *scope, *factor, *sigma)?,
             Step::Bandpass { low, high, q } => gpr.bandpass(*low, *high, *q, true)?,
             Step::BandpassMhz { low, high, q } => gpr.bandpass(*low, *high, *q, false)?,
             Step::EquidistantTraces { step } => gpr.make_equidistant(*step),
@@ -1011,6 +1095,69 @@ mod tests {
             one("multiply(5e0)").unwrap().step,
             Step::Multiply { factor: 5. }
         );
+    }
+
+    #[test]
+    fn zero_corr_records_only_the_arguments_its_method_uses() {
+        for (source, canonical) in [
+            ("zero_corr", "zero_corr(method=aic, scope=global)"),
+            (
+                "zero_corr(max_peak, trace)",
+                "zero_corr(method=max_peak, scope=trace)",
+            ),
+            (
+                "zero_corr(legacy)",
+                "zero_corr(method=legacy, scope=global, factor=1)",
+            ),
+            (
+                "zero_corr(first_break, trace, sigma=3)",
+                "zero_corr(method=first_break, scope=trace, sigma=3)",
+            ),
+        ] {
+            let parsed = one(source).unwrap();
+            assert_eq!(parsed.canonical, canonical, "{source}");
+            assert_eq!(one(&parsed.canonical).unwrap().step, parsed.step);
+        }
+    }
+
+    #[test]
+    fn zero_corr_says_how_to_migrate_and_what_does_not_apply() {
+        for (source, fragment, underlined) in [
+            (
+                "zero_corr_max_peak",
+                "use `zero_corr(max_peak, trace)`",
+                "zero_corr_max_peak",
+            ),
+            ("zero_corr(0.9)", "`zero_corr(legacy, factor=0.9)`", "0.9"),
+            (
+                "zero_corr(aic, factor=0.9)",
+                "`factor` has no effect with `method=aic`",
+                "factor=0.9",
+            ),
+            (
+                "zero_corr(legacy, global, 1, 5)",
+                "`sigma` has no effect with `method=legacy`",
+                "5",
+            ),
+            (
+                "zero_corr(legacy, trace)",
+                "only has a global scope",
+                "zero_corr(legacy, trace)",
+            ),
+            ("zero_corr(aic, both)", "`global` or `trace`", "both"),
+        ] {
+            let err = one(source).unwrap_err();
+            assert!(
+                err.message.contains(fragment),
+                "{source:?}: expected {fragment:?} in {:?}",
+                err.message
+            );
+            assert_eq!(
+                &source[err.span.start..err.span.end],
+                underlined,
+                "{source}"
+            );
+        }
     }
 
     #[test]

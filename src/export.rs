@@ -603,7 +603,7 @@ impl GPR {
         // for the anchor by a reader who had the SPEC to hand.
         //
         // Each is a scalar where one number is true of every trace, and
-        // `(x)` where it is not -- which is the `zero_corr_max_peak` case,
+        // `(x)` where it is not -- which is the per-trace `zero_corr` case,
         // since aligning each trace's first break crops them by different
         // amounts. Writing a mean there would be a number true of no trace.
         // This is why they are variables rather than global attributes:

@@ -9,9 +9,11 @@ use std::time::SystemTime;
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
 
+use crate::filters::zero_corr;
 use crate::{dem, filters, io, tools, user_metadata};
 
 pub(crate) const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
+pub(crate) const DEFAULT_ZERO_CORR_SIGMA: f32 = 5.0;
 pub(crate) const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
 pub(crate) const DEFAULT_DEWOW_WINDOW: u32 = 5;
 const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
@@ -417,8 +419,8 @@ pub struct GPR {
     /// part company as soon as it does not -- so the distinction is worth
     /// holding now rather than discovering later (#152).
     ///
-    /// Per trace rather than one number because `zero_corr_max_peak` crops
-    /// per trace -- it aligns each trace's first break -- and a single
+    /// Per trace rather than one number because `zero_corr(<method>, trace)`
+    /// aligns each trace's first break on its own, and a single
     /// value would be the mean of crops that no individual trace actually
     /// received. That mean is not a rounding error: it is wrong by the
     /// spread of the first breaks, on the axis whose origin re-anchoring
@@ -688,7 +690,7 @@ impl GPR {
     /// Where each trace's first sample sits on the recording clock, in
     /// nanoseconds: how much of the front of the record was discarded.
     ///
-    /// One value per trace, because `zero_corr_max_peak` crops per trace.
+    /// One value per trace, because `zero_corr(<method>, trace)` crops per trace.
     /// See [`GPR::twtt_crop_uniform_ns`] for the common case where they all
     /// agree, and [`GPR::twtt_time_zero_ns`] for where time zero sits.
     pub fn twtt_crop_ns(&self) -> &[f32] {
@@ -697,7 +699,7 @@ impl GPR {
 
     /// The one crop that describes every trace, when there is one.
     ///
-    /// `None` when they differ, which is the `zero_corr_max_peak` case. The
+    /// `None` when they differ, which is the per-trace `zero_corr` case. The
     /// export writes an `(x)`-dimensioned variable then, rather than a mean
     /// that is true of no trace.
     pub fn twtt_crop_uniform_ns(&self) -> Option<f32> {
@@ -883,106 +885,80 @@ impl GPR {
         Ok(())
     }
 
-    pub fn zero_corr_max_peak(&mut self) {
-        let start_time = SystemTime::now();
-
-        let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
-
-        let threshold = 0.5 * mean_trace.std(1.0);
-
-        let mut first_rise = 0_isize;
-
-        for i in 1..mean_trace.shape()[0] {
-            if (mean_trace[i] - mean_trace[i - 1]).abs() > threshold {
-                first_rise = i as isize;
-                break;
-            };
+    /// Pick time zero with `method` and crop each trace to it.
+    ///
+    /// With [`zero_corr::Scope::Trace`] each trace is cropped by its own
+    /// pick, and the bottom is trimmed to the shortest trace so that none
+    /// is padded with zeros (#6). `legacy` goes to
+    /// [`GPR::zero_corr_legacy`] and supports only the global scope.
+    pub fn zero_corr(
+        &mut self,
+        method: zero_corr::Method,
+        scope: zero_corr::Scope,
+        factor: f32,
+        sigma: f32,
+    ) -> Result<(), String> {
+        if method == zero_corr::Method::Legacy {
+            if scope != zero_corr::Scope::Global {
+                return Err("the legacy method only has a global scope".into());
+            }
+            self.zero_corr_legacy(factor);
+            return Ok(());
         }
-
-        if first_rise == 0 {
+        let start_time = SystemTime::now();
+        let name = format!("zero_corr({method}, {scope})");
+        let Some(picks) = zero_corr::pick(&self.data, method, scope, sigma)? else {
             self.log_event(
-                "zero_corr_max_peak",
-                "Found no first rise in the mean trace; nothing was cropped",
+                &name,
+                "Every trace is flat; nothing was cropped",
                 start_time,
             );
-            return;
+            return Ok(());
         };
+        let min = picks.samples.iter().copied().min().unwrap_or(0);
+        let max = picks.samples.iter().copied().max().unwrap_or(0);
 
-        let mean_silent_val = mean_trace
-            .slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1))
-            .mean()
-            .unwrap();
-
-        self.data -= mean_silent_val;
-
-        let mut positive_peaks = Array1::<isize>::zeros(self.width());
-
-        let mut i = 0_usize;
-        for col in self.data.columns() {
-            positive_peaks[i] = col
-                .into_iter()
-                .enumerate()
-                .max_by_key(|(_, v)| v.abs().abs() as u64)
-                .map(|(idx, _)| idx as isize)
-                .unwrap();
-
-            i += 1;
-        }
-
-        let mut new_data = Array2::from_elem(
-            (
-                self.height()
-                    - positive_peaks.iter().cloned().fold(isize::MAX, isize::min) as usize,
-                self.width(),
-            ),
-            0_f32,
-        );
-
-        i = 0;
-        for col in self.data.columns() {
-            let mut new_col = new_data.column_mut(i);
-
-            let mut positive_data_slice = new_col.slice_axis_mut(
-                Axis(0),
-                Slice::new(0, Some(self.height() as isize - positive_peaks[i]), 1),
-            );
-
-            positive_data_slice += &col.slice_axis(Axis(0), Slice::new(positive_peaks[i], None, 1));
-            i += 1;
-        }
-
-        // The crop this step actually applied, trace by trace. Recording
-        // the mean here was the bug: the whole point of this step is that
-        // the traces are cropped by *different* amounts, so one number
-        // describes none of them.
-        //
         // Accumulated, not assigned, because a pipeline may crop more than
-        // once. Computed before `update_data`, so `time_window` and
-        // `height()` still describe the record this crop was measured
-        // against and the terms are in consistent units.
+        // once; computed before `update_data` so `time_window` and
+        // `height()` still describe the record the picks were made in.
         let step_ns = self.metadata.time_window / self.height() as f32;
-        for ((crop, time_zero), peak) in self
+        for ((crop, time_zero), pick) in self
             .crop_ns
             .iter_mut()
             .zip(self.time_zero_ns.iter_mut())
-            .zip(positive_peaks.iter())
+            .zip(picks.samples.iter())
         {
-            *crop += *peak as f32 * step_ns;
-            // The crop landed on the first break, so that is where time
-            // zero is -- and unlike the crop it is an absolute position,
-            // assigned rather than accumulated.
+            *crop += *pick as f32 * step_ns;
+            // The crop landed on time zero, which unlike the crop is an
+            // absolute position: assigned rather than accumulated.
             *time_zero = *crop;
         }
-        self.update_data(new_data);
-        self.log_event(
-            "zero_corr_max_peak",
-            &format!(
-                "Applied a per-trace zero-corr by removing the first {}-{} rows",
-                positive_peaks.iter().cloned().fold(isize::MAX, isize::min),
-                positive_peaks.iter().cloned().fold(isize::MIN, isize::max)
+        self.update_data(zero_corr::apply_shifts(&self.data, &picks.samples));
+
+        let removed = if min == max {
+            format!("removed the first {min} rows")
+        } else {
+            format!(
+                "removed the first {min}-{max} rows per trace and trimmed the bottom by up to {} \
+                 rows so that no trace is zero-padded",
+                max - min
+            )
+        };
+        let outliers = match scope {
+            zero_corr::Scope::Global => String::new(),
+            zero_corr::Scope::Trace => format!(
+                "; {} of {} picks were outliers or failed and were replaced by their neighbours' \
+                 median",
+                picks.replaced,
+                picks.samples.len()
             ),
+        };
+        self.log_event(
+            &name,
+            &format!("Picked time zero and {removed}{outliers}"),
             start_time,
         );
+        Ok(())
     }
 
     fn update_data(&mut self, data: Array2<f32>) {
@@ -1176,14 +1152,15 @@ impl GPR {
         self.log_event("unphase", &format!("Summed the positive and negative phases of the signal by shifting the negative signal component by {} rows", mean_peak_spacing), start_time);
     }
 
-    pub fn zero_corr(&mut self, threshold_multiplier: Option<f32>) {
+    /// The pre-0.7 `zero_corr`: crop every trace at the first sample where
+    /// the mean trace jumps by more than `factor` times half its standard
+    /// deviation, and subtract the mean of what came before.
+    pub fn zero_corr_legacy(&mut self, factor: f32) {
         let start_time = SystemTime::now();
 
         let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
 
-        let threshold = 0.5
-            * mean_trace.std(1.0)
-            * threshold_multiplier.unwrap_or(DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER);
+        let threshold = 0.5 * mean_trace.std(1.0) * factor;
 
         let mut first_rise = 0_isize;
 
@@ -1196,7 +1173,7 @@ impl GPR {
 
         if first_rise == 0 {
             self.log_event(
-                "zero_corr",
+                "zero_corr(legacy, global)",
                 "Found no first rise in the mean trace; nothing was cropped",
                 start_time,
             );
@@ -1220,7 +1197,14 @@ impl GPR {
         );
         self.data -= mean_silent_val;
 
-        self.log_event("zero_corr", &format!("Applied a global zero-corr by removing the first {} rows (threshold multiplier: {:?})", first_rise, threshold_multiplier), start_time);
+        self.log_event(
+            "zero_corr(legacy, global)",
+            &format!(
+                "Applied a global zero-corr by removing the first {first_rise} rows (factor: \
+                 {factor})"
+            ),
+            start_time,
+        );
     }
 
     pub fn dewow(&mut self, window: u32) {
@@ -2655,7 +2639,7 @@ pub fn validate_steps(steps: &[String]) -> Result<(), String> {
 pub fn default_processing_profile() -> Vec<String> {
     vec![
         "remove_empty_traces".to_string(),
-        "zero_corr_max_peak".to_string(),
+        "zero_corr(max_peak, trace)".to_string(),
         "correct_antenna_separation".to_string(),
         format!(
             "normalize_horizontal_magnitudes({})",
@@ -3034,21 +3018,21 @@ pub mod tests {
     #[test]
     fn successive_crops_accumulate_into_one_crop() {
         let mut accumulating = make_gpr_with_first_break(64, 512);
-        accumulating.zero_corr(None);
+        accumulating.zero_corr_legacy(1.);
         let first = accumulating.twtt_crop_uniform_ns().unwrap();
         assert!(first > 0., "the fixture must have a first break to find");
 
         // The same second crop, measured on a radargram that arrives at
         // the same data carrying no history.
         let mut in_isolation = make_gpr_with_first_break(64, 512);
-        in_isolation.zero_corr(None);
+        in_isolation.zero_corr_legacy(1.);
         in_isolation.crop_ns.fill(0.);
         in_isolation.time_zero_ns.fill(0.);
-        in_isolation.zero_corr_max_peak();
+        in_isolation.zero_corr_legacy(1.);
         let second = in_isolation.twtt_crop_uniform_ns().unwrap();
         assert!(second > 0., "the second crop must remove something too");
 
-        accumulating.zero_corr_max_peak();
+        accumulating.zero_corr_legacy(1.);
 
         // Assigning instead of accumulating would report `second` alone and
         // describe the file as starting at the later offset — the same
@@ -3106,7 +3090,7 @@ pub mod tests {
         // the new first sample -- which is precisely the gprinterp anchor
         // `t0` that neither of them is.
         let mut gpr = make_gpr_with_first_break(16, 512);
-        gpr.zero_corr(None);
+        gpr.zero_corr_legacy(1.);
         let at_zero = gpr.twtt_crop_uniform_ns().unwrap();
         assert!(at_zero > 0.);
         assert_eq!(
@@ -3150,8 +3134,18 @@ pub mod tests {
         assert!(cropped.twtt_crop_uniform_ns().unwrap() > 0.);
     }
 
+    fn per_trace_max_peak(gpr: &mut super::GPR) {
+        gpr.zero_corr(
+            super::zero_corr::Method::MaxPeak,
+            super::zero_corr::Scope::Trace,
+            1.,
+            5.,
+        )
+        .unwrap();
+    }
+
     /// A radargram whose first break arrives at a different sample in each
-    /// trace, which is the situation `zero_corr_max_peak` exists for.
+    /// trace, which is the situation a per-trace zero correction exists for.
     fn make_gpr_with_a_wandering_first_break(width: usize, height: usize) -> super::GPR {
         let mut gpr = make_exportable_gpr(width, height);
         let reflector = height / 2;
@@ -3172,13 +3166,13 @@ pub mod tests {
 
     #[test]
     fn a_per_trace_zero_correction_records_a_per_trace_offset() {
-        // The bug this replaced: `zero_corr_max_peak` crops each trace by a
+        // The bug this replaced: a per-trace zero correction crops each trace by a
         // different amount and recorded the mean, which is an offset no
         // trace actually received. It is not a rounding error -- it is
         // wrong by the spread of the first breaks, on the axis whose origin
         // re-anchoring depends on.
         let mut gpr = make_gpr_with_a_wandering_first_break(64, 512);
-        gpr.zero_corr_max_peak();
+        per_trace_max_peak(&mut gpr);
 
         let offsets = gpr.twtt_crop_ns();
         assert_eq!(offsets.len(), gpr.width(), "one per trace");
@@ -3196,7 +3190,7 @@ pub mod tests {
         // A uniform crop still reports one number, which is the common case
         // and what keeps the ordinary file simple.
         let mut uniform = make_gpr_with_first_break(64, 512);
-        uniform.zero_corr(None);
+        uniform.zero_corr_legacy(1.);
         assert!(uniform.twtt_crop_uniform_ns().is_some());
     }
 
@@ -3207,7 +3201,7 @@ pub mod tests {
         // vector would be worse than the mean it replaced, since it would
         // attribute one trace's crop to another.
         let mut gpr = make_gpr_with_a_wandering_first_break(64, 512);
-        gpr.zero_corr_max_peak();
+        per_trace_max_peak(&mut gpr);
         let before = gpr.twtt_crop_ns().to_vec();
 
         let cropped = gpr.subset(Some(10), Some(40), None, None).unwrap();
@@ -3219,12 +3213,12 @@ pub mod tests {
         );
 
         let mut averaged = make_gpr_with_a_wandering_first_break(64, 512);
-        averaged.zero_corr_max_peak();
+        per_trace_max_peak(&mut averaged);
         averaged.average_traces(4).unwrap();
         assert_eq!(averaged.twtt_crop_ns().len(), averaged.width());
 
         let mut thinned = make_gpr_with_a_wandering_first_break(64, 512);
-        thinned.zero_corr_max_peak();
+        per_trace_max_peak(&mut thinned);
         thinned.remove_traces(&[0, 1, 2], true).unwrap();
         assert_eq!(thinned.twtt_crop_ns().len(), thinned.width());
         assert_eq!(thinned.twtt_crop_ns()[0], before[3]);
@@ -3256,14 +3250,14 @@ pub mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let mut uniform = make_gpr_with_first_break(48, 512);
-        uniform.zero_corr(None);
+        uniform.zero_corr_legacy(1.);
         let uniform_expected = uniform.twtt_crop_uniform_ns().unwrap();
         assert!(uniform_expected > 0., "a crop of zero would prove nothing");
         let uniform_path = dir.path().join("uniform.nc");
         uniform.export(&uniform_path).unwrap();
 
         let mut wandering = make_gpr_with_a_wandering_first_break(48, 512);
-        wandering.zero_corr_max_peak();
+        per_trace_max_peak(&mut wandering);
         let wandering_expected = wandering.twtt_crop_ns().to_vec();
         assert!(
             wandering.twtt_crop_uniform_ns().is_none(),
@@ -3324,7 +3318,7 @@ pub mod tests {
         let path = dir.path().join("line.nc");
 
         let mut gpr = make_gpr_with_first_break(64, 512);
-        gpr.zero_corr(None);
+        gpr.zero_corr_legacy(1.);
         gpr.export(&path).unwrap();
 
         let declared = crate::interp::source::read_axis_declarations(&path);

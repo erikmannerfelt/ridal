@@ -42,19 +42,19 @@ The coordinate information is picked from the middle averaged trace. Example: `a
 |---|---|---|
 | `window` | *required* | Number of traces to average |
 
-## zero_corr_max_peak
-Shift the location of the zero return time by finding the maximum row value.
-
-The peak is found for each trace individually.
-
 ## zero_corr
-Shift the location of the zero return time by finding the first row where data appear.
+Move time zero to where the direct wave starts, and crop what came before it.
 
-The correction can be tweaked to allow more or less data, e.g. `zero_corr(0.9)`.
+`method` decides what counts as the start. `aic` splits the record where it best divides into noise and signal. `first_break` takes the first sample more than `sigma` noise standard deviations out of the noise. `coppens` takes the steepest rise of the smoothed energy ratio. `max_peak` takes the largest value of the direct wave, which is later than its start. `legacy` is the pre-0.7 threshold on the mean trace, and also subtracts the mean of what it crops. All but `legacy` look for the direct wave around the first strong arrival, and none of them depend on the amplitude scale.
+
+`scope` is `global`, one time zero from the mean trace, or `trace`, one per trace. Per-trace picks that stray from their neighbours by more than a quarter period are replaced by the neighbours' median, and the bottom is trimmed so that no trace is zero-padded. Examples: `zero_corr(aic, trace)`, `zero_corr(max_peak, trace)`, `zero_corr(first_break, sigma=4)`, `zero_corr(legacy, factor=0.9)`.
 
 | argument | default | description |
 |---|---|---|
-| `threshold_multiplier` | `1` | Multiplier on the first-rise threshold; lower picks earlier |
+| `method` | `aic` | `aic`, `first_break`, `coppens`, `max_peak` or `legacy` |
+| `scope` | `global` | `global` or `trace` |
+| `factor` | `1` | `legacy` only: multiplier on the first-rise threshold; lower picks earlier |
+| `sigma` | `5` | `first_break` only: how many noise standard deviations count as signal |
 
 ## bandpass
 Apply a bandpass Butterworth filter to each trace individually.
