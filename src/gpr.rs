@@ -3,7 +3,6 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 
 use crate::formats::{self, FormatKind, ResolvedInput};
-use num::Zero;
 use serde::Serialize;
 use std::time::SystemTime;
 
@@ -12,14 +11,14 @@ use rayon::prelude::*;
 
 use crate::{dem, filters, io, tools, user_metadata};
 
-const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
-const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
-const DEFAULT_DEWOW_WINDOW: u32 = 5;
+pub(crate) const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
+pub(crate) const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
+pub(crate) const DEFAULT_DEWOW_WINDOW: u32 = 5;
 const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
-const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
-const DEFAULT_BANDPASS_LOW_CUTOFF: f32 = 0.1;
-const DEFAULT_BANDPASS_HIGH_CUTOFF: f32 = 0.9;
-const DEFAULT_BANDPASS_Q: f32 = 0.707;
+pub(crate) const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
+pub(crate) const DEFAULT_BANDPASS_LOW_CUTOFF: f32 = 0.1;
+pub(crate) const DEFAULT_BANDPASS_HIGH_CUTOFF: f32 = 0.9;
+pub(crate) const DEFAULT_BANDPASS_Q: f32 = 0.707;
 
 /// Metadata associated with a GPR dataset
 ///
@@ -463,203 +462,46 @@ pub struct RidalIdentity {
 }
 
 impl GPR {
+    /// Run one step, given as written (e.g. `dewow(10)`).
+    ///
+    /// The step's own definition lives in [`crate::steps::Step`]; this is
+    /// the part every step shares: after it runs, the per-trace metadata
+    /// must still describe the data, and the call is recorded.
+    ///
+    /// The record is the canonical form, every argument named and defaults
+    /// filled in (`dewow(window=10)`), not what was typed: `dewow` alone
+    /// would stop saying what ran the day its default changes.
     pub fn process(&mut self, step_name: &str) -> Result<(), Box<dyn Error>> {
-        if step_name.contains("dewow") {
-            let window = tools::parse_option::<u32>(step_name, 0)?.unwrap_or(DEFAULT_DEWOW_WINDOW);
-
-            self.dewow(window);
-        } else if step_name.contains("zero_corr_max_peak") {
-            self.zero_corr_max_peak();
-        } else if step_name.contains("zero_corr") {
-            let threshold_multiplier = tools::parse_option::<f32>(step_name, 0)?;
-
-            self.zero_corr(threshold_multiplier);
-        } else if step_name.contains("equidistant_traces") {
-            let step = tools::parse_option::<f32>(step_name, 0)?;
-            self.make_equidistant(step);
-        } else if step_name.contains("shift_coordinates") {
-            let along_track = tools::parse_option::<f64>(step_name, 0)?
-                .ok_or("Must provide an offset to shift_coordinates".to_string())?;
-            let altitude = tools::parse_option::<f64>(step_name, 1)?.unwrap_or(0.);
-            let cross_track = tools::parse_option::<f64>(step_name, 2)?.unwrap_or(0.);
-
-            self.shift_coordinates(along_track, altitude, cross_track)?;
-        } else if step_name.contains("normalize_horizontal_magnitudes") {
-            // Try to parse the argument as an integer. If that doesn't work, try to parse it as a
-            // float and assume it's the fraction of the height
-            let skip_first: isize =
-                match tools::parse_option::<isize>(step_name, 0) {
-                    Ok(v) => Ok(v.unwrap_or(0)),
-                    Err(e) => match e.contains("Could not parse argument 0 as value") {
-                        true => tools::parse_option::<f32>(step_name, 0).and_then(|fraction| {
-                            match (fraction.unwrap() >= 1.0) & (fraction.unwrap() < 0.) {
-                                true => Err(format!(
-                                    "Invalid fraction: {:?}. Must be between 0.0 and 1.0.",
-                                    fraction
-                                )),
-                                false => {
-                                    Ok((self.height() as f32 * fraction.unwrap_or(0.)) as isize)
-                                }
-                            }
-                        }),
-                        false => Err(e),
-                    },
-                }?;
-            self.normalize_horizontal_magnitudes(Some(skip_first));
-        } else if step_name.contains("kirchhoff_migration2d") {
-            self.kirchhoff_migration2d();
-        } else if step_name.contains("auto_gain") {
-            let n_bins =
-                tools::parse_option::<usize>(step_name, 0)?.unwrap_or(DEFAULT_AUTOGAIN_N_BINS);
-            self.auto_gain(n_bins);
-        } else if step_name.contains("gain") {
-            let factor = match tools::parse_option::<f32>(step_name, 0)? {
-                Some(v) => Ok(v),
-                None => Err(
-                    "The gain factor must be specified when applying gain. E.g. gain(0.1)"
-                        .to_string(),
-                ),
-            }?;
-            self.gain(factor);
-        } else if step_name.contains("subset") {
-            let min_trace: Option<u32> = match tools::parse_option::<u32>(step_name, 0)? {
-                Some(v) => Ok(Some(v)),
-                None => Err("Indices must be given when subsetting, e.g. subset(0, -1, 0, 500)"),
-            }?;
-
-            let max_trace: Option<u32> = match tools::parse_option::<isize>(step_name, 1) {
-                Ok(v) => Ok(v.and_then(|v2| if v2 == -1 { None } else { Some(v2 as u32) })),
-                Err(e) => match e.contains("out of bounds") {
-                    true => Ok(None),
-                    false => Err(e),
-                },
-            }?;
-            let min_sample: Option<u32> = match tools::parse_option::<u32>(step_name, 2) {
-                Ok(v) => Ok(v),
-                Err(e) => match e.contains("out of bounds") {
-                    true => Ok(None),
-                    false => Err(e),
-                },
-            }?;
-            let max_sample: Option<u32> = match tools::parse_option::<isize>(step_name, 3) {
-                Ok(v) => Ok(v.and_then(|v2| if v2 == -1 { None } else { Some(v2 as u32) })),
-                Err(e) => match e.contains("out of bounds") {
-                    true => Ok(None),
-                    false => Err(e),
-                },
-            }?;
-            *self = self.subset(min_trace, max_trace, min_sample, max_sample)?;
-        } else if step_name.contains("average_traces") {
-            let window: usize = tools::parse_option(step_name, 0)?
-                .ok_or("Must provide an averaging window to average_traces".to_string())?;
-
-            self.average_traces(window)?;
-        } else if step_name.contains("unphase") {
-            self.unphase();
-        } else if step_name.contains("abslog") {
-            self.abslog()
-        } else if step_name.contains("adaptive_siglog") {
-            // Before the `siglog` branch: step names match by substring, and
-            // "adaptive_siglog" contains "siglog".
-            let offset = tools::parse_option::<f32>(step_name, 0)?
-                .unwrap_or(crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET);
-            self.adaptive_siglog(offset)?;
-        } else if step_name.contains("siglog") {
-            let minval = tools::parse_option::<f32>(step_name, 0)?
-                .unwrap_or(crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10);
-            self.siglog(minval);
-        } else if step_name.contains("correct_topography") {
-            self.correct_topography();
-        } else if step_name.contains("correct_antenna_separation") {
-            self.correct_antenna_separation();
-        } else if step_name.contains("remove_traces") {
-            let mut traces = Vec::<usize>::new();
-            for i in 0..self.width() {
-                // Try to parse the i:th option as an usize.
-                // If that doesn't work, it's either a range (e.g. 1-3) or it's poorly formatted
-                if let Some(trace) = tools::parse_option::<usize>(step_name, i).ok().flatten() {
-                    traces.push(trace);
-                } else {
-                    // Extract the option as a string. If i is out of bounds, this one will fail (and break the loop)
-                    if let Some(token) = tools::parse_option::<String>(step_name, i).ok().flatten()
-                    {
-                        // Start trying to parse it as a range (e.g. 1-3), or else give helpful messages.
-                        if !token.contains("-") {
-                            return Err(
-                                format!("Error reading 'remove_traces' argument: {token}").into()
-                            );
-                        }
-                        let mut new_traces = Vec::<usize>::new();
-                        let parts: Vec<&str> = token.split('-').collect();
-                        if let (Some(start_str), Some(end_str)) = (parts.first(), parts.get(1)) {
-                            if let (Ok(start), Ok(end)) =
-                                (start_str.parse::<usize>(), end_str.parse::<usize>())
-                            {
-                                for value in start..=end {
-                                    new_traces.push(value);
-                                }
-                            }
-                        }
-                        if new_traces.is_empty() {
-                            return Err(
-                                format!("Error reading 'remove_traces' argument: {token}").into()
-                            );
-                        };
-                        traces.append(&mut new_traces);
-                    } else {
-                        break;
-                    }
-                }
-            }
-            if traces.is_empty() {
-                return Err(
-                    "Indices must be given when calling remove_traces, e.g. remove_traces(0 1 5)"
-                        .into(),
-                );
-            };
-            self.remove_traces(&traces, true)?;
-        } else if step_name.contains("remove_empty_traces") {
-            let strength =
-                tools::parse_option::<f32>(step_name, 0)?.unwrap_or(DEFAULT_EMPTY_TRACE_STRENGTH);
-
-            self.remove_empty_traces(strength)?;
-        } else if step_name.contains("bandpass_mhz") {
-            let error_msg =
-                "Must provide lower and upper cutoff frequencies (e.g. bandpass_mhz(50 150)";
-            let low_cutoff = tools::parse_option(step_name, 0)?.ok_or(error_msg)?;
-            let high_cutoff = tools::parse_option(step_name, 1)?.ok_or(error_msg)?;
-            let q: f32 = tools::parse_option(step_name, 2)
-                .ok()
-                .flatten()
-                .unwrap_or(DEFAULT_BANDPASS_Q);
-            self.bandpass(low_cutoff, high_cutoff, q, false)?;
-        } else if step_name.contains("bandpass") {
-            let low_cutoff =
-                tools::parse_option(step_name, 0)?.unwrap_or(DEFAULT_BANDPASS_LOW_CUTOFF);
-            let high_cutoff =
-                tools::parse_option(step_name, 1)?.unwrap_or(DEFAULT_BANDPASS_HIGH_CUTOFF);
-            let q: f32 = tools::parse_option(step_name, 2)
-                .ok()
-                .flatten()
-                .unwrap_or(DEFAULT_BANDPASS_Q);
-            self.bandpass(low_cutoff, high_cutoff, q, true)?;
-        } else if step_name.contains("multiply") {
-            let factor: f32 = tools::parse_option(step_name, 0)?
-                .ok_or("Must provide a factor to `multiply` (e.g. `multiply(5)`)".to_string())?;
-
-            if factor.is_zero() {
-                return Err("The factor of `multiply` cannot be zero".into());
-            } else if factor.is_infinite() {
-                return Err("The factor of `multiply` cannot be infinite".into());
-            };
-
-            self.multiply(factor);
-        } else {
-            return Err(format!("Step name not recognized: {}", step_name).into());
+        let parsed = crate::steps::parse_one(step_name)?;
+        let log_len = self.log.len();
+        parsed.step.apply(self)?;
+        // Every step says what it did, including when it did nothing (#85).
+        if self.log.len() == log_len {
+            return Err(format!("Internal error: `{step_name}` ran without logging").into());
         }
+        self.check_trace_metadata(step_name)?;
+        self.steps.push(parsed.canonical);
+        Ok(())
+    }
 
-        self.steps.push(step_name.to_string());
-
+    /// Every per-trace vector has one entry per trace.
+    ///
+    /// Each step that changes the trace count has to keep these in step by
+    /// hand; this catches the one that does not, at the step that broke it
+    /// rather than at export.
+    fn check_trace_metadata(&self, step_name: &str) -> Result<(), String> {
+        let width = self.width();
+        for (what, len) in [
+            ("coordinates", self.location.cor_points.len()),
+            ("crop offsets", self.crop_ns.len()),
+            ("time-zero offsets", self.time_zero_ns.len()),
+        ] {
+            if len != width {
+                return Err(format!(
+                    "Internal error after `{step_name}`: {len} {what} for {width} traces"
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -1058,6 +900,11 @@ impl GPR {
         }
 
         if first_rise == 0 {
+            self.log_event(
+                "zero_corr_max_peak",
+                "Found no first rise in the mean trace; nothing was cropped",
+                start_time,
+            );
             return;
         };
 
@@ -1348,6 +1195,11 @@ impl GPR {
         }
 
         if first_rise == 0 {
+            self.log_event(
+                "zero_corr",
+                "Found no first rise in the mean trace; nothing was cropped",
+                start_time,
+            );
             return;
         };
 
@@ -1602,7 +1454,7 @@ impl GPR {
         */
     }
 
-    fn shift_coordinates(
+    pub(crate) fn shift_coordinates(
         &mut self,
         along_track: f64,
         altitude: f64,
@@ -2787,36 +2639,15 @@ fn group_batch_inputs_chronologically(
 
     Ok(groups)
 }
-// src/steps.rs
-const STEPS_MD: &str = include_str!("../steps.md");
-
 pub fn all_available_steps() -> Vec<(String, String)> {
-    // Split on “## ” headings
-    STEPS_MD
-        .split("\n## ")
-        .skip(1) // text before first heading
-        .filter_map(|section| {
-            let mut lines = section.lines();
-
-            // first line after "## " is the name (up to end of line)
-            let name = lines.next()?.trim().to_string();
-
-            // rest is the description
-            let description = lines.collect::<Vec<_>>().join("\n").trim().to_string();
-
-            Some((name, description))
-        })
-        .collect()
+    crate::steps::descriptions()
 }
+
+/// Check that every entry is exactly one registered step with valid
+/// arguments.
 pub fn validate_steps(steps: &[String]) -> Result<(), String> {
-    let allowed_steps = all_available_steps()
-        .iter()
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<String>>();
     for step in steps {
-        if !allowed_steps.iter().any(|allowed| step.contains(allowed)) {
-            return Err(format!("Unrecognized step: {step}"));
-        }
+        crate::steps::parse_one(step)?;
     }
     Ok(())
 }
@@ -3727,6 +3558,27 @@ pub mod tests {
     }
 
     #[test]
+    fn every_step_runs_logs_and_records_its_canonical_form() {
+        // Each step once, with its first documented example or bare if it
+        // has none, on a fresh radargram: `process` itself enforces the log
+        // entry and the per-trace metadata, so this proves both for all of
+        // them, not just the steps other tests happen to exercise.
+        for (name, description) in crate::steps::descriptions() {
+            let call = description
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .find(|s| s.starts_with(&format!("{name}(")))
+                .unwrap_or(&name)
+                .to_string();
+            let mut gpr = make_dummy_gpr(40, 600, Some(1.));
+            gpr.process(&call).unwrap_or_else(|e| panic!("{call}: {e}"));
+            let recorded = gpr.steps.last().unwrap();
+            assert!(recorded.starts_with(&name), "{call} recorded as {recorded}");
+        }
+    }
+
+    #[test]
     fn test_multiply() -> Result<(), Box<dyn std::error::Error>> {
         let mut gpr = make_dummy_gpr(20, 30, Some(1.));
 
@@ -3741,7 +3593,9 @@ pub mod tests {
 
         let error = gpr.process("multiply(five)").unwrap_err();
         assert!(
-            error.to_string().contains("Could not parse argument 0"),
+            error
+                .to_string()
+                .contains("invalid value `five` for `factor`"),
             "Unexpected error: {error:?}"
         );
 
@@ -3749,7 +3603,7 @@ pub mod tests {
         assert!(
             error
                 .to_string()
-                .contains("The factor of `multiply` cannot be zero"),
+                .contains("`factor` in `multiply`: cannot be zero"),
             "Unexpected error: {error:?}"
         );
 
@@ -3757,7 +3611,7 @@ pub mod tests {
         assert!(
             error
                 .to_string()
-                .contains("The factor of `multiply` cannot be inf"),
+                .contains("`factor` in `multiply`: must be finite"),
             "Unexpected error: {error:?}"
         );
 

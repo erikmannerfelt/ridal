@@ -9,6 +9,8 @@ on:
     branches: [main]
     paths:
     - src/**
+    # Generated from src/steps/; a test fails if it is edited by hand.
+    - steps.md
     - Cargo.toml
     - Cargo.lock
     - .github/workflows/rust.yml
