@@ -45,11 +45,13 @@ The coordinate information is picked from the middle averaged trace. Example: `a
 ## zero_corr
 Move time zero to where the direct wave starts, and crop what came before it.
 
-`method` decides what counts as the start. `coppens` takes the steepest rise of the smoothed energy ratio. `first_break` takes the first sample more than `sigma` noise standard deviations out of the noise, and mostly agrees with `coppens`. `aic` splits the record where it best divides into noise and signal, which puts it at the start of a gradual rise, often a sample earlier. `max_peak` takes the largest value of the direct wave, which is later than its start. `legacy` is the pre-0.7 threshold on the mean trace, and also subtracts the mean of what it crops. All but `legacy` look for the direct wave around the first strong arrival, and none of them depend on the amplitude scale.
+`method` decides how each trace's direct wave is found, and so what the traces are aligned on. `coppens` takes the steepest rise of the smoothed energy ratio. `first_break` takes the first sample more than `sigma` noise standard deviations out of the noise, and mostly agrees with `coppens`. `aic` splits the record where it best divides into noise and signal, which puts it at the start of a gradual rise, often a sample earlier. `max_peak` takes the direct wave's largest value, which survives noisy or corrupted first samples best. `legacy` is the pre-0.7 threshold on the mean trace, and also subtracts the mean of what it crops. All but `legacy` look for the direct wave around the first strong arrival, and none of them depend on the amplitude scale.
+
+`time_zero` says which feature of the direct wave time zero goes on, `onset` or `peak`, whichever method aligned the traces. When the method finds the other feature, the distance between the two is measured once, on the traces stacked on their picks, so every method means the same time zero by default.
 
 `scope` is `global`, one time zero from the mean trace, or `trace`, one per trace. Per-trace picks that stray from their neighbours by more than a quarter period are replaced by the neighbours' median, and the bottom is trimmed so that no trace is zero-padded.
 
-`margin` keeps some record above time zero, the same amount in every trace, and the travel times of those samples are negative. `auto` keeps back to where the direct wave starts: nothing for the methods that pick the start, and the whole wavelet for `max_peak`. Examples: `zero_corr(coppens, trace)`, `zero_corr(max_peak, trace)`, `zero_corr(coppens, margin=5)`, `zero_corr(first_break, sigma=4)`, `zero_corr(legacy, factor=0.9)`.
+`margin` keeps some record above time zero, the same amount in every trace, and the travel times of those samples are negative. `auto` keeps back to where the direct wave starts: nothing with `time_zero=onset`, and the start of the wavelet with `time_zero=peak`. Examples: `zero_corr(coppens, trace)`, `zero_corr(max_peak, trace)`, `zero_corr(max_peak, trace, time_zero=peak)`, `zero_corr(coppens, margin=5)`, `zero_corr(first_break, sigma=4)`, `zero_corr(legacy, factor=0.9)`.
 
 | argument | default | description |
 |---|---|---|
@@ -57,6 +59,7 @@ Move time zero to where the direct wave starts, and crop what came before it.
 | `scope` | `global` | `global` or `trace` |
 | `factor` | `1` | `legacy` only: multiplier on the first-rise threshold; lower picks earlier |
 | `sigma` | `5` | `first_break` only: how many noise standard deviations count as signal |
+| `time_zero` | `onset` | Where on the direct wave time zero goes: `onset` or `peak` |
 | `margin` | `auto` | How much record to keep above time zero: `auto`, back to where the direct wave starts, or a number of nanoseconds |
 
 ## bandpass

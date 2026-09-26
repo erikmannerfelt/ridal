@@ -131,14 +131,34 @@ fn per_trace_picks_follow_the_jumps_rather_than_being_smoothed_away() {
 }
 
 #[test]
-fn max_peak_with_an_auto_margin_aligns_the_drift_and_keeps_the_wavelet() {
+fn max_peak_aligns_the_drift_and_puts_time_zero_at_the_onset() {
     let gpr = processed("zero_corr(max_peak, trace)");
     // Measured 0.85 over the last 1000 traces, against 0.60 for coppens.
     let score = worst_alignment(&gpr, 120, 500..1500);
     assert!(score > 0.75, "{score}");
 
+    // Time zero is at the start of the direct wave, as for the onset
+    // methods, not about 10 ns later at its peak.
+    let median = |gpr: &GPR| {
+        let mut zeros = gpr.twtt_time_zero_ns().to_vec();
+        zeros.sort_by(f32::total_cmp);
+        zeros[zeros.len() / 2]
+    };
+    let onset = median(&processed("zero_corr(coppens, trace)"));
+    assert!(
+        (median(&gpr) - onset).abs() < 2.5,
+        "{} vs {onset}",
+        median(&gpr)
+    );
+    assert!(gpr.twtt_first_sample_ns().abs() < 1e-3);
+}
+
+#[test]
+fn max_peak_at_the_peak_keeps_the_wavelet_above_time_zero() {
+    let gpr = processed("zero_corr(max_peak, trace, time_zero=peak)");
     // The onset-to-peak distance was kept above time zero (measured 29
-    // samples, 14.4 ns), so the record starts before time zero.
+    // samples, 14.4 ns, before it came from the aligned stack), so the
+    // record starts before time zero.
     let first = gpr.twtt_first_sample_ns();
     assert!((-20.0..-8.0).contains(&first), "{first}");
     assert!(gpr.depths()[0] < 0.);

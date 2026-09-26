@@ -1,5 +1,7 @@
 # Malå test recordings
 
+`dronbreen` in the file names is an ASCII-safe spelling of Drønbreen.
+
 Raw Malå `.rd3` data with their `.rad` headers and `.cor` positions, used by the tests and the web GUI's integration tests. They are left out of the published crate (`exclude` in `Cargo.toml`).
 
 - `dronbreen-20220329-DAT_0237_A1`: 100 MHz, 2529 traces.

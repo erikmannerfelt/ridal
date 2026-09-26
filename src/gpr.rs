@@ -897,6 +897,7 @@ impl GPR {
         scope: zero_corr::Scope,
         factor: f32,
         sigma: f32,
+        reference: zero_corr::Reference,
         margin: zero_corr::Margin,
     ) -> Result<(), String> {
         if method == zero_corr::Method::Legacy {
@@ -909,7 +910,8 @@ impl GPR {
         let start_time = SystemTime::now();
         let name = format!("zero_corr({method}, {scope})");
         let step_ns = self.metadata.time_window / self.height() as f32;
-        let Some(picks) = zero_corr::pick(&self.data, method, scope, sigma, margin, step_ns)?
+        let Some(picks) =
+            zero_corr::pick(&self.data, method, scope, sigma, reference, margin, step_ns)?
         else {
             self.log_event(
                 &name,
@@ -949,6 +951,16 @@ impl GPR {
                 max - min
             )
         };
+        let placed = if picks.shift == 0 {
+            String::new()
+        } else {
+            format!(
+                "; time zero is at the {reference}, {} samples ({:.2} ns) from the traces' \
+                 aligned picks, as measured on their stack",
+                picks.shift,
+                picks.shift as f32 * step_ns
+            )
+        };
         let mut kept = format!(
             "; kept {} rows ({:.2} ns) above time zero (margin={margin})",
             picks.margin,
@@ -971,7 +983,7 @@ impl GPR {
         };
         self.log_event(
             &name,
-            &format!("Picked time zero and {removed}{kept}{outliers}"),
+            &format!("Picked time zero and {removed}{placed}{kept}{outliers}"),
             start_time,
         );
         Ok(())
@@ -3216,6 +3228,7 @@ pub mod tests {
             super::zero_corr::Scope::Trace,
             1.,
             5.,
+            super::zero_corr::Reference::Peak,
             super::zero_corr::Margin::Ns(0.),
         )
         .unwrap();

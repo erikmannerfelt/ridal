@@ -161,6 +161,35 @@ impl FromStr for Margin {
     }
 }
 
+/// Which feature of the direct wave time zero is placed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reference {
+    /// Where the direct wave starts.
+    Onset,
+    /// The direct wave's largest value.
+    Peak,
+}
+
+impl fmt::Display for Reference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Reference::Onset => "onset",
+            Reference::Peak => "peak",
+        })
+    }
+}
+
+impl FromStr for Reference {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "onset" => Ok(Reference::Onset),
+            "peak" => Ok(Reference::Peak),
+            _ => Err("expected `onset` or `peak`".into()),
+        }
+    }
+}
+
 /// The result of a pick. Every trace keeps the same number of samples
 /// above its time zero, so that time zero lands on the same row in all of
 /// them and they share one travel-time axis.
@@ -177,6 +206,10 @@ pub struct Picks {
     /// Per-trace picks that disagreed with their neighbours, or failed, and
     /// were replaced by the neighbours' median.
     pub replaced: usize,
+    /// Samples from the feature the traces were aligned on to time zero,
+    /// measured on the aligned stack. Zero when the method picks the
+    /// requested reference itself.
+    pub shift: isize,
     pub window: Window,
 }
 
@@ -190,14 +223,24 @@ impl Picks {
 /// Pick time zero with any method but `legacy`, which also changes the
 /// data and so lives with the rest of [`crate::gpr::GPR`].
 ///
+/// The method's own picks decide the alignment: each trace moves so that its
+/// pick lands on the same row. Time zero is then put on `reference`. When
+/// the method picks another feature -- the peak, for an onset -- the distance
+/// between the two is measured once, on the traces stacked on their picks,
+/// where the direct wave is sharp and the noise has averaged away. So
+/// `zero_corr(max_peak)` aligns on the peaks, which survive noisy onsets,
+/// but still puts time zero where the direct wave starts.
+///
 /// `data` is `(samples, traces)` with `dt_ns` between samples. `Ok(None)`
 /// when every trace is flat: there is no signal whose time zero could be
 /// wrong.
+#[allow(clippy::too_many_arguments)]
 pub fn pick(
     data: &Array2<f32>,
     method: Method,
     scope: Scope,
     sigma: f32,
+    reference: Reference,
     margin: Margin,
     dt_ns: f32,
 ) -> Result<Option<Picks>, String> {
@@ -218,26 +261,23 @@ pub fn pick(
             window.noise_end
         ));
     }
-    // What `margin=auto` measures back to: the start of the direct wave, by
-    // the default method where it can run.
+    // How the start of the direct wave is found when the method itself
+    // picks something else: the default method where it can run.
     let onset_method = if has_noise {
         Method::Coppens
     } else {
         Method::Aic
     };
-    let picks_start = !matches!(method, Method::MaxPeak);
+    let picks = match method {
+        Method::MaxPeak => Reference::Peak,
+        _ => Reference::Onset,
+    };
 
-    let (time_zero, replaced, auto) = match scope {
+    let (aligned, replaced) = match scope {
         Scope::Global => {
             let at = pick_trace(stack.view(), method, &window, sigma)
                 .ok_or_else(|| format!("`{method}` found no direct wave in the mean trace"))?;
-            let auto = if picks_start {
-                0
-            } else {
-                pick_trace(stack.view(), onset_method, &window, sigma)
-                    .map_or(0, |onset| at.saturating_sub(onset))
-            };
-            (vec![at; data.shape()[1]], 0, auto)
+            (vec![at; data.shape()[1]], 0)
         }
         Scope::Trace => {
             let traces: Vec<ArrayView1<f32>> = data.columns().into_iter().collect();
@@ -246,37 +286,53 @@ pub fn pick(
                 .map(|trace| pick_trace(*trace, method, &window, sigma))
                 .collect();
             // The other end of the direct wave, to check each pick against.
-            let anchor_method = if picks_start {
-                Method::MaxPeak
-            } else {
-                onset_method
+            let anchor_method = match picks {
+                Reference::Onset => Method::MaxPeak,
+                Reference::Peak => onset_method,
             };
             let anchors: Vec<Option<usize>> = traces
                 .par_iter()
                 .map(|trace| pick_trace(*trace, anchor_method, &window, sigma))
                 .collect();
             let tolerance = (window.half_period as f32 / 2.).max(1.);
-            let (time_zero, replaced) =
-                replace_outliers(&raw, &anchors, OUTLIER_HALF_WINDOW, tolerance)
-                    .ok_or_else(|| format!("`{method}` found no direct wave in any trace"))?;
-            let auto = if picks_start {
-                0
-            } else {
-                // A high percentile, so that nearly every trace keeps its
-                // whole wavelet; the few that start earlier lose a sample
-                // or two of it rather than every trace gaining the
-                // longest lead-in.
-                let distances: Vec<f32> = time_zero
-                    .iter()
-                    .zip(&anchors)
-                    .filter_map(|(&t0, onset)| onset.map(|o| t0.saturating_sub(o) as f32))
-                    .collect();
-                percentile(distances, 0.95).round() as usize
-            };
-            (time_zero, replaced, auto)
+            replace_outliers(&raw, &anchors, OUTLIER_HALF_WINDOW, tolerance)
+                .ok_or_else(|| format!("`{method}` found no direct wave in any trace"))?
         }
     };
 
+    // The direct wave's start and peak on the aligned stack, relative to
+    // the row the picks landed on.
+    let (stacked, origin) = aligned_stack(data, &aligned);
+    let stacked = stacked.insert_axis(Axis(1));
+    let stack_window = find_window(&stacked)?.unwrap_or(window);
+    let stacked = stacked.column(0);
+    let locate = |method: Method| {
+        pick_trace(stacked, method, &stack_window, sigma)
+            .map(|at| at as isize - origin as isize)
+            .ok_or_else(|| format!("found no direct wave in the stack aligned by `{method}`"))
+    };
+    let onset = match picks {
+        Reference::Onset => 0,
+        Reference::Peak => locate(onset_method)?,
+    };
+    let peak = match picks {
+        Reference::Peak => 0,
+        Reference::Onset => locate(Method::MaxPeak)?,
+    };
+    let shift = match reference {
+        Reference::Onset => onset,
+        Reference::Peak => peak,
+    };
+    // Back to the start of the direct wave.
+    let auto = (shift - onset).max(0) as usize;
+
+    let time_zero = aligned
+        .iter()
+        .map(|&at| usize::try_from(at as isize + shift))
+        .collect::<Result<Vec<usize>, _>>()
+        .map_err(|_| {
+            format!("time zero at the {reference} would be before the first sample in some traces")
+        })?;
     let margin_wanted = match margin {
         Margin::Auto => auto,
         Margin::Ns(ns) => (ns / dt_ns).round() as usize,
@@ -287,8 +343,38 @@ pub fn pick(
         margin_wanted,
         time_zero,
         replaced,
+        shift,
         window,
     }))
+}
+
+/// The mean of the traces shifted so that their picks line up, and the row
+/// the picks are on.
+///
+/// Each row averages the traces that have it, so the stack reaches as far
+/// before the picks as the trace with the latest pick does. Stopping where
+/// every trace has data would leave only as much lead-in as the earliest
+/// pick, which can be too little noise for an onset picker to measure.
+fn aligned_stack(data: &Array2<f32>, picks: &[usize]) -> (ndarray::Array1<f32>, usize) {
+    let height = data.shape()[0];
+    let origin = picks.iter().copied().max().unwrap_or(0);
+    let last = picks.iter().copied().min().unwrap_or(0);
+    let length = origin + height - last;
+    let mut sum = vec![0_f64; length];
+    let mut count = vec![0_u32; length];
+    for (trace, &at) in data.columns().into_iter().zip(picks) {
+        let start = origin - at;
+        for (i, v) in trace.iter().enumerate() {
+            sum[start + i] += *v as f64;
+            count[start + i] += 1;
+        }
+    }
+    let mean = sum
+        .iter()
+        .zip(&count)
+        .map(|(s, &c)| if c == 0 { 0. } else { (s / c as f64) as f32 })
+        .collect();
+    (mean, origin)
 }
 
 /// Locate the direct wave from every trace's own first strong lobe.
@@ -694,22 +780,55 @@ mod tests {
     fn onset_pickers_find_the_synthetic_onset() {
         let data = radargram(&[40; 20], 1000.);
         for method in [Method::Aic, Method::FirstBreak, Method::Coppens] {
-            let picks = pick(&data, method, Scope::Trace, 5., Margin::Auto, 1.)
-                .unwrap()
-                .unwrap();
+            let picks = pick(
+                &data,
+                method,
+                Scope::Trace,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+                1.,
+            )
+            .unwrap()
+            .unwrap();
             for &p in &picks.time_zero {
                 assert!((39..=42).contains(&p), "{method}: picked {p}, onset 40");
             }
         }
         // The peak of a sine starting at 40 is a quarter period later.
-        let peaks = pick(&data, Method::MaxPeak, Scope::Global, 5., Margin::Auto, 1.)
-            .unwrap()
-            .unwrap();
-        assert!(
-            (42..=46).contains(&peaks.time_zero[0]),
-            "{:?}",
-            peaks.time_zero
-        );
+        for method in [Method::MaxPeak, Method::Coppens] {
+            for scope in [Scope::Global, Scope::Trace] {
+                let peaks = pick(&data, method, scope, 5., Reference::Peak, Margin::Auto, 1.)
+                    .unwrap()
+                    .unwrap();
+                for &p in &peaks.time_zero {
+                    assert!((42..=46).contains(&p), "{method}, {scope}: peak at {p}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn max_peak_aligns_on_the_peaks_but_puts_time_zero_at_the_onset() {
+        // The onsets wander, and the peaks with them.
+        let onsets: Vec<usize> = (0..30).map(|i| 40 + (i * 5) % 7).collect();
+        let data = radargram(&onsets, 1000.);
+        let picks = pick(
+            &data,
+            Method::MaxPeak,
+            Scope::Trace,
+            5.,
+            Reference::Onset,
+            Margin::Auto,
+            1.,
+        )
+        .unwrap()
+        .unwrap();
+        assert!((-5..=-2).contains(&picks.shift), "{}", picks.shift);
+        for (p, o) in picks.time_zero.iter().zip(&onsets) {
+            assert!(p.abs_diff(*o) <= 1, "time zero {p}, onset {o}");
+        }
+        assert_eq!(picks.margin, 0);
     }
 
     #[test]
@@ -719,22 +838,46 @@ mod tests {
         let scaled = data.mapv(|v| v * 1000.);
         let clipped = data.mapv(|v| v.clamp(2.7, 3.3));
         for method in [Method::Aic, Method::FirstBreak, Method::Coppens] {
-            let base = pick(&data, method, Scope::Trace, 5., Margin::Auto, 1.)
-                .unwrap()
-                .unwrap()
-                .time_zero;
+            let base = pick(
+                &data,
+                method,
+                Scope::Trace,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+                1.,
+            )
+            .unwrap()
+            .unwrap()
+            .time_zero;
             assert_eq!(
                 base,
-                pick(&scaled, method, Scope::Trace, 5., Margin::Auto, 1.)
-                    .unwrap()
-                    .unwrap()
-                    .time_zero,
+                pick(
+                    &scaled,
+                    method,
+                    Scope::Trace,
+                    5.,
+                    Reference::Onset,
+                    Margin::Auto,
+                    1.
+                )
+                .unwrap()
+                .unwrap()
+                .time_zero,
                 "{method} moved when scaled"
             );
-            let clip = pick(&clipped, method, Scope::Trace, 5., Margin::Auto, 1.)
-                .unwrap()
-                .unwrap()
-                .time_zero;
+            let clip = pick(
+                &clipped,
+                method,
+                Scope::Trace,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+                1.,
+            )
+            .unwrap()
+            .unwrap()
+            .time_zero;
             for (a, b) in base.iter().zip(&clip) {
                 assert!(
                     a.abs_diff(*b) <= 1,
@@ -748,9 +891,17 @@ mod tests {
     fn per_trace_picks_follow_the_traces() {
         let onsets: Vec<usize> = (0..30).map(|i| 40 + i % 4).collect();
         let data = radargram(&onsets, 1000.);
-        let picks = pick(&data, Method::Aic, Scope::Trace, 5., Margin::Auto, 1.)
-            .unwrap()
-            .unwrap();
+        let picks = pick(
+            &data,
+            Method::Aic,
+            Scope::Trace,
+            5.,
+            Reference::Onset,
+            Margin::Auto,
+            1.,
+        )
+        .unwrap()
+        .unwrap();
         for (p, o) in picks.time_zero.iter().zip(&onsets) {
             assert!(p.abs_diff(*o) <= 1, "picked {p}, onset {o}");
         }
@@ -775,7 +926,7 @@ mod tests {
             Method::Coppens,
         ] {
             for scope in [Scope::Global, Scope::Trace] {
-                let picks = pick(&data, method, scope, 5., Margin::Auto, 1.)
+                let picks = pick(&data, method, scope, 5., Reference::Onset, Margin::Auto, 1.)
                     .unwrap()
                     .unwrap();
                 assert!(
@@ -825,9 +976,17 @@ mod tests {
         let onsets: Vec<usize> = (0..30).map(|i| 40 + i % 3).collect();
         let data = radargram(&onsets, 1000.);
         for scope in [Scope::Global, Scope::Trace] {
-            let peak = pick(&data, Method::MaxPeak, scope, 5., Margin::Auto, 1.)
-                .unwrap()
-                .unwrap();
+            let peak = pick(
+                &data,
+                Method::MaxPeak,
+                scope,
+                5.,
+                Reference::Peak,
+                Margin::Auto,
+                1.,
+            )
+            .unwrap()
+            .unwrap();
             // A quarter of the 12-sample period between onset and peak.
             assert!((2..=4).contains(&peak.margin), "{scope}: {}", peak.margin);
             for (crop, onset) in peak.crops().iter().zip(&onsets) {
@@ -838,9 +997,17 @@ mod tests {
             }
         }
         // Nothing to keep for a method that already picks the start.
-        let start = pick(&data, Method::Coppens, Scope::Trace, 5., Margin::Auto, 1.)
-            .unwrap()
-            .unwrap();
+        let start = pick(
+            &data,
+            Method::Coppens,
+            Scope::Trace,
+            5.,
+            Reference::Onset,
+            Margin::Auto,
+            1.,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(start.margin, 0);
         assert_eq!(start.crops(), start.time_zero);
     }
@@ -853,6 +1020,7 @@ mod tests {
             Method::Coppens,
             Scope::Global,
             5.,
+            Reference::Onset,
             Margin::Ns(10.),
             2.,
         )
@@ -864,6 +1032,7 @@ mod tests {
             Method::Coppens,
             Scope::Global,
             5.,
+            Reference::Onset,
             Margin::Ns(1000.),
             1.,
         )
@@ -889,10 +1058,32 @@ mod tests {
     }
 
     #[test]
+    fn the_aligned_stack_keeps_the_longest_lead_in() {
+        // Two traces with a spike at rows 2 and 6: aligned, the stack must
+        // reach 6 rows before the spike, not stop at the 2 the first one has.
+        let mut data = Array2::<f32>::zeros((10, 2));
+        data[[2, 0]] = 1.;
+        data[[6, 1]] = 1.;
+        let (stack, origin) = aligned_stack(&data, &[2, 6]);
+        assert_eq!(origin, 6);
+        assert_eq!(stack.len(), 14);
+        assert_eq!(stack[origin], 1.);
+        assert_eq!(stack.iter().filter(|&&v| v != 0.).count(), 1);
+    }
+
+    #[test]
     fn a_flat_radargram_has_nothing_to_pick() {
         let data = Array2::from_elem((50, 4), 7_f32);
         assert_eq!(
-            pick(&data, Method::Aic, Scope::Trace, 5., Margin::Auto, 1.),
+            pick(
+                &data,
+                Method::Aic,
+                Scope::Trace,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+                1.
+            ),
             Ok(None)
         );
     }
@@ -901,7 +1092,16 @@ mod tests {
     fn noise_based_methods_refuse_a_record_without_noise() {
         let data = radargram(&[1; 5], 1000.);
         for method in [Method::FirstBreak, Method::Coppens] {
-            let err = pick(&data, method, Scope::Global, 5., Margin::Auto, 1.).unwrap_err();
+            let err = pick(
+                &data,
+                method,
+                Scope::Global,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+                1.,
+            )
+            .unwrap_err();
             assert!(err.contains("samples of noise"), "{err}");
         }
     }
