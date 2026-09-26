@@ -6,6 +6,8 @@ pub mod bandpass;
 pub mod coordinates;
 pub mod siglog;
 pub mod zero_corr;
+#[cfg(test)]
+mod zero_corr_asset_tests;
 
 pub fn abslog<T: Float>(data: &mut Array2<T>) {
     data.mapv_inplace(|v| v.abs());

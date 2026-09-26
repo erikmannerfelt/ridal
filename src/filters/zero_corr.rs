@@ -349,19 +349,24 @@ fn direct_wave(trace: ArrayView1<f32>) -> Option<(usize, usize, usize)> {
         peak += 1;
     }
 
-    // Half a period: the distance to the largest opposite-signed value
-    // before the sign flips back.
+    // Half a period: the distance to the opposite lobe, which is the first
+    // opposite-signed value at least half the peak's size, climbed to its
+    // extreme. Smaller sign flips on the way are not a lobe: on a trace
+    // whose samples zig-zag (interleaved sampling gone wrong), taking the
+    // first flip would make half a period one or two samples.
     let positive = centred[peak] > 0.;
+    let is_opposite = |v: f32| (v > 0.) != positive && v.abs() >= 0.5 * centred[peak].abs();
     let mut opposite = peak;
-    let mut i = peak + 1;
-    while i < n && (centred[i] > 0.) == positive {
-        i += 1;
-    }
-    while i < n && (centred[i] > 0.) != positive {
-        if opposite == peak || centred[i].abs() > centred[opposite].abs() {
-            opposite = i;
+    if let Some(start) = (peak + 1..n).find(|&i| is_opposite(centred[i])) {
+        opposite = start;
+        for i in start + 1..n {
+            if (centred[i] > 0.) == positive {
+                break;
+            }
+            if centred[i].abs() > centred[opposite].abs() {
+                opposite = i;
+            }
         }
-        i += 1;
     }
     let half_period = (opposite - peak).max(1);
     let onset = aic_onset(centred.slice(ndarray::s![..(peak + half_period + 1).min(n)]))
@@ -866,6 +871,21 @@ mod tests {
         .unwrap();
         assert_eq!(picks.margin, picks.time_zero[0]);
         assert_eq!(picks.margin_wanted, 1000);
+    }
+
+    #[test]
+    fn a_small_sign_flip_after_the_peak_is_not_the_opposite_lobe() {
+        // A 12-sample period, so half a period is 6, with a small
+        // opposite-signed blip just after the peak, as zig-zagging samples
+        // give: it used to make half a period 1 or 2 samples.
+        let mut trace = synthetic_trace(200, 40, 1000., 1., 0);
+        let peak = (40..60)
+            .max_by(|&a, &b| trace[a].abs().total_cmp(&trace[b].abs()))
+            .unwrap();
+        trace[peak + 1] = -0.2 * trace[peak];
+        let (_, found, half_period) = direct_wave(trace.view()).unwrap();
+        assert_eq!(found, peak);
+        assert!((5..=7).contains(&half_period), "{half_period}");
     }
 
     #[test]
