@@ -1677,7 +1677,9 @@ mod tests {
         let expected_attrs = vec![
             (
                 "processing_steps",
-                netcdf::AttributeValue::Strs(vec!["subset(0 50)".to_string()]),
+                netcdf::AttributeValue::Strs(vec![
+                    "subset(min_trace=0, max_trace=50, min_sample=0, max_sample=-1)".to_string(),
+                ]),
             ),
             (
                 "processing_log",

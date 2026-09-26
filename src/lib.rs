@@ -23,6 +23,7 @@ mod server;
 /// Windowed NetCDF reads for the renderer above. Moved out of `server`
 /// with it: a chunk of a radargram is not a server concept.
 mod source;
+mod steps;
 mod tools;
 mod user_metadata;
 
