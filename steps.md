@@ -128,13 +128,13 @@ Remove what the traces share at the same sample, such as antenna ringing and hor
 | `method` | `median` | `median` or `mean` |
 
 ## auto_gain
-Automatically determine the best gain factor and apply it.
+Measure the gain that levels the amplitude below the direct wave, and apply it with `gain`.
 
-The data are binned vertically and the mean absolute deviation of the values is used as a proxy for signal attenuation. The median attenuation in decibel volts is given to the gain filter. The amounts of bins can be given, e.g. `auto_gain(100)`.
+The samples are split into bins from top to bottom, and each bin's level is the median absolute amplitude over all its samples and traces. The direct wave's ring-down is skipped, and the gain is the median decrease in level between neighbouring bins below it, in dB/ns. This is a display gain, not an attenuation estimate. If the amplitude grows with time, or no gain can be measured (e.g. too short a record), no gain is applied and the log says why. The number of bins can be given, e.g. `auto_gain(100)`.
 
 | argument | default | description |
 |---|---|---|
-| `n_bins` | `100` | Number of vertical bins |
+| `n_bins` | `100` | Number of vertical bins. At least 2 |
 
 ## gain
 Multiply the magnitude as a function of depth.

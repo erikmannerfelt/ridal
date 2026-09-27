@@ -284,16 +284,22 @@ pub enum Step {
         #[arg(long, default_value = "median")]
         method: rolling::Statistic,
     },
-    /// Automatically determine the best gain factor and apply it.
+    /// Measure the gain that levels the amplitude below the direct wave, and
+    /// apply it with `gain`.
     ///
-    /// The data are binned vertically and the mean absolute deviation of the
-    /// values is used as a proxy for signal attenuation. The median
-    /// attenuation in decibel volts is given to the gain filter. The amounts
-    /// of bins can be given, e.g. `auto_gain(100)`.
+    /// The samples are split into bins from top to bottom, and each bin's
+    /// level is the median absolute amplitude over all its samples and
+    /// traces. The direct wave's ring-down is skipped, and the gain is the
+    /// median decrease in level between neighbouring bins below it, in dB/ns.
+    /// This is a display gain, not an attenuation estimate. If the amplitude
+    /// grows with time, or no gain can be measured (e.g. too short a record),
+    /// no gain is applied and the log says why. The number of bins can be
+    /// given, e.g. `auto_gain(100)`.
     #[command(rename_all = "snake_case")]
     AutoGain {
-        /// Number of vertical bins.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_AUTOGAIN_N_BINS)]
+        /// Number of vertical bins. At least 2.
+        #[arg(long, default_value_t = crate::gpr::DEFAULT_AUTOGAIN_N_BINS,
+              value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(2..))]
         n_bins: usize,
     },
     /// Multiply the magnitude as a function of depth.
