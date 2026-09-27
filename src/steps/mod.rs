@@ -137,7 +137,7 @@ pub enum Step {
     /// `time_zero=onset`, and the start of the wavelet with `time_zero=peak`.
     /// Examples: `zero_corr(coppens, trace)`, `zero_corr(max_peak, trace)`,
     /// `zero_corr(coppens, smooth, window=101)`,
-    /// `zero_corr(max_peak, trace, time_zero=peak)`,
+    /// `zero_corr(max_peak, trace, peak)`,
     /// `zero_corr(coppens, margin=5)`, `zero_corr(first_break, sigma=4)`,
     /// `zero_corr(legacy, factor=0.9)`.
     #[command(rename_all = "snake_case")]
@@ -145,9 +145,16 @@ pub enum Step {
         /// `coppens`, `first_break`, `aic`, `max_peak` or `legacy`.
         #[arg(long, default_value = "coppens")]
         method: zero_corr::Method,
-        /// `global` or `trace`.
+        /// `global`, `trace` or `smooth`.
         #[arg(long, default_value = "global")]
         scope: zero_corr::Scope,
+        /// Where on the direct wave time zero goes: `onset` or `peak`.
+        #[arg(long, default_value = "onset")]
+        time_zero: zero_corr::Reference,
+        /// How much record to keep above time zero: `auto`, back to where
+        /// the direct wave starts, or a number of nanoseconds.
+        #[arg(long, default_value = "auto")]
+        margin: zero_corr::Margin,
         /// `legacy` only: multiplier on the first-rise threshold; lower
         /// picks earlier.
         #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_FACTOR)]
@@ -156,13 +163,6 @@ pub enum Step {
         /// signal.
         #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_SIGMA)]
         sigma: f32,
-        /// Where on the direct wave time zero goes: `onset` or `peak`.
-        #[arg(long, default_value = "onset")]
-        time_zero: zero_corr::Reference,
-        /// How much record to keep above time zero: `auto`, back to where
-        /// the direct wave starts, or a number of nanoseconds.
-        #[arg(long, default_value = "auto")]
-        margin: zero_corr::Margin,
         /// `smooth` only: how many traces the running median of the picks
         /// spans.
         #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_SMOOTH_WINDOW,
@@ -522,7 +522,7 @@ impl fmt::Display for StepError {
 impl Error for StepError {}
 
 /// Step names that no longer exist, and what replaces them.
-const RETIRED: &[(&str, &str)] = &[("zero_corr_max_peak", "zero_corr(max_peak, trace)")];
+const RETIRED: &[(&str, &str)] = &[("zero_corr_max_peak", "zero_corr(max_peak, trace, peak)")];
 
 /// Whether `name` is a registered step.
 #[cfg(test)]
@@ -1170,12 +1170,16 @@ mod tests {
                 "zero_corr(method=legacy, scope=global, factor=1)",
             ),
             (
+                "zero_corr(max_peak, trace, peak)",
+                "zero_corr(method=max_peak, scope=trace, time_zero=peak, margin=auto)",
+            ),
+            (
                 "zero_corr(coppens, smooth, window=101)",
                 "zero_corr(method=coppens, scope=smooth, time_zero=onset, margin=auto, window=101)",
             ),
             (
                 "zero_corr(first_break, trace, sigma=3)",
-                "zero_corr(method=first_break, scope=trace, sigma=3, time_zero=onset, margin=auto)",
+                "zero_corr(method=first_break, scope=trace, time_zero=onset, margin=auto, sigma=3)",
             ),
         ] {
             let parsed = one(source).unwrap();
@@ -1189,7 +1193,7 @@ mod tests {
         for (source, fragment, underlined) in [
             (
                 "zero_corr_max_peak",
-                "use `zero_corr(max_peak, trace)`",
+                "use `zero_corr(max_peak, trace, peak)`",
                 "zero_corr_max_peak",
             ),
             ("zero_corr(0.9)", "`zero_corr(legacy, factor=0.9)`", "0.9"),
@@ -1199,9 +1203,14 @@ mod tests {
                 "factor=0.9",
             ),
             (
-                "zero_corr(legacy, global, 1, 5)",
+                "zero_corr(legacy, global, onset)",
+                "`time_zero` has no effect with `method=legacy`",
+                "onset",
+            ),
+            (
+                "zero_corr(legacy, sigma=5)",
                 "`sigma` has no effect with `method=legacy`",
-                "5",
+                "sigma=5",
             ),
             (
                 "zero_corr(legacy, trace)",
