@@ -591,7 +591,7 @@ impl GPR {
             self.log_event(
                 "bandpass",
                 &format!(
-                    "Applied a normalized bandpass Butterworth filter ({:.3}-{:.3}, q={:.3})",
+                    "Applied a normalized zero-phase bandpass filter ({:.3}-{:.3}, q={:.3})",
                     low_cutoff, high_cutoff, q,
                 ),
                 start_time,
@@ -600,7 +600,7 @@ impl GPR {
             self.log_event(
                 "bandpass_mhz",
                 &format!(
-                    "Applied a bandpass Butterworth filter ({:.3}-{:.3} MHz, q={:.3})",
+                    "Applied a zero-phase bandpass filter ({:.3}-{:.3} MHz, q={:.3})",
                     low_cutoff, high_cutoff, q
                 ),
                 start_time,

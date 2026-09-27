@@ -2,16 +2,26 @@ use ndarray::{ArrayBase, DataMut, Ix1};
 use num::Float;
 use num_complex::Complex;
 
-/// Apply a band‑pass by running a **high‑pass at low_cutoff** then a **low‑pass at high_cutoff**.
-/// Two biquads total (4th‑order overall), steeper skirts than a single RBJ band‑pass,
-/// with only two passes over the buffer.
+/// Apply a zero‑phase band‑pass: a **high‑pass at low_cutoff** then a **low‑pass at high_cutoff**,
+/// run forward and then backward over the trace (like `scipy.signal.filtfilt`).
+///
+/// A single forward pass is causal and has a frequency‑dependent phase, which reshapes a
+/// wavelet and moves picks on it (#264). Running the same cascade backward cancels the
+/// phase exactly, so a symmetric wavelet keeps its peak sample and its symmetry.
+///
+/// The backward pass squares the magnitude response: each skirt is twice as steep as one
+/// pass (8th order overall), and with `q = 0.707` a cutoff is at **−6 dB**, not −3 dB.
+///
+/// Both ends are padded with an odd reflection long enough for the slowest pole to decay,
+/// and each pass starts from the steady state of its first sample, so neither the top nor the
+/// bottom of the trace carries a start‑up transient.
 ///
 /// Modes:
 /// - Absolute units: pass `Some(fs)`; cutoffs in same unit; require 0 < low < high < fs/2.
 /// - Normalized: pass `None` for `sample_rate`, and treat cutoffs in (0, 1) where 1 = Nyquist.
 ///
 /// `q`: section damping (default ~0.707). `normalize_at_center`: if true, apply one constant gain so
-/// the response is ~0 dB at f0 = sqrt(low*high).
+/// the (two‑pass) response is ~0 dB at f0 = sqrt(low*high).
 ///
 /// Coefficients follow RBJ/W3C cookbook HPF/LPF; filter is DF‑II‑Transposed for good numerics.
 pub fn bandpass_hpf_then_lpf<T: Float, S: DataMut<Elem = T>>(
@@ -63,15 +73,18 @@ pub fn bandpass_hpf_then_lpf<T: Float, S: DataMut<Elem = T>>(
     let (b0_h, b1_h, b2_h, a1_h, a2_h) = design_hpf_rbj::<T>(low_cutoff, fs, q)?;
     let (b0_l, b1_l, b2_l, a1_l, a2_l) = design_lpf_rbj::<T>(high_cutoff, fs, q)?;
 
-    // Optional: normalize ~0 dB at geometric center
+    let hpf = [b0_h, b1_h, b2_h, a1_h, a2_h];
+    let lpf = [b0_l, b1_l, b2_l, a1_l, a2_l];
+
+    // Optional: normalize ~0 dB at geometric center. Two passes apply |H|², not |H|.
     let gain = if normalize_at_center {
         let f0 = (low_cutoff * high_cutoff).sqrt();
         let w = two * pi * (f0 / fs);
         let h_hpf = biquad_h_ejw::<T>(w, b0_h, b1_h, b2_h, a1_h, a2_h);
         let h_lpf = biquad_h_ejw::<T>(w, b0_l, b1_l, b2_l, a1_l, a2_l);
         let mag = complex_abs(h_hpf * h_lpf);
-        if mag > T::from(1e-12).unwrap() {
-            one / mag
+        if mag > T::from(1e-6).unwrap() {
+            one / (mag * mag)
         } else {
             one
         }
@@ -79,16 +92,87 @@ pub fn bandpass_hpf_then_lpf<T: Float, S: DataMut<Elem = T>>(
         one
     };
 
-    // ----- Run HPF then LPF (DF2‑T) -----
-    apply_biquad_df2t_in_place(data, b0_h, b1_h, b2_h, a1_h, a2_h);
-    apply_biquad_df2t_in_place(data, b0_l, b1_l, b2_l, a1_l, a2_l);
-    if gain != one {
-        for i in 0..data.len() {
-            data[i] = data[i] * gain;
-        }
+    let n = data.len();
+    if n == 0 {
+        return Ok(());
+    }
+
+    // ----- Pad with an odd reflection about each end sample -----
+    // Long enough for the slowest pole to decay to 1e-4, but a reflection cannot be longer
+    // than the trace itself.
+    let settle = settling_samples(&[hpf, lpf]);
+    let pad = settle.min(n - 1);
+    let mut ext = Vec::with_capacity(n + 2 * pad);
+    let (first, last) = (data[0], data[n - 1]);
+    ext.extend((1..=pad).rev().map(|i| two * first - data[i]));
+    ext.extend(data.iter().copied());
+    ext.extend((1..=pad).map(|i| two * last - data[n - 1 - i]));
+
+    // ----- Forward, then backward, through HPF → LPF (DF2‑T) -----
+    run_cascade_from_steady_state(&mut ext, &hpf, &lpf);
+    ext.reverse();
+    run_cascade_from_steady_state(&mut ext, &hpf, &lpf);
+    ext.reverse();
+
+    for (out, &v) in data.iter_mut().zip(&ext[pad..pad + n]) {
+        *out = v * gain;
     }
 
     Ok(())
+}
+
+/// Biquad coefficients `(b0, b1, b2, a1, a2)`, with a0 normalized to 1.
+type Biquad<T> = [T; 5];
+
+/// Run `hpf` then `lpf` over `x` in place, each starting in the steady state it would have
+/// reached had `x[0]` been held forever. That is `scipy`'s `lfilter_zi` scaled by the first
+/// sample, and it keeps a trace that starts away from zero from ringing.
+fn run_cascade_from_steady_state<T: Float>(x: &mut [T], hpf: &Biquad<T>, lpf: &Biquad<T>) {
+    let Some(&x0) = x.first() else {
+        return;
+    };
+    let hpf_state = steady_state_df2t(hpf, x0);
+    // The LPF sees the HPF's steady output, not x0 (zero, for a true high‑pass).
+    let lpf_state = steady_state_df2t(lpf, dc_gain(hpf) * x0);
+    apply_biquad_df2t_in_place(x, hpf, hpf_state);
+    apply_biquad_df2t_in_place(x, lpf, lpf_state);
+}
+
+/// Gain of a biquad at 0 Hz, H(z = 1).
+fn dc_gain<T: Float>(&[b0, b1, b2, a1, a2]: &Biquad<T>) -> T {
+    (b0 + b1 + b2) / (T::one() + a1 + a2)
+}
+
+/// DF2‑T state `(z1, z2)` of a biquad that has been fed the constant `u` indefinitely.
+fn steady_state_df2t<T: Float>(section: &Biquad<T>, u: T) -> (T, T) {
+    let [b0, _, b2, _, a2] = *section;
+    let y = dc_gain(section) * u;
+    (y - b0 * u, b2 * u - a2 * y)
+}
+
+/// How many samples the slowest pole of any section needs to decay to 1e-4.
+///
+/// The poles are the roots of z² + a1·z + a2. A complex pair has radius √a2; a real pair is
+/// solved directly.
+fn settling_samples<T: Float>(sections: &[Biquad<T>]) -> usize {
+    let radius = sections
+        .iter()
+        .map(|&[_, _, _, a1, a2]| {
+            let a1 = a1.to_f64().unwrap_or(0.0);
+            let a2 = a2.to_f64().unwrap_or(0.0);
+            let disc = a1 * a1 - 4.0 * a2;
+            if disc < 0.0 {
+                a2.sqrt()
+            } else {
+                let root = disc.sqrt();
+                ((-a1 + root) / 2.0).abs().max(((-a1 - root) / 2.0).abs())
+            }
+        })
+        .fold(0.0_f64, f64::max);
+    if !(radius > 0.0 && radius < 1.0) {
+        return 0;
+    }
+    (1e-4_f64.ln() / radius.ln()).ceil() as usize
 }
 
 /// RBJ/W3C HPF biquad with a0 normalized to 1 (case: Q).
@@ -137,23 +221,19 @@ fn design_lpf_rbj<T: Float>(f_c: T, fs: T, q: T) -> Result<(T, T, T, T, T), &'st
     Ok((b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0))
 }
 
-/// Apply one biquad in‑place, Direct‑Form II Transposed, with a0 assumed 1.
-fn apply_biquad_df2t_in_place<T: Float, S: DataMut<Elem = T>>(
-    data: &mut ArrayBase<S, Ix1>,
-    b0: T,
-    b1: T,
-    b2: T,
-    a1: T,
-    a2: T,
+/// Apply one biquad in‑place, Direct‑Form II Transposed, with a0 assumed 1, from state
+/// `(z1, z2)`.
+fn apply_biquad_df2t_in_place<T: Float>(
+    data: &mut [T],
+    &[b0, b1, b2, a1, a2]: &Biquad<T>,
+    (mut z1, mut z2): (T, T),
 ) {
-    let mut z1 = T::zero();
-    let mut z2 = T::zero();
-    for i in 0..data.len() {
-        let x = data[i];
+    for v in data.iter_mut() {
+        let x = *v;
         let y = b0 * x + z1;
         z1 = b1 * x - a1 * y + z2;
         z2 = b2 * x - a2 * y;
-        data[i] = y;
+        *v = y;
     }
 }
 
@@ -530,5 +610,77 @@ mod tests {
             att2 < att1 - 5.0,
             "cascading did not clearly improve attenuation"
         );
+    }
+
+    /// Ricker wavelet with peak frequency `f_peak` (normalized, 1 = Nyquist), centred on `centre`.
+    fn ricker_norm(f_peak: f64, centre: usize, n: usize) -> Array1<f64> {
+        Array1::from_iter((0..n).map(|i| {
+            let a = (std::f64::consts::PI * f_peak / 2.0 * (i as f64 - centre as f64)).powi(2);
+            (1.0 - 2.0 * a) * (-a).exp()
+        }))
+    }
+
+    // #264: a single forward pass rotated the phase, which reshaped the wavelet and moved picks.
+    #[test]
+    fn symmetric_wavelet_keeps_peak_and_symmetry() {
+        let (n, centre) = (401, 200);
+        // The cases in #264's table: 8 and 10 samples per period in the default band, and 10
+        // and 20 in a narrower one.
+        for (f_peak, low, high) in [
+            (0.25, 0.1, 0.9),
+            (0.2, 0.1, 0.9),
+            (0.2, 0.05, 0.5),
+            (0.1, 0.05, 0.5),
+        ] {
+            let x = ricker_norm(f_peak, centre, n);
+            let mut y = x.clone();
+            bandpass_hpf_then_lpf(&mut y, low, high, None, None, true).unwrap();
+
+            let peak = y
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(b.1))
+                .unwrap()
+                .0;
+            assert_eq!(peak, centre, "peak moved for f={f_peak}, band {low}-{high}");
+
+            let asymmetry = (1..=100)
+                .map(|k| (y[centre - k] - y[centre + k]).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(asymmetry < 1e-9, "wavelet not symmetric: {asymmetry}");
+
+            let corr = x.dot(&y) / (x.dot(&x) * y.dot(&y)).sqrt();
+            assert!(corr > 0.98, "wavelet shape changed: correlation {corr:.3}");
+        }
+    }
+
+    // Neither end may ring: the backward pass starts at the bottom of the trace, where a
+    // causal filter from rest would see a step to whatever offset or drift is left there.
+    #[test]
+    fn no_transient_at_either_end() {
+        let (n, centre) = (1000, 500);
+        let x =
+            ricker_norm(0.2, centre, n) + Array1::from_iter((0..n).map(|i| 5.0 + 0.01 * i as f64));
+        let mut y = x.clone();
+        bandpass_hpf_then_lpf(&mut y, 0.1, 0.9, None, None, true).unwrap();
+        for i in (0..100).chain(n - 100..n) {
+            assert!(y[i].abs() < 1e-3, "sample {i} rings: {}", y[i]);
+        }
+        assert!(y[centre] > 0.5, "wavelet lost: {}", y[centre]);
+    }
+
+    // Two passes square the response: with q = 0.707 a cutoff is at -6 dB (half amplitude).
+    #[test]
+    fn cutoff_is_minus_six_db() {
+        let n = 16384;
+        let (low, high) = (0.02_f32, 0.9_f32);
+        let x_c = sine_norm((low * high).sqrt(), n);
+        let x_l = sine_norm(low, n);
+        let mut y_c = x_c.clone();
+        let mut y_l = x_l.clone();
+        bandpass_hpf_then_lpf(&mut y_c, low, high, None, None, true).unwrap();
+        bandpass_hpf_then_lpf(&mut y_l, low, high, None, None, true).unwrap();
+        let db = rel_db(rms(&y_l), rms(&y_c));
+        assert!((db + 6.02).abs() < 0.3, "low cutoff at {db:.2} dB");
     }
 }

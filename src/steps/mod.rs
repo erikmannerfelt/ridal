@@ -169,10 +169,15 @@ pub enum Step {
               value_parser = clap::value_parser!(u32).range(2..))]
         window: u32,
     },
-    /// Apply a bandpass Butterworth filter to each trace individually.
+    /// Apply a zero-phase bandpass filter to each trace individually.
     ///
     /// The given frequencies are normalized (0: 0Hz, 1: Nyquist). Example
     /// (with default values): `bandpass(0.1 0.9)`.
+    ///
+    /// A high-pass and a low-pass section (Butterworth at the default `q`)
+    /// are run forward and then backward along the trace, so reflections
+    /// keep their shape and position. The two passes square the response:
+    /// each cutoff is where the amplitude has fallen to half (-6 dB).
     #[command(rename_all = "snake_case")]
     Bandpass {
         /// Lower cutoff, as a fraction of the Nyquist frequency.
@@ -185,10 +190,11 @@ pub enum Step {
         #[arg(long, default_value_t = crate::gpr::DEFAULT_BANDPASS_Q)]
         q: f32,
     },
-    /// Apply a bandpass Butterworth filter to each trace individually, with
+    /// Apply a zero-phase bandpass filter to each trace individually, with
     /// the frequencies in MHz.
     ///
-    /// Example: `bandpass_mhz(100 800)`.
+    /// Example: `bandpass_mhz(100 800)`. Filters as `bandpass` does, so each
+    /// cutoff is at -6 dB.
     #[command(rename_all = "snake_case")]
     BandpassMhz {
         /// Lower cutoff, in MHz.
