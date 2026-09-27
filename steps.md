@@ -105,23 +105,25 @@ Useful if the location data were collected away from the GPR antenna. Edge coord
 | `altitude` | `0` | Vertical shift in m; positive is up |
 | `cross_track` | `0` | Cross-track shift in m; positive is right |
 
-## normalize_horizontal_magnitudes
-Normalize the magnitudes of the traces in the horizontal axis.
-
-This removes or reduces horizontal banding. The uppermost samples of the trace can be excluded, either by sample number (integer; e.g. `normalize_horizontal_magnitudes(300)`) or by a fraction of the trace (float; e.g. `normalize_horizontal_magnitudes(0.3)`).
-
-| argument | default | description |
-|---|---|---|
-| `skip_first` | `0` | Samples to exclude at the top: a count, or a fraction in [0, 1) |
-
 ## dewow
-Remove values that are systematic across all traces.
+Remove slow drift ("wow") from each trace by subtracting the running median or mean of the samples around each sample.
 
-The samples are split into consecutive blocks of `window` rows, and each block's mean over all traces is subtracted. The last 1 to `window` samples are left unchanged. Example: `dewow(10)`.
+This is a zero-phase high-pass that works on each trace separately. `auto` makes the window two periods of the antenna's nominal frequency, which removes drift slower than that and keeps the wavelet. A window much shorter than a period removes the signal itself. The median is the default because the mean is pulled by the strong direct wave and leaves an artefact below it, and a median over only one period distorts the wavelet. Examples: `dewow`, `dewow(10)` for a 10 ns window, `dewow(method=mean)`.
 
 | argument | default | description |
 |---|---|---|
-| `window` | `5` | Height of each block, in samples |
+| `window` | `auto` | `auto`, two periods of the antenna frequency, or a window in nanoseconds |
+| `method` | `median` | `median` or `mean` |
+
+## background_removal
+Remove what the traces share at the same sample, such as antenna ringing and horizontal banding, by subtracting the median or mean trace.
+
+`traces` is `all`, one background for the whole radargram, or an odd number of traces for a running background centred on each trace, which follows ringing that changes along the profile. Anything horizontal and as long as the window is removed too, including a flat bed or the direct wave, so a running window should be much longer than any flat reflector worth keeping. The median keeps a reflector found in fewer than half the traces of the window intact; the mean spreads a fraction of it into every trace. Examples: `background_removal`, `background_removal(501)`, `background_removal(all, mean)`.
+
+| argument | default | description |
+|---|---|---|
+| `traces` | `all` | `all`, or an odd number of traces for a running background |
+| `method` | `median` | `median` or `mean` |
 
 ## auto_gain
 Automatically determine the best gain factor and apply it.

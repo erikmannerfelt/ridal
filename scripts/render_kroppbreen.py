@@ -36,7 +36,7 @@ def process_kroppbreen():
             "zero_corr",
             "correct_antenna_separation",
             "bandpass",
-            "dewow(15)",
+            "dewow",
             "gain(0.003556)",
             "siglog(1)",
             "correct_topography",

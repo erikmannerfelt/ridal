@@ -9,15 +9,13 @@ use std::time::SystemTime;
 use ndarray::{Array1, Array2, Axis, Slice};
 use rayon::prelude::*;
 
-use crate::filters::zero_corr;
+use crate::filters::{rolling, zero_corr};
 use crate::{dem, filters, io, tools, user_metadata};
 
 pub(crate) const DEFAULT_ZERO_CORR_FACTOR: f32 = 1.0;
 pub(crate) const DEFAULT_ZERO_CORR_SIGMA: f32 = 5.0;
 pub(crate) const DEFAULT_ZERO_CORR_SMOOTH_WINDOW: u32 = 51;
 pub(crate) const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
-pub(crate) const DEFAULT_DEWOW_WINDOW: u32 = 5;
-const DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF: f32 = 0.3;
 pub(crate) const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
 pub(crate) const DEFAULT_BANDPASS_LOW_CUTOFF: f32 = 0.1;
 pub(crate) const DEFAULT_BANDPASS_HIGH_CUTOFF: f32 = 0.9;
@@ -1261,41 +1259,45 @@ impl GPR {
         );
     }
 
-    pub fn dewow(&mut self, window: u32) {
+    /// Subtract from each sample the running median or mean of the samples
+    /// around it in the same trace, over `window` (#259).
+    pub fn dewow(
+        &mut self,
+        window: rolling::DewowWindow,
+        statistic: rolling::Statistic,
+    ) -> Result<(), String> {
         let start_time = SystemTime::now();
-
-        let height = self.height() as u32;
-
-        for i in (0..(height - window)).step_by(window as usize) {
-            let mut view = self.data.slice_axis_mut(
-                Axis(0),
-                ndarray::Slice::new(i as isize, Some((i + window) as isize), 1_isize),
-            );
-
-            view -= view.mean().unwrap();
-        }
+        let step_ns = self.metadata.time_window / self.height() as f32;
+        let half = window.half_samples(self.metadata.antenna_mhz, step_ns)?;
+        rolling::dewow(&mut self.data, half, statistic);
         self.log_event(
             "dewow",
-            &format!("Ran dewow with a window size of {}", window),
+            &format!(
+                "Subtracted the running {statistic} over {} samples ({:.2} ns) in each trace",
+                2 * half + 1,
+                (2 * half + 1) as f32 * step_ns
+            ),
             start_time,
         );
+        Ok(())
     }
 
-    pub fn normalize_horizontal_magnitudes(&mut self, skip_first: Option<isize>) {
+    /// Subtract from each sample the median or mean of the same sample over
+    /// `traces` (#259).
+    pub fn background_removal(
+        &mut self,
+        traces: rolling::TraceWindow,
+        statistic: rolling::Statistic,
+    ) {
         let start_time = SystemTime::now();
-        if let Some(mean) = self
-            .data
-            .slice_axis(Axis(0), Slice::new(skip_first.unwrap_or(0), None, 1))
-            .mean_axis(Axis(0))
-        {
-            self.data -= &mean;
+        rolling::background_removal(&mut self.data, traces.half(), statistic);
+        let over = match traces {
+            rolling::TraceWindow::All => "all traces".to_string(),
+            rolling::TraceWindow::Traces(n) => format!("a running window of {n} traces"),
         };
         self.log_event(
-            "normalize_horizontal_magnitudes",
-            &format!(
-                "Normalized horizontal magnitudes, skipping {:?} of the first rows",
-                skip_first
-            ),
+            "background_removal",
+            &format!("Subtracted the {statistic} trace over {over}"),
             start_time,
         );
     }
@@ -1313,7 +1315,19 @@ impl GPR {
                 .data
                 .slice_axis(Axis(0), Slice::new(i, Some(i + step), step));
 
-            let new_att = slice.mapv(|a| a.abs().log10()).mean().unwrap() * 20.;
+            // Exact zeros have no attenuation to measure, and their -inf
+            // would make the bin NaN. Median filters leave many: a median
+            // `dewow` zeros the sample that is its window's median.
+            let logs: Vec<f32> = slice
+                .iter()
+                .filter(|a| **a != 0. && a.is_finite())
+                .map(|a| a.abs().log10())
+                .collect();
+            if logs.is_empty() {
+                old_att = None;
+                continue;
+            }
+            let new_att = logs.iter().sum::<f32>() / logs.len() as f32 * 20.;
             if let Some(old) = old_att {
                 attenuations.push(old - new_att);
             }
@@ -2770,11 +2784,8 @@ pub fn default_processing_profile() -> Vec<String> {
         "remove_empty_traces".to_string(),
         "zero_corr".to_string(),
         "correct_antenna_separation".to_string(),
-        format!(
-            "normalize_horizontal_magnitudes({})",
-            DEFAULT_NORMALIZE_HORIZONTAL_MAGNITUDES_CUTOFF
-        ),
-        format!("dewow({})", DEFAULT_DEWOW_WINDOW),
+        "dewow".to_string(),
+        "background_removal".to_string(),
         format!("auto_gain({})", DEFAULT_AUTOGAIN_N_BINS),
     ]
 }
@@ -3021,6 +3032,24 @@ pub mod tests {
             user_metadata: crate::user_metadata::UserMetadata::new(),
             identity: super::RidalIdentity::default(),
         }
+    }
+
+    #[test]
+    fn auto_gain_ignores_exact_zeros() {
+        // A decaying signal with one trace that is exactly zero, as a median
+        // background removal leaves the median trace.
+        let mut gpr = make_test_gpr(Some(5), Some(200));
+        gpr.data = ndarray::Array2::from_shape_fn((200, 5), |(i, j)| {
+            if j == 2 {
+                0.
+            } else {
+                (-(i as f32) / 50.).exp() * if i % 2 == 0 { 1. } else { -1. }
+            }
+        });
+        gpr.auto_gain(10);
+        assert!(gpr.data.iter().all(|v| v.is_finite()));
+        // The gain undoes most of the decay.
+        assert!(gpr.data[[199, 0]].abs() > 0.5 * gpr.data[[0, 0]].abs());
     }
 
     #[test]
