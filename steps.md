@@ -186,11 +186,14 @@ With the transmitter and receiver apart, a reflection travels two slant legs, an
 
 Afterwards, `twtt` is the travel time a coincident transmitter and receiver would have recorded rather than the travel time between the pair, and the output declares that with `twtt:anchor_name = "twtt_normal_incidence"` and `antenna_separation_effective = 0`.
 
-`legacy` is the conversion before 0.7, which used the full separation where the geometry needs half and, after a zero correction, no separation at all. It exists to regenerate data processed with it, and picks made on its grid, exactly. Example: `correct_antenna_separation(legacy)`.
+`legacy` is the conversion before 0.7, which used the full separation where the geometry needs half and, after a zero correction, no separation at all. It exists to regenerate data processed with it, and picks made on its grid, exactly.
+
+`direct_velocity` is the velocity of the wave that time zero was picked on. The default is the speed of light in air, because the air wave arrives first. Pass the medium velocity to time it from the ground wave, as ImpDAR's `nmo` does. Only this step reads it: the depth axis of an uncorrected radargram always assumes air. Examples: `correct_antenna_separation(legacy)`, `correct_antenna_separation(slant, 0.168)`.
 
 | argument | default | description |
 |---|---|---|
 | `method` | `slant` | `slant` or `legacy` |
+| `direct_velocity` | `0.2997` | `slant` only: the direct wave's velocity, in m/ns |
 
 ## multiply
 Multiply all values by a constant factor.

@@ -183,13 +183,17 @@ pub const SPEED_OF_LIGHT_AIR_M_PER_NS: f32 = 0.2997;
 /// Convert a two-way travel time, measured from time zero, to depth.
 ///
 /// Time zero is the direct wave's arrival at the receiver, which is where
-/// `zero_corr` puts it: the air wave is always the first arrival, and it
-/// leaves the transmitter `antenna_separation / c_air` before it gets there.
-/// The time since the pulse was emitted is therefore
+/// `zero_corr` puts it. The pulse left the transmitter
+/// `antenna_separation / direct_velocity` before that, so the time since it
+/// was emitted is
 ///
 /// ```text
-/// t_emission = return_time + antenna_separation / c_air
+/// t_emission = return_time + antenna_separation / direct_velocity
 /// ```
+///
+/// The air wave is always the first arrival, so `direct_velocity` is
+/// normally [`SPEED_OF_LIGHT_AIR_M_PER_NS`]. ImpDAR's `nmo` uses the medium
+/// velocity instead, which assumes time zero is on the ground wave.
 ///
 /// and a reflection straight below the antenna midpoint travels two slant
 /// legs of `sqrt(depth² + (antenna_separation / 2)²)` each, so
@@ -202,12 +206,18 @@ pub const SPEED_OF_LIGHT_AIR_M_PER_NS: f32 = 0.2997;
 /// - `return_time`: The two-way travel time since time zero, in ns
 /// - `velocity`: The wave velocity in the medium, in m/ns
 /// - `antenna_separation`: The separation between the transmitter and the receiver, in m
+/// - `direct_velocity`: The velocity of the wave that time zero was picked on, in m/ns
 ///
 /// # Returns
 /// The depth in m corresponding to the return time, or 0. if the return time is smaller than
 /// theoretically possible given the antenna separation.
-pub fn return_time_to_depth(return_time: f32, velocity: f32, antenna_separation: f32) -> f32 {
-    let emission_time = return_time + antenna_separation / SPEED_OF_LIGHT_AIR_M_PER_NS;
+pub fn return_time_to_depth(
+    return_time: f32,
+    velocity: f32,
+    antenna_separation: f32,
+    direct_velocity: f32,
+) -> f32 {
+    let emission_time = return_time + antenna_separation / direct_velocity;
     let slant_leg = emission_time * velocity / 2.;
     let half_separation = antenna_separation / 2.;
     match slant_leg > half_separation {
@@ -617,7 +627,7 @@ mod tests {
     #[test]
     fn test_return_time_to_depth() {
         // The depth without antenna distance should be the time * velocity / 2
-        let depth = super::return_time_to_depth(200., 0.1, 0.);
+        let depth = super::return_time_to_depth(200., 0.1, 0., super::SPEED_OF_LIGHT_AIR_M_PER_NS);
         assert_eq!(depth, 10.);
 
         // Forward-model a reflector below the midpoint and invert it (#261): the
@@ -629,7 +639,12 @@ mod tests {
                 let since_emission = 2. * slant / 0.168;
                 let since_time_zero =
                     since_emission - separation / super::SPEED_OF_LIGHT_AIR_M_PER_NS;
-                let depth = super::return_time_to_depth(since_time_zero, 0.168, separation);
+                let depth = super::return_time_to_depth(
+                    since_time_zero,
+                    0.168,
+                    separation,
+                    super::SPEED_OF_LIGHT_AIR_M_PER_NS,
+                );
                 assert!(
                     (depth - true_depth).abs() < 1e-3 * true_depth.max(1.),
                     "separation {separation} m, depth {true_depth} m: got {depth} m"
@@ -637,22 +652,40 @@ mod tests {
             }
         }
 
+        // Timed from the ground wave instead (ImpDAR's `nmo`), the lead is the
+        // separation's flight time through the medium.
+        let since_ground_wave = 2. * (10_f32.powi(2) + 1_f32).sqrt() / 0.168 - 2. / 0.168;
+        let depth = super::return_time_to_depth(since_ground_wave, 0.168, 2., 0.168);
+        assert!((depth - 10.).abs() < 1e-3, "{depth}");
+
         // The case from #261: 25 MHz on Drønbreen, 6.2 m apart, 100 m deep.
         // Using the full separation instead of half of it and ignoring the
         // air-wave lead both put the depth well away from 100 m.
         let since_time_zero = 2. * (100_f32.powi(2) + 3.1_f32.powi(2)).sqrt() / 0.168
             - 6.2 / super::SPEED_OF_LIGHT_AIR_M_PER_NS;
-        let depth = super::return_time_to_depth(since_time_zero, 0.168, 6.2);
+        let depth = super::return_time_to_depth(
+            since_time_zero,
+            0.168,
+            6.2,
+            super::SPEED_OF_LIGHT_AIR_M_PER_NS,
+        );
         assert!((depth - 100.).abs() < 0.01, "{depth}");
         assert!((since_time_zero * 0.168 / 2. - 100.).abs() > 1.);
 
         // Before the air wave could have reached a reflector and come back, the
         // depth is 0.
-        assert_eq!(super::return_time_to_depth(0., 0.1, 2.), 0.);
-        assert_eq!(super::return_time_to_depth(2., 0.1, 2.), 0.);
+        assert_eq!(
+            super::return_time_to_depth(0., 0.1, 2., super::SPEED_OF_LIGHT_AIR_M_PER_NS),
+            0.
+        );
+        assert_eq!(
+            super::return_time_to_depth(2., 0.1, 2., super::SPEED_OF_LIGHT_AIR_M_PER_NS),
+            0.
+        );
 
         // A weird NAN error came up with these settings which should not occur
-        let depth = super::return_time_to_depth(5.9624557, 0.168, 1.0);
+        let depth =
+            super::return_time_to_depth(5.9624557, 0.168, 1.0, super::SPEED_OF_LIGHT_AIR_M_PER_NS);
         assert!(depth.is_finite(), "{}", depth);
     }
 

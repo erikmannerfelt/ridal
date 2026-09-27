@@ -365,13 +365,24 @@ pub enum Step {
     /// `legacy` is the conversion before 0.7, which used the full separation
     /// where the geometry needs half and, after a zero correction, no
     /// separation at all. It exists to regenerate data processed with it,
-    /// and picks made on its grid, exactly. Example:
-    /// `correct_antenna_separation(legacy)`.
+    /// and picks made on its grid, exactly.
+    ///
+    /// `direct_velocity` is the velocity of the wave that time zero was
+    /// picked on. The default is the speed of light in air, because the air
+    /// wave arrives first. Pass the medium velocity to time it from the
+    /// ground wave, as ImpDAR's `nmo` does. Only this step reads it: the
+    /// depth axis of an uncorrected radargram always assumes air.
+    /// Examples: `correct_antenna_separation(legacy)`,
+    /// `correct_antenna_separation(slant, 0.168)`.
     #[command(rename_all = "snake_case")]
     CorrectAntennaSeparation {
         /// `slant` or `legacy`.
         #[arg(long, default_value = "slant")]
         method: crate::gpr::SeparationMethod,
+        /// `slant` only: the direct wave's velocity, in m/ns.
+        #[arg(long, default_value_t = crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
+              value_parser = finite_positive)]
+        direct_velocity: f32,
     },
     /// Multiply all values by a constant factor.
     ///
@@ -420,6 +431,17 @@ fn finite_nonzero(s: &str) -> Result<f32, String> {
         Err("cannot be zero".into())
     } else if !value.is_finite() {
         Err("must be finite".into())
+    } else {
+        Ok(value)
+    }
+}
+
+fn finite_positive(s: &str) -> Result<f32, String> {
+    let value: f32 = s.parse().map_err(|_| "expected a number".to_string())?;
+    if !value.is_finite() {
+        Err("must be finite".into())
+    } else if value <= 0. {
+        Err("must be above 0".into())
     } else {
         Ok(value)
     }
@@ -792,6 +814,10 @@ impl Step {
                 }
                 unused
             }
+            Step::CorrectAntennaSeparation {
+                method: method @ crate::gpr::SeparationMethod::Legacy,
+                ..
+            } => vec![("direct_velocity", format!("method={method}"))],
             _ => Vec::new(),
         }
     }
@@ -867,7 +893,10 @@ impl Step {
             Step::AdaptiveSiglog { offset } => gpr.adaptive_siglog(*offset)?,
             Step::Unphase => gpr.unphase(),
             Step::CorrectTopography => gpr.correct_topography(),
-            Step::CorrectAntennaSeparation { method } => gpr.correct_antenna_separation(*method),
+            Step::CorrectAntennaSeparation {
+                method,
+                direct_velocity,
+            } => gpr.correct_antenna_separation(*method, *direct_velocity),
             Step::Multiply { factor } => gpr.multiply(*factor),
         }
         Ok(())
@@ -1165,6 +1194,37 @@ mod tests {
             one("multiply(5e0)").unwrap().step,
             Step::Multiply { factor: 5. }
         );
+    }
+
+    #[test]
+    fn correct_antenna_separation_takes_the_direct_wave_velocity_second() {
+        assert_eq!(
+            one("correct_antenna_separation").unwrap().canonical,
+            "correct_antenna_separation(method=slant, direct_velocity=0.2997)"
+        );
+        assert_eq!(
+            one("correct_antenna_separation(slant, 0.168)")
+                .unwrap()
+                .step,
+            Step::CorrectAntennaSeparation {
+                method: crate::gpr::SeparationMethod::Slant,
+                direct_velocity: 0.168,
+            }
+        );
+        assert_eq!(
+            one("correct_antenna_separation(legacy)").unwrap().canonical,
+            "correct_antenna_separation(method=legacy)"
+        );
+        assert_eq!(
+            one("correct_antenna_separation(legacy, 0.168)")
+                .unwrap_err()
+                .message,
+            "`direct_velocity` has no effect with `method=legacy`"
+        );
+        for bad in ["0", "-0.1", "inf"] {
+            let source = format!("correct_antenna_separation(slant, {bad})");
+            assert!(one(&source).is_err(), "{source}");
+        }
     }
 
     #[test]
