@@ -64,9 +64,11 @@ Move time zero to where the direct wave starts, and crop what came before it.
 | `window` | `51` | `smooth` only: how many traces the running median of the picks spans |
 
 ## bandpass
-Apply a bandpass Butterworth filter to each trace individually.
+Apply a zero-phase bandpass filter to each trace individually.
 
 The given frequencies are normalized (0: 0Hz, 1: Nyquist). Example (with default values): `bandpass(0.1 0.9)`.
+
+A high-pass and a low-pass section (Butterworth at the default `q`) are run forward and then backward along the trace, so reflections keep their shape and position. The two passes square the response: each cutoff is where the amplitude has fallen to half (-6 dB).
 
 | argument | default | description |
 |---|---|---|
@@ -75,9 +77,9 @@ The given frequencies are normalized (0: 0Hz, 1: Nyquist). Example (with default
 | `q` | `0.707` | Filter strength (quality factor). Must be above 0 |
 
 ## bandpass_mhz
-Apply a bandpass Butterworth filter to each trace individually, with the frequencies in MHz.
+Apply a zero-phase bandpass filter to each trace individually, with the frequencies in MHz.
 
-Example: `bandpass_mhz(100 800)`.
+Example: `bandpass_mhz(100 800)`. Filters as `bandpass` does, so each cutoff is at -6 dB.
 
 | argument | default | description |
 |---|---|---|
