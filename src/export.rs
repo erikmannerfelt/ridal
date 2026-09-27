@@ -588,16 +588,16 @@ impl GPR {
         //
         // `twtt_crop` is how much of the front of the record was discarded;
         // `twtt_time_zero` is where time zero -- the moment the pulse left the
-        // antenna -- sits on the same recording clock. They are equal
-        // immediately after a zero correction, which is why one number
-        // seemed to be enough, and they part company the moment anything
-        // else crops the record.
+        // antenna -- sits on the same recording clock. They are equal after
+        // a zero correction that keeps no margin above time zero, which is
+        // why one number seemed to be enough, and part company with a margin
+        // or when anything else crops the record.
         //
         // Neither is the gprinterp SPEC §7.5.1 anchor `t0`, which is their
         // difference `twtt_crop - twtt_time_zero`: the travel-time value of
         // sample 0. Zero for an ordinarily zero-corrected radargram,
         // positive for one cropped further without re-zeroing, negative
-        // once padding keeps samples from before time zero. Neither
+        // when `zero_corr` keeps a margin above time zero. Neither
         // variable is named `t0`, because the one that was got substituted
         // for the anchor by a reader who had the SPEC to hand.
         //

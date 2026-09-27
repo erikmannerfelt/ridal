@@ -416,9 +416,8 @@ pub struct GPR {
     /// clock, in nanoseconds, one value per trace.
     ///
     /// A position, not an amount removed. The two are numerically the same
-    /// while a zero correction crops exactly to the first break, and they
-    /// part company as soon as it does not -- so the distinction is worth
-    /// holding now rather than discovering later (#152).
+    /// while a zero correction crops exactly at time zero, and part company
+    /// when it keeps a margin above it or something crops further (#152).
     ///
     /// Per trace rather than one number because `zero_corr(<method>, trace)`
     /// aligns each trace's first break on its own, and a single
@@ -440,9 +439,10 @@ pub struct GPR {
     /// the instrument started sampling.
     ///
     /// Distinct from `crop_ns` because "how much was thrown away" and
-    /// "where zero is" are different facts. They are equal immediately
-    /// after a zero correction and part company the moment anything else
-    /// crops -- `subset` today, padding tomorrow (#152).
+    /// "where zero is" are different facts. They are equal after a zero
+    /// correction that keeps no margin above time zero, and part company
+    /// with a margin (`zero_corr(margin=...)`) or a later crop (`subset`)
+    /// (#152).
     ///
     /// Same length invariant, maintained by the same five operations.
     time_zero_ns: Vec<f32>,
@@ -719,9 +719,10 @@ impl GPR {
     /// the instrument started sampling.
     ///
     /// On the **same clock as the crop**, not an offset from sample 0. A
-    /// zero correction therefore sets this *equal to* `crop_ns` rather
-    /// than to zero — sample 0 becomes the pulse, so the travel time of
-    /// sample 0 is zero. Expecting `0` here after a correction is the
+    /// zero correction without a margin therefore sets this *equal to*
+    /// `crop_ns` rather than to zero — sample 0 becomes the pulse, so the
+    /// travel time of sample 0 is zero; with a margin it is the margin
+    /// later. Expecting `0` here after a correction is the
     /// natural reading and the wrong one, and it matters: under that
     /// reading a corrected and an uncorrected radargram would be
     /// indistinguishable, and carrying picks between them would report no
