@@ -838,7 +838,7 @@ mod tests {
 
     #[test]
     fn a_per_trace_zero_correction_still_gives_one_offset() {
-        // `zero_corr_max_peak` crops each trace differently and sets time
+        // a per-trace `zero_corr` crops each trace differently and sets time
         // zero to where each crop landed, so the difference is zero
         // everywhere. A per-trace *correction* is not a per-trace *anchor*.
         let crop = vec![40.0, 41.2, 39.6, 42.8];
@@ -936,7 +936,7 @@ mod tests {
     #[test]
     fn a_radargram_whose_time_zero_was_never_found_offers_no_travel_time_anchor() {
         // Reported from real data: `fimbulisen-20220430-DAT_0084_B1`
-        // processed with and without `zero_corr_max_peak`. The corrected
+        // processed with and without a per-trace `zero_corr`. The corrected
         // revision has 1987 samples with time zero at 61.86 ns; the
         // uncorrected one has 2024 samples and `twtt_time_zero = 0`, which
         // every exported file's own comment defines as "never located".
@@ -986,7 +986,7 @@ mod tests {
     #[test]
     fn a_corrected_and_an_uncorrected_revision_share_the_recording_clock() {
         // Reported from real data, twice. `fimbulisen-20220430-DAT_0084_B1`
-        // with and without `zero_corr_max_peak`: the corrected revision
+        // with and without a per-trace `zero_corr`: the corrected revision
         // crops 50.7572 ns and locates time zero there; the uncorrected one
         // crops nothing and has never located it.
         //
@@ -1092,7 +1092,7 @@ mod tests {
 
     #[test]
     fn a_per_trace_crop_gets_no_recording_clock_either() {
-        // `zero_corr_max_peak` crops each trace by its own amount, so there
+        // a per-trace `zero_corr` crops each trace by its own amount, so there
         // is no single position for sample 0 on the clock. A `regular` axis
         // has one `t0`, and a mean would be a place no trace actually is —
         // the same rule the travel-time offset follows.
