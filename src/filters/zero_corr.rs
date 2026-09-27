@@ -523,15 +523,18 @@ pub fn pick_trace(
         }
     }
     let segment_end = (peak + window.half_period + 1).min(n);
+    // A quarter period, at least 3 samples: how long a real onset stays out
+    // of the noise at the least.
+    let run = (window.half_period / 2).max(3);
 
     match method {
         Method::Legacy => None,
         Method::MaxPeak => Some(peak),
-        Method::FirstBreak => {
-            let threshold = sigma * std;
-            (start..=peak).find(|&i| centred[i].abs() > threshold)
+        Method::FirstBreak => sustained_from(centred.view(), start, peak, sigma * std, run),
+        Method::Aic => {
+            let split = aic_onset(centred.slice(ndarray::s![..segment_end]))?;
+            sustained_from(centred.view(), split, peak, 3. * std, run).or(Some(split))
         }
-        Method::Aic => aic_onset(centred.slice(ndarray::s![..segment_end])),
         Method::Coppens => {
             // Half a period: a longer window moves the steepest rise of
             // the ratio from the onset towards the energy peak.
@@ -539,9 +542,32 @@ pub fn pick_trace(
             // Stabilises the ratio in the noise, where both energies are
             // small; proportional to the noise energy of one window.
             let beta = (w as f32 * std * std).max(f32::MIN_POSITIVE);
-            coppens_onset(centred.slice(ndarray::s![..segment_end]), w, beta)
+            let rise = coppens_onset(centred.slice(ndarray::s![..segment_end]), w, beta)?;
+            // An isolated blip also makes the ratio jump; move on to where
+            // the signal stays out of the noise.
+            sustained_from(centred.view(), rise, peak, 3. * std, run).or(Some(rise))
         }
     }
+}
+
+/// The first sample in `from..=to` that starts a sustained excursion beyond
+/// `threshold`: it and at least two thirds of the `run` samples from it
+/// exceed it. A few isolated samples before the real arrival -- noise
+/// spikes, or a mistimed interleaved sampling series -- then do not count
+/// as the onset.
+fn sustained_from(
+    centred: ArrayView1<f32>,
+    from: usize,
+    to: usize,
+    threshold: f32,
+    run: usize,
+) -> Option<usize> {
+    let n = centred.len();
+    let beyond = |i: usize| centred[i].abs() > threshold;
+    (from..=to.min(n.saturating_sub(1))).find(|&i| {
+        let end = (i + run).min(n);
+        beyond(i) && 3 * (i..end).filter(|&j| beyond(j)).count() >= 2 * (end - i)
+    })
 }
 
 /// The first sample of the second segment in the split that minimises
@@ -1250,6 +1276,31 @@ mod tests {
         assert!(mean_error(&picks(Scope::Trace), &onsets) <= 1.);
         let smooth = picks(Scope::Smooth);
         assert!(smooth.iter().all(|&p| p.abs_diff(40) <= 1), "{smooth:?}");
+    }
+
+    #[test]
+    fn isolated_blips_before_the_onset_are_not_the_onset() {
+        // Every third sample from 30 carries a blip of 20 noise standard
+        // deviations, as a mistimed interleaved sampling series gives, and
+        // the real wavelet starts at 40.
+        let mut data = noisy_radargram(&[40; 30], 0.01);
+        for mut column in data.columns_mut() {
+            for i in (31..40).step_by(3) {
+                column[i] += 20. * 1000. * 0.01 * 0.3;
+            }
+        }
+        for method in [Method::Coppens, Method::Aic, Method::FirstBreak] {
+            let picks = pick(
+                &data,
+                &settings(method, Scope::Trace, 5., Reference::Onset, Margin::Auto),
+                1.,
+            )
+            .unwrap()
+            .unwrap();
+            for &p in &picks.time_zero {
+                assert!((39..=42).contains(&p), "{method}: onset picked at {p}");
+            }
+        }
     }
 
     #[test]

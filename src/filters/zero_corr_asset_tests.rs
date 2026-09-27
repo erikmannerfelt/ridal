@@ -86,10 +86,11 @@ fn the_cut_is_the_jittery_recording_it_claims_to_be() {
 #[test]
 fn a_per_trace_correction_aligns_what_a_global_one_cannot() {
     for (step, bound) in [
-        // Measured 0.51, 0.49 and 0.46.
-        ("zero_corr(coppens, trace)", 0.4),
-        ("zero_corr(aic, trace)", 0.4),
-        ("zero_corr(first_break, trace)", 0.35),
+        // Measured 0.68, 0.68 and 0.74; 0.49, 0.48 and 0.44 before onsets
+        // had to be sustained, when isolated early samples could start them.
+        ("zero_corr(coppens, trace)", 0.6),
+        ("zero_corr(aic, trace)", 0.6),
+        ("zero_corr(first_break, trace)", 0.6),
     ] {
         let gpr = processed(step);
         let score = worst_alignment(&gpr, 120, 0..1500);

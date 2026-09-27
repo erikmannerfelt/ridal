@@ -112,6 +112,9 @@ pub enum Step {
     /// pre-0.7 threshold on the mean trace, and also subtracts the mean of
     /// what it crops. All but `legacy` look for the direct wave around the
     /// first strong arrival, and none of them depend on the amplitude scale.
+    /// The onset methods only accept an onset where the signal stays out of
+    /// the noise for most of the next quarter period, so isolated early
+    /// samples do not start the direct wave.
     ///
     /// `time_zero` says which feature of the direct wave time zero goes on,
     /// `onset` or `peak`, whichever method aligned the traces. When the
