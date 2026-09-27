@@ -286,12 +286,14 @@ pub enum Step {
     /// traces. The direct wave's ring-down is skipped, and the gain is the
     /// median decrease in level between neighbouring bins below it, in dB/ns.
     /// This is a display gain, not an attenuation estimate. If the amplitude
-    /// grows with time, no gain is applied and the log says so. The number of
-    /// bins can be given, e.g. `auto_gain(100)`.
+    /// grows with time, or no gain can be measured (e.g. too short a record),
+    /// no gain is applied and the log says why. The number of bins can be
+    /// given, e.g. `auto_gain(100)`.
     #[command(rename_all = "snake_case")]
     AutoGain {
-        /// Number of vertical bins.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_AUTOGAIN_N_BINS)]
+        /// Number of vertical bins. At least 2.
+        #[arg(long, default_value_t = crate::gpr::DEFAULT_AUTOGAIN_N_BINS,
+              value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(2..))]
         n_bins: usize,
     },
     /// Multiply the magnitude as a function of depth.
@@ -876,7 +878,7 @@ impl Step {
             } => gpr.shift_coordinates(*along_track, *altitude, *cross_track)?,
             Step::Dewow { window, method } => gpr.dewow(*window, *method)?,
             Step::BackgroundRemoval { traces, method } => gpr.background_removal(*traces, *method),
-            Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins)?,
+            Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins),
             Step::Gain { factor } => gpr.gain(*factor),
             Step::KirchhoffMigration2d => gpr.kirchhoff_migration2d(),
             Step::Abslog => gpr.abslog(),

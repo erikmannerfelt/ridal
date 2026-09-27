@@ -1329,23 +1329,41 @@ impl GPR {
     /// Measure the display gain that levels the amplitude envelope below the
     /// direct wave, and apply it (#266).
     ///
-    /// See [`filters::gain::estimate_display_gain`] for the measurement. An
-    /// envelope that grows with time gets no gain rather than a negative one,
-    /// and the log says so.
-    pub fn auto_gain(&mut self, n_bins: usize) -> Result<(), String> {
+    /// See [`filters::gain::estimate_display_gain`] for the measurement.
+    ///
+    /// Never fails on the data. When no gain can be measured (too short a
+    /// record, no amplitude, a non-finite result) or the envelope grows with
+    /// time, it applies no gain and the log says why: a radargram without
+    /// gain is still usable, and one bad file should not stop a batch.
+    pub fn auto_gain(&mut self, n_bins: usize) {
         let start_time = SystemTime::now();
 
-        let est = filters::gain::estimate_display_gain(
+        let est = match filters::gain::estimate_display_gain(
             &self.data,
             self.vertical_resolution_ns(),
             n_bins,
-        )?;
-        if !est.db_per_ns.is_finite() {
-            return Err(format!(
-                "auto_gain measured a non-finite gain ({}); nothing was applied",
-                est.db_per_ns
-            ));
-        }
+        ) {
+            Ok(est) if est.db_per_ns.is_finite() => est,
+            Ok(est) => {
+                self.log_event(
+                    "auto_gain",
+                    &format!(
+                        "Warning: measured a non-finite gain ({}); applied no gain",
+                        est.db_per_ns
+                    ),
+                    start_time,
+                );
+                return;
+            }
+            Err(reason) => {
+                self.log_event(
+                    "auto_gain",
+                    &format!("Warning: could not measure a gain ({reason}); applied no gain"),
+                    start_time,
+                );
+                return;
+            }
+        };
         let window = format!(
             "the median bin-to-bin change of the median |amplitude| over {:.0}-{:.0} ns \
              ({} bin pairs of {n_bins} bins, below the direct wave's ring-down)",
@@ -1362,7 +1380,7 @@ impl GPR {
                 ),
                 start_time,
             );
-            return Ok(());
+            return;
         }
         self.log_event(
             "auto_gain",
@@ -1373,7 +1391,6 @@ impl GPR {
             start_time,
         );
         self.gain(est.db_per_ns);
-        Ok(())
     }
 
     pub fn gain(&mut self, factor: f32) {
@@ -3077,6 +3094,23 @@ pub mod tests {
     }
 
     #[test]
+    fn auto_gain_skips_with_a_reason_instead_of_failing() {
+        // Nothing to measure: the step still succeeds, applies no gain and
+        // says why, so one bad file does not stop a batch.
+        let mut gpr = make_test_gpr(Some(5), Some(200));
+        gpr.data.fill(0.);
+        gpr.process("auto_gain").unwrap();
+        assert!(gpr.data.iter().all(|v| *v == 0.));
+        let entry = gpr.log.last().unwrap();
+        assert!(entry.contains("could not measure a gain"), "{entry}");
+        assert!(entry.contains("applied no gain"), "{entry}");
+
+        // A bad argument is still an error, at parse time.
+        let err = gpr.process("auto_gain(1)").unwrap_err().to_string();
+        assert!(err.contains("n_bins"), "{err}");
+    }
+
+    #[test]
     fn a_step_that_makes_nan_fails_at_that_step() {
         let mut gpr = make_test_gpr(Some(5), Some(200));
         let err = gpr.process("gain(nan)").unwrap_err().to_string();
@@ -3097,7 +3131,7 @@ pub mod tests {
                 (-(i as f32) / 50.).exp() * if i % 2 == 0 { 1. } else { -1. }
             }
         });
-        gpr.auto_gain(10).unwrap();
+        gpr.auto_gain(10);
         assert!(gpr.data.iter().all(|v| v.is_finite()));
         // The gain undoes most of the decay.
         assert!(gpr.data[[199, 0]].abs() > 0.5 * gpr.data[[0, 0]].abs());
