@@ -23,6 +23,42 @@ pub(crate) const DEFAULT_BANDPASS_LOW_CUTOFF: f32 = 0.1;
 pub(crate) const DEFAULT_BANDPASS_HIGH_CUTOFF: f32 = 0.9;
 pub(crate) const DEFAULT_BANDPASS_Q: f32 = 0.707;
 
+/// Which geometry `correct_antenna_separation` converts travel time to
+/// depth with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SeparationMethod {
+    /// Two slant legs below the antenna midpoint, timed from the air wave's
+    /// arrival at the receiver. See [`tools::return_time_to_depth`].
+    #[default]
+    Slant,
+    /// The pre-0.7 conversion, kept so that data processed with it -- and
+    /// picks made on its grid -- can be regenerated exactly. It uses the
+    /// full separation where the geometry needs half, and shrinks the
+    /// separation by time zero times the medium velocity, which after a
+    /// zero correction removes it altogether (#261).
+    Legacy,
+}
+
+impl std::fmt::Display for SeparationMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SeparationMethod::Slant => "slant",
+            SeparationMethod::Legacy => "legacy",
+        })
+    }
+}
+
+impl std::str::FromStr for SeparationMethod {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "slant" => Ok(SeparationMethod::Slant),
+            "legacy" => Ok(SeparationMethod::Legacy),
+            _ => Err("expected `slant` or `legacy`".into()),
+        }
+    }
+}
+
 /// Metadata associated with a GPR dataset
 ///
 /// This contains all required information except the location data and the actual data
@@ -430,7 +466,7 @@ pub struct GPR {
     /// the trace count maintains it alongside `location.cor_points`, which
     /// has the same shape and the same rule.
     crop_ns: Vec<f32>,
-    /// Where time zero -- the moment the pulse left the antenna -- sits on
+    /// Where time zero -- the direct wave's arrival at the receiver -- sits on
     /// the recording clock, in nanoseconds, per trace.
     ///
     /// Set only by a zero correction, which is the only thing that locates
@@ -653,8 +689,8 @@ impl GPR {
                 .iter()
                 .map(|crop| crop + removed_ns)
                 .collect(),
-            // Time zero does not move: the pulse left the antenna when it
-            // left it, whatever is later done to the record. This is where
+            // Time zero does not move: the direct wave arrived when it
+            // arrived, whatever is later done to the record. This is where
             // the two quantities part company, and the gap is exactly the
             // travel time of the new sample 0.
             time_zero_ns: self.time_zero_ns[min_trace_ as usize..max_trace_ as usize].to_vec(),
@@ -711,7 +747,7 @@ impl GPR {
             .then_some(first)
     }
 
-    /// Where time zero -- the moment the pulse left the antenna -- sits on
+    /// Where time zero -- the direct wave's arrival at the receiver -- sits on
     /// the recording clock, per trace.
     ///
     /// `0` until a zero correction locates it, which is the honest reading
@@ -750,24 +786,6 @@ impl GPR {
             .iter()
             .all(|v| (v - first).abs() < f32::EPSILON)
             .then_some(first)
-    }
-
-    /// The mean time zero, for the one place that can only take one number.
-    ///
-    /// Only [`GPR::depths`] uses this, where time zero feeds a second-order
-    /// geometric correction to the antenna separation rather than the depth
-    /// scale itself -- so the spread of a per-trace value sits far below the
-    /// resolution of what it corrects. The *exported* values never go
-    /// through here.
-    ///
-    /// Time zero rather than the crop, because the quantity it stands for
-    /// is the direct wave's flight through the air: a fact about the
-    /// geometry, not about how much of the record was kept.
-    fn twtt_time_zero_mean_ns(&self) -> f32 {
-        if self.time_zero_ns.is_empty() {
-            return 0.;
-        }
-        self.time_zero_ns.iter().sum::<f32>() / self.time_zero_ns.len() as f32
     }
 
     /// Which gprinterp `y` anchor axis (SPEC §8.2) the `twtt` coordinate is.
@@ -1003,7 +1021,13 @@ impl GPR {
         self.metadata.last_trace = self.width() as u32;
     }
 
-    pub fn correct_antenna_separation(&mut self) {
+    /// Resample each trace onto an even depth grid, taking the antenna
+    /// separation out of the geometry.
+    ///
+    /// `direct_velocity` is the velocity (m/ns) of the wave time zero was
+    /// picked on; see [`tools::return_time_to_depth`]. [`SeparationMethod::Legacy`]
+    /// ignores it.
+    pub fn correct_antenna_separation(&mut self, method: SeparationMethod, direct_velocity: f32) {
         let start_time = SystemTime::now();
 
         if self.antenna_separation_effective == 0. {
@@ -1017,7 +1041,10 @@ impl GPR {
 
         let height_before = self.height();
 
-        let depths = self.depths();
+        let depths = match method {
+            SeparationMethod::Slant => self.depths_timed_from(direct_velocity),
+            SeparationMethod::Legacy => self.legacy_depths(),
+        };
         let max_depth = depths.iter().cloned().fold(0.0f32, f32::max);
 
         if max_depth == 0.0 {
@@ -1025,13 +1052,16 @@ impl GPR {
             panic!("");
         }
 
-        let resolution = self.vertical_resolution_m();
+        let resolution = vertical_resolution_of(&depths);
         let resampler = tools::Resampler::<f32>::new(depths, resolution);
 
         //resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
         self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
         //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
-        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.antenna_separation_effective, height_before, self.height()), start_time);
+        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m with the {} geometry (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.antenna_separation_effective, match method {
+            SeparationMethod::Slant => format!("slant (direct wave at {direct_velocity} m/ns)"),
+            SeparationMethod::Legacy => method.to_string(),
+        }, height_before, self.height()), start_time);
 
         self.antenna_separation_effective = 0.;
         self.metadata.samples = self.height() as u32;
@@ -1071,16 +1101,6 @@ impl GPR {
             ),
             start_time,
         );
-    }
-
-    pub fn vertical_resolution_m(&self) -> f32 {
-        let depths = self.depths();
-
-        let mut diffs = Array1::<f32>::zeros((depths.shape()[0] - 1,));
-        for i in 1..depths.shape()[0] {
-            diffs[i - 1] = depths[i] - depths[i - 1];
-        }
-        tools::quantiles(&diffs, &[0.8], None)[0]
     }
 
     pub fn correct_topography(&mut self) {
@@ -1805,21 +1825,57 @@ impl GPR {
     /// Depth of every sample, in metres. Samples above time zero (a margin
     /// kept by `zero_corr`) get negative depths, as a straight path through
     /// the medium, so the axis keeps increasing.
+    ///
+    /// The geometry is [`tools::return_time_to_depth`]'s, with the separation
+    /// the data has not yet been corrected for. Where time zero sits on the
+    /// recording clock plays no part: that is mostly the instrument's
+    /// pre-trigger delay, not a flight time (#261). Before a zero correction,
+    /// sample 0 stands in for time zero.
+    ///
+    /// Time zero is taken to be on the air wave. Only
+    /// `correct_antenna_separation` can be told otherwise, and after it has
+    /// run there is no separation left for the choice to matter.
     pub fn depths(&self) -> Array1<f32> {
-        let time_windows = self.twtt_ns();
-        let corr_antenna_separation = (self.antenna_separation_effective.powi(2)
-            - (self.twtt_time_zero_mean_ns() * self.metadata.medium_velocity).powi(2))
-        .max(0.)
-        .sqrt();
-        time_windows.mapv(|time| {
+        self.depths_timed_from(tools::SPEED_OF_LIGHT_AIR_M_PER_NS)
+    }
+
+    /// [`GPR::depths`], with time zero on a direct wave travelling at
+    /// `direct_velocity` (m/ns).
+    fn depths_timed_from(&self, direct_velocity: f32) -> Array1<f32> {
+        self.twtt_ns().mapv(|time| {
             if time < 0. {
                 time * self.metadata.medium_velocity / 2.
             } else {
                 tools::return_time_to_depth(
                     time,
                     self.metadata.medium_velocity,
-                    corr_antenna_separation,
+                    self.antenna_separation_effective,
+                    direct_velocity,
                 )
+            }
+        })
+    }
+
+    /// [`GPR::depths`] as it was before #261, for
+    /// [`SeparationMethod::Legacy`] only.
+    fn legacy_depths(&self) -> Array1<f32> {
+        let velocity = self.metadata.medium_velocity;
+        let time_zero_mean = match self.time_zero_ns.len() {
+            0 => 0.,
+            n => self.time_zero_ns.iter().sum::<f32>() / n as f32,
+        };
+        let separation = (self.antenna_separation_effective.powi(2)
+            - (time_zero_mean * velocity).powi(2))
+        .max(0.)
+        .sqrt();
+        self.twtt_ns().mapv(|time| {
+            let two_way_distance = time * velocity;
+            if time < 0. {
+                two_way_distance / 2.
+            } else if two_way_distance > 2. * separation {
+                (two_way_distance.powi(2) - 4. * separation.powi(2)).sqrt() / 2.
+            } else {
+                0.
             }
         })
     }
@@ -1868,6 +1924,13 @@ impl GPR {
         }
     }
 }
+
+/// The typical spacing of a depth axis, in metres: its 80th-percentile step.
+fn vertical_resolution_of(depths: &Array1<f32>) -> f32 {
+    let diffs = &depths.slice(ndarray::s![1..]) - &depths.slice(ndarray::s![..-1]);
+    tools::quantiles(&diffs, &[0.8], None)[0]
+}
+
 #[derive(Debug, Clone)]
 pub struct RunParams {
     pub filepaths: Vec<PathBuf>,
@@ -3060,7 +3123,10 @@ pub mod tests {
             "twtt"
         );
 
-        gpr.correct_antenna_separation();
+        gpr.correct_antenna_separation(
+            super::SeparationMethod::Slant,
+            crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
+        );
         let after = gpr.export_dataset().unwrap();
 
         // The acquisition fact survives -- it is still true that the survey
@@ -3467,7 +3533,10 @@ pub mod tests {
         let path = dir.path().join("line.nc");
 
         let mut gpr = make_gpr_with_first_break(48, 512);
-        gpr.correct_antenna_separation();
+        gpr.correct_antenna_separation(
+            super::SeparationMethod::Slant,
+            crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
+        );
         gpr.export(&path).unwrap();
 
         let geometry = crate::interp::source::read_geometry(&path).unwrap();
@@ -3489,10 +3558,47 @@ pub mod tests {
         gpr.metadata.antenna_separation = 0.;
         gpr.antenna_separation_effective = 0.;
 
-        gpr.correct_antenna_separation();
+        gpr.correct_antenna_separation(
+            super::SeparationMethod::Slant,
+            crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
+        );
         let ds = gpr.export_dataset().unwrap();
         assert_eq!(str_attr(&ds.coords["twtt"].attrs, "anchor_name"), "twtt");
         assert_eq!(f32_attr(&ds, "antenna_separation_effective"), 0.);
+    }
+
+    #[test]
+    fn depths_keep_the_antenna_separation_after_a_zero_correction() {
+        // #261: time zero used to be read as the direct wave's flight time,
+        // and a pre-trigger delay of 107 ns (25 MHz on Drønbreen) wiped out
+        // a 6.2 m separation entirely. Where time zero sits on the recording
+        // clock must not change the geometry.
+        let mut gpr = make_dummy_gpr(4, 1024, None);
+        gpr.metadata.medium_velocity = 0.168;
+        gpr.antenna_separation_effective = 6.2;
+        let before = gpr.depths();
+
+        gpr.crop_ns = vec![107.; 4];
+        gpr.time_zero_ns = vec![107.; 4];
+        let after = gpr.depths();
+        assert_eq!(before, after);
+
+        let twtt = gpr.twtt_ns();
+        for (time, depth) in twtt.iter().zip(after.iter()) {
+            assert_eq!(
+                *depth,
+                crate::tools::return_time_to_depth(
+                    *time,
+                    0.168,
+                    6.2,
+                    crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
+                )
+            );
+        }
+        // Near the surface no reflection can have arrived yet, and deeper down
+        // the air wave's lead puts depths below `twtt * v / 2`.
+        assert_eq!(after[5], 0.);
+        assert!(after[200] > twtt[200] * 0.168 / 2.);
     }
 
     #[test]
@@ -3503,7 +3609,10 @@ pub mod tests {
 
         assert_eq!(gpr.data[[10, 0]], 10.);
         assert_eq!(gpr.log.len(), 0);
-        gpr.correct_antenna_separation();
+        gpr.correct_antenna_separation(
+            super::SeparationMethod::Slant,
+            crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
+        );
         assert!(gpr
             .log
             .last()

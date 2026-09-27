@@ -28,7 +28,7 @@ use crate::project::layers::{ExclusivityGroup, Layer, LayerSet, Reducer};
 /// The steps that regenerate the published grid bit-for-bit (PLAN §2.4). They
 /// must be comma-separated: issue #130 makes space-separated steps silently
 /// run only one.
-const STEPS: &str = "remove_empty_traces,zero_corr(legacy),correct_antenna_separation,bandpass,dewow(15),gain(0.00234),siglog(0)";
+const STEPS: &str = "remove_empty_traces,zero_corr(legacy),correct_antenna_separation(legacy),bandpass,dewow(15),gain(0.00234),siglog(0)";
 
 const RADARGRAM_ID: &str = "dronbreen-20250327-dat_0066_a1_1";
 const RADAR_KEY: &str = "dronbreen-20250327-DAT_0066_A1_1";
