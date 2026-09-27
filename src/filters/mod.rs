@@ -4,6 +4,7 @@ use num::{Float, FromPrimitive};
 
 pub mod bandpass;
 pub mod coordinates;
+pub mod rolling;
 pub mod siglog;
 pub mod zero_corr;
 #[cfg(test)]

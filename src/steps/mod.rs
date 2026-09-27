@@ -27,7 +27,7 @@ use std::str::FromStr;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, FromArgMatches, Parser};
 
-use crate::filters::zero_corr;
+use crate::filters::{rolling, zero_corr};
 use crate::gpr::GPR;
 use parse::{RawStep, Span};
 
@@ -234,29 +234,49 @@ pub enum Step {
         #[arg(long, default_value_t = 0.)]
         cross_track: f64,
     },
-    /// Normalize the magnitudes of the traces in the horizontal axis.
+    /// Remove slow drift ("wow") from each trace by subtracting the running
+    /// median or mean of the samples around each sample.
     ///
-    /// This removes or reduces horizontal banding. The uppermost samples of
-    /// the trace can be excluded, either by sample number (integer; e.g.
-    /// `normalize_horizontal_magnitudes(300)`) or by a fraction of the trace
-    /// (float; e.g. `normalize_horizontal_magnitudes(0.3)`).
-    #[command(rename_all = "snake_case")]
-    NormalizeHorizontalMagnitudes {
-        /// Samples to exclude at the top: a count, or a fraction in [0, 1).
-        #[arg(long, default_value = "0")]
-        skip_first: SkipFirst,
-    },
-    /// Remove values that are systematic across all traces.
-    ///
-    /// The samples are split into consecutive blocks of `window` rows, and
-    /// each block's mean over all traces is subtracted. The last 1 to
-    /// `window` samples are left unchanged. Example: `dewow(10)`.
+    /// This is a zero-phase high-pass that works on each trace separately.
+    /// `auto` makes the window two periods of the antenna's nominal
+    /// frequency, which removes drift slower than that and keeps the
+    /// wavelet. A window much shorter than a period removes the signal
+    /// itself. The median is the default because the mean is pulled by the
+    /// strong direct wave and leaves an artefact below it, and a median
+    /// over only one period distorts the wavelet. Examples: `dewow`,
+    /// `dewow(10)` for a 10 ns window, `dewow(method=mean)`.
     #[command(rename_all = "snake_case")]
     Dewow {
-        /// Height of each block, in samples.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_DEWOW_WINDOW,
-              value_parser = clap::value_parser!(u32).range(1..))]
-        window: u32,
+        /// `auto`, two periods of the antenna frequency, or a window in
+        /// nanoseconds.
+        #[arg(long, default_value = "auto")]
+        window: rolling::DewowWindow,
+        /// `median` or `mean`.
+        #[arg(long, default_value = "median")]
+        method: rolling::Statistic,
+    },
+    /// Remove what the traces share at the same sample, such as antenna
+    /// ringing and horizontal banding, by subtracting the median or mean
+    /// trace.
+    ///
+    /// `traces` is `all`, one background for the whole radargram, or an odd
+    /// number of traces for a running background centred on each trace,
+    /// which follows ringing that changes along the profile. Anything
+    /// horizontal and as long as the window is removed too, including a
+    /// flat bed or the direct wave, so a running window should be much
+    /// longer than any flat reflector worth keeping. The median keeps a
+    /// reflector found in fewer than half the traces of the window intact;
+    /// the mean spreads a fraction of it into every trace. Examples:
+    /// `background_removal`, `background_removal(501)`,
+    /// `background_removal(all, mean)`.
+    #[command(rename_all = "snake_case")]
+    BackgroundRemoval {
+        /// `all`, or an odd number of traces for a running background.
+        #[arg(long, default_value = "all")]
+        traces: rolling::TraceWindow,
+        /// `median` or `mean`.
+        #[arg(long, default_value = "median")]
+        method: rolling::Statistic,
     },
     /// Automatically determine the best gain factor and apply it.
     ///
@@ -464,39 +484,6 @@ impl FromStr for End {
     }
 }
 
-/// How many samples at the top of each trace to leave out.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum SkipFirst {
-    Samples(usize),
-    /// Fraction of the trace height, in [0, 1).
-    Fraction(f32),
-}
-
-impl SkipFirst {
-    fn samples(self, height: usize) -> usize {
-        match self {
-            SkipFirst::Samples(n) => n,
-            SkipFirst::Fraction(f) => (height as f32 * f) as usize,
-        }
-    }
-}
-
-impl FromStr for SkipFirst {
-    type Err = String;
-    /// An integer is a sample count and anything with a decimal point is a
-    /// fraction, so `1` and `1.0` mean different things on purpose.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(n) = s.parse::<usize>() {
-            return Ok(SkipFirst::Samples(n));
-        }
-        match s.parse::<f32>() {
-            Ok(f) if (0.0..1.0).contains(&f) => Ok(SkipFirst::Fraction(f)),
-            Ok(_) => Err("a fraction must be at least 0 and below 1".into()),
-            Err(_) => Err("expected a sample count or a fraction in [0, 1)".into()),
-        }
-    }
-}
-
 /// The clap root the steps hang off. Never shown to a user: it exists so
 /// each step can be a subcommand.
 #[derive(Debug, clap::Parser)]
@@ -557,7 +544,10 @@ impl fmt::Display for StepError {
 impl Error for StepError {}
 
 /// Step names that no longer exist, and what replaces them.
-const RETIRED: &[(&str, &str)] = &[("zero_corr_max_peak", "zero_corr(max_peak, trace, peak)")];
+const RETIRED: &[(&str, &str)] = &[
+    ("zero_corr_max_peak", "zero_corr(max_peak, trace, peak)"),
+    ("normalize_horizontal_magnitudes", "dewow"),
+];
 
 /// Whether `name` is a registered step.
 #[cfg(test)]
@@ -880,11 +870,8 @@ impl Step {
                 altitude,
                 cross_track,
             } => gpr.shift_coordinates(*along_track, *altitude, *cross_track)?,
-            Step::NormalizeHorizontalMagnitudes { skip_first } => {
-                let skip = skip_first.samples(gpr.height()) as isize;
-                gpr.normalize_horizontal_magnitudes(Some(skip));
-            }
-            Step::Dewow { window } => gpr.dewow(*window),
+            Step::Dewow { window, method } => gpr.dewow(*window, *method)?,
+            Step::BackgroundRemoval { traces, method } => gpr.background_removal(*traces, *method),
             Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins),
             Step::Gain { factor } => gpr.gain(*factor),
             Step::KirchhoffMigration2d => gpr.kirchhoff_migration2d(),
@@ -1020,7 +1007,10 @@ mod tests {
 
     #[test]
     fn the_canonical_form_spells_out_every_default() {
-        assert_eq!(one("dewow").unwrap().canonical, "dewow(window=5)");
+        assert_eq!(
+            one("dewow").unwrap().canonical,
+            "dewow(window=auto, method=median)"
+        );
         assert_eq!(
             one("subset(0 300)").unwrap().canonical,
             "subset(min_trace=0, max_trace=300, min_sample=0, max_sample=-1)"
@@ -1044,21 +1034,33 @@ mod tests {
     }
 
     #[test]
-    fn an_integer_skips_samples_and_a_decimal_skips_a_fraction() {
-        let skip = |s: &str| match one(s).unwrap().step {
-            Step::NormalizeHorizontalMagnitudes { skip_first } => skip_first,
+    fn a_background_window_is_all_traces_or_an_odd_count() {
+        let traces = |s: &str| match one(s).unwrap().step {
+            Step::BackgroundRemoval { traces, .. } => traces,
             other => panic!("{other:?}"),
         };
+        assert_eq!(traces("background_removal"), rolling::TraceWindow::All);
         assert_eq!(
-            skip("normalize_horizontal_magnitudes(300)"),
-            SkipFirst::Samples(300)
+            traces("background_removal(101)"),
+            rolling::TraceWindow::Traces(101)
         );
-        assert_eq!(
-            skip("normalize_horizontal_magnitudes(0.3)"),
-            SkipFirst::Fraction(0.3)
-        );
-        // The old parser's range check could never fire; this one does.
-        assert!(one("normalize_horizontal_magnitudes(1.5)").is_err());
+        for (source, fragment) in [
+            ("background_removal(100)", "odd number"),
+            ("background_removal(1)", "at least 3"),
+            ("background_removal(0)", "odd number"),
+            ("background_removal(-1)", "expected `all`"),
+            ("background_removal(all, mode)", "`median` or `mean`"),
+            ("dewow(-3)", "positive number of nanoseconds"),
+        ] {
+            let err = one(source).unwrap_err();
+            assert!(err.message.contains(fragment), "{source}: {}", err.message);
+        }
+    }
+
+    #[test]
+    fn normalize_horizontal_magnitudes_points_to_dewow() {
+        let err = one("normalize_horizontal_magnitudes(0.3)").unwrap_err();
+        assert!(err.message.contains("use `dewow`"), "{}", err.message);
     }
 
     #[test]
@@ -1079,7 +1081,7 @@ mod tests {
             ),
             ("dewow(0)", vec!["invalid value `0` for `window`"]),
             ("dewow(abc)", vec!["invalid value `abc` for `window`"]),
-            ("dewow(5 6)", vec!["at most 1 argument"]),
+            ("dewow(5 median 6)", vec!["at most 2 argument"]),
             ("dewow(window=5, window=6)", vec!["more than once"]),
             ("subset", vec!["requires the argument `min_trace`"]),
             ("subset(0 -2)", vec!["for `max_trace`", "-1 for the end"]),
