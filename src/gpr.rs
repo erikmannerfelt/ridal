@@ -1003,9 +1003,14 @@ impl GPR {
                 picks.time_zero.len()
             ),
         };
+        let warning = picks
+            .substituted
+            .as_ref()
+            .map(|why| format!("Warning: {why}. "))
+            .unwrap_or_default();
         self.log_event(
             &name,
-            &format!("Picked time zero and {removed}{placed}{kept}{outliers}{smoothed}"),
+            &format!("{warning}Picked time zero and {removed}{placed}{kept}{outliers}{smoothed}"),
             start_time,
         );
         Ok(())

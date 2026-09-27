@@ -234,6 +234,8 @@ pub struct Picks {
     /// the median over the traces of the distance between the two. Zero
     /// when the method picks the requested reference itself.
     pub shift: isize,
+    /// Why another method picked instead of the one asked for, when it did.
+    pub substituted: Option<String>,
 }
 
 impl Picks {
@@ -273,13 +275,23 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
         return Ok(None);
     };
     let has_noise = window.noise_end >= MIN_NOISE_SAMPLES;
-    if matches!(method, Method::FirstBreak | Method::Coppens) && !has_noise {
-        return Err(format!(
-            "`{method}` needs at least {MIN_NOISE_SAMPLES} samples of noise before the direct \
-             wave, but it starts {} samples in; try `aic` or `max_peak`",
-            window.noise_end
-        ));
-    }
+    // `coppens` and `first_break` measure the rise out of the noise, so a
+    // record that starts on the direct wave gives them nothing to measure.
+    // `aic` needs no noise window and picks the same onset where both can
+    // run, so it stands in rather than failing a whole batch over one file.
+    let substituted =
+        (matches!(method, Method::FirstBreak | Method::Coppens) && !has_noise).then(|| {
+            format!(
+                "`{method}` needs at least {MIN_NOISE_SAMPLES} samples of noise before the \
+                 direct wave, but it starts {} samples in; used `aic` instead",
+                window.noise_end
+            )
+        });
+    let method = if substituted.is_some() {
+        Method::Aic
+    } else {
+        method
+    };
     // How the start of the direct wave is found when the method itself
     // picks something else: the default method where it can run.
     let onset_method = if has_noise {
@@ -387,6 +399,7 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
         time_zero,
         replaced,
         shift,
+        substituted,
     }))
 }
 
@@ -1388,16 +1401,37 @@ mod tests {
     }
 
     #[test]
-    fn noise_based_methods_refuse_a_record_without_noise() {
+    fn noise_based_methods_fall_back_to_aic_without_noise() {
+        // A record that starts on the direct wave gives `coppens` and
+        // `first_break` no noise to measure against. They hand over to
+        // `aic` and say so, rather than failing a batch over one file.
         let data = radargram(&[1; 5], 1000.);
+        let aic = pick(
+            &data,
+            &settings(
+                Method::Aic,
+                Scope::Global,
+                5.,
+                Reference::Onset,
+                Margin::Auto,
+            ),
+            1.,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(aic.substituted, None);
         for method in [Method::FirstBreak, Method::Coppens] {
-            let err = pick(
+            let picks = pick(
                 &data,
                 &settings(method, Scope::Global, 5., Reference::Onset, Margin::Auto),
                 1.,
             )
-            .unwrap_err();
-            assert!(err.contains("samples of noise"), "{err}");
+            .unwrap()
+            .unwrap();
+            assert_eq!(picks.time_zero, aic.time_zero, "{method}");
+            let why = picks.substituted.expect("the substitution is reported");
+            assert!(why.contains("samples of noise"), "{why}");
+            assert!(why.contains("used `aic` instead"), "{why}");
         }
     }
 
