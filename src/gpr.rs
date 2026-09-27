@@ -1316,8 +1316,8 @@ impl GPR {
                 .slice_axis(Axis(0), Slice::new(i, Some(i + step), step));
 
             // Exact zeros have no attenuation to measure, and their -inf
-            // would make the bin NaN. A median background removal leaves
-            // one in every row: the trace that was the median.
+            // would make the bin NaN. Median filters leave many: a median
+            // `dewow` zeros the sample that is its window's median.
             let logs: Vec<f32> = slice
                 .iter()
                 .filter(|a| **a != 0. && a.is_finite())
