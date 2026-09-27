@@ -511,13 +511,37 @@ impl GPR {
     pub fn process(&mut self, step_name: &str) -> Result<(), Box<dyn Error>> {
         let parsed = crate::steps::parse_one(step_name)?;
         let log_len = self.log.len();
+        let non_finite_before = self.count_non_finite();
         parsed.step.apply(self)?;
         // Every step says what it did, including when it did nothing (#85).
         if self.log.len() == log_len {
             return Err(format!("Internal error: `{step_name}` ran without logging").into());
         }
         self.check_trace_metadata(step_name)?;
+        self.check_finite(step_name, non_finite_before)?;
         self.steps.push(parsed.canonical);
+        Ok(())
+    }
+
+    fn count_non_finite(&self) -> usize {
+        self.data.iter().filter(|v| !v.is_finite()).count()
+    }
+
+    /// The step did not add NaN or infinite samples.
+    ///
+    /// A NaN spreads through every later step and still exports, so without
+    /// this the first sign of it is a renderer with nothing to draw (#266).
+    /// Only samples the step *added* count, so input that was already
+    /// non-finite is not blamed on whichever step happens to run first.
+    fn check_finite(&self, step_name: &str, before: usize) -> Result<(), String> {
+        let after = self.count_non_finite();
+        if after > before {
+            return Err(format!(
+                "`{step_name}` made {} of {} samples NaN or infinite",
+                after - before,
+                self.data.len()
+            ));
+        }
         Ok(())
     }
 
@@ -1302,50 +1326,54 @@ impl GPR {
         );
     }
 
-    pub fn auto_gain(&mut self, n_bins: usize) {
+    /// Measure the display gain that levels the amplitude envelope below the
+    /// direct wave, and apply it (#266).
+    ///
+    /// See [`filters::gain::estimate_display_gain`] for the measurement. An
+    /// envelope that grows with time gets no gain rather than a negative one,
+    /// and the log says so.
+    pub fn auto_gain(&mut self, n_bins: usize) -> Result<(), String> {
         let start_time = SystemTime::now();
 
-        let step = ((self.height() / n_bins) as isize).max(1);
-
-        let mut old_att: Option<f32> = None;
-        let mut attenuations: Vec<f32> = Vec::new();
-
-        for i in (0..(self.height() as isize - step)).step_by(step as usize) {
-            let slice = self
-                .data
-                .slice_axis(Axis(0), Slice::new(i, Some(i + step), step));
-
-            // Exact zeros have no attenuation to measure, and their -inf
-            // would make the bin NaN. Median filters leave many: a median
-            // `dewow` zeros the sample that is its window's median.
-            let logs: Vec<f32> = slice
-                .iter()
-                .filter(|a| **a != 0. && a.is_finite())
-                .map(|a| a.abs().log10())
-                .collect();
-            if logs.is_empty() {
-                old_att = None;
-                continue;
-            }
-            let new_att = logs.iter().sum::<f32>() / logs.len() as f32 * 20.;
-            if let Some(old) = old_att {
-                attenuations.push(old - new_att);
-            }
-            old_att = Some(new_att);
+        let est = filters::gain::estimate_display_gain(
+            &self.data,
+            self.vertical_resolution_ns(),
+            n_bins,
+        )?;
+        if !est.db_per_ns.is_finite() {
+            return Err(format!(
+                "auto_gain measured a non-finite gain ({}); nothing was applied",
+                est.db_per_ns
+            ));
         }
+        let window = format!(
+            "the median bin-to-bin change of the median |amplitude| over {:.0}-{:.0} ns \
+             ({} bin pairs of {n_bins} bins, below the direct wave's ring-down)",
+            est.fit_start_ns, est.fit_end_ns, est.bin_pairs,
+        );
 
-        let median_att = tools::quantiles(&attenuations, &[0.5], None)[0];
-
-        let slope = (median_att.abs()
-            / (self.vertical_resolution_ns() * (self.height() as f32) / (n_bins as f32)))
-            * median_att.signum();
-
+        if est.db_per_ns < 0. {
+            self.log_event(
+                "auto_gain",
+                &format!(
+                    "Warning: the amplitude grows with time ({:.5} dB / ns, from {window}); \
+                     applied no gain",
+                    est.db_per_ns
+                ),
+                start_time,
+            );
+            return Ok(());
+        }
         self.log_event(
             "auto_gain",
-            &format!("Measured gain factor using autogain from {} bins", n_bins),
+            &format!(
+                "Measured a display gain of {:.5} dB / ns (TWT) from {window}",
+                est.db_per_ns
+            ),
             start_time,
         );
-        self.gain(slope);
+        self.gain(est.db_per_ns);
+        Ok(())
     }
 
     pub fn gain(&mut self, factor: f32) {
@@ -3035,6 +3063,29 @@ pub mod tests {
     }
 
     #[test]
+    fn auto_gain_applies_no_gain_when_amplitude_grows() {
+        let mut gpr = make_test_gpr(Some(5), Some(200));
+        gpr.data = ndarray::Array2::from_shape_fn((200, 5), |(i, j)| {
+            (i as f32 / 50.).exp() * if (i + j) % 2 == 0 { 1. } else { -1. }
+        });
+        let before = gpr.data.clone();
+        gpr.process("auto_gain(20)").unwrap();
+        assert_eq!(gpr.data, before);
+        let entry = gpr.log.last().unwrap();
+        assert!(entry.contains("grows with time"), "{entry}");
+        assert!(entry.contains("applied no gain"), "{entry}");
+    }
+
+    #[test]
+    fn a_step_that_makes_nan_fails_at_that_step() {
+        let mut gpr = make_test_gpr(Some(5), Some(200));
+        let err = gpr.process("gain(nan)").unwrap_err().to_string();
+        assert!(err.contains("`gain(nan)` made"), "{err}");
+        assert!(err.contains("NaN or infinite"), "{err}");
+        assert!(gpr.steps.is_empty(), "a failed step must not be recorded");
+    }
+
+    #[test]
     fn auto_gain_ignores_exact_zeros() {
         // A decaying signal with one trace that is exactly zero, as a median
         // background removal leaves the median trace.
@@ -3046,7 +3097,7 @@ pub mod tests {
                 (-(i as f32) / 50.).exp() * if i % 2 == 0 { 1. } else { -1. }
             }
         });
-        gpr.auto_gain(10);
+        gpr.auto_gain(10).unwrap();
         assert!(gpr.data.iter().all(|v| v.is_finite()));
         // The gain undoes most of the decay.
         assert!(gpr.data[[199, 0]].abs() > 0.5 * gpr.data[[0, 0]].abs());

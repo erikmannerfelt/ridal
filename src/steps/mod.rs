@@ -278,12 +278,16 @@ pub enum Step {
         #[arg(long, default_value = "median")]
         method: rolling::Statistic,
     },
-    /// Automatically determine the best gain factor and apply it.
+    /// Measure the gain that levels the amplitude below the direct wave, and
+    /// apply it with `gain`.
     ///
-    /// The data are binned vertically and the mean absolute deviation of the
-    /// values is used as a proxy for signal attenuation. The median
-    /// attenuation in decibel volts is given to the gain filter. The amounts
-    /// of bins can be given, e.g. `auto_gain(100)`.
+    /// The samples are split into bins from top to bottom, and each bin's
+    /// level is the median absolute amplitude over all its samples and
+    /// traces. The direct wave's ring-down is skipped, and the gain is the
+    /// median decrease in level between neighbouring bins below it, in dB/ns.
+    /// This is a display gain, not an attenuation estimate. If the amplitude
+    /// grows with time, no gain is applied and the log says so. The number of
+    /// bins can be given, e.g. `auto_gain(100)`.
     #[command(rename_all = "snake_case")]
     AutoGain {
         /// Number of vertical bins.
@@ -872,7 +876,7 @@ impl Step {
             } => gpr.shift_coordinates(*along_track, *altitude, *cross_track)?,
             Step::Dewow { window, method } => gpr.dewow(*window, *method)?,
             Step::BackgroundRemoval { traces, method } => gpr.background_removal(*traces, *method),
-            Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins),
+            Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins)?,
             Step::Gain { factor } => gpr.gain(*factor),
             Step::KirchhoffMigration2d => gpr.kirchhoff_migration2d(),
             Step::Abslog => gpr.abslog(),
