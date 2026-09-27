@@ -587,8 +587,8 @@ impl GPR {
         // could not previously say.
         //
         // `twtt_crop` is how much of the front of the record was discarded;
-        // `twtt_time_zero` is where time zero -- the moment the pulse left the
-        // antenna -- sits on the same recording clock. They are equal after
+        // `twtt_time_zero` is where time zero -- the direct wave's arrival at
+        // the receiver -- sits on the same recording clock. They are equal after
         // a zero correction that keeps no margin above time zero, which is
         // why one number seemed to be enough, and part company with a margin
         // or when anything else crops the record.
@@ -658,7 +658,7 @@ impl GPR {
                     ),
                     (
                         "comment".into(),
-                        "Where the transmitted pulse left the antenna, on the original \
+                        "Where the direct wave reached the receiver, on the original \
                          recording's clock -- the SAME clock as twtt_crop, not an \
                          offset from sample 0. The travel time of sample 0 is \
                          twtt_crop - twtt_time_zero, and the twtt coordinate already \

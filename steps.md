@@ -182,9 +182,15 @@ In the output, the data will be called "data_topographically_corrected". Note th
 ## correct_antenna_separation
 Correct for the separation between the antenna transmitter and receiver.
 
-The consequence of antenna separation is that depths are slightly exaggerated at low return-times before correction. This step averages samples so that each sample represents a consistent depth interval.
+With the transmitter and receiver apart, a reflection travels two slant legs, and time zero (the air wave's arrival at the receiver) comes after the pulse left the transmitter. Depth is therefore not linear in travel time, least of all near the surface. This step resamples each trace so that each sample represents a consistent depth interval.
 
 Afterwards, `twtt` is the travel time a coincident transmitter and receiver would have recorded rather than the travel time between the pair, and the output declares that with `twtt:anchor_name = "twtt_normal_incidence"` and `antenna_separation_effective = 0`.
+
+`legacy` is the conversion before 0.7, which used the full separation where the geometry needs half and, after a zero correction, no separation at all. It exists to regenerate data processed with it, and picks made on its grid, exactly. Example: `correct_antenna_separation(legacy)`.
+
+| argument | default | description |
+|---|---|---|
+| `method` | `slant` | `slant` or `legacy` |
 
 ## multiply
 Multiply all values by a constant factor.
