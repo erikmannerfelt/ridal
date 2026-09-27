@@ -125,8 +125,6 @@ const OUTLIER_HALF_WINDOW: usize = 25;
 pub struct Window {
     /// Samples before this are pre-signal noise (exclusive end).
     pub noise_end: usize,
-    /// The direct wave's first strong lobe, median over the traces.
-    pub peak: usize,
     /// Half the dominant period, in samples: from the direct wave's
     /// largest lobe to the opposite one after it.
     pub half_period: usize,
@@ -142,9 +140,9 @@ pub struct Window {
 /// How much of the record to keep above time zero.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Margin {
-    /// Back to where the direct wave starts: nothing for the methods that
-    /// pick the start, and the start-to-pick distance for `max_peak`, so
-    /// that the whole wavelet is kept.
+    /// Back to where the direct wave starts: nothing when time zero is the
+    /// onset, and the onset-to-peak distance when it is the peak, so that
+    /// the whole wavelet is kept.
     Auto,
     /// A fixed margin in nanoseconds.
     Ns(f32),
@@ -236,7 +234,6 @@ pub struct Picks {
     /// the median over the traces of the distance between the two. Zero
     /// when the method picks the requested reference itself.
     pub shift: isize,
-    pub window: Window,
 }
 
 impl Picks {
@@ -272,10 +269,7 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
     if method == Method::Legacy {
         return Err("the legacy method is not a picker".into());
     }
-    let stack = data
-        .mean_axis(Axis(1))
-        .ok_or("cannot pick time zero in a radargram without traces")?;
-    let Some(window) = find_window(data)? else {
+    let Some((window, live)) = find_window(data)? else {
         return Ok(None);
     };
     let has_noise = window.noise_end >= MIN_NOISE_SAMPLES;
@@ -312,6 +306,9 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
     // `max_peak` put time zero at an onset no onset method would pick.
     let (aligned, replaced, distance) = match scope {
         Scope::Global => {
+            let stack = data
+                .mean_axis(Axis(1))
+                .ok_or("cannot pick time zero in a radargram without traces")?;
             let at = pick_trace(stack.view(), method, &window, sigma)
                 .ok_or_else(|| format!("`{method}` found no direct wave in the mean trace"))?;
             let distance = pick_trace(stack.view(), other_method, &window, sigma)
@@ -320,38 +317,21 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
         }
         Scope::Trace | Scope::Smooth => {
             let traces: Vec<ArrayView1<f32>> = data.columns().into_iter().collect();
-            // A trace whose direct wave is under a tenth of the typical
-            // trace's has none to pick: it is dead, and whatever a picker
-            // found in it would be noise. Left in, such picks decided the
-            // bottom trim for every trace.
-            let strengths: Vec<f32> = traces
-                .par_iter()
-                .map(|trace| {
-                    let dc = median(trace.iter().copied().collect());
-                    trace
-                        .slice(ndarray::s![window.noise_end..window.end])
-                        .fold(0_f32, |a, v| a.max((v - dc).abs()))
-                })
-                .collect();
-            let alive = 0.1 * median(strengths.clone());
-            let live = |j: usize| strengths[j] >= alive;
-            let raw: Vec<Option<usize>> = (0..traces.len())
-                .into_par_iter()
-                .map(|j| {
-                    live(j)
-                        .then(|| pick_trace(traces[j], method, &window, sigma))
-                        .flatten()
-                })
-                .collect();
+            // Dead traces have no direct wave, and whatever a picker found
+            // in them would be noise; they take their neighbours' value.
+            let pick_live = |method: Method| -> Vec<Option<usize>> {
+                (0..traces.len())
+                    .into_par_iter()
+                    .map(|j| {
+                        live[j]
+                            .then(|| pick_trace(traces[j], method, &window, sigma))
+                            .flatten()
+                    })
+                    .collect()
+            };
+            let raw = pick_live(method);
             // Also what each pick is checked against.
-            let anchors: Vec<Option<usize>> = (0..traces.len())
-                .into_par_iter()
-                .map(|j| {
-                    live(j)
-                        .then(|| pick_trace(traces[j], other_method, &window, sigma))
-                        .flatten()
-                })
-                .collect();
+            let anchors = pick_live(other_method);
             let distances: Vec<f32> = raw
                 .iter()
                 .zip(&anchors)
@@ -407,37 +387,43 @@ pub fn pick(data: &Array2<f32>, settings: &Settings, dt_ns: f32) -> Result<Optio
         time_zero,
         replaced,
         shift,
-        window,
     }))
 }
 
-/// Locate the direct wave from every trace's own first strong lobe.
+/// Locate the direct wave from every trace's own first strong lobe, and
+/// tell which traces have one.
 ///
 /// Per trace rather than from the stack, because a direct wave that
 /// wanders between traces smears out in the stack, and a later reflector
 /// that does not wander can then outweigh it. Percentiles over the traces
 /// make the window wide enough for the wander without letting a few odd
-/// traces stretch it. `Ok(None)` when every trace is flat.
-pub fn find_window(data: &Array2<f32>) -> Result<Option<Window>, String> {
+/// traces stretch it.
+///
+/// A trace is dead -- `false` in the returned mask -- when it is flat or
+/// its amplitude is under a tenth of the typical trace's. Dead traces are
+/// left out here, since their noise would drag the window around, and have
+/// no pick of their own. `Ok(None)` when every trace is flat.
+fn find_window(data: &Array2<f32>) -> Result<Option<(Window, Vec<bool>)>, String> {
     let n = data.shape()[0];
     if n < 5 {
         return Err("too few samples to pick time zero".into());
     }
-    let all: Vec<ArrayView1<f32>> = data.columns().into_iter().collect();
-    let features: Vec<(ArrayView1<f32>, DirectWave)> = all
-        .par_iter()
-        .filter_map(|trace| direct_wave(*trace).map(|wave| (*trace, wave)))
-        .collect();
-    if features.is_empty() {
+    let traces: Vec<ArrayView1<f32>> = data.columns().into_iter().collect();
+    let waves: Vec<Option<DirectWave>> = traces.par_iter().map(|t| direct_wave(*t)).collect();
+    let amplitudes: Vec<f32> = waves.iter().flatten().map(|w| w.amplitude).collect();
+    if amplitudes.is_empty() {
         return Ok(None);
     }
-    // Dead traces -- a tenth of the typical amplitude or less -- have no
-    // direct wave; their noise would drag the window around.
-    let alive = 0.1 * median(features.iter().map(|(_, w)| w.amplitude).collect());
-    let (traces, features): (Vec<ArrayView1<f32>>, Vec<DirectWave>) = features
-        .into_iter()
-        .filter(|(_, w)| w.amplitude >= alive)
-        .unzip();
+    let alive = 0.1 * median(amplitudes);
+    let live: Vec<bool> = waves
+        .iter()
+        .map(|w| w.as_ref().is_some_and(|w| w.amplitude >= alive))
+        .collect();
+    let features: Vec<&DirectWave> = waves
+        .iter()
+        .flatten()
+        .filter(|w| w.amplitude >= alive)
+        .collect();
     let column = |f: fn(&DirectWave) -> usize| -> Vec<f32> {
         features.iter().map(|x| f(x) as f32).collect()
     };
@@ -453,7 +439,13 @@ pub fn find_window(data: &Array2<f32>) -> Result<Option<Window>, String> {
     // A vote rather than the mean trace's sign, so that a few traces with
     // a large opposite lobe cannot decide it, and traces that wander do not
     // cancel out.
-    let positive = traces
+    let voters: Vec<ArrayView1<f32>> = traces
+        .iter()
+        .zip(&live)
+        .filter(|(_, live)| **live)
+        .map(|(t, _)| *t)
+        .collect();
+    let positive = voters
         .par_iter()
         .filter(|trace| {
             let dc = median(trace.iter().copied().collect());
@@ -465,17 +457,17 @@ pub fn find_window(data: &Array2<f32>) -> Result<Option<Window>, String> {
             largest > 0.
         })
         .count();
-    Ok(Some(Window {
+    let window = Window {
         noise_end,
-        peak,
         half_period,
         end,
-        polarity: if 2 * positive >= traces.len() {
+        polarity: if 2 * positive >= voters.len() {
             1.
         } else {
             -1.
         },
-    }))
+    };
+    Ok(Some((window, live)))
 }
 
 /// One trace's direct wave, roughly.
@@ -540,7 +532,7 @@ fn direct_wave(trace: ArrayView1<f32>) -> Option<DirectWave> {
 }
 
 /// Pick one trace, or the stack. `None` when the method finds nothing.
-pub fn pick_trace(
+fn pick_trace(
     trace: ArrayView1<f32>,
     method: Method,
     window: &Window,
@@ -620,7 +612,7 @@ fn sustained_from(
 /// `AIC(k) = k ln var(x[..k]) + (n - k - 1) ln var(x[k..])`
 ///
 /// Scale-free: multiplying `x` adds the same constant to every `k`.
-pub fn aic_onset(x: ArrayView1<f32>) -> Option<usize> {
+fn aic_onset(x: ArrayView1<f32>) -> Option<usize> {
     let n = x.len();
     if n < 5 {
         return None;
@@ -653,7 +645,7 @@ pub fn aic_onset(x: ArrayView1<f32>) -> Option<usize> {
 /// The steepest rise of the edge-preserving-smoothed energy ratio
 /// `E1 / (E2 + beta)`, with `E1` the energy of the last `w` samples and
 /// `E2` the energy since the start.
-pub fn coppens_onset(x: ArrayView1<f32>, w: usize, beta: f32) -> Option<usize> {
+fn coppens_onset(x: ArrayView1<f32>, w: usize, beta: f32) -> Option<usize> {
     let n = x.len();
     if n < w + 2 {
         return None;
@@ -747,7 +739,7 @@ fn neighbourhood(
 ///
 /// Returns the picks and how many were replaced, or `None` if every pick
 /// is missing.
-pub fn replace_outliers(
+fn replace_outliers(
     picks: &[Option<usize>],
     anchors: &[Option<usize>],
     half_window: usize,
@@ -1214,7 +1206,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(picks.window.polarity, -1.);
+        assert_eq!(find_window(&data).unwrap().unwrap().0.polarity, -1.);
         for &p in &picks.time_zero {
             assert!((42..=44).contains(&p), "peak at {p}");
         }
@@ -1224,7 +1216,7 @@ mod tests {
     fn the_polarity_can_be_negative_or_positive() {
         let data = radargram(&[40; 5], 1000.);
         let flipped = data.mapv(|v| 6000. - v);
-        let window = |d: &Array2<f32>| find_window(d).unwrap().unwrap();
+        let window = |d: &Array2<f32>| find_window(d).unwrap().unwrap().0;
         assert_eq!(window(&data).polarity, -1.);
         assert_eq!(window(&flipped).polarity, 1.);
         let pick_at = |d: &Array2<f32>| {

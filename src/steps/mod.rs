@@ -150,7 +150,7 @@ pub enum Step {
         scope: zero_corr::Scope,
         /// `legacy` only: multiplier on the first-rise threshold; lower
         /// picks earlier.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER)]
+        #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_FACTOR)]
         factor: f32,
         /// `first_break` only: how many noise standard deviations count as
         /// signal.

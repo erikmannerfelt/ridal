@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use crate::filters::zero_corr;
 use crate::{dem, filters, io, tools, user_metadata};
 
-pub(crate) const DEFAULT_ZERO_CORR_THRESHOLD_MULTIPLIER: f32 = 1.0;
+pub(crate) const DEFAULT_ZERO_CORR_FACTOR: f32 = 1.0;
 pub(crate) const DEFAULT_ZERO_CORR_SIGMA: f32 = 5.0;
 pub(crate) const DEFAULT_ZERO_CORR_SMOOTH_WINDOW: u32 = 51;
 pub(crate) const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
