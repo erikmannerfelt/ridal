@@ -30,6 +30,13 @@
 //! is where the refusal happens, because a project opened on its own by
 //! `ridal gui` must keep working exactly as it did.
 
+#![allow(
+    dead_code,
+    reason = "the multi-project server mounts a project under its key and \
+              consumes the rest of this registry; the CLI uses the parts it \
+              needs today (#214)"
+)]
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -78,7 +85,10 @@ pub enum SiteError {
     NotASite(PathBuf),
     AlreadyASite(PathBuf),
     /// A site written by a newer Ridal than this one.
-    UnsupportedFormat { path: PathBuf, version: u32 },
+    UnsupportedFormat {
+        path: PathBuf,
+        version: u32,
+    },
     Io {
         path: PathBuf,
         message: String,
@@ -347,16 +357,19 @@ impl Site {
     }
 
     /// Create a project at `key` with an optional display name.
-    pub fn create_project(&self, key: &ProjectKey, name: Option<&str>) -> Result<Project, SiteError> {
+    pub fn create_project(
+        &self,
+        key: &ProjectKey,
+        name: Option<&str>,
+    ) -> Result<Project, SiteError> {
         let path = self.project_path(key);
         if path.exists() {
             return Err(SiteError::KeyInUse(key.to_string()));
         }
-        let project =
-            Project::init(&path, name).map_err(|e| SiteError::Io {
-                path: path.clone(),
-                message: e.to_string(),
-            })?;
+        let project = Project::init(&path, name).map_err(|e| SiteError::Io {
+            path: path.clone(),
+            message: e.to_string(),
+        })?;
         Ok(project)
     }
 
@@ -434,7 +447,11 @@ impl Site {
         Ok(())
     }
 
-    fn write_config(&self, config: &SiteConfig, expected: &Expectation) -> Result<Version, SiteError> {
+    fn write_config(
+        &self,
+        config: &SiteConfig,
+        expected: &Expectation,
+    ) -> Result<Version, SiteError> {
         let text = toml::to_string_pretty(config).map_err(|e| SiteError::Config {
             path: self.root.join(SITE_MARKER),
             message: e.to_string(),
@@ -507,7 +524,10 @@ mod tests {
         site.create_project(&glac, Some("Glaciology 2026")).unwrap();
         assert_eq!(site.list().unwrap(), vec![glac.clone()]);
         let project = site.project(&glac).unwrap();
-        assert_eq!(project.config().project.name.as_deref(), Some("Glaciology 2026"));
+        assert_eq!(
+            project.config().project.name.as_deref(),
+            Some("Glaciology 2026")
+        );
         // A second project at the same key is refused.
         assert!(matches!(
             site.create_project(&glac, None).unwrap_err(),

@@ -718,6 +718,328 @@ A path inside the project. The project is found by searching upwards
 Default: `.`.
 ```
 
+## `ridal site`
+
+```{program} ridal site
+```
+
+Create and manage a Ridal site: one server, many projects (#214)
+
+```console
+$ ridal site <COMMAND>
+```
+
+### `ridal site init`
+
+```{program} ridal site init
+```
+
+Create a site (a `ridal-site.toml` marker and a `projects/` directory)
+
+```console
+$ ridal site init [OPTIONS] [PATH]
+```
+
+**Arguments**
+
+```{option} <PATH>
+Directory to create the site in. Created if it does not exist
+
+Default: `.`.
+```
+
+**Options**
+
+```{option} --name <NAME>
+Human-facing site name. Cosmetic
+```
+
+### `ridal site account`
+
+```{program} ridal site account
+```
+
+Manage server-wide accounts
+
+```console
+$ ridal site account <COMMAND>
+```
+
+#### `ridal site account add`
+
+```{program} ridal site account add
+```
+
+Create an account and print a one-time invite link
+
+```console
+$ ridal site account add [OPTIONS] <NAME>
+```
+
+**Arguments**
+
+```{option} <NAME>
+The account name. Lowercase letters, digits, '-' and '_'
+
+Required.
+```
+
+**Options**
+
+```{option} --server-admin
+Make this a server administrator: they create projects and accounts, and act as an administrator in every project
+```
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site account list`
+
+```{program} ridal site account list
+```
+
+List the accounts
+
+```console
+$ ridal site account list [PATH]
+```
+
+**Arguments**
+
+```{option} <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site account set`
+
+```{program} ridal site account set
+```
+
+Grant or revoke server administration
+
+```console
+$ ridal site account set [OPTIONS] <NAME>
+```
+
+**Arguments**
+
+```{option} <NAME>
+Required.
+```
+
+**Options**
+
+```{option} --server-admin
+Grant server administration
+```
+
+```{option} --no-server-admin
+Revoke server administration
+```
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site account reset`
+
+```{program} ridal site account reset
+```
+
+Issue a fresh invite link, for a password reset or a lost one
+
+```console
+$ ridal site account reset [OPTIONS] <NAME>
+```
+
+**Arguments**
+
+```{option} <NAME>
+Required.
+```
+
+**Options**
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site account remove`
+
+```{program} ridal site account remove
+```
+
+Remove an account. It is removed from every project
+
+```console
+$ ridal site account remove [OPTIONS] <NAME>
+```
+
+**Arguments**
+
+```{option} <NAME>
+Required.
+```
+
+**Options**
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+### `ridal site project`
+
+```{program} ridal site project
+```
+
+Manage the site's projects
+
+```console
+$ ridal site project <COMMAND>
+```
+
+#### `ridal site project add`
+
+```{program} ridal site project add
+```
+
+Create an empty project at a key
+
+```console
+$ ridal site project add [OPTIONS] <KEY>
+```
+
+**Arguments**
+
+```{option} <KEY>
+The project's immutable key (lowercase letters, digits, '-' and '_')
+
+Required.
+```
+
+**Options**
+
+```{option} --name <NAME>
+Human-facing display name. Cosmetic and editable
+```
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site project list`
+
+```{program} ridal site project list
+```
+
+List the site's projects
+
+```console
+$ ridal site project list [PATH]
+```
+
+**Arguments**
+
+```{option} <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site project archive`
+
+```{program} ridal site project archive
+```
+
+Make a project read-only, keeping its interpretations exportable
+
+```console
+$ ridal site project archive [OPTIONS] <KEY>
+```
+
+**Arguments**
+
+```{option} <KEY>
+The project's key
+
+Required.
+```
+
+**Options**
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site project unarchive`
+
+```{program} ridal site project unarchive
+```
+
+Reverse `archive`
+
+```console
+$ ridal site project unarchive [OPTIONS] <KEY>
+```
+
+**Arguments**
+
+```{option} <KEY>
+The project's key
+
+Required.
+```
+
+**Options**
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site project delete`
+
+```{program} ridal site project delete
+```
+
+Delete a project and everything it owns, for good
+
+```console
+$ ridal site project delete [OPTIONS] <KEY>
+```
+
+**Arguments**
+
+```{option} <KEY>
+The project's key
+
+Required.
+```
+
+**Options**
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
 ## `ridal gui`
 
 ```{program} ridal gui

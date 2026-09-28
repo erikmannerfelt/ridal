@@ -81,6 +81,11 @@ impl Default for AccessOptions {
 /// `ridal gui` project has no site, which is what keeps its behaviour
 /// unchanged.
 pub struct SiteContext {
+    /// The project's immutable key. Read by the site router and its links.
+    #[allow(
+        dead_code,
+        reason = "the site router mounts projects by key next (#214)"
+    )]
     pub key: ProjectKey,
     pub store: DocumentStore,
     /// Archived projects are read-only and named as such in a refusal.
@@ -89,6 +94,7 @@ pub struct SiteContext {
 }
 
 impl SiteContext {
+    #[allow(dead_code, reason = "constructed by the site server next (#214)")]
     pub fn new(key: ProjectKey, store: DocumentStore, archived: bool) -> Self {
         Self {
             key,
@@ -591,6 +597,7 @@ impl AppState {
     /// Attach the site this project is served from (#214). A builder method
     /// rather than a `build_with_project` parameter, so the many callers and
     /// tests that serve a lone project are untouched.
+    #[allow(dead_code, reason = "the site server attaches a context next (#214)")]
     pub fn with_site(mut self, site: Arc<SiteContext>) -> Self {
         self.site = Some(site);
         self

@@ -25,14 +25,21 @@
 //! meaning "this project has not opted into authentication", distinct from a
 //! file holding no members (everyone was removed).
 
+#![allow(
+    dead_code,
+    reason = "membership editing arrives with the project member routes; the \
+              server reads memberships already and the rest is exercised by \
+              tests (#214)"
+)]
+
 use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use super::store::{DocumentStore, Expectation, StoreError, Version};
-use crate::identity::UserId;
 use super::users::{DownloadScope, Role};
+use crate::identity::UserId;
 
 /// The membership document, relative to the project's data directory.
 pub const MEMBERS_FILE: &str = "users.json";
@@ -80,7 +87,8 @@ impl MemberSet {
 
     /// Whether `name` is the only member with the `admin` role.
     pub fn is_last_admin(&self, name: &UserId) -> bool {
-        self.get(name).is_some_and(|member| member.role == Role::Admin)
+        self.get(name)
+            .is_some_and(|member| member.role == Role::Admin)
             && !self
                 .members
                 .iter()
@@ -204,11 +212,8 @@ mod tests {
     fn a_membership_round_trips() {
         let (_dir, store) = store();
         update(&store, |set| {
-            set.members.push(Member::new(
-                name("anna"),
-                Role::Admin,
-                DownloadScope::All,
-            ));
+            set.members
+                .push(Member::new(name("anna"), Role::Admin, DownloadScope::All));
             Ok(())
         })
         .unwrap();

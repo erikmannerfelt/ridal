@@ -9,6 +9,12 @@
 //! a project's invite was before; a link found in an old log is worthless
 //! once used or expired.
 
+#![allow(
+    dead_code,
+    reason = "token redemption lands with the site invite route (#214); the \
+              token format and hashing are exercised by tests until then"
+)]
+
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ProjectKey;
@@ -49,8 +55,7 @@ pub fn mint(
     download: Option<DownloadScope>,
 ) -> Result<(String, Invite), String> {
     let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| format!("could not read system randomness: {e}"))?;
+    getrandom::fill(&mut bytes).map_err(|e| format!("could not read system randomness: {e}"))?;
     let token = to_hex(&bytes);
     let invite = Invite {
         token_hash: blake3::hash(token.as_bytes()).to_hex().to_string(),

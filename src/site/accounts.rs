@@ -17,6 +17,13 @@
 //! (and is how `ridal gui` runs). That is deliberately distinct from a file
 //! holding no accounts, which means every account was removed.
 
+#![allow(
+    dead_code,
+    reason = "password verification and redaction are consumed by the \
+              site login and account routes, which land with the multi-project \
+              server (#214)"
+)]
+
 use std::fmt;
 use std::path::PathBuf;
 
@@ -158,12 +165,11 @@ pub fn read(store: &DocumentStore) -> Result<Option<(AccountSet, Version)>, Acco
     let Some(document) = store.read(&path)? else {
         return Ok(None);
     };
-    let set: AccountSet = serde_json::from_str(&document.text).map_err(|e| {
-        AccountError::Malformed {
+    let set: AccountSet =
+        serde_json::from_str(&document.text).map_err(|e| AccountError::Malformed {
             path: store.root().join(&path),
             message: e.to_string(),
-        }
-    })?;
+        })?;
     Ok(Some((set, document.version)))
 }
 
@@ -283,8 +289,7 @@ mod tests {
     fn an_account_round_trips_through_the_private_file() {
         let (_dir, store) = store();
         update(&store, |set| {
-            set.users
-                .push(Account::new(name("anna"), true));
+            set.users.push(Account::new(name("anna"), true));
             Ok(())
         })
         .unwrap();

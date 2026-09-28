@@ -229,6 +229,10 @@ pub struct Caller {
     pub user: Option<UserId>,
     /// Whether this account administers the whole site (#214): it creates
     /// projects and accounts and acts as an administrator in every project.
+    #[allow(
+        dead_code,
+        reason = "read by the site account and project routes next (#214)"
+    )]
     pub server_admin: bool,
     /// Whether the caller may see this project at all. False for a
     /// non-member of a project that requires a login; the middleware answers
@@ -501,11 +505,9 @@ fn resolve_site(
     let (user, account_role, download) = match account {
         // A server administrator acts as an administrator everywhere, with
         // nothing withheld.
-        Some(account) if server_admin => (
-            Some(account.name.clone()),
-            Role::Admin,
-            DownloadScope::All,
-        ),
+        Some(account) if server_admin => {
+            (Some(account.name.clone()), Role::Admin, DownloadScope::All)
+        }
         Some(account) => {
             let (role, download) = member
                 .map(|member| (member.role, member.download))

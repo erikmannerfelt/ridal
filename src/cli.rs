@@ -2432,16 +2432,15 @@ fn site_account_set_command(args: &SiteAccountSetArgs) -> Result<(), String> {
         use crate::site::accounts::AccountError;
         // The last administrator cannot demote themselves, or the site has
         // nobody who can create projects or accounts.
-        if !wanted && !set.has_another_admin(&name) {
-            if let Some(account) = set.get(&name) {
-                if account.server_admin {
-                    return Err(AccountError::Rejected(
-                        "This is the only server administrator. Grant \
-                         --server-admin to somebody else first."
-                            .to_string(),
-                    ));
-                }
-            }
+        if !wanted
+            && !set.has_another_admin(&name)
+            && set.get(&name).is_some_and(|account| account.server_admin)
+        {
+            return Err(AccountError::Rejected(
+                "This is the only server administrator. Grant \
+                 --server-admin to somebody else first."
+                    .to_string(),
+            ));
         }
         let account = set
             .get_mut(&name)
@@ -2478,14 +2477,14 @@ fn site_account_remove_command(args: &SiteAccountResetArgs) -> Result<(), String
     let name = crate::identity::UserId::new(args.name.clone())?;
     crate::site::accounts::update(site.store(), |set| {
         use crate::site::accounts::AccountError;
-        if !set.has_another_admin(&name) {
-            if set.get(&name).is_some_and(|account| account.server_admin) {
-                return Err(AccountError::Rejected(
-                    "This is the only server administrator. Grant --server-admin to \
-                     somebody else first."
-                        .to_string(),
-                ));
-            }
+        if !set.has_another_admin(&name)
+            && set.get(&name).is_some_and(|account| account.server_admin)
+        {
+            return Err(AccountError::Rejected(
+                "This is the only server administrator. Grant --server-admin to \
+                 somebody else first."
+                    .to_string(),
+            ));
         }
         let before = set.users.len();
         set.users.retain(|account| account.name != name);
