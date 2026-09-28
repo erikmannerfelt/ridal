@@ -81,7 +81,8 @@ unit and never converted.
 ## Numbers
 
 :::{important}
-Two rules that the current version does not enforce well:
+Two rules that the current version does not enforce well
+([#270](https://github.com/erikmannerfelt/ridal/issues/270)):
 
 - **Write numbers with a decimal point**: {expr}`2.0`, not {expr}`2`. A whole number
   such as {expr}`50` is an integer in this language, and most functions only
