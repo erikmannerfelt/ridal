@@ -32,10 +32,12 @@ autodoc_typehints = "none"
 
 exclude_patterns = ["_build", "requirements.txt"]
 
-html_title = "Ridal"
+# "Ridal docs" and a teal favicon, so that a tab of the documentation can be
+# told apart from a tab of a Ridal server, which is titled "... - Ridal".
+html_title = "Ridal docs"
 html_static_path = ["_static"]
 html_logo = "_static/logo.svg"
-html_favicon = "_static/logo.svg"
+html_favicon = "_static/favicon.svg"
 html_css_files = ["ridal.css"]
 
 html_theme = "furo"

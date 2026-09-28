@@ -1100,6 +1100,44 @@ async fn download_scope_gates_the_downloads_and_not_the_viewer() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn own_picks_are_readable_without_a_download_scope_but_not_as_a_file() {
+    // The viewer draws someone's own picks through the plain `GET`, so that
+    // route cannot ask for a download scope: with `none` it would stop
+    // working. The documentation says so, because it means `none` does not
+    // keep a person's own picks on the server -- only the file download is
+    // gated.
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![
+        activated("nothing", Role::Picker, DownloadScope::None, &hash),
+        activated("other", Role::Picker, DownloadScope::None, &hash),
+    ]);
+    let mine = sign_in(&app, "nothing").await;
+    let saved = put(
+        &app,
+        &interpretation_uri("nothing"),
+        &document(RADARGRAM),
+        Some(&mine),
+    )
+    .await;
+    assert!(saved.status.is_success(), "{}", saved.text);
+
+    let read = get(&app, &interpretation_uri("nothing"), Some(&mine)).await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    assert_eq!(read.body["features"][0]["properties"]["label"], "bed");
+
+    let raw = format!("{}/raw", interpretation_uri("nothing"));
+    let file = get(&app, &raw, Some(&mine)).await;
+    assert_eq!(file.status, StatusCode::FORBIDDEN, "{}", file.text);
+    assert_eq!(file.body["error"]["code"], "download_not_permitted");
+
+    // Someone else's picks are not readable at all with `none`.
+    let theirs = sign_in(&app, "other").await;
+    let refused = get(&app, &interpretation_uri("nothing"), Some(&theirs)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_download_the_caller_may_not_have_is_not_offered() {
     // The API refusing is necessary and not sufficient. A menu entry is a
     // promise; one that answers with an error dialog teaches someone about

@@ -148,7 +148,8 @@ These endpoints never require a login, since they are how one happens.
 ## Interpretations
 
 A `picker` may only write their own interpretation. Reading someone else's
-needs the `picks` download scope.
+needs the `picks` download scope. Reading one's own needs no scope, since
+the viewer draws it; downloading it as a file (`/raw`) still needs `picks`.
 
 | Method | Path | Needs | Description |
 |---|---|---|---|
@@ -156,7 +157,7 @@ needs the `picks` download scope.
 | `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | own, or download `picks` | One person's interpretation, with an `ETag`. |
 | `PUT` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | `picker`, own | Save an interpretation. Refused if a line breaks its layer's rules, such as an overhang on a layer that does not allow them. |
 | `DELETE` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | `picker`, own | Delete an interpretation. |
-| `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/raw` | own, or download `picks` | The stored interpretation file, byte for byte. |
+| `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/raw` | download `picks`, even for one's own | The stored interpretation file, byte for byte. |
 | `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/carried` | own, or download `picks` | The interpretation as drawn on the radargram's current revision, when it was picked on an earlier one, with a report of what carrying it over changed. |
 | `POST` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/promote` | `picker`, own | Adopt the carried-over interpretation as the interpretation on the current revision. Query: `onto`, the revision the caller believes is current. |
 
