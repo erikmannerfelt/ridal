@@ -63,9 +63,14 @@ shifted two units down. A plain number and an attribute count the same on
 either side of `+` and `-`: {expr}`10 - median(bed)` is also a layer, the bed
 mirrored about 10 units.
 
-A derived layer that comes out above the surface (sample 0, the top of the
-radargram) is {expr}`NaN` there, rather than being drawn along the top. With
-the bed deeper than 10 m, {expr}`10 - median(bed)` in `meters` is {expr}`NaN`.
+A derived layer may lie outside the radargram, above its first sample or
+below its last. {expr}`median(bed) + 5`, for a bed depth corrected by a known
+error in time zero, is a real depth whether or not the recording reaches it.
+Its value is kept as the expression gives it, and it is drawn off the edge of
+the radargram rather than along it. To convert it into the other two units,
+the depth and time axes are extended past their ends at their spacing
+there. Its sample number can then be negative, or larger than the number of
+samples.
 
 ## Units
 

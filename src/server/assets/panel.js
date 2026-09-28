@@ -110,16 +110,41 @@
   //
   // A derived item's values are in its own unit; the map wants a sample
   // index. `/axes` gives the same depth/twtt arrays the cursor readout uses.
+  //
+  // Past either end the axis is continued from its outermost segment that is
+  // not flat, exactly as `axis_invert` in `interp::derive` does (#270). A
+  // derived layer may lie outside the radargram -- `median(bed) + 5.0` for a
+  // known error in time zero -- and clamping it here drew it along the top or
+  // bottom edge, where it looked like a real line on the data.
+
+  /** The axis's change per sample at one end, or null if it is all flat. */
+  function edgeSlope(axis, atStart) {
+    const last = axis.length - 1;
+    for (let step = 0; step < last; step++) {
+      const i = atStart ? step : last - 1 - step;
+      const slope = axis[i + 1] - axis[i];
+      if (slope !== 0) return slope;
+    }
+    return null;
+  }
 
   function invertAxis(axis, value) {
     if (!axis || axis.length < 2 || !Number.isFinite(value)) return null;
-    const ascending = axis[axis.length - 1] >= axis[0];
+    // Non-decreasing axes only; depth and twtt both are.
+    const last = axis.length - 1;
+    if (value < axis[0]) {
+      const slope = edgeSlope(axis, true);
+      return slope === null ? null : (value - axis[0]) / slope;
+    }
+    if (value > axis[last]) {
+      const slope = edgeSlope(axis, false);
+      return slope === null ? null : last + (value - axis[last]) / slope;
+    }
     let index = 0;
-    while (index < axis.length && (ascending ? axis[index] < value : axis[index] > value)) {
+    while (index < axis.length && axis[index] < value) {
       index += 1;
     }
     if (index === 0) return 0;
-    if (index >= axis.length) return axis.length - 1;
     const lo = index - 1;
     const span = axis[index] - axis[lo];
     return span === 0 ? lo : lo + (value - axis[lo]) / span;

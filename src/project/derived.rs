@@ -511,15 +511,6 @@ impl DerivedSet {
                     &layer_ids,
                     &item_kinds,
                 )?;
-                // A position above the surface is not on the radargram, so it
-                // is absent rather than drawn along the top.
-                let value = if kind == Kind::Layer
-                    && derive::is_above_surface(value, item.unit, geometry)
-                {
-                    f64::NAN
-                } else {
-                    value
-                };
                 values.push(value);
             }
             results.insert(
@@ -960,39 +951,50 @@ mod tests {
         }
     }
 
-    /// `10.0 - median(bed)` is a position, mirrored about 10 (#270). Where it
-    /// lands above the surface it is not on the radargram, and it must be
-    /// absent rather than clamped to sample 0 -- which would draw and export
-    /// a confident line along the top.
+    /// A derived layer outside the radargram keeps the value its expression
+    /// gives, and converts by extending the axes past their ends (#270).
+    /// `median(bed) + 5.0` for a known error in time zero is a real depth
+    /// whether or not the recording reaches it; clamping it to the edge
+    /// drew a false line along the top or bottom, and NaN would drop it.
     #[test]
-    fn a_derived_layer_above_the_surface_is_nan() {
+    fn a_derived_layer_outside_the_radargram_is_extrapolated() {
         let (reduced, geometry) = flat_picks();
+        // The fixture's axes: 0.04 m and 0.4 ns per sample, 50 samples, so
+        // the bottom is sample 49 at 1.96 m. The bed is at 0.4 m.
         let mut in_samples = item("in_samples", "5 - median(bed)");
         in_samples.unit = Unit::Samples;
         let set = set(vec![
             item("mirrored", "0.6 - median(bed)"),
             item("above", "0.2 - median(bed)"),
-            item("depends_on_above", "above + 1"),
+            item("below", "median(bed) + 5"),
+            item("depends_on_above", "above + 0.1"),
             in_samples,
-            // An attribute is not a position, so a negative one is kept.
-            item("thickness", "median(bed) - median(temperate_ice)"),
         ]);
         let results = set.evaluate(&reduced, &geometry).unwrap();
 
-        assert_eq!(results["mirrored"].kind, Kind::Layer);
-        for value in &results["mirrored"].values {
-            assert!((value - 0.2).abs() < 1e-9, "{value}");
-        }
-        for id in ["above", "depends_on_above", "in_samples"] {
+        let close = |id: &str, expected: f64| {
             assert_eq!(results[id].kind, Kind::Layer, "{id}");
-            assert!(
-                results[id].values.iter().all(|v| v.is_nan()),
-                "{id} is above the surface and must be NaN: {:?}",
-                results[id].values
-            );
-        }
-        assert_eq!(results["thickness"].kind, Kind::Attribute);
-        assert!(results["thickness"].values.iter().all(|v| *v < 0.0));
+            for value in &results[id].values {
+                assert!(
+                    (value - expected).abs() < 1e-9,
+                    "{id}: {value} vs {expected}"
+                );
+            }
+        };
+        close("mirrored", 0.2);
+        close("above", -0.2);
+        close("below", 5.4);
+        // Converted into the dependant's unit and back without clamping.
+        close("depends_on_above", -0.1);
+        close("in_samples", -5.0);
+
+        // And the other units carry on along the same axes.
+        let to =
+            |value: f64, from: Unit, to: Unit| derive::convert_position(value, from, to, &geometry);
+        assert!((to(-0.2, Unit::Meters, Unit::Samples) + 5.0).abs() < 1e-9);
+        assert!((to(-0.2, Unit::Meters, Unit::Nanoseconds) + 2.0).abs() < 1e-9);
+        assert!((to(5.4, Unit::Meters, Unit::Samples) - 135.0).abs() < 1e-9);
+        assert!((to(-5.0, Unit::Samples, Unit::Meters) + 0.2).abs() < 1e-9);
     }
 
     #[test]

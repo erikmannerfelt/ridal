@@ -1250,35 +1250,70 @@ fn describe_type(name: &str) -> &str {
 
 // -- Unit conversion --------------------------------------------------------
 
+/// The axis's change per sample at one end, from the outermost segment that
+/// is not flat.
+///
+/// A depth axis can be flat near the top -- the legacy conversion put every
+/// sample inside the antenna separation at 0 m -- and a flat edge says
+/// nothing about how the axis continues. `None` if the whole axis is flat.
+fn edge_slope(axis: &[f64], at_start: bool) -> Option<f64> {
+    let slope = |i: usize| axis[i + 1] - axis[i];
+    let mut segments = 0..axis.len().saturating_sub(1);
+    let found = if at_start {
+        segments.find(|i| slope(*i) != 0.0)
+    } else {
+        segments.rev().find(|i| slope(*i) != 0.0)
+    };
+    found.map(slope)
+}
+
+/// The axis value at a fractional sample index, extrapolated linearly past
+/// either end.
+///
+/// A derived layer may lie outside the radargram: a depth corrected by a
+/// known offset, `median(bed) + 5.0`, is a real position whether or not the
+/// recording reaches it. Clamping it to the edge, or dropping it, would both
+/// misstate it. The axes are close to linear at both ends -- sampling is
+/// uniform, and depth is `t·v/2` above time zero and approaches that far
+/// below the antenna separation -- so the edge spacing continues them.
 fn axis_at(axis: &[f64], index: f64) -> f64 {
     if axis.is_empty() || index.is_nan() {
         return f64::NAN;
     }
-    if axis.len() == 1 {
-        return axis[0];
+    let last = axis.len() - 1;
+    if index < 0.0 {
+        return axis[0] + index * edge_slope(axis, true).unwrap_or(0.0);
     }
-    let clamped = index.clamp(0.0, (axis.len() - 1) as f64);
-    let lower = clamped.floor() as usize;
-    let upper = clamped.ceil() as usize;
+    if index > last as f64 {
+        return axis[last] + (index - last as f64) * edge_slope(axis, false).unwrap_or(0.0);
+    }
+    let lower = index.floor() as usize;
+    let upper = index.ceil() as usize;
     if lower == upper {
         return axis[lower];
     }
-    let fraction = clamped - lower as f64;
+    let fraction = index - lower as f64;
     axis[lower] + fraction * (axis[upper] - axis[lower])
 }
 
+/// The fractional sample index of an axis value; the inverse of [`axis_at`],
+/// extrapolated past either end in the same way.
 fn axis_invert(axis: &[f64], value: f64) -> f64 {
     if axis.len() < 2 || value.is_nan() {
         return f64::NAN;
     }
     // Non-decreasing axes only; depth and twtt both are.
-    let ascending = axis[axis.len() - 1] >= axis[0];
-    let index = axis.partition_point(|v| if ascending { *v < value } else { *v > value });
+    let last = axis.len() - 1;
+    if value < axis[0] {
+        return edge_slope(axis, true).map_or(f64::NAN, |slope| (value - axis[0]) / slope);
+    }
+    if value > axis[last] {
+        return edge_slope(axis, false)
+            .map_or(f64::NAN, |slope| last as f64 + (value - axis[last]) / slope);
+    }
+    let index = axis.partition_point(|v| *v < value);
     if index == 0 {
         return 0.0;
-    }
-    if index >= axis.len() {
-        return (axis.len() - 1) as f64;
     }
     let (lo, hi) = (index - 1, index);
     let span = axis[hi] - axis[lo];
@@ -1305,22 +1340,6 @@ pub fn unit_to_sample(value: f64, unit: Unit, geometry: &RadargramGeometry) -> f
         Unit::Meters => axis_invert(&geometry.depth, value),
         Unit::Nanoseconds => axis_invert(&geometry.twtt, value),
     }
-}
-
-/// Whether a position lies above the surface, the top of the radargram.
-///
-/// [`unit_to_sample`] clamps such a value to sample 0, so a position
-/// computed above the surface -- `10.0 - median(bed)` where the bed is deeper
-/// than 10 -- would otherwise be drawn and exported as a line along the
-/// surface (#270). Sample 0 is the surface throughout this module, as in
-/// [`reduce_picks`], which drops a pick above it for the same reason.
-pub fn is_above_surface(value: f64, unit: Unit, geometry: &RadargramGeometry) -> bool {
-    let top = match unit {
-        Unit::Samples | Unit::Dimensionless => Some(0.0),
-        Unit::Meters => geometry.depth.first().copied(),
-        Unit::Nanoseconds => geometry.twtt.first().copied(),
-    };
-    top.is_some_and(|top| value < top)
 }
 
 /// Convert a position from one unit to another, via the sample axis.
@@ -1707,6 +1726,31 @@ mod tests {
         let nanos = sample_to_unit(sample, Unit::Nanoseconds, &geometry);
         let back = unit_to_sample(nanos, Unit::Nanoseconds, &geometry);
         assert!((back - sample).abs() < 1e-9);
+    }
+
+    /// Past either end the axis continues from its outermost segment that
+    /// is not flat, and the two directions stay inverses.
+    #[test]
+    fn conversion_extrapolates_past_the_axis() {
+        let even = [0.0, 1.0, 2.0, 3.0];
+        assert_eq!(axis_at(&even, -2.0), -2.0);
+        assert_eq!(axis_at(&even, 5.5), 5.5);
+        assert_eq!(axis_invert(&even, -2.0), -2.0);
+        assert_eq!(axis_invert(&even, 5.5), 5.5);
+
+        // Flat at the top, as the legacy depth conversion is inside the
+        // antenna separation: the first rising segment sets the slope.
+        let flat_top = [0.0, 0.0, 0.5, 1.0];
+        assert_eq!(axis_at(&flat_top, -1.0), -0.5);
+        assert_eq!(axis_invert(&flat_top, -0.5), -1.0);
+        // Uneven spacing at the bottom: the last segment sets it.
+        let uneven = [0.0, 1.0, 3.0];
+        assert_eq!(axis_at(&uneven, 3.0), 5.0);
+        assert_eq!(axis_invert(&uneven, 5.0), 3.0);
+
+        // A wholly flat axis says nothing about where it goes.
+        assert!(axis_invert(&[1.0, 1.0], 2.0).is_nan());
+        assert!(axis_at(&[], 0.0).is_nan());
     }
 
     #[test]

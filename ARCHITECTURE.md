@@ -664,11 +664,17 @@ number is registered to *fail*, rather than left to Rhai's fallback.
 Errors are rewritten by `describe_error` into the reference's terms (a
 layer, a number); no message names `Kinded`, `UserArray` or `f64`.
 
-**A derived layer above the surface is `NaN`.** `number - layer` is a layer
-(the layer mirrored), so it can land above sample 0, and `unit_to_sample`
-clamps there — the item would be drawn along the top of the radargram.
-`DerivedSet::evaluate` NaNs such a value (`derive::is_above_surface`), as
-`reduce_picks` drops an above-surface pick.
+**A derived layer may lie outside the radargram, and is extrapolated, not
+clamped or dropped.** `median(bed) + 5.0` for a known time-zero error, or
+`10.0 - median(bed)`, is a real position past the first or last sample.
+`axis_at`/`axis_invert` used to clamp to the edge, which drew and exported it
+as a line along the top or bottom; NaN would have lost it instead. They now
+continue the axis from its outermost non-flat segment (`edge_slope`). That
+is exact for samples and nanoseconds, exact for depth above time zero
+(`t·v/2`), and close to exact below the antenna separation. The GUI has its
+own copy in `panel.js` (`invertAxis`), which must do the same. Picks are not
+affected: `reduce_picks` drops a pick outside the radargram before any
+conversion.
 
 `inference_and_evaluation_accept_the_same_expressions` enforces this over a
 table of expressions. **Add a row whenever a function is registered** — the
