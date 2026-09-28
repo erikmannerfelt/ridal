@@ -6,12 +6,16 @@ when the editor does. Registers the ``ridal-expr`` language for code blocks
 and an ``expr`` role for inline expressions: {expr}`median(bed)`.
 """
 
+from __future__ import annotations
+
 import re
 from pathlib import Path
+from typing import Any, ClassVar
 
 from docutils import nodes
 from pygments.lexer import RegexLexer, words
-from pygments.token import Name, Number, Operator, Punctuation, Text, Token
+from pygments.token import Number, Operator, Punctuation, Text, Token
+from sphinx.application import Sphinx
 
 _APP_JS = Path(__file__).resolve().parents[2] / "src" / "server" / "assets" / "app.js"
 
@@ -25,7 +29,7 @@ Layer = Token.Name.Ridal.Layer
 
 def _js_list(source: str, name: str) -> list[str]:
     """The string literals of ``const NAME = [...]`` in the GUI's source."""
-    match = re.search(rf"const {name} = \[(.*?)\];", source, re.S)
+    match = re.search(rf"const {name} = \[(.*?)\];", source, re.DOTALL)
     if match is None:
         raise RuntimeError(f"{name} not found in {_APP_JS}; did the editor move?")
     return re.findall(r'"([^"]+)"', match.group(1))
@@ -40,9 +44,9 @@ KEYWORDS = _js_list(_source, "IDENTIFIER_KEYWORDS")
 
 class RidalExpressionLexer(RegexLexer):
     name = "Ridal derived item expression"
-    aliases = ["ridal-expr"]
+    aliases: ClassVar[list[str]] = ["ridal-expr"]
 
-    tokens = {
+    tokens: ClassVar[dict[str, list[Any]]] = {
         "root": [
             (r"\s+", Text),
             (words(REDUCERS, suffix=r"\b"), Reduce),
@@ -57,7 +61,15 @@ class RidalExpressionLexer(RegexLexer):
     }
 
 
-def expr_role(name, rawtext, text, lineno, inliner, options=None, content=None):
+def expr_role(
+    name: str,
+    rawtext: str,
+    text: str,
+    lineno: int,
+    inliner: Any,
+    options: dict[str, Any] | None = None,
+    content: list[str] | None = None,
+) -> tuple[list[nodes.Node], list[nodes.system_message]]:
     """Inline code that Sphinx's HTML writer highlights as ``ridal-expr``.
 
     Not docutils' own ``code`` role: that looks lexers up in Pygments
@@ -68,7 +80,7 @@ def expr_role(name, rawtext, text, lineno, inliner, options=None, content=None):
     return [node], []
 
 
-def setup(app):
+def setup(app: Sphinx) -> dict[str, bool]:
     app.add_lexer("ridal-expr", RidalExpressionLexer)
     app.add_role("expr", expr_role)
     return {"parallel_read_safe": True}

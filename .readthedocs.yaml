@@ -1,0 +1,22 @@
+# Read the Docs configuration: https://docs.readthedocs.io/en/stable/config-file/v2.html
+version: 2
+
+build:
+  os: ubuntu-24.04
+  tools:
+    # Must match the wheel that docs/install_ridal.py installs, which CI
+    # builds for Python 3.12.
+    python: '3.12'
+  jobs:
+    # The Python reference is read from an installed `ridal`. It is installed
+    # from a prebuilt wheel, since building one here compiles HDF5.
+    post_install:
+    - python docs/install_ridal.py
+
+python:
+  install:
+  - requirements: docs/requirements.txt
+
+sphinx:
+  configuration: docs/conf.py
+  fail_on_warning: true
