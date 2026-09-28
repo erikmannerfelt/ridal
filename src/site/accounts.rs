@@ -17,13 +17,6 @@
 //! (and is how `ridal gui` runs). That is deliberately distinct from a file
 //! holding no accounts, which means every account was removed.
 
-#![allow(
-    dead_code,
-    reason = "password verification and redaction are consumed by the \
-              site login and account routes, which land with the multi-project \
-              server (#214)"
-)]
-
 use std::fmt;
 use std::path::PathBuf;
 

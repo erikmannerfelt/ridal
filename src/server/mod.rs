@@ -73,5 +73,6 @@ pub mod overrides_routes;
 pub mod render_service;
 pub mod replace_routes;
 pub mod routes;
+pub mod site;
 pub mod templates;
 pub mod track;

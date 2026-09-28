@@ -9,12 +9,6 @@
 //! a project's invite was before; a link found in an old log is worthless
 //! once used or expired.
 
-#![allow(
-    dead_code,
-    reason = "token redemption lands with the site invite route (#214); the \
-              token format and hashing are exercised by tests until then"
-)]
-
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ProjectKey;

@@ -686,6 +686,7 @@ mod tests {
                 "error.html.jinja",
                 include_str!("templates/error.html.jinja"),
             ),
+            ("site.html.jinja", include_str!("templates/site.html.jinja")),
         ] {
             for forbidden in [
                 "/api/v1/",

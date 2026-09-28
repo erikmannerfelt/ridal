@@ -82,10 +82,6 @@ impl Default for AccessOptions {
 /// unchanged.
 pub struct SiteContext {
     /// The project's immutable key. Read by the site router and its links.
-    #[allow(
-        dead_code,
-        reason = "the site router mounts projects by key next (#214)"
-    )]
     pub key: ProjectKey,
     pub store: DocumentStore,
     /// Archived projects are read-only and named as such in a refusal.
@@ -94,7 +90,6 @@ pub struct SiteContext {
 }
 
 impl SiteContext {
-    #[allow(dead_code, reason = "constructed by the site server next (#214)")]
     pub fn new(key: ProjectKey, store: DocumentStore, archived: bool) -> Self {
         Self {
             key,
@@ -597,9 +592,20 @@ impl AppState {
     /// Attach the site this project is served from (#214). A builder method
     /// rather than a `build_with_project` parameter, so the many callers and
     /// tests that serve a lone project are untouched.
-    #[allow(dead_code, reason = "the site server attaches a context next (#214)")]
     pub fn with_site(mut self, site: Arc<SiteContext>) -> Self {
         self.site = Some(site);
+        self
+    }
+
+    /// Share one render-permit budget with the rest of a site (#214).
+    ///
+    /// A site builds a separate [`AppState`] per project but wants
+    /// `--n-workers` to bound the whole server, not each project
+    /// independently -- otherwise N projects allow N times the concurrent
+    /// renders the operator asked for. `ridal gui` and the tests leave this
+    /// alone and keep the budget `build_with_project` sized for one project.
+    pub fn with_render_permits(mut self, permits: Arc<Semaphore>) -> Self {
+        self.render_permits = permits;
         self
     }
 
@@ -841,11 +847,13 @@ impl MergeScope {
 /// every ungrouped radargram in the catalog is not one group.
 pub const NO_GROUP_ID: &str = "_none";
 
-/// Build the complete Axum application over `state`.
-pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
+/// The static assets and favicon.
+///
+/// Stateless, so the project router and the site router share one definition
+/// rather than each listing the same dozen `/static/*` routes (#214). Merged
+/// after `.with_state`, so the two routers' state types line up.
+pub fn static_router() -> Router {
     Router::new()
-        .route("/", get(super::routes::index_page))
-        .route("/view/{radargram_id}", get(super::routes::viewer_page))
         .route("/static/leaflet.js", get(super::assets::leaflet_js))
         .route("/static/leaflet.css", get(super::assets::leaflet_css))
         .route("/static/app.css", get(super::assets::app_css))
@@ -854,6 +862,9 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/viewer.js", get(super::assets::viewer_js))
         .route("/static/picker.js", get(super::assets::picker_js))
         .route("/static/panel.js", get(super::assets::panel_js))
+        .route("/static/login.js", get(super::assets::login_js))
+        .route("/static/settings.js", get(super::assets::settings_js))
+        .route("/static/layers.js", get(super::assets::layers_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -873,13 +884,19 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         )
         .route("/static/images/logo.svg", get(super::assets::logo_svg))
         .route("/favicon.ico", get(super::assets::favicon))
+}
+
+/// Build the complete Axum application over `state`.
+pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
+    Router::new()
+        .route("/", get(super::routes::index_page))
+        .route("/view/{radargram_id}", get(super::routes::viewer_page))
         .route("/api/v1/health", get(super::routes::health))
         // Authentication. The write routes below did not change shape when
         // this arrived (#131): the path still names the user, and only the
         // body of `current_user` moved.
         .route("/login", get(super::auth_routes::login_page))
         .route("/invite/{token}", get(super::auth_routes::invite_page))
-        .route("/static/login.js", get(super::assets::login_js))
         .route("/api/v1/auth/me", get(super::auth_routes::me))
         .route(
             "/api/v1/auth/login",
@@ -924,12 +941,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         )
         .route("/layers", get(super::routes::layers_page))
         .route("/settings", get(super::routes::settings_page))
-        .route("/static/settings.js", get(super::assets::settings_js))
         .route(
             "/api/v1/project/settings",
             get(super::interp_routes::get_settings).put(super::interp_routes::put_settings),
         )
-        .route("/static/layers.js", get(super::assets::layers_js))
         .route(
             "/api/v1/layers",
             get(super::interp_routes::get_layers).put(super::interp_routes::put_layers),
@@ -1098,6 +1113,11 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             super::auth::middleware,
         ))
         .with_state(state)
+        // Stateless assets, merged last so their paths are served without
+        // the identity middleware. Nothing under `/static` or the favicon
+        // was ever gated by it (`auth::is_public_path`), so this only saves
+        // a `users.json` read per asset (#214).
+        .merge(static_router())
 }
 
 /// A radargram ID from the URL is validated the same way an explicit

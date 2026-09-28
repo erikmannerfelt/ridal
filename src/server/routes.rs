@@ -1115,7 +1115,23 @@ pub async fn settings_page(
 /// (#141): it belongs to the shared layout rather than to any one page, and
 /// reading it needs the preferences document.
 fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
+    // Where this page's project-scoped URLs live (#214). A project served by
+    // a site is mounted at `/p/{key}`, with its API under
+    // `/api/v1/projects/{key}`; a lone project (and `ridal gui`) keeps the
+    // root shape the environment globals already carry. Delivered through
+    // the render context rather than the globals because it varies per
+    // request, and `base.html.jinja` reads one set of values either way.
+    let (api_base, page_base) = match state.site.as_ref() {
+        Some(site) => (
+            format!("/api/v1/projects/{}", site.key),
+            format!("/p/{}", site.key),
+        ),
+        None => ("/api/v1".to_string(), String::new()),
+    };
     minijinja::context! {
+        api_base => api_base,
+        site_api_base => "/api/v1",
+        page_base => page_base,
         // Empty means "follow the device", which is the absence of an
         // override rather than a third theme -- see `resolve_theme`.
         active_theme => resolve_theme(state, caller),

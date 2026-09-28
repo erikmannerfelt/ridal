@@ -25,13 +25,6 @@
 //! meaning "this project has not opted into authentication", distinct from a
 //! file holding no members (everyone was removed).
 
-#![allow(
-    dead_code,
-    reason = "membership editing arrives with the project member routes; the \
-              server reads memberships already and the rest is exercised by \
-              tests (#214)"
-)]
-
 use std::fmt;
 use std::path::PathBuf;
 
@@ -103,7 +96,15 @@ impl MemberSet {
 #[derive(Debug)]
 pub enum MemberError {
     Store(StoreError),
-    Malformed { path: PathBuf, message: String },
+    Malformed {
+        path: PathBuf,
+        message: String,
+    },
+    /// No membership with this name in the project.
+    NotFound(String),
+    /// A change refused because it would lock everyone out of managing the
+    /// project.
+    Rejected(String),
 }
 
 impl fmt::Display for MemberError {
@@ -113,6 +114,8 @@ impl fmt::Display for MemberError {
             MemberError::Malformed { path, message } => {
                 write!(f, "could not read {}: {message}", path.display())
             }
+            MemberError::NotFound(name) => write!(f, "No member named '{name}'."),
+            MemberError::Rejected(message) => f.write_str(message),
         }
     }
 }

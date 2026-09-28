@@ -30,13 +30,6 @@
 //! is where the refusal happens, because a project opened on its own by
 //! `ridal gui` must keep working exactly as it did.
 
-#![allow(
-    dead_code,
-    reason = "the multi-project server mounts a project under its key and \
-              consumes the rest of this registry; the CLI uses the parts it \
-              needs today (#214)"
-)]
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;

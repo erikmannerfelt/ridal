@@ -194,7 +194,7 @@ pub fn cleared_cookie() -> String {
 }
 
 /// The value of one cookie from a request's `Cookie` header.
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(super) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(header::COOKIE)
         .iter()

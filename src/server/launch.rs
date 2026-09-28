@@ -1,13 +1,17 @@
-//! `ridal gui` and `ridal server start` launch modes (#120). Both use the
-//! same [`crate::server::app::build_router`] application; only bind
+//! `ridal gui` and `ridal server start` launch modes (#120). `ridal gui`
+//! serves a single project through [`crate::server::app::build_router`];
+//! `ridal server start` serves a whole [`crate::site::Site`] of projects
+//! through [`crate::server::site::build_site_router`] (#214). Only bind
 //! behavior, port selection, and browser-opening differ between them.
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
 
-use super::app::AppState;
+use super::app::{AccessOptions, AppState};
 use crate::server::render_service::RenderServiceConfig;
+use crate::server::site::{self, SiteState};
+use crate::site::Site;
 
 pub struct LaunchOptions {
     pub host: IpAddr,
@@ -150,6 +154,114 @@ async fn shutdown_signal() {
     println!("Shutting down.");
 }
 
+/// Serve a whole site (#214).
+///
+/// `root` must be a site, not a project: a project has no site-wide accounts,
+/// and serving one through the site entry point would silently expose
+/// whatever the project happened to hold. The refusal points at `ridal gui`
+/// for local single-project work and at `ridal site init` for making a site.
+async fn serve_site(
+    root: &Path,
+    options: LaunchOptions,
+    config: RenderServiceConfig,
+) -> Result<(), String> {
+    // A project, found by walking upwards, is the one input that must be
+    // refused rather than treated as a site. Checked before `Site::discover`,
+    // because a project *inside* a site's `projects/` would otherwise resolve
+    // to the enclosing site and serve every project when one was asked for.
+    if crate::project::Project::discover(root)
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err(format!(
+            "{} is a project, not a site. Run `ridal site init` here, or use \
+             `ridal gui` for local single-project work.",
+            root.display()
+        ));
+    }
+    let site = Site::discover(root)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "{} is not a Ridal site. Run `ridal site init` here, or use \
+                 `ridal gui` for local single-project work.",
+                root.display()
+            )
+        })?;
+
+    // Parsed here, not merely stat-ed: an account file that will not parse is
+    // refused at startup, where an operator is watching, rather than turning
+    // every later request into a silent denial.
+    let accounts = crate::site::accounts::read(site.store())
+        .map_err(|e| {
+            format!(
+                "Refusing to serve {}: its accounts cannot be read. {e}",
+                site.root().display()
+            )
+        })?
+        .is_some();
+    if !accounts && !options.read_only {
+        return Err(format!(
+            "Refusing to serve {}: it has no accounts, so everyone who can reach \
+             it would be a server administrator. Create the first one with `ridal \
+             site account add <name> --server-admin`, or start with --read-only.",
+            site.root().display()
+        ));
+    }
+
+    check_bind_safety(
+        options.host,
+        !options.read_only,
+        accounts,
+        options.allow_insecure_login,
+    )?;
+
+    let site_name = site.name();
+    let site_root = site.root().to_path_buf();
+    let project_count = site.list().map_err(|e| e.to_string())?.len();
+    let state = SiteState::new(
+        site,
+        AccessOptions {
+            read_only: options.read_only,
+            allow_password_login: options.host.is_loopback() || options.allow_insecure_login,
+            // A deployment's sessions are expected to outlive a restart.
+            persist_sessions: true,
+        },
+        config,
+    );
+
+    println!("Site {site_name} ({})", site_root.display());
+    println!("  {project_count} project(s)");
+    if accounts {
+        println!("  authenticated");
+    } else {
+        println!("  read-only, no accounts");
+    }
+
+    let router = site::build_site_router(Arc::clone(&state));
+    let addr = SocketAddr::new(options.host, options.port);
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("Failed to bind {addr}: {e}"))?;
+    let bound_addr = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to read bound address: {e}"))?;
+    let url = format!("http://{bound_addr}");
+    println!("Serving on {url}");
+
+    if options.open_browser {
+        println!("{url}");
+        if let Err(e) = webbrowser::open(&url) {
+            eprintln!("Warning: could not open a browser automatically: {e}");
+        }
+    }
+
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|e| format!("Server error: {e}"))
+}
+
 /// `ridal gui`: local convenience mode. Binds loopback only and selects an
 /// available port. The URL is always printed; a browser is opened only when
 /// `--open-browser` was passed, and a failure to open it is a warning, never
@@ -193,7 +305,7 @@ pub fn run_server_start(
 ) -> Result<(), String> {
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to start async runtime: {e}"))?;
-    runtime.block_on(serve(
+    runtime.block_on(serve_site(
         root,
         LaunchOptions {
             host,
@@ -202,7 +314,7 @@ pub fn run_server_start(
             read_only,
             allow_insecure_login,
             // A deployment's sessions are expected to outlive a restart,
-            // and the project directory is the operator's own.
+            // and the site directory is the operator's own.
             persist_sessions: true,
         },
         config,
@@ -243,12 +355,11 @@ fn check_bind_safety(
     }
     if writable && !accounts {
         return Err(format!(
-            "Refusing to accept writes on {host}: this project has no accounts, so \
-             everyone who can reach this address would be the '{}' user and could \
-             modify interpretations. Create an administrator with `ridal project \
-             user add <name> --role admin`, or start with --read-only, or bind \
-             loopback behind a reverse proxy.",
-            crate::identity::DEFAULT_USER
+            "Refusing to accept writes on {host}: this site has no accounts, so \
+             everyone who can reach this address would be a server administrator \
+             and could modify every project. Create one with `ridal site account \
+             add <name> --server-admin`, or start with --read-only, or bind \
+             loopback behind a reverse proxy."
         ));
     }
     if accounts && !allow_insecure_login {
@@ -290,7 +401,7 @@ mod tests {
         // answer is no longer a flag that waves it through -- it is to
         // create an administrator, so the writes become authenticated.
         let error = check_bind_safety(ip("0.0.0.0"), true, false, false).unwrap_err();
-        assert!(error.contains("ridal project user add"), "{error}");
+        assert!(error.contains("ridal site account add"), "{error}");
         assert!(error.contains("--read-only"), "{error}");
         assert!(check_bind_safety(ip("192.168.1.10"), true, false, false).is_err());
 

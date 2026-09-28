@@ -1081,6 +1081,20 @@ impl Project {
         })
     }
 
+    /// Set or clear the project's display name (#214).
+    ///
+    /// Cosmetic only: the identity of a project inside a site is its
+    /// directory-derived key, and this is the label people read. Reached
+    /// through the site's project settings, so a CLI-only build never calls
+    /// it.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn set_name(&self, name: Option<&str>) -> Result<(), ProjectError> {
+        self.edit_marker(|document| {
+            set_or_clear(document, "project", "name", name.map(toml_edit::value));
+            Ok(())
+        })
+    }
+
     /// The point spacing the download dialogs should open on (#166).
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn default_spacing(&self) -> Option<String> {

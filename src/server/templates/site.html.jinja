@@ -1,0 +1,47 @@
+{% extends "base.html.jinja" %}
+{% block title %}{{ site_name }} - Ridal{% endblock %}
+{% block content %}
+  <h1>{{ site_name }}</h1>
+
+  {% if not authentication_configured %}
+    {#- A site with no accounts is the public read-only arrangement Ridal
+        already had: everyone is the anonymous viewer. Said plainly rather
+        than shown as a sign-in that cannot work. -#}
+    <div class="warning">
+      <p>
+        This site has no accounts. It is served read-only to everyone.
+      </p>
+      <p>
+        An administrator creates the first one from the command line, on the
+        machine serving this site:
+      </p>
+      <pre><code>ridal site account add &lt;name&gt; --server-admin</code></pre>
+    </div>
+  {% endif %}
+
+  {% if projects %}
+    <p class="lede">
+      You are signed in as <strong>{{ current_user }}</strong>
+      ({{ current_role }}).
+    </p>
+    <ul class="project-list">
+      {% for project in projects %}
+        <li class="project-card" data-project-key="{{ project.key }}">
+          <a href="/p/{{ project.key }}/">{{ project.name }}</a>
+          {% if project.archived %}<span class="project-badge">Archived</span>{% endif %}
+          <span class="project-role">{{ project.role }}</span>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="lede">There are no projects here yet.</p>
+  {% endif %}
+
+  {% if server_admin %}
+    <h2>New project</h2>
+    <p class="hint">
+      A project is a directory under <code>projects/</code>. Create one from
+      the command line, or here once the site editor arrives.
+    </p>
+  {% endif %}
+{% endblock %}
