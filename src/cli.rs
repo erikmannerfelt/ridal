@@ -132,7 +132,7 @@ pub struct ProjectUserAddArgs {
     #[arg(long, default_value = "picker")]
     pub role: String,
 
-    /// What they may download: none, picks, derived or all.
+    /// What they may download: none, results, picks, derived or all.
     #[arg(long, default_value = "all")]
     pub download: String,
 
@@ -160,7 +160,7 @@ pub struct ProjectUserAddBulkArgs {
     #[arg(long, default_value = "picker")]
     pub role: String,
 
-    /// What they may download: none, picks, derived or all.
+    /// What they may download: none, results, picks, derived or all.
     #[arg(long, default_value = "all")]
     pub download: String,
 
@@ -198,7 +198,7 @@ pub struct ProjectUserSetArgs {
     #[arg(long)]
     pub role: Option<String>,
 
-    /// New download scope: none, picks, derived or all.
+    /// New download scope: none, results, picks, derived or all.
     #[arg(long)]
     pub download: Option<String>,
 
@@ -2532,4 +2532,172 @@ fn project_user_remove_command(args: &ProjectUserRemoveArgs) -> Result<(), Strin
          account and their personal settings are gone."
     );
     Ok(())
+}
+
+/// The CLI reference in the documentation, generated from these definitions.
+///
+/// Only with `server`, so that `gui` and `server` are in it: the page
+/// documents the full CLI, which is what `cargo install ridal` builds.
+#[cfg(all(test, feature = "server"))]
+mod reference_tests {
+    use clap::CommandFactory;
+    use std::fmt::Write;
+
+    fn markdown() -> String {
+        let mut command = super::Args::command();
+        command.build();
+        let mut out = String::from(
+            "<!-- Generated from src/cli.rs; edit the doc comments there, then run\n     \
+             UPDATE_CLI_MD=1 cargo test --no-default-features -F cli,server cli_md -->\n\n\
+             # CLI reference\n\n\
+             Every command and option of `ridal`, generated from the program itself. \
+             `ridal <command> --help` prints the same text.\n",
+        );
+        for sub in command.get_subcommands() {
+            write_command(&mut out, sub, 2);
+        }
+        out
+    }
+
+    fn write_command(out: &mut String, command: &clap::Command, depth: usize) {
+        // clap's generated `help` subcommand only repeats `--help`.
+        if command.is_hide_set() || command.get_name() == "help" {
+            return;
+        }
+        let name = command.get_bin_name().unwrap_or(command.get_name());
+        let heading = "#".repeat(depth.min(4));
+        // `program` scopes the `option` entries below to this command, so
+        // `--quiet` on two commands are two entries, each linkable as
+        // {option}`ridal render --quiet`.
+        write!(
+            out,
+            "\n{heading} `{name}`\n\n```{{program}} {name}\n```\n\n"
+        )
+        .unwrap();
+        if let Some(about) = command.get_long_about().or(command.get_about()) {
+            write!(out, "{}\n\n", about.to_string().trim()).unwrap();
+        }
+        let usage = command.clone().render_usage().to_string();
+        let usage = usage.trim().trim_start_matches("Usage:").trim();
+        write!(out, "```console\n$ {usage}\n```\n").unwrap();
+
+        let arguments: Vec<&clap::Arg> = command
+            .get_arguments()
+            .filter(|arg| !arg.is_hide_set())
+            .filter(|arg| !matches!(arg.get_id().as_str(), "help" | "version"))
+            .collect();
+        for (title, positional) in [("Arguments", true), ("Options", false)] {
+            let selected: Vec<_> = arguments
+                .iter()
+                .filter(|arg| arg.is_positional() == positional)
+                .collect();
+            if selected.is_empty() {
+                continue;
+            }
+            write!(out, "\n**{title}**\n").unwrap();
+            for arg in selected {
+                write_argument(out, arg);
+            }
+        }
+        for sub in command.get_subcommands() {
+            write_command(out, sub, depth + 1);
+        }
+    }
+
+    fn write_argument(out: &mut String, arg: &clap::Arg) {
+        let value = arg
+            .get_value_names()
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|name| format!("<{name}>"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        let takes_value = arg.get_num_args().is_some_and(|n| n.takes_values());
+        // The forms Sphinx's `option` directive parses: `-o <OUTPUT>, --output
+        // <OUTPUT>` for an option, and the bare `<INPUTS>` for a positional.
+        let with_value = |flag: String| {
+            if takes_value && !value.is_empty() {
+                format!("{flag} {value}")
+            } else {
+                flag
+            }
+        };
+        let mut term = Vec::new();
+        if let Some(short) = arg.get_short() {
+            term.push(with_value(format!("-{short}")));
+        }
+        if let Some(long) = arg.get_long() {
+            term.push(with_value(format!("--{long}")));
+        }
+        if arg.is_positional() {
+            term.push(value.clone());
+        }
+        write!(out, "\n```{{option}} {}\n", term.join(", ")).unwrap();
+
+        let help = arg
+            .get_long_help()
+            .or(arg.get_help())
+            .map(|help| help.to_string())
+            .unwrap_or_default();
+        let mut notes = Vec::new();
+        if arg.is_required_set() {
+            notes.push("Required.".to_string());
+        }
+        let defaults: Vec<_> = arg
+            .get_default_values()
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        if !defaults.is_empty() && takes_value {
+            notes.push(format!("Default: `{}`.", defaults.join(" ")));
+        }
+        let possible: Vec<_> = arg
+            .get_possible_values()
+            .iter()
+            .filter(|value| !value.is_hide_set())
+            .map(|value| format!("`{}`", value.get_name()))
+            .collect();
+        if !possible.is_empty() && takes_value {
+            notes.push(format!("One of {}.", possible.join(", ")));
+        }
+        let mut paragraphs: Vec<String> = help
+            .trim()
+            .split("\n\n")
+            .map(|paragraph| paragraph.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|paragraph| !paragraph.is_empty())
+            .collect();
+        if !notes.is_empty() {
+            paragraphs.push(notes.join(" "));
+        }
+        if paragraphs.is_empty() {
+            paragraphs.push("(Not documented.)".to_string());
+        }
+        write!(out, "{}\n```\n", paragraphs.join("\n\n")).unwrap();
+    }
+
+    #[test]
+    fn cli_md_is_up_to_date() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/reference/cli.md");
+        let expected = markdown();
+        if std::env::var_os("UPDATE_CLI_MD").is_some() {
+            // CI must check the committed file, never regenerate it.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "UPDATE_CLI_MD is set in CI"
+            );
+            std::fs::write(&path, &expected).unwrap();
+        }
+        // A Windows checkout may have converted the line endings.
+        let actual = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
+        assert!(
+            actual == expected,
+            "docs/reference/cli.md is stale. Regenerate it with\n  \
+             UPDATE_CLI_MD=1 cargo test --no-default-features -F cli,server cli_md"
+        );
+    }
 }

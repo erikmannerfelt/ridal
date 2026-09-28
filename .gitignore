@@ -43,3 +43,6 @@ old/
 # Ignoring the shape rather than the names, since the next one will be
 # called something else.
 /*.nc
+
+# Sphinx output
+docs/_build/

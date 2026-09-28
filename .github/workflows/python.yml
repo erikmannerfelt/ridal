@@ -15,6 +15,8 @@ on:
     - .github/workflows/python.yml
     - .github/workflows/python-build.yml
     - test_ridal_interface.py
+    - docs/**
+    - .readthedocs.yaml
   workflow_dispatch:
 
 jobs:
@@ -46,6 +48,34 @@ jobs:
       run: |
         pip install uv
         uv publish --dry-run wheels/**/*.whl
+
+  docs-pr:
+    name: Build the documentation
+    needs: build-pr
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+
+    # The wheel this PR builds, so the Python reference is the PR's own.
+    - name: Download wheel
+      uses: actions/download-artifact@v4
+      with:
+        name: wheels-ubuntu-latest-py3.12
+        path: wheels
+
+    - name: Build with warnings as errors
+      run: |
+        pip install -r docs/requirements.txt wheels/*.whl
+        sphinx-build -W --keep-going -b html docs docs/_build/html
 
   build-all:
     name: Build all platforms
@@ -82,3 +112,53 @@ jobs:
       run: |
         pip install uv
         uv publish --check-url https://pypi.org/simple/ wheels/**/*.whl
+
+  # Read the Docs cannot build `ridal` itself (it would compile HDF5), so the
+  # documentation of `main` installs the wheel kept here. See
+  # docs/install_ridal.py.
+  docs-nightly:
+    name: Publish the wheel the documentation uses
+    needs: build-all
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    concurrency:
+      group: docs-nightly
+      cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RTD_TOKEN: ${{ secrets.RTD_TOKEN }}
+
+    steps:
+    - name: Download wheel
+      uses: actions/download-artifact@v4
+      with:
+        name: wheels-ubuntu-latest-py3.12
+        path: wheels
+
+    - name: Replace the wheel in the docs-nightly release
+      run: |
+        if ! gh release view docs-nightly > /dev/null 2>&1; then
+          gh release create docs-nightly --prerelease --target "$GITHUB_SHA" \
+            --title "Wheel for the documentation" \
+            --notes "Not a release. CI replaces the wheel here on every push to main, for the documentation build to install."
+        fi
+        # Upload first and prune after, so there is always a wheel to find.
+        gh release upload docs-nightly wheels/*.whl --clobber
+        new=$(cd wheels && ls *.whl)
+        for asset in $(gh release view docs-nightly --json assets --jq '.assets[].name'); do
+          if ! grep -qxF "$asset" <<< "$new"; then
+            gh release delete-asset docs-nightly "$asset" --yes
+          fi
+        done
+
+    # Read the Docs starts building on the push itself, usually before this
+    # wheel exists, so build `latest` again now that it does.
+    - name: Rebuild the latest documentation
+      if: env.RTD_TOKEN != ''
+      run: |
+        curl --fail --silent --show-error -X POST \
+          -H "Authorization: Token $RTD_TOKEN" \
+          https://readthedocs.org/api/v3/projects/ridal/versions/latest/builds/

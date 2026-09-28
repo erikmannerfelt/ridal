@@ -51,6 +51,8 @@ const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 ///     dataset.
 /// batch_process(...)
 ///     Batch-process one or more GPR files into multiple outputs.
+/// render(...)
+///     Render a processed radargram to an image file.
 ///
 /// Discovery helpers
 /// -----------------
@@ -354,7 +356,7 @@ pub mod ridal {
         radargram_name=None,
         group_id=None,
         group_name=None,
-        return_dataset_format="xarray_dict".to_string()
+        return_dataset_format="xarray_dict"
     ))]
     fn process(
         py: Python<'_>,
@@ -381,14 +383,11 @@ pub mod ridal {
         radargram_name: Option<String>,
         group_id: Option<String>,
         group_name: Option<String>,
-        return_dataset_format: String,
+        return_dataset_format: &str,
     ) -> PyResult<Py<PyAny>> {
         use pyo3::exceptions::PyValueError;
 
-        if !["xarray", "xarray_dict"]
-            .iter()
-            .any(|s| s == &return_dataset_format)
-        {
+        if !["xarray", "xarray_dict"].contains(&return_dataset_format) {
             return Err(PyNotImplementedError::new_err(
                 "Only 'xarray_dict' and 'xarray' return formats are supported for now",
             ));
@@ -611,7 +610,7 @@ pub mod ridal {
         override_antenna_mhz=None,
         override_antenna_separation=None,
         metadata=None,
-        return_dataset_format="xarray_dict".to_string()
+        return_dataset_format="xarray_dict"
     ))]
     fn read(
         py: Python<'_>,
@@ -623,7 +622,7 @@ pub mod ridal {
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
         metadata: Option<Py<PyAny>>,
-        return_dataset_format: String,
+        return_dataset_format: &str,
     ) -> PyResult<Py<PyAny>> {
         process(
             py,
@@ -929,39 +928,6 @@ pub mod ridal {
             .collect())
     }
 
-    /// Inspect one or more GPR files and return metadata summaries.
-    ///
-    /// This function reads metadata and summary information without performing a
-    /// full processing workflow.
-    ///
-    /// Parameters
-    /// ----------
-    /// inputs : path-like or sequence of path-like
-    ///     One or more input files to inspect. A single path, list, or tuple of
-    ///     path-like objects is accepted.
-    /// velocity : float, default 0.168
-    ///     Propagation velocity in meters per nanosecond.
-    /// cor : path-like, optional
-    ///     Coordinate file to use instead of any coordinate information implied by
-    ///     the input format.
-    /// dem : path-like, optional
-    ///     Digital elevation model to sample for topographic information.
-    /// crs : str, optional
-    ///     Coordinate reference system for interpreting or transforming coordinates.
-    ///     If omitted, the most appropriate WGS84 UTM zone is used.
-    /// override_antenna_mhz : float, optional
-    ///     Override the antenna center frequency inferred from the input data.
-    ///
-    /// Returns
-    /// -------
-    /// list of dict
-    ///     One metadata summary dictionary per input file.
-    ///
-    /// Raises
-    /// ------
-    /// RuntimeError
-    ///     If inspection fails.
-    ///
     /// Render a processed radargram to an image file.
     ///
     /// The Python equivalent of `ridal render`, and the same renderer the web
@@ -1039,6 +1005,41 @@ pub mod ridal {
         Ok(out.into_any().unbind())
     }
 
+    /// Inspect one or more GPR files and return metadata summaries.
+    ///
+    /// This function reads metadata and summary information without performing a
+    /// full processing workflow.
+    ///
+    /// Parameters
+    /// ----------
+    /// inputs : path-like or sequence of path-like
+    ///     One or more input files to inspect. A single path, list, or tuple of
+    ///     path-like objects is accepted.
+    /// velocity : float, default 0.168
+    ///     Propagation velocity in meters per nanosecond.
+    /// cor : path-like, optional
+    ///     Coordinate file to use instead of any coordinate information implied by
+    ///     the input format.
+    /// dem : path-like, optional
+    ///     Digital elevation model to sample for topographic information.
+    /// crs : str, optional
+    ///     Coordinate reference system for interpreting or transforming coordinates.
+    ///     If omitted, the most appropriate WGS84 UTM zone is used.
+    /// override_antenna_mhz : float, optional
+    ///     Override the antenna center frequency inferred from the input data.
+    /// override_antenna_separation : float, optional
+    ///     Override the antenna separation inferred from the input data.
+    ///
+    /// Returns
+    /// -------
+    /// list of dict
+    ///     One metadata summary dictionary per input file.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If inspection fails.
+    ///
     /// Notes
     /// -----
     /// `info()` is intended for lightweight inspection. For loading in-memory data,
