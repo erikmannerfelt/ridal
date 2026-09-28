@@ -206,6 +206,16 @@
       );
   }
 
+  /** How many people have picked at least one line here, the caller
+   * included: the same number the catalog card gives (#272). */
+  function contributorCount() {
+    return state.documents.filter((entry) =>
+      ((entry.document && entry.document.features) || []).some(
+        (feature) => feature.geometry && feature.geometry.type === "LineString",
+      ),
+    ).length;
+  }
+
   /** Other contributors' picks, when the toggle is on. */
   function drawContributors() {
     clearList(contributorLines);
@@ -653,7 +663,7 @@
       body.appendChild(contributors);
       checkbox(body, {
         checked: state.showContributors,
-        label: { text: "Show all contributors" },
+        label: { text: `Show all contributors (n=${contributorCount()})` },
         // No colour of its own: no swatch.
         swatch: false,
         onChange: (visible) => {

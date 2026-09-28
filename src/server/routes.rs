@@ -198,6 +198,18 @@ struct DatasetSummary {
     /// `Some(0)`: "nowhere to save picks" and "nobody has picked this yet"
     /// should not look the same on a card.
     line_count: Option<usize>,
+    /// How many users have at least one picked line here (#272). `None`
+    /// exactly when `line_count` is.
+    contributor_count: Option<usize>,
+}
+
+/// What has been picked on one radargram, across every user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PickCounts {
+    lines: usize,
+    /// Users with at least one line. A document emptied by deleting its
+    /// last line is not a contribution.
+    contributors: usize,
 }
 
 /// Format an RFC3339 processing datetime for display as `YYYY-MM-DD HH:MM`.
@@ -566,37 +578,45 @@ fn to_summary(state: &AppState, entry: &super::catalog::CatalogEntry) -> Dataset
     summarize(state, entry, None)
 }
 
-/// Count the picked lines stored for `radargram`, across all users.
+/// Count the picked lines stored for `radargram`, and who picked them.
 ///
 /// Returns `None` if the count cannot be established, so a card falls back
 /// to saying nothing rather than claiming zero. A malformed document on
 /// disk is a reason not to answer, not a reason to report "no picks".
-fn count_lines(project: &crate::project::Project, radargram: &RadargramId) -> Option<usize> {
+fn count_picks(project: &crate::project::Project, radargram: &RadargramId) -> Option<PickCounts> {
     let store = project.documents();
     let users = crate::project::interpretations::list_users(store, radargram).ok()?;
-    let mut total = 0;
+    let mut counts = PickCounts {
+        lines: 0,
+        contributors: 0,
+    };
     for user in users {
         let user_id = crate::identity::UserId::new(user).ok()?;
         let stored = crate::project::interpretations::read(store, radargram, &user_id).ok()?;
         if let Some(stored) = stored {
-            total += stored
+            let lines = stored
                 .document
                 .features
                 .iter()
                 .filter(|f| matches!(f.geometry, gprinterp::Geometry::LineString(_)))
                 .count();
+            counts.lines += lines;
+            if lines > 0 {
+                counts.contributors += 1;
+            }
         }
     }
-    Some(total)
+    Some(counts)
 }
 
 fn summarize(
     state: &AppState,
     entry: &super::catalog::CatalogEntry,
-    line_count: Option<usize>,
+    picks: Option<PickCounts>,
 ) -> DatasetSummary {
     DatasetSummary {
-        line_count,
+        line_count: picks.map(|p| p.lines),
+        contributor_count: picks.map(|p| p.contributors),
         in_project: state.is_writable(entry),
         radargram_id: entry.radargram_id.to_string(),
         effective_label: entry.effective_label(),
@@ -673,7 +693,7 @@ pub async fn list_datasets(
                 state
                     .project
                     .as_ref()
-                    .and_then(|project| count_lines(project, &entry.radargram_id)),
+                    .and_then(|project| count_picks(project, &entry.radargram_id)),
             )
         })
         .collect();
@@ -1187,14 +1207,14 @@ pub async fn index_page(
     // One snapshot for the whole page: asking twice is how two halves of
     // it come to disagree after an edit lands between them.
     let catalog = state.catalog();
-    let line_counts: std::collections::HashMap<String, Option<usize>> = match &state.project {
+    let pick_counts: std::collections::HashMap<String, Option<PickCounts>> = match &state.project {
         Some(project) => catalog
             .entries
             .iter()
             .map(|e| {
                 (
                     e.radargram_id.to_string(),
-                    count_lines(project, &e.radargram_id),
+                    count_picks(project, &e.radargram_id),
                 )
             })
             .collect(),
@@ -1204,7 +1224,7 @@ pub async fn index_page(
         summarize(
             &state,
             entry,
-            line_counts
+            pick_counts
                 .get(entry.radargram_id.as_str())
                 .copied()
                 .flatten(),

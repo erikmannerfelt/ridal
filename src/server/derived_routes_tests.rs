@@ -1610,3 +1610,61 @@ async fn the_merged_derived_download_needs_no_user() {
         derived.disposition
     );
 }
+
+/// The catalog counts contributors as well as lines (#272), and a document
+/// emptied of its last line is not a contributor.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_catalog_counts_contributors_and_lines() {
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_picks(
+        vec![
+            activated("op", Role::Operator, DownloadScope::All, &hash),
+            activated("pk", Role::Picker, DownloadScope::None, &hash),
+            activated("gone", Role::Picker, DownloadScope::None, &hash),
+        ],
+        &[("op", 2.0), ("pk", 4.0)],
+    );
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let empty: gprinterp::Document =
+        serde_json::from_value(json!({"key": RADARGRAM, "features": []})).unwrap();
+    interpretations::write(
+        project.documents(),
+        &radargram(),
+        &id("gone"),
+        &empty,
+        &Expectation::Absent,
+    )
+    .unwrap();
+    let pk = sign_in(&app, "pk").await;
+
+    let listed = get(&app, "/api/v1/datasets", Some(&pk)).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let entry = &listed.body["entries"][0];
+    assert_eq!(entry["line_count"], 2, "{}", listed.text);
+    assert_eq!(entry["contributor_count"], 2, "{}", listed.text);
+
+    let page = get(&app, "/", Some(&pk)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    let squashed = page.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        squashed.contains("2 contributors (2 lines)"),
+        "{}",
+        page.text
+    );
+}
+
+/// One contributor with one line reads in the singular.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_catalog_count_is_singular_for_one() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+    let page = get(&app, "/", Some(&op)).await;
+    let squashed = page.text.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(squashed.contains("1 contributor (1 line)"), "{}", page.text);
+}
