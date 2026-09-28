@@ -5,6 +5,8 @@ author = "Erik Schytt Mannerfelt"
 copyright = "Erik Schytt Mannerfelt and contributors"
 
 extensions = [
+    "sphinx.ext.autodoc",
+    "sphinx.ext.napoleon",
     "myst_parser",
     "sphinx_copybutton",
     "sphinx_design",
@@ -15,6 +17,11 @@ myst_enable_extensions = [
     "deflist",
 ]
 myst_heading_anchors = 3
+
+# The Python reference is read from an installed `ridal`, whose docstrings
+# are NumPy style.
+napoleon_google_docstring = False
+autodoc_typehints = "none"
 
 exclude_patterns = ["_build", "requirements.txt"]
 

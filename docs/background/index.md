@@ -7,5 +7,6 @@ The ideas behind GPR processing and Ridal's data model.
 
 gpr-intro
 concepts
+scope
 other-software
 ```

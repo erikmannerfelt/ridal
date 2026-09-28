@@ -10,8 +10,6 @@ python
 processing
 gui
 interpretation
-layers
-derived-layers
 rendering
 coordinates
 file-formats

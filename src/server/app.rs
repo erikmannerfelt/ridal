@@ -1886,3 +1886,88 @@ mod tests {
         });
     }
 }
+
+/// `docs/reference/http-api.md` is written by hand, so this is what stops it
+/// drifting: every `/api` route in [`build_router`] must have a row there,
+/// and every row must still be a route.
+#[cfg(test)]
+mod http_reference_tests {
+    use std::collections::BTreeSet;
+
+    type Endpoint = (String, String);
+
+    /// `(METHOD, path)` for every `/api` route, read from this file's source.
+    /// The router offers no way to list its routes at runtime.
+    fn routed() -> BTreeSet<Endpoint> {
+        let source = include_str!("app.rs");
+        let start = source.find("pub fn build_router").unwrap();
+        let end = start + source[start..].find("\n}\n").unwrap();
+        let mut rest = &source[start..end];
+        let mut endpoints = BTreeSet::new();
+        while let Some(at) = rest.find(".route(") {
+            rest = &rest[at + ".route(".len()..];
+            let open = rest.find('"').unwrap();
+            let close = open + 1 + rest[open + 1..].find('"').unwrap();
+            let path = &rest[open + 1..close];
+            // The handlers run to the parenthesis that closes `.route(`.
+            let mut depth = 1;
+            let mut stop = close;
+            for (i, c) in rest[close..].char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    stop = close + i;
+                    break;
+                }
+            }
+            let handlers = &rest[close..stop];
+            if path.starts_with("/api/") {
+                for method in ["get", "post", "put", "delete"] {
+                    let called = handlers.split(|c: char| !c.is_ascii_alphanumeric() && c != '_');
+                    if called.clone().any(|word| word == method) {
+                        endpoints.insert((method.to_uppercase(), path.to_string()));
+                    }
+                }
+            }
+            rest = &rest[stop..];
+        }
+        endpoints
+    }
+
+    /// `(METHOD, path)` for every table row in the reference page.
+    fn documented() -> BTreeSet<Endpoint> {
+        let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("docs")
+            .join("reference")
+            .join("http-api.md");
+        let page = std::fs::read_to_string(page).unwrap();
+        page.lines()
+            .filter(|line| line.starts_with("| `"))
+            .map(|line| {
+                let cells: Vec<&str> = line.split('|').map(|cell| cell.trim()).collect();
+                (
+                    cells[1].trim_matches('`').to_string(),
+                    cells[2].trim_matches('`').to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_http_reference_lists_every_api_route() {
+        let routed = routed();
+        let documented = documented();
+        assert!(routed.len() > 50, "the route parser found only {routed:?}");
+        let undocumented: Vec<_> = routed.difference(&documented).collect();
+        let stale: Vec<_> = documented.difference(&routed).collect();
+        assert!(
+            undocumented.is_empty() && stale.is_empty(),
+            "docs/reference/http-api.md is out of step with build_router.\n\
+             Routes with no row: {undocumented:?}\n\
+             Rows with no route: {stale:?}"
+        );
+    }
+}
