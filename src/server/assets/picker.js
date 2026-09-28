@@ -317,8 +317,8 @@
      * silently on the first browser edit. */
     let loaded = null;
     let layers = [];
-    /** Mutually exclusive layer groups (#208), as `/api/v1/layers` serves
-     * them. */
+    /** Mutually exclusive layer groups (#208), as the layers endpoint
+     * serves them. */
     let groups = [];
     let dirty = false;
     /** The line being drawn: array of [trace, sample], or null.
@@ -2147,7 +2147,7 @@
 
     async function loadLayers() {
       try {
-        const body = await RIDAL.fetchJson("/api/v1/layers");
+        const body = await RIDAL.fetchJson(RIDAL.apiPath("layers"));
         layers = body.layers || [];
         groups = body.groups || [];
       } catch (error) {

@@ -8,6 +8,15 @@ use minijinja::Environment;
 
 pub fn environment() -> Environment<'static> {
     let mut env = Environment::new();
+    // Where this page's URLs live, so relocating the routes is a server
+    // change rather than a hunt through templates and scripts (#214). A
+    // page render may override any of them; these are the root shape, which
+    // `ridal gui` and the tests use. `api_base` is project-scoped,
+    // `site_api_base` is not, and `page_base` is the prefix for project
+    // pages (`""` here, `/p/{key}` when a site serves them).
+    env.add_global("api_base", "/api/v1");
+    env.add_global("site_api_base", "/api/v1");
+    env.add_global("page_base", "");
     env.add_template("base.html.jinja", include_str!("templates/base.html.jinja"))
         .expect("base template must parse");
     env.add_template(
@@ -224,8 +233,34 @@ mod tests {
             .unwrap()
             .render(minijinja::context! { project => true })
             .unwrap();
-        assert!(out.contains("<body>"), "{out}");
+        assert!(out.contains("<body"), "{out}");
         assert!(!out.contains("data-basemaps"), "{out}");
+    }
+
+    /// The page base is what makes a later move to `/p/{key}` a server
+    /// change (#214). The layout must both carry the bases for the scripts
+    /// and prefix its own project links from them.
+    #[test]
+    fn the_page_base_prefixes_project_links() {
+        let env = environment();
+        let out = env
+            .get_template("base.html.jinja")
+            .unwrap()
+            .render(minijinja::context! {
+                page_base => "/p/glac",
+                api_base => "/api/v1/projects/glac",
+                site_api_base => "/api/v1",
+            })
+            .unwrap();
+        assert!(out.contains(r#"data-page-base="/p/glac""#), "{out}");
+        assert!(
+            out.contains(r#"data-api-base="/api/v1/projects/glac""#),
+            "{out}"
+        );
+        assert!(out.contains(r#"data-site-api-base="/api/v1""#), "{out}");
+        assert!(out.contains(r#"href="/p/glac/layers""#), "{out}");
+        assert!(out.contains(r#"href="/p/glac/settings""#), "{out}");
+        assert!(!out.contains(r#"href="/layers""#), "{out}");
     }
 
     #[test]

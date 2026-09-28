@@ -564,7 +564,7 @@ async function save() {
     headers["If-None-Match"] = "*";
   }
   try {
-    const response = await fetch("/api/v1/layers", {
+    const response = await fetch(RIDAL.apiPath("layers"), {
       method: "PUT",
       headers,
       // A partial overlay, not a bare array: the server merges it onto the
@@ -603,7 +603,7 @@ async function save() {
 
 async function loadUsage() {
   try {
-    usage = await RIDAL.fetchJson("/api/v1/layers/usage");
+    usage = await RIDAL.fetchJson(RIDAL.apiPath("layers", "usage"));
   } catch (error) {
     // Usage is advisory. Losing it must not stop the page working, so it
     // degrades to zero counts with a console note rather than an error box.
@@ -615,7 +615,7 @@ async function loadUsage() {
 async function load() {
   clearError();
   try {
-    const response = await fetch("/api/v1/layers");
+    const response = await fetch(RIDAL.apiPath("layers"));
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       showError(body?.error?.message || RIDAL.upstreamMessage(response.status));
@@ -870,7 +870,7 @@ async function deleteDerived(item) {
       audience: existing.audience,
     }));
   try {
-    await RIDAL.fetchJson("/api/v1/derived", {
+    await RIDAL.fetchJson(RIDAL.apiPath("derived"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -891,7 +891,7 @@ async function deleteDerived(item) {
 async function loadDerived() {
   clearDerivedError();
   try {
-    const body = await RIDAL.fetchJson("/api/v1/derived");
+    const body = await RIDAL.fetchJson(RIDAL.apiPath("derived"));
     derivedItems = body.items || [];
     derivedUnusable = body.layers_unusable_in_expressions || [];
     derivedCanAuthor = Boolean(body.can_author);

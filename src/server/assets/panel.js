@@ -827,7 +827,7 @@
         audience: existing.audience,
       }));
     try {
-      await RIDAL.fetchJson("/api/v1/derived", {
+      await RIDAL.fetchJson(RIDAL.apiPath("derived"), {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -854,7 +854,7 @@
 
   async function loadDerived() {
     try {
-      const body = await RIDAL.fetchJson("/api/v1/derived");
+      const body = await RIDAL.fetchJson(RIDAL.apiPath("derived"));
       state.items = body.items || [];
       state.unusable = body.layers_unusable_in_expressions || [];
       state.canAuthor = Boolean(body.can_author);
@@ -880,7 +880,7 @@
 
   async function load() {
     try {
-      const layersBody = await RIDAL.fetchJson("/api/v1/layers");
+      const layersBody = await RIDAL.fetchJson(RIDAL.apiPath("layers"));
       state.layers = layersBody.layers || [];
     } catch (error) {
       console.warn(`Could not load layers: ${error.message}`);

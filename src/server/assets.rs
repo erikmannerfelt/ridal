@@ -630,4 +630,78 @@ mod tests {
             "picker.js must stay inside its IIFE; found {declarations:?}"
         );
     }
+
+    /// Project-scoped URLs must come from the page's base, not be spelled
+    /// out (#214).
+    ///
+    /// The server writes `api_base`, `site_api_base` and `page_base` on the
+    /// body, and `RIDAL.apiPath` / `RIDAL.siteApiPath` / `RIDAL.pagePath`
+    /// build from them. That is what makes moving the routes under a project
+    /// key -- or serving Ridal under a reverse-proxy subpath -- a server
+    /// change rather than a hunt through every script and template. One
+    /// hard-coded `/api/v1/...` or `/view/...` would keep pointing at the
+    /// old root, and nothing would fail until the move.
+    ///
+    /// Server-level paths are not project-scoped and stay at the root:
+    /// `/static`, `/favicon.ico`, `/login`, `/invite/`, and the site routes.
+    /// The `/api/v1` literals in `app.js` are base *fallbacks* and carry no
+    /// trailing slash, so they do not match.
+    #[test]
+    fn project_urls_are_built_from_the_page_base() {
+        for (name, text) in [
+            ("app.js", include_str!("assets/app.js")),
+            ("index.js", include_str!("assets/index.js")),
+            ("viewer.js", include_str!("assets/viewer.js")),
+            ("picker.js", include_str!("assets/picker.js")),
+            ("panel.js", include_str!("assets/panel.js")),
+            ("layers.js", include_str!("assets/layers.js")),
+            ("settings.js", include_str!("assets/settings.js")),
+            ("login.js", include_str!("assets/login.js")),
+            ("base.html.jinja", include_str!("templates/base.html.jinja")),
+            (
+                "index.html.jinja",
+                include_str!("templates/index.html.jinja"),
+            ),
+            (
+                "viewer.html.jinja",
+                include_str!("templates/viewer.html.jinja"),
+            ),
+            (
+                "layers.html.jinja",
+                include_str!("templates/layers.html.jinja"),
+            ),
+            (
+                "settings.html.jinja",
+                include_str!("templates/settings.html.jinja"),
+            ),
+            (
+                "login.html.jinja",
+                include_str!("templates/login.html.jinja"),
+            ),
+            (
+                "invite.html.jinja",
+                include_str!("templates/invite.html.jinja"),
+            ),
+            (
+                "error.html.jinja",
+                include_str!("templates/error.html.jinja"),
+            ),
+        ] {
+            for forbidden in [
+                "/api/v1/",
+                "\"/view/",
+                "`/view/",
+                "href=\"/view",
+                "href=\"/layers",
+                "href=\"/settings",
+            ] {
+                assert!(
+                    !text.contains(forbidden),
+                    "{name} hard-codes {forbidden}; build it from the page base \
+                     (RIDAL.apiPath / siteApiPath / pagePath, or api_base / \
+                     site_api_base / page_base in a template)"
+                );
+            }
+        }
+    }
 }

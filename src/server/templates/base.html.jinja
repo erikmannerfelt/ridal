@@ -31,12 +31,18 @@
     Only the pages that have a map set these; elsewhere they are undefined,
     which minijinja renders as nothing, and app.js falls back to the
     built-in. -#}
-<body{% if basemaps_json %} data-basemaps="{{ basemaps_json }}" data-basemap="{{ active_basemap }}" data-overlays="{{ overlays_json }}"{% endif %}>
+{#- Where this page's project-scoped URLs live (#214). `app.js` reads
+    them once so no script or template has to spell out `/api/v1` or
+    `/p/{key}`: a site can put a project key in the path, and Ridal can sit
+    under a reverse-proxy subpath, without editing every caller. `|safe`
+    because these are server-chosen bases, never user input, and escaping
+    their slashes would fill every URL with `&#x2f;`. -#}
+<body data-api-base="{{ api_base|safe }}" data-site-api-base="{{ site_api_base|safe }}" data-page-base="{{ page_base|safe }}"{% if basemaps_json %} data-basemaps="{{ basemaps_json }}" data-basemap="{{ active_basemap }}" data-overlays="{{ overlays_json }}"{% endif %}>
   <header>
     {#- Same reasoning as the menu links below: the logo is another way home,
         and it should not be the one that quietly resets the profile. -#}
     {%- set profile_query = "?profile=" ~ active_profile if active_profile else "" %}
-    <a href="/{{ profile_query }}" class="brand">
+    <a href="{{ page_base|safe }}/{{ profile_query }}" class="brand">
       <img src="/static/images/logo.svg" alt="" class="brand-logo">
       Ridal
     </a>
@@ -54,9 +60,9 @@
             error page), which minijinja treats as falsy -- so the links
             simply come out bare there. -#}
         <ul>
-          <li><a href="/{{ profile_query }}">Radargram catalog</a></li>
-          <li><a href="/layers{{ profile_query }}">Layers</a></li>
-          <li><a href="/settings{{ profile_query }}">Settings</a></li>
+          <li><a href="{{ page_base|safe }}/{{ profile_query }}">Radargram catalog</a></li>
+          <li><a href="{{ page_base|safe }}/layers{{ profile_query }}">Layers</a></li>
+          <li><a href="{{ page_base|safe }}/settings{{ profile_query }}">Settings</a></li>
           {#- The sign-in control is offered only where signing in can
               succeed. A project with no accounts has nothing to sign in to,
               and a link to a login page that always fails is worse than no

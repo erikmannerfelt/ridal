@@ -188,7 +188,7 @@
     clearError();
     let settings;
     try {
-      settings = await RIDAL.fetchJson("/api/v1/project/settings");
+      settings = await RIDAL.fetchJson(RIDAL.apiPath("project", "settings"));
     } catch (error) {
       showError(`Could not load settings: ${error.message}`);
       return;
@@ -286,7 +286,7 @@
       clearError();
       setStatus("my-settings-status", "Saving…");
       try {
-        const saved = await send("PUT", "/api/v1/preferences", {
+        const saved = await send("PUT", RIDAL.apiPath("preferences"), {
           render_profile: byId("my-profile").value || null,
           x_scale: Number(byId("my-xscale").value) || null,
           theme: byId("my-theme").value || null,
@@ -328,7 +328,7 @@
       clearError();
       setStatus("settings-status", "Saving…");
       try {
-        const saved = await send("PUT", "/api/v1/project/settings", {
+        const saved = await send("PUT", RIDAL.apiPath("project", "settings"), {
           default_profile: byId("default-profile").value || null,
           default_xscale: Number(byId("default-xscale").value) || null,
           default_spacing: byId("default-spacing").value || null,
@@ -372,7 +372,7 @@
         return;
       }
       try {
-        const saved = await send("PUT", "/api/v1/project/settings", {
+        const saved = await send("PUT", RIDAL.apiPath("project", "settings"), {
           max_bytes: bytes,
         });
         byId("storage-used").textContent = formatBytes(saved.size_bytes);
@@ -569,7 +569,7 @@
       clearError();
       setStatus("basemap-status", "Saving…");
       try {
-        const saved = await send("PUT", "/api/v1/project/settings", {
+        const saved = await send("PUT", RIDAL.apiPath("project", "settings"), {
           // Only the basemap half is sent; the render defaults above have
           // their own form, and the API leaves alone what a request does
           // not mention.
@@ -765,7 +765,7 @@
       clearError();
       setStatus("overlay-status", "Saving…");
       try {
-        const saved = await send("PUT", "/api/v1/project/settings", { overlays });
+        const saved = await send("PUT", RIDAL.apiPath("project", "settings"), { overlays });
         await load("basemaps-section");
         setStatus(
           "overlay-status",
@@ -787,7 +787,7 @@
 
   async function loadAccess() {
     try {
-      access = await RIDAL.fetchJson("/api/v1/users");
+      access = await RIDAL.fetchJson(RIDAL.siteApiPath("users"));
     } catch (error) {
       showError(`Could not load accounts: ${error.message}`);
       return;
@@ -902,7 +902,7 @@
     clearError();
     if (status) status.textContent = "Saving…";
     try {
-      await send("PUT", `/api/v1/users/${encodeURIComponent(name)}`, change);
+      await send("PUT", RIDAL.siteApiPath("users", name), change);
       // Redrawn from the server's answer, which also replaces this row --
       // so the "Saved" below is set on a row that is about to go. It is
       // still worth setting: a refusal leaves the old row in place, and
@@ -935,7 +935,7 @@
     try {
       const result = await send(
         "POST",
-        `/api/v1/users/${encodeURIComponent(name)}/invite`,
+        RIDAL.siteApiPath("users", name, "invite"),
         {},
       );
       showInvite(name, result);
@@ -956,7 +956,7 @@
     if (!confirmed) return;
     clearError();
     try {
-      await send("DELETE", `/api/v1/users/${encodeURIComponent(name)}`, {});
+      await send("DELETE", RIDAL.siteApiPath("users", name), {});
       await loadAccess();
     } catch (error) {
       showError(error.message);
@@ -970,7 +970,7 @@
       clearError();
       const name = addForm.elements.name.value.trim();
       try {
-        const result = await send("POST", "/api/v1/users", {
+        const result = await send("POST", RIDAL.siteApiPath("users"), {
           name,
           role: addForm.elements.role.value,
           download: addForm.elements.download.value,
@@ -1089,7 +1089,7 @@
       event.preventDefault();
       clearBulkWarning();
       try {
-        const result = await send("POST", "/api/v1/users/bulk/invites", bulkBody());
+        const result = await send("POST", RIDAL.siteApiPath("users", "bulk", "invites"), bulkBody());
         renderBulkResult(result, "invites");
         await loadAccess();
       } catch (error) {
@@ -1116,7 +1116,7 @@
       }
       clearBulkWarning();
       try {
-        const result = await send("POST", "/api/v1/users/bulk/passwords", {
+        const result = await send("POST", RIDAL.siteApiPath("users", "bulk", "passwords"), {
           ...bulkBody(),
           acknowledge_risk: true,
         });
@@ -1135,7 +1135,7 @@
       clearError();
       setStatus("access-status", "Saving…");
       try {
-        await send("PUT", "/api/v1/access", {
+        await send("PUT", RIDAL.apiPath("access"), {
           require_auth_to_read: byId("require-auth").checked,
           anonymous_download: byId("anonymous-download").value,
         });
