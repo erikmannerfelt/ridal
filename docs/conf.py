@@ -16,6 +16,7 @@ extensions = [
     "sphinx_copybutton",
     "sphinx_design",
     "ridal_expr",
+    "ridal_steps",
 ]
 
 myst_enable_extensions = [

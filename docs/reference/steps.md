@@ -1,11 +1,234 @@
+<!-- Generated from src/steps/mod.rs; edit the doc comments there, then run
+     UPDATE_STEPS_MD=1 cargo test --no-default-features -F cli steps_md -->
+
 # Processing steps
 
-This page is generated from the step registry in `src/steps/`, so it always
-matches the code. `ridal steps --describe-all` prints the same text.
+Every processing step, generated from Ridal itself. `ridal steps --describe-all` prints the same text.
 
-Steps are given as `name(positional args, key=value)`, for example
-`zero_corr(coppens, trace)` or `bandpass(0.1 0.9)`.
+A step is written as its name, optionally followed by its arguments in parentheses. Arguments can be given in order, separated by spaces, or by name: `bandpass(0.1 0.9)` and `bandpass(low=0.1, high=0.9)` are the same step. Arguments that are left out take the defaults shown.
 
-```{include} ../../steps.md
-:start-line: 4
+```{step} subset(min_trace, max_trace=-1, min_sample=0, max_sample=-1)
+Subset the data in x (traces) and/or y (samples).
+
+Indices are zero-based and the end is exclusive; `-1` means "to the end". Clip to the first 500 samples: `subset(0 -1 0 500)`. Clip to the first 300 traces: `subset(0 300)`.
+
+**Arguments**
+
+- `min_trace` (required): First trace to keep
+- `max_trace` (default `-1`): Trace to stop before, or -1 for the last one
+- `min_sample` (default `0`): First sample to keep
+- `max_sample` (default `-1`): Sample to stop before, or -1 for the last one
+```
+
+```{step} remove_traces(traces…)
+Manually remove trace indices, for example in case they are visually deemed bad.
+
+Remove the first two traces: `remove_traces(0 1)`. Inclusive ranges are allowed too: `remove_traces(0 5-9)`.
+
+**Arguments**
+
+- `traces` (required): Trace indices or inclusive ranges (`5-9`) to remove
+```
+
+```{step} remove_empty_traces(strength=1)
+Remove all traces that appear empty.
+
+Recommended to be run as the first filter if required! The strength threshold (mean absolute trace value) can be tweaked. Example: `remove_empty_traces(2)`.
+
+**Arguments**
+
+- `strength` (default `1`): Mean absolute trace value below which a trace counts as empty
+```
+
+```{step} average_traces(window)
+Average traces in a given window.
+
+The coordinate information is picked from the middle averaged trace. Example: `average_traces(3)`.
+
+**Arguments**
+
+- `window` (required): Number of traces to average
+```
+
+```{step} zero_corr(method=coppens, scope=global, time_zero=onset, margin=auto, factor=1, sigma=5, window=51)
+Move time zero to where the direct wave starts, and crop what came before it.
+
+`method` decides how each trace's direct wave is found, and so what the traces are aligned on. `coppens` takes the steepest rise of the smoothed energy ratio. `first_break` takes the first sample more than `sigma` noise standard deviations out of the noise, and mostly agrees with `coppens`. `aic` splits the record where it best divides into noise and signal, which puts it at the start of a gradual rise, often a sample earlier. `max_peak` takes the direct wave's largest value with the sign that most traces' largest value has, and survives noisy or corrupted first samples best. `legacy` is the pre-0.7 threshold on the mean trace, and also subtracts the mean of what it crops. All but `legacy` look for the direct wave around the first strong arrival, and none of them depend on the amplitude scale. The onset methods only accept an onset where the signal stays out of the noise for most of the next quarter period, so isolated early samples do not start the direct wave.
+
+`time_zero` says which feature of the direct wave time zero goes on, `onset` or `peak`, whichever method aligned the traces. When the method finds the other feature, time zero moves by the median distance between the two over the traces, so every method means the same time zero by default.
+
+`scope` is `global`, one time zero from the mean trace; `trace`, one per trace; or `smooth`, one per trace from the running median of the per-trace picks over `window` traces, for a time zero that drifts slowly and would otherwise gain the scatter of single picks. Per-trace picks that stray from their neighbours by more than three quarters of a period, and whose distance to the other end of their own direct wave is also unusual, are replaced, and the bottom is trimmed so that no trace is zero-padded.
+
+`margin` keeps some record above time zero, the same amount in every trace, and the travel times of those samples are negative. `auto` keeps back to where the direct wave starts: nothing with `time_zero=onset`, and the start of the wavelet with `time_zero=peak`. Examples: `zero_corr(coppens, trace)`, `zero_corr(max_peak, trace)`, `zero_corr(coppens, smooth, window=101)`, `zero_corr(max_peak, trace, peak)`, `zero_corr(coppens, margin=5)`, `zero_corr(first_break, sigma=4)`, `zero_corr(legacy, factor=0.9)`.
+
+**Arguments**
+
+- `method` (default `coppens`): `coppens`, `first_break`, `aic`, `max_peak` or `legacy`
+- `scope` (default `global`): `global`, `trace` or `smooth`
+- `time_zero` (default `onset`): Where on the direct wave time zero goes: `onset` or `peak`
+- `margin` (default `auto`): How much record to keep above time zero: `auto`, back to where the direct wave starts, or a number of nanoseconds
+- `factor` (default `1`): `legacy` only: multiplier on the first-rise threshold; lower picks earlier
+- `sigma` (default `5`): `first_break` only: how many noise standard deviations count as signal
+- `window` (default `51`): `smooth` only: how many traces the running median of the picks spans
+```
+
+```{step} bandpass(low=0.1, high=0.9, q=0.707)
+Apply a zero-phase bandpass filter to each trace individually.
+
+The given frequencies are normalized (0: 0Hz, 1: Nyquist). Example (with default values): `bandpass(0.1 0.9)`.
+
+A high-pass and a low-pass section (Butterworth at the default `q`) are run forward and then backward along the trace, so reflections keep their shape and position. The two passes square the response: each cutoff is where the amplitude has fallen to half (-6 dB).
+
+**Arguments**
+
+- `low` (default `0.1`): Lower cutoff, as a fraction of the Nyquist frequency
+- `high` (default `0.9`): Upper cutoff, as a fraction of the Nyquist frequency
+- `q` (default `0.707`): Filter strength (quality factor). Must be above 0
+```
+
+```{step} bandpass_mhz(low, high, q=0.707)
+Apply a zero-phase bandpass filter to each trace individually, with the frequencies in MHz.
+
+Example: `bandpass_mhz(100 800)`. Filters as `bandpass` does, so each cutoff is at -6 dB.
+
+**Arguments**
+
+- `low` (required): Lower cutoff, in MHz
+- `high` (required): Upper cutoff, in MHz
+- `q` (default `0.707`): Filter strength (quality factor). Must be above 0
+```
+
+```{step} equidistant_traces([step])
+Make all traces equidistant by resampling them in a fixed horizontal grid.
+
+Unless provided, the step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. `equidistant_traces(2.)` for 2 m.
+
+**Arguments**
+
+- `step`: Distance between traces, in m. Determined from the data if left out
+```
+
+```{step} shift_coordinates(along_track, altitude=0, cross_track=0)
+Shift trace coordinates along the track.
+
+Useful if the location data were collected away from the GPR antenna. Edge coordinates are clamped to the min/max bounds of the original data. Example for moving the location data (along-track) forward 3 m (if the GPR is ahead of the GNSS), down 2 m (GNSS mounted on a pole) and (cross-track) right 1 m (GNSS mounted on the left): `shift_coordinates(3 -2 1)`
+
+**Arguments**
+
+- `along_track` (required): Along-track shift in m; positive is forward
+- `altitude` (default `0`): Vertical shift in m; positive is up
+- `cross_track` (default `0`): Cross-track shift in m; positive is right
+```
+
+```{step} dewow(window=auto, method=median)
+Remove slow drift ("wow") from each trace by subtracting the running median or mean of the samples around each sample.
+
+This is a zero-phase high-pass that works on each trace separately. `auto` makes the window two periods of the antenna's nominal frequency, which removes drift slower than that and keeps the wavelet. A window much shorter than a period removes the signal itself. The median is the default because the mean is pulled by the strong direct wave and leaves an artefact below it, and a median over only one period distorts the wavelet. Examples: `dewow`, `dewow(10)` for a 10 ns window, `dewow(method=mean)`.
+
+**Arguments**
+
+- `window` (default `auto`): `auto`, two periods of the antenna frequency, or a window in nanoseconds
+- `method` (default `median`): `median` or `mean`
+```
+
+```{step} background_removal(traces=all, method=median)
+Remove what the traces share at the same sample, such as antenna ringing and horizontal banding, by subtracting the median or mean trace.
+
+`traces` is `all`, one background for the whole radargram, or an odd number of traces for a running background centred on each trace, which follows ringing that changes along the profile. Anything horizontal and as long as the window is removed too, including a flat bed or the direct wave, so a running window should be much longer than any flat reflector worth keeping. The median keeps a reflector found in fewer than half the traces of the window intact; the mean spreads a fraction of it into every trace. Examples: `background_removal`, `background_removal(501)`, `background_removal(all, mean)`.
+
+**Arguments**
+
+- `traces` (default `all`): `all`, or an odd number of traces for a running background
+- `method` (default `median`): `median` or `mean`
+```
+
+```{step} auto_gain(n_bins=100)
+Measure the gain that levels the amplitude below the direct wave, and apply it with `gain`.
+
+The samples are split into bins from top to bottom, and each bin's level is the median absolute amplitude over all its samples and traces. The direct wave's ring-down is skipped, and the gain is the median decrease in level between neighbouring bins below it, in dB/ns. This is a display gain, not an attenuation estimate. If the amplitude grows with time, or no gain can be measured (e.g. too short a record), no gain is applied and the log says why. The number of bins can be given, e.g. `auto_gain(100)`.
+
+**Arguments**
+
+- `n_bins` (default `100`): Number of vertical bins. At least 2
+```
+
+```{step} gain(factor)
+Multiply the magnitude as a function of depth.
+
+This is most often used to correct for signal attenuation with time/distance. Gain is applied as: '10 ^(gain * twtt / 20)' (dB / ns) where gain is the given gain factor and twtt is the two-way travel time of the signal. Example: `gain(0.002)`.
+
+**Arguments**
+
+- `factor` (required): Gain factor, in dB/ns
+```
+
+```{step} kirchhoff_migration2d()
+Migrate sample magnitudes in the horizontal and vertical distance dimension to correct hyperbolae in the data.
+
+The correction is needed because the GPR does not observe only what is directly below it, but rather in a cone that is determined by the dominant antenna frequency. Thus, without migration, each trace is the sum of a cone beneath it. Topographic Kirchhoff migration (in 2D) corrects for this in two dimensions.
+```
+
+```{step} abslog()
+Run a log10 operation on the absolute values (log10(abs(data))), converting it to a logarithmic scale.
+
+This is useful for visualization. Before conversion, the data are added with the 1st percentile (absolute) value in the dataset to avoid log10(0) == inf.
+```
+
+```{step} siglog(minval_log10=0)
+Run a log10 operation on absolute values and then account for the sign.
+
+Values smaller than the set minimum magnitude are truncated to zero. E.g. with an exponent offset of 0: 1000 -> 3, -1000 -> -3, 0.001 -> 0. The argument specifies the exponent offset to apply to allow for values smaller than +-1 (e.g. 10e-1).
+
+**Arguments**
+
+- `minval_log10` (default `0`): Exponent offset (log10 of the smallest magnitude kept)
+```
+
+```{step} adaptive_siglog(offset=-1.7)
+Run `siglog` at a strength set from the data's own noise floor instead of a fixed one.
+
+The strength is `log10(noise) + offset`, where the noise floor is the median `log10|value|` over the whole radargram (zeros excluded). The same offset therefore gives the same result regardless of the recording's amplitude scale, which a fixed `siglog` strength cannot. More negative offsets keep more weak signal (and noise). The resolved strength is written to the processing log. Example: `adaptive_siglog(-1.7)`.
+
+**Arguments**
+
+- `offset` (default `-1.7`): Offset from the noise floor, in log10 units
+```
+
+```{step} unphase()
+Combine the positive and negative phases of the signal into one positive magntiude.
+
+The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly.
+```
+
+```{step} correct_topography()
+Make a copy of the data and topographically correct it.
+
+In the output, the data will be called "data_topographically_corrected". Note that the copying means any step run after this will not be reflected in "data_topographically_corrected". This is thus recommended to run last.
+```
+
+```{step} correct_antenna_separation(method=slant, direct_velocity=0.2997)
+Correct for the separation between the antenna transmitter and receiver.
+
+With the transmitter and receiver apart, a reflection travels two slant legs, and time zero (the air wave's arrival at the receiver) comes after the pulse left the transmitter. Depth is therefore not linear in travel time, least of all near the surface. This step resamples each trace so that each sample represents a consistent depth interval.
+
+Afterwards, `twtt` is the travel time a coincident transmitter and receiver would have recorded rather than the travel time between the pair, and the output declares that with `twtt:anchor_name = "twtt_normal_incidence"` and `antenna_separation_effective = 0`.
+
+`legacy` is the conversion before 0.7, which used the full separation where the geometry needs half and, after a zero correction, no separation at all. It exists to regenerate data processed with it, and picks made on its grid, exactly.
+
+`direct_velocity` is the velocity of the wave that time zero was picked on. The default is the speed of light in air, because the air wave arrives first. Pass the medium velocity to time it from the ground wave, as ImpDAR's `nmo` does. Only this step reads it: the depth axis of an uncorrected radargram always assumes air. Examples: `correct_antenna_separation(legacy)`, `correct_antenna_separation(slant, 0.168)`.
+
+**Arguments**
+
+- `method` (default `slant`): `slant` or `legacy`
+- `direct_velocity` (default `0.2997`): `slant` only: the direct wave's velocity, in m/ns
+```
+
+```{step} multiply(factor)
+Multiply all values by a constant factor.
+
+This is useful e.g. for standardizing data between sensors and antenna frequencies. Example: `multiply(5)`.
+
+**Arguments**
+
+- `factor` (required): Factor to multiply by. Must be finite and non-zero
 ```
