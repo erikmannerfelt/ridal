@@ -51,15 +51,26 @@ inferred from the expression:
 | {expr}`median(x)`, {expr}`mean(x)`, {expr}`min(x)`, {expr}`max(x)`, {expr}`percentile(x, p)` | the same as `x` |
 | {expr}`count(x)`, {expr}`std(x)`, {expr}`nmad(x)` | attribute |
 | {expr}`a - b`, where both are layers | attribute (a distance between two positions) |
-| {expr}`a + b`, {expr}`a - b` otherwise | the same as `a` |
+| {expr}`a + b`, {expr}`a - b` otherwise | layer if either side is one, otherwise attribute |
 | {expr}`a * b`, {expr}`a / b` | attribute |
-| {expr}`a + 2.0`, {expr}`a * 2.0`, and so on | the same as `a` |
-| {expr}`shallowest(a, b)`, {expr}`deepest(a, b)`, {expr}`clamp(a, lo, hi)` | the same as `a` |
+| {expr}`a * 2`, {expr}`2 * a`, {expr}`a / 2` and so on, with a plain number | the same as `a` |
+| {expr}`shallowest(a, b)`, {expr}`deepest(a, b)`, {expr}`clamp(a, lo, hi)`, {expr}`abs(a)` | the same as `a` |
 | {expr}`where(cond, a, b)` | the same as `a` (or `b`, if `a` is a plain number) |
 
 So {expr}`median(bed)` is a derived layer, {expr}`median(bed) - median(surface)` is a
-thickness and therefore an attribute, and {expr}`median(bed) + 2.0` is a layer
-shifted two units down.
+thickness and therefore an attribute, and {expr}`median(bed) + 2` is a layer
+shifted two units down. A plain number and an attribute count the same on
+either side of `+` and `-`: {expr}`10 - median(bed)` is also a layer, the bed
+mirrored about 10 units.
+
+A derived layer may lie outside the radargram, above its first sample or
+below its last. {expr}`median(bed) + 5`, for a bed depth corrected by a known
+error in time zero, is a real depth whether or not the recording reaches it.
+Its value is kept as the expression gives it, and it is drawn off the edge of
+the radargram rather than along it. To convert it into the other two units,
+the depth and time axes are extended past their ends at their spacing
+there. Its sample number can then be negative, or larger than the number of
+samples.
 
 ## Units
 
@@ -80,21 +91,10 @@ unit and never converted.
 
 ## Numbers
 
-:::{important}
-Two rules that the current version does not enforce well
-([#270](https://github.com/erikmannerfelt/ridal/issues/270)):
-
-- **Write numbers with a decimal point**: {expr}`2.0`, not {expr}`2`. A whole number
-  such as {expr}`50` is an integer in this language, and most functions only
-  accept decimal numbers, so {expr}`percentile(bed, 50)` fails with "Function not
-  found". Write {expr}`percentile(bed, 50.0)`. **In a comparison it is
-  worse:** {expr}`bed > 50` does not fail but is always false, so
-  {expr}`where(bed > 50, bed, NaN)` silently gives `NaN` everywhere. Write
-  {expr}`bed > 50.0`.
-- **Put a plain number on the right** of an operator: {expr}`median(bed) * 2.0`
-  works, while {expr}`2.0 * median(bed)` and {expr}`10.0 - median(bed)` are refused when
-  the item is saved. Rearrange the expression so the number comes second.
-:::
+Every number is a decimal number: {expr}`50` and {expr}`50.0` are the same, so
+{expr}`percentile(bed, 50)` and {expr}`bed > 50` work as written, and
+{expr}`1 / 2` is {expr}`0.5`. A number may stand on either side of an operator:
+{expr}`2 * median(bed)` is the same as {expr}`median(bed) * 2`.
 
 ## Functions
 
@@ -108,7 +108,7 @@ skip {expr}`NaN`, and give {expr}`NaN` if nothing is left.
 | {expr}`median(x)` | The median. With an even number of values, the mean of the middle two. |
 | {expr}`mean(x)` | The arithmetic mean. |
 | {expr}`min(x)`, {expr}`max(x)` | The smallest or largest value. Since depths grow downwards, {expr}`min` is the shallowest. |
-| {expr}`percentile(x, p)` | The value at rank `floor(p / 100 × (n − 1))` among the `n` sorted values, with `p` from {expr}`0.0` to {expr}`100.0`. It never interpolates, so the result is always a value someone actually picked. |
+| {expr}`percentile(x, p)` | The value at rank `floor(p / 100 × (n − 1))` among the `n` sorted values, with `p` from {expr}`0` to {expr}`100`. It never interpolates, so the result is always a value someone actually picked. |
 | {expr}`count(x)` | How many contributors have a value. |
 | {expr}`std(x)` | The sample standard deviation (dividing by `n − 1`). {expr}`NaN` with fewer than two values. |
 | {expr}`nmad(x)` | The normalised median absolute deviation, 1.4826 times the median of the absolute differences from the median. A spread that is robust to outliers. |
@@ -130,7 +130,10 @@ skip {expr}`NaN`, and give {expr}`NaN` if nothing is left.
 
 {expr}`clamp(a, lo, hi)`
 : Limits `a` to the range from `lo` to `hi`. The bounds must be single
-  numbers; reduce a layer first, as in {expr}`clamp(x, 0.0, median(bed))`.
+  numbers; reduce a layer first, as in {expr}`clamp(x, 0, median(bed))`.
+
+{expr}`abs(a)`
+: The absolute value, contributor by contributor for a layer.
 
 ### Conditions
 
@@ -141,18 +144,23 @@ consumes:
 {expr}`where(cond, a, b)`
 : For each contributor, `a` where `cond` holds and `b` where it does not.
   A contributor with no value in `cond` gets {expr}`NaN`. For example,
-  {expr}`median(where(bed > 50.0, bed, NaN))` ignores picks shallower than 50.
+  {expr}`median(where(bed > 50, bed, NaN))` ignores picks shallower than 50.
+
+Comparing a layer with anything other than a number or another layer, such
+as {expr}`bed > true`, is an error.
 
 `if` works too, but only on a single true or false, such as a comparison
 between two reduced values:
-{expr}`if median(bed) > 100.0 { median(bed) } else { NaN }`. Using `if` on a
+{expr}`if median(bed) > 100 { median(bed) } else { NaN }`. Using `if` on a
 layer's per-contributor values is an error that points to {expr}`where`.
 
 ### Plain numbers
 
 {expr}`min(a, b)` and {expr}`max(a, b)` of two single numbers give the smaller or
-larger one, like {expr}`shallowest` and {expr}`deepest`. `let` can name an intermediate
-value: {expr}`let b = median(bed); b - 2.0`.
+larger one, like {expr}`shallowest` and {expr}`deepest`. They do not take a layer;
+use {expr}`shallowest` and {expr}`deepest` for that. {expr}`is_nan(a)` is true where a
+single number is {expr}`NaN`. `let` can name an intermediate
+value: {expr}`let b = median(bed); b - 2`.
 
 ## Limits
 
@@ -166,12 +174,12 @@ a limited nesting depth.
 | Expression | Unit | What it is |
 |---|---|---|
 | {expr}`median(bed)` | `meters` | A consensus bed from everyone's picks. |
-| {expr}`percentile(bed, 49.0)` | `meters` | A consensus bed that is always one contributor's actual pick. |
+| {expr}`percentile(bed, 49)` | `meters` | A consensus bed that is always one contributor's actual pick. |
 | {expr}`median(bed) - median(cts)` | `meters` | The thickness between two consensus layers. |
 | {expr}`std(bed)` | `meters` | How much the contributors disagree about the bed. |
 | {expr}`count(bed)` | `dimensionless` | How many people picked the bed here. |
 | {expr}`median(concatenate(bed, bed_no_temperate))` | `meters` | A consensus over two layers that describe the same reflector in different conditions. |
-| {expr}`clamp(median(bed) - median(cts), 0.0, 1000.0)` | `meters` | A thickness that is never negative. |
+| {expr}`clamp(median(bed) - median(cts), 0, 1000)` | `meters` | A thickness that is never negative. |
 
 ## Errors
 
@@ -189,9 +197,12 @@ evaluates it before anything is stored. The most common errors are:
 : Items refer to each other in a loop, such as `a` using `b` and `b` using
   `a`.
 
-"Function not found: … i64"
-: A whole number was used where a decimal one is needed. Write {expr}`50.0`
-  instead of {expr}`50`.
+"no function '…' accepts (…)"
+: The name is misspelt, or the function does not take what it was given,
+  such as {expr}`percentile(bed)` without a percentile, or {expr}`min(bed, 3)`,
+  where {expr}`shallowest(bed, 3)` is meant. "No operator" is the same for `+`,
+  `>` and the others.
 
-"Function not found: … (f64, Kinded)"
-: A plain number is on the left of an operator. Move it to the right.
+"a condition must be a single true or false"
+: `if` was given a layer's per-contributor values, as in `if bed > 50`. Use
+  {expr}`where` to choose per contributor, or reduce first.

@@ -885,8 +885,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_derived_layer_evaluates_against_reduced_picks() {
+    /// One contributor with `bed` at sample 10 (0.4 m) and `temperate_ice`
+    /// at sample 20 (0.8 m), flat across three traces.
+    fn flat_picks() -> (ReducedPicks, RadargramGeometry) {
         use crate::interp::derive::GridPosition;
         use gprinterp::Document;
 
@@ -930,7 +931,12 @@ mod tests {
             &grid,
             false,
         );
+        (reduced, geometry)
+    }
 
+    #[test]
+    fn a_derived_layer_evaluates_against_reduced_picks() {
+        let (reduced, geometry) = flat_picks();
         let set = set(vec![item(
             "thickness",
             "percentile(bed, 49.0) - percentile(temperate_ice, 49.0)",
@@ -943,6 +949,52 @@ mod tests {
         for value in &thickness.values {
             assert!((value + 0.4).abs() < 1e-9, "{value}");
         }
+    }
+
+    /// A derived layer outside the radargram keeps the value its expression
+    /// gives, and converts by extending the axes past their ends (#270).
+    /// `median(bed) + 5.0` for a known error in time zero is a real depth
+    /// whether or not the recording reaches it; clamping it to the edge
+    /// drew a false line along the top or bottom, and NaN would drop it.
+    #[test]
+    fn a_derived_layer_outside_the_radargram_is_extrapolated() {
+        let (reduced, geometry) = flat_picks();
+        // The fixture's axes: 0.04 m and 0.4 ns per sample, 50 samples, so
+        // the bottom is sample 49 at 1.96 m. The bed is at 0.4 m.
+        let mut in_samples = item("in_samples", "5 - median(bed)");
+        in_samples.unit = Unit::Samples;
+        let set = set(vec![
+            item("mirrored", "0.6 - median(bed)"),
+            item("above", "0.2 - median(bed)"),
+            item("below", "median(bed) + 5"),
+            item("depends_on_above", "above + 0.1"),
+            in_samples,
+        ]);
+        let results = set.evaluate(&reduced, &geometry).unwrap();
+
+        let close = |id: &str, expected: f64| {
+            assert_eq!(results[id].kind, Kind::Layer, "{id}");
+            for value in &results[id].values {
+                assert!(
+                    (value - expected).abs() < 1e-9,
+                    "{id}: {value} vs {expected}"
+                );
+            }
+        };
+        close("mirrored", 0.2);
+        close("above", -0.2);
+        close("below", 5.4);
+        // Converted into the dependant's unit and back without clamping.
+        close("depends_on_above", -0.1);
+        close("in_samples", -5.0);
+
+        // And the other units carry on along the same axes.
+        let to =
+            |value: f64, from: Unit, to: Unit| derive::convert_position(value, from, to, &geometry);
+        assert!((to(-0.2, Unit::Meters, Unit::Samples) + 5.0).abs() < 1e-9);
+        assert!((to(-0.2, Unit::Meters, Unit::Nanoseconds) + 2.0).abs() < 1e-9);
+        assert!((to(5.4, Unit::Meters, Unit::Samples) - 135.0).abs() < 1e-9);
+        assert!((to(-5.0, Unit::Samples, Unit::Meters) + 0.2).abs() < 1e-9);
     }
 
     #[test]

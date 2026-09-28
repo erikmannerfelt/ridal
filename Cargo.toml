@@ -57,7 +57,7 @@ gprinterp = "0.3"
 # on picks, and the sandbox limits are set explicitly in `interp::derive`. Not
 # optional -- both the CLI (the legacy converter and `interp export`) and the
 # server evaluate expressions, so a CLI-only build needs it too.
-rhai = { version = "1", features = ["sync"] }
+rhai = { version = "1", features = ["sync", "internals"] }
 
 # Web server and browser GUI (feature "server"). See tracking issue #115.
 axum = { version = "0.8", optional = true }

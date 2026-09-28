@@ -640,12 +640,41 @@ evaluate saves cleanly, reports its kind in the editor, and then fails on
 every read afterwards.
 
 So every element-wise helper has a scalar twin (`clamp`, `shallowest`,
-`deepest`, `where`), the mixed array/scalar forms exist on both engines, and
-inference refuses an array-valued result exactly as evaluation does —
-`bed - temperate_ice` is a length *per contributor*, not an item;
-`median(bed) - median(temperate_ice)` is. Rhai's standard library already
-supplies scalar `min`, `max`, `abs` and `is_nan`, so those need only a
-`Kinded` mirror.
+`deepest`, `where`), the mixed array/scalar forms exist on both engines with
+the number on either side, and inference refuses an array-valued result
+exactly as evaluation does — `bed - temperate_ice` is a length *per
+contributor*, not an item; `median(bed) - median(temperate_ice)` is. Rhai's
+standard library already supplies scalar `min`, `max`, `abs` and `is_nan`, so
+those need only a `Kinded` mirror, and that mirror refuses a layer wherever
+evaluation has no layer form (all but `abs`). A comparison in inference
+mirrors evaluation too: a `Kinded` mask when a layer is involved, a `bool`
+otherwise, so `if bed > 50` fails on save rather than on every read.
+
+**There is one number type.** `build_engine` rewrites every integer literal
+into a float token before parsing (`on_parse_token`, behind Rhai's
+`internals` feature), so `50` is `50.0` everywhere (#270). Before that, every
+function here was registered for `f64` only and a whole number matched none
+of them — and a comparison with no matching operator is a constant `false`
+in Rhai, so `where(bed > 50, ..)` silently took the `else` branch for every
+contributor. Registering `i64` twins instead would have doubled both tables
+and still left `1 / 2` as integer division. For the same reason a
+comparison between a layer (or a `Kinded`) and anything that is not a
+number is registered to *fail*, rather than left to Rhai's fallback.
+
+Errors are rewritten by `describe_error` into the reference's terms (a
+layer, a number); no message names `Kinded`, `UserArray` or `f64`.
+
+**A derived layer may lie outside the radargram, and is extrapolated, not
+clamped or dropped.** `median(bed) + 5.0` for a known time-zero error, or
+`10.0 - median(bed)`, is a real position past the first or last sample.
+`axis_at`/`axis_invert` used to clamp to the edge, which drew and exported it
+as a line along the top or bottom; NaN would have lost it instead. They now
+continue the axis from its outermost non-flat segment (`edge_slope`). That
+is exact for samples and nanoseconds, exact for depth above time zero
+(`t·v/2`), and close to exact below the antenna separation. The GUI has its
+own copy in `panel.js` (`invertAxis`), which must do the same. Picks are not
+affected: `reduce_picks` drops a pick outside the radargram before any
+conversion.
 
 `inference_and_evaluation_accept_the_same_expressions` enforces this over a
 table of expressions. **Add a row whenever a function is registered** — the
