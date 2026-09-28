@@ -28,6 +28,8 @@ pub enum Commands {
     Interp(InterpArgs),
     /// Create and inspect Ridal projects
     Project(ProjectArgs),
+    /// Create and manage a Ridal site: one server, many projects (#214)
+    Site(SiteArgs),
     /// Open a local browser GUI for one radargram or a directory of them
     #[cfg(feature = "server")]
     Gui(GuiArgs),
@@ -252,6 +254,155 @@ pub struct ProjectMigrateArgs {
     /// Print what would move, without moving anything.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteArgs {
+    #[command(subcommand)]
+    pub command: SiteCommand,
+}
+
+/// A site is identity and hosting: server-wide accounts, one session key,
+/// and the projects themselves under `projects/`. A project stays portable;
+/// inside a site it is addressed by an immutable key.
+#[derive(Debug, Subcommand)]
+pub enum SiteCommand {
+    /// Create a site (a `ridal-site.toml` marker and a `projects/` directory)
+    Init(SiteInitArgs),
+    /// Manage server-wide accounts
+    Account(SiteAccountArgs),
+    /// Manage the site's projects
+    Project(SiteProjectArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteInitArgs {
+    /// Directory to create the site in. Created if it does not exist.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Human-facing site name. Cosmetic.
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountArgs {
+    #[command(subcommand)]
+    pub command: SiteAccountCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SiteAccountCommand {
+    /// Create an account and print a one-time invite link
+    Add(SiteAccountAddArgs),
+    /// List the accounts
+    List(SiteAccountListArgs),
+    /// Grant or revoke server administration
+    Set(SiteAccountSetArgs),
+    /// Issue a fresh invite link, for a password reset or a lost one
+    Reset(SiteAccountResetArgs),
+    /// Remove an account. It is removed from every project.
+    Remove(SiteAccountResetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountAddArgs {
+    /// The account name. Lowercase letters, digits, '-' and '_'.
+    pub name: String,
+
+    /// Make this a server administrator: they create projects and accounts,
+    /// and act as an administrator in every project.
+    #[arg(long)]
+    pub server_admin: bool,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountListArgs {
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountSetArgs {
+    pub name: String,
+
+    /// Grant server administration.
+    #[arg(long)]
+    pub server_admin: bool,
+
+    /// Revoke server administration.
+    #[arg(long, conflicts_with = "server_admin")]
+    pub no_server_admin: bool,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountResetArgs {
+    pub name: String,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteProjectArgs {
+    #[command(subcommand)]
+    pub command: SiteProjectCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SiteProjectCommand {
+    /// Create an empty project at a key
+    Add(SiteProjectAddArgs),
+    /// List the site's projects
+    List(SiteProjectListArgs),
+    /// Make a project read-only, keeping its interpretations exportable
+    Archive(SiteProjectKeyArgs),
+    /// Reverse `archive`
+    Unarchive(SiteProjectKeyArgs),
+    /// Delete a project and everything it owns, for good
+    Delete(SiteProjectKeyArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteProjectAddArgs {
+    /// The project's immutable key (lowercase letters, digits, '-' and '_').
+    pub key: String,
+
+    /// Human-facing display name. Cosmetic and editable.
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteProjectListArgs {
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteProjectKeyArgs {
+    /// The project's key.
+    pub key: String,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -746,6 +897,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Gui(args) => gui_command(args),
         #[cfg(feature = "server")]
         Commands::Server(args) => server_command(args),
+        Commands::Site(args) => site_command(args),
     }
 }
 
@@ -2160,6 +2312,245 @@ fn print_invite(name: &str, token: &str, expires: i64) {
          sensitive as a password until it is used or expires, so send it the way \
          you would send one."
     );
+}
+
+fn site_command(args: SiteArgs) -> Result<(), String> {
+    match args.command {
+        SiteCommand::Init(args) => site_init_command(&args),
+        SiteCommand::Account(args) => match args.command {
+            SiteAccountCommand::Add(args) => site_account_add_command(&args),
+            SiteAccountCommand::List(args) => site_account_list_command(&args),
+            SiteAccountCommand::Set(args) => site_account_set_command(&args),
+            SiteAccountCommand::Reset(args) => site_account_reset_command(&args),
+            SiteAccountCommand::Remove(args) => site_account_remove_command(&args),
+        },
+        SiteCommand::Project(args) => match args.command {
+            SiteProjectCommand::Add(args) => site_project_add_command(&args),
+            SiteProjectCommand::List(args) => site_project_list_command(&args),
+            SiteProjectCommand::Archive(args) => site_project_archive_command(&args, true),
+            SiteProjectCommand::Unarchive(args) => site_project_archive_command(&args, false),
+            SiteProjectCommand::Delete(args) => site_project_delete_command(&args),
+        },
+    }
+}
+
+/// Open the site containing `path`, or say how to make one.
+fn open_site(path: &std::path::Path) -> Result<crate::site::Site, String> {
+    crate::site::Site::discover(path)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "No Ridal site at or above {}. Run `ridal site init` to create one.",
+                path.display()
+            )
+        })
+}
+
+fn site_init_command(args: &SiteInitArgs) -> Result<(), String> {
+    let site =
+        crate::site::Site::init(&args.path, args.name.as_deref()).map_err(|e| e.to_string())?;
+    println!("Created a Ridal site at {}", site.root().display());
+    println!(
+        "Next, create a server administrator:\n  ridal site account add <name> --server-admin"
+    );
+    Ok(())
+}
+
+fn site_account_add_command(args: &SiteAccountAddArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let (token, invite) =
+        crate::site::accounts::invite::mint(chrono::Utc::now().timestamp(), None, None, None)?;
+    crate::site::accounts::update(site.store(), |set| {
+        use crate::site::accounts::AccountError;
+        if set.get(&name).is_some() {
+            return Err(AccountError::Duplicate(name.to_string()));
+        }
+        // An account that cannot administer the site would leave nobody
+        // able to create projects or accounts. The first account is the
+        // administrator's, exactly as the first project account was.
+        if !args.server_admin && !set.has_server_admin() {
+            return Err(AccountError::Rejected(format!(
+                "'{name}' would be the first account, and without --server-admin it \
+                 could not create projects or accounts. Create an administrator \
+                 first:\n  ridal site account add {name} --server-admin"
+            )));
+        }
+        let mut account = crate::site::accounts::Account::new(name.clone(), args.server_admin);
+        account.invite = Some(invite.clone());
+        set.users.push(account);
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    print_invite(name.as_str(), &token, invite.expires);
+    Ok(())
+}
+
+fn site_account_list_command(args: &SiteAccountListArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let Some((set, _version)) =
+        crate::site::accounts::read(site.store()).map_err(|e| e.to_string())?
+    else {
+        println!(
+            "No accounts yet. Create one with `ridal site account add <name> --server-admin`."
+        );
+        return Ok(());
+    };
+    if set.users.is_empty() {
+        println!("No accounts.");
+        return Ok(());
+    }
+    for account in &set.users {
+        let admin = if account.server_admin {
+            " [server admin]"
+        } else {
+            ""
+        };
+        let state = if account.is_activated() {
+            "active"
+        } else if account.invite.is_some() {
+            "invite pending"
+        } else {
+            "no password"
+        };
+        println!("{}{} ({state})", account.name, admin);
+    }
+    Ok(())
+}
+
+fn site_account_set_command(args: &SiteAccountSetArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let wanted = if args.no_server_admin {
+        false
+    } else if args.server_admin {
+        true
+    } else {
+        return Err("Pass --server-admin or --no-server-admin.".to_string());
+    };
+    crate::site::accounts::update(site.store(), |set| {
+        use crate::site::accounts::AccountError;
+        // The last administrator cannot demote themselves, or the site has
+        // nobody who can create projects or accounts.
+        if !wanted && !set.has_another_admin(&name) {
+            if let Some(account) = set.get(&name) {
+                if account.server_admin {
+                    return Err(AccountError::Rejected(
+                        "This is the only server administrator. Grant \
+                         --server-admin to somebody else first."
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        let account = set
+            .get_mut(&name)
+            .ok_or_else(|| AccountError::NotFound(name.to_string()))?;
+        account.server_admin = wanted;
+        // A live session must not keep authority it no longer has.
+        account.credential_version += 1;
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn site_account_reset_command(args: &SiteAccountResetArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let (token, invite) =
+        crate::site::accounts::invite::mint(chrono::Utc::now().timestamp(), None, None, None)?;
+    crate::site::accounts::update(site.store(), |set| {
+        use crate::site::accounts::AccountError;
+        let account = set
+            .get_mut(&name)
+            .ok_or_else(|| AccountError::NotFound(name.to_string()))?;
+        account.invite = Some(invite.clone());
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    print_invite(name.as_str(), &token, invite.expires);
+    Ok(())
+}
+
+fn site_account_remove_command(args: &SiteAccountResetArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    crate::site::accounts::update(site.store(), |set| {
+        use crate::site::accounts::AccountError;
+        if !set.has_another_admin(&name) {
+            if set.get(&name).is_some_and(|account| account.server_admin) {
+                return Err(AccountError::Rejected(
+                    "This is the only server administrator. Grant --server-admin to \
+                     somebody else first."
+                        .to_string(),
+                ));
+            }
+        }
+        let before = set.users.len();
+        set.users.retain(|account| account.name != name);
+        if set.users.len() == before {
+            return Err(AccountError::NotFound(name.to_string()));
+        }
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    println!("Removed account '{name}'.");
+    Ok(())
+}
+
+fn site_project_add_command(args: &SiteProjectAddArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let key = crate::identity::ProjectKey::new(args.key.clone())?;
+    let project = site
+        .create_project(&key, args.name.as_deref())
+        .map_err(|e| e.to_string())?;
+    println!("Created project '{}' at {}", key, project.root().display());
+    Ok(())
+}
+
+fn site_project_list_command(args: &SiteProjectListArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let keys = site.list().map_err(|e| e.to_string())?;
+    if keys.is_empty() {
+        println!("No projects yet. Create one with `ridal site project add <key>`.");
+        return Ok(());
+    }
+    for key in keys {
+        let name = site
+            .project(&key)
+            .ok()
+            .and_then(|project| project.config().project.name.clone())
+            .unwrap_or_else(|| key.to_string());
+        let archived = if site.is_archived(&key) {
+            " [archived]"
+        } else {
+            ""
+        };
+        println!("{key}  {name}{archived}");
+    }
+    Ok(())
+}
+
+fn site_project_archive_command(args: &SiteProjectKeyArgs, archive: bool) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let key = crate::identity::ProjectKey::new(args.key.clone())?;
+    if archive {
+        site.archive(&key).map_err(|e| e.to_string())?;
+        println!("Archived '{key}' (read-only).");
+    } else {
+        site.unarchive(&key).map_err(|e| e.to_string())?;
+        println!("Unarchived '{key}'.");
+    }
+    Ok(())
+}
+
+fn site_project_delete_command(args: &SiteProjectKeyArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let key = crate::identity::ProjectKey::new(args.key.clone())?;
+    site.delete_project(&key).map_err(|e| e.to_string())?;
+    println!("Deleted project '{key}'.");
+    Ok(())
 }
 
 fn project_user_add_command(args: &ProjectUserAddArgs) -> Result<(), String> {

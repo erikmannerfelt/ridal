@@ -20,6 +20,9 @@ mod project;
 mod render;
 #[cfg(feature = "server")]
 mod server;
+/// A site: server-wide identity and hosting for one or more projects (#214).
+/// Outside the `server` feature because the CLI creates and manages sites.
+mod site;
 /// Windowed NetCDF reads for the renderer above. Moved out of `server`
 /// with it: a chunk of a radargram is not a server concept.
 mod source;

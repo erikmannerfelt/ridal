@@ -25,6 +25,7 @@ mod project;
 mod render;
 #[cfg(feature = "server")]
 mod server;
+mod site;
 mod source;
 mod steps;
 mod tools;
