@@ -417,7 +417,65 @@
    * themselves, and without this the cached ones would be redrawn unchanged. */
   window.RIDAL_REDRAW_DERIVED = (force) => {
     if (force) state.values.clear();
-    refreshDerivedLines().then(refreshFills);
+    refreshDerivedLines().then(refreshFills).then(refreshAttributes);
+  };
+
+  // --- Attributes in the cursor readout (#280) -----------------------------
+  //
+  // An attribute is a number per trace with no line to draw, so the readout
+  // is where it is seen: `count(bed)` as "Bed pickers: 4" under the cursor.
+  // Every listed attribute is shown. Listing is the author's decision to show
+  // it, and unticking "listed" takes it out again.
+
+  /** Listed attributes, in the stored order. */
+  function readoutAttributes() {
+    return state.items.filter(
+      (item) => item.kind === "attribute" && item.listed !== false,
+    );
+  }
+
+  /** Fetch the values of every listed attribute into the shared cache, so
+   * the readout can look them up synchronously on every mouse move. */
+  async function refreshAttributes() {
+    for (const item of readoutAttributes()) {
+      try {
+        await loadItemValues(item.id);
+      } catch (error) {
+        console.warn(`Could not load derived item '${item.id}': ${error.message}`);
+      }
+    }
+  }
+
+  const UNIT_SUFFIX = { meters: " m", nanoseconds: " ns", samples: " samples" };
+
+  /** One attribute value as the readout shows it. A length or time is given
+   * to one decimal like the readout's own depth; a count stays whole. */
+  function formatAttribute(value, unit) {
+    if (value === null || value === undefined || !Number.isFinite(value)) return "–";
+    let text;
+    if (unit === "meters" || unit === "nanoseconds") text = value.toFixed(1);
+    else if (Number.isInteger(value)) text = String(value);
+    else text = value.toFixed(2);
+    return text + (UNIT_SUFFIX[unit] || "");
+  }
+
+  /* The readout terms at a (fractional) trace, e.g. ["Bed pickers: 4"].
+   *
+   * Published for viewer.js, which owns the readout. Reads only the cache:
+   * an attribute whose values have not arrived yet, or failed, is left out
+   * rather than stalling the readout. */
+  window.RIDAL_ATTRIBUTE_READOUT = (traceIndex) => {
+    const terms = [];
+    for (const item of readoutAttributes()) {
+      const body = state.values.get(item.id);
+      if (!body || !Array.isArray(body.values) || !body.values.length) continue;
+      const trace = Math.min(
+        body.values.length - 1,
+        Math.max(0, Math.round(traceIndex)),
+      );
+      terms.push(`${item.name || item.id}: ${formatAttribute(body.values[trace], body.unit)}`);
+    }
+    return terms;
   };
 
   // --- The panel control ---------------------------------------------------
@@ -817,6 +875,7 @@
     renderPanel();
     await refreshDerivedLines();
     await refreshFills();
+    await refreshAttributes();
   }
 
   async function load() {

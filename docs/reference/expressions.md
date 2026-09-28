@@ -89,6 +89,12 @@ layer's result is converted back into the other two units, so that it can
 be drawn and exported in any of them. An attribute is exported in its own
 unit and never converted.
 
+A derived layer is drawn as a line in the viewer. A derived attribute has no
+line, so its value at the cursor's trace is shown in the viewer's cursor
+readout instead: an item named "Bed pickers" with the expression
+{expr}`count(bed)` reads as `Bed pickers: 4`. Every listed attribute is shown
+there, and unticking "listed" removes it.
+
 ## Numbers
 
 Every number is a decimal number: {expr}`50` and {expr}`50.0` are the same, so
