@@ -355,3 +355,119 @@ async fn a_server_admin_creates_an_account_and_its_invite() {
         .unwrap()
         .starts_with("/invite/"));
 }
+
+#[tokio::test]
+async fn a_server_admin_gets_the_project_and_account_controls_on_the_landing() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let page = send(&app, get("/", Some(&cookie))).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    assert!(page.text.contains(r#"id="new-project""#), "{}", page.text);
+    assert!(
+        page.text.contains(r#"id="accounts-section""#),
+        "{}",
+        page.text
+    );
+    // The project card carries its management controls, keyed by the
+    // directory name rather than the display name.
+    assert!(
+        page.text.contains(r#"class="archive-project""#),
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text.contains(r#"data-project-key="glac""#),
+        "{}",
+        page.text
+    );
+}
+
+#[tokio::test]
+async fn a_plain_member_gets_members_but_not_site_admin_controls() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    // Bo is a project administrator but not a server administrator.
+    let project = Site::open(_dir.path())
+        .unwrap()
+        .project(&key("glac"))
+        .unwrap();
+    members::update(project.documents(), |set| {
+        set.members.push(members::Member::new(
+            id("bo"),
+            Role::Admin,
+            DownloadScope::All,
+        ));
+        Ok(())
+    })
+    .unwrap();
+
+    let cookie = sign_in(&app, "bo").await;
+
+    let landing = send(&app, get("/", Some(&cookie))).await;
+    assert_eq!(landing.status, StatusCode::OK, "{}", landing.text);
+    assert!(
+        !landing.text.contains(r#"id="accounts-section""#),
+        "a project admin is not a site admin: {}",
+        landing.text
+    );
+    assert!(!landing.text.contains(r#"id="new-project""#));
+
+    let settings = send(&app, get("/p/glac/settings", Some(&cookie))).await;
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.text);
+    assert!(
+        settings.text.contains(r#"id="members-section""#),
+        "{}",
+        settings.text
+    );
+    assert!(settings.text.contains(r#"id="members-table""#));
+    assert!(settings.text.contains(r#"id="access-form""#));
+}
+
+#[tokio::test]
+async fn a_project_admin_adds_and_lists_a_member() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+
+    let added = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members",
+            &json!({ "name": "bo", "role": "picker", "download": "picks" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
+
+    let listed = send(&app, get("/api/v1/projects/glac/members", Some(&cookie))).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    assert_eq!(listed.body["require_auth_to_read"], false);
+    let found = listed.body["members"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|member| member["name"] == "bo")
+        .expect("the new member is listed");
+    assert_eq!(found["role"], "picker");
+    assert_eq!(found["download"], "picks");
+}

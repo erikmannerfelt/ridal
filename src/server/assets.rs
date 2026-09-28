@@ -72,6 +72,7 @@ embedded_asset!(index_js, "index.js", "text/javascript");
 embedded_asset!(viewer_js, "viewer.js", "text/javascript");
 embedded_asset!(layers_js, "layers.js", "text/javascript");
 embedded_asset!(settings_js, "settings.js", "text/javascript");
+embedded_asset!(site_js, "site.js", "text/javascript");
 embedded_asset!(login_js, "login.js", "text/javascript");
 embedded_asset!(picker_js, "picker.js", "text/javascript");
 embedded_asset!(panel_js, "panel.js", "text/javascript");
@@ -267,6 +268,7 @@ mod tests {
             ("layers.js", include_str!("assets/layers.js")),
             ("settings.js", include_str!("assets/settings.js")),
             ("login.js", include_str!("assets/login.js")),
+            ("site.js", include_str!("assets/site.js")),
         ] {
             // The envelope-or-fallback shape. What follows `||` must be
             // the shared message, not a hand-written status string.
@@ -577,6 +579,10 @@ mod tests {
                 "login",
                 vec![app, ("login.js", include_str!("assets/login.js"))],
             ),
+            (
+                "site",
+                vec![app, ("site.js", include_str!("assets/site.js"))],
+            ),
         ]
     }
 
@@ -657,6 +663,7 @@ mod tests {
             ("layers.js", include_str!("assets/layers.js")),
             ("settings.js", include_str!("assets/settings.js")),
             ("login.js", include_str!("assets/login.js")),
+            ("site.js", include_str!("assets/site.js")),
             ("base.html.jinja", include_str!("templates/base.html.jinja")),
             (
                 "index.html.jinja",

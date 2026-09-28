@@ -17,19 +17,42 @@
       </p>
       <pre><code>ridal site account add &lt;name&gt; --server-admin</code></pre>
     </div>
-  {% endif %}
-
-  {% if projects %}
+  {% elif current_user %}
     <p class="lede">
       You are signed in as <strong>{{ current_user }}</strong>
       ({{ current_role }}).
     </p>
+  {% endif %}
+
+  <div id="site-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+  {% if projects %}
     <ul class="project-list">
       {% for project in projects %}
         <li class="project-card" data-project-key="{{ project.key }}">
-          <a href="/p/{{ project.key }}/">{{ project.name }}</a>
+          <a class="project-name" href="/p/{{ project.key }}/">{{ project.name }}</a>
           {% if project.archived %}<span class="project-badge">Archived</span>{% endif %}
-          <span class="project-role">{{ project.role }}</span>
+          {% if project.member %}<span class="project-role">{{ project.role }}</span>{% endif %}
+          {% if server_admin %}
+            {#- Management lives here rather than on the project's own
+                settings page: archiving and deleting are site-level acts,
+                and the key is immutable so the display name is the only
+                editable part. -#}
+            <div class="project-actions">
+              <form class="rename-project" novalidate>
+                <label class="visually-hidden" for="rename-{{ project.key }}">Project name</label>
+                <input type="text" id="rename-{{ project.key }}" name="name"
+                       value="{{ project.name }}" autocomplete="off">
+                <button type="submit">Rename</button>
+              </form>
+              <button type="button" class="archive-project"
+                      data-archived="{{ 'true' if project.archived else 'false' }}">
+                {{ "Unarchive" if project.archived else "Archive" }}
+              </button>
+              <button type="button" class="danger delete-project">Delete</button>
+              <span class="row-status project-status"></span>
+            </div>
+          {% endif %}
         </li>
       {% endfor %}
     </ul>
@@ -38,10 +61,93 @@
   {% endif %}
 
   {% if server_admin %}
-    <h2>New project</h2>
-    <p class="hint">
-      A project is a directory under <code>projects/</code>. Create one from
-      the command line, or here once the site editor arrives.
-    </p>
+    <section class="settings-section" id="new-project-section">
+      <h2>New project</h2>
+      <p class="hint">
+        A project is a directory under <code>projects/</code>. The key names
+        that directory and cannot be changed later; the name is what people
+        see, and can be edited at any time.
+      </p>
+      <form id="new-project" class="add-layer" novalidate>
+        <div class="add-layer-fields">
+          <label>Name
+            <input type="text" name="name" required
+                   placeholder="Glaciology 2026" autocomplete="off">
+          </label>
+          {#- The name comes first because the key is derived from it: the
+              key box's placeholder shows what will be used if it is left
+              alone, which is the answer almost everyone wants. -#}
+          <label>Key (from the name)
+            <input type="text" name="key" pattern="[a-z0-9_\-]+"
+                   placeholder="glac-2026" autocomplete="off"
+                   autocapitalize="none" spellcheck="false">
+          </label>
+        </div>
+        <button type="submit">Create project</button>
+        <span id="new-project-status" class="pick-status"></span>
+      </form>
+    </section>
+
+    {#- Accounts are server-wide (#214): they sign in once and are given a
+        role in each project. The project's own settings page is where a
+        membership is granted; this is where the account itself lives. -#}
+    <section class="settings-section" id="accounts-section">
+      <h2>Accounts</h2>
+      <p class="hint">
+        Everyone signs in with one of these, then sees the projects they are
+        a member of. An account that is not a server administrator still
+        needs a role in a project before it can open it.
+      </p>
+
+      <table id="accounts-table" class="layers-table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Server admin</th>
+            <th scope="col">Status</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      {#- The one moment an invite token exists: only its hash is stored,
+          so this is shown once and cannot be shown again. -#}
+      <div id="invite-result" class="warning" hidden>
+        <p>
+          <strong>Invite link for <span id="invite-who"></span>.</strong>
+          Send it however you already talk to that person. It works once
+          and expires in <span id="invite-days"></span> days, and it is as
+          sensitive as a password until then.
+        </p>
+        <p><code id="invite-link" class="path"></code></p>
+        <p class="hint">
+          This is the only time it is shown. If it is lost, issue another.
+        </p>
+      </div>
+
+      <form id="add-account" class="add-layer" novalidate>
+        <h3>Add an account</h3>
+        <p class="hint">
+          You create the account; they set their own password through a
+          one-time link, so no password is ever known to two people.
+        </p>
+        <div class="add-layer-fields">
+          <label>Name
+            <input type="text" name="name" required pattern="[a-z0-9_\-]+"
+                   placeholder="erik" autocomplete="off"
+                   autocapitalize="none" spellcheck="false">
+          </label>
+          <label class="checkbox bulk-random">
+            <input type="checkbox" name="server_admin">
+            Server administrator
+          </label>
+        </div>
+        <button type="submit">Create account and get a link</button>
+      </form>
+    </section>
   {% endif %}
+{% endblock %}
+{% block extrascript %}
+  <script src="/static/site.js"></script>
 {% endblock %}

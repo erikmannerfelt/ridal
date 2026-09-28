@@ -962,6 +962,68 @@ dialog th {
   max-width: 60ch;
 }
 
+/* The landing page's project list (#214). A card per project rather than a
+ * table: the row holds a link, a badge and, for a server administrator,
+ * management controls that a comparison layout would not fit. */
+.project-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+  max-width: 60rem;
+}
+
+.project-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-md);
+}
+
+.project-name {
+  font-weight: 600;
+  font-size: var(--text-lg);
+}
+
+.project-badge {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.project-role {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.project-actions {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.project-actions form {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.project-actions input[type="text"] {
+  font: inherit;
+  max-width: 14rem;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: inherit;
+}
+
 .hint {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
