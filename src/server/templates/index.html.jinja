@@ -85,10 +85,9 @@
       <dd>
         {%- if e.line_count == 0 -%}
           <span class="meta-none">None yet</span>
-        {%- elif e.line_count == 1 -%}
-          1 line
         {%- else -%}
-          {{ e.line_count }} lines
+          {{ e.contributor_count }} contributor{% if e.contributor_count != 1 %}s{% endif %}
+          ({{ e.line_count }} line{% if e.line_count != 1 %}s{% endif %})
         {%- endif -%}
       </dd>
       {% endif %}
