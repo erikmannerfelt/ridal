@@ -166,7 +166,7 @@ pub async fn get_properties(
             name: name.as_str().to_string(),
         })
         .collect();
-    groups.sort_by(|a, b| a.name.cmp(&b.name));
+    groups.sort_by(|a, b| super::catalog::group_display_order((&a.name, &a.id), (&b.name, &b.id)));
 
     Ok(Json(Properties {
         radargram_id: entry.radargram_id.to_string(),

@@ -724,6 +724,22 @@ fn apply_override(entry: &mut CatalogEntry, overrides: &CatalogOverrides) {
     entry.elevation_max = over.elevation_max;
 }
 
+/// The order groups are listed in, wherever they are listed: by the name a
+/// person sees, ignoring case, so a rename moves a group to where its new
+/// name belongs. Ties fall back to the exact name and then the id, so two
+/// groups can never swap places between loads.
+///
+/// `label` is what is shown, which is the id itself for a group nobody has
+/// named.
+pub fn group_display_order(a: (&str, &str), b: (&str, &str)) -> std::cmp::Ordering {
+    let ((a_label, a_id), (b_label, b_id)) = (a, b);
+    a_label
+        .to_lowercase()
+        .cmp(&b_label.to_lowercase())
+        .then_with(|| a_label.cmp(b_label))
+        .then_with(|| a_id.cmp(b_id))
+}
+
 /// One representative name per group id (see [`Catalog::group_names`]):
 /// resolved with the same rule as a duplicate `radargram_id`, applied one
 /// level up, except where the project has settled the question itself.
@@ -832,6 +848,28 @@ fn resolve_group_names(
 mod tests {
     use super::*;
     use crate::gpr::{self, RunParams};
+
+    #[test]
+    fn groups_are_listed_by_name_ignoring_case_not_by_id() {
+        let mut groups = vec![
+            ("zeta", "a-first-id"),
+            ("Beta", "z"),
+            ("alpha", "y"),
+            ("beta", "x"),
+            ("Beta", "b"),
+        ];
+        groups.sort_by(|a, b| group_display_order(*a, *b));
+        assert_eq!(
+            groups,
+            vec![
+                ("alpha", "y"),
+                ("Beta", "b"),
+                ("Beta", "z"),
+                ("beta", "x"),
+                ("zeta", "a-first-id"),
+            ]
+        );
+    }
 
     fn process_to(
         input: &str,

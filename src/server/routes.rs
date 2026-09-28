@@ -1279,6 +1279,11 @@ pub async fn index_page(
             }
         })
         .collect();
+    // By the heading people read, not by id: an id is fixed when the group
+    // is created, so sorting on it leaves a renamed group where its old
+    // name was. "Ungrouped" is pushed after, so it stays last.
+    groups
+        .sort_by(|a, b| super::catalog::group_display_order((&a.label, &a.id), (&b.label, &b.id)));
     let ungrouped: Vec<_> = visible
         .iter()
         .copied()
