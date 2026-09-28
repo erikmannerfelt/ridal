@@ -87,6 +87,7 @@ pub mod basemaps;
 pub mod derived;
 pub mod interpretations;
 pub mod layers;
+pub mod members;
 pub mod migrate;
 pub mod overlays;
 pub mod overrides;

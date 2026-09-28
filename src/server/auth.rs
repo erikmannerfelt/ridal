@@ -48,9 +48,11 @@ use axum::response::{IntoResponse, Redirect, Response};
 use super::app::AppState;
 use super::routes::ApiError;
 use crate::identity::UserId;
+use crate::project::members::{self, MemberSet};
 use crate::project::store::{DocumentStore, Expectation};
 use crate::project::users::{self, DownloadScope, Role, UserSet};
 use crate::project::Project;
+use crate::site::accounts;
 
 /// Name of the session cookie.
 pub const SESSION_COOKIE: &str = "ridal_session";
@@ -210,6 +212,9 @@ pub enum RoleCap {
     ReadOnlyServer,
     /// The catalog is not a project, so there is nowhere to write.
     NotAProject,
+    /// The project is archived: read-only, interpretations still
+    /// exportable (#214).
+    Archived,
 }
 
 /// Who is asking, and what they may do.
@@ -222,6 +227,14 @@ pub struct Caller {
     /// `None` for an anonymous reader, who has no preferences and can write
     /// nothing.
     pub user: Option<UserId>,
+    /// Whether this account administers the whole site (#214): it creates
+    /// projects and accounts and acts as an administrator in every project.
+    pub server_admin: bool,
+    /// Whether the caller may see this project at all. False for a
+    /// non-member of a project that requires a login; the middleware answers
+    /// `404` rather than `403`, so the project's existence does not leak.
+    /// Always true outside a site.
+    pub visible: bool,
     /// What the account says, before any server-wide cap.
     pub account_role: Role,
     /// What this caller may actually do here and now.
@@ -293,6 +306,13 @@ impl Caller {
                 "read_only",
                 format!("This server was started read-only, so you cannot {action}."),
             )),
+            Some(RoleCap::Archived) => Err(ApiError::forbidden(
+                "archived",
+                format!(
+                    "This project is archived, so you cannot {action}. An archived \
+                     project is read-only; its interpretations can still be exported."
+                ),
+            )),
             None if !self.is_authenticated() => Err(ApiError::unauthorized(
                 "authentication_required",
                 format!("Sign in to {action}."),
@@ -344,6 +364,8 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
         // nothing to write, so every caller is a viewer.
         return Caller {
             user: None,
+            server_admin: false,
+            visible: true,
             account_role: Role::Viewer,
             role: Role::Viewer,
             download: DownloadScope::All,
@@ -352,6 +374,10 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
             requires_login_to_read: false,
         };
     };
+
+    if let Some(site) = &state.site {
+        return resolve_site(state, site, headers, now);
+    }
 
     // A user file that will not parse must fail *closed*, and closed here
     // means more than "nobody is signed in".
@@ -412,6 +438,8 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
 
     Caller {
         user,
+        server_admin: false,
+        visible: true,
         account_role,
         role,
         download,
@@ -420,6 +448,96 @@ pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
             .as_ref()
             .is_some_and(|set| set.require_auth_to_read),
         authentication_configured: configured.is_some(),
+    }
+}
+
+/// Resolve a caller inside a site (#214).
+///
+/// Identity is server-wide: the session cookie names an account in the
+/// site's `accounts.json`, and what the caller may do in *this* project
+/// comes from the project's memberships. A server administrator acts as an
+/// administrator in every project. A non-member of a project that requires
+/// a login is not visible, which the middleware turns into a `404` rather
+/// than naming the project and refusing it.
+fn resolve_site(
+    state: &AppState,
+    site: &super::app::SiteContext,
+    headers: &HeaderMap,
+    now: i64,
+) -> Caller {
+    // A damaged account file fails closed: no account matches, so only the
+    // public read path is left.
+    let accounts = match accounts::read(&site.store) {
+        Ok(Some((set, _))) => Some(set),
+        Ok(None) => None,
+        Err(_) => Some(accounts::AccountSet::default()),
+    };
+    // A damaged membership file fails closed: require a login (which nobody
+    // can satisfy) and deny anonymous downloads. Absent is the public
+    // default, exactly as a project with no user file has always been.
+    let members = match state.project.as_ref() {
+        Some(project) => match members::read(project.documents()) {
+            Ok(Some((set, _))) => set,
+            Ok(None) => MemberSet::default(),
+            Err(_) => MemberSet {
+                require_auth_to_read: true,
+                anonymous_download: DownloadScope::None,
+                members: Vec::new(),
+            },
+        },
+        None => MemberSet::default(),
+    };
+
+    let account = accounts.as_ref().and_then(|set| {
+        let cookie = cookie_value(headers, SESSION_COOKIE)?;
+        let key = state.session_key().ok()?;
+        let (name, version) = key.verify(&cookie, now)?;
+        let account = set.get(&name)?;
+        (account.credential_version == version).then_some(account)
+    });
+    let server_admin = account.is_some_and(|account| account.server_admin);
+    let member = account.and_then(|account| members.get(&account.name));
+
+    let (user, account_role, download) = match account {
+        // A server administrator acts as an administrator everywhere, with
+        // nothing withheld.
+        Some(account) if server_admin => (
+            Some(account.name.clone()),
+            Role::Admin,
+            DownloadScope::All,
+        ),
+        Some(account) => {
+            let (role, download) = member
+                .map(|member| (member.role, member.download))
+                .unwrap_or((Role::Viewer, members.anonymous_download));
+            (Some(account.name.clone()), role, download)
+        }
+        None => (None, Role::Viewer, members.anonymous_download),
+    };
+
+    let visible = server_admin || member.is_some() || !members.require_auth_to_read;
+
+    let (role, cap) = if state.access.read_only {
+        (
+            account_role.min(Role::Viewer),
+            Some(RoleCap::ReadOnlyServer),
+        )
+    } else if site.archived {
+        (account_role.min(Role::Viewer), Some(RoleCap::Archived))
+    } else {
+        (account_role, None)
+    };
+
+    Caller {
+        user,
+        server_admin,
+        visible,
+        account_role,
+        role,
+        download,
+        cap,
+        requires_login_to_read: members.require_auth_to_read,
+        authentication_configured: accounts.is_some(),
     }
 }
 
@@ -466,6 +584,21 @@ pub async fn middleware(
 ) -> Response {
     let caller = resolve(&state, request.headers(), now());
     let path = request.uri().path().to_string();
+
+    // A project the caller may not see answers 404, not 403, so its
+    // existence does not leak (#214). A readable key is not a secret; access
+    // comes from membership.
+    if !caller.visible {
+        let error = ApiError::not_found(
+            "project_not_found",
+            "No such project, or you are not a member of it.",
+        );
+        return if path.starts_with("/api/") {
+            error.into_response()
+        } else {
+            super::routes::PageError(error).into_response()
+        };
+    }
 
     if caller.requires_login_to_read && !caller.is_authenticated() && !is_public_path(&path) {
         return if path.starts_with("/api/") {
@@ -696,6 +829,8 @@ mod tests {
     fn a_refusal_says_which_of_the_reasons_it_was() {
         let base = Caller {
             user: None,
+            server_admin: false,
+            visible: true,
             account_role: Role::Viewer,
             role: Role::Viewer,
             download: DownloadScope::All,
@@ -751,6 +886,8 @@ mod tests {
     fn download_scope_refusals_distinguish_anonymous_from_restricted() {
         let anonymous = Caller {
             user: None,
+            server_admin: false,
+            visible: true,
             account_role: Role::Viewer,
             role: Role::Viewer,
             download: DownloadScope::None,

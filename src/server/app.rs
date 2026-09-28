@@ -13,7 +13,8 @@ use axum::Router;
 use tokio::sync::Semaphore;
 
 use super::catalog::{Catalog, CatalogRoot, RevisionId};
-use crate::identity::RadargramId;
+use crate::identity::{ProjectKey, RadargramId};
+use crate::project::store::DocumentStore;
 use crate::server::render_service::{RenderService, RenderServiceConfig};
 use crate::source::{AmplitudeSource, SourceReader};
 
@@ -69,6 +70,46 @@ impl Default for AccessOptions {
             allow_password_login: true,
             persist_sessions: true,
         }
+    }
+}
+
+/// The site a project is served from, when it is (#214).
+///
+/// Every project's [`AppState`] in one site shares this: the site root (which
+/// holds `accounts.json` and `session.key`), the project's key, and one
+/// session-signing key so signing in to the site reaches every project. A
+/// `ridal gui` project has no site, which is what keeps its behaviour
+/// unchanged.
+pub struct SiteContext {
+    pub key: ProjectKey,
+    pub store: DocumentStore,
+    /// Archived projects are read-only and named as such in a refusal.
+    pub archived: bool,
+    session_key: Mutex<Option<super::auth::SessionKey>>,
+}
+
+impl SiteContext {
+    pub fn new(key: ProjectKey, store: DocumentStore, archived: bool) -> Self {
+        Self {
+            key,
+            store,
+            archived,
+            session_key: Mutex::new(None),
+        }
+    }
+
+    /// The site-wide signing key, loaded on first use.
+    pub fn session_key(&self) -> Result<super::auth::SessionKey, String> {
+        let mut guard = self
+            .session_key
+            .lock()
+            .map_err(|_| "the session key lock was poisoned by a panic".to_string())?;
+        if let Some(key) = guard.as_ref() {
+            return Ok(key.clone());
+        }
+        let key = super::auth::SessionKey::load_or_create(&self.store)?;
+        *guard = Some(key.clone());
+        Ok(key)
     }
 }
 
@@ -132,6 +173,10 @@ pub struct AppState {
     /// parallel gate is how the two drift apart. See
     /// [`super::auth::Caller`].
     pub access: AccessOptions,
+    /// The site this project is served from, when it is (#214). `None` is
+    /// `ridal gui` and the read-only bare-directory case, whose identity
+    /// behaviour is unchanged.
+    pub site: Option<Arc<SiteContext>>,
     /// The key that signs session cookies, loaded on first use.
     ///
     /// Lazy so a project that never authenticates never grows a
@@ -321,6 +366,7 @@ impl AppState {
             access,
             session_key: Mutex::new(None),
             project,
+            site: None,
             // `.max(1)`: a zero-permit semaphore would deadlock every
             // render forever. The CLI rejects `--n-workers 0` with a
             // clear message, so this only guards programmatic callers.
@@ -542,6 +588,14 @@ impl AppState {
         self.roots.get(entry.root).is_some_and(|root| root.writable)
     }
 
+    /// Attach the site this project is served from (#214). A builder method
+    /// rather than a `build_with_project` parameter, so the many callers and
+    /// tests that serve a lone project are untouched.
+    pub fn with_site(mut self, site: Arc<SiteContext>) -> Self {
+        self.site = Some(site);
+        self
+    }
+
     /// The key that signs this project's session cookies, creating it on
     /// first use.
     ///
@@ -549,6 +603,11 @@ impl AppState {
     /// nothing should be asking for a session key there, and answering
     /// "there is no key" would read as "this cookie is fine".
     pub fn session_key(&self) -> Result<super::auth::SessionKey, String> {
+        // A site has one key for every project, kept at the site root, so a
+        // session outlives a project's own directory and reaches them all.
+        if let Some(site) = &self.site {
+            return site.session_key();
+        }
         let project = self
             .project
             .as_ref()
