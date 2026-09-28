@@ -12,7 +12,7 @@ authors = ["Erik Schytt Mannerfelt"]
 # The Malå test fixtures are raw radar files of 15 MB together, which is
 # more than crates.io accepts for a whole crate (10 MiB). They are only
 # read by tests, and tests are not run from the published crate.
-exclude = ["assets/mala/"]
+exclude = ["assets/mala/", "docs/"]
 
 [lib]
 name = "ridal_lib"
