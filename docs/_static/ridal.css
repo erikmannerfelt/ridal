@@ -4,3 +4,37 @@ figure img {
   background: #fff;
   border-radius: 4px;
 }
+
+/* Derived item expressions, in the GUI editor's colours (see app.css,
+   `.tok-*`). The dark values are lighter, for contrast on a dark page.
+   The selectors outrank Furo's dark-mode Pygments rules, which would
+   otherwise recolour these tokens. */
+body {
+  --expr-reduce: #c2185b;
+  --expr-builtin: #1f6f8b;
+  --expr-keyword: #9a3f9a;
+  --expr-layer: #2f7d32;
+  --expr-number: #b06000;
+}
+@media (prefers-color-scheme: dark) {
+  body:not([data-theme="light"]) {
+    --expr-reduce: #f06292;
+    --expr-builtin: #6fb7cf;
+    --expr-keyword: #ce93d8;
+    --expr-layer: #81c784;
+    --expr-number: #ffb74d;
+  }
+}
+body[data-theme="dark"] {
+  --expr-reduce: #f06292;
+  --expr-builtin: #6fb7cf;
+  --expr-keyword: #ce93d8;
+  --expr-layer: #81c784;
+  --expr-number: #ffb74d;
+}
+html body .highlight .n-Ridal.n-Ridal-Reduce { color: var(--expr-reduce); font-weight: 600; }
+html body .highlight .n-Ridal.n-Ridal-Builtin { color: var(--expr-builtin); font-weight: 600; }
+html body .highlight .n-Ridal.n-Ridal-Keyword { color: var(--expr-keyword); font-weight: 600; }
+html body .highlight .n-Ridal.n-Ridal-Layer { color: var(--expr-layer); }
+html body .highlight .m.m-Ridal { color: var(--expr-number); }
+html body .highlight .o.o-Ridal { color: var(--color-foreground-muted); }

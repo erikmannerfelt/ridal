@@ -17,24 +17,24 @@ position, make up the item.
 
 Inside an expression, names mean the following:
 
-A layer's id, such as `bed`
+A layer's id, such as {expr}`bed`
 : The values every contributor has for that layer **at this position**: one
   value per contributor, in the item's unit. This is a list, not a number, so
-  it has to be reduced to one number, for example with `median(bed)`. Each
+  it has to be reduced to one number, for example with {expr}`median(bed)`. Each
   contributor's value has already been through the layer's reducer and its
   exclusivity rules (see {doc}`../guide/interpretation`). A contributor
-  with no value here contributes `NaN`.
+  with no value here contributes {expr}`NaN`.
 
 Another derived item's id
 : That item's value at this position, already a single number, in this
   item's unit.
 
-`NaN`
+{expr}`NaN`
 : "No value". It propagates through arithmetic, and every reduction skips it.
 
 Whose picks count as "every contributor" depends on who is looking. An
 `operator` or `admin` sees everyone's. Anyone else sees only their own, so
-`median(bed)` is simply their own `bed`, unless an administrator has released
+{expr}`median(bed)` is simply their own {expr}`bed`, unless an administrator has released
 the item's result computed over everyone's picks.
 
 ## Layers and attributes
@@ -48,17 +48,17 @@ inferred from the expression:
 | Expression | Result |
 |---|---|
 | A layer id | layer |
-| `median(x)`, `mean(x)`, `min(x)`, `max(x)`, `percentile(x, p)` | the same as `x` |
-| `count(x)`, `std(x)`, `nmad(x)` | attribute |
-| `a - b`, where both are layers | attribute (a distance between two positions) |
-| `a + b`, `a - b` otherwise | the same as `a` |
-| `a * b`, `a / b` | attribute |
-| `a + 2.0`, `a * 2.0`, and so on | the same as `a` |
-| `shallowest(a, b)`, `deepest(a, b)`, `clamp(a, lo, hi)` | the same as `a` |
-| `where(cond, a, b)` | the same as `a` (or `b`, if `a` is a plain number) |
+| {expr}`median(x)`, {expr}`mean(x)`, {expr}`min(x)`, {expr}`max(x)`, {expr}`percentile(x, p)` | the same as `x` |
+| {expr}`count(x)`, {expr}`std(x)`, {expr}`nmad(x)` | attribute |
+| {expr}`a - b`, where both are layers | attribute (a distance between two positions) |
+| {expr}`a + b`, {expr}`a - b` otherwise | the same as `a` |
+| {expr}`a * b`, {expr}`a / b` | attribute |
+| {expr}`a + 2.0`, {expr}`a * 2.0`, and so on | the same as `a` |
+| {expr}`shallowest(a, b)`, {expr}`deepest(a, b)`, {expr}`clamp(a, lo, hi)` | the same as `a` |
+| {expr}`where(cond, a, b)` | the same as `a` (or `b`, if `a` is a plain number) |
 
-So `median(bed)` is a derived layer, `median(bed) - median(surface)` is a
-thickness and therefore an attribute, and `median(bed) + 2.0` is a layer
+So {expr}`median(bed)` is a derived layer, {expr}`median(bed) - median(surface)` is a
+thickness and therefore an attribute, and {expr}`median(bed) + 2.0` is a layer
 shifted two units down.
 
 ## Units
@@ -83,12 +83,12 @@ unit and never converted.
 :::{important}
 Two rules that the current version does not explain well when broken:
 
-- **Write numbers with a decimal point**: `2.0`, not `2`. A whole number
-  such as `50` is an integer in this language, and most functions only
-  accept decimal numbers, so `percentile(bed, 50)` fails with "Function not
-  found". Write `percentile(bed, 50.0)`.
-- **Put a plain number on the right** of an operator: `median(bed) * 2.0`
-  works, while `2.0 * median(bed)` and `10.0 - median(bed)` are refused when
+- **Write numbers with a decimal point**: {expr}`2.0`, not {expr}`2`. A whole number
+  such as {expr}`50` is an integer in this language, and most functions only
+  accept decimal numbers, so {expr}`percentile(bed, 50)` fails with "Function not
+  found". Write {expr}`percentile(bed, 50.0)`.
+- **Put a plain number on the right** of an operator: {expr}`median(bed) * 2.0`
+  works, while {expr}`2.0 * median(bed)` and {expr}`10.0 - median(bed)` are refused when
   the item is saved. Rearrange the expression so the number comes second.
 :::
 
@@ -97,58 +97,58 @@ Two rules that the current version does not explain well when broken:
 ### Reductions
 
 These turn a layer's per-contributor values into one number. All of them
-skip `NaN`, and give `NaN` if nothing is left.
+skip {expr}`NaN`, and give {expr}`NaN` if nothing is left.
 
 | Function | Result |
 |---|---|
-| `median(x)` | The median. With an even number of values, the mean of the middle two. |
-| `mean(x)` | The arithmetic mean. |
-| `min(x)`, `max(x)` | The smallest or largest value. Since depths grow downwards, `min` is the shallowest. |
-| `percentile(x, p)` | The value at rank `floor(p / 100 × (n − 1))` among the `n` sorted values, with `p` from `0.0` to `100.0`. It never interpolates, so the result is always a value someone actually picked. |
-| `count(x)` | How many contributors have a value. |
-| `std(x)` | The sample standard deviation (dividing by `n − 1`). `NaN` with fewer than two values. |
-| `nmad(x)` | The normalised median absolute deviation, 1.4826 times the median of the absolute differences from the median. A spread that is robust to outliers. |
+| {expr}`median(x)` | The median. With an even number of values, the mean of the middle two. |
+| {expr}`mean(x)` | The arithmetic mean. |
+| {expr}`min(x)`, {expr}`max(x)` | The smallest or largest value. Since depths grow downwards, {expr}`min` is the shallowest. |
+| {expr}`percentile(x, p)` | The value at rank `floor(p / 100 × (n − 1))` among the `n` sorted values, with `p` from {expr}`0.0` to {expr}`100.0`. It never interpolates, so the result is always a value someone actually picked. |
+| {expr}`count(x)` | How many contributors have a value. |
+| {expr}`std(x)` | The sample standard deviation (dividing by `n − 1`). {expr}`NaN` with fewer than two values. |
+| {expr}`nmad(x)` | The normalised median absolute deviation, 1.4826 times the median of the absolute differences from the median. A spread that is robust to outliers. |
 
 ### Combining layers
 
-`concatenate(a, b)`
+{expr}`concatenate(a, b)`
 : Pools two layers' per-contributor values into one list, so that they can
-  be reduced together: `median(concatenate(bed, bed_no_temperate))`. Layers
+  be reduced together: {expr}`median(concatenate(bed, bed_no_temperate))`. Layers
   are never pooled implicitly.
 
-`a + b`, `a - b`, `a * b`, `a / b`
+{expr}`a + b`, {expr}`a - b`, {expr}`a * b`, {expr}`a / b`
 : Element-wise, contributor by contributor, when both sides are layers; a
-  plain number applies to every contributor. `NaN` on either side gives
-  `NaN`.
+  plain number applies to every contributor. {expr}`NaN` on either side gives
+  {expr}`NaN`.
 
-`shallowest(a, b)`, `deepest(a, b)`
-: Element-wise minimum or maximum depth. `NaN` on either side gives `NaN`.
+{expr}`shallowest(a, b)`, {expr}`deepest(a, b)`
+: Element-wise minimum or maximum depth. {expr}`NaN` on either side gives {expr}`NaN`.
 
-`clamp(a, lo, hi)`
+{expr}`clamp(a, lo, hi)`
 : Limits `a` to the range from `lo` to `hi`. The bounds must be single
-  numbers; reduce a layer first, as in `clamp(x, 0.0, median(bed))`.
+  numbers; reduce a layer first, as in {expr}`clamp(x, 0.0, median(bed))`.
 
 ### Conditions
 
 Comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`) between a layer and a number,
-or between two layers, give one result per contributor, which `where`
+or between two layers, give one result per contributor, which {expr}`where`
 consumes:
 
-`where(cond, a, b)`
+{expr}`where(cond, a, b)`
 : For each contributor, `a` where `cond` holds and `b` where it does not.
-  A contributor with no value in `cond` gets `NaN`. For example,
-  `median(where(bed > 50.0, bed, NaN))` ignores picks shallower than 50.
+  A contributor with no value in `cond` gets {expr}`NaN`. For example,
+  {expr}`median(where(bed > 50.0, bed, NaN))` ignores picks shallower than 50.
 
 `if` works too, but only on a single true or false, such as a comparison
 between two reduced values:
-`if median(bed) > 100.0 { median(bed) } else { NaN }`. Using `if` on a
-layer's per-contributor values is an error that points to `where`.
+{expr}`if median(bed) > 100.0 { median(bed) } else { NaN }`. Using `if` on a
+layer's per-contributor values is an error that points to {expr}`where`.
 
 ### Plain numbers
 
-`min(a, b)` and `max(a, b)` of two single numbers give the smaller or
-larger one, like `shallowest` and `deepest`. `let` can name an intermediate
-value: `let b = median(bed); b - 2.0`.
+{expr}`min(a, b)` and {expr}`max(a, b)` of two single numbers give the smaller or
+larger one, like {expr}`shallowest` and {expr}`deepest`. `let` can name an intermediate
+value: {expr}`let b = median(bed); b - 2.0`.
 
 ## Limits
 
@@ -161,13 +161,13 @@ a limited nesting depth.
 
 | Expression | Unit | What it is |
 |---|---|---|
-| `median(bed)` | `meters` | A consensus bed from everyone's picks. |
-| `percentile(bed, 49.0)` | `meters` | A consensus bed that is always one contributor's actual pick. |
-| `median(bed) - median(cts)` | `meters` | The thickness between two consensus layers. |
-| `std(bed)` | `meters` | How much the contributors disagree about the bed. |
-| `count(bed)` | `dimensionless` | How many people picked the bed here. |
-| `median(concatenate(bed, bed_no_temperate))` | `meters` | A consensus over two layers that describe the same reflector in different conditions. |
-| `clamp(median(bed) - median(cts), 0.0, 1000.0)` | `meters` | A thickness that is never negative. |
+| {expr}`median(bed)` | `meters` | A consensus bed from everyone's picks. |
+| {expr}`percentile(bed, 49.0)` | `meters` | A consensus bed that is always one contributor's actual pick. |
+| {expr}`median(bed) - median(cts)` | `meters` | The thickness between two consensus layers. |
+| {expr}`std(bed)` | `meters` | How much the contributors disagree about the bed. |
+| {expr}`count(bed)` | `dimensionless` | How many people picked the bed here. |
+| {expr}`median(concatenate(bed, bed_no_temperate))` | `meters` | A consensus over two layers that describe the same reflector in different conditions. |
+| {expr}`clamp(median(bed) - median(cts), 0.0, 1000.0)` | `meters` | A thickness that is never negative. |
 
 ## Errors
 
@@ -176,7 +176,7 @@ evaluates it before anything is stored. The most common errors are:
 
 "must reduce to a single value per position"
 : The result is still one value per contributor. Wrap it in a reduction,
-  such as `median()`.
+  such as {expr}`median()`.
 
 "references missing layer" or "references missing derived item"
 : A name is not a layer or derived item in the project.
@@ -186,8 +186,8 @@ evaluates it before anything is stored. The most common errors are:
   `a`.
 
 "Function not found: … i64"
-: A whole number was used where a decimal one is needed. Write `50.0`
-  instead of `50`.
+: A whole number was used where a decimal one is needed. Write {expr}`50.0`
+  instead of {expr}`50`.
 
 "Function not found: … (f64, Kinded)"
 : A plain number is on the left of an operator. Move it to the right.

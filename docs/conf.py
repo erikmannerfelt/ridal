@@ -1,5 +1,10 @@
 """Sphinx configuration for the Ridal documentation."""
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent / "_ext"))
+
 project = "Ridal"
 author = "Erik Schytt Mannerfelt"
 copyright = "Erik Schytt Mannerfelt and contributors"
@@ -10,6 +15,7 @@ extensions = [
     "myst_parser",
     "sphinx_copybutton",
     "sphinx_design",
+    "ridal_expr",
 ]
 
 myst_enable_extensions = [
