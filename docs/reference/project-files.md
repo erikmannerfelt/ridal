@@ -26,7 +26,7 @@ my_survey/
     revisions/, revisions.json    earlier revisions of replaced radargrams
     audit.json                    who added or removed radargrams, and when
     radargrams/                   radargrams uploaded through the browser
-    cache/                        rendered images; safe to delete
+    cache/                        derived data; safe to delete
 ```
 
 Several of these only appear once they are needed. For example, a project
@@ -123,7 +123,7 @@ name_field = "Stake"
 ### `[cache]`
 
 `dir`
-: Where rendered images are cached. Useful when the project is on a network
+: Where derived data is cached. Useful when the project is on a network
   share and the cache should be on local disk. Default: `cache`, inside the
   data directory.
 

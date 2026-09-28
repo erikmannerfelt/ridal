@@ -37,3 +37,6 @@ html_theme_options = {
     "source_branch": "main",
     "source_directory": "docs/",
 }
+
+# Leave the `$ ` prompt of console examples out of what the copy button copies.
+copybutton_prompt_text = "$ "

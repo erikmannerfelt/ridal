@@ -2566,13 +2566,20 @@ mod reference_tests {
         }
         let name = command.get_bin_name().unwrap_or(command.get_name());
         let heading = "#".repeat(depth.min(4));
-        write!(out, "\n{heading} `{name}`\n\n").unwrap();
+        // `program` scopes the `option` entries below to this command, so
+        // `--quiet` on two commands are two entries, each linkable as
+        // {option}`ridal render --quiet`.
+        write!(
+            out,
+            "\n{heading} `{name}`\n\n```{{program}} {name}\n```\n\n"
+        )
+        .unwrap();
         if let Some(about) = command.get_long_about().or(command.get_about()) {
             write!(out, "{}\n\n", about.to_string().trim()).unwrap();
         }
         let usage = command.clone().render_usage().to_string();
         let usage = usage.trim().trim_start_matches("Usage:").trim();
-        write!(out, "```text\n{usage}\n```\n").unwrap();
+        write!(out, "```console\n$ {usage}\n```\n").unwrap();
 
         let arguments: Vec<&clap::Arg> = command
             .get_arguments()
@@ -2609,21 +2616,26 @@ mod reference_tests {
             })
             .unwrap_or_default();
         let takes_value = arg.get_num_args().is_some_and(|n| n.takes_values());
+        // The forms Sphinx's `option` directive parses: `-o <OUTPUT>, --output
+        // <OUTPUT>` for an option, and the bare `<INPUTS>` for a positional.
+        let with_value = |flag: String| {
+            if takes_value && !value.is_empty() {
+                format!("{flag} {value}")
+            } else {
+                flag
+            }
+        };
         let mut term = Vec::new();
         if let Some(short) = arg.get_short() {
-            term.push(format!("`-{short}`"));
+            term.push(with_value(format!("-{short}")));
         }
         if let Some(long) = arg.get_long() {
-            if takes_value && !value.is_empty() {
-                term.push(format!("`--{long} {value}`"));
-            } else {
-                term.push(format!("`--{long}`"));
-            }
+            term.push(with_value(format!("--{long}")));
         }
         if arg.is_positional() {
-            term.push(format!("`{value}`"));
+            term.push(value.clone());
         }
-        write!(out, "\n{}\n", term.join(", ")).unwrap();
+        write!(out, "\n```{{option}} {}\n", term.join(", ")).unwrap();
 
         let help = arg
             .get_long_help()
@@ -2663,7 +2675,7 @@ mod reference_tests {
         if paragraphs.is_empty() {
             paragraphs.push("(Not documented.)".to_string());
         }
-        write!(out, ": {}\n", paragraphs.join("\n\n  ")).unwrap();
+        write!(out, "{}\n```\n", paragraphs.join("\n\n")).unwrap();
     }
 
     #[test]
