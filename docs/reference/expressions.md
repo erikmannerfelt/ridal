@@ -81,12 +81,15 @@ unit and never converted.
 ## Numbers
 
 :::{important}
-Two rules that the current version does not explain well when broken:
+Two rules that the current version does not enforce well:
 
 - **Write numbers with a decimal point**: {expr}`2.0`, not {expr}`2`. A whole number
   such as {expr}`50` is an integer in this language, and most functions only
   accept decimal numbers, so {expr}`percentile(bed, 50)` fails with "Function not
-  found". Write {expr}`percentile(bed, 50.0)`.
+  found". Write {expr}`percentile(bed, 50.0)`. **In a comparison it is
+  worse:** {expr}`bed > 50` does not fail but is always false, so
+  {expr}`where(bed > 50, bed, NaN)` silently gives `NaN` everywhere. Write
+  {expr}`bed > 50.0`.
 - **Put a plain number on the right** of an operator: {expr}`median(bed) * 2.0`
   works, while {expr}`2.0 * median(bed)` and {expr}`10.0 - median(bed)` are refused when
   the item is saved. Rearrange the expression so the number comes second.
