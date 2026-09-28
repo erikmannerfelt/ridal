@@ -1132,6 +1132,12 @@ fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
         api_base => api_base,
         site_api_base => "/api/v1",
         page_base => page_base,
+        // Whether this project is hosted by a site rather than served on
+        // its own (#214). A site's project has site-wide accounts, so its
+        // settings page shows a members table; a lone project (`ridal gui`)
+        // has none and reads the access policy from its own users document.
+        site_managed => state.site.is_some(),
+        server_admin => caller.server_admin,
         // Empty means "follow the device", which is the absence of an
         // override rather than a third theme -- see `resolve_theme`.
         active_theme => resolve_theme(state, caller),

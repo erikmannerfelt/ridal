@@ -1425,18 +1425,22 @@ button.danger:disabled {
   font-size: var(--text-sm);
 }
 
-/* The Access section stacks three blocks that arrived from two different
- * places -- a form styled like the layers page's and one styled like the
- * settings page's -- and they were laid out to different widths and with
- * no gap, so two grey panels of different sizes met edge to edge and read
- * as one broken thing. One width, one gap. */
+/* The Members and Access sections stack grey blocks that arrived from
+ * different places -- a form styled like the layers page's and one styled
+ * like the settings page's -- and they were laid out to different widths
+ * and with no gap, so two grey panels of different sizes met edge to edge
+ * and read as one broken thing. One width, one gap. */
+#members-section .add-layer,
+#members-section .settings-form,
+#members-section .warning,
 #access-section .add-layer,
 #access-section .settings-form,
-#access-section .bulk-users,
 #access-section .warning {
   max-width: 44rem;
 }
 
+#members-section .add-layer,
+#members-section .settings-form,
 #access-section .add-layer,
 #access-section .settings-form {
   margin-top: var(--space-5);

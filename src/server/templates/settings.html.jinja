@@ -393,15 +393,18 @@
       {% endif %}
     </section>
 
-    {#- Section three: who may do what. A distinct area rather than a few
-        more fields, because everything in it is about people rather than
-        about the project's data, and it is the only part where a mistake
-        locks someone out. -#}
-    {% if can_edit_access %}
-      <section class="settings-section" id="access-section">
-        <h2>Access</h2>
-
-        <h3>People</h3>
+    {#- Members are a site concept (#214): who belongs to this project and
+        what they may do here. A lone project (`ridal gui`) has no site
+        accounts, so the section is absent there rather than pointing at an
+        API that does not exist. -#}
+    {% if site_managed and can_edit_access %}
+      <section class="settings-section" id="members-section">
+        <h2>Members</h2>
+        <p class="hint">
+          Who belongs to this project, and what each may do here. A member is
+          an account on the site; create accounts, reset passwords and
+          appoint server administrators from the <a href="/">site home</a>.
+        </p>
         {#- Said before the table rather than discovered after it. The
             role and download controls are selects that apply on change,
             and there is a Save button further down this page for a
@@ -413,39 +416,23 @@
           their next request, including one already signed in.
         </p>
 
-        <table id="users-table" class="layers-table">
+        <table id="members-table" class="layers-table">
           <thead>
             <tr>
               <th scope="col">Name</th>
               <th scope="col">Role</th>
               <th scope="col">Downloads</th>
-              <th scope="col">Status</th>
               <th scope="col"><span class="visually-hidden">Actions</span></th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
 
-        {#- The one moment an invite token exists: only its hash is stored,
-            so this is shown once and cannot be shown again. -#}
-        <div id="invite-result" class="warning" hidden>
-          <p>
-            <strong>Invite link for <span id="invite-who"></span>.</strong>
-            Send it however you already talk to that person. It works once
-            and expires in <span id="invite-days"></span> days, and it is as
-            sensitive as a password until then.
-          </p>
-          <p><code id="invite-link" class="path"></code></p>
+        <form id="add-member" class="add-layer" novalidate>
+          <h3>Add a member</h3>
           <p class="hint">
-            This is the only time it is shown. If it is lost, issue another.
-          </p>
-        </div>
-
-        <form id="add-user" class="add-layer" novalidate>
-          <h3>Add someone</h3>
-          <p class="hint">
-            You create the account; they set their own password through a
-            one-time link, so no password is ever known to two people.
+            The name must be an existing account on this site. Create the
+            account first, then give it a role here.
           </p>
           <div class="add-layer-fields">
             <label>Name
@@ -460,56 +447,18 @@
               <select name="download"></select>
             </label>
           </div>
-          <button type="submit">Create account and get a link</button>
+          <button type="submit">Add member</button>
         </form>
+      </section>
+    {% endif %}
 
-        {#- Bulk-specific warnings sit beside the control they are about,
-            rather than at the top of the page where they read as unrelated
-            to "Add several people". -#}
-        <div id="bulk-warning" class="warning" role="status" aria-live="polite" hidden></div>
-
-        <details class="bulk-users" id="bulk-users">
-          <summary>Add several people</summary>
-          <p class="hint">
-            Invite mode creates separate one-time links, so each person sets
-            their own password. Use password mode only for a small workshop:
-            the generated passwords must be printed or handed out by you.
-          </p>
-          <form id="bulk-user-form" class="add-layer" novalidate>
-            <div class="add-layer-fields">
-              <label class="checkbox bulk-random">
-                <input type="checkbox" id="bulk-random-names">
-                Use random usernames instead of the prefix
-              </label>
-              <label>Prefix
-                <input type="text" name="prefix" value="student" required
-                       pattern="[a-z0-9_\-]+" autocomplete="off"
-                       autocapitalize="none" spellcheck="false">
-              </label>
-              <label>Count
-                <input type="number" name="count" value="10" min="1" max="100" required>
-              </label>
-              <label>Role
-                <select name="role"></select>
-              </label>
-              <label>Downloads
-                <select name="download"></select>
-              </label>
-            </div>
-            <div class="bulk-actions">
-              <button type="submit">Create invite links</button>
-              <button type="button" id="bulk-passwords" class="danger">
-                Create with generated passwords
-              </button>
-            </div>
-            <label class="settings-field checkbox bulk-risk">
-              <input type="checkbox" id="bulk-risk">
-              I understand that generated passwords are shared secrets and are
-              less safe than invite links.
-            </label>
-          </form>
-          <div id="bulk-result" class="bulk-result" hidden></div>
-        </details>
+    {#- The project-wide policy. A distinct area rather than a few more
+        fields: everything in it is about people rather than the project's
+        data, and it is the only part of settings where a mistake locks
+        someone out. -#}
+    {% if can_edit_access %}
+      <section class="settings-section" id="access-section">
+        <h2>Access</h2>
 
         {#- The heading lives *inside* the container rather than above it,
             so the grey block and its Save button are visibly one thing
