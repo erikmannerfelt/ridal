@@ -1226,6 +1226,12 @@ map.on('mousemove', (event) => {
       text += ` · elev. ${(surfaceElevation - depth).toFixed(1)} m`;
     }
   }
+  // Listed derived attributes at this trace (#280), from panel.js's cache.
+  if (window.RIDAL_ATTRIBUTE_READOUT) {
+    for (const term of window.RIDAL_ATTRIBUTE_READOUT(traceIndex)) {
+      text += ` · ${term}`;
+    }
+  }
   readout.textContent = text;
 
   if (ownTrack) {
