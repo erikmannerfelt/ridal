@@ -523,6 +523,27 @@ pub fn build_engine() -> Engine {
     register_user_array(&mut engine);
     register_kinded(&mut engine);
 
+    // Every number is a decimal number (#270). A whole number is an `i64` in
+    // Rhai, and every function and operator here takes an `f64`, so `50`
+    // matched nothing: `percentile(bed, 50)` was "Function not found", and
+    // worse, Rhai answers a comparison it has no operator for with `false`,
+    // so `where(bed > 50, bed, NaN)` silently took the `else` branch for
+    // everyone. Registering an `i64` twin of every function would still
+    // leave `1 / 2` as integer division and any future function without its
+    // twin, so the literal is turned into a float before it is parsed and
+    // there is only one number type left to register anything for.
+    #[allow(
+        deprecated,
+        reason = "on_parse_token is marked volatile, not deprecated; \
+                  whole_numbers_are_decimal pins what it does here"
+    )]
+    engine.on_parse_token(|token, _, _| match token {
+        rhai::Token::IntegerConstant(n) => rhai::Token::FloatConstant(
+            (rhai::FloatWrapper::new(n as f64), n.to_string().into()).into(),
+        ),
+        _ => token,
+    });
+
     engine.disable_symbol("while");
     engine.disable_symbol("loop");
     engine.disable_symbol("for");
@@ -593,10 +614,13 @@ fn register_user_array(engine: &mut Engine) {
     engine.register_fn("-", |a: UserArray, b: f64| a.map_scalar(b, |x, y| x - y));
     engine.register_fn("*", |a: UserArray, b: f64| a.map_scalar(b, |x, y| x * y));
     engine.register_fn("/", |a: UserArray, b: f64| a.map_scalar(b, |x, y| x / y));
-    engine.register_fn("+", |a: f64, b: UserArray| b.map_scalar(a, |x, y| x + y));
-    engine.register_fn("-", |a: f64, b: UserArray| b.map_scalar(a, |x, y| x - y));
-    engine.register_fn("*", |a: f64, b: UserArray| b.map_scalar(a, |x, y| x * y));
-    engine.register_fn("/", |a: f64, b: UserArray| b.map_scalar(a, |x, y| x / y));
+    // `map_scalar` hands the closure (element, scalar), so with the number on
+    // the left the operands are swapped back. `10.0 - bed` once computed
+    // `bed - 10.0`.
+    engine.register_fn("+", |a: f64, b: UserArray| b.map_scalar(a, |x, y| y + x));
+    engine.register_fn("-", |a: f64, b: UserArray| b.map_scalar(a, |x, y| y - x));
+    engine.register_fn("*", |a: f64, b: UserArray| b.map_scalar(a, |x, y| y * x));
+    engine.register_fn("/", |a: f64, b: UserArray| b.map_scalar(a, |x, y| y / x));
 
     engine.register_fn("shallowest", |a: UserArray, b: UserArray| {
         a.map(&b, f64::min)
@@ -606,6 +630,10 @@ fn register_user_array(engine: &mut Engine) {
         a.map_scalar(b, f64::min)
     });
     engine.register_fn("deepest", |a: UserArray, b: f64| a.map_scalar(b, f64::max));
+    engine.register_fn("shallowest", |a: f64, b: UserArray| {
+        b.map_scalar(a, f64::min)
+    });
+    engine.register_fn("deepest", |a: f64, b: UserArray| b.map_scalar(a, f64::max));
     engine.register_fn("clamp", |a: UserArray, lo: f64, hi: f64| {
         UserArray(
             a.0.iter()
@@ -718,7 +746,37 @@ fn register_user_array(engine: &mut Engine) {
         engine.register_fn(op, |a: f64, b: UserArray| {
             UserArray(b.0.iter().map(|y| compare(op, a, *y)).collect())
         });
+        // Anything else compared with a layer is a mistake, and Rhai's
+        // fallback for a comparison it has no operator for is a constant
+        // `false`. That fallback is how `bed > 50` used to empty every
+        // `where`, so it is refused here rather than trusted.
+        engine.register_fn(op, |_a: UserArray, b: rhai::Dynamic| {
+            refuse_comparison::<UserArray>(op, "a layer", &b)
+        });
+        engine.register_fn(op, |a: rhai::Dynamic, _b: UserArray| {
+            refuse_comparison::<UserArray>(op, "a layer", &a)
+        });
     }
+
+    // `abs` of a layer is element-wise, like the arithmetic operators. Rhai's
+    // standard library supplies the scalar form.
+    engine.register_fn("abs", |a: UserArray| {
+        UserArray(a.0.iter().map(|v| v.abs()).collect())
+    });
+}
+
+/// The error for a comparison between a layer (or, in inference, any derived
+/// value) and something that is not a number.
+fn refuse_comparison<T>(
+    op: &str,
+    this: &str,
+    other: &rhai::Dynamic,
+) -> Result<T, Box<rhai::EvalAltResult>> {
+    Err(format!(
+        "cannot compare {this} with {} using '{op}'; compare it with a number or another layer",
+        describe_type(other.type_name())
+    )
+    .into())
 }
 
 /// Choose per user from `a` or `b` according to a mask, propagating NaN.
@@ -789,6 +847,21 @@ fn register_kinded(engine: &mut Engine) {
             kind,
         }
     }
+    /// A plain number, as inference sees it: one value with no position.
+    fn number() -> Kinded {
+        scalar(Kind::Attribute)
+    }
+    /// Refuse an array where evaluation only has a scalar form.
+    fn single(a: Kinded, function: &str) -> Result<Kinded, Box<rhai::EvalAltResult>> {
+        if a.is_array {
+            return Err(format!(
+                "{function}() takes a single value, not a layer's per-contributor values; \
+                 reduce it first, for example with median()"
+            )
+            .into());
+        }
+        Ok(a)
+    }
 
     // count/std/nmad flatten any input to Scalar.
     for name in ["count", "std", "nmad"] {
@@ -825,6 +898,7 @@ fn register_kinded(engine: &mut Engine) {
             }
         });
         engine.register_fn(name, |a: Kinded, _b: f64| -> Kinded { a });
+        engine.register_fn(name, |_a: f64, b: Kinded| -> Kinded { b });
     }
     engine.register_fn("clamp", |a: Kinded, _lo: f64, _hi: f64| -> Kinded { a });
     // A bound may itself be a reduced expression (`clamp(x, 0.0,
@@ -856,76 +930,145 @@ fn register_kinded(engine: &mut Engine) {
     engine.register_fn("clamp", |a: Kinded, _lo: f64, hi: Kinded| {
         bounded(a, None, Some(hi))
     });
-    engine.register_fn("where", |_cond: Kinded, a: Kinded, _b: Kinded| -> Kinded {
-        a
+
+    // `where` in every combination the real engine has: a condition that is
+    // either a per-contributor mask (a `Kinded` array) or a single true/false,
+    // and branches that are each a `Kinded` or a plain number. The result is
+    // per-contributor if anything going in is, because a mask broadcasts a
+    // scalar branch across the contributors. A *scalar* `Kinded` condition is
+    // refused, as evaluation has no `where` taking one number.
+    fn chosen(mask: bool, a: Option<Kinded>, b: Option<Kinded>) -> Kinded {
+        let is_array = mask
+            || a.as_ref().is_some_and(|a| a.is_array)
+            || b.as_ref().is_some_and(|b| b.is_array);
+        let kind = a.or(b).map_or(Kind::Attribute, |k| k.kind);
+        Kinded { is_array, kind }
+    }
+    fn mask(cond: Kinded) -> Result<bool, Box<rhai::EvalAltResult>> {
+        if !cond.is_array {
+            return Err(
+                "where() needs a comparison as its condition, such as bed > 50; \
+                 to choose between single values use if"
+                    .into(),
+            );
+        }
+        Ok(true)
+    }
+    engine.register_fn("where", |c: Kinded, a: Kinded, b: Kinded| {
+        mask(c).map(|m| chosen(m, Some(a), Some(b)))
+    });
+    engine.register_fn("where", |c: Kinded, a: Kinded, _b: f64| {
+        mask(c).map(|m| chosen(m, Some(a), None))
+    });
+    engine.register_fn("where", |c: Kinded, _a: f64, b: Kinded| {
+        mask(c).map(|m| chosen(m, None, Some(b)))
+    });
+    engine.register_fn("where", |c: Kinded, _a: f64, _b: f64| {
+        mask(c).map(|m| chosen(m, None, None))
     });
     // A comparison between two scalars is a native `bool`, so a `where` over
-    // already-reduced derived items reaches this form and not the `Kinded`
-    // one. Without it, inference rejects an expression evaluation accepts --
-    // the same mismatch as the missing scalar `clamp`, pointing the other way.
-    engine.register_fn("where", |_cond: bool, a: Kinded, _b: Kinded| -> Kinded {
-        a
+    // already-reduced derived items reaches these forms.
+    engine.register_fn("where", |_c: bool, a: Kinded, b: Kinded| {
+        chosen(false, Some(a), Some(b))
     });
-    // Mirrors of the real engine's mixed array/scalar branches. Every form
-    // registered there must exist here, or the two disagree about what is a
-    // valid expression -- which the symmetry test enforces.
-    engine.register_fn("where", |_cond: Kinded, a: Kinded, _b: f64| -> Kinded { a });
-    engine.register_fn("where", |_cond: Kinded, _a: f64, b: Kinded| -> Kinded { b });
-    engine.register_fn("where", |cond: Kinded, _a: f64, _b: f64| -> Kinded {
-        Kinded {
-            is_array: cond.is_array,
-            kind: Kind::Attribute,
-        }
+    engine.register_fn("where", |_c: bool, a: Kinded, _b: f64| {
+        chosen(false, Some(a), None)
     });
-    engine.register_fn("where", |_cond: bool, a: Kinded, _b: f64| -> Kinded { a });
-    engine.register_fn("where", |_cond: bool, _a: f64, b: Kinded| -> Kinded { b });
-    // Rhai's standard library supplies these for `f64`, so evaluation has them
-    // whether or not inference does.
+    engine.register_fn("where", |_c: bool, _a: f64, b: Kinded| {
+        chosen(false, None, Some(b))
+    });
+
+    // Rhai's standard library supplies `min`, `max`, `abs` and `is_nan` for
+    // `f64`, so evaluation has them for a derived item whether or not
+    // inference does. Only `abs` also has a layer form (element-wise); the
+    // others refuse a layer here because evaluation would.
     for name in ["min", "max"] {
-        engine.register_fn(name, |a: Kinded, b: Kinded| -> Kinded {
-            Kinded {
-                is_array: a.is_array || b.is_array,
-                kind: a.kind,
-            }
+        engine.register_fn(name, move |a: Kinded, b: Kinded| {
+            single(a, name)?;
+            single(b, name)
         });
-        engine.register_fn(name, |a: Kinded, _b: f64| -> Kinded { a });
-        engine.register_fn(name, |_a: f64, b: Kinded| -> Kinded { b });
+        engine.register_fn(name, move |a: Kinded, _b: f64| single(a, name));
+        engine.register_fn(name, move |_a: f64, b: Kinded| single(b, name));
     }
-    engine.register_fn("is_nan", |_a: Kinded| -> bool { true });
-    engine.register_fn("+", |a: Kinded, _b: Kinded| -> Kinded {
-        Kinded {
-            is_array: a.is_array,
-            kind: a.kind,
-        }
-    });
-    engine.register_fn("-", |a: Kinded, b: Kinded| -> Kinded {
-        let kind = if a.kind == Kind::Layer && b.kind == Kind::Layer {
-            Kind::Attribute
+    engine.register_fn("abs", |a: Kinded| -> Kinded { a });
+    engine.register_fn("is_nan", |a: Kinded| single(a, "is_nan").map(|_| true));
+
+    // Arithmetic, with a plain number on either side (#270). A number is a
+    // value with no position, so it is treated exactly as an attribute is:
+    // `median(bed) - 10.0` and `10.0 - median(bed)` are both positions, the
+    // second one mirrored about 10 -- and a position that lands above the
+    // surface is NaN, which evaluation takes care of. Only a difference of
+    // two positions is a distance.
+    fn sum(a: Kinded, b: Kinded) -> Kinded {
+        let kind = if a.kind == Kind::Layer || b.kind == Kind::Layer {
+            Kind::Layer
         } else {
-            a.kind
+            Kind::Attribute
         };
         Kinded {
-            is_array: a.is_array,
+            is_array: a.is_array || b.is_array,
             kind,
         }
-    });
-    for op in ["*", "/"] {
-        engine.register_fn(op, |a: Kinded, _b: Kinded| -> Kinded {
+    }
+    fn difference(a: Kinded, b: Kinded) -> Kinded {
+        if a.kind == Kind::Layer && b.kind == Kind::Layer {
             Kinded {
-                is_array: a.is_array,
+                is_array: a.is_array || b.is_array,
                 kind: Kind::Attribute,
             }
-        });
+        } else {
+            sum(a, b)
+        }
     }
-    for op in ["+", "-", "*", "/"] {
-        engine.register_fn(op, |a: Kinded, _b: f64| -> Kinded { a });
+    // Scaling by a plain number keeps the kind, so `median(bed) * 2.0` and
+    // `2.0 * median(bed)` are both layers. Two derived values multiplied or
+    // divided are something else, and so an attribute.
+    fn product(a: Kinded, b: Kinded) -> Kinded {
+        Kinded {
+            is_array: a.is_array || b.is_array,
+            kind: Kind::Attribute,
+        }
     }
-    // Comparisons: the actual boolean does not matter for kind inference, so
-    // returning a constant lets a data-dependent `if` still be typed.
+    fn scaled(a: Kinded, b: Kinded) -> Kinded {
+        Kinded {
+            is_array: a.is_array || b.is_array,
+            kind: a.kind,
+        }
+    }
+    engine.register_fn("+", sum);
+    engine.register_fn("+", |a: Kinded, _b: f64| sum(a, number()));
+    engine.register_fn("+", |_a: f64, b: Kinded| sum(number(), b));
+    engine.register_fn("-", difference);
+    engine.register_fn("-", |a: Kinded, _b: f64| difference(a, number()));
+    engine.register_fn("-", |_a: f64, b: Kinded| difference(number(), b));
+    for op in ["*", "/"] {
+        engine.register_fn(op, product);
+        engine.register_fn(op, |a: Kinded, _b: f64| scaled(a, number()));
+        engine.register_fn(op, |_a: f64, b: Kinded| scaled(b, number()));
+    }
+
+    // Comparisons. The actual boolean does not matter for kind inference, so
+    // a comparison of two single values is a constant `true`, which lets a
+    // data-dependent `if` still be typed. A comparison involving a layer is a
+    // per-contributor mask, exactly as in evaluation, so `if bed > 50 {..}`
+    // fails here and not first on every read.
+    fn compared(a: Kinded, b: Kinded) -> rhai::Dynamic {
+        if a.is_array || b.is_array {
+            rhai::Dynamic::from(array(Kind::Attribute))
+        } else {
+            rhai::Dynamic::from(true)
+        }
+    }
     for op in ["==", "!=", ">", ">=", "<", "<="] {
-        engine.register_fn(op, |_a: Kinded, _b: Kinded| -> bool { true });
-        engine.register_fn(op, |_a: Kinded, _b: f64| -> bool { true });
-        engine.register_fn(op, |_a: f64, _b: Kinded| -> bool { true });
+        engine.register_fn(op, compared);
+        engine.register_fn(op, |a: Kinded, _b: f64| compared(a, number()));
+        engine.register_fn(op, |_a: f64, b: Kinded| compared(number(), b));
+        engine.register_fn(op, |_a: Kinded, b: rhai::Dynamic| {
+            refuse_comparison::<rhai::Dynamic>(op, "a layer or derived value", &b)
+        });
+        engine.register_fn(op, |a: rhai::Dynamic, _b: Kinded| {
+            refuse_comparison::<rhai::Dynamic>(op, "a layer or derived value", &a)
+        });
     }
 }
 
@@ -1030,19 +1173,78 @@ pub fn map_eval_error(
     }
     DeriveError::Eval {
         expression: expression.to_string(),
-        message: augment_message(error.to_string()),
+        message: describe_error(error),
     }
 }
 
-/// Add the `where()` hint to the one Rhai error a user is most likely to hit.
-fn augment_message(message: String) -> String {
-    if message.contains("bool") || message.contains("if condition") {
-        format!(
-            "{message} (if requires a scalar condition; use where(cond, a, b) for an \
-             element-wise choice)"
-        )
-    } else {
-        message
+/// Say what went wrong in the terms the expression reference uses.
+///
+/// Rhai's own messages name the types the engines bind -- `Kinded`,
+/// `UserArray`, `f64` -- which mean nothing to someone writing an expression,
+/// and `Function not found: + (Kinded, i64)` does not say what to change.
+fn describe_error(error: &rhai::EvalAltResult) -> String {
+    use rhai::EvalAltResult as E;
+    let at = |position: rhai::Position| {
+        if position.is_none() {
+            String::new()
+        } else {
+            format!(" ({position})")
+        }
+    };
+    match error {
+        E::ErrorFunctionNotFound(signature, position) => {
+            // `name (T1, T2)`; an operator's name is its symbol.
+            let (name, arguments) = signature
+                .split_once(" (")
+                .map(|(name, rest)| (name, rest.trim_end_matches(')')))
+                .unwrap_or((signature.as_str(), ""));
+            let arguments: Vec<&str> = arguments
+                .split(", ")
+                .filter(|a| !a.is_empty())
+                .map(describe_type)
+                .collect();
+            // Also the error for a misspelt name, so it does not claim the
+            // function exists.
+            let what = if name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                "function"
+            } else {
+                "operator"
+            };
+            format!(
+                "no {what} '{name}' accepts ({}){}; the expression reference lists the \
+                 functions and what each accepts",
+                arguments.join(", "),
+                at(*position),
+            )
+        }
+        E::ErrorMismatchDataType(expected, actual, position) if expected == "bool" => format!(
+            "a condition must be a single true or false, not {}{}; use where(cond, a, b) \
+             to choose per contributor",
+            describe_type(actual),
+            at(*position),
+        ),
+        E::ErrorInFunctionCall(_, _, inner, _) => describe_error(inner),
+        E::ErrorRuntime(message, position) => format!("{message}{}", at(*position)),
+        other => other
+            .to_string()
+            .replace("UserArray", "a layer")
+            .replace("Kinded", "a layer or derived value"),
+    }
+}
+
+/// The name the expression reference uses for a type an engine binds.
+fn describe_type(name: &str) -> &str {
+    // A type without a registered name is reported by its full path.
+    match name.rsplit("::").next().unwrap_or(name) {
+        "UserArray" => "a layer",
+        // Inference binds layers and derived items alike as a `Kinded`, so
+        // it cannot say which of the two this was.
+        "Kinded" => "a layer or derived value",
+        "f64" | "i64" | "float" | "int" => "a number",
+        "bool" => "true/false",
+        "string" | "&str" | "ImmutableString" | "char" => "text",
+        "()" => "nothing",
+        other => other,
     }
 }
 
@@ -1103,6 +1305,22 @@ pub fn unit_to_sample(value: f64, unit: Unit, geometry: &RadargramGeometry) -> f
         Unit::Meters => axis_invert(&geometry.depth, value),
         Unit::Nanoseconds => axis_invert(&geometry.twtt, value),
     }
+}
+
+/// Whether a position lies above the surface, the top of the radargram.
+///
+/// [`unit_to_sample`] clamps such a value to sample 0, so a position
+/// computed above the surface -- `10.0 - median(bed)` where the bed is deeper
+/// than 10 -- would otherwise be drawn and exported as a line along the
+/// surface (#270). Sample 0 is the surface throughout this module, as in
+/// [`reduce_picks`], which drops a pick above it for the same reason.
+pub fn is_above_surface(value: f64, unit: Unit, geometry: &RadargramGeometry) -> bool {
+    let top = match unit {
+        Unit::Samples | Unit::Dimensionless => Some(0.0),
+        Unit::Meters => geometry.depth.first().copied(),
+        Unit::Nanoseconds => geometry.twtt.first().copied(),
+    };
+    top.is_some_and(|top| value < top)
 }
 
 /// Convert a position from one unit to another, via the sample axis.
@@ -1270,6 +1488,48 @@ mod tests {
             "min(median(bed), dep)",
             // An array bound on clamp exists on neither engine.
             "clamp(median(bed), 0.0, bed)",
+            // Whole numbers (#270), which used to be refused by one engine,
+            // the other, or both.
+            "median(where(bed > 50, bed, NaN))",
+            "median(where(bed == 60, bed, NaN))",
+            "median(bed) + 50",
+            "median(bed) * 2",
+            "median(bed + 50)",
+            "percentile(bed, 50)",
+            "clamp(median(bed), 0, 10)",
+            "clamp(dep, 0, 10)",
+            "shallowest(bed, 3)",
+            // A number on the left, and `abs` of a derived value.
+            "2 * median(bed)",
+            "2.0 * median(bed)",
+            "10.0 - median(bed)",
+            "10 / median(bed)",
+            "1 + dep",
+            "median(2.0 * bed)",
+            "median(10.0 - bed)",
+            "abs(median(bed) - 5.0)",
+            "abs(dep)",
+            "median(abs(bed))",
+            "shallowest(3.0, median(bed))",
+            "shallowest(dep, bed)",
+            "median(deepest(3, bed))",
+            // Both sides of a comparison, and its per-contributor result.
+            "median(where(50 < bed, bed, NaN))",
+            "median(where(bed > dep, bed, NaN))",
+            "where(median(bed) > 2, median(bed), NaN)",
+            "if median(bed) > 2 { median(bed) } else { NaN }",
+            "if bed > 2 { median(bed) } else { NaN }",
+            "where(bed > 2, dep, 0)",
+            "median(where(bed > 2, dep, 0))",
+            "where(median(bed), bed, 0)",
+            // Scalar-only helpers from Rhai's standard library.
+            "min(bed, 3.0)",
+            "max(dep, bed)",
+            "if is_nan(bed) { 0.0 } else { dep }",
+            // A comparison with something that is not a number.
+            "median(where(bed > true, bed, NaN))",
+            "median(where(true == bed, bed, NaN))",
+            "median(where(bed > \"50\", bed, NaN))",
         ] {
             let ast = compile(&engine, expression).unwrap_or_else(|e| {
                 panic!("{expression} did not compile: {e}");
@@ -1295,6 +1555,118 @@ mod tests {
                     .map(|v| v.to_string())
                     .map_err(|e| e.to_string()),
             );
+        }
+    }
+
+    /// A whole number is the same number as its decimal form everywhere
+    /// (#270). Every row is from the issue, evaluated with the value the
+    /// decimal spelling gives.
+    #[test]
+    fn whole_numbers_are_decimal() {
+        let tens: &[(&str, &[f64])] = &[("bed", &[60.0, 70.0, 80.0])];
+        let ones: &[(&str, &[f64])] = &[("bed", &[1.0, 2.0, 3.0])];
+        for (expression, layers, expected) in [
+            // These two used to be NaN, silently: `bed > 50` was `false`.
+            ("median(where(bed > 50, bed, NaN))", tens, 70.0),
+            ("median(where(bed == 60, bed, NaN))", tens, 60.0),
+            ("median(where(bed > 50.0, bed, NaN))", tens, 70.0),
+            ("median(where(65 < bed, bed, NaN))", tens, 75.0),
+            ("median(bed) + 50", ones, 52.0),
+            ("median(bed) * 2", ones, 4.0),
+            ("median(bed + 50)", ones, 52.0),
+            ("percentile(bed, 50)", ones, 2.0),
+            ("clamp(median(bed), 0, 10)", ones, 2.0),
+            ("2 * median(bed)", ones, 4.0),
+            ("2.0 * median(bed)", ones, 4.0),
+            ("10.0 - median(bed)", ones, 8.0),
+            ("median(10 - bed)", ones, 8.0),
+            ("abs(median(bed) - 5.0)", ones, 3.0),
+            ("median(abs(bed - 3))", ones, 1.0),
+            // Integer division would make this 0.
+            ("median(bed) + 1 / 2", ones, 2.5),
+            ("median(12 / bed)", ones, 6.0),
+        ] {
+            assert_eq!(eval(expression, layers), expected, "{expression}");
+        }
+    }
+
+    /// Rhai answers a comparison it has no operator for with a constant
+    /// `false`, which is how `bed > 50` used to empty every `where` without
+    /// a word. Comparing a layer with anything but a number must fail, on
+    /// both engines, and say so in the reference's terms.
+    #[test]
+    fn a_comparison_with_a_non_number_fails_rather_than_being_false() {
+        let engine = build_engine();
+        let layers = vec!["bed".to_string()];
+        let expression = "median(where(bed > true, bed, NaN))";
+        let ast = compile(&engine, expression).unwrap();
+
+        let inferred = infer_kind(&engine, &ast, expression, &layers, &BTreeMap::new());
+        let message = inferred.unwrap_err().to_string();
+        assert!(message.contains("cannot compare"), "{message}");
+
+        let mut bound = BTreeMap::new();
+        bound.insert("bed".to_string(), arrays(&[60.0, 70.0]));
+        let evaluated = evaluate_at(
+            &engine,
+            &ast,
+            expression,
+            &bound,
+            &BTreeMap::new(),
+            &layers,
+            &BTreeMap::new(),
+        );
+        let message = evaluated.unwrap_err().to_string();
+        assert!(
+            message.contains("cannot compare a layer with true/false"),
+            "{message}"
+        );
+    }
+
+    /// An error names things the way the documentation does, never by the
+    /// types the engines bind.
+    #[test]
+    fn errors_do_not_name_internal_types() {
+        let engine = build_engine();
+        let layers = vec!["bed".to_string()];
+        let mut items = BTreeMap::new();
+        items.insert("dep".to_string(), Kind::Layer);
+        let mut other = BTreeMap::new();
+        other.insert("dep".to_string(), 5.0_f64);
+        let mut bound = BTreeMap::new();
+        bound.insert("bed".to_string(), arrays(&[1.0, 2.0]));
+
+        for expression in [
+            "percentile(bed)",
+            "median(bed, 2)",
+            "concatenate(bed, 1)",
+            "median(bed) + true",
+            "if bed > 2 { 1 } else { 0 }",
+            "min(bed, 3)",
+            "is_nan(bed)",
+            "where(median(bed), bed, 0)",
+            "clamp(median(bed), 0, bed)",
+            "median(bed > \"x\")",
+            "no_such_function(bed)",
+        ] {
+            let ast = compile(&engine, expression).unwrap();
+            let messages = [
+                infer_kind(&engine, &ast, expression, &layers, &items).map(|_| ()),
+                evaluate_at(&engine, &ast, expression, &bound, &other, &layers, &items).map(|_| ()),
+            ]
+            .map(|result| {
+                result
+                    .expect_err(&format!("{expression} should fail"))
+                    .to_string()
+            });
+            for message in messages {
+                for internal in ["Kinded", "UserArray", "f64", "i64", "Function not found"] {
+                    assert!(
+                        !message.contains(internal),
+                        "{expression}: '{message}' names {internal}"
+                    );
+                }
+            }
         }
     }
 
@@ -1788,6 +2160,28 @@ mod tests {
         );
         assert_eq!(infer("count(bed)"), Kind::Attribute);
         assert_eq!(infer("std(bed)"), Kind::Attribute);
+        // A plain number shifts or scales a position from either side, and
+        // an attribute shifts it just as a number does (#270).
+        for expression in [
+            "median(bed) + 2",
+            "2 + median(bed)",
+            "median(bed) - 10.0",
+            "10.0 - median(bed)",
+            "2 * median(bed)",
+            "median(bed) / 2",
+            "abs(median(bed))",
+            "count(bed) + median(bed)",
+            "std(bed) - median(bed)",
+        ] {
+            assert_eq!(infer(expression), Kind::Layer, "{expression}");
+        }
+        for expression in [
+            "median(bed) * median(temperate_ice)",
+            "count(bed) + 1",
+            "10.0 - count(bed)",
+        ] {
+            assert_eq!(infer(expression), Kind::Attribute, "{expression}");
+        }
         assert_eq!(
             infer(
                 "if count(bed) + count(bed_no_temperate) >= count(bed_not_visible) { \

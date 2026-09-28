@@ -511,6 +511,15 @@ impl DerivedSet {
                     &layer_ids,
                     &item_kinds,
                 )?;
+                // A position above the surface is not on the radargram, so it
+                // is absent rather than drawn along the top.
+                let value = if kind == Kind::Layer
+                    && derive::is_above_surface(value, item.unit, geometry)
+                {
+                    f64::NAN
+                } else {
+                    value
+                };
                 values.push(value);
             }
             results.insert(
@@ -885,8 +894,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_derived_layer_evaluates_against_reduced_picks() {
+    /// One contributor with `bed` at sample 10 (0.4 m) and `temperate_ice`
+    /// at sample 20 (0.8 m), flat across three traces.
+    fn flat_picks() -> (ReducedPicks, RadargramGeometry) {
         use crate::interp::derive::GridPosition;
         use gprinterp::Document;
 
@@ -930,7 +940,12 @@ mod tests {
             &grid,
             false,
         );
+        (reduced, geometry)
+    }
 
+    #[test]
+    fn a_derived_layer_evaluates_against_reduced_picks() {
+        let (reduced, geometry) = flat_picks();
         let set = set(vec![item(
             "thickness",
             "percentile(bed, 49.0) - percentile(temperate_ice, 49.0)",
@@ -943,6 +958,41 @@ mod tests {
         for value in &thickness.values {
             assert!((value + 0.4).abs() < 1e-9, "{value}");
         }
+    }
+
+    /// `10.0 - median(bed)` is a position, mirrored about 10 (#270). Where it
+    /// lands above the surface it is not on the radargram, and it must be
+    /// absent rather than clamped to sample 0 -- which would draw and export
+    /// a confident line along the top.
+    #[test]
+    fn a_derived_layer_above_the_surface_is_nan() {
+        let (reduced, geometry) = flat_picks();
+        let mut in_samples = item("in_samples", "5 - median(bed)");
+        in_samples.unit = Unit::Samples;
+        let set = set(vec![
+            item("mirrored", "0.6 - median(bed)"),
+            item("above", "0.2 - median(bed)"),
+            item("depends_on_above", "above + 1"),
+            in_samples,
+            // An attribute is not a position, so a negative one is kept.
+            item("thickness", "median(bed) - median(temperate_ice)"),
+        ]);
+        let results = set.evaluate(&reduced, &geometry).unwrap();
+
+        assert_eq!(results["mirrored"].kind, Kind::Layer);
+        for value in &results["mirrored"].values {
+            assert!((value - 0.2).abs() < 1e-9, "{value}");
+        }
+        for id in ["above", "depends_on_above", "in_samples"] {
+            assert_eq!(results[id].kind, Kind::Layer, "{id}");
+            assert!(
+                results[id].values.iter().all(|v| v.is_nan()),
+                "{id} is above the surface and must be NaN: {:?}",
+                results[id].values
+            );
+        }
+        assert_eq!(results["thickness"].kind, Kind::Attribute);
+        assert!(results["thickness"].values.iter().all(|v| *v < 0.0));
     }
 
     #[test]
