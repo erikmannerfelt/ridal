@@ -74,5 +74,7 @@ pub mod render_service;
 pub mod replace_routes;
 pub mod routes;
 pub mod site;
+#[cfg(test)]
+mod site_tests;
 pub mod templates;
 pub mod track;
