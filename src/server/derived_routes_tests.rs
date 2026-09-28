@@ -116,6 +116,11 @@ fn app_with_picks(users: Vec<User>, picks: &[(&str, f64)]) -> (tempfile::TempDir
         ..UserSet::default()
     };
     users::write(project.documents(), &set, &Expectation::Any).unwrap();
+    // The picks below are labelled `bed`, and an expression may only name a
+    // layer the vocabulary defines (#276).
+    let vocabulary: crate::project::layers::LayerSet =
+        serde_json::from_value(json!({"layers": [{"id": "bed", "name": "Bed"}]})).unwrap();
+    crate::project::layers::write(project.documents(), &vocabulary, &Expectation::Any).unwrap();
 
     for (name, sample) in picks {
         let document: gprinterp::Document = serde_json::from_value(json!({
@@ -1183,6 +1188,148 @@ async fn derived_points_are_wide_and_skip_unlisted_layers_by_default() {
         "include_unlisted must bring it back: {}",
         response.text
     );
+}
+
+/// An expression that cannot be evaluated is refused when it is saved, and
+/// the message names the item (#271).
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn an_invalid_expression_is_refused_at_save() {
+    let hash = users::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+
+    for expression in ["median(bed", "median(no_such_layer)"] {
+        let response = put(
+            &app,
+            "/api/v1/derived",
+            &derived_set(json!([
+                item("line_a", "median(bed)", json!("project")),
+                item("broken", expression, json!("project")),
+            ])),
+            Some(&op),
+        )
+        .await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{expression}: {}",
+            response.text
+        );
+        assert!(
+            response.text.contains("invalid_derived_items") && response.text.contains("broken"),
+            "{}",
+            response.text
+        );
+    }
+    let listed = get(&app, "/api/v1/derived", Some(&op)).await;
+    assert_eq!(listed.body["items"], json!([]), "{}", listed.text);
+}
+
+/// An item that stopped working after it was saved -- its layer was deleted,
+/// or the file was edited by hand -- fails on its own. Every other item still
+/// lists, draws and exports (#271, #276), and the set can still be edited.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_broken_stored_item_does_not_take_the_others_with_it() {
+    let hash = users::hash_password(password()).unwrap();
+    let (dir, app) = app_with_picks(
+        vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
+        &[("op", 2.0)],
+    );
+    let op = sign_in(&app, "op").await;
+
+    let items = json!([
+        item("line_a", "median(bed)", json!("project")),
+        item("deleted", "median(removed_layer)", json!("project")),
+        item("dependent", "deleted + 1", json!("project")),
+        item("unparsable", "median(bed", json!("project")),
+    ]);
+    let derived_dir = dir
+        .path()
+        .join(crate::project::DEFAULT_DATA_DIR)
+        .join(crate::project::DERIVED_DIR);
+    std::fs::create_dir_all(&derived_dir).unwrap();
+    std::fs::write(
+        derived_dir.join("derived.json"),
+        derived_set(items.clone()).to_string(),
+    )
+    .unwrap();
+
+    let listed = get(&app, "/api/v1/derived", Some(&op)).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let kind = |id: &str| -> String {
+        listed.body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .unwrap()["kind"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(kind("line_a"), "layer");
+    assert!(
+        kind("deleted").contains("references missing layer 'removed_layer'"),
+        "{}",
+        kind("deleted")
+    );
+    assert!(
+        kind("dependent").contains("depends on 'deleted'"),
+        "{}",
+        kind("dependent")
+    );
+    assert!(kind("unparsable").starts_with("error"));
+
+    assert!((first_value(&app, "line_a", &op).await - depth(2.0)).abs() < 1e-6);
+    let broken = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/derived/deleted"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(broken.status, StatusCode::BAD_REQUEST, "{}", broken.text);
+
+    let points = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/derived/level2?format=csv"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(points.status, StatusCode::OK, "{}", points.text);
+    let header = points.text.lines().next().unwrap();
+    assert!(header.contains("line_a_m"), "{header}");
+    assert!(!header.contains("deleted"), "{header}");
+
+    let csv = get(
+        &app,
+        &format!("/api/v1/datasets/{RADARGRAM}/derived"),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(csv.status, StatusCode::OK, "{}", csv.text);
+    assert!(csv.text.contains(",line_a,"), "{}", csv.text);
+
+    // Saving an unrelated change keeps the broken items as they are, rather
+    // than refusing every edit until they are fixed.
+    let mut renamed = items.clone();
+    renamed[0]["name"] = json!("Line A");
+    let saved = put(&app, "/api/v1/derived", &derived_set(renamed), Some(&op)).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+
+    // And they can be deleted.
+    let saved = put(
+        &app,
+        "/api/v1/derived",
+        &derived_set(json!([item("line_a", "median(bed)", json!("project"))])),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
 }
 
 /// A property name that would displace a point's own field is refused when the

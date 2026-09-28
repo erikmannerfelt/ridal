@@ -2575,6 +2575,11 @@ button.danger:disabled {
   gap: var(--space-1);
 }
 
+.layer-panel-derived-broken .layer-panel-toggle {
+  color: var(--color-danger-text);
+  cursor: help;
+}
+
 .layer-panel-toggle {
   display: flex;
   align-items: center;

@@ -348,24 +348,82 @@ impl DerivedSet {
     }
 
     /// Infer an item's kind, resolving references to other derived items.
+    ///
+    /// Only the item's own dependency chain can make it fail: another item's
+    /// broken expression is no reason for this one to have no kind (#271).
     pub fn inferred_kind(&self, id: &str, layers: &LayerSet) -> Result<Kind, DerivedError> {
+        self.inferred_kinds(layers)?.remove(id).unwrap_or_else(|| {
+            Err(DerivedError::Derive(DeriveError::MissingItem {
+                name: id.to_string(),
+            }))
+        })
+    }
+
+    /// Infer every item's kind, each with its own success or failure.
+    ///
+    /// The outer error is for what breaks the whole set: a cycle, which
+    /// leaves no order to infer in. Everything else is per item.
+    pub fn inferred_kinds(
+        &self,
+        layers: &LayerSet,
+    ) -> Result<BTreeMap<String, Result<Kind, DerivedError>>, DerivedError> {
         let order = self.evaluation_order()?;
         let engine = derive::build_engine();
         let layer_ids: Vec<String> = layers.layers.iter().map(|l| l.id.clone()).collect();
         let mut kinds: BTreeMap<String, Kind> = BTreeMap::new();
+        let mut inferred = BTreeMap::new();
         for item_id in order {
             let Some(item) = self.get(&item_id) else {
                 continue;
             };
-            let ast = derive::compile(&engine, &item.expression)?;
-            let kind = derive::infer_kind(&engine, &ast, &item.expression, &layer_ids, &kinds)?;
-            kinds.insert(item_id.clone(), kind);
+            let kind = self
+                .compile_item(&engine, item, &layer_ids, &kinds)
+                .map(|(_, kind)| kind);
+            if let Ok(kind) = &kind {
+                kinds.insert(item_id.clone(), *kind);
+            }
+            inferred.insert(item_id, kind);
         }
-        kinds.get(id).copied().ok_or_else(|| {
-            DerivedError::Derive(DeriveError::MissingItem {
-                name: id.to_string(),
-            })
-        })
+        Ok(inferred)
+    }
+
+    /// Compile one item and infer its kind, given the kinds of the items
+    /// before it in evaluation order.
+    ///
+    /// `kinds` holds only the items that succeeded, so a dependency missing
+    /// from it has failed. The item says so, rather than the `references
+    /// missing layer` its expression would otherwise report for a name that
+    /// does exist.
+    fn compile_item(
+        &self,
+        engine: &rhai::Engine,
+        item: &DerivedItem,
+        layer_ids: &[String],
+        kinds: &BTreeMap<String, Kind>,
+    ) -> Result<(rhai::AST, Kind), DerivedError> {
+        if let Some(dependency) = self
+            .dependencies(&item.id)
+            .into_iter()
+            .find(|dependency| !kinds.contains_key(dependency))
+        {
+            return Err(DerivedError::BrokenDependency {
+                id: item.id.clone(),
+                dependency,
+            });
+        }
+        let ast = derive::compile(engine, &item.expression)?;
+        let kind = derive::infer_kind(engine, &ast, &item.expression, layer_ids, kinds)?;
+        // A position is a depth, and a depth is not dimensionless. Caught
+        // here rather than in `validate`, which has no layer vocabulary
+        // and so cannot know an expression's kind.
+        if !item.unit.allows(kind) {
+            return Err(DerivedError::UnitMismatch {
+                id: item.id.clone(),
+                kind,
+                unit: item.unit,
+            });
+        }
+        Ok((ast, kind))
     }
 
     /// Reject a set that cannot be used unambiguously.
@@ -448,82 +506,99 @@ impl DerivedSet {
     /// The whole dependency chain is evaluated together on one grid, so no
     /// alignment checks are needed and a referenced item is converted into the
     /// referencing expression's unit.
+    ///
+    /// An item that cannot be evaluated -- an expression that does not parse,
+    /// or one naming a layer that has since been deleted -- goes into
+    /// [`Evaluation::failures`] with every item that depends on it, and the
+    /// rest are still evaluated (#271, #276). Only a cycle, which leaves no
+    /// order to evaluate in, fails the whole set.
     pub fn evaluate(
         &self,
         reduced: &ReducedPicks,
         geometry: &RadargramGeometry,
-    ) -> Result<BTreeMap<String, EvaluatedItem>, DerivedError> {
+    ) -> Result<Evaluation, DerivedError> {
         let order = self.evaluation_order()?;
         let engine = derive::build_engine();
         let layer_ids: Vec<String> = reduced.layers.keys().cloned().collect();
-        let mut results: BTreeMap<String, EvaluatedItem> = BTreeMap::new();
+        let mut evaluation = Evaluation::default();
 
         for id in order {
             let Some(item) = self.get(&id) else {
                 continue;
             };
-            let ast = derive::compile(&engine, &item.expression)?;
-            let item_kinds: BTreeMap<String, Kind> =
-                results.iter().map(|(k, v)| (k.clone(), v.kind)).collect();
-            let kind =
-                derive::infer_kind(&engine, &ast, &item.expression, &layer_ids, &item_kinds)?;
-            // A position is a depth, and a depth is not dimensionless. Caught
-            // here rather than in `validate`, which has no layer vocabulary
-            // and so cannot know an expression's kind.
-            if !item.unit.allows(kind) {
-                return Err(DerivedError::UnitMismatch {
-                    id: item.id.clone(),
-                    kind,
-                    unit: item.unit,
-                });
-            }
-
-            let mut values = Vec::with_capacity(reduced.n_positions());
-            for position in 0..reduced.n_positions() {
-                let mut bound: BTreeMap<String, UserArray> = BTreeMap::new();
-                for (layer_id, per_position) in &reduced.layers {
-                    let array = per_position[position]
-                        .iter()
-                        .map(|sample| derive::sample_to_unit(*sample, item.unit, geometry))
-                        .collect();
-                    bound.insert(layer_id.clone(), UserArray(array));
+            match self.evaluate_item(&engine, item, reduced, geometry, &layer_ids, &evaluation) {
+                Ok(result) => {
+                    evaluation.results.insert(id, result);
                 }
-                let mut deps: BTreeMap<String, f64> = BTreeMap::new();
-                for (dep_id, dep) in &results {
-                    let value = if dep.kind == Kind::Layer {
-                        derive::convert_position(
-                            dep.values[position],
-                            dep.unit,
-                            item.unit,
-                            geometry,
-                        )
-                    } else {
-                        dep.values[position]
-                    };
-                    deps.insert(dep_id.clone(), value);
+                Err(error) => {
+                    evaluation.failures.insert(id, error);
                 }
-                let value = derive::evaluate_at(
-                    &engine,
-                    &ast,
-                    &item.expression,
-                    &bound,
-                    &deps,
-                    &layer_ids,
-                    &item_kinds,
-                )?;
-                values.push(value);
             }
-            results.insert(
-                id,
-                EvaluatedItem {
-                    kind,
-                    unit: item.unit,
-                    values,
-                },
-            );
         }
-        Ok(results)
+        Ok(evaluation)
     }
+
+    /// Evaluate one item, given everything evaluated before it.
+    fn evaluate_item(
+        &self,
+        engine: &rhai::Engine,
+        item: &DerivedItem,
+        reduced: &ReducedPicks,
+        geometry: &RadargramGeometry,
+        layer_ids: &[String],
+        evaluated: &Evaluation,
+    ) -> Result<EvaluatedItem, DerivedError> {
+        let item_kinds: BTreeMap<String, Kind> = evaluated
+            .results
+            .iter()
+            .map(|(k, v)| (k.clone(), v.kind))
+            .collect();
+        let (ast, kind) = self.compile_item(engine, item, layer_ids, &item_kinds)?;
+
+        let mut values = Vec::with_capacity(reduced.n_positions());
+        for position in 0..reduced.n_positions() {
+            let mut bound: BTreeMap<String, UserArray> = BTreeMap::new();
+            for (layer_id, per_position) in &reduced.layers {
+                let array = per_position[position]
+                    .iter()
+                    .map(|sample| derive::sample_to_unit(*sample, item.unit, geometry))
+                    .collect();
+                bound.insert(layer_id.clone(), UserArray(array));
+            }
+            let mut deps: BTreeMap<String, f64> = BTreeMap::new();
+            for (dep_id, dep) in &evaluated.results {
+                let value = if dep.kind == Kind::Layer {
+                    derive::convert_position(dep.values[position], dep.unit, item.unit, geometry)
+                } else {
+                    dep.values[position]
+                };
+                deps.insert(dep_id.clone(), value);
+            }
+            let value = derive::evaluate_at(
+                engine,
+                &ast,
+                &item.expression,
+                &bound,
+                &deps,
+                layer_ids,
+                &item_kinds,
+            )?;
+            values.push(value);
+        }
+        Ok(EvaluatedItem {
+            kind,
+            unit: item.unit,
+            values,
+        })
+    }
+}
+
+/// What [`DerivedSet::evaluate`] produced. Every item is in exactly one of
+/// the two maps.
+#[derive(Debug, Default)]
+pub struct Evaluation {
+    pub results: BTreeMap<String, EvaluatedItem>,
+    pub failures: BTreeMap<String, DerivedError>,
 }
 
 /// Extract identifier-shaped tokens from an expression.
@@ -575,6 +650,11 @@ pub enum DerivedError {
         path: Vec<String>,
     },
     Derive(DeriveError),
+    /// An item references another derived item that cannot be evaluated.
+    BrokenDependency {
+        id: String,
+        dependency: String,
+    },
     /// An item's exported property name would displace one of the point's own
     /// fields (see [`crate::interp::derived_points::BASE_FIELDS`]).
     ReservedProperty {
@@ -616,6 +696,11 @@ impl std::fmt::Display for DerivedError {
                 write!(f, "the derived items form a cycle: {}", path.join(" → "))
             }
             DerivedError::Derive(e) => write!(f, "{e}"),
+            DerivedError::BrokenDependency { id, dependency } => write!(
+                f,
+                "the derived item '{id}' depends on '{dependency}', which cannot be \
+                 evaluated"
+            ),
             DerivedError::ReservedProperty { id, property } => write!(
                 f,
                 "the derived item '{id}' would write the point property '{property}', \
@@ -941,7 +1026,7 @@ mod tests {
             "thickness",
             "percentile(bed, 49.0) - percentile(temperate_ice, 49.0)",
         )]);
-        let results = set.evaluate(&reduced, &geometry).unwrap();
+        let results = set.evaluate(&reduced, &geometry).unwrap().results;
         let thickness = &results["thickness"];
         assert_eq!(thickness.kind, Kind::Attribute);
         // bed at sample 10 -> 0.4 m, cts at 20 -> 0.8 m; thickness is
@@ -949,6 +1034,45 @@ mod tests {
         for value in &thickness.values {
             assert!((value + 0.4).abs() < 1e-9, "{value}");
         }
+    }
+
+    /// One item that cannot be evaluated fails alone, with the items that
+    /// depend on it, and the rest of the set still evaluates (#271, #276).
+    #[test]
+    fn a_broken_item_does_not_take_the_others_with_it() {
+        let (reduced, geometry) = flat_picks();
+        let set = set(vec![
+            item("good", "median(bed)"),
+            item("unparsable", "median(bed"),
+            item("deleted_layer", "median(no_such)"),
+            item("dependent", "deleted_layer + 1"),
+        ]);
+        let evaluation = set.evaluate(&reduced, &geometry).unwrap();
+        assert_eq!(
+            evaluation.results.keys().collect::<Vec<_>>(),
+            vec!["good"],
+            "{:?}",
+            evaluation.failures
+        );
+        assert_eq!(
+            evaluation.failures["deleted_layer"].to_string(),
+            "references missing layer 'no_such'"
+        );
+        assert_eq!(
+            evaluation.failures["dependent"].to_string(),
+            "the derived item 'dependent' depends on 'deleted_layer', which cannot be \
+             evaluated"
+        );
+        assert!(matches!(
+            evaluation.failures["unparsable"],
+            DerivedError::Derive(DeriveError::Compile { .. })
+        ));
+
+        // Kind inference is per item in the same way.
+        let kinds = set.inferred_kinds(&layers()).unwrap();
+        assert_eq!(kinds["good"].as_ref().unwrap(), &Kind::Layer);
+        assert!(kinds["unparsable"].is_err());
+        assert_eq!(set.inferred_kind("good", &layers()).unwrap(), Kind::Layer);
     }
 
     /// A derived layer outside the radargram keeps the value its expression
@@ -970,7 +1094,7 @@ mod tests {
             item("depends_on_above", "above + 0.1"),
             in_samples,
         ]);
-        let results = set.evaluate(&reduced, &geometry).unwrap();
+        let results = set.evaluate(&reduced, &geometry).unwrap().results;
 
         let close = |id: &str, expected: f64| {
             assert_eq!(results[id].kind, Kind::Layer, "{id}");
@@ -984,7 +1108,7 @@ mod tests {
         close("mirrored", 0.2);
         close("above", -0.2);
         close("below", 5.4);
-        // Converted into the dependant's unit and back without clamping.
+        // Converted into the dependent's unit and back without clamping.
         close("depends_on_above", -0.1);
         close("in_samples", -5.0);
 

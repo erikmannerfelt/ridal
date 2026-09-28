@@ -348,7 +348,8 @@ fn the_derived_layers_reproduce_the_published_consensus() {
     let set = derived_set();
     let results = set
         .evaluate(&reduced, &geometry)
-        .expect("evaluating the derived items");
+        .expect("evaluating the derived items")
+        .results;
 
     assert_eq!(results["thickness"].kind, Kind::Layer);
 
