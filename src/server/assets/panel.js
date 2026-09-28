@@ -506,20 +506,34 @@
     return item.name + (personal ? " (your picks)" : "");
   }
 
+  /** Whether the server could not infer this item's kind: its expression
+   * does not parse, or names a layer or item that no longer works (#271). */
+  function derivedBroken(item) {
+    return typeof item.kind === "string" && item.kind.startsWith("error");
+  }
+
   /** One derived *layer*'s row. Only positions reach here: an attribute has
    * no line to draw, so it is not shown in the viewer's panel at all -- it
-   * belongs on the /layers page. */
+   * belongs on the /layers page. A broken item is shown too, marked and
+   * unselectable, so it can be fixed or deleted from here. */
   function derivedRow(item, container) {
+    const broken = derivedBroken(item);
     const row = document.createElement("div");
     row.className = "layer-panel-row layer-panel-derived-row";
+    if (broken) row.classList.add("layer-panel-derived-broken");
     row.dataset.derivedId = item.id;
 
     const label = document.createElement("label");
     label.className = "layer-panel-toggle";
-    label.title = item.expression;
+    // The server's message says what is wrong, which the expression alone
+    // cannot.
+    label.title = broken
+      ? `${item.expression}\n${item.kind}`
+      : item.expression;
     const input = document.createElement("input");
     input.type = "checkbox";
-    input.checked = state.itemVisible.get(item.id) === true;
+    input.checked = !broken && state.itemVisible.get(item.id) === true;
+    input.disabled = broken;
     input.addEventListener("change", () => {
       state.itemVisible.set(item.id, input.checked);
       refreshDerivedLines().then(refreshFills);
@@ -528,7 +542,7 @@
     swatch.className = "layer-panel-swatch";
     if (item.color) swatch.style.background = item.color;
     const text = document.createElement("span");
-    text.textContent = derivedLabel(item);
+    text.textContent = derivedLabel(item) + (broken ? " (invalid)" : "");
     label.append(input, swatch, text);
     row.appendChild(label);
 
@@ -611,7 +625,8 @@
     // belongs in this panel. An attribute (a number per position) and an
     // intermediate layer marked "not listed" are managed on the /layers page.
     const derivedLayers = state.items.filter(
-      (item) => item.kind === "layer" && item.listed !== false,
+      (item) =>
+        (item.kind === "layer" || derivedBroken(item)) && item.listed !== false,
     );
     if (derivedLayers.length || state.canAuthor) {
       const derivedHeading = document.createElement("div");

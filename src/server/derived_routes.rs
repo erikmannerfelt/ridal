@@ -57,7 +57,8 @@ fn derived_error(error: DerivedError) -> ApiError {
         | DerivedError::InvalidColor { .. }
         | DerivedError::Malformed { .. }
         | DerivedError::ReservedProperty { .. }
-        | DerivedError::PropertyCollision { .. } => {
+        | DerivedError::PropertyCollision { .. }
+        | DerivedError::BrokenDependency { .. } => {
             ApiError::bad_request("invalid_derived_items", error.to_string())
         }
         DerivedError::Derive(e) => ApiError::bad_request("invalid_derived_items", e.to_string()),
@@ -183,6 +184,17 @@ fn reduce_on(
     Ok((reduced, layer_set))
 }
 
+/// Log the items an export or download leaves out because they failed.
+fn log_failures(radargram: &crate::identity::RadargramId, evaluation: &derived::Evaluation) {
+    for (id, error) in &evaluation.failures {
+        tracing::warn!(
+            radargram = radargram.as_str(),
+            item = id.as_str(),
+            "skipping a derived item that cannot be evaluated: {error}"
+        );
+    }
+}
+
 fn geometry_for(
     state: &AppState,
     radargram: &crate::identity::RadargramId,
@@ -224,14 +236,21 @@ pub async fn get_derived(
         }
     }
 
+    // Inferred once for the whole set, each item with its own outcome, so a
+    // broken item reads as an error without taking the others with it (#271).
+    let kinds = set.inferred_kinds(&layer_set);
     let items: Vec<serde_json::Value> = set
         .visible_to(&user)
         .into_iter()
         .map(|item| {
-            let kind = set
-                .inferred_kind(&item.id, &layer_set)
-                .map(|kind| kind.to_string())
-                .unwrap_or_else(|e| format!("error: {e}"));
+            let kind = match &kinds {
+                Ok(kinds) => match kinds.get(&item.id) {
+                    Some(Ok(kind)) => kind.to_string(),
+                    Some(Err(e)) => format!("error: {e}"),
+                    None => "error: not evaluated".to_string(),
+                },
+                Err(e) => format!("error: {e}"),
+            };
             serde_json::json!({
                 "id": item.id,
                 "name": item.name,
@@ -385,6 +404,27 @@ pub async fn put_derived(
     let mut merged = set;
     merged.items.extend(preserved);
 
+    // Refuse an expression that cannot be evaluated (#271), but only one this
+    // save adds or changes. An item that was valid when saved can break later
+    // -- its layer is deleted (#276) -- and refusing it here would stop every
+    // other edit until someone fixed it, including deleting it.
+    let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
+    let kinds = merged.inferred_kinds(&layer_set).map_err(derived_error)?;
+    for item in &merged.items {
+        let unchanged = stored
+            .get(&item.id)
+            .is_some_and(|before| before.expression == item.expression && before.unit == item.unit);
+        if unchanged {
+            continue;
+        }
+        if let Some(Err(error)) = kinds.get(&item.id) {
+            return Err(ApiError::bad_request(
+                "invalid_derived_items",
+                format!("'{}': {error}", item.id),
+            ));
+        }
+    }
+
     let version = derived::write(project.documents(), &merged, &expected).map_err(derived_error)?;
     let mut response = HeaderMap::new();
     if let Ok(value) = format!("\"{version}\"").parse() {
@@ -515,10 +555,16 @@ pub async fn preview_derived(
         extra: Default::default(),
     });
 
-    let results = preview
+    let evaluation = preview
         .evaluate(&reduced, &geometry)
         .map_err(|e| ApiError::bad_request("invalid_expression", e.to_string()))?;
-    let result = &results["preview"];
+    if let Some(error) = evaluation.failures.get("preview") {
+        return Err(ApiError::bad_request(
+            "invalid_expression",
+            error.to_string(),
+        ));
+    }
+    let result = &evaluation.results["preview"];
     let values: Vec<serde_json::Value> = result
         .values
         .iter()
@@ -565,10 +611,13 @@ pub async fn get_derived_item(
     }
     let geometry = geometry_for(&state, &radargram)?;
     let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry, item.audience)?;
-    let results = set
+    let evaluation = set
         .evaluate(&reduced, &geometry)
         .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
-    let result = &results[&item_id];
+    if let Some(error) = evaluation.failures.get(&item_id) {
+        return Err(ApiError::bad_request("derived_failed", error.to_string()));
+    }
+    let result = &evaluation.results[&item_id];
 
     let values: Vec<serde_json::Value> = result
         .values
@@ -623,10 +672,11 @@ pub async fn download_derived(
             continue;
         }
         let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry, audience)?;
-        let results = set
+        let evaluation = set
             .evaluate(&reduced, &geometry)
             .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
-        per_audience.insert(audience, results);
+        log_failures(&radargram, &evaluation);
+        per_audience.insert(audience, evaluation.results);
     }
 
     let mut body = String::from("radargram_id,item,kind,unit,trace,value\n");
@@ -728,13 +778,17 @@ pub(crate) fn export_derived_points(
         Audience::OwnPicks,
         &grid,
     )?;
-    let results = set
+    let evaluation = set
         .evaluate(&reduced, geometry)
         .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
+    // A broken item is left out rather than failing the export (#276): the
+    // layers pane is what defines which layers exist, and an item naming one
+    // that has been deleted has nothing to export.
+    log_failures(radargram, &evaluation);
     let viewer = caller.display_name().to_string();
     derived_points::build(
         &set,
-        &results,
+        &evaluation.results,
         geometry,
         &grid,
         spacing_m,

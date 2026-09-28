@@ -184,7 +184,11 @@ a limited nesting depth.
 ## Errors
 
 An expression is checked when it is saved, and the editor's preview
-evaluates it before anything is stored. The most common errors are:
+evaluates it before anything is stored. An item can still break after it was
+saved, for example when a layer it names is deleted. It then shows as invalid
+in the viewer's layer panel and its error is shown as its kind on the Layers
+page. It is left out of downloads and exports, and every other item keeps
+working. The most common errors are:
 
 "must reduce to a single value per position"
 : The result is still one value per contributor. Wrap it in a reduction,
@@ -196,6 +200,9 @@ evaluates it before anything is stored. The most common errors are:
 "the derived items form a cycle"
 : Items refer to each other in a loop, such as `a` using `b` and `b` using
   `a`.
+
+"depends on '…', which cannot be evaluated"
+: The item uses another derived item that has one of these errors itself.
 
 "no function '…' accepts (…)"
 : The name is misspelt, or the function does not take what it was given,
