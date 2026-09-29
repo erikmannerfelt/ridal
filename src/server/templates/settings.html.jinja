@@ -464,10 +464,14 @@
         </table>
 
         <form id="add-member" class="add-layer" novalidate>
-          <h3>Add a member</h3>
+          <h3>Add or invite someone</h3>
           <p class="hint">
-            The name must be an existing account on this site. Create the
-            account first, then give it a role here.
+            <strong>Add member</strong> gives an existing site account a role
+            here. <strong>Invite new member</strong> creates the account and a
+            one-time link that grants only this project, with the role and
+            downloads below. Deleting an account or resetting its password
+            stays with a server administrator on
+            <a href="{{ site_settings_href }}">site settings</a>.
           </p>
           <div class="add-layer-fields">
             <label>Name
@@ -482,8 +486,27 @@
               <select name="download"></select>
             </label>
           </div>
-          <button type="submit">Add member</button>
+          <div class="bulk-actions">
+            <button type="submit">Add member</button>
+            <button type="button" id="invite-member">Invite new member</button>
+          </div>
         </form>
+
+        {#- The one moment a new member's invite token exists: only its hash
+            is stored, so it is shown once and cannot be shown again. -#}
+        <div id="invite-result" class="warning" hidden>
+          <p>
+            <strong>Invite link for <span id="invite-who"></span>.</strong>
+            Send it however you already talk to that person. It works once
+            and expires in <span id="invite-days"></span> days, and it is as
+            sensitive as a password until then.
+          </p>
+          <p><code id="invite-link" class="path"></code></p>
+          <p class="hint">
+            This is the only time it is shown. If it is lost, a server
+            administrator can issue another from site settings.
+          </p>
+        </div>
       </section>
     {% endif %}
 

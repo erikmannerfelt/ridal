@@ -861,3 +861,125 @@ async fn a_site_project_links_back_to_the_site_root() {
     );
     assert!(page.text.contains(">Projects<"), "{}", page.text);
 }
+
+#[tokio::test]
+async fn a_project_admin_creates_an_account_for_their_project() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    // Bo administers glac but not the site.
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    members::update(project.documents(), |set| {
+        set.members.push(members::Member::new(
+            id("bo"),
+            Role::Admin,
+            DownloadScope::All,
+        ));
+        Ok(())
+    })
+    .unwrap();
+
+    let cookie = sign_in(&app, "bo").await;
+    let created = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/invite",
+            &json!({ "name": "cara", "role": "picker", "download": "picks" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.body["name"], "cara");
+    let token = created.body["invite_path"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+
+    // The account is created without server administration and with the
+    // membership the invite carries -- and nothing beyond this project.
+    let site = Site::open(_dir.path()).unwrap();
+    let (set, _) = accounts::read(site.store()).unwrap().unwrap();
+    assert!(
+        !set.get(&id("cara"))
+            .expect("the account exists")
+            .server_admin
+    );
+    let project = site.project(&key("glac")).unwrap();
+    let (members, _) = members::read(project.documents()).unwrap().unwrap();
+    assert_eq!(members.get(&id("cara")).unwrap().role, Role::Picker);
+
+    // Redeeming the link sets the password and leaves the membership alone.
+    let redeemed = send(
+        &app,
+        post_json(
+            "/api/v1/auth/invite",
+            &json!({ "token": token, "password": password() }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text);
+    let site = Site::open(_dir.path()).unwrap();
+    let (set, _) = accounts::read(site.store()).unwrap().unwrap();
+    assert!(set.get(&id("cara")).unwrap().is_activated());
+
+    // A name that already has an account is refused; the project admin is
+    // pointed at add-member rather than silently resetting anything.
+    let again = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/invite",
+            &json!({ "name": "cara", "role": "viewer", "download": "none" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn only_a_project_admin_may_invite_a_member() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    members::update(project.documents(), |set| {
+        set.members.push(members::Member::new(
+            id("bo"),
+            Role::Viewer,
+            DownloadScope::None,
+        ));
+        Ok(())
+    })
+    .unwrap();
+
+    let cookie = sign_in(&app, "bo").await;
+    let response = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/invite",
+            &json!({ "name": "cara", "role": "picker" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+}

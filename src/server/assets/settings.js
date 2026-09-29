@@ -967,22 +967,59 @@
     }
   }
 
+  /* The one moment a new member's invite token exists; it is shown once. */
+  function showMemberInvite(name, result) {
+    byId("invite-who").textContent = name;
+    byId("invite-days").textContent = String(result.invite_ttl_days);
+    // Built from this page's own origin rather than from anything the
+    // server guessed: Ridal is normally behind a reverse proxy and has no
+    // reliable idea what address the browser reached it on.
+    byId("invite-link").textContent =
+      window.location.origin + result.invite_path;
+    byId("invite-result").hidden = false;
+  }
+
   if (membersForm) {
+    const memberBody = () => ({
+      name: membersForm.elements.name.value.trim(),
+      role: membersForm.elements.role.value,
+      download: membersForm.elements.download.value,
+    });
+
+    /* Add an existing site account to this project. */
     membersForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearError();
       try {
-        await send("POST", RIDAL.apiPath("members"), {
-          name: membersForm.elements.name.value.trim(),
-          role: membersForm.elements.role.value,
-          download: membersForm.elements.download.value,
-        });
+        await send("POST", RIDAL.apiPath("members"), memberBody());
         membersForm.reset();
         await loadMembers();
       } catch (error) {
         showError(error.message);
       }
     });
+
+    /* Or create the account and invite it into this project alone. A
+     * project administrator cannot grant more than that from here. */
+    const inviteButton = byId("invite-member");
+    if (inviteButton) {
+      inviteButton.addEventListener("click", async () => {
+        clearError();
+        const name = membersForm.elements.name.value.trim();
+        try {
+          const result = await send(
+            "POST",
+            RIDAL.apiPath("members", "invite"),
+            memberBody(),
+          );
+          membersForm.reset();
+          showMemberInvite(name, result);
+          await loadMembers();
+        } catch (error) {
+          showError(error.message);
+        }
+      });
+    }
   }
 
   if (accessForm) {

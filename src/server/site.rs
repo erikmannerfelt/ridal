@@ -321,6 +321,11 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
             "/api/v1/projects/{key}/members/{name}",
             put(update_member).delete(remove_member),
         )
+        // A project administrator may create an account for their own
+        // project, but only through this route: it can grant nothing beyond
+        // the project in its path. Account lifecycle stays at the site
+        // level, for a server administrator.
+        .route("/api/v1/projects/{key}/members/invite", post(invite_member))
         .route("/api/v1/projects/{key}/access", put(put_project_access))
         .route("/api/v1/accounts", get(list_accounts).post(create_account))
         .route(
@@ -1234,6 +1239,80 @@ async fn add_member(
             "name": name.as_str(),
             "role": role.as_str(),
             "download": download.as_str(),
+        })),
+    ))
+}
+
+/// `POST /api/v1/projects/{key}/members/invite` -- create a site account and
+/// invite it into this project.
+///
+/// A project administrator may create an account, but only for their own
+/// project: the invite carries this project, role and download and nothing
+/// else. The account is never a server administrator, and account lifecycle
+/// -- deleting it, resetting its password, promoting it -- stays with a
+/// server administrator at the site level.
+async fn invite_member(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Path(key): Path<String>,
+    Json(body): Json<MemberBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    require_project_admin(&site, &key, &caller, "invite a member")?;
+    let (name, role, download) = parse_member_body(&body)?;
+
+    let set = accounts::read(site.site.store())
+        .map_err(account_error)?
+        .map(|(set, _)| set)
+        .unwrap_or_default();
+    if set.get(&name).is_some() {
+        return Err(ApiError::conflict(
+            "account_exists",
+            format!("'{name}' already has an account. Add them as a member instead."),
+        ));
+    }
+
+    let (token, invite) = invite::mint_for_project(auth::now(), key.clone(), role, download)
+        .map_err(|e| ApiError::internal("invite_failed", e))?;
+
+    // Created without server administration, whatever else this route can
+    // carry. The invite would otherwise hand the whole site to whoever
+    // redeemed the link.
+    accounts::update(site.site.store(), |set| {
+        if set.get(&name).is_some() {
+            return Err(AccountError::Duplicate(name.to_string()));
+        }
+        let mut account = Account::new(name.clone(), false);
+        account.invite = Some(invite.clone());
+        set.users.push(account);
+        Ok(())
+    })
+    .map_err(account_error)?;
+
+    let project = site.site.project(&key).map_err(site_error)?;
+    members::update(project.documents(), |set| {
+        match set.get_mut(&name) {
+            Some(member) => {
+                member.role = role;
+                member.download = download;
+            }
+            None => set
+                .members
+                .push(members::Member::new(name.clone(), role, download)),
+        }
+        Ok(())
+    })
+    .map_err(member_error)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "name": name.as_str(),
+            "role": role.as_str(),
+            "download": download.as_str(),
+            "invite_path": format!("/invite/{token}"),
+            "invite_expires": invite.expires,
+            "invite_ttl_days": invite::INVITE_TTL_DAYS,
         })),
     ))
 }
