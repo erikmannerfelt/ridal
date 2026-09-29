@@ -254,20 +254,19 @@
     admin.checked = Boolean(account.server_admin);
     const adminStatus = document.createElement("span");
     adminStatus.className = "row-status";
-    admin.addEventListener("change", async () => {
-      const previous = !admin.checked;
-      adminStatus.textContent = "Saving…";
-      try {
-        await send("PUT", RIDAL.siteApiPath("accounts", account.name), {
-          server_admin: admin.checked,
-        });
-        adminStatus.textContent = "Saved";
-      } catch (error) {
-        showError(error.message);
-        admin.checked = previous;
-        adminStatus.textContent = "";
-      }
+    /* The checkbox only asks: the change goes through a confirmation
+     * dialog, because server administration reaches every project. */
+    admin.addEventListener("change", () => {
+      askAdminChange(account.name, admin.checked, admin, adminStatus);
     });
+    // Granting needs an account that has already set a password; a revoke is
+    // always allowed.
+    if (!account.activated && !account.server_admin) {
+      admin.disabled = true;
+      admin.title =
+        "They must set a password from the invite before they can be a " +
+        "server administrator.";
+    }
     adminCell.append(admin, adminStatus);
     row.appendChild(adminCell);
 
@@ -370,7 +369,6 @@
       try {
         const result = await send("POST", RIDAL.siteApiPath("accounts"), {
           name,
-          server_admin: addAccountForm.elements.server_admin.checked,
           project,
           role: project ? addAccountForm.elements.role.value : null,
           download: project ? addAccountForm.elements.download.value : null,
@@ -610,6 +608,58 @@
         loaded = false;
         box.replaceChildren();
         showError(`Could not load memberships: ${error.message}`);
+      }
+    });
+  }
+
+  /* ---- Confirming a server-administrator change --------------------- */
+
+  /* The checkbox asks; this dialog decides. Server administration reaches
+   * every project, so it is never applied on a single click. */
+  const adminDialog = byId("admin-confirm-dialog");
+  let pendingAdmin = null;
+
+  function askAdminChange(account, grant, checkbox, status) {
+    pendingAdmin = { account, grant, checkbox, status };
+    byId("admin-confirm-title").textContent = grant
+      ? "Make a server administrator"
+      : "Remove server administration";
+    byId("admin-confirm-message").textContent = grant
+      ? `Make ${account} a server administrator? They can create projects ` +
+        `and accounts, and act as an administrator in every project.`
+      : `Remove ${account}'s server administrator rights? They keep whatever ` +
+        `membership and role they have in each project.`;
+    byId("admin-confirm-error").hidden = true;
+    adminDialog.showModal();
+  }
+
+  if (adminDialog) {
+    byId("admin-confirm-cancel").addEventListener("click", () => {
+      // Put the box back to what the server still believes.
+      if (pendingAdmin) pendingAdmin.checkbox.checked = !pendingAdmin.grant;
+      pendingAdmin = null;
+      adminDialog.close();
+    });
+
+    byId("admin-confirm-ok").addEventListener("click", async () => {
+      if (!pendingAdmin) return;
+      const { account, grant, checkbox, status } = pendingAdmin;
+      const errorBox = byId("admin-confirm-error");
+      errorBox.hidden = true;
+      status.textContent = "Saving…";
+      try {
+        await send("PUT", RIDAL.siteApiPath("accounts", account), {
+          server_admin: grant,
+        });
+        pendingAdmin = null;
+        adminDialog.close();
+        await loadAccounts();
+      } catch (error) {
+        // Leave the dialog open with the refusal, and put the box back.
+        RIDAL.setMessage(errorBox, error.message);
+        errorBox.hidden = false;
+        checkbox.checked = !grant;
+        status.textContent = "";
       }
     });
   }

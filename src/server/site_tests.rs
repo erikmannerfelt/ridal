@@ -1329,3 +1329,97 @@ async fn the_memberships_overview_requires_a_server_admin() {
     let response = send(&app, get("/api/v1/site/memberships", Some(&cookie))).await;
     assert_eq!(response.status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn creating_a_server_admin_over_http_is_refused() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &[],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let response = send(
+        &app,
+        post_json(
+            "/api/v1/accounts",
+            &json!({ "name": "bo", "server_admin": true }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(response.body["error"]["code"], "server_admin_at_creation");
+}
+
+#[tokio::test]
+async fn server_admin_is_granted_only_after_activation() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &[],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let created = send(
+        &app,
+        post_json("/api/v1/accounts", &json!({ "name": "bo" }), Some(&cookie)),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let token = created.body["invite_path"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+
+    // Granting while the invite is outstanding is refused: the link would
+    // become an administrator link.
+    let early = send(
+        &app,
+        put_json(
+            "/api/v1/accounts/bo",
+            &json!({ "server_admin": true }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(early.status, StatusCode::BAD_REQUEST, "{}", early.text);
+
+    let redeemed = send(
+        &app,
+        post_json(
+            "/api/v1/auth/invite",
+            &json!({ "token": token, "password": password() }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text);
+
+    let granted = send(
+        &app,
+        put_json(
+            "/api/v1/accounts/bo",
+            &json!({ "server_admin": true }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(granted.status, StatusCode::OK, "{}", granted.text);
+    assert_eq!(granted.body["server_admin"], true);
+
+    let revoked = send(
+        &app,
+        put_json(
+            "/api/v1/accounts/bo",
+            &json!({ "server_admin": false }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.text);
+    assert_eq!(revoked.body["server_admin"], false);
+}

@@ -1750,6 +1750,19 @@ async fn create_account(
     Json(body): Json<CreateAccountBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     caller.require_server_admin("create an account")?;
+    // A new account gets an invite, and anyone holding that link can claim
+    // the account. Creating it as a server administrator would therefore
+    // hand the whole site to whoever used the link, so the flag can only be
+    // set later, on an account that has a password.
+    if body.server_admin {
+        return Err(ApiError::bad_request(
+            "server_admin_at_creation",
+            "Create the account first, then grant server administration from \
+             the accounts list once it has a password. A pending invite that \
+             carried administrator rights would hand the site to whoever used \
+             the link.",
+        ));
+    }
     let name = UserId::new(&body.name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
     let role = body
         .role
@@ -1778,7 +1791,7 @@ async fn create_account(
         if set.get(&name).is_some() {
             return Err(AccountError::Duplicate(name.to_string()));
         }
-        let mut account = Account::new(name.clone(), body.server_admin);
+        let mut account = Account::new(name.clone(), false);
         account.invite = Some(invite.clone());
         set.users.push(account.clone());
         Ok(account)
@@ -1792,9 +1805,6 @@ async fn create_account(
     );
     if let Some(key) = &project {
         entry = entry.project(key).membership(role, download);
-    }
-    if body.server_admin {
-        entry = entry.note("server administrator");
     }
     audit(&site, entry);
 
@@ -1836,6 +1846,19 @@ async fn update_account(
                     "'{name}' is the only server administrator. Promote someone \
                      else first, or nobody will be able to manage accounts."
                 )));
+            }
+            // Promoting an account that still has an invite outstanding
+            // would hand administration to whoever redeems the link.
+            if admin {
+                if let Some(account) = set.get(&name) {
+                    if !account.is_activated() || account.invite.is_some() {
+                        return Err(AccountError::Rejected(format!(
+                            "'{name}' has not set a password yet, or has a reset \
+                             outstanding. Wait until the current invite has been \
+                             used before granting administrator rights."
+                        )));
+                    }
+                }
             }
         }
         let account = set

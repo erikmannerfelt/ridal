@@ -127,11 +127,12 @@
               {% endfor %}
             </select>
           </label>
-          <label class="checkbox bulk-random">
-            <input type="checkbox" name="server_admin">
-            Server administrator
-          </label>
         </div>
+        <p class="hint">
+          Server administrator rights are granted after the account has a
+          password, from the list above &mdash; never to an invite, whose
+          link would then carry the whole site with it.
+        </p>
         <button type="submit">Create account and get a link</button>
       </form>
 
@@ -216,6 +217,19 @@
         <div id="history-table"></div>
       </details>
     </section>
+
+    {#- Making or unmaking a server administrator is the one account change
+        that reaches every project, so it is confirmed rather than applied on
+        a checkbox click. -#}
+    <dialog id="admin-confirm-dialog">
+      <h2 id="admin-confirm-title">Change server administration</h2>
+      <p id="admin-confirm-message"></p>
+      <div id="admin-confirm-error" class="warning" hidden></div>
+      <p>
+        <button type="button" id="admin-confirm-ok">Confirm</button>
+        <button type="button" id="admin-confirm-cancel">Cancel</button>
+      </p>
+    </dialog>
   {% endif %}
 {% endblock %}
 {% block extrascript %}
