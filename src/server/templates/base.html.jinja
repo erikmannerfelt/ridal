@@ -60,8 +60,14 @@
             error page), which minijinja treats as falsy -- so the links
             simply come out bare there. -#}
         <ul>
-          {%- if page_base %}
-            {#- Project pages: the catalog, its layers and its own settings. -#}
+          {%- if in_project %}
+            {#- Project pages: back to the site, then the catalog, its layers
+                and its own settings. The site link is absent for a lone
+                project, which has no site root to return to. The brand link
+                above still goes to this project's catalog. -#}
+            {%- if site_managed %}
+              <li><a href="/">Projects</a></li>
+            {%- endif %}
             <li><a href="{{ page_base|safe }}/{{ profile_query }}">Radargram catalog</a></li>
             <li><a href="{{ page_base|safe }}/layers{{ profile_query }}">Layers</a></li>
             <li><a href="{{ page_base|safe }}/settings{{ profile_query }}">Settings</a></li>

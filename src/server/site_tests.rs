@@ -827,3 +827,16 @@ async fn a_bulk_batch_requires_a_server_admin() {
     .await;
     assert_eq!(response.status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn a_site_project_links_back_to_the_site_root() {
+    let (_dir, app) = site_with(Vec::new(), &["glac"], AccessOptions::default());
+    let page = send(&app, get("/p/glac/", None)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    assert!(
+        page.text.contains(r#"href="/""#),
+        "the project menu needs a way back to the site: {}",
+        page.text
+    );
+    assert!(page.text.contains(">Projects<"), "{}", page.text);
+}

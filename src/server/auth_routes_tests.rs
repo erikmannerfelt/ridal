@@ -3455,6 +3455,8 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     // A lone project has no site settings, so its theme stays in the
     // project's own personal settings (#214).
     assert!(page.text.contains(r#"id="my-theme""#), "{}", page.text);
+    // And no site root to link back to.
+    assert!(!page.text.contains(">Projects<"), "{}", page.text);
 
     let saved = put(
         &app,

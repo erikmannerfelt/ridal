@@ -1151,6 +1151,10 @@ fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
         // settings page shows a members table; a lone project (`ridal gui`)
         // has none and reads the access policy from its own users document.
         site_managed => state.site.is_some(),
+        // Whether this is a project page at all. `page_base` cannot answer
+        // it: a lone project (`ridal gui`) is served at the root, so its
+        // pages carry an empty base just like a site's own pages do.
+        in_project => state.project.is_some(),
         // The site's own settings page, which sits at the root rather than
         // under a project key. A template cannot build it from `page_base`
         // without hard-coding `/settings`, which the anti-hardcoding test
