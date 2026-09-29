@@ -583,6 +583,71 @@ A path inside the site. The site is found by searching upwards
 Default: `.`.
 ```
 
+#### `ridal site account add-bulk`
+
+```{program} ridal site account add-bulk
+```
+
+Create several accounts, for a class or a workshop, with invite links or generated passwords
+
+```console
+$ ridal site account add-bulk [OPTIONS] --count <COUNT>
+```
+
+**Options**
+
+```{option} --count <COUNT>
+Number of accounts to create
+
+Required.
+```
+
+```{option} --prefix <PREFIX>
+Name them prefix-01, prefix-02, and so on, after any that exist
+
+Default: `student`.
+```
+
+```{option} --random-names
+Draw names from a fixed pool of friendly usernames instead of the prefix. Fails if fewer unused names remain than were requested
+```
+
+```{option} --project <PROJECT>
+Make each account a member of this project (its key). Without it, the accounts belong to no project until one adds them
+```
+
+```{option} --role <ROLE>
+Their role in --project: viewer, picker, operator or admin
+
+Default: `picker`.
+```
+
+```{option} --download <DOWNLOAD>
+What they may download from --project: none, results, picks, derived or all
+
+Default: `all`.
+```
+
+```{option} --passwords
+Generate shared passwords instead of one-time invite links
+```
+
+```{option} --i-know-what-i-am-doing
+Required with --passwords: generated passwords are shared secrets
+```
+
+```{option} --out <OUT>
+Where --passwords writes `name<TAB>password` lines. They are never printed to the terminal, which is often captured in a log; hand the file out and then delete it
+
+Default: `passwords.txt`.
+```
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
 #### `ridal site account list`
 
 ```{program} ridal site account list

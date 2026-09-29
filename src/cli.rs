@@ -158,6 +158,9 @@ pub struct SiteAccountArgs {
 pub enum SiteAccountCommand {
     /// Create an account and print a one-time invite link
     Add(SiteAccountAddArgs),
+    /// Create several accounts, for a class or a workshop, with invite links
+    /// or generated passwords
+    AddBulk(SiteAccountAddBulkArgs),
     /// List the accounts
     List(SiteAccountListArgs),
     /// Grant or revoke server administration
@@ -177,6 +180,54 @@ pub struct SiteAccountAddArgs {
     /// and act as an administrator in every project.
     #[arg(long)]
     pub server_admin: bool,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountAddBulkArgs {
+    /// Number of accounts to create.
+    #[arg(long)]
+    pub count: usize,
+
+    /// Name them prefix-01, prefix-02, and so on, after any that exist.
+    #[arg(long, default_value = "student")]
+    pub prefix: String,
+
+    /// Draw names from a fixed pool of friendly usernames instead of the
+    /// prefix. Fails if fewer unused names remain than were requested.
+    #[arg(long)]
+    pub random_names: bool,
+
+    /// Make each account a member of this project (its key). Without it, the
+    /// accounts belong to no project until one adds them.
+    #[arg(long)]
+    pub project: Option<String>,
+
+    /// Their role in --project: viewer, picker, operator or admin.
+    #[arg(long, default_value = "picker")]
+    pub role: String,
+
+    /// What they may download from --project: none, results, picks, derived
+    /// or all.
+    #[arg(long, default_value = "all")]
+    pub download: String,
+
+    /// Generate shared passwords instead of one-time invite links.
+    #[arg(long)]
+    pub passwords: bool,
+
+    /// Required with --passwords: generated passwords are shared secrets.
+    #[arg(long)]
+    pub i_know_what_i_am_doing: bool,
+
+    /// Where --passwords writes `name<TAB>password` lines. They are never
+    /// printed to the terminal, which is often captured in a log; hand the
+    /// file out and then delete it.
+    #[arg(long, default_value = "passwords.txt")]
+    pub out: PathBuf,
 
     /// A path inside the site. The site is found by searching upwards.
     #[arg(long, default_value = ".")]
@@ -1274,6 +1325,136 @@ mod tests {
         .unwrap();
     }
 
+    /// A site with a server administrator and one project, `glac`.
+    fn site_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let site = crate::site::Site::init(dir.path(), Some("test")).unwrap();
+        crate::site::accounts::update(site.store(), |set| {
+            set.users.push(crate::site::accounts::Account::new(
+                crate::identity::UserId::new("anna").unwrap(),
+                true,
+            ));
+            Ok(())
+        })
+        .unwrap();
+        site.create_project(
+            &crate::identity::ProjectKey::new("glac").unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        dir
+    }
+
+    fn add_bulk(dir: &std::path::Path, extra: &[&str]) -> Result<(), String> {
+        let mut argv = vec![
+            "ridal",
+            "site",
+            "account",
+            "add-bulk",
+            "--path",
+            dir.to_str().unwrap(),
+        ];
+        argv.extend_from_slice(extra);
+        match Args::try_parse_from(argv).unwrap().command {
+            Commands::Site(SiteArgs {
+                command:
+                    SiteCommand::Account(SiteAccountArgs {
+                        command: SiteAccountCommand::AddBulk(args),
+                    }),
+            }) => super::site_account_add_bulk_command(&args),
+            other => panic!("expected site account add-bulk, got {other:?}"),
+        }
+    }
+
+    fn site_accounts(dir: &std::path::Path) -> crate::site::accounts::AccountSet {
+        let site = crate::site::Site::open(dir).unwrap();
+        crate::site::accounts::read(site.store())
+            .unwrap()
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn bulk_invites_from_the_command_line_carry_the_project() {
+        let dir = site_dir();
+        add_bulk(
+            dir.path(),
+            &["--count", "3", "--project", "glac", "--role", "viewer"],
+        )
+        .unwrap();
+        // Continuing a batch numbers after it rather than colliding.
+        add_bulk(dir.path(), &["--count", "1"]).unwrap();
+
+        let set = site_accounts(dir.path());
+        let names: Vec<&str> = set.users.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "anna",
+                "student-01",
+                "student-02",
+                "student-03",
+                "student-04"
+            ]
+        );
+        let invite = set.users[1].invite.as_ref().expect("an invite");
+        assert_eq!(invite.project.as_ref().unwrap().as_str(), "glac");
+        assert_eq!(invite.role, Some(crate::project::roles::Role::Viewer));
+        assert!(set.users[4].invite.as_ref().unwrap().project.is_none());
+        assert!(set.users.iter().skip(1).all(|a| a.password_hash.is_none()));
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn bulk_passwords_need_the_flag_refuse_admins_and_write_a_handout() {
+        let dir = site_dir();
+        let out = dir.path().join("handout.txt");
+        let out = out.to_str().unwrap();
+        let passwords = ["--count", "2", "--passwords", "--project", "glac"];
+
+        let refused = add_bulk(dir.path(), &passwords).unwrap_err();
+        assert!(refused.contains("--i-know-what-i-am-doing"), "{refused}");
+
+        let mut admins = passwords.to_vec();
+        admins.extend(["--i-know-what-i-am-doing", "--role", "admin"]);
+        let refused = add_bulk(dir.path(), &admins).unwrap_err();
+        assert!(refused.contains("invite links"), "{refused}");
+        assert_eq!(site_accounts(dir.path()).users.len(), 1, "nothing created");
+
+        let mut ok = passwords.to_vec();
+        ok.extend(["--i-know-what-i-am-doing", "--out", out]);
+        add_bulk(dir.path(), &ok).unwrap();
+
+        let handout = std::fs::read_to_string(out).unwrap();
+        let lines: Vec<&str> = handout.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let (name, password) = lines[0].split_once('\t').unwrap();
+        let set = site_accounts(dir.path());
+        let account = set
+            .get(&crate::identity::UserId::new(name).unwrap())
+            .unwrap();
+        assert!(crate::site::accounts::verify_password(account, password));
+
+        // No invite to redeem, so the membership is there already.
+        let site = crate::site::Site::open(dir.path()).unwrap();
+        let project = site
+            .project(&crate::identity::ProjectKey::new("glac").unwrap())
+            .unwrap();
+        let (members, _) = crate::project::members::read(project.documents())
+            .unwrap()
+            .unwrap();
+        assert_eq!(members.members.len(), 2);
+    }
+
+    #[test]
+    fn a_batch_cannot_be_a_sites_first_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::site::Site::init(dir.path(), None).unwrap();
+        let refused = add_bulk(dir.path(), &["--count", "2"]).unwrap_err();
+        assert!(refused.contains("--server-admin"), "{refused}");
+    }
+
     #[test]
     fn gui_does_not_open_a_browser_unless_asked() {
         // Opening a browser by default under `ssh`, a container, or any
@@ -1719,6 +1900,7 @@ fn site_command(args: SiteArgs) -> Result<(), String> {
         SiteCommand::Init(args) => site_init_command(&args),
         SiteCommand::Account(args) => match args.command {
             SiteAccountCommand::Add(args) => site_account_add_command(&args),
+            SiteAccountCommand::AddBulk(args) => site_account_add_bulk_command(&args),
             SiteAccountCommand::List(args) => site_account_list_command(&args),
             SiteAccountCommand::Set(args) => site_account_set_command(&args),
             SiteAccountCommand::Reset(args) => site_account_reset_command(&args),
@@ -1792,6 +1974,111 @@ fn site_account_add_command(args: &SiteAccountAddArgs) -> Result<(), String> {
     }
     crate::site::audit::record(site.store(), entry);
     print_invite(name.as_str(), &token, invite.expires);
+    Ok(())
+}
+
+fn site_account_add_bulk_command(args: &SiteAccountAddBulkArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let role = crate::project::roles::Role::parse(&args.role)?;
+    let download = crate::project::roles::DownloadScope::parse(&args.download)?;
+    let project = match args.project.as_deref() {
+        Some(raw) => {
+            let key = crate::identity::ProjectKey::new(raw)?;
+            // Opened, not merely checked for: a project the site would refuse
+            // to serve is no place to add members.
+            site.project(&key).map_err(|e| e.to_string())?;
+            if site.is_archived(&key) {
+                return Err(format!(
+                    "Project '{key}' is archived. Unarchive it before adding people to it."
+                ));
+            }
+            Some(key)
+        }
+        None => None,
+    };
+    if args.passwords && !args.i_know_what_i_am_doing {
+        return Err(
+            "Generated passwords are shared secrets. Re-run with --i-know-what-i-am-doing, \
+             or leave out --passwords to use invite links instead."
+                .to_string(),
+        );
+    }
+    // Like `site account add`: a batch cannot be the site's first accounts,
+    // because none of them would be able to administer it.
+    let has_admin = crate::site::accounts::read(site.store())
+        .map_err(|e| e.to_string())?
+        .is_some_and(|(set, _)| set.has_server_admin());
+    if !has_admin {
+        return Err("Create a server administrator first:\n  \
+                    ridal site account add <name> --server-admin"
+            .to_string());
+    }
+
+    let prefix = (!args.random_names).then_some(args.prefix.as_str());
+    let names = site
+        .batch_names(prefix, args.count)
+        .map_err(|e| e.to_string())?;
+    let grant = crate::site::Grant {
+        project: project.clone(),
+        role,
+        download,
+    };
+    let record = |name: &crate::identity::UserId, note: &str| {
+        let mut entry = crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::AccountCreated,
+            name.as_str(),
+        )
+        .note(note);
+        if let Some(key) = &project {
+            entry = entry.project(key).membership(role, download);
+        }
+        crate::site::audit::record(site.store(), entry);
+    };
+
+    if args.passwords {
+        #[cfg(not(feature = "server"))]
+        return Err("Password mode needs a build with the server feature.".to_string());
+
+        #[cfg(feature = "server")]
+        {
+            let generated = site
+                .password_batch(&names, &grant)
+                .map_err(|e| e.to_string())?;
+            // Written to a file rather than echoed: a terminal is a log, and
+            // standard output is routinely captured. The file is the
+            // handout, and the operator deletes it after distributing.
+            let mut handout = String::new();
+            for (name, password) in &generated {
+                record(name, "bulk generated password");
+                handout.push_str(&format!("{name}\t{password}\n"));
+            }
+            std::fs::write(&args.out, handout)
+                .map_err(|e| format!("could not write {}: {e}", args.out.display()))?;
+            if let Some(advisory) = crate::site::accounts::bulk::bulk_risk_advisory(role) {
+                println!("{advisory}");
+            }
+            println!(
+                "Wrote {} generated passwords to {}.",
+                generated.len(),
+                args.out.display()
+            );
+            println!(
+                "Hand them out, then delete that file: it is as sensitive as the \
+                 passwords themselves and is not stored anywhere else."
+            );
+            return Ok(());
+        }
+    }
+
+    let minted = site
+        .invite_batch(&names, &grant)
+        .map_err(|e| e.to_string())?;
+    println!("Invite links let each person set their own password.");
+    for (name, token, expires) in &minted {
+        record(name, "bulk invite");
+        print_invite(name.as_str(), token, *expires);
+    }
     Ok(())
 }
 

@@ -149,6 +149,7 @@ The same can be done from the command line on the server:
 | Grant or revoke server administration | `ridal site account set jane --server-admin` / `--no-server-admin` |
 | Issue a new invite link | `ridal site account reset jane --path /srv/ridal` |
 | Remove an account | `ridal site account remove jane --path /srv/ridal` |
+| Add a class | `ridal site account add-bulk --count 20 --project dronbreen --path /srv/ridal` |
 
 ## Managing a project's members
 
@@ -178,6 +179,22 @@ makes the passwords for you instead, after you confirm that you understand
 the risk. Shared passwords are weaker than invite links, since you know them
 too, so keep them to short, supervised sessions. Administrator accounts are
 never made this way.
+
+The same is available on the server's command line:
+
+```console
+$ ridal site account add-bulk --count 20 --project dronbreen --role picker --path /srv/ridal
+```
+
+prints one invite link per account. `--random-names` draws from the friendly
+names instead of `--prefix`, and `--passwords --i-know-what-i-am-doing`
+generates passwords, which are written to a file (`--out`, by default
+`passwords.txt`) rather than to the terminal. Hand them out and delete it.
+Without `--project` the accounts belong to no project yet.
+
+A batch never takes a name that an account already has, nor one that any
+project still lists as a member, so a new account cannot inherit someone
+else's place in a project.
 
 ## Sessions and passwords
 

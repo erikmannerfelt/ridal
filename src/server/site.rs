@@ -42,7 +42,7 @@ use crate::project::members;
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{DocumentStore, Expectation};
 use crate::site::accounts::{self, bulk, invite, Account, AccountError, AccountSet};
-use crate::site::{audit as site_audit, Site, SiteError};
+use crate::site::{audit as site_audit, Grant, Site, SiteError};
 
 /// The site's account file, for the "create the first one" hint.
 const ACCOUNTS_FILE: &str = accounts::ACCOUNTS_FILE;
@@ -1222,7 +1222,7 @@ async fn site_info(
 }
 
 /// How much history one request returns. The log keeps roughly the last
-/// two [`site_audit::MAX_BYTES`]; a page shows the recent end of it.
+/// two [`crate::project::jsonl::MAX_BYTES`]; a page shows the recent end of it.
 const AUDIT_PAGE: usize = 500;
 
 /// `GET /api/v1/site/audit` -- the site's account and project history, for a
@@ -2290,21 +2290,6 @@ fn parse_bulk_role_download(
     Ok((role, download))
 }
 
-fn bulk_error(error: bulk::BulkError) -> ApiError {
-    ApiError::bad_request("invalid_bulk_accounts", error.to_string())
-}
-
-/// Every name a new account must not take: the existing accounts, and every
-/// name some project still has a membership for (see [`reusable_name`]).
-fn taken_names(
-    site: &SiteState,
-    set: &AccountSet,
-) -> Result<std::collections::BTreeSet<UserId>, ApiError> {
-    let mut taken = site.site()?.member_names().map_err(site_error)?;
-    taken.extend(set.users.iter().map(|account| account.name.clone()));
-    Ok(taken)
-}
-
 /// Refuse to hand a project administrator a name that some project already
 /// has a membership for.
 ///
@@ -2331,21 +2316,6 @@ fn reusable_name(site: &SiteState, name: &UserId) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// The names a batch will create, avoiding every [`taken_names`].
-fn bulk_account_names(
-    taken: &std::collections::BTreeSet<UserId>,
-    prefix: &str,
-    count: usize,
-    random_names: bool,
-) -> Result<Vec<UserId>, ApiError> {
-    if random_names {
-        bulk::random_bulk_names(taken.iter(), count).map_err(bulk_error)
-    } else {
-        let start = bulk::next_bulk_start(taken.iter(), prefix);
-        bulk::bulk_names_after(prefix, count, start).map_err(bulk_error)
-    }
-}
-
 /// A batch of one-time invite links, shared by the site route (any project,
 /// or none) and the project route (this project only).
 async fn bulk_invites(
@@ -2355,38 +2325,17 @@ async fn bulk_invites(
     body: BulkAccountsBody,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
-    let set = account_set(&site)?;
-    let names = bulk_account_names(
-        &taken_names(&site, &set)?,
-        &body.prefix,
-        body.count,
-        body.random_names,
-    )?;
-
-    let minted: Vec<(UserId, String, invite::Invite)> = names
-        .iter()
-        .map(|name| {
-            let (token, invite) = match &project {
-                Some(key) => invite::mint_for_project(auth::now(), key.clone(), role, download),
-                None => invite::mint(auth::now(), None, None, None),
-            }
-            .map_err(|e| ApiError::internal("invite_failed", e))?;
-            Ok((name.clone(), token, invite))
-        })
-        .collect::<Result<_, ApiError>>()?;
-
-    accounts::update(site.site()?.store(), |set| {
-        if let Some((name, _, _)) = minted.iter().find(|(name, _, _)| set.get(name).is_some()) {
-            return Err(AccountError::Duplicate(name.to_string()));
-        }
-        for (name, _, invite) in &minted {
-            let mut account = Account::new(name.clone(), false);
-            account.invite = Some(invite.clone());
-            set.users.push(account);
-        }
-        Ok(())
-    })
-    .map_err(account_error)?;
+    let directory = site.site()?;
+    let prefix = (!body.random_names).then_some(body.prefix.as_str());
+    let names = directory
+        .batch_names(prefix, body.count)
+        .map_err(site_error)?;
+    let grant = Grant {
+        project: project.clone(),
+        role,
+        download,
+    };
+    let minted = directory.invite_batch(&names, &grant).map_err(site_error)?;
 
     for (name, _, _) in &minted {
         let mut entry =
@@ -2401,10 +2350,10 @@ async fn bulk_invites(
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
-            "users": minted.iter().map(|(name, token, invite)| serde_json::json!({
+            "users": minted.iter().map(|(name, token, expires)| serde_json::json!({
                 "name": name.as_str(),
                 "invite_path": format!("/invite/{token}"),
-                "invite_expires": invite.expires,
+                "invite_expires": expires,
             })).collect::<Vec<_>>(),
             "invite_ttl_days": invite::INVITE_TTL_DAYS,
         })),
@@ -2460,55 +2409,26 @@ async fn bulk_passwords(
              not shared passwords.",
         )
     })?;
-    let set = account_set(&site)?;
-    let names = bulk_account_names(
-        &taken_names(&site, &set)?,
-        &body.prefix,
-        body.count,
-        body.random_names,
-    )?;
-
-    let generated: Vec<(UserId, String)> = names
-        .iter()
-        .map(|name| bulk::generate_password().map(|password| (name.clone(), password)))
-        .collect::<Result<_, _>>()
-        .map_err(bulk_error)?;
-    let to_hash = generated.clone();
-    let hashed = tokio::task::spawn_blocking(move || {
-        to_hash
-            .into_iter()
-            .map(|(name, password)| accounts::hash_password(&password).map(|hash| (name, hash)))
-            .collect::<Result<Vec<_>, AccountError>>()
+    let prefix = (!body.random_names).then_some(body.prefix.as_str());
+    let names = site
+        .site()?
+        .batch_names(prefix, body.count)
+        .map_err(site_error)?;
+    let grant = Grant {
+        project: project.clone(),
+        role,
+        download,
+    };
+    // One Argon2id hash per account: off the async runtime.
+    let hashing = Arc::clone(&site);
+    let generated = tokio::task::spawn_blocking(move || {
+        hashing
+            .site()?
+            .password_batch(&names, &grant)
+            .map_err(site_error)
     })
     .await
-    .map_err(|e| ApiError::internal("password_hash_task_failed", e.to_string()))?
-    .map_err(account_error)?;
-
-    accounts::update(site.site()?.store(), |set| {
-        if let Some((name, _)) = hashed.iter().find(|(name, _)| set.get(name).is_some()) {
-            return Err(AccountError::Duplicate(name.to_string()));
-        }
-        for ((name, _password), (_, hash)) in generated.iter().zip(&hashed) {
-            let mut account = Account::new(name.clone(), false);
-            account.password_hash = Some(hash.clone());
-            set.users.push(account);
-        }
-        Ok(())
-    })
-    .map_err(account_error)?;
-
-    // There is no invite to redeem, so a named project's membership is added
-    // now rather than on redemption.
-    if let Some(key) = &project {
-        let project = site.site()?.project(key).map_err(site_error)?;
-        members::update(project.documents(), |set| {
-            for name in &names {
-                set.upsert(name, role, download);
-            }
-            Ok(())
-        })
-        .map_err(member_error)?;
-    }
+    .map_err(|e| ApiError::internal("password_hash_task_failed", e.to_string()))??;
 
     for (name, _) in &generated {
         let mut entry =

@@ -170,6 +170,15 @@ impl From<StoreError> for SiteError {
     }
 }
 
+/// What a batch of new accounts is given: a membership in `project`, as
+/// `role` with `download`, or nothing when there is no project.
+#[derive(Debug, Clone)]
+pub struct Grant {
+    pub project: Option<ProjectKey>,
+    pub role: crate::project::roles::Role,
+    pub download: crate::project::roles::DownloadScope,
+}
+
 /// A site on disk. Holds no project state itself; projects are opened on
 /// demand through [`Site::project`].
 #[derive(Debug)]
@@ -554,6 +563,141 @@ impl Site {
             let _ = crate::project::preferences::remove(project.documents(), name);
         }
         Ok(removed_from)
+    }
+
+    /// Names for `count` new accounts: numbered after `prefix`
+    /// (`student-01`, …), or drawn from the fixed pool when `prefix` is
+    /// `None`. Never a name an account has, nor one any project still has a
+    /// membership for, since whoever took it would inherit that membership.
+    pub fn batch_names(
+        &self,
+        prefix: Option<&str>,
+        count: usize,
+    ) -> Result<Vec<UserId>, SiteError> {
+        let mut taken = self.member_names()?;
+        if let Some((set, _)) = accounts::read(self.store()).map_err(SiteError::Account)? {
+            taken.extend(set.users.into_iter().map(|account| account.name));
+        }
+        match prefix {
+            None => accounts::bulk::random_bulk_names(taken.iter(), count),
+            Some(prefix) => {
+                let start = accounts::bulk::next_bulk_start(taken.iter(), prefix);
+                accounts::bulk::bulk_names_after(prefix, count, start)
+            }
+        }
+        .map_err(|e| SiteError::Account(accounts::AccountError::Rejected(e.to_string())))
+    }
+
+    /// Create invite-only accounts for `names`, all or none, and return each
+    /// one's name, one-time token and expiry.
+    ///
+    /// Each invite carries `grant`'s membership, which is added when it is
+    /// redeemed; with no project, the accounts join nothing.
+    pub fn invite_batch(
+        &self,
+        names: &[UserId],
+        grant: &Grant,
+    ) -> Result<Vec<(UserId, String, i64)>, SiteError> {
+        let now = chrono::Utc::now().timestamp();
+        let minted = names
+            .iter()
+            .map(|name| {
+                let (token, invite) = match &grant.project {
+                    Some(key) => accounts::invite::mint_for_project(
+                        now,
+                        key.clone(),
+                        grant.role,
+                        grant.download,
+                    ),
+                    None => accounts::invite::mint(now, None, None, None),
+                }
+                .map_err(|e| SiteError::Account(accounts::AccountError::Rejected(e)))?;
+                Ok((name.clone(), token, invite))
+            })
+            .collect::<Result<Vec<_>, SiteError>>()?;
+        accounts::update(self.store(), |set| {
+            if let Some((name, _, _)) = minted.iter().find(|(name, _, _)| set.get(name).is_some()) {
+                return Err(accounts::AccountError::Duplicate(name.to_string()));
+            }
+            for (name, _, invite) in &minted {
+                let mut account = accounts::Account::new(name.clone(), false);
+                account.invite = Some(invite.clone());
+                set.users.push(account);
+            }
+            Ok(())
+        })
+        .map_err(SiteError::Account)?;
+        Ok(minted
+            .into_iter()
+            .map(|(name, token, invite)| (name, token, invite.expires))
+            .collect())
+    }
+
+    /// Create accounts for `names` with generated passwords, all or none,
+    /// and return each name with its password. The only copy of the
+    /// passwords is what this returns; only their hashes are stored.
+    ///
+    /// With no invite to redeem, `grant`'s membership is added now. Refused
+    /// for an administrator role: a shared password handed to someone who
+    /// runs a project is a standing key to it.
+    ///
+    /// Slow on purpose, one Argon2id hash per account; call it off the
+    /// async runtime.
+    #[cfg(feature = "server")]
+    pub fn password_batch(
+        &self,
+        names: &[UserId],
+        grant: &Grant,
+    ) -> Result<Vec<(UserId, String)>, SiteError> {
+        if accounts::bulk::bulk_risk_advisory(grant.role).is_none() {
+            return Err(SiteError::Account(accounts::AccountError::Rejected(
+                "Administrator accounts must be created with one-time invite links, \
+                 not shared passwords."
+                    .to_string(),
+            )));
+        }
+        let generated = names
+            .iter()
+            .map(|name| {
+                let password = accounts::bulk::generate_password().map_err(|e| {
+                    SiteError::Account(accounts::AccountError::Rejected(e.to_string()))
+                })?;
+                let hash = accounts::hash_password(&password).map_err(SiteError::Account)?;
+                Ok((name.clone(), password, hash))
+            })
+            .collect::<Result<Vec<_>, SiteError>>()?;
+        accounts::update(self.store(), |set| {
+            if let Some((name, _, _)) = generated
+                .iter()
+                .find(|(name, _, _)| set.get(name).is_some())
+            {
+                return Err(accounts::AccountError::Duplicate(name.to_string()));
+            }
+            for (name, _, hash) in &generated {
+                let mut account = accounts::Account::new(name.clone(), false);
+                account.password_hash = Some(hash.clone());
+                set.users.push(account);
+            }
+            Ok(())
+        })
+        .map_err(SiteError::Account)?;
+        if let Some(key) = &grant.project {
+            let project = self.project(key)?;
+            members::update(project.documents(), |set| {
+                for name in names {
+                    set.upsert(name, grant.role, grant.download);
+                }
+                Ok(())
+            })
+            .map_err(|e| SiteError::Io {
+                path: self.project_path(key),
+                message: e.to_string(),
+            })?;
+        }
+        Ok(generated
+            .into_iter()
+            .map(|(name, password, _)| (name, password))
+            .collect())
     }
 
     fn ensure_project_exists(&self, key: &ProjectKey) -> Result<(), SiteError> {
