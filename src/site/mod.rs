@@ -861,6 +861,80 @@ mod tests {
     }
 
     #[test]
+    fn a_site_is_made_once_and_opened_only_by_a_ridal_that_knows_its_format() {
+        let (dir, _site) = site();
+        assert!(matches!(
+            Site::init(dir.path(), None).unwrap_err(),
+            SiteError::AlreadyASite(_)
+        ));
+
+        // Written by a newer Ridal: refused rather than misread.
+        std::fs::write(
+            dir.path().join(SITE_MARKER),
+            "[site]\nformat_version = 99\n",
+        )
+        .unwrap();
+        let error = Site::open(dir.path()).unwrap_err();
+        assert!(matches!(
+            error,
+            SiteError::UnsupportedFormat { version: 99, .. }
+        ));
+        assert!(error.to_string().contains("Upgrade Ridal"), "{error}");
+
+        std::fs::write(dir.path().join(SITE_MARKER), "not toml [").unwrap();
+        assert!(matches!(
+            Site::open(dir.path()).unwrap_err(),
+            SiteError::Config { .. }
+        ));
+    }
+
+    #[test]
+    fn every_site_error_says_what_to_do_in_words() {
+        let path = PathBuf::from("/srv/ridal");
+        for (error, expected) in [
+            (SiteError::NotASite(path.clone()), "ridal site init"),
+            (
+                SiteError::AlreadyASite(path.clone()),
+                "already a Ridal site",
+            ),
+            (
+                SiteError::Io {
+                    path: path.clone(),
+                    message: "disk full".to_string(),
+                },
+                "disk full",
+            ),
+            (
+                SiteError::Config {
+                    path: path.clone(),
+                    message: "bad".to_string(),
+                },
+                "could not read",
+            ),
+            (SiteError::NotFound("glac".to_string()), "No project 'glac'"),
+            (SiteError::KeyInUse("glac".to_string()), "immutable"),
+            (
+                SiteError::NotArchived("glac".to_string()),
+                "Archive it first",
+            ),
+            (
+                SiteError::Account(accounts::AccountError::NotFound("bo".to_string())),
+                "bo",
+            ),
+        ] {
+            let text = error.to_string();
+            assert!(text.contains(expected), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_site_with_no_projects_directory_lists_none() {
+        let (dir, site) = site();
+        std::fs::remove_dir(dir.path().join(PROJECTS_DIR)).unwrap();
+        assert!(site.list().unwrap().is_empty());
+    }
+
+    #[test]
     fn a_project_that_still_holds_accounts_is_refused() {
         let (_dir, site) = site();
         let glac = key("glac-2026");

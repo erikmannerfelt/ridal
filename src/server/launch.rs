@@ -329,6 +329,71 @@ mod tests {
         assert!(check_bind_safety(ip("0.0.0.0"), true, true).is_ok());
     }
 
+    /// `ridal server start` with everything but the path and the flags at
+    /// their defaults. Every case below is refused before anything binds.
+    async fn start(root: &std::path::Path, host: &str, read_only: bool) -> String {
+        super::serve_site(
+            root,
+            ip(host),
+            0,
+            false,
+            read_only,
+            false,
+            crate::server::render_service::RenderServiceConfig::default(),
+        )
+        .await
+        .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn server_start_refuses_what_is_not_a_servable_site() {
+        // A project, including one inside a site's `projects/`, is not a site.
+        let project = tempfile::tempdir().unwrap();
+        crate::project::Project::init(project.path(), None).unwrap();
+        let refused = start(project.path(), "127.0.0.1", false).await;
+        assert!(refused.contains("is a project, not a site"), "{refused}");
+
+        let bare = tempfile::tempdir().unwrap();
+        let refused = start(bare.path(), "127.0.0.1", false).await;
+        assert!(refused.contains("not a Ridal site"), "{refused}");
+
+        // A site nobody can sign in to is served read-only or not at all.
+        let site = tempfile::tempdir().unwrap();
+        let opened = crate::site::Site::init(site.path(), None).unwrap();
+        let refused = start(site.path(), "127.0.0.1", false).await;
+        assert!(refused.contains("no accounts"), "{refused}");
+
+        // And with accounts, a network bind still guards the passwords.
+        crate::site::accounts::update(opened.store(), |set| {
+            set.users.push(crate::site::accounts::Account::new(
+                crate::identity::UserId::new("anna").unwrap(),
+                true,
+            ));
+            Ok(())
+        })
+        .unwrap();
+        let refused = start(site.path(), "0.0.0.0", true).await;
+        assert!(refused.contains("--allow-insecure-login"), "{refused}");
+    }
+
+    #[test]
+    fn ridal_gui_names_accounts_it_will_ignore_and_is_quiet_otherwise() {
+        // Only a warning, so there is nothing to assert but that each shape
+        // of file is looked at without failing.
+        let dir = tempfile::tempdir().unwrap();
+        let project = crate::project::Project::init(dir.path(), None).unwrap();
+        super::warn_about_project_accounts(&project);
+        project
+            .documents()
+            .write(
+                std::path::Path::new(crate::project::members::MEMBERS_FILE),
+                r#"{"users": []}"#,
+                &crate::project::store::Expectation::Any,
+            )
+            .unwrap();
+        super::warn_about_project_accounts(&project);
+    }
+
     #[test]
     fn a_site_with_no_accounts_has_no_password_to_guard() {
         // The read-only public arrangement: nothing to log in to.

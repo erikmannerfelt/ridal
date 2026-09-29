@@ -5206,3 +5206,43 @@ async fn adopting_from_a_page_that_missed_a_save_is_refused() {
         "a refused adoption leaves no stray archived copy"
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_preference_nothing_offers_is_refused_rather_than_stored() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Picker,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    for (body, code) in [
+        (
+            json!({"render_profile": "no-such-profile"}),
+            "unknown_profile",
+        ),
+        (json!({"x_scale": 7.25}), "unknown_xscale"),
+        (json!({"theme": "sepia"}), "unknown_theme"),
+        (json!({"level2_format": "xlsx"}), "unknown_format"),
+    ] {
+        let refused = put(&app, "/api/v1/preferences", &body, Some(&erik)).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{body}: {}",
+            refused.text
+        );
+        assert_eq!(refused.body["error"]["code"], code, "{body}");
+    }
+    // Someone who is not signed in has nowhere to keep one.
+    let anonymous = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"render_profile": null}),
+        None,
+    )
+    .await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+}

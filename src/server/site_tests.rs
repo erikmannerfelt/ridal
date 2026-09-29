@@ -1861,3 +1861,144 @@ async fn a_project_records_the_account_that_created_it() {
     let info = send(&app, get("/api/v1/projects/glac", Some(&anna))).await;
     assert_eq!(info.body["created_by"], "anna");
 }
+
+#[tokio::test]
+async fn the_rest_of_the_site_api_answers_as_documented() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let anna = sign_in(&app, "anna").await;
+
+    // Who the site is, to anyone.
+    let info = send(&app, get("/api/v1/site", None)).await;
+    assert_eq!(info.body["name"], "Test site");
+    assert_eq!(info.body["accounts_configured"], true);
+    assert_eq!(info.body["authenticated"], false);
+
+    // Site settings need an account, and remember what it chose.
+    for request in [
+        get("/api/v1/site/preferences", None),
+        put_json("/api/v1/site/preferences", &json!({"theme": "dark"}), None),
+    ] {
+        assert_eq!(send(&app, request).await.status, StatusCode::UNAUTHORIZED);
+    }
+    let saved = send(
+        &app,
+        put_json(
+            "/api/v1/site/preferences",
+            &json!({"theme": "dark"}),
+            Some(&anna),
+        ),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    let read = send(&app, get("/api/v1/site/preferences", Some(&anna))).await;
+    assert_eq!(read.body["theme"], "dark");
+
+    // Membership: added, added again as something else, changed, removed.
+    let members = "/api/v1/projects/glac/members";
+    for role in ["picker", "viewer"] {
+        let added = send(
+            &app,
+            post_json(members, &json!({"name": "bo", "role": role}), Some(&anna)),
+        )
+        .await;
+        assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
+    }
+    let changed = send(
+        &app,
+        put_json(
+            "/api/v1/projects/glac/members/bo",
+            &json!({"role": "operator", "download": "picks"}),
+            Some(&anna),
+        ),
+    )
+    .await;
+    assert_eq!(changed.body["role"], "operator", "{}", changed.text);
+    assert_eq!(changed.body["download"], "picks");
+    let removed = send(
+        &app,
+        delete("/api/v1/projects/glac/members/bo", Some(&anna)),
+    )
+    .await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+
+    // The project's policy for people who are not signed in.
+    let access = send(
+        &app,
+        put_json(
+            "/api/v1/projects/glac/access",
+            &json!({"anonymous_download": "results"}),
+            Some(&anna),
+        ),
+    )
+    .await;
+    assert_eq!(access.status, StatusCode::OK, "{}", access.text);
+    assert_eq!(access.body["anonymous_download"], "results");
+    let bad = send(
+        &app,
+        put_json(
+            "/api/v1/projects/glac/access",
+            &json!({"anonymous_download": "everything"}),
+            Some(&anna),
+        ),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+
+    // A new invite link for an existing account, and none for a stranger.
+    let reissued = send(
+        &app,
+        post_json("/api/v1/accounts/bo/invite", &json!({}), Some(&anna)),
+    )
+    .await;
+    assert_eq!(reissued.status, StatusCode::OK, "{}", reissued.text);
+    assert!(reissued.body["invite_path"]
+        .as_str()
+        .unwrap()
+        .starts_with("/invite/"));
+    let missing = send(
+        &app,
+        post_json("/api/v1/accounts/nobody/invite", &json!({}), Some(&anna)),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
+    // Archive, then back again.
+    for (path, archived) in [
+        ("/api/v1/projects/glac/archive", true),
+        ("/api/v1/projects/glac/unarchive", false),
+    ] {
+        let response = send(&app, post_json(path, &json!({}), Some(&anna))).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+        assert_eq!(response.body["archived"], archived);
+    }
+
+    // Another project's key is refused, and nothing but projects lives under
+    // the prefixes.
+    let taken = send(
+        &app,
+        post_json("/api/v1/projects", &json!({"key": "glac"}), Some(&anna)),
+    )
+    .await;
+    assert_eq!(taken.status, StatusCode::CONFLICT);
+    let nowhere = send(&app, get("/nowhere", Some(&anna))).await;
+    assert_eq!(nowhere.status, StatusCode::NOT_FOUND);
+
+    // A second account for the last administrator's name is refused, and
+    // the last administrator cannot be removed.
+    let duplicate = send(
+        &app,
+        post_json("/api/v1/accounts", &json!({"name": "bo"}), Some(&anna)),
+    )
+    .await;
+    assert_eq!(duplicate.status, StatusCode::CONFLICT);
+    let last = send(&app, delete("/api/v1/accounts/anna", Some(&anna))).await;
+    assert_eq!(last.status, StatusCode::BAD_REQUEST, "{}", last.text);
+}
