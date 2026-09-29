@@ -1193,5 +1193,24 @@
     });
   }
 
+  /* This project's slice of the site ledger, loaded when first opened. */
+  const history = byId("history");
+  if (history) {
+    let loaded = false;
+    history.addEventListener("toggle", async () => {
+      if (!history.open || loaded) return;
+      loaded = true;
+      const box = byId("history-table");
+      try {
+        const body = await RIDAL.fetchJson(RIDAL.apiPath("audit"));
+        box.replaceChildren(RIDAL.historyTable(body.entries || []));
+      } catch (error) {
+        loaded = false;
+        box.replaceChildren();
+        showError(`Could not load the history: ${error.message}`);
+      }
+    });
+  }
+
   load();
 })();

@@ -546,5 +546,28 @@
     });
   }
 
+  /* ---- History ------------------------------------------------------ */
+
+  /* Loaded the first time the disclosure is opened, so the settings page
+   * does not fetch the whole ledger for someone who never looks. */
+  const history = byId("history");
+  if (history) {
+    let loaded = false;
+    history.addEventListener("toggle", async () => {
+      if (!history.open || loaded) return;
+      loaded = true;
+      const box = byId("history-table");
+      try {
+        const body = await RIDAL.fetchJson(RIDAL.siteApiPath("site", "audit"));
+        box.replaceChildren(RIDAL.historyTable(body.entries || []));
+      } catch (error) {
+        // Let the next open try again.
+        loaded = false;
+        box.replaceChildren();
+        showError(`Could not load the history: ${error.message}`);
+      }
+    });
+  }
+
   loadAccounts();
 })();

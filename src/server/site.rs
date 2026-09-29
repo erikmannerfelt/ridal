@@ -42,7 +42,7 @@ use crate::project::members;
 use crate::project::store::{DocumentStore, Expectation};
 use crate::project::users::{self, DownloadScope, Role};
 use crate::site::accounts::{self, invite, Account, AccountError, AccountSet};
-use crate::site::{Site, SiteError};
+use crate::site::{audit as site_audit, Site, SiteError};
 
 /// The site's account file, for the "create the first one" hint.
 const ACCOUNTS_FILE: &str = accounts::ACCOUNTS_FILE;
@@ -152,6 +152,22 @@ fn site_error(error: SiteError) -> ApiError {
         SiteError::KeyInUse(_) => ApiError::conflict("project_exists", error.to_string()),
         _ => ApiError::internal("site_error", error.to_string()),
     }
+}
+
+/// The account name behind a request, for the site audit. These routes all
+/// require a session, so `anonymous` should not be reached.
+fn actor(caller: &SiteCaller) -> String {
+    caller
+        .user
+        .as_ref()
+        .map(|user| user.as_str().to_string())
+        .unwrap_or_else(|| "anonymous".to_string())
+}
+
+/// Append one site-audit entry. Never fails the change it describes, for the
+/// same reason the project audit does not: the change has already happened.
+fn audit(site: &SiteState, entry: site_audit::Entry) {
+    site_audit::record(site.site.store(), entry);
 }
 
 /// Resolve an optional project key from a request body, refusing one that
@@ -297,6 +313,7 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         .route("/settings", get(site_settings_page))
         .route("/api/v1/health", get(super::routes::health))
         .route("/api/v1/site", get(site_info))
+        .route("/api/v1/site/audit", get(site_audit_log))
         .route(
             "/api/v1/site/preferences",
             get(get_site_preferences).put(put_site_preferences),
@@ -336,6 +353,7 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
             "/api/v1/projects/{key}/members/bulk/passwords",
             post(create_project_bulk_passwords),
         )
+        .route("/api/v1/projects/{key}/audit", get(project_audit_log))
         .route("/api/v1/projects/{key}/access", put(put_project_access))
         .route("/api/v1/accounts", get(list_accounts).post(create_account))
         .route(
@@ -868,11 +886,11 @@ async fn redeem_invite(
     })
     .map_err(account_error)?;
 
-    if let Some(membership) = target {
-        if let Some(key) = membership.project {
+    if let Some(membership) = &target {
+        if let Some(key) = &membership.project {
             let role = membership.role.unwrap_or(Role::Picker);
             let download = membership.download.unwrap_or(DownloadScope::All);
-            let project = site.site.project(&key).map_err(site_error)?;
+            let project = site.site.project(key).map_err(site_error)?;
             members::update(project.documents(), |set| {
                 match set.get_mut(&account.name) {
                     Some(member) => {
@@ -887,6 +905,33 @@ async fn redeem_invite(
                 Ok(())
             })
             .map_err(|e| ApiError::internal("membership_write_failed", e.to_string()))?;
+        }
+    }
+    // The person is the actor: they set their own password.
+    let redeemer = account.name.as_str().to_string();
+    audit(
+        &site,
+        site_audit::Entry::new(
+            &redeemer,
+            site_audit::Action::AccountActivated,
+            account.name.as_str(),
+        ),
+    );
+    if let Some(membership) = &target {
+        if let Some(key) = &membership.project {
+            audit(
+                &site,
+                site_audit::Entry::new(
+                    &redeemer,
+                    site_audit::Action::MembershipAdded,
+                    account.name.as_str(),
+                )
+                .project(key)
+                .membership(
+                    membership.role.unwrap_or(Role::Picker),
+                    membership.download.unwrap_or(DownloadScope::All),
+                ),
+            );
         }
     }
 
@@ -919,6 +964,44 @@ async fn site_info(
         "invite_ttl_days": invite::INVITE_TTL_DAYS,
         "min_password_len": accounts::MIN_PASSWORD_LEN,
     })))
+}
+
+/// How much history one request returns. The log keeps the most recent
+/// [`site_audit::MAX_ENTRIES`]; a page shows the recent end of it.
+const AUDIT_PAGE: usize = 500;
+
+/// `GET /api/v1/site/audit` -- the site's account and project history, for a
+/// server administrator.
+async fn site_audit_log(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_server_admin("read the history")?;
+    let (log, _) = site_audit::read(site.site.store())
+        .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
+    let entries: Vec<&site_audit::Entry> = log.entries.iter().rev().take(AUDIT_PAGE).collect();
+    Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
+/// `GET /api/v1/projects/{key}/audit` -- the history of one project, for the
+/// people who administer it. Only the entries that name this project.
+async fn project_audit_log(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Path(key): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    require_project_admin(&site, &key, &caller, "read the history")?;
+    let (log, _) = site_audit::read(site.site.store())
+        .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
+    let entries: Vec<&site_audit::Entry> = log
+        .entries
+        .iter()
+        .rev()
+        .filter(|entry| entry.project.as_ref() == Some(&key))
+        .take(AUDIT_PAGE)
+        .collect();
+    Ok(Json(serde_json::json!({ "entries": entries })))
 }
 
 #[derive(serde::Deserialize)]
@@ -1019,6 +1102,14 @@ async fn create_project(
         .site
         .create_project(&key, body.name.as_deref())
         .map_err(site_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::ProjectCreated,
+            key.as_str(),
+        ),
+    );
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
@@ -1065,6 +1156,14 @@ async fn update_project(
         .set_name(body.name.as_deref())
         .map_err(|e| ApiError::internal("project_write_failed", e.to_string()))?;
     site.evict(&key);
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::ProjectRenamed,
+            key.as_str(),
+        ),
+    );
     Ok(Json(serde_json::json!({ "key": key.as_str() })))
 }
 
@@ -1078,6 +1177,14 @@ async fn archive_project(
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     site.site.archive(&key).map_err(site_error)?;
     site.evict(&key);
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::ProjectArchived,
+            key.as_str(),
+        ),
+    );
     Ok(Json(
         serde_json::json!({ "key": key.as_str(), "archived": true }),
     ))
@@ -1093,6 +1200,14 @@ async fn unarchive_project(
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     site.site.unarchive(&key).map_err(site_error)?;
     site.evict(&key);
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::ProjectUnarchived,
+            key.as_str(),
+        ),
+    );
     Ok(Json(serde_json::json!({
         "key": key.as_str(),
         "archived": false,
@@ -1109,6 +1224,14 @@ async fn delete_project(
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     site.evict(&key);
     site.site.delete_project(&key).map_err(site_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::ProjectDeleted,
+            key.as_str(),
+        ),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1229,19 +1352,36 @@ async fn add_member(
     }
 
     let project = site.site.project(&key).map_err(site_error)?;
+    let added = std::cell::Cell::new(false);
     members::update(project.documents(), |set| {
         match set.get_mut(&name) {
             Some(member) => {
                 member.role = role;
                 member.download = download;
             }
-            None => set
-                .members
-                .push(members::Member::new(name.clone(), role, download)),
+            None => {
+                added.set(true);
+                set.members
+                    .push(members::Member::new(name.clone(), role, download));
+            }
         }
         Ok(())
     })
     .map_err(member_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            if added.get() {
+                site_audit::Action::MembershipAdded
+            } else {
+                site_audit::Action::MembershipChanged
+            },
+            name.as_str(),
+        )
+        .project(&key)
+        .membership(role, download),
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -1313,6 +1453,26 @@ async fn invite_member(
         Ok(())
     })
     .map_err(member_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::AccountCreated,
+            name.as_str(),
+        )
+        .project(&key)
+        .note("created by a project administrator"),
+    );
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::MembershipAdded,
+            name.as_str(),
+        )
+        .project(&key)
+        .membership(role, download),
+    );
 
     Ok((
         StatusCode::CREATED,
@@ -1379,6 +1539,16 @@ async fn update_member(
         Ok(member.clone())
     })
     .map_err(member_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::MembershipChanged,
+            name.as_str(),
+        )
+        .project(&key)
+        .membership(updated.role, updated.download),
+    );
 
     Ok(Json(member_json(&updated)))
 }
@@ -1405,6 +1575,15 @@ async fn remove_member(
         Ok(())
     })
     .map_err(member_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::MembershipRemoved,
+            name.as_str(),
+        )
+        .project(&key),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1443,6 +1622,19 @@ async fn put_project_access(
         Ok(set.clone())
     })
     .map_err(member_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::AccessChanged,
+            key.as_str(),
+        )
+        .note(format!(
+            "require_auth_to_read={}, anonymous_download={}",
+            set.require_auth_to_read,
+            set.anonymous_download.as_str()
+        )),
+    );
 
     Ok(Json(serde_json::json!({
         "require_auth_to_read": set.require_auth_to_read,
@@ -1530,6 +1722,19 @@ async fn create_account(
     })
     .map_err(account_error)?;
 
+    let mut entry = site_audit::Entry::new(
+        actor(&caller),
+        site_audit::Action::AccountCreated,
+        name.as_str(),
+    );
+    if let Some(key) = &project {
+        entry = entry.project(key).membership(role, download);
+    }
+    if body.server_admin {
+        entry = entry.note("server administrator");
+    }
+    audit(&site, entry);
+
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
@@ -1560,7 +1765,7 @@ async fn update_account(
     caller.require_server_admin("change an account")?;
     let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
 
-    let redacted = accounts::update(site.site.store(), |set| {
+    let (redacted, changed) = accounts::update(site.site.store(), |set| {
         if let Some(admin) = body.server_admin {
             let is_admin = set.get(&name).map(|a| a.server_admin).unwrap_or(false);
             if is_admin && !admin && !set.has_another_admin(&name) {
@@ -1573,15 +1778,31 @@ async fn update_account(
         let account = set
             .get_mut(&name)
             .ok_or_else(|| AccountError::NotFound(name.to_string()))?;
+        let mut changed = false;
         if let Some(admin) = body.server_admin {
             if account.server_admin != admin {
                 account.server_admin = admin;
                 account.credential_version += 1;
+                changed = true;
             }
         }
-        Ok(account.redacted())
+        Ok((account.redacted(), changed))
     })
     .map_err(account_error)?;
+    if changed {
+        audit(
+            &site,
+            site_audit::Entry::new(
+                actor(&caller),
+                if body.server_admin == Some(true) {
+                    site_audit::Action::ServerAdminGranted
+                } else {
+                    site_audit::Action::ServerAdminRevoked
+                },
+                name.as_str(),
+            ),
+        );
+    }
 
     Ok(Json(redacted))
 }
@@ -1612,6 +1833,14 @@ async fn delete_account(
         Ok(())
     })
     .map_err(account_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::AccountRemoved,
+            name.as_str(),
+        ),
+    );
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1636,6 +1865,14 @@ async fn reissue_account_invite(
         Ok(())
     })
     .map_err(account_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::InviteIssued,
+            name.as_str(),
+        ),
+    );
 
     Ok(Json(serde_json::json!({
         "user": name.as_str(),
@@ -1721,6 +1958,7 @@ fn bulk_account_names(
 async fn bulk_invites(
     site: Arc<SiteState>,
     project: Option<ProjectKey>,
+    actor: String,
     body: BulkAccountsBody,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
@@ -1755,6 +1993,16 @@ async fn bulk_invites(
     })
     .map_err(account_error)?;
 
+    for (name, _, _) in &minted {
+        let mut entry =
+            site_audit::Entry::new(&actor, site_audit::Action::AccountCreated, name.as_str())
+                .note("bulk invite");
+        if let Some(key) = &project {
+            entry = entry.project(key);
+        }
+        audit(&site, entry);
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({
@@ -1776,7 +2024,7 @@ async fn create_bulk_invites(
 ) -> Result<impl IntoResponse, ApiError> {
     caller.require_server_admin("create accounts")?;
     let project = resolve_optional_project(&site, body.project.as_deref())?;
-    bulk_invites(site, project, body).await
+    bulk_invites(site, project, actor(&caller), body).await
 }
 
 /// `POST /api/v1/projects/{key}/members/bulk/invites` -- a project
@@ -1789,7 +2037,7 @@ async fn create_project_bulk_invites(
 ) -> Result<impl IntoResponse, ApiError> {
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     require_project_admin(&site, &key, &caller, "create accounts")?;
-    bulk_invites(site, Some(key), body).await
+    bulk_invites(site, Some(key), actor(&caller), body).await
 }
 
 /// A batch of accounts with generated passwords, shared by the site route
@@ -1797,6 +2045,7 @@ async fn create_project_bulk_invites(
 async fn bulk_passwords(
     site: Arc<SiteState>,
     project: Option<ProjectKey>,
+    actor: String,
     body: BulkPasswordsBody,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     if !body.acknowledge_risk {
@@ -1870,6 +2119,16 @@ async fn bulk_passwords(
         .map_err(member_error)?;
     }
 
+    for (name, _) in &generated {
+        let mut entry =
+            site_audit::Entry::new(&actor, site_audit::Action::AccountCreated, name.as_str())
+                .note("bulk generated password");
+        if let Some(key) = &project {
+            entry = entry.project(key).membership(role, download);
+        }
+        audit(&site, entry);
+    }
+
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({
@@ -1891,7 +2150,7 @@ async fn create_bulk_passwords(
 ) -> Result<impl IntoResponse, ApiError> {
     caller.require_server_admin("create accounts")?;
     let project = resolve_optional_project(&site, body.project.as_deref())?;
-    bulk_passwords(site, project, body).await
+    bulk_passwords(site, project, actor(&caller), body).await
 }
 
 /// `POST /api/v1/projects/{key}/members/bulk/passwords` -- a project
@@ -1904,7 +2163,7 @@ async fn create_project_bulk_passwords(
 ) -> Result<impl IntoResponse, ApiError> {
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     require_project_admin(&site, &key, &caller, "create accounts")?;
-    bulk_passwords(site, Some(key), body).await
+    bulk_passwords(site, Some(key), actor(&caller), body).await
 }
 
 #[cfg(test)]

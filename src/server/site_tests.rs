@@ -138,6 +138,17 @@ fn put_json(uri: &str, body: &Value, cookie: Option<&str>) -> Request<Body> {
     builder.body(Body::from(body.to_string())).unwrap()
 }
 
+fn patch_json(uri: &str, body: &Value, cookie: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("PATCH")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
+}
+
 fn cookie_pair(set_cookie: &str) -> String {
     set_cookie.split(';').next().unwrap().to_string()
 }
@@ -1114,4 +1125,152 @@ async fn a_project_admin_bulk_batch_still_refuses_admin_passwords() {
     )
     .await;
     assert_eq!(outsider.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_site_audit_records_account_and_project_changes() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+
+    let created = send(
+        &app,
+        post_json(
+            "/api/v1/accounts",
+            &json!({
+                "name": "bo",
+                "server_admin": false,
+                "project": "glac",
+                "role": "picker",
+                "download": "picks",
+            }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let renamed = send(
+        &app,
+        patch_json(
+            "/api/v1/projects/glac",
+            &json!({ "name": "Glaciology" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    let archived = send(
+        &app,
+        post_json("/api/v1/projects/glac/archive", &json!({}), Some(&cookie)),
+    )
+    .await;
+    assert_eq!(archived.status, StatusCode::OK, "{}", archived.text);
+
+    let page = send(&app, get("/api/v1/site/audit", Some(&cookie))).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    let entries = page.body["entries"].as_array().unwrap();
+    let actions: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry["action"].as_str().unwrap())
+        .collect();
+    // Most recent first.
+    assert_eq!(actions[0], "project_archived");
+    assert!(actions.contains(&"project_renamed"), "{actions:?}");
+    assert!(actions.contains(&"account_created"), "{actions:?}");
+
+    let account = entries
+        .iter()
+        .find(|entry| entry["action"] == "account_created")
+        .expect("the account creation is recorded");
+    assert_eq!(account["actor"], "anna");
+    assert_eq!(account["subject"], "bo");
+    assert_eq!(account["project"], "glac");
+    assert_eq!(account["role"], "picker");
+}
+
+#[tokio::test]
+async fn a_project_admin_sees_only_their_projects_history() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+            activated("dan", false, &hash),
+        ],
+        &["glac", "share"],
+        AccessOptions::default(),
+    );
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    members::update(project.documents(), |set| {
+        set.members.push(members::Member::new(
+            id("bo"),
+            Role::Admin,
+            DownloadScope::All,
+        ));
+        set.members.push(members::Member::new(
+            id("dan"),
+            Role::Viewer,
+            DownloadScope::None,
+        ));
+        Ok(())
+    })
+    .unwrap();
+
+    let bo = sign_in(&app, "bo").await;
+    let created = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/invite",
+            &json!({ "name": "cara", "role": "picker" }),
+            Some(&bo),
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+
+    // A change in another project, by the server administrator.
+    let anna = sign_in(&app, "anna").await;
+    let renamed = send(
+        &app,
+        patch_json(
+            "/api/v1/projects/share",
+            &json!({ "name": "Shared" }),
+            Some(&anna),
+        ),
+    )
+    .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+
+    let page = send(&app, get("/api/v1/projects/glac/audit", Some(&bo))).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    let entries = page.body["entries"].as_array().unwrap();
+    assert!(!entries.is_empty(), "{}", page.text);
+    assert!(
+        entries.iter().all(|entry| entry["project"] == "glac"),
+        "a project admin sees only their project: {}",
+        page.text
+    );
+
+    // A plain member may not read it.
+    let dan = sign_in(&app, "dan").await;
+    let refused = send(&app, get("/api/v1/projects/glac/audit", Some(&dan))).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn the_site_audit_requires_a_server_admin() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", false, &hash)],
+        &[],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let response = send(&app, get("/api/v1/site/audit", Some(&cookie))).await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
 }

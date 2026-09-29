@@ -2382,6 +2382,15 @@ fn site_account_add_command(args: &SiteAccountAddArgs) -> Result<(), String> {
         Ok(())
     })
     .map_err(|e| e.to_string())?;
+    let mut entry = crate::site::audit::Entry::new(
+        "cli",
+        crate::site::audit::Action::AccountCreated,
+        name.as_str(),
+    );
+    if args.server_admin {
+        entry = entry.note("server administrator");
+    }
+    crate::site::audit::record(site.store(), entry);
     print_invite(name.as_str(), &token, invite.expires);
     Ok(())
 }
@@ -2451,6 +2460,18 @@ fn site_account_set_command(args: &SiteAccountSetArgs) -> Result<(), String> {
         Ok(())
     })
     .map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            if wanted {
+                crate::site::audit::Action::ServerAdminGranted
+            } else {
+                crate::site::audit::Action::ServerAdminRevoked
+            },
+            name.as_str(),
+        ),
+    );
     Ok(())
 }
 
@@ -2468,6 +2489,14 @@ fn site_account_reset_command(args: &SiteAccountResetArgs) -> Result<(), String>
         Ok(())
     })
     .map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::InviteIssued,
+            name.as_str(),
+        ),
+    );
     print_invite(name.as_str(), &token, invite.expires);
     Ok(())
 }
@@ -2494,6 +2523,14 @@ fn site_account_remove_command(args: &SiteAccountResetArgs) -> Result<(), String
         Ok(())
     })
     .map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::AccountRemoved,
+            name.as_str(),
+        ),
+    );
     println!("Removed account '{name}'.");
     Ok(())
 }
@@ -2504,6 +2541,14 @@ fn site_project_add_command(args: &SiteProjectAddArgs) -> Result<(), String> {
     let project = site
         .create_project(&key, args.name.as_deref())
         .map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::ProjectCreated,
+            key.as_str(),
+        ),
+    );
     println!("Created project '{}' at {}", key, project.root().display());
     Ok(())
 }
@@ -2536,9 +2581,25 @@ fn site_project_archive_command(args: &SiteProjectKeyArgs, archive: bool) -> Res
     let key = crate::identity::ProjectKey::new(args.key.clone())?;
     if archive {
         site.archive(&key).map_err(|e| e.to_string())?;
+        crate::site::audit::record(
+            site.store(),
+            crate::site::audit::Entry::new(
+                "cli",
+                crate::site::audit::Action::ProjectArchived,
+                key.as_str(),
+            ),
+        );
         println!("Archived '{key}' (read-only).");
     } else {
         site.unarchive(&key).map_err(|e| e.to_string())?;
+        crate::site::audit::record(
+            site.store(),
+            crate::site::audit::Entry::new(
+                "cli",
+                crate::site::audit::Action::ProjectUnarchived,
+                key.as_str(),
+            ),
+        );
         println!("Unarchived '{key}'.");
     }
     Ok(())
@@ -2548,6 +2609,14 @@ fn site_project_delete_command(args: &SiteProjectKeyArgs) -> Result<(), String> 
     let site = open_site(&args.path)?;
     let key = crate::identity::ProjectKey::new(args.key.clone())?;
     site.delete_project(&key).map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::ProjectDeleted,
+            key.as_str(),
+        ),
+    );
     println!("Deleted project '{key}'.");
     Ok(())
 }

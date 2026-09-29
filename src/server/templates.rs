@@ -263,6 +263,7 @@ mod tests {
                 page_base => "/p/glac",
                 api_base => "/api/v1/projects/glac",
                 site_api_base => "/api/v1",
+                in_project => true,
             })
             .unwrap();
         assert!(out.contains(r#"data-page-base="/p/glac""#), "{out}");

@@ -557,6 +557,23 @@
           <div id="bulk-result" class="bulk-result" hidden></div>
         </details>
       </section>
+
+      {#- This project's slice of the site ledger: who joined, left, or had a
+          role changed here. The account-wide history is on site settings,
+          for a server administrator. -#}
+      <section class="settings-section" id="history-section">
+        <h2>History</h2>
+        <p class="hint">
+          Who joined, left, or changed role in this project, most recent
+          first. It is a record to work out what happened, not a security
+          control: it can be edited by anyone with access to the site
+          directory.
+        </p>
+        <details id="history" class="bulk-users">
+          <summary>Show the history</summary>
+          <div id="history-table"></div>
+        </details>
+      </section>
     {% endif %}
 
     {#- The project-wide policy. A distinct area rather than a few more

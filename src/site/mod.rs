@@ -41,6 +41,7 @@ use crate::project::store::{DocumentStore, Expectation, StoreError, Version};
 use crate::project::{Project, ProjectError};
 
 pub mod accounts;
+pub mod audit;
 
 /// The site's marker and settings file, at its root.
 pub const SITE_MARKER: &str = "ridal-site.toml";

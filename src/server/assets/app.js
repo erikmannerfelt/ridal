@@ -216,6 +216,57 @@ const RIDAL = Object.freeze({
     }
   },
 
+  /** A table of site-audit entries, most recent first.
+   *
+   * The server sends the entries already reversed; this lays them out. The
+   * action is a snake_case enum, shown as words, and the detail column
+   * carries the role/download or a free-text note when there is one. */
+  historyTable(entries) {
+    const table = document.createElement("table");
+    table.className = "layers-table";
+    const header = document.createElement("tr");
+    for (const label of ["When", "Who", "What", "About", "Project", "Detail"]) {
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = label;
+      header.appendChild(th);
+    }
+    table.appendChild(header);
+    if (entries.length === 0) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 6;
+      cell.className = "hint";
+      cell.textContent = "Nothing has been recorded yet.";
+      row.appendChild(cell);
+      table.appendChild(row);
+      return table;
+    }
+    for (const entry of entries) {
+      const detail = [];
+      if (entry.role) detail.push(`${entry.role} · ${entry.download || ""}`);
+      if (entry.note) detail.push(entry.note);
+      // Seconds precision and a space instead of the T: this is read at a
+      // glance, and the timezone is always UTC.
+      const when = String(entry.at || "").replace("T", " ").slice(0, 19);
+      for (const [text, klass] of [
+        [when, ""],
+        [entry.actor || "", ""],
+        [String(entry.action || "").replaceAll("_", " "), ""],
+        [entry.subject || "", ""],
+        [entry.project || "", ""],
+        [detail.join(" — "), "hint"],
+      ]) {
+        const cell = document.createElement("td");
+        cell.textContent = text;
+        if (klass) cell.className = klass;
+        row.appendChild(cell);
+      }
+      table.appendChild(row);
+    }
+    return table;
+  },
+
   /** The message for an error response that Ridal did not write.
    *
    * Every Ridal route answers a failure with the same envelope (#120), so a

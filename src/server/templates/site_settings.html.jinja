@@ -188,6 +188,23 @@
         <div id="bulk-result" class="bulk-result" hidden></div>
       </details>
     </section>
+
+    {#- The site's ledger: who created, removed or changed accounts,
+        memberships and projects. Read-only, and honest about what it is:
+        anyone who can edit the site directory can edit this file too. -#}
+    <section class="settings-section" id="history-section">
+      <h2>History</h2>
+      <p class="hint">
+        What has happened to accounts, memberships and projects, most recent
+        first. It is a record to work out what happened, not a security
+        control: it can be edited by anyone with access to the site
+        directory.
+      </p>
+      <details id="history" class="bulk-users">
+        <summary>Show the history</summary>
+        <div id="history-table"></div>
+      </details>
+    </section>
   {% endif %}
 {% endblock %}
 {% block extrascript %}
