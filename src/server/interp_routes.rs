@@ -29,8 +29,8 @@ use super::auth::Caller;
 use super::routes::{lookup_dataset, ApiError};
 use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
+use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{Expectation, StoreError, Version};
-use crate::project::users::{DownloadScope, Role};
 use crate::project::{audit, interpretations, layers, Project};
 
 /// The project, if this server has one and `caller` may do `action` in it.
@@ -1017,13 +1017,6 @@ pub async fn get_settings(
         _ => crate::project::preferences::Preferences::default(),
     };
 
-    let access = match project {
-        Some(project) => crate::project::users::read(project.documents())
-            .map_err(|e| ApiError::internal("users_read_failed", e.to_string()))?
-            .map(|(set, _)| set),
-        None => None,
-    };
-
     // Project size is shown to operator and above, not every reader: it is
     // operational information, and walking the tree on each settings load is
     // work worth not doing for a viewer who cannot change anything (#173).
@@ -1044,7 +1037,9 @@ pub async fn get_settings(
         // What each section may do, answered once here rather than inferred
         // in JavaScript from a role string it would have to rank itself.
         "can_edit_project": can_edit_project,
-        "can_edit_access": caller.may(Role::Admin),
+        // Members and the access policy exist only in a site: a project on
+        // its own has no accounts for them to be about.
+        "can_edit_access": state.site.is_some() && caller.may(Role::Admin),
         // Current usage and the effective cap, in bytes (#173). An admin may
         // change the cap; everyone at operator or above may see it.
         "size_bytes": size_bytes,
@@ -1062,11 +1057,9 @@ pub async fn get_settings(
         "xscales": crate::server::routes::x_scale_options(),
         "my_profile": mine.render_profile,
         "my_xscale": mine.x_scale,
-        "my_theme": mine.theme,
         "my_show_picks": mine.show_picks,
         "my_spacing": mine.level2_spacing,
         "my_format": mine.level2_format,
-        "themes": crate::server::routes::THEMES,
         "spacings": crate::server::routes::spacing_options(),
         "formats": crate::server::routes::format_options(),
         "default_spacing": project.and_then(|p| p.default_spacing()),
@@ -1100,10 +1093,6 @@ pub async fn get_settings(
             .map(|p| crate::project::overlays::problems(&p.overlays()))
             .unwrap_or_default(),
         "my_basemap": mine.basemap,
-        "require_auth_to_read": access.as_ref().map(|set| set.require_auth_to_read),
-        "anonymous_download": access
-            .as_ref()
-            .map(|set| set.anonymous_download.as_str()),
     })))
 }
 

@@ -19,18 +19,16 @@
 //!         default.gprinterp.json            one document per user
 //!     layers/
 //!       layers.json                         project-scoped layer vocabulary
-//!     users.json                            accounts and access policy (0600)
-//!     session.key                           signs session cookies (0600)
+//!     users.json                            memberships and access policy
 //!     preferences/
 //!       erik.json                           one person's viewing preferences
 //!     cache/                                derived data; safe to delete
 //! ```
 //!
-//! `users.json` and `session.key` are absent until a project opts into
-//! authentication, which is what keeps every project that predates it
-//! working exactly as it did (#131). `ridal gui` never writes either: it
-//! signs its cookies with a key generated at startup and kept in memory, so
-//! a survey directory that gets zipped and shared carries no secret.
+//! A project holds no secrets. `users.json` appears only when a site gives
+//! the project members (#214), and names accounts that live in the site;
+//! `ridal gui` never writes it and ignores it, so a survey directory that
+//! gets zipped and shared carries nothing that signs anyone in.
 //!
 //! # Why an explicit marker
 //!
@@ -94,8 +92,8 @@ pub mod overlays;
 pub mod overrides;
 pub mod preferences;
 pub mod revisions;
+pub mod roles;
 pub mod store;
-pub mod users;
 
 use std::path::{Path, PathBuf};
 
@@ -147,9 +145,8 @@ cache/
 catalog-summary.json
 # Uploads part-way through being staged.
 .staging/
-# Secrets. A signing key or a password hash in a shared repository is a
-# leaked one.
-session.key
+# Who may use the project inside a site. It names the site's accounts,
+# which are the site's business rather than the survey's.
 users.json
 ";
 
@@ -1494,12 +1491,12 @@ mod tests {
     }
 
     #[test]
-    fn init_writes_a_gitignore_that_keeps_the_cache_and_the_secrets_out() {
+    fn init_writes_a_gitignore_that_keeps_the_cache_and_the_memberships_out() {
         let dir = tempfile::tempdir().unwrap();
         let project = Project::init(dir.path(), None).unwrap();
 
         let text = std::fs::read_to_string(project.data_dir().join(".gitignore")).unwrap();
-        for ignored in ["cache/", "session.key", "users.json", ".staging/"] {
+        for ignored in ["cache/", "catalog-summary.json", "users.json", ".staging/"] {
             assert!(text.contains(ignored), "{ignored} is missing from {text}");
         }
         // Interpretations are the opposite case: authored work that ought

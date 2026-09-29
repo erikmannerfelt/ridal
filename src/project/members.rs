@@ -25,19 +25,34 @@
 //! meaning "this project has not opted into authentication", distinct from a
 //! file holding no members (everyone was removed).
 
+#![cfg_attr(
+    not(feature = "server"),
+    allow(
+        dead_code,
+        reason = "reached through the server's HTTP routes; a CLI-only build \
+                  still needs the types for `ridal site` and `ridal project`"
+    )
+)]
+
 use std::fmt;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use super::roles::{DownloadScope, Role};
 use super::store::{DocumentStore, Expectation, StoreError, Version};
-use super::users::{DownloadScope, Role};
 use crate::identity::UserId;
 
 /// The membership document, relative to the project's data directory.
 pub const MEMBERS_FILE: &str = "users.json";
 
+/// Unknown fields are refused rather than ignored, here and on
+/// [`MemberSet`]: this file is read, changed and written back whole, so a
+/// field this Ridal does not know would otherwise be silently dropped by the
+/// next change -- which is how a whole membership list was once lost to a
+/// file written in another shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Member {
     pub name: UserId,
     #[serde(default)]
@@ -57,6 +72,7 @@ impl Member {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct MemberSet {
     /// Whether a login is required to read the catalog at all.
     #[serde(default)]
@@ -283,5 +299,25 @@ mod tests {
         let (set, _version) = read(&store).unwrap().unwrap();
         assert!(set.is_last_admin(&name("anna")));
         assert!(!set.is_last_admin(&name("bo")));
+    }
+
+    #[test]
+    fn a_file_in_another_shape_is_refused_rather_than_rewritten_without_its_fields() {
+        let (_dir, store) = store();
+        // The pre-site shape, and a member carrying a field this Ridal does
+        // not know. Either would lose data if read leniently and saved back.
+        for text in [
+            r#"{"users": [{"name": "anna", "role": "admin"}]}"#,
+            r#"{"members": [{"name": "anna", "role": "admin", "password_hash": "x"}]}"#,
+        ] {
+            store
+                .write(&relative_path(), text, &Expectation::Any)
+                .unwrap();
+            assert!(matches!(read(&store), Err(MemberError::Malformed { .. })));
+            assert!(update(&store, |_| Ok(())).is_err());
+            assert_eq!(store.read(&relative_path()).unwrap().unwrap().text, text);
+            // And an access decision over it fails closed.
+            assert!(read_for_access(&store).require_auth_to_read);
+        }
     }
 }

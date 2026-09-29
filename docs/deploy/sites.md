@@ -6,9 +6,9 @@ list of people. It is what `ridal server start` serves.
 Use a site when the same group of people should be able to reach more than
 one project without a separate account on each. If you only have one project
 and work on your own machine, you do not need one: `ridal gui` serves a
-single project with no accounts. The two are deliberate alternatives, and
-`ridal server start` refuses a bare project rather than guessing which you
-meant.
+single project with no accounts, as a site of one (its project is at
+`/p/default/`). `ridal server start` refuses a bare project rather than
+guessing which you meant.
 
 ## Making a site
 
@@ -47,7 +47,8 @@ empty project directory, and you can copy an existing project into
 The site owns **identity**: accounts, the session key and the site ledger.
 Each project owns its **data** and its own memberships, exactly as it would
 standing alone. A project directory never contains a password, so it stays
-portable: copy it to another site, or open it with `ridal gui`.
+portable: copy it to another site, or open it with `ridal gui`, which ignores
+its memberships and leaves them as they are.
 
 ## The browser
 

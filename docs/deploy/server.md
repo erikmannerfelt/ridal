@@ -9,10 +9,10 @@ Serving on http://127.0.0.1:8000
 ```
 
 For one project on your own machine, use `ridal gui <project>` instead. It
-serves the project alone, with no accounts, and needs no setup; see
-{doc}`../guide/gui`. The two are deliberately different: `server start`
-refuses a directory that is a project rather than a site, and says so, so
-that "many people can reach this" is never a mode you arrive at by accident.
+serves the project alone, at `/p/default/`, with no accounts, and needs no
+setup; see {doc}`../guide/gui`. `server start` refuses a directory that is a
+project rather than a site, and says so, so that "many people can reach
+this" is never a mode you arrive at by accident.
 
 ## Options
 
@@ -54,9 +54,10 @@ startup. The first time a project is opened, Ridal also records its catalog
 size in `ridal_data/catalog-summary.json`, which is what the landing page's
 project card shows.
 
-A site bound to a network address refuses to start unless it either has
-accounts or is `--read-only`: an entry point anyone can reach and anyone can
-edit is not a state worth starting in.
+A site refuses to start unless it either has accounts or is `--read-only`:
+with no accounts there is nobody to sign in and manage it. Bound to a
+network address with accounts, it also refuses password sign-ins unless
+`--allow-insecure-login` is given (see {doc}`reverse-proxy`).
 
 ## Keeping it running
 

@@ -1,25 +1,25 @@
-//! The multi-project site server (#214).
+//! The site server (#214): one entry point, many projects.
 //!
-//! One entry point serves many projects from one directory. [`SiteState`]
-//! holds the site's registry, its accounts and one shared render budget.
-//! Each project is served by the *unchanged*
-//! [`build_router`](super::app::build_router): a request to the site's
-//! `/p/{key}/…` or `/api/v1/projects/{key}/…` is rewritten back to the
-//! project-relative path and dispatched in-process with
-//! [`tower::ServiceExt::oneshot`]. Keeping every project handler and route
-//! literal as it was is what keeps `app::http_reference_tests` and the
-//! single-project GUI valid.
+//! [`SiteState`] holds the site's registry, its accounts and one shared
+//! render budget. Each project is served by its own
+//! [`build_router`](super::app::build_router), which knows nothing of keys or
+//! accounts: a request to `/p/{key}/…` or `/api/v1/projects/{key}/…` is
+//! rewritten to the project-relative path and dispatched in-process with
+//! [`tower::ServiceExt::oneshot`].
+//!
+//! `ridal gui` is served the same way, as a site of one: its project is
+//! `default`, at `/p/default/`, and its host is [`Host::Local`] rather than a
+//! site directory, so there are no accounts and nothing to manage.
 //!
 //! # Identity
 //!
 //! Site accounts live in `accounts.json` at the site root; a project holds
-//! only memberships (`members.json`, still filed as `users.json`). The
-//! project router's own middleware resolves a [`Caller`](super::auth::Caller)
-//! from both, because each project's [`AppState`] carries a
-//! [`SiteContext`] -- so member roles and the 404-for-non-members rule reach
-//! every project route without a handler changing. This module's
-//! [`SiteCaller`] is only for the site-level routes: the landing page, the
-//! account routes, and signing in.
+//! only memberships (`users.json`). [`site_middleware`] resolves the account
+//! behind a request once, as a [`SiteCaller`], for the site's own routes.
+//! A request for a project gets its project [`Caller`](super::auth::Caller)
+//! from the same resolution plus that project's memberships
+//! ([`auth::project_caller`]), handed to the project router in the request
+//! extensions, so no project route reads an account or a cookie itself.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -33,15 +33,15 @@ use tokio::sync::Semaphore;
 use tower::ServiceExt;
 
 use super::app::{AccessOptions, AppState, SiteContext};
-use super::auth::{self, SessionKey, SESSION_COOKIE, SESSION_TTL_DAYS};
+use super::auth::{self, SessionKey, SESSION_TTL_DAYS};
 use super::render_service::RenderServiceConfig;
 use super::routes::{ApiError, PageError};
 use super::templates;
 use crate::identity::{ProjectKey, UserId};
 use crate::project::members;
+use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{DocumentStore, Expectation};
-use crate::project::users::{self, DownloadScope, Role};
-use crate::site::accounts::{self, invite, Account, AccountError, AccountSet};
+use crate::site::accounts::{self, bulk, invite, Account, AccountError, AccountSet};
 use crate::site::{audit as site_audit, Site, SiteError};
 
 /// The site's account file, for the "create the first one" hint.
@@ -52,19 +52,29 @@ const ACCOUNTS_FILE: &str = accounts::ACCOUNTS_FILE;
 /// Built lazily on the first request that names the key, so starting a site
 /// with a hundred projects opens none of them until someone looks.
 pub struct ProjectRuntime {
-    /// Kept so a later request can rediscover this project in place without
-    /// rebuilding it from disk (#147's `rediscover`, per project).
-    #[allow(
-        dead_code,
-        reason = "per-project rediscovery lands with the site settings routes"
-    )]
     pub state: Arc<AppState>,
     pub router: Router,
 }
 
+/// What a [`SiteState`] serves.
+pub enum Host {
+    /// `ridal server start`: a site directory of projects, with accounts.
+    Site(Site),
+    /// `ridal gui`: one directory, served as the project `default` to the one
+    /// person at this machine. No accounts, and no site to manage.
+    Local {
+        /// What the browser tab calls it.
+        name: String,
+        /// Where that person's settings live: the project's own data
+        /// directory, the same place its project preferences are kept.
+        /// `None` for a bare directory of radargrams, which has nowhere.
+        store: Option<DocumentStore>,
+    },
+}
+
 /// Everything the site server needs that is not per-project.
 pub struct SiteState {
-    pub site: Site,
+    pub host: Host,
     /// What this server permits, independent of who is asking. Copied into
     /// every project's [`AppState`], so `--read-only` caps every one.
     pub access: AccessOptions,
@@ -82,7 +92,7 @@ pub struct SiteState {
 impl SiteState {
     pub fn new(site: Site, access: AccessOptions, render_config: RenderServiceConfig) -> Arc<Self> {
         Arc::new(Self {
-            site,
+            host: Host::Site(site),
             access,
             // `.max(1)`: a zero-permit semaphore would deadlock every render.
             render_permits: Arc::new(Semaphore::new(render_config.n_workers.max(1))),
@@ -90,6 +100,81 @@ impl SiteState {
             projects: RwLock::new(HashMap::new()),
             session_key: Mutex::new(None),
         })
+    }
+
+    /// `ridal gui`'s site of one: `state`, already built, as the project
+    /// `default` (#214).
+    pub fn local(state: AppState) -> Arc<Self> {
+        let name = state
+            .project
+            .as_ref()
+            .and_then(|project| project.config().project.name)
+            .unwrap_or_else(|| "Ridal".to_string());
+        let store = state
+            .project
+            .as_ref()
+            .map(|project| DocumentStore::new(project.documents().root().to_path_buf()));
+        let access = state.access;
+        let render_permits = Arc::clone(&state.render_permits);
+        let state = Arc::new(state);
+        let runtime = Arc::new(ProjectRuntime {
+            router: super::app::build_router(Arc::clone(&state)),
+            state,
+        });
+        let key = local_key();
+        Arc::new(Self {
+            host: Host::Local { name, store },
+            access,
+            render_permits,
+            render_config: runtime.state.render_config(),
+            projects: RwLock::new(HashMap::from([(key, runtime)])),
+            session_key: Mutex::new(None),
+        })
+    }
+
+    /// The site directory, or a 404 under `ridal gui`, which serves one
+    /// project and has no site to manage.
+    pub fn site(&self) -> Result<&Site, ApiError> {
+        match &self.host {
+            Host::Site(site) => Ok(site),
+            Host::Local { .. } => Err(ApiError::not_found(
+                "no_site",
+                "`ridal gui` serves a single project; there is no site to manage.",
+            )),
+        }
+    }
+
+    /// Refuse unless the caller is a server administrator. Under `ridal
+    /// gui` there is no site to administer, which is a 404 before it is a
+    /// question of who is asking.
+    fn require_server_admin(&self, caller: &SiteCaller, action: &str) -> Result<(), ApiError> {
+        self.site()?;
+        caller.require_server_admin(action)
+    }
+
+    /// The name shown in the browser.
+    pub fn name(&self) -> String {
+        match &self.host {
+            Host::Site(site) => site.name(),
+            Host::Local { name, .. } => name.clone(),
+        }
+    }
+
+    /// Whether anyone can sign in here. Never under `ridal gui`.
+    fn accounts_configured(&self) -> bool {
+        match &self.host {
+            Host::Site(site) => accounts::is_configured(site.store()).unwrap_or(false),
+            Host::Local { .. } => false,
+        }
+    }
+
+    /// Where a person's site-wide settings are kept: the site root, or the
+    /// project's own data directory under `ridal gui`.
+    fn preferences_store(&self) -> Option<&DocumentStore> {
+        match &self.host {
+            Host::Site(site) => Some(site.store()),
+            Host::Local { store, .. } => store.as_ref(),
+        }
     }
 
     /// The site-wide signing key, loaded from the site root on first use.
@@ -101,7 +186,11 @@ impl SiteState {
         if let Some(key) = guard.as_ref() {
             return Ok(key.clone());
         }
-        let key = SessionKey::load_or_create(self.site.store())?;
+        let key = SessionKey::load_or_create(
+            self.site()
+                .map_err(|_| "`ridal gui` has no sessions".to_string())?
+                .store(),
+        )?;
         *guard = Some(key.clone());
         Ok(key)
     }
@@ -117,17 +206,21 @@ impl SiteState {
             return Ok(runtime);
         }
 
-        let project = self.site.project(key).map_err(site_error)?;
-        let archived = self.site.is_archived(key);
+        // Under `ridal gui` the one project is built at startup, so a miss is
+        // a key that does not exist.
+        let site = self.site().map_err(|_| hidden_project())?;
+        let project = site.project(key).map_err(site_error)?;
         let root = project.root().to_path_buf();
         let state =
             AppState::build_with_project(&root, &self.render_config, Some(project), self.access)
                 .map_err(|e| ApiError::internal("project_open_failed", e))?
-                .with_site(Arc::new(SiteContext::new(
+                .with_site(
                     key.clone(),
-                    DocumentStore::new(self.site.root().to_path_buf()),
-                    archived,
-                )))
+                    Arc::new(SiteContext {
+                        store: DocumentStore::new(site.root().to_path_buf()),
+                        archived: site.is_archived(key),
+                    }),
+                )
                 .with_render_permits(Arc::clone(&self.render_permits));
         let state = Arc::new(state);
         let router = super::app::build_router(Arc::clone(&state));
@@ -161,7 +254,7 @@ impl SiteState {
     /// policy and invitations as much as for its catalog.
     fn require_project_writable(&self, key: &ProjectKey, action: &str) -> Result<(), ApiError> {
         self.require_writable(action)?;
-        if self.site.is_archived(key) {
+        if self.site()?.is_archived(key) {
             return Err(ApiError::forbidden(
                 "archived",
                 format!(
@@ -225,7 +318,9 @@ fn actor(caller: &SiteCaller) -> String {
 /// Append one site-audit entry. Never fails the change it describes, for the
 /// same reason the project audit does not: the change has already happened.
 fn audit(site: &SiteState, entry: site_audit::Entry) {
-    site_audit::record(site.site.store(), entry);
+    if let Ok(directory) = site.site() {
+        site_audit::record(directory.store(), entry);
+    }
 }
 
 /// Resolve an optional project key from a request body, refusing one that
@@ -239,7 +334,7 @@ fn resolve_optional_project(
         return Ok(None);
     };
     let key = ProjectKey::new(raw).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
-    if !site.site.project_path(&key).is_dir() {
+    if !site.site()?.project_path(&key).is_dir() {
         return Err(ApiError::not_found(
             "project_not_found",
             format!("No project '{key}' in this site."),
@@ -286,9 +381,19 @@ fn member_error(error: members::MemberError) -> ApiError {
 pub struct SiteCaller {
     pub user: Option<UserId>,
     pub server_admin: bool,
+    /// Whether the site has an account file at all.
+    pub accounts_configured: bool,
 }
 
 impl SiteCaller {
+    fn identity(&self) -> auth::SiteIdentity<'_> {
+        auth::SiteIdentity {
+            user: self.user.as_ref(),
+            server_admin: self.server_admin,
+            accounts_configured: self.accounts_configured,
+        }
+    }
+
     fn require_server_admin(&self, action: &str) -> Result<(), ApiError> {
         if self.server_admin {
             return Ok(());
@@ -330,23 +435,35 @@ impl FromRequestParts<Arc<SiteState>> for SiteCaller {
 /// Resolve a site caller from the session cookie and `accounts.json`.
 ///
 /// A damaged account file fails closed: no account matches, so only an
-/// anonymous caller remains.
+/// anonymous caller remains. Under `ridal gui` there are no accounts, and
+/// the one person is the local default user wherever there is a project to
+/// keep their settings in.
 fn resolve_caller(site: &SiteState, headers: &HeaderMap, now: i64) -> SiteCaller {
-    let accounts = match accounts::read(site.site.store()) {
+    let directory = match &site.host {
+        Host::Site(directory) => directory,
+        Host::Local { store, .. } => {
+            return SiteCaller {
+                user: store
+                    .as_ref()
+                    .and_then(|_| UserId::new(crate::identity::DEFAULT_USER).ok()),
+                server_admin: false,
+                accounts_configured: false,
+            }
+        }
+    };
+    let accounts = match accounts::read(directory.store()) {
         Ok(Some((set, _))) => Some(set),
         Ok(None) => None,
         Err(_) => Some(AccountSet::default()),
     };
     let account = accounts.as_ref().and_then(|set| {
-        let cookie = auth::cookie_value(headers, SESSION_COOKIE)?;
         let key = site.session_key().ok()?;
-        let (name, version) = key.verify(&cookie, now)?;
-        let account = set.get(&name)?;
-        (account.credential_version == version).then_some(account)
+        auth::signed_in(set, &key, headers, now)
     });
     SiteCaller {
         user: account.map(|account| account.name.clone()),
         server_admin: account.is_some_and(|account| account.server_admin),
+        accounts_configured: accounts.is_some(),
     }
 }
 
@@ -456,6 +573,16 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
 // Delegating to a project
 // ---------------------------------------------------------------------------
 
+/// The key `ridal gui` serves its project under.
+fn local_key() -> ProjectKey {
+    ProjectKey::new(super::app::DEFAULT_PROJECT_KEY).expect("the default key is a valid slug")
+}
+
+/// A page of `ridal gui`'s project, from its project-relative path.
+fn local_page(path: &str) -> String {
+    format!("/p/{}{path}", super::app::DEFAULT_PROJECT_KEY)
+}
+
 /// Rewrite a site path to the project-relative path its router expects.
 ///
 /// `/p/{key}/view/x` becomes `/view/x`; `/api/v1/projects/{key}/datasets`
@@ -491,33 +618,13 @@ fn split_project_path(path: &str) -> Option<(ProjectKey, String)> {
     Some((key, rewritten))
 }
 
-/// Routes that exist on a project router but must not be reachable through a
-/// site, because they would read or write the membership file as though it
-/// still held accounts. Site identity is server-wide and lives under
-/// `/api/v1/auth/*` and `/api/v1/accounts*` at the site root instead.
-fn is_retired_project_path(path: &str) -> bool {
-    path.starts_with("/api/v1/users")
-        || path == "/api/v1/access"
-        || path == "/api/v1/auth"
-        || path.starts_with("/api/v1/auth/")
-        || path == "/login"
-        || path == "/invite"
-        || path.starts_with("/invite/")
-}
-
-async fn project_fallback(State(site): State<Arc<SiteState>>, request: Request) -> Response {
+/// Hand a request for a project to that project's router, with the caller
+/// the site resolved for it.
+async fn project_fallback(State(site): State<Arc<SiteState>>, mut request: Request) -> Response {
     let path = request.uri().path().to_string();
     let Some((key, rewritten)) = split_project_path(&path) else {
         return ApiError::not_found("not_found", "No such page.").into_response();
     };
-    if is_retired_project_path(&rewritten) {
-        return ApiError::not_found(
-            "not_found",
-            "That endpoint belongs to the old per-project accounts, which a site \
-             replaces with site accounts.",
-        )
-        .into_response();
-    }
     let refuse = |error: ApiError| {
         if rewritten.starts_with("/api/") {
             error.into_response()
@@ -525,22 +632,40 @@ async fn project_fallback(State(site): State<Arc<SiteState>>, request: Request) 
             PageError(error).into_response()
         }
     };
+    let Some(identity) = request.extensions().get::<SiteCaller>().cloned() else {
+        return refuse(ApiError::internal(
+            "caller_unresolved",
+            "The request reached a project without an identity.",
+        ));
+    };
     // Building a project opens every radargram in it, so a caller who may
     // not see the project must be turned away before that, not by the
     // project's own middleware after it. Once built, that middleware is
     // enough: it answers the same 404 without the cost.
+    // A project the caller may not see and one that does not exist get the
+    // same answer: a request to sign in for someone who is not, a 404 for
+    // someone who is. Matching the project's own middleware (see
+    // `auth::middleware`), so it makes no difference whether it was built.
+    let unseen = || {
+        if identity.user.is_none() && identity.accounts_configured {
+            auth::login_required(&rewritten)
+        } else {
+            auth::hidden_project(&rewritten)
+        }
+    };
     let runtime = match site.cached(&key) {
         Some(runtime) => runtime,
         None => {
-            let Some(caller) = request.extensions().get::<SiteCaller>() else {
-                return refuse(ApiError::internal(
-                    "caller_unresolved",
-                    "The request reached a project without an identity.",
-                ));
-            };
-            match standing(&site, &key, caller) {
-                Ok((_, _, Standing::Hidden)) => return refuse(hidden_project()),
+            match standing(&site, &key, &identity) {
+                Ok((_, _, Standing::Hidden)) => return unseen(),
                 Ok(_) => {}
+                Err(_)
+                    if !site
+                        .site()
+                        .is_ok_and(|directory| directory.project_path(&key).is_dir()) =>
+                {
+                    return unseen()
+                }
                 Err(error) => return refuse(error),
             }
             match site.runtime(&key) {
@@ -549,6 +674,17 @@ async fn project_fallback(State(site): State<Arc<SiteState>>, request: Request) 
             }
         }
     };
+    let state = &runtime.state;
+    let caller = match &site.host {
+        Host::Local { .. } => auth::local_caller(state.project.is_some(), site.access.read_only),
+        Host::Site(_) => auth::project_caller(
+            &identity.identity(),
+            state.project.as_ref(),
+            state.site.as_ref().is_some_and(|context| context.archived),
+            site.access.read_only,
+        ),
+    };
+    request.extensions_mut().insert(caller);
 
     let mut parts = request.into_parts();
     let query = parts
@@ -597,10 +733,10 @@ fn site_page_bases() -> (String, String, String) {
 /// every project, which is what makes the theme a *site* setting rather than
 /// one saved separately for each project.
 fn site_theme(site: &SiteState, user: Option<&UserId>) -> String {
-    let Some(user) = user else {
+    let (Some(user), Some(store)) = (user, site.preferences_store()) else {
         return String::new();
     };
-    crate::project::preferences::read_lenient(site.site.store(), user)
+    crate::project::preferences::read_lenient(store, user)
         .theme
         .filter(|theme| super::routes::is_offered_theme(theme))
         .unwrap_or_default()
@@ -609,18 +745,22 @@ fn site_theme(site: &SiteState, user: Option<&UserId>) -> String {
 /// `GET /` -- the landing page.
 ///
 /// A site that has accounts asks for a login first; one that does not (a
-/// read-only public catalog) shows its projects to anyone.
+/// read-only public catalog) lists nothing, since its projects are opened by
+/// their links. `ridal gui` has one project, so it goes straight there.
 async fn landing(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<Response, PageError> {
-    let configured = accounts::is_configured(site.site.store()).unwrap_or(false);
+    let directory = match &site.host {
+        Host::Site(directory) => directory,
+        Host::Local { .. } => return Ok(Redirect::to(&local_page("/")).into_response()),
+    };
+    let configured = site.accounts_configured();
     if configured && caller.user.is_none() {
         return Ok(Redirect::to("/login").into_response());
     }
 
-    let keys = site
-        .site
+    let keys = directory
         .list()
         .map_err(|e| PageError(ApiError::internal("site_error", e.to_string())))?;
     let projects: Vec<serde_json::Value> = keys
@@ -632,7 +772,7 @@ async fn landing(
     let html = render(
         "site.html.jinja",
         minijinja::context! {
-            site_name => site.site.name(),
+            site_name => site.name(),
             projects => projects,
             project_count => keys.len(),
             current_user => caller.user.as_ref().map(|u| u.as_str()),
@@ -690,7 +830,7 @@ fn project_entry(
             .project
             .name
             .unwrap_or_else(|| key.as_str().to_string()),
-        "archived": site.site.is_archived(key),
+        "archived": site.site().ok()?.is_archived(key),
         "created_by": project.config().project.created_by.map(|user| user.as_str().to_string()),
         "member": member.is_some() || caller.server_admin,
         "member_count": members.members.len(),
@@ -706,17 +846,21 @@ fn project_entry(
 /// Personal, site-wide settings (the theme) for anyone signed in, and the
 /// accounts for a server administrator. A site with no accounts has nothing
 /// to sign in to, so it is sent back to the landing, which explains that.
+/// `ridal gui` keeps everything on its project's settings page.
 async fn site_settings_page(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<Response, PageError> {
-    let configured = accounts::is_configured(site.site.store()).unwrap_or(false);
+    let directory = match &site.host {
+        Host::Site(directory) => directory,
+        Host::Local { .. } => return Ok(Redirect::to(&local_page("/settings")).into_response()),
+    };
+    let configured = site.accounts_configured();
     if caller.user.is_none() {
         return Ok(Redirect::to(if configured { "/login" } else { "/" }).into_response());
     }
 
-    let keys = site
-        .site
+    let keys = directory
         .list()
         .map_err(|e| PageError(ApiError::internal("site_error", e.to_string())))?;
     let projects: Vec<serde_json::Value> = keys
@@ -728,7 +872,7 @@ async fn site_settings_page(
     let html = render(
         "site_settings.html.jinja",
         minijinja::context! {
-            site_name => site.site.name(),
+            site_name => site.name(),
             projects => projects,
             roles => Role::ALL.map(Role::as_str),
             download_scopes => DownloadScope::ALL.map(DownloadScope::as_str),
@@ -752,7 +896,7 @@ async fn login_page(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<Html<String>, PageError> {
-    let configured = accounts::is_configured(site.site.store()).unwrap_or(false);
+    let configured = site.accounts_configured();
     let (api_base, site_api_base, page_base) = site_page_bases();
     render(
         "login.html.jinja",
@@ -763,6 +907,9 @@ async fn login_page(
             current_role => if caller.server_admin { "admin" } else { "viewer" },
             // Not a bare catalog: a site always has somewhere to save.
             project => true,
+            // The way out as much as the way in, so a person who chose dark
+            // does not get one light screen on the way past it (#141).
+            active_theme => site_theme(&site, caller.user.as_ref()),
             api_base => api_base,
             site_api_base => site_api_base,
             page_base => page_base,
@@ -812,7 +959,7 @@ fn password_login_allowed(site: &SiteState) -> Result<(), ApiError> {
 }
 
 fn configured_accounts(site: &SiteState) -> Result<AccountSet, ApiError> {
-    accounts::read(site.site.store())
+    accounts::read(site.site()?.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
         .ok_or_else(|| {
@@ -888,7 +1035,7 @@ fn burn_a_verification(candidate: &str) {
     let decoy = DECOY.get_or_init(|| {
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes).ok()?;
-        let hash = accounts::hash_password(&users::to_hex(&bytes)).ok()?;
+        let hash = accounts::hash_password(&accounts::to_hex(&bytes)).ok()?;
         let mut account = Account::new(UserId::new("decoy").ok()?, false);
         account.password_hash = Some(hash);
         Some(account)
@@ -909,7 +1056,7 @@ async fn logout() -> impl IntoResponse {
 
 /// `GET /api/v1/auth/me` -- who the site thinks is calling.
 async fn me(State(site): State<Arc<SiteState>>, caller: SiteCaller) -> impl IntoResponse {
-    let configured = accounts::is_configured(site.site.store()).unwrap_or(false);
+    let configured = site.accounts_configured();
     Json(serde_json::json!({
         "user": caller.user.as_ref().map(|u| u.as_str()),
         "authenticated": caller.user.is_some(),
@@ -972,7 +1119,7 @@ async fn redeem_invite(
     }
     let hash = accounts::hash_password(&body.password).map_err(account_error)?;
 
-    let (account, target) = accounts::update(site.site.store(), |set| {
+    let (account, target) = accounts::update(site.site()?.store(), |set| {
         let name = account_for_invite(set, &body.token, auth::now())
             .map(|account| account.name.clone())
             .ok_or_else(stale_in_store)?;
@@ -993,7 +1140,7 @@ async fn redeem_invite(
             let download = membership.download.unwrap_or(DownloadScope::All);
             // The password is set by now, so a project deleted since the
             // invite was sent costs the membership, not the account.
-            match site.site.project(key) {
+            match site.site()?.project(key) {
                 Ok(project) => {
                     members::update(project.documents(), |set| {
                         set.upsert(&account.name, role, download);
@@ -1051,9 +1198,9 @@ async fn site_info(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
-    let configured = accounts::is_configured(site.site.store()).map_err(account_error)?;
+    let configured = site.accounts_configured();
     Ok(Json(serde_json::json!({
-        "name": site.site.name(),
+        "name": site.name(),
         "accounts_configured": configured,
         "authenticated": caller.user.is_some(),
         "user": caller.user.as_ref().map(|u| u.as_str()),
@@ -1075,8 +1222,8 @@ async fn site_audit_log(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("read the history")?;
-    let log = site_audit::read(site.site.store())
+    site.require_server_admin(&caller, "read the history")?;
+    let log = site_audit::read(site.site()?.store())
         .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
     let entries: Vec<&site_audit::Entry> = log.entries.iter().rev().take(AUDIT_PAGE).collect();
     Ok(Json(serde_json::json!({ "entries": entries })))
@@ -1091,7 +1238,7 @@ async fn project_audit_log(
 ) -> Result<impl IntoResponse, ApiError> {
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     require_project_admin(&site, &key, &caller, "read the history")?;
-    let log = site_audit::read(site.site.store())
+    let log = site_audit::read(site.site()?.store())
         .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
     let entries: Vec<&site_audit::Entry> = log
         .entries
@@ -1110,6 +1257,15 @@ pub struct SitePreferencesBody {
     theme: Option<String>,
 }
 
+/// A caller with an account but nowhere to keep settings: `ridal gui` over a
+/// bare directory of radargrams, which is not a project.
+fn no_preferences() -> ApiError {
+    ApiError::conflict(
+        "not_a_project",
+        "This catalog is not a Ridal project, so there is nowhere to keep settings.",
+    )
+}
+
 /// `GET /api/v1/site/preferences` -- the caller's own site-wide settings.
 async fn get_site_preferences(
     State(site): State<Arc<SiteState>>,
@@ -1121,7 +1277,8 @@ async fn get_site_preferences(
             "Sign in to read your site settings.",
         ));
     };
-    let preferences = crate::project::preferences::read(site.site.store(), user)
+    let store = site.preferences_store().ok_or_else(no_preferences)?;
+    let preferences = crate::project::preferences::read(store, user)
         .map_err(|e| ApiError::internal("preferences_read_failed", e.to_string()))?;
     Ok(Json(serde_json::json!({
         "user": user.as_str(),
@@ -1144,7 +1301,8 @@ async fn put_site_preferences(
             "Sign in to change your site settings.",
         ));
     };
-    let mut stored = crate::project::preferences::read_lenient(site.site.store(), user);
+    let store = site.preferences_store().ok_or_else(no_preferences)?;
+    let mut stored = crate::project::preferences::read_lenient(store, user);
     stored.theme = match body.theme.as_deref() {
         None | Some("") => None,
         Some(name) => {
@@ -1160,7 +1318,7 @@ async fn put_site_preferences(
             Some(name.to_string())
         }
     };
-    crate::project::preferences::write(site.site.store(), user, &stored, &Expectation::Any)
+    crate::project::preferences::write(store, user, &stored, &Expectation::Any)
         .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
     Ok(Json(serde_json::json!({
         "user": user.as_str(),
@@ -1173,7 +1331,7 @@ async fn list_projects(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
-    let keys = site.site.list().map_err(site_error)?;
+    let keys = site.site()?.list().map_err(site_error)?;
     let projects: Vec<serde_json::Value> = keys
         .iter()
         .filter_map(|key| project_entry(&site, key, &caller, Lookup::Listing))
@@ -1194,12 +1352,12 @@ async fn create_project(
     caller: SiteCaller,
     Json(body): Json<CreateProjectBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("create a project")?;
+    site.require_server_admin(&caller, "create a project")?;
     site.require_writable("create a project")?;
     let key =
         ProjectKey::new(&body.key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     let project = site
-        .site
+        .site()?
         .create_project(&key, body.name.as_deref(), caller.user.as_ref())
         .map_err(site_error)?;
     audit(
@@ -1244,10 +1402,10 @@ async fn update_project(
     Path(key): Path<String>,
     Json(body): Json<UpdateProjectBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("rename a project")?;
+    site.require_server_admin(&caller, "rename a project")?;
     site.require_writable("rename a project")?;
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
-    site.site
+    site.site()?
         .project(&key)
         .map_err(site_error)?
         .set_name(body.name.as_deref())
@@ -1270,10 +1428,10 @@ async fn archive_project(
     caller: SiteCaller,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("archive a project")?;
+    site.require_server_admin(&caller, "archive a project")?;
     site.require_writable("archive a project")?;
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
-    site.site.archive(&key).map_err(site_error)?;
+    site.site()?.archive(&key).map_err(site_error)?;
     site.evict(&key);
     audit(
         &site,
@@ -1294,10 +1452,10 @@ async fn unarchive_project(
     caller: SiteCaller,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("unarchive a project")?;
+    site.require_server_admin(&caller, "unarchive a project")?;
     site.require_writable("unarchive a project")?;
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
-    site.site.unarchive(&key).map_err(site_error)?;
+    site.site()?.unarchive(&key).map_err(site_error)?;
     site.evict(&key);
     audit(
         &site,
@@ -1319,11 +1477,11 @@ async fn delete_project(
     caller: SiteCaller,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("delete a project")?;
+    site.require_server_admin(&caller, "delete a project")?;
     site.require_writable("delete a project")?;
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     site.evict(&key);
-    site.site.delete_project(&key).map_err(site_error)?;
+    site.site()?.delete_project(&key).map_err(site_error)?;
     audit(
         &site,
         site_audit::Entry::new(
@@ -1360,7 +1518,11 @@ fn standing(
     key: &ProjectKey,
     caller: &SiteCaller,
 ) -> Result<(crate::project::Project, members::MemberSet, Standing), ApiError> {
-    let project = site.site.project(key).map_err(site_error)?;
+    let project = site
+        .site()
+        .map_err(|_| hidden_project())?
+        .project(key)
+        .map_err(site_error)?;
     let members = members::read_for_access(project.documents());
     let standing = if caller.server_admin {
         Standing::ServerAdmin
@@ -1468,7 +1630,7 @@ async fn add_member(
 
     // A membership names a site account, so the account must exist. Without
     // this a typo would write a member nobody can sign in as.
-    let accounts = accounts::read(site.site.store())
+    let accounts = accounts::read(site.site()?.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
         .unwrap_or_default();
@@ -1530,7 +1692,7 @@ async fn invite_member(
     site.require_project_writable(&key, "invite a member")?;
     let (name, role, download) = parse_member_body(&body)?;
 
-    let set = accounts::read(site.site.store())
+    let set = accounts::read(site.site()?.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
         .unwrap_or_default();
@@ -1550,7 +1712,7 @@ async fn invite_member(
     // Created without server administration, whatever else this route can
     // carry. The invite would otherwise hand the whole site to whoever
     // redeemed the link.
-    accounts::update(site.site.store(), |set| {
+    accounts::update(site.site()?.store(), |set| {
         if set.get(&name).is_some() {
             return Err(AccountError::Duplicate(name.to_string()));
         }
@@ -1764,8 +1926,8 @@ async fn list_accounts(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("see the accounts")?;
-    let set = accounts::read(site.site.store())
+    site.require_server_admin(&caller, "see the accounts")?;
+    let set = accounts::read(site.site()?.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
         .unwrap_or_default();
@@ -1783,12 +1945,12 @@ async fn site_memberships(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("see memberships")?;
-    let accounts = accounts::read(site.site.store())
+    site.require_server_admin(&caller, "see memberships")?;
+    let accounts = accounts::read(site.site()?.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
         .unwrap_or_default();
-    let keys = site.site.list().map_err(site_error)?;
+    let keys = site.site()?.list().map_err(site_error)?;
 
     // Seeded from the accounts so one with no memberships still appears.
     let mut by_account: std::collections::HashMap<String, Vec<serde_json::Value>> = accounts
@@ -1799,7 +1961,7 @@ async fn site_memberships(
     for key in &keys {
         // A project that no longer opens is skipped rather than failing the
         // overview; this is a convenience page, not an authority.
-        let Ok(project) = site.site.project(key) else {
+        let Ok(project) = site.site()?.project(key) else {
             continue;
         };
         let name = project
@@ -1861,7 +2023,7 @@ async fn create_account(
     caller: SiteCaller,
     Json(body): Json<CreateAccountBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("create an account")?;
+    site.require_server_admin(&caller, "create an account")?;
     site.require_writable("create an account")?;
     // A new account gets an invite, and anyone holding that link can claim
     // the account. Creating it as a server administrator would therefore
@@ -1900,7 +2062,7 @@ async fn create_account(
     .map_err(|e| ApiError::internal("invite_failed", e))?;
     let expires = invite.expires;
 
-    let created = accounts::update(site.site.store(), |set| {
+    let created = accounts::update(site.site()?.store(), |set| {
         if set.get(&name).is_some() {
             return Err(AccountError::Duplicate(name.to_string()));
         }
@@ -1948,11 +2110,11 @@ async fn update_account(
     Path(name): Path<String>,
     Json(body): Json<UpdateAccountBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("change an account")?;
+    site.require_server_admin(&caller, "change an account")?;
     site.require_writable("change an account")?;
     let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
 
-    let (redacted, changed) = accounts::update(site.site.store(), |set| {
+    let (redacted, changed) = accounts::update(site.site()?.store(), |set| {
         if let Some(admin) = body.server_admin {
             let is_admin = set.get(&name).map(|a| a.server_admin).unwrap_or(false);
             if is_admin && !admin && !set.has_another_admin(&name) {
@@ -2016,10 +2178,10 @@ async fn delete_account(
     caller: SiteCaller,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("remove an account")?;
+    site.require_server_admin(&caller, "remove an account")?;
     site.require_writable("remove an account")?;
     let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
-    let removed_from = site.site.remove_account(&name).map_err(site_error)?;
+    let removed_from = site.site()?.remove_account(&name).map_err(site_error)?;
     for key in &removed_from {
         audit(
             &site,
@@ -2050,14 +2212,14 @@ async fn reissue_account_invite(
     caller: SiteCaller,
     Path(name): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("reset a password")?;
+    site.require_server_admin(&caller, "reset a password")?;
     site.require_writable("reset a password")?;
     let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
     let (token, invite) = invite::mint(auth::now(), None, None, None)
         .map_err(|e| ApiError::internal("invite_failed", e))?;
     let expires = invite.expires;
 
-    accounts::update(site.site.store(), |set| {
+    accounts::update(site.site()?.store(), |set| {
         let account = set
             .get_mut(&name)
             .ok_or_else(|| AccountError::NotFound(name.to_string()))?;
@@ -2132,7 +2294,7 @@ fn parse_bulk_role_download(
     Ok((role, download))
 }
 
-fn bulk_error(error: users::UserError) -> ApiError {
+fn bulk_error(error: bulk::BulkError) -> ApiError {
     ApiError::bad_request("invalid_bulk_accounts", error.to_string())
 }
 
@@ -2142,7 +2304,7 @@ fn taken_names(
     site: &SiteState,
     set: &AccountSet,
 ) -> Result<std::collections::BTreeSet<UserId>, ApiError> {
-    let mut taken = site.site.member_names().map_err(site_error)?;
+    let mut taken = site.site()?.member_names().map_err(site_error)?;
     taken.extend(set.users.iter().map(|account| account.name.clone()));
     Ok(taken)
 }
@@ -2156,7 +2318,12 @@ fn taken_names(
 /// server administrator may still reuse one deliberately, which is how a
 /// copied-in project's members are reconnected.
 fn reusable_name(site: &SiteState, name: &UserId) -> Result<(), ApiError> {
-    if site.site.member_names().map_err(site_error)?.contains(name) {
+    if site
+        .site()?
+        .member_names()
+        .map_err(site_error)?
+        .contains(name)
+    {
         return Err(ApiError::conflict(
             "name_in_use",
             format!(
@@ -2176,10 +2343,10 @@ fn bulk_account_names(
     random_names: bool,
 ) -> Result<Vec<UserId>, ApiError> {
     if random_names {
-        users::random_bulk_names_from(taken.iter(), count).map_err(bulk_error)
+        bulk::random_bulk_names(taken.iter(), count).map_err(bulk_error)
     } else {
-        let start = users::next_bulk_start_from(taken.iter(), prefix);
-        users::bulk_names_after(prefix, count, start).map_err(bulk_error)
+        let start = bulk::next_bulk_start(taken.iter(), prefix);
+        bulk::bulk_names_after(prefix, count, start).map_err(bulk_error)
     }
 }
 
@@ -2192,7 +2359,7 @@ async fn bulk_invites(
     body: BulkAccountsBody,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
-    let set = accounts::read(site.site.store())
+    let set = accounts::read(site.site()?.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
         .unwrap_or_default();
@@ -2215,7 +2382,7 @@ async fn bulk_invites(
         })
         .collect::<Result<_, ApiError>>()?;
 
-    accounts::update(site.site.store(), |set| {
+    accounts::update(site.site()?.store(), |set| {
         if let Some((name, _, _)) = minted.iter().find(|(name, _, _)| set.get(name).is_some()) {
             return Err(AccountError::Duplicate(name.to_string()));
         }
@@ -2257,7 +2424,7 @@ async fn create_bulk_invites(
     caller: SiteCaller,
     Json(body): Json<BulkAccountsBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("create accounts")?;
+    site.require_server_admin(&caller, "create accounts")?;
     site.require_writable("create accounts")?;
     let project = resolve_optional_project(&site, body.project.as_deref())?;
     bulk_invites(site, project, actor(&caller), body).await
@@ -2293,14 +2460,14 @@ async fn bulk_passwords(
         ));
     }
     let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
-    let advisory = users::bulk_risk_advisory(role).ok_or_else(|| {
+    let advisory = bulk::bulk_risk_advisory(role).ok_or_else(|| {
         ApiError::bad_request(
             "admin_bulk_passwords_forbidden",
             "Administrator accounts must be created with one-time invite links, \
              not shared passwords.",
         )
     })?;
-    let set = accounts::read(site.site.store())
+    let set = accounts::read(site.site()?.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
         .unwrap_or_default();
@@ -2313,7 +2480,7 @@ async fn bulk_passwords(
 
     let generated: Vec<(UserId, String)> = names
         .iter()
-        .map(|name| users::generate_password().map(|password| (name.clone(), password)))
+        .map(|name| bulk::generate_password().map(|password| (name.clone(), password)))
         .collect::<Result<_, _>>()
         .map_err(bulk_error)?;
     let to_hash = generated.clone();
@@ -2327,7 +2494,7 @@ async fn bulk_passwords(
     .map_err(|e| ApiError::internal("password_hash_task_failed", e.to_string()))?
     .map_err(account_error)?;
 
-    accounts::update(site.site.store(), |set| {
+    accounts::update(site.site()?.store(), |set| {
         if let Some((name, _)) = hashed.iter().find(|(name, _)| set.get(name).is_some()) {
             return Err(AccountError::Duplicate(name.to_string()));
         }
@@ -2343,7 +2510,7 @@ async fn bulk_passwords(
     // There is no invite to redeem, so a named project's membership is added
     // now rather than on redemption.
     if let Some(key) = &project {
-        let project = site.site.project(key).map_err(site_error)?;
+        let project = site.site()?.project(key).map_err(site_error)?;
         members::update(project.documents(), |set| {
             for name in &names {
                 set.upsert(name, role, download);
@@ -2382,7 +2549,7 @@ async fn create_bulk_passwords(
     caller: SiteCaller,
     Json(body): Json<BulkPasswordsBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("create accounts")?;
+    site.require_server_admin(&caller, "create accounts")?;
     site.require_writable("create accounts")?;
     let project = resolve_optional_project(&site, body.project.as_deref())?;
     bulk_passwords(site, project, actor(&caller), body).await
@@ -2433,24 +2600,5 @@ mod tests {
         assert!(split_project_path("/login").is_none());
         // A malformed key is not a project.
         assert!(split_project_path("/p/Not A Key/x").is_none());
-    }
-
-    #[test]
-    fn the_old_project_account_routes_are_retired() {
-        for path in [
-            "/api/v1/users",
-            "/api/v1/users/bulk/invites",
-            "/api/v1/users/anna",
-            "/api/v1/access",
-            "/api/v1/auth/login",
-            "/api/v1/auth/invite",
-            "/login",
-            "/invite/abc",
-        ] {
-            assert!(is_retired_project_path(path), "{path}");
-        }
-        for path in ["/api/v1/datasets", "/api/v1/preferences", "/settings", "/"] {
-            assert!(!is_retired_project_path(path), "{path}");
-        }
     }
 }

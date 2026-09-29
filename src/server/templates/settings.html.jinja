@@ -31,8 +31,9 @@
   {% if project %}
     {#- Personal settings that belong to the whole site (#214), shown here
         as well as on the site's own settings page: one value, reachable
-        from wherever a person happens to be. -#}
-    {% if site_managed and signed_in %}
+        from wherever a person happens to be. Under `ridal gui` the "site"
+        is this one project, and the value is kept with it. -#}
+    {% if signed_in %}
       <section class="settings-section" id="my-site-settings-section">
         <h2>My site settings</h2>
         <p class="hint">
@@ -85,23 +86,6 @@
               <option value="">Loading&hellip;</option>
             </select>
           </label>
-          {#- #141. "Follow this device" is the absence of a choice rather
-              than a third theme, which is what lets a laptop that switches
-              at dusk keep switching. A site's theme is site-wide (#214) and
-              lives in "My site settings" above, so this field is only for a
-              lone project, which has no site to hold it. -#}
-          {% if not site_managed %}
-            <label class="settings-field">
-              <span class="settings-label">Theme</span>
-              <select id="my-theme">
-                <option value="">Loading&hellip;</option>
-              </select>
-              <span class="hint">
-                &ldquo;Follow this device&rdquo; uses whatever your system asks
-                for, including when it changes during the day.
-              </span>
-            </label>
-          {% endif %}
           {#- #143. A starting state, not a lock: the viewer has its own
               toggle, and picking brings the lines back by itself. -#}
           <label class="settings-field checkbox">
@@ -428,9 +412,9 @@
     </section>
 
     {#- Members are a site concept (#214): who belongs to this project and
-        what they may do here. A lone project (`ridal gui`) has no site
-        accounts, so the section is absent there rather than pointing at an
-        API that does not exist. -#}
+        what they may do here. `ridal gui` has no accounts, so the section
+        is absent there rather than pointing at an API that does not
+        exist. -#}
     {% if site_managed and can_edit_access %}
       <section class="settings-section" id="members-section">
         <h2>Members</h2>
@@ -583,8 +567,9 @@
     {#- The project-wide policy. A distinct area rather than a few more
         fields: everything in it is about people rather than the project's
         data, and it is the only part of settings where a mistake locks
-        someone out. -#}
-    {% if can_edit_access %}
+        someone out. Only in a site: it is about accounts, which a project
+        served by `ridal gui` does not have. -#}
+    {% if site_managed and can_edit_access %}
       <section class="settings-section" id="access-section">
         <h2>Access</h2>
 

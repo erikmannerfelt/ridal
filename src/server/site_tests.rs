@@ -19,7 +19,7 @@ use super::app::AccessOptions;
 use super::site::{build_site_router, SiteState};
 use crate::identity::{ProjectKey, UserId};
 use crate::project::members;
-use crate::project::users::{DownloadScope, Role};
+use crate::project::roles::{DownloadScope, Role};
 use crate::server::render_service::RenderServiceConfig;
 use crate::site::accounts::{self, invite, Account};
 use crate::site::Site;

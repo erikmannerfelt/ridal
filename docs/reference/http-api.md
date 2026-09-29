@@ -14,7 +14,12 @@ machine-readable OpenAPI description is planned.
 ## Conventions
 
 Base path
-: Every endpoint is under `/api/v1`. Paths below are written in full.
+: Every endpoint is under `/api/v1`. A project's endpoints are served under
+  its key, at `/api/v1/projects/{key}/…`; the tables below write them in
+  the project's own shape, so `/api/v1/datasets` is
+  `/api/v1/projects/{key}/datasets`. `ridal gui` serves its one project as
+  `default`. The site's own endpoints, in {ref}`the last section
+  <site-server>`, are at `/api/v1` itself.
 
 Path parameters
 : `{radargram_id}` is a radargram's id, `{group}` a group's id, `{user}` an
@@ -32,17 +37,17 @@ Errors
 
 Signing in
 : `POST /api/v1/auth/login` sets a `ridal_session` cookie, which is then
-  sent with every request. A project without accounts has no logins, and
-  every request acts as the single local user.
+  sent with every request. Accounts belong to a site; `ridal gui` has none,
+  and every request acts as the single local user, an `operator`.
 
 Permissions
-: Each account has a **role**: `viewer` < `picker` < `operator` < `admin`,
-  where each includes the ones before it. It also has a **download scope**:
-  `none` < `results` < `picks` < `derived` < `all`. A server started with
-  `--read-only` treats everyone as a `viewer`. The *Needs* column below gives
-  the role or scope an endpoint checks; "anyone" means anyone who may read
-  the catalog, which on a project that requires a login means anyone signed
-  in.
+: Each project membership has a **role**: `viewer` < `picker` < `operator`
+  < `admin`, where each includes the ones before it. It also has a
+  **download scope**: `none` < `results` < `picks` < `derived` < `all`. A
+  server started with `--read-only` treats everyone as a `viewer`, and so
+  does an archived project. The *Needs* column below gives the role or scope
+  an endpoint checks; "anyone" means anyone who may read the catalog, which
+  on a project that requires a login means its members.
 
 Status codes for refusals
 : `401` means signing in would help; `403` means it would not (the role or
@@ -67,27 +72,15 @@ Concurrent edits
 
 ## Signing in
 
-These endpoints never require a login, since they are how one happens.
+These are the site's, at `/api/v1/auth` rather than under a project, and
+never require a login, since they are how one happens.
 
 | Method | Path | Needs | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/auth/me` | nobody | Who the server thinks is calling: their name, effective and account role, download scope, whether they are signed in, and whether the project has accounts at all. |
+| `GET` | `/api/v1/auth/me` | nobody | Who the site thinks is calling: their name, whether they are signed in, whether they are a server administrator, and whether the site has accounts at all. |
 | `POST` | `/api/v1/auth/login` | nobody | Sign in with a name and password. Every failure gives the same answer, so that the endpoint cannot be used to find out which accounts exist. Refused on a network-bound server without `--allow-insecure-login`; see {doc}`../deploy/reverse-proxy`. |
 | `POST` | `/api/v1/auth/logout` | nobody | Sign out. Succeeds whether or not anyone was signed in. |
 | `POST` | `/api/v1/auth/invite` | nobody | Set a password with a one-time invite token, and sign in. Ends every other session of that account. |
-
-## Accounts and access
-
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/users` | `admin` | Every account, without password hashes or tokens. |
-| `POST` | `/api/v1/users` | `admin` | Create an account. The response contains its invite path, which is shown only this once. |
-| `POST` | `/api/v1/users/bulk/invites` | `admin` | Create several invite-only accounts at once. |
-| `POST` | `/api/v1/users/bulk/passwords` | `admin` | Create several accounts with generated passwords. |
-| `PUT` | `/api/v1/users/{name}` | `admin` | Change an account's role, download scope, or both. Takes effect on that person's next request. |
-| `DELETE` | `/api/v1/users/{name}` | `admin` | Remove an account. Their interpretations are kept; their preferences are not. |
-| `POST` | `/api/v1/users/{name}/invite` | `admin` | Issue a new invite link, replacing any outstanding one. The account keeps working until the new link is used. |
-| `PUT` | `/api/v1/access` | `admin` | The project-wide access policy, such as whether reading the catalog requires a login. |
 
 ## Preferences and project settings
 
@@ -203,20 +196,27 @@ They share these query parameters:
 | `GET` | `/api/v1/groups/{group}/level2` | download `derived` | Every interpreted radargram in a group, merged. Query: `user` (default: the caller), `every_user` (`admin` only), `derived`, `include_unlisted`. |
 | `GET` | `/api/v1/catalog/level2` | download `derived` | Every interpreted radargram being served, merged. Same query as the group export. |
 
+(site-server)=
 ## Site server
 
 `ridal server start <site>` serves many projects from one root. A project's
 pages live under `/p/{key}/…` and its API under `/api/v1/projects/{key}/…`;
 the tables above describe that project-relative shape. This section lists the
-endpoints that belong to the *site* rather than to any one project.
+endpoints that belong to the *site* rather than to any one project. Under
+`ridal gui`, which has no site to manage, only `/api/v1/site`,
+`/api/v1/site/preferences` and `/api/v1/auth/me` answer; the rest are `404`.
+
+A project the caller may not see answers `404` exactly as one that does not
+exist, to someone signed in. Someone not signed in, on a site with
+accounts, is asked to sign in instead (`401`, or the login page), for a
+project that exists and one that does not alike.
 
 A **server administrator** is the `server_admin` flag on an account, which
 is separate from a project role. A **project administrator** is a member
 with the `admin` role in that project. A server administrator acts as a
 project administrator in every project.
 
-A project the caller may not see answers `404` exactly as one that does not
-exist. A server started `--read-only` refuses every change below with `403`
+A server started `--read-only` refuses every change below with `403`
 `read_only`, and an archived project refuses changes to its members, access
 policy and invitations with `403` `archived`.
 

@@ -34,7 +34,7 @@ use crate::identity::{DisplayName, GroupId, GroupName, RadargramId};
 use crate::project::overrides::{
     self, CatalogOverrides, GroupMembership, GroupOverride, RadargramOverride,
 };
-use crate::project::users::Role;
+use crate::project::roles::Role;
 
 /// What the dialog needs to render itself.
 #[derive(Debug, Serialize)]

@@ -318,7 +318,7 @@ pub fn write(
 /// One document for the whole catalog means two operators renaming two
 /// different radargrams are editing the same file, which is exactly the
 /// case a blind overwrite loses. Retried on conflict for the same reason
-/// [`super::users::update`] is.
+/// [`super::members::update`] is.
 pub fn update<T>(
     store: &DocumentStore,
     change: impl Fn(&mut CatalogOverrides) -> Result<T, OverridesError>,

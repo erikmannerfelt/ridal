@@ -271,6 +271,7 @@ impl Site {
     }
 
     /// The site's editable display name, falling back to the directory name.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn name(&self) -> String {
         let config = self.config.read().expect("site config lock poisoned");
         config
@@ -467,6 +468,7 @@ impl Site {
     /// A name in here must not be handed out by anyone who does not
     /// administer the whole site: whoever gets it inherits every one of
     /// those memberships.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn member_names(&self) -> Result<std::collections::BTreeSet<UserId>, SiteError> {
         let mut names = std::collections::BTreeSet::new();
         for (_, project) in self.memberships()? {
@@ -544,6 +546,13 @@ impl Site {
             Ok(())
         })
         .map_err(SiteError::Account)?;
+        // Their personal settings go with them, site-wide and in every
+        // project, so a later account of the same name starts clean. Best
+        // effort: a leftover theme is not worth failing a removal over.
+        let _ = crate::project::preferences::remove(self.store(), name);
+        for (_, project) in self.memberships()? {
+            let _ = crate::project::preferences::remove(project.documents(), name);
+        }
         Ok(removed_from)
     }
 
@@ -588,7 +597,7 @@ impl Site {
 /// uses `members`. A file with neither (or one that will not parse) is left
 /// to the module that reads it, which reports the malformed document rather
 /// than the site guessing at it.
-fn looks_like_accounts(text: &str) -> bool {
+pub fn looks_like_accounts(text: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(text)
         .map(|value| value.get("users").is_some())
         .unwrap_or(false)

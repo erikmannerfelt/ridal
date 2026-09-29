@@ -3,27 +3,18 @@
 {% block content %}
   <h1>Sign in</h1>
 
-  {% if not project %}
+  {% if not authentication_configured %}
+    {#- Said plainly rather than shown as a form that always fails: `ridal
+        gui` and a site without accounts have nothing to sign in to. -#}
     <div class="warning">
       <p>
-        This catalog is not a Ridal project, so it has no accounts. It is
-        served read-only to everyone.
-      </p>
-    </div>
-  {% elif not authentication_configured %}
-    {#- Said plainly rather than shown as a form that always fails: a project
-        with no user file is one where everybody is the local default user,
-        and there is nothing to sign in to. -#}
-    <div class="warning">
-      <p>
-        This project has no accounts, so there is nothing to sign in to.
-        Everyone here is <code>{{ current_user }}</code>.
+        This server has no accounts, so there is nothing to sign in to.
       </p>
       <p>
-        An administrator creates the first account from the command line, on
-        the machine serving this project:
+        To serve projects with sign-ins, make a site and create its first
+        administrator from the command line, on the machine serving it:
       </p>
-      <pre><code>ridal project user add &lt;name&gt; --role admin</code></pre>
+      <pre><code>ridal site account add &lt;name&gt; --server-admin</code></pre>
     </div>
   {% elif already_signed_in %}
     <p class="lede">

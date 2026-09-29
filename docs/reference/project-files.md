@@ -21,7 +21,6 @@ my_survey/
     preferences/
       <user>.json                 one person's display preferences
     users.json                    this project's members, and its access policy
-    session.key                   signs login cookies (a lone project only)
     overrides.json                corrected radargram and group metadata
     revisions/, revisions.json    earlier revisions of replaced radargrams
     audit.json                    who added or removed radargrams, and when
@@ -31,9 +30,8 @@ my_survey/
 ```
 
 Several of these only appear once they are needed. `users.json` is written
-when the project gets its first member; `session.key` only exists for a
-project served on its own, since a [site](../deploy/sites) signs everyone in
-at the site root instead.
+when the project gets its first member in a [site](../deploy/sites); `ridal
+gui` never writes it, and ignores it when it is there.
 
 ## What to keep
 
@@ -48,11 +46,10 @@ contains a `CACHEDIR.TAG`, so backup tools that honour the convention skip it.
 whenever the catalog is scanned, and read by the site landing page so that it
 does not have to open every project.
 
-`session.key` (for a project served on its own) and a site's `accounts.json`
-and `session.key` are **secrets**. Ridal creates them readable by their owner
-only, and the `.gitignore` keeps them out of git. Deleting `session.key`
-signs everyone out. A project's `users.json` holds only members and the
-access policy — no passwords — once the project belongs to a site.
+A project holds no secrets. A project's `users.json` holds only members and
+the access policy — no passwords — and names accounts that live in a site's
+`accounts.json`. That file and the site's `session.key` are the secrets;
+see the site layout below.
 
 :::{note}
 Projects made with Ridal 0.6 kept these entries directly beside `ridal.toml`.
@@ -91,8 +88,9 @@ creates an empty one, and copying an existing project directory into
 list — makes a project read-only without changing the directory, so it stays
 portable.
 
-`accounts.json` and the site's `session.key` are written readable by their
-owner only. `audit.jsonl` is JSON Lines, one entry per line, appended to
+`accounts.json` and the site's `session.key` are **secrets**, written
+readable by their owner only; keep them out of version control. Deleting
+`session.key` signs everyone out. `audit.jsonl` is JSON Lines, one entry per line, appended to
 and never rewritten; a line that does not parse is skipped when it is read.
 It is a record, not a security control: anyone who can edit the site
 directory can edit it.

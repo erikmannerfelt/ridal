@@ -16,7 +16,7 @@
 //! answers?* If yes it is a preference and belongs here, cascading
 //! request -> user -> project -> built-in. If a disagreement would be
 //! incoherent -- two people cannot each decide whether the catalog needs a
-//! login -- it is policy, and belongs in [`super::users::UserSet`] or
+//! login -- it is policy, and belongs in [`super::members::MemberSet`] or
 //! `ridal.toml` instead.
 //!
 //! # Why a document of their own

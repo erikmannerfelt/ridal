@@ -42,8 +42,8 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ProjectKey;
+use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::DocumentStore;
-use crate::project::users::{DownloadScope, Role};
 
 /// The current log, relative to the site root.
 pub const FILE: &str = "audit.jsonl";

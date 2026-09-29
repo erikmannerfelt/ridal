@@ -9,10 +9,20 @@
 //! a project's invite was before; a link found in an old log is worthless
 //! once used or expired.
 
+#![cfg_attr(
+    not(feature = "server"),
+    allow(
+        dead_code,
+        reason = "reached through the server's HTTP routes; a CLI-only build \
+                  still needs the types for `ridal site` and `ridal project`"
+    )
+)]
+
 use serde::{Deserialize, Serialize};
 
+use super::to_hex;
 use crate::identity::ProjectKey;
-use crate::project::users::{DownloadScope, Role};
+use crate::project::roles::{DownloadScope, Role};
 
 /// How long an invite link is good for.
 pub const INVITE_TTL_DAYS: i64 = 7;
@@ -75,15 +85,6 @@ pub fn mint_for_project(
 pub fn token_matches(invite: &Invite, token: &str) -> bool {
     let presented = blake3::hash(token.as_bytes());
     blake3::Hash::from_hex(&invite.token_hash).is_ok_and(|stored| stored == presented)
-}
-
-/// Lowercase hex, without pulling in an encoding crate for 32 bytes.
-fn to_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
 }
 
 #[cfg(test)]

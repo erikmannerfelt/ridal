@@ -37,7 +37,6 @@
    * and so these lists cannot drift from the download dialogs' (#166). */
   let spacings = [];
   let formats = [];
-  let themes = [];
   /* Two lists, as the settings endpoint answers them: `offeredBasemaps` is
    * what can be chosen (the project's, plus the built-in), and `basemaps` is
    * the project's own editable entries. Only the second is ever sent back. */
@@ -224,16 +223,9 @@
     renderOverlays();
     spacings = settings.spacings || [];
     formats = settings.formats || [];
-    themes = (settings.themes || []).map((name) => ({
-      value: name,
-      // Capitalised here rather than server-side: these are two words shown
-      // in one dropdown, not a vocabulary anything else reads.
-      label: name.charAt(0).toUpperCase() + name.slice(1),
-    }));
 
     fillProfiles(byId("my-profile"), "Project default", settings.my_profile);
     fillScales(byId("my-xscale"), settings.my_xscale, "Project default");
-    fillOptions(byId("my-theme"), themes, settings.my_theme, "Follow this device");
     // Absent means shown, which is what the viewer did before the toggle
     // existed -- so only an explicit `false` unticks it.
     const showPicks = byId("my-show-picks");
@@ -281,9 +273,9 @@
   }
 
   /* The theme is a site-wide, personal setting (#214), so it has its own
-   * form and its own endpoint. "My project settings" carries the rest. A
-   * lone project (`ridal gui`) has no site, so its theme stays in the
-   * project form and this one is absent. */
+   * form and its own endpoint. "My project settings" carries the rest.
+   * Under `ridal gui` the site is this one project, and the same endpoint
+   * keeps the theme with it. */
   const siteSettingsForm = byId("my-site-settings-form");
   if (siteSettingsForm) {
     siteSettingsForm.addEventListener("submit", async (event) => {
@@ -311,13 +303,12 @@
   }
 
   if (myForm) {
-    const themeField = byId("my-theme");
     myForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearError();
       setStatus("my-settings-status", "Saving…");
-      // The theme is set in "My site settings"; a form without the field must
-      // not mention it, so a save here leaves the site theme alone.
+      // The theme is set in "My site settings", so this body never mentions
+      // it and a save here leaves the theme alone.
       const body = {
         render_profile: byId("my-profile").value || null,
         x_scale: Number(byId("my-xscale").value) || null,
@@ -326,7 +317,6 @@
         level2_format: byId("my-format").value || null,
         basemap: byId("my-basemap").value || null,
       };
-      if (themeField) body.theme = themeField.value || null;
       try {
         const saved = await send("PUT", RIDAL.apiPath("preferences"), body);
         byId("my-profile").value = saved.render_profile || "";
@@ -337,18 +327,6 @@
         byId("my-spacing").value = saved.level2_spacing || "";
         byId("my-format").value = saved.level2_format || "";
         byId("my-basemap").value = saved.basemap || "";
-        if (themeField) {
-          themeField.value = saved.theme || "";
-          // Applied to the page being looked at, not only stored: a theme
-          // that took effect on the next page load would read as a setting
-          // that did not work. The server writes the same attribute into
-          // every page it renders from here on.
-          if (saved.theme) {
-            document.documentElement.dataset.theme = saved.theme;
-          } else {
-            delete document.documentElement.dataset.theme;
-          }
-        }
         setStatus("my-settings-status", "Saved");
       } catch (error) {
         showError(error.message);
@@ -825,10 +803,8 @@
    * table worked; the policy form at the bottom is the one setting with a
    * Save button.
    *
-   * A lone project (`ridal gui`) has no site accounts, so there is no
-   * members table and the policy is read from the project's own `users`
-   * document instead. Both answer with the same shape of policy; only
-   * where it lives differs.
+   * Only in a site: a project served by `ridal gui` has no accounts, so the
+   * page leaves both sections out there.
    */
 
   const membersSection = byId("members-section");
@@ -857,15 +833,12 @@
     membersForm.elements.name.addEventListener("input", clearMemberError);
   }
 
-  /* Read the membership list (a site) or the access policy alone (a lone
-   * project). One fetch either way: both endpoints carry the policy and the
+  /* Read the membership list, which also carries the access policy and the
    * role/download vocabularies the controls are built from. */
   async function loadMembers() {
     let access;
     try {
-      access = await RIDAL.fetchJson(
-        membersSection ? RIDAL.apiPath("members") : RIDAL.siteApiPath("users"),
-      );
+      access = await RIDAL.fetchJson(RIDAL.apiPath("members"));
     } catch (error) {
       showError(`Could not load members: ${error.message}`);
       return;

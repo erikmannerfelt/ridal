@@ -447,8 +447,9 @@ fn resolve_export_defaults(state: &AppState, caller: &Caller) -> (String, String
 ///
 /// A site has its own per-account settings (#214), and its theme is
 /// genuinely site-wide: it is read here rather than from the project, so
-/// the same choice follows the person into every project. A lone project
-/// (`ridal gui`) has no site, so it keeps the project preference.
+/// the same choice follows the person into every project. `ridal gui` has
+/// no site, so its site settings are kept in the project's own preferences,
+/// which is where this reads them.
 pub fn resolve_theme(state: &AppState, caller: &Caller) -> String {
     if let Some(site) = state.site.as_ref() {
         return match caller.user.as_ref() {
@@ -659,7 +660,7 @@ fn listable<'a>(
     entries: impl Iterator<Item = &'a super::catalog::CatalogEntry>,
     caller: &Caller,
 ) -> Vec<&'a super::catalog::CatalogEntry> {
-    let curates = caller.may(crate::project::users::Role::Operator);
+    let curates = caller.may(crate::project::roles::Role::Operator);
     entries.filter(|e| curates || !e.unlisted).collect()
 }
 
@@ -679,7 +680,7 @@ fn readable_warnings(
     visible: &[&super::catalog::CatalogEntry],
     caller: &Caller,
 ) -> Vec<String> {
-    let curates = caller.may(crate::project::users::Role::Operator);
+    let curates = caller.may(crate::project::roles::Role::Operator);
     catalog
         .warnings
         .iter()
@@ -1102,8 +1103,8 @@ pub async fn settings_page(
     let html = tmpl
         .render(minijinja::context! {
             project => state.project.is_some(),
-            can_edit_project => caller.may(crate::project::users::Role::Operator),
-            can_edit_access => caller.may(crate::project::users::Role::Admin),
+            can_edit_project => caller.may(crate::project::roles::Role::Operator),
+            can_edit_access => caller.may(crate::project::roles::Role::Admin),
             signed_in => caller.is_authenticated(),
             active_profile => active_profile,
             project_name => state
@@ -1129,32 +1130,24 @@ pub async fn settings_page(
 /// (#141): it belongs to the shared layout rather than to any one page, and
 /// reading it needs the preferences document.
 fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
-    // Where this page's project-scoped URLs live (#214). A project served by
-    // a site is mounted at `/p/{key}`, with its API under
-    // `/api/v1/projects/{key}`; a lone project (and `ridal gui`) keeps the
-    // root shape the environment globals already carry. Delivered through
-    // the render context rather than the globals because it varies per
-    // request, and `base.html.jinja` reads one set of values either way.
-    let (api_base, page_base) = match state.site.as_ref() {
-        Some(site) => (
-            format!("/api/v1/projects/{}", site.key),
-            format!("/p/{}", site.key),
-        ),
-        None => ("/api/v1".to_string(), String::new()),
-    };
+    // Where this page's project-scoped URLs live (#214): `/p/{key}` for its
+    // pages and `/api/v1/projects/{key}` for its API, `default` under
+    // `ridal gui`. Delivered through the render context rather than the
+    // globals because it varies per project, and `base.html.jinja` reads one
+    // set of values either way.
+    let api_base = format!("/api/v1/projects/{}", state.key);
+    let page_base = format!("/p/{}", state.key);
     minijinja::context! {
         api_base => api_base,
         site_api_base => "/api/v1",
         page_base => page_base,
-        // Whether this project is hosted by a site rather than served on
-        // its own (#214). A site's project has site-wide accounts, so its
-        // settings page shows a members table; a lone project (`ridal gui`)
-        // has none and reads the access policy from its own users document.
+        // Whether this project is hosted by a site rather than by `ridal
+        // gui` (#214). Only a site has accounts, so only a site's project
+        // has members, an access policy and a site to go back to.
         site_managed => state.site.is_some(),
-        // Whether this is a project page at all. `page_base` cannot answer
-        // it: a lone project (`ridal gui`) is served at the root, so its
-        // pages carry an empty base just like a site's own pages do.
-        in_project => state.project.is_some(),
+        // Every page this renders is a project's, which is what the menu
+        // branches on; the site's own pages leave it unset.
+        in_project => true,
         // The site's own settings page, which sits at the root rather than
         // under a project key. A template cannot build it from `page_base`
         // without hard-coding `/settings`, which the anti-hardcoding test
@@ -1184,13 +1177,13 @@ fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
         // follows, and deliberately so -- picking is the point of the
         // page, so its absence needs explaining, while a download someone
         // was never granted is not a feature they are missing.
-        can_download_picks => caller.may_download(crate::project::users::DownloadScope::Picks),
+        can_download_picks => caller.may_download(crate::project::roles::DownloadScope::Picks),
         can_download_derived =>
-            caller.may_download(crate::project::users::DownloadScope::Derived),
-        can_download_all => caller.may_download(crate::project::users::DownloadScope::All),
+            caller.may_download(crate::project::roles::DownloadScope::Derived),
+        can_download_all => caller.may_download(crate::project::roles::DownloadScope::All),
         // Admins may release a cross-user result and may download every
         // contributor's picks in one file; both are the same authority.
-        can_administer => caller.may(crate::project::users::Role::Admin),
+        can_administer => caller.may(crate::project::roles::Role::Admin),
     }
 }
 
@@ -1225,8 +1218,8 @@ pub async fn layers_page(
             // and explains why it cannot be changed, rather than hiding the
             // controls, following the same rule as the picking toolbar --
             // a missing control reads as a missing feature.
-            writable => caller.may(crate::project::users::Role::Operator),
-            can_pick => caller.may(crate::project::users::Role::Picker),
+            writable => caller.may(crate::project::roles::Role::Operator),
+            can_pick => caller.may(crate::project::roles::Role::Picker),
             active_profile => active_profile,
             ..caller_context(&state, &caller),
         })
@@ -1371,7 +1364,7 @@ pub async fn index_page(
             // click with a refusal is a worse way to learn about a
             // permission than never having been offered it.
             can_edit_project => state.project.is_some()
-                && caller.may(crate::project::users::Role::Operator),
+                && caller.may(crate::project::roles::Role::Operator),
             spacings => spacing_options(),
             formats => format_options(),
             active_spacing => export_defaults.0,
@@ -1459,7 +1452,7 @@ pub async fn viewer_page(
             project => state.project.is_some(),
             // Whether *this caller* may pick, which is what the toolbar is
             // asking. Not a property of the server any more.
-            writable => caller.may(crate::project::users::Role::Picker),
+            writable => caller.may(crate::project::roles::Role::Picker),
             // Who the viewer will save as. Empty for an anonymous reader,
             // who cannot save anything -- the toolbar says so instead.
             user => caller.user.as_ref().map(|u| u.as_str()).unwrap_or(""),
@@ -1607,7 +1600,7 @@ pub async fn dataset_image(
     // the point of having a viewer -- and anyone who can see the page can
     // script the chunk requests anyway. See `DownloadScope`.
     caller.require_download(
-        crate::project::users::DownloadScope::Derived,
+        crate::project::roles::DownloadScope::Derived,
         "the rendered image",
     )?;
     let catalog = state.catalog();
@@ -1753,7 +1746,7 @@ pub async fn dataset_track_geojson(
     Path(radargram_id): Path<String>,
     caller: Caller,
 ) -> Result<Response, ApiError> {
-    caller.require_download(crate::project::users::DownloadScope::All, "the track")?;
+    caller.require_download(crate::project::roles::DownloadScope::All, "the track")?;
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
     let path = state
@@ -1812,7 +1805,7 @@ fn merged_track_geojson(
     caller: &Caller,
     scope: &MergeScope,
 ) -> Result<Response, ApiError> {
-    caller.require_download(crate::project::users::DownloadScope::All, "tracks")?;
+    caller.require_download(crate::project::roles::DownloadScope::All, "tracks")?;
     let catalog = state.catalog();
     let (entries, unlisted) = scope.listed_entries(&catalog);
     if entries.is_empty() {
@@ -1921,7 +1914,7 @@ pub async fn dataset_download(
     caller: Caller,
 ) -> Result<Response, ApiError> {
     caller.require_download(
-        crate::project::users::DownloadScope::All,
+        crate::project::roles::DownloadScope::All,
         "the radargram itself",
     )?;
     let catalog = state.catalog();

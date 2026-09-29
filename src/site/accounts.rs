@@ -6,7 +6,7 @@
 //! same way a project's `users.json` used to be.
 //!
 //! An account is *identity only*. What someone may do in a project lives in
-//! that project's membership (`crate::project::users`), and a server
+//! that project's membership (`crate::project::roles`), and a server
 //! administrator is a flag here -- they create projects and accounts and act
 //! as an administrator in every project.
 //!
@@ -17,6 +17,15 @@
 //! (and is how `ridal gui` runs). That is deliberately distinct from a file
 //! holding no accounts, which means every account was removed.
 
+#![cfg_attr(
+    not(feature = "server"),
+    allow(
+        dead_code,
+        reason = "reached through the server's HTTP routes; a CLI-only build \
+                  still needs the types for `ridal site` and `ridal project`"
+    )
+)]
+
 use std::fmt;
 use std::path::PathBuf;
 
@@ -25,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use crate::identity::UserId;
 use crate::project::store::{DocumentStore, Expectation, StoreError, Version};
 
+pub mod bulk;
 pub mod invite;
 
 pub use invite::Invite;
@@ -253,6 +263,33 @@ pub fn verify_password(account: &Account, password: &str) -> bool {
         .is_ok()
 }
 
+/// Lowercase hex, without pulling in an encoding crate for 32 bytes.
+///
+/// Shared by the invite tokens and the session key, so the two do not grow
+/// two hand-rolled codecs.
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// The inverse of [`to_hex`] for exactly 32 bytes. `None` for anything that
+/// is not 64 hex characters, which is how a truncated or hand-edited secret
+/// is caught rather than silently accepted at the wrong length.
+pub(crate) fn from_hex_32(text: &str) -> Option<[u8; 32]> {
+    let text = text.trim();
+    if text.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (index, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(text.get(index * 2..index * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
+}
+
 fn now_rfc3339() -> String {
     chrono::Utc::now().to_rfc3339()
 }
@@ -335,5 +372,19 @@ mod tests {
         assert!(matches!(error, AccountError::Rejected(_)), "{error}");
         assert!(check_password("short").is_err());
         assert!(check_password("long enough passphrase").is_ok());
+    }
+
+    #[test]
+    fn hex_round_trips_and_refuses_anything_that_is_not_32_bytes() {
+        let bytes: [u8; 32] = std::array::from_fn(|i| (i * 7 % 256) as u8);
+        let text = to_hex(&bytes);
+        assert_eq!(text.len(), 64);
+        assert_eq!(from_hex_32(&text), Some(bytes));
+        assert_eq!(from_hex_32(&text[..62]), None, "truncated");
+        assert_eq!(from_hex_32(&format!("{text}00")), None, "too long");
+        assert_eq!(from_hex_32(&"z".repeat(64)), None, "not hex");
+        // Trailing whitespace is what a hand-edited or shell-written key
+        // file actually looks like, so it is tolerated.
+        assert_eq!(from_hex_32(&format!("{text}\n")), Some(bytes));
     }
 }

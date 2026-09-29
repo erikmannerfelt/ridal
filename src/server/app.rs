@@ -45,73 +45,30 @@ pub struct AccessOptions {
     /// request, so a guard sampled at boot would be bypassed by exactly
     /// the sequence that makes it matter.
     pub allow_password_login: bool,
-    /// Whether the key that signs session cookies is kept in the project,
-    /// or generated at startup and held only in memory (#187).
-    ///
-    /// False for `ridal gui`. A survey directory gets zipped, synced and
-    /// mailed around, and a signing key inside one is a leaked signing key
-    /// -- so the offline mode that writes into the user's own directory
-    /// writes no secret there at all. The cost is that a `ridal gui`
-    /// restart signs its own sessions out, which for a session that lives
-    /// as long as the window is open is not much of a cost.
-    ///
-    /// True for `ridal server start`, where sessions outliving a restart is
-    /// the point and the project directory is the operator's.
-    pub persist_sessions: bool,
 }
 
 impl Default for AccessOptions {
-    /// Writable, logins permitted, sessions persisted. The loopback case,
-    /// and what tests want: a bind that is either genuinely local or behind
-    /// a proxy.
+    /// Writable, logins permitted. The loopback case, and what tests want:
+    /// a bind that is either genuinely local or behind a proxy.
     fn default() -> Self {
         Self {
             read_only: false,
             allow_password_login: true,
-            persist_sessions: true,
         }
     }
 }
 
 /// The site a project is served from, when it is (#214).
 ///
-/// Every project's [`AppState`] in one site shares this: the site root (which
-/// holds `accounts.json` and `session.key`), the project's key, and one
-/// session-signing key so signing in to the site reaches every project. A
-/// `ridal gui` project has no site, which is what keeps its behaviour
-/// unchanged.
+/// A project served by a site receives its caller from the site (see
+/// [`super::auth::project_caller`]), so this carries only what the project's
+/// own pages need: where the site keeps each account's site-wide settings,
+/// and whether the project is archived.
 pub struct SiteContext {
-    /// The project's immutable key. Read by the site router and its links.
-    pub key: ProjectKey,
+    /// The site root, which holds each account's site-wide preferences.
     pub store: DocumentStore,
     /// Archived projects are read-only and named as such in a refusal.
     pub archived: bool,
-    session_key: Mutex<Option<super::auth::SessionKey>>,
-}
-
-impl SiteContext {
-    pub fn new(key: ProjectKey, store: DocumentStore, archived: bool) -> Self {
-        Self {
-            key,
-            store,
-            archived,
-            session_key: Mutex::new(None),
-        }
-    }
-
-    /// The site-wide signing key, loaded on first use.
-    pub fn session_key(&self) -> Result<super::auth::SessionKey, String> {
-        let mut guard = self
-            .session_key
-            .lock()
-            .map_err(|_| "the session key lock was poisoned by a panic".to_string())?;
-        if let Some(key) = guard.as_ref() {
-            return Ok(key.clone());
-        }
-        let key = super::auth::SessionKey::load_or_create(&self.store)?;
-        *guard = Some(key.clone());
-        Ok(key)
-    }
 }
 
 pub struct AppState {
@@ -174,17 +131,12 @@ pub struct AppState {
     /// parallel gate is how the two drift apart. See
     /// [`super::auth::Caller`].
     pub access: AccessOptions,
+    /// The key this project is served under: `/p/{key}` for its pages and
+    /// `/api/v1/projects/{key}` for its API. `default` for `ridal gui`.
+    pub key: ProjectKey,
     /// The site this project is served from, when it is (#214). `None` is
-    /// `ridal gui` and the read-only bare-directory case, whose identity
-    /// behaviour is unchanged.
+    /// `ridal gui`, whose one person is the local user.
     pub site: Option<Arc<SiteContext>>,
-    /// The key that signs session cookies, loaded on first use.
-    ///
-    /// Lazy so a project that never authenticates never grows a
-    /// `session.key`, and behind a lock rather than a `OnceLock` so a
-    /// failure to read it is retried on the next login instead of being
-    /// cached forever.
-    session_key: Mutex<Option<super::auth::SessionKey>>,
     /// Bounds how many renders may be in flight at once, across every
     /// radargram, sized from `--n-workers`.
     ///
@@ -381,8 +333,8 @@ impl AppState {
                 radargrams,
             })),
             access,
-            session_key: Mutex::new(None),
             project,
+            key: ProjectKey::new(DEFAULT_PROJECT_KEY).expect("the default key is a valid slug"),
             site: None,
             // `.max(1)`: a zero-permit semaphore would deadlock every
             // render forever. The CLI rejects `--n-workers 0` with a
@@ -606,10 +558,11 @@ impl AppState {
         self.roots.get(entry.root).is_some_and(|root| root.writable)
     }
 
-    /// Attach the site this project is served from (#214). A builder method
+    /// Serve this project under `key` in a site (#214). A builder method
     /// rather than a `build_with_project` parameter, so the many callers and
-    /// tests that serve a lone project are untouched.
-    pub fn with_site(mut self, site: Arc<SiteContext>) -> Self {
+    /// tests that serve a project on its own are untouched.
+    pub fn with_site(mut self, key: ProjectKey, site: Arc<SiteContext>) -> Self {
+        self.key = key;
         self.site = Some(site);
         self
     }
@@ -626,40 +579,11 @@ impl AppState {
         self
     }
 
-    /// The key that signs this project's session cookies, creating it on
-    /// first use.
-    ///
-    /// Errors rather than returning `None` for a catalog with no project:
-    /// nothing should be asking for a session key there, and answering
-    /// "there is no key" would read as "this cookie is fine".
-    pub fn session_key(&self) -> Result<super::auth::SessionKey, String> {
-        // A site has one key for every project, kept at the site root, so a
-        // session outlives a project's own directory and reaches them all.
-        if let Some(site) = &self.site {
-            return site.session_key();
-        }
-        let project = self
-            .project
-            .as_ref()
-            .ok_or_else(|| "this catalog is not a project, so it has no sessions".to_string())?;
-        let mut guard = self
-            .session_key
-            .lock()
-            .map_err(|_| "the session key lock was poisoned by a panic".to_string())?;
-        if let Some(key) = guard.as_ref() {
-            return Ok(key.clone());
-        }
-        // Either way it is cached above, so every session this process
-        // mints is signed with one key -- an ephemeral key that changed
-        // per request would sign each caller out of the page they were on.
-        let key = if self.access.persist_sessions {
-            super::auth::project_session_key(project)?
-        } else {
-            super::auth::SessionKey::ephemeral()?
-        };
-        *guard = Some(key.clone());
-        Ok(key)
+    /// How this project's render services are configured.
+    pub fn render_config(&self) -> RenderServiceConfig {
+        self.render_config
     }
+
     /// The catalog and its services as they are right now.
     ///
     /// Every read goes through here rather than through a field, so there
@@ -864,6 +788,9 @@ impl MergeScope {
 /// every ungrouped radargram in the catalog is not one group.
 pub const NO_GROUP_ID: &str = "_none";
 
+/// The key `ridal gui` serves its one project under, at `/p/default/`.
+pub const DEFAULT_PROJECT_KEY: &str = "default";
+
 /// The static assets and favicon.
 ///
 /// Stateless, so the project router and the site router share one definition
@@ -910,52 +837,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/", get(super::routes::index_page))
         .route("/view/{radargram_id}", get(super::routes::viewer_page))
         .route("/api/v1/health", get(super::routes::health))
-        // Authentication. The write routes below did not change shape when
-        // this arrived (#131): the path still names the user, and only the
-        // body of `current_user` moved.
-        .route("/login", get(super::auth_routes::login_page))
-        .route("/invite/{token}", get(super::auth_routes::invite_page))
-        .route("/api/v1/auth/me", get(super::auth_routes::me))
-        .route(
-            "/api/v1/auth/login",
-            axum::routing::post(super::auth_routes::login),
-        )
-        .route(
-            "/api/v1/auth/logout",
-            axum::routing::post(super::auth_routes::logout),
-        )
-        .route(
-            "/api/v1/auth/invite",
-            axum::routing::post(super::auth_routes::redeem_invite),
-        )
-        .route(
-            "/api/v1/users",
-            get(super::auth_routes::list_users).post(super::auth_routes::create_user),
-        )
-        .route(
-            "/api/v1/users/bulk/invites",
-            axum::routing::post(super::auth_routes::create_bulk_invites),
-        )
-        .route(
-            "/api/v1/users/bulk/passwords",
-            axum::routing::post(super::auth_routes::create_bulk_passwords),
-        )
-        .route(
-            "/api/v1/users/{name}",
-            axum::routing::put(super::auth_routes::update_user)
-                .delete(super::auth_routes::delete_user),
-        )
-        .route(
-            "/api/v1/users/{name}/invite",
-            axum::routing::post(super::auth_routes::reissue_invite),
-        )
-        .route(
-            "/api/v1/access",
-            axum::routing::put(super::auth_routes::put_access),
-        )
         .route(
             "/api/v1/preferences",
-            get(super::auth_routes::get_preferences).put(super::auth_routes::put_preferences),
+            get(super::preference_routes::get_preferences)
+                .put(super::preference_routes::put_preferences),
         )
         .route("/layers", get(super::routes::layers_page))
         .route("/settings", get(super::routes::settings_page))
@@ -1602,7 +1487,9 @@ mod tests {
             let html = String::from_utf8(body.to_vec()).unwrap();
 
             assert!(
-                html.contains("/api/v1/datasets/thumb-test-a/views/standard/overview"),
+                html.contains(
+                    "/api/v1/projects/default/datasets/thumb-test-a/views/standard/overview"
+                ),
                 "index must embed the overview image URL"
             );
             assert!(
@@ -1643,9 +1530,9 @@ mod tests {
             // and the card's own link, so opening a radargram keeps the
             // profile the index was browsing in.
             assert!(html.contains(
-                "/api/v1/datasets/profile-test-a/views/standard/overview?profile=positive"
+                "/api/v1/projects/default/datasets/profile-test-a/views/standard/overview?profile=positive"
             ));
-            assert!(html.contains("/view/profile-test-a?profile=positive"));
+            assert!(html.contains("/p/default/view/profile-test-a?profile=positive"));
             assert!(
                 html.contains("value=\"positive\" selected"),
                 "the switcher must reflect the active profile"

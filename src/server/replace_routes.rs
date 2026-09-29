@@ -52,7 +52,7 @@ use crate::identity::{RadargramId, RevisionId};
 use crate::interp::carry::{CarryReport, Severity};
 use crate::io::RidalNetcdfKind;
 use crate::project::revisions::{self, ledger};
-use crate::project::users::Role;
+use crate::project::roles::Role;
 use crate::project::{audit, interpretations, Project};
 
 /// Where a staged replacement waits between the two requests, under the

@@ -8,10 +8,11 @@ simpler:
   members; it never holds a password, so it stays portable.
 
 Until a site has accounts, everyone who opens it is the same anonymous
-reader. A lone project served with `ridal gui` behaves the same way, with an
-implicit `default` user who can do everything. That is exactly right on your
-own computer. As soon as other people can reach the server, make a
-[site](sites) and give it accounts.
+reader. `ridal gui` has no accounts at all: whoever is at the machine is an
+implicit `default` user who can pick, curate radargrams and change the
+project's settings, and any memberships the project carries from a site are
+ignored. That is exactly right on your own computer. As soon as other
+people can reach the server, make a [site](sites) and give it accounts.
 
 :::{important}
 Accounts use passwords, and passwords must only travel over HTTPS. Read

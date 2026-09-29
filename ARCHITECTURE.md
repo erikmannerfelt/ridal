@@ -29,10 +29,11 @@ ridal gui <PROJECT>          # local, one project, ephemeral port, opens a brows
 ridal server start <SITE>    # persistent, 127.0.0.1:8000 by default
 ```
 
-`ridal gui` serves a single project (or a bare directory) with no accounts.
 `ridal server start` serves a **site**: many projects from one root, behind
-one list of accounts. The two are deliberately different rather than one
-being a mode of the other — see [Sites](#sites-214) below.
+one list of accounts. `ridal gui` serves a site of one — a single project
+(or a bare directory) as the project `default`, at `/p/default/`, with no
+accounts. Both go through the same router, so a project's pages and API
+have one shape wherever they are served — see [Sites](#sites-214) below.
 
 ## Request lifecycle
 
@@ -40,9 +41,10 @@ being a mode of the other — see [Sites](#sites-214) below.
    radargram under its root *eagerly* — the target catalog size is on the
    order of 100 files, and eager construction turns a broken file into a
    clear startup warning instead of a request-time surprise — and builds one
-   shared `AppState` (`src/server/app.rs`). `ridal server start` instead
-   builds a `SiteState`, listing project keys without opening any of them;
-   each project's `AppState` is built lazily on its first request.
+   shared `AppState` (`src/server/app.rs`), which it hands to a
+   `SiteState::local`. `ridal server start` builds a `SiteState` over a site
+   directory, listing project keys without opening any of them; each
+   project's `AppState` is built lazily on its first request.
 2. **Discovery** (`src/server/catalog.rs`) walks the directory (or
    accepts a single file), recognising processed output via
    `io::inspect_ridal_netcdf` — a metadata-only recogniser that lives
@@ -76,50 +78,61 @@ against synthetic arrays with no HTTP server anywhere near the tests.
 One server hosts many projects from one root. A **site** is a directory with
 a `ridal-site.toml`, an `accounts.json`, a site `session.key`, an
 `audit.jsonl`, and a `projects/` directory of ordinary project directories.
-`ridal server start` takes a site; `ridal gui` remains the single-project
-path. The split is state, not only layout:
+`ridal server start` takes a site; `ridal gui` is a site of one. The split
+is state, not only layout:
 
-- **`SiteState`** (`src/server/site.rs`) owns the site, its `DocumentStore`
-  (accounts, session key, site preferences and the ledger live at the site
-  root), the archive list, one `Semaphore` shared by every project so that
-  `--n-workers` means *site-wide*, and a cache of per-project
-  `ProjectRuntime { state, router }`.
+- **`SiteState`** (`src/server/site.rs`) owns what it serves — a `Host`,
+  either a site directory or `ridal gui`'s `Local` project — one `Semaphore`
+  shared by every project so that `--n-workers` means *site-wide*, and a
+  cache of per-project `ProjectRuntime { state, router }`. Routes that
+  manage the site ask `SiteState::site()`, which is a `404` under `ridal
+  gui`.
 - **A project runtime** is built lazily on the first request that names its
   key: open the project, build an `AppState` with a `SiteContext`, and call
-  the *unchanged* `app::build_router`. Building every project at startup
-  would open every radargram for rendering; the lazy cache is what keeps a
-  site with many projects cheap. The catalog size it discovers is recorded in
-  the project's `catalog-summary.json`, which the landing page reads rather
-  than opening the project itself.
-- **Identity is two layers.** A site account lives in `accounts.json`;
-  a project holds only memberships in `users.json` (role and download scope,
-  never a password). `Caller` (`src/server/auth.rs`) resolves a site account
-  from the session cookie, then the request project's membership from the
-  project `AppState`'s `SiteContext`. A server administrator acts as `admin`
-  in every project; a non-member of a project that requires a login gets a
-  `404`, not a `403`, so the project's existence is not confirmed. `Caller`
-  and `Project` are extractors that fail closed.
+  `app::build_router`, which knows nothing of keys or accounts. Building
+  every project at startup would open every radargram for rendering; the
+  lazy cache is what keeps a site with many projects cheap. Before building
+  one, the site checks that the caller may see it, so a stranger cannot make
+  the server open a private project. The catalog size it discovers is
+  recorded in the project's `catalog-summary.json`, which the landing page
+  reads rather than opening the project itself. `ridal gui` builds its one
+  runtime at startup instead, as it always did.
+- **Identity is decided once, by the site.** An account lives in
+  `accounts.json`; a project holds only memberships in `users.json` (role
+  and download scope, never a password — the file refuses fields it does not
+  know, so it cannot silently lose any). The site middleware resolves the
+  account behind the session cookie as a `SiteCaller`; for a project
+  request, the fallback turns that and the project's memberships into the
+  project `Caller` (`auth::project_caller`) and passes it to the project
+  router in the request extensions. A project router served by a site that
+  receives no `Caller` fails closed. A server administrator acts as `admin`
+  in every project; a signed-in non-member of a project that requires a
+  login gets a `404`, not a `403`, and someone not signed in is sent to sign
+  in, for a key that exists and one that does not alike, so neither answer
+  confirms a project. Under `ridal gui` the caller is the local default
+  user, an `operator` (`auth::local_caller`).
 - **Routing** is one flat `build_site_router`: site routes under
   `/api/v1/…`, project pages under `/p/{key}/…`, project API under
   `/api/v1/projects/{key}/…`. A fallback rewrites a project-prefixed path to
   the project-relative one `build_router` expects (`/api/v1/datasets`,
-  `/view/{id}`, …) and dispatches in-process with `tower::ServiceExt`. The
-  old per-project account paths are retired through the prefix, so a project
-  router can no longer read its `users.json` as accounts.
+  `/view/{id}`, …) and dispatches in-process with `tower::ServiceExt`.
 - **The front end** learns where it is from the body's `data-api-base` /
-  `data-site-api-base` / `data-page-base`, so one `app.js` serves a lone
-  project (all bases at the root) and a site project (bases under `/p/{key}`
-  and `/api/v1/projects/{key}`). `site.js` drives the landing and site
-  settings; `settings.js` drives a project's settings, including its members.
+  `data-site-api-base` / `data-page-base`, so `app.js` builds every URL from
+  the key it was served under. `site.js` drives the landing and site
+  settings; `settings.js` drives a project's settings, including its
+  members, which only a site has.
 - **Site settings** are per account and site-wide
   (`preferences/<name>.json` at the site root): the theme is one choice that
   follows a person into every project. Project preferences stay per project.
+  Under `ridal gui` the "site" is the one project, so its site settings are
+  kept in that project's own preferences.
 - **The ledger** (`src/site/audit.rs`) appends every account, membership,
   project-lifecycle and access change to the site root's `audit.jsonl`, with
   the actor. JSON Lines, appended and never rewritten, so an append costs the
   same however long the history is and an interrupted one damages only its
-  own line; the file is rotated to `audit.1.jsonl` at 2 MiB. Server administrators read it whole; project administrators read
-  their project's slice. Like the per-project catalog audit, it is a record to
+  own line; the file is rotated to `audit.1.jsonl` at 2 MiB. Server
+  administrators read it whole; project administrators read their project's
+  slice. Like the per-project catalog audit, it is a record to
   work out what happened, **not** a security control.
 
 ## Identity model
@@ -487,22 +500,24 @@ Durable, load-bearing decisions rather than oversights:
   bind address because of it.** Behind a TLS-terminating proxy the
   server sees plain HTTP on loopback, which is correct and safe, so
   "is this connection TLS?" always answers no and is useless as a
-  check. A loopback bind is therefore trusted; a public one refuses to
-  serve writes with no accounts configured, and refuses password
-  logins without `--allow-insecure-login`. The reverse proxy is the
-  supported way to serve this remotely (#131).
+  check. A loopback bind is therefore trusted; a public one refuses
+  password logins without `--allow-insecure-login`, and a site with no
+  accounts is served only `--read-only`, wherever it binds. The reverse
+  proxy is the supported way to serve this remotely (#131).
 - **Sessions are a signed cookie, with no server-side table.**
   `blake3::keyed_hash` over `user|version|expiry`, verified by
   constant-time `blake3::Hash` comparison against a 32-byte key.
   The credential version in the cookie is what makes a stateless
-  session revocable: changing a password, a server-administrator flag or a
-  membership's role or download scope bumps it, and the outstanding cookie
-  stops verifying. A site keeps the key in its root `session.key` and signs
-  everyone with it; a lone project generates one at startup and never writes
-  it down, so an offline session ends with the server and a survey directory
-  that is zipped and shared carries no secret out with it (#187). A site's
-  accounts live in the root `accounts.json`; a project's `users.json` holds
-  only memberships, so the project directory stays portable.
+  session revocable: changing a password or the server-administrator flag
+  bumps it, and the outstanding cookie stops verifying; a membership is read
+  on every request, so a change to a role or download scope applies to the
+  next one. A site keeps the key in its root `session.key` and signs
+  everyone with it. `ridal gui` has no accounts and so no key, which keeps
+  any secret out of a survey directory that is zipped and shared (#187). A
+  site's accounts live in the root `accounts.json`; a project's
+  `users.json` holds only memberships, so the project directory stays
+  portable — `ridal gui` over a project taken out of a site ignores the
+  memberships and leaves them as they are.
 - **Bulk teaching accounts have two deliberately different paths.** Invite
   batches create one single-use link per account, so each student chooses a
   password without the administrator knowing it. A second batch mode can create
