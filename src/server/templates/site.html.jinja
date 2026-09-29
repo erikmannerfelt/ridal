@@ -56,9 +56,13 @@
                       {%- if project.archived %}Unarchive{% else %}Archive{% endif -%}
                     </button>
                   </li>
+                  {#- Deleting is the second step, offered only once a
+                      project is archived (read-only, still exportable). -#}
+                  {% if project.archived %}
                   <li>
                     <button type="button" class="danger delete-project">Delete&hellip;</button>
                   </li>
+                  {% endif %}
                 </ul>
               </details>
               <span class="row-status project-status"></span>
@@ -67,8 +71,14 @@
         </li>
       {% endfor %}
     </ul>
-  {% else %}
+  {% elif server_admin %}
     <p class="lede">There are no projects here yet.</p>
+  {% elif current_user %}
+    {#- Only memberships are listed. A public project is reachable by its
+        link but never listed, so this says nothing about what exists. -#}
+    <p class="lede">You are not a member of any project yet.</p>
+  {% else %}
+    <p class="lede">Projects here are opened by their link.</p>
   {% endif %}
 
   {% if server_admin %}

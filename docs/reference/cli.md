@@ -1018,7 +1018,7 @@ Default: `.`.
 ```{program} ridal site project delete
 ```
 
-Delete a project and everything it owns, for good
+Delete an archived project and everything it owns, for good
 
 ```console
 $ ridal site project delete [OPTIONS] <KEY>

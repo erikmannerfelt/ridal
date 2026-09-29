@@ -131,8 +131,13 @@ locks anyone out.
 
 Removing an account keeps that person's interpretations, still under their
 name, since picks are part of the results rather than of the account. Their
-memberships are left in place too, so recreating the same name reconnects
-them.
+memberships are removed from every project, so an account created later
+under the same name starts with none of them.
+
+A project administrator cannot create an account under a name that any
+project on the site still has a membership for, since whoever holds that
+name would inherit the membership. A server administrator can, which is how
+the members of a project copied into the site are reconnected.
 
 The same can be done from the command line on the server:
 
@@ -184,6 +189,7 @@ signs everyone out.
 ## Publishing a finished site
 
 `ridal server start --read-only` makes everyone a `viewer`, whatever their
-account says, and accepts no changes at all. A read-only site needs no
-accounts, so it is a simple way to publish finished projects for others to
-browse. It still belongs behind HTTPS.
+account says, and accepts no changes at all, including to accounts,
+memberships and projects. A read-only site needs no accounts, so it is a
+simple way to publish finished projects: the landing lists nothing, so share
+each project's link. It still belongs behind HTTPS.

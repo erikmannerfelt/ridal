@@ -23,8 +23,9 @@ that "many people can reach this" is never a mode you arrive at by accident.
 
 `--read-only`
 : Serve everything, change nothing. Every caller is a `viewer`, whatever
-  their account says. A read-only site needs no accounts, which makes this a
-  simple way to publish finished projects.
+  their account says, and no account, membership or project can change. A
+  read-only site needs no accounts, which makes this a simple way to publish
+  finished projects by their links.
 
 `--allow-insecure-login`
 : Accept password sign-ins while bound to a network address. Ridal does not

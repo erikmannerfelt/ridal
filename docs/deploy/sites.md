@@ -51,10 +51,12 @@ portable: copy it to another site, or open it with `ridal gui`.
 
 ## The browser
 
-The **landing page** (`/`) lists the projects you can see. A server
-administrator gets a card per project with its member and radargram counts
-and an **Edit** menu to rename, archive or delete it, plus a **New project**
-form. Everyone else sees the list alone.
+The **landing page** (`/`) lists the projects you are a member of; a server
+administrator sees every project. A public project is **unlisted**: anyone
+with its link can open it, but it is never shown to someone who is not a
+member. A server administrator's cards carry the member and radargram counts
+and an **Edit** menu to rename, archive or delete the project, plus a **New
+project** form. Everyone else sees the list alone.
 
 **Site settings** (`/settings`) holds what belongs to you and, for a server
 administrator, to the site:
@@ -102,12 +104,15 @@ which records changes to its radargrams.
 ## Archiving and deleting
 
 Archiving a project from its card's **Edit** menu makes it read-only
-everywhere while keeping its data and its memberships. Deleting one removes
-the whole project directory, for good; archive instead if there is any doubt.
+everywhere, its members and access policy included, while keeping its data
+and its memberships. Only an archived project can be deleted, which removes
+the whole project directory for good; unarchive it instead if there is any
+doubt.
 
 ## Publishing a finished site
 
 `ridal server start --read-only` makes everyone a `viewer`, whatever their
 account says, and accepts no changes at all. A read-only site needs no
-accounts, which makes it a simple way to publish finished projects. It still
+accounts, which makes it a simple way to publish finished projects. Its
+landing lists nothing, so share each project's link. It still
 belongs behind HTTPS; see {doc}`reverse-proxy`.

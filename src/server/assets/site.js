@@ -205,8 +205,7 @@
       const confirmed = window.confirm(
         `Delete the project "${name}" and everything in it?\n\nThis removes ` +
           `the project directory, including its interpretations and cache. ` +
-          `It cannot be undone. Archive it instead to keep the data while ` +
-          `making it read-only.`,
+          `It cannot be undone. Unarchive it instead to keep working on it.`,
       );
       if (!confirmed) return;
       const status = card.querySelector(".project-status");

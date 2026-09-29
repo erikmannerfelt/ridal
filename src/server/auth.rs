@@ -48,7 +48,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use super::app::AppState;
 use super::routes::ApiError;
 use crate::identity::UserId;
-use crate::project::members::{self, MemberSet};
+use crate::project::members;
 use crate::project::store::{DocumentStore, Expectation};
 use crate::project::users::{self, DownloadScope, Role, UserSet};
 use crate::project::Project;
@@ -479,18 +479,11 @@ fn resolve_site(
     // A damaged membership file fails closed: require a login (which nobody
     // can satisfy) and deny anonymous downloads. Absent is the public
     // default, exactly as a project with no user file has always been.
-    let members = match state.project.as_ref() {
-        Some(project) => match members::read(project.documents()) {
-            Ok(Some((set, _))) => set,
-            Ok(None) => MemberSet::default(),
-            Err(_) => MemberSet {
-                require_auth_to_read: true,
-                anonymous_download: DownloadScope::None,
-                members: Vec::new(),
-            },
-        },
-        None => MemberSet::default(),
-    };
+    let members = state
+        .project
+        .as_ref()
+        .map(|project| members::read_for_access(project.documents()))
+        .unwrap_or_default();
 
     let account = accounts.as_ref().and_then(|set| {
         let cookie = cookie_value(headers, SESSION_COOKIE)?;

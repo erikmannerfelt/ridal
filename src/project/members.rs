@@ -91,6 +91,37 @@ impl MemberSet {
     pub fn has_admin(&self) -> bool {
         self.members.iter().any(|member| member.role == Role::Admin)
     }
+
+    /// Give `name` this role and download scope, adding the membership if
+    /// there is none. Returns whether it was added.
+    pub fn upsert(&mut self, name: &UserId, role: Role, download: DownloadScope) -> bool {
+        match self.get_mut(name) {
+            Some(member) => {
+                member.role = role;
+                member.download = download;
+                false
+            }
+            None => {
+                self.members.push(Member::new(name.clone(), role, download));
+                true
+            }
+        }
+    }
+
+    /// The policy that denies everything: a login required, which nobody can
+    /// satisfy, and no anonymous downloads.
+    ///
+    /// What a membership file that will not parse reads as. Its
+    /// [`Default`] is the permissive public policy, which is right for a
+    /// project with no file and exactly backwards for one whose policy has
+    /// just become unreadable.
+    pub fn closed() -> Self {
+        Self {
+            require_auth_to_read: true,
+            anonymous_download: DownloadScope::None,
+            members: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -144,6 +175,17 @@ pub fn read(store: &DocumentStore) -> Result<Option<(MemberSet, Version)>, Membe
             message: e.to_string(),
         })?;
     Ok(Some((set, document.version)))
+}
+
+/// Read the membership file for an access decision: absent is the public
+/// default, and a file that will not parse fails closed
+/// ([`MemberSet::closed`]).
+pub fn read_for_access(store: &DocumentStore) -> MemberSet {
+    match read(store) {
+        Ok(Some((set, _))) => set,
+        Ok(None) => MemberSet::default(),
+        Err(_) => MemberSet::closed(),
+    }
 }
 
 /// Whether this project has a membership file at all.

@@ -215,6 +215,11 @@ is separate from a project role. A **project administrator** is a member
 with the `admin` role in that project. A server administrator acts as a
 project administrator in every project.
 
+A project the caller may not see answers `404` exactly as one that does not
+exist. A server started `--read-only` refuses every change below with `403`
+`read_only`, and an archived project refuses changes to its members, access
+policy and invitations with `403` `archived`.
+
 | Method | Path | Needs | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/site` | anyone | The site's name, whether it has accounts, and who the caller is. |
@@ -227,18 +232,18 @@ project administrator in every project.
 | `POST` | `/api/v1/accounts/bulk/invites` | server administrator | Create several invite-only accounts at once. |
 | `POST` | `/api/v1/accounts/bulk/passwords` | server administrator | Create several accounts with generated passwords. |
 | `PUT` | `/api/v1/accounts/{name}` | server administrator | Change the server-administrator flag. Refused if it would leave the site with none, or while the account has an invite outstanding. |
-| `DELETE` | `/api/v1/accounts/{name}` | server administrator | Remove an account. Memberships and picks are left in place. |
+| `DELETE` | `/api/v1/accounts/{name}` | server administrator | Remove an account and its membership in every project. Picks are left in place. |
 | `POST` | `/api/v1/accounts/{name}/invite` | server administrator | Issue a new invite link, for a reset or a lost one. |
-| `GET` | `/api/v1/projects` | anyone | The projects the caller may see. |
+| `GET` | `/api/v1/projects` | anyone | The projects the caller is a member of; every project for a server administrator. Public projects are not listed. |
 | `POST` | `/api/v1/projects` | server administrator | Create a project at a key. |
-| `GET` | `/api/v1/projects/{key}` | member, or server administrator | One project. |
+| `GET` | `/api/v1/projects/{key}` | member, server administrator, or anyone for a public project | One project. |
 | `PATCH` | `/api/v1/projects/{key}` | server administrator | Rename its display name; the key does not change. |
-| `DELETE` | `/api/v1/projects/{key}` | server administrator | Delete it and everything it owns. |
+| `DELETE` | `/api/v1/projects/{key}` | server administrator | Delete an archived project and everything it owns. `409` `not_archived` otherwise. |
 | `POST` | `/api/v1/projects/{key}/archive` | server administrator | Make the project read-only. |
 | `POST` | `/api/v1/projects/{key}/unarchive` | server administrator | Reverse an archive. |
 | `GET` | `/api/v1/projects/{key}/members` | project administrator | The membership list and access policy. |
 | `POST` | `/api/v1/projects/{key}/members` | project administrator | Add or update an existing account's membership. |
-| `POST` | `/api/v1/projects/{key}/members/invite` | project administrator | Create an account and invite it into this project only. |
+| `POST` | `/api/v1/projects/{key}/members/invite` | project administrator | Create an account and invite it into this project only. `409` `name_in_use` for a name any project has a membership for. |
 | `POST` | `/api/v1/projects/{key}/members/bulk/invites` | project administrator | Bulk-create accounts, each granted this project only. |
 | `POST` | `/api/v1/projects/{key}/members/bulk/passwords` | project administrator | Bulk-create accounts with generated passwords, each granted this project only. |
 | `PUT` | `/api/v1/projects/{key}/members/{name}` | project administrator | Change a member's role or download scope. |

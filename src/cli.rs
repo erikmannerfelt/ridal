@@ -370,7 +370,7 @@ pub enum SiteProjectCommand {
     Archive(SiteProjectKeyArgs),
     /// Reverse `archive`
     Unarchive(SiteProjectKeyArgs),
-    /// Delete a project and everything it owns, for good
+    /// Delete an archived project and everything it owns, for good
     Delete(SiteProjectKeyArgs),
 }
 
@@ -2504,25 +2504,19 @@ fn site_account_reset_command(args: &SiteAccountResetArgs) -> Result<(), String>
 fn site_account_remove_command(args: &SiteAccountResetArgs) -> Result<(), String> {
     let site = open_site(&args.path)?;
     let name = crate::identity::UserId::new(args.name.clone())?;
-    crate::site::accounts::update(site.store(), |set| {
-        use crate::site::accounts::AccountError;
-        if !set.has_another_admin(&name)
-            && set.get(&name).is_some_and(|account| account.server_admin)
-        {
-            return Err(AccountError::Rejected(
-                "This is the only server administrator. Grant --server-admin to \
-                 somebody else first."
-                    .to_string(),
-            ));
-        }
-        let before = set.users.len();
-        set.users.retain(|account| account.name != name);
-        if set.users.len() == before {
-            return Err(AccountError::NotFound(name.to_string()));
-        }
-        Ok(())
-    })
-    .map_err(|e| e.to_string())?;
+    let removed_from = site.remove_account(&name).map_err(|e| e.to_string())?;
+    for key in &removed_from {
+        crate::site::audit::record(
+            site.store(),
+            crate::site::audit::Entry::new(
+                "cli",
+                crate::site::audit::Action::MembershipRemoved,
+                name.as_str(),
+            )
+            .project(key)
+            .note("account removed"),
+        );
+    }
     crate::site::audit::record(
         site.store(),
         crate::site::audit::Entry::new(

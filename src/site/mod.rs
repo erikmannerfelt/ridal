@@ -36,7 +36,8 @@ use std::sync::RwLock;
 
 use serde::{Deserialize, Serialize};
 
-use crate::identity::ProjectKey;
+use crate::identity::{ProjectKey, UserId};
+use crate::project::members;
 use crate::project::store::{DocumentStore, Expectation, StoreError, Version};
 use crate::project::{Project, ProjectError};
 
@@ -101,6 +102,10 @@ pub enum SiteError {
     NotFound(String),
     /// A project directory already exists at this key.
     KeyInUse(String),
+    /// Deleting a project that has not been archived first.
+    NotArchived(String),
+    /// A change to the site's accounts was refused or failed.
+    Account(accounts::AccountError),
 }
 
 impl fmt::Display for SiteError {
@@ -147,6 +152,12 @@ impl fmt::Display for SiteError {
                 "A project already exists at key '{key}'. Project keys are immutable; \
                  choose another."
             ),
+            SiteError::NotArchived(key) => write!(
+                f,
+                "Project '{key}' is not archived. Archive it first: deleting is \
+                 the second step, for a project that is already read-only."
+            ),
+            SiteError::Account(e) => write!(f, "{e}"),
         }
     }
 }
@@ -395,11 +406,18 @@ impl Site {
         self.replace_config(config)
     }
 
-    /// Delete a project and everything it owns, for good.
+    /// Delete an archived project and everything it owns, for good.
+    ///
+    /// Only an archived project may be deleted, so removing one is always
+    /// two deliberate steps: archive (read-only, still exportable), then
+    /// delete.
     pub fn delete_project(&self, key: &ProjectKey) -> Result<(), SiteError> {
         let path = self.project_path(key);
         if !path.is_dir() {
             return Err(SiteError::NotFound(key.to_string()));
+        }
+        if !self.is_archived(key) {
+            return Err(SiteError::NotArchived(key.to_string()));
         }
         // `key` is a validated slug, so `path` is always directly under
         // `projects/`; this is a belt-and-braces check that a future caller
@@ -414,12 +432,113 @@ impl Site {
             path,
             message: e.to_string(),
         })?;
-        if self.is_archived(key) {
-            let mut config = self.config();
-            config.site.archived.retain(|archived| archived != key);
-            self.replace_config(config)?;
+        let mut config = self.config();
+        config.site.archived.retain(|archived| archived != key);
+        self.replace_config(config)
+    }
+
+    /// The projects that can be opened, each with its memberships.
+    ///
+    /// A project that still holds accounts is skipped: a site never serves
+    /// it, and its file holds no memberships to find. Anything else that
+    /// stops a project opening is an error, because a membership hidden in
+    /// an unreadable project is one this site cannot account for.
+    fn memberships(&self) -> Result<Vec<(ProjectKey, Project)>, SiteError> {
+        let mut projects = Vec::new();
+        for key in self.list()? {
+            match self.project(&key) {
+                Ok(project) => projects.push((key, project)),
+                Err(SiteError::LegacyAccounts { .. }) => continue,
+                Err(e) => return Err(e),
+            }
         }
-        Ok(())
+        Ok(projects)
+    }
+
+    /// Every name any project has a membership for, whether or not an
+    /// account by that name exists.
+    ///
+    /// A name in here must not be handed out by anyone who does not
+    /// administer the whole site: whoever gets it inherits every one of
+    /// those memberships.
+    pub fn member_names(&self) -> Result<std::collections::BTreeSet<UserId>, SiteError> {
+        let mut names = std::collections::BTreeSet::new();
+        for (_, project) in self.memberships()? {
+            let set = members::read_for_access(project.documents());
+            names.extend(set.members.into_iter().map(|member| member.name));
+        }
+        Ok(names)
+    }
+
+    /// Remove `name`'s membership from every project, returning the keys it
+    /// was removed from.
+    ///
+    /// Called when an account is deleted, so a later account with the same
+    /// name starts with nothing rather than inheriting the old one's roles.
+    /// Picks are left alone: they belong to the project's history.
+    fn remove_memberships(&self, name: &UserId) -> Result<Vec<ProjectKey>, SiteError> {
+        let mut removed = Vec::new();
+        for (key, project) in self.memberships()? {
+            // Checked first so a project with no membership file does not
+            // gain one, which would change its access policy from "never
+            // configured" to "configured".
+            if members::read_for_access(project.documents())
+                .get(name)
+                .is_none()
+            {
+                continue;
+            }
+            let was_member = members::update(project.documents(), |set| {
+                let before = set.members.len();
+                set.members.retain(|member| &member.name != name);
+                Ok(set.members.len() != before)
+            })
+            .map_err(|e| SiteError::Io {
+                path: self.project_path(&key),
+                message: e.to_string(),
+            })?;
+            if was_member {
+                removed.push(key);
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Delete the account `name` and its membership in every project,
+    /// returning the keys it was removed from.
+    ///
+    /// Refuses to remove the last server administrator. The memberships go
+    /// first: were the account to go first and this then fail, the
+    /// memberships would be left for the next account of the same name to
+    /// inherit. This way round, a failure leaves an account with fewer
+    /// memberships, which is safe to retry.
+    pub fn remove_account(&self, name: &UserId) -> Result<Vec<ProjectKey>, SiteError> {
+        use accounts::{AccountError, AccountSet};
+        let refuse = |set: &AccountSet| match set.get(name) {
+            None => Err(AccountError::NotFound(name.to_string())),
+            Some(account) if account.server_admin && !set.has_another_admin(name) => {
+                Err(AccountError::Rejected(format!(
+                    "'{name}' is the only server administrator. Make someone else \
+                     one first, or nobody will be able to manage accounts."
+                )))
+            }
+            Some(_) => Ok(()),
+        };
+        // Checked before the memberships go, so a refused delete changes
+        // nothing.
+        let (set, _) = accounts::read(self.store())
+            .map_err(SiteError::Account)?
+            .ok_or_else(|| SiteError::Account(AccountError::NotFound(name.to_string())))?;
+        refuse(&set).map_err(SiteError::Account)?;
+
+        let removed_from = self.remove_memberships(name)?;
+        accounts::update(self.store(), |set| {
+            refuse(set)?;
+            set.users.retain(|account| &account.name != name);
+            Ok(())
+        })
+        .map_err(SiteError::Account)?;
+        Ok(removed_from)
     }
 
     fn ensure_project_exists(&self, key: &ProjectKey) -> Result<(), SiteError> {
@@ -551,6 +670,18 @@ mod tests {
             site.archive(&key("absent")).unwrap_err(),
             SiteError::NotFound(_)
         ));
+    }
+
+    #[test]
+    fn only_an_archived_project_may_be_deleted() {
+        let (dir, site) = site();
+        let glac = key("glac-2026");
+        site.create_project(&glac, None).unwrap();
+        assert!(matches!(
+            site.delete_project(&glac).unwrap_err(),
+            SiteError::NotArchived(_)
+        ));
+        assert!(dir.path().join(PROJECTS_DIR).join("glac-2026").is_dir());
     }
 
     #[test]

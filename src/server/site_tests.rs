@@ -423,13 +423,26 @@ async fn a_server_admin_gets_the_project_controls_on_the_landing() {
         "{}",
         page.text
     );
+    // Deleting is offered only once a project is archived.
     assert!(
-        page.text.contains(r#"class="danger delete-project""#),
+        !page.text.contains(r#"class="danger delete-project""#),
         "{}",
         page.text
     );
     assert!(
         page.text.contains(r#"class="project-members">0 members"#),
+        "{}",
+        page.text
+    );
+    let archived = send(
+        &app,
+        post_json("/api/v1/projects/glac/archive", &json!({}), Some(&cookie)),
+    )
+    .await;
+    assert_eq!(archived.status, StatusCode::OK, "{}", archived.text);
+    let page = send(&app, get("/", Some(&cookie))).await;
+    assert!(
+        page.text.contains(r#"class="danger delete-project""#),
         "{}",
         page.text
     );
@@ -1494,4 +1507,332 @@ async fn a_project_card_reports_its_catalog_size() {
         "the card shows the catalog size: {}",
         landing.text
     );
+}
+
+fn delete(uri: &str, cookie: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method("DELETE").uri(uri);
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
+/// Set a project's memberships and access policy directly on disk.
+fn set_members(dir: &std::path::Path, project: &str, private: bool, list: &[(&str, Role)]) {
+    let site = Site::open(dir).unwrap();
+    let project = site.project(&key(project)).unwrap();
+    members::update(project.documents(), |set| {
+        set.require_auth_to_read = private;
+        for (name, role) in list {
+            set.upsert(&id(name), *role, DownloadScope::All);
+        }
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_read_only_site_refuses_site_administration() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions {
+            read_only: true,
+            ..AccessOptions::default()
+        },
+    );
+    set_members(dir.path(), "glac", false, &[("bo", Role::Admin)]);
+    // Signing in still works: reading a private project needs it.
+    let anna = sign_in(&app, "anna").await;
+    let bo = sign_in(&app, "bo").await;
+
+    for (request, what) in [
+        (
+            post_json("/api/v1/projects", &json!({ "key": "new" }), Some(&anna)),
+            "create a project",
+        ),
+        (
+            post_json("/api/v1/accounts", &json!({ "name": "cy" }), Some(&anna)),
+            "create an account",
+        ),
+        (
+            post_json("/api/v1/projects/glac/archive", &json!({}), Some(&anna)),
+            "archive",
+        ),
+        (
+            delete("/api/v1/accounts/bo", Some(&anna)),
+            "remove an account",
+        ),
+        (
+            post_json(
+                "/api/v1/projects/glac/members",
+                &json!({ "name": "anna", "role": "viewer" }),
+                Some(&bo),
+            ),
+            "add a member",
+        ),
+        (
+            put_json(
+                "/api/v1/projects/glac/access",
+                &json!({ "require_auth_to_read": true }),
+                Some(&bo),
+            ),
+            "change access",
+        ),
+    ] {
+        let response = send(&app, request).await;
+        assert_eq!(
+            response.status,
+            StatusCode::FORBIDDEN,
+            "{what}: {}",
+            response.text
+        );
+        assert_eq!(response.body["error"]["code"], "read_only", "{what}");
+    }
+    assert!(!dir.path().join("projects/new").exists());
+}
+
+#[tokio::test]
+async fn an_archived_project_refuses_membership_and_access_changes() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    set_members(dir.path(), "glac", false, &[("bo", Role::Admin)]);
+    let anna = sign_in(&app, "anna").await;
+    let bo = sign_in(&app, "bo").await;
+    let archived = send(
+        &app,
+        post_json("/api/v1/projects/glac/archive", &json!({}), Some(&anna)),
+    )
+    .await;
+    assert_eq!(archived.status, StatusCode::OK, "{}", archived.text);
+
+    for request in [
+        post_json(
+            "/api/v1/projects/glac/members/invite",
+            &json!({ "name": "cy", "role": "picker" }),
+            Some(&bo),
+        ),
+        put_json(
+            "/api/v1/projects/glac/access",
+            &json!({ "require_auth_to_read": true }),
+            Some(&bo),
+        ),
+        post_json(
+            "/api/v1/accounts",
+            &json!({ "name": "cy", "project": "glac", "role": "picker" }),
+            Some(&anna),
+        ),
+    ] {
+        let response = send(&app, request).await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN, "{}", response.text);
+        assert_eq!(response.body["error"]["code"], "archived");
+    }
+    // Reading the members is still fine.
+    let list = send(&app, get("/api/v1/projects/glac/members", Some(&bo))).await;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.text);
+}
+
+#[tokio::test]
+async fn a_project_is_deleted_only_after_it_is_archived() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let anna = sign_in(&app, "anna").await;
+    let refused = send(&app, delete("/api/v1/projects/glac", Some(&anna))).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "not_archived");
+    assert!(dir.path().join("projects/glac").is_dir());
+
+    send(
+        &app,
+        post_json("/api/v1/projects/glac/archive", &json!({}), Some(&anna)),
+    )
+    .await;
+    let deleted = send(&app, delete("/api/v1/projects/glac", Some(&anna))).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    assert!(!dir.path().join("projects/glac").exists());
+}
+
+#[tokio::test]
+async fn a_public_project_is_reachable_but_never_listed_to_a_non_member() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["public", "mine"],
+        AccessOptions::default(),
+    );
+    set_members(dir.path(), "public", false, &[]);
+    set_members(dir.path(), "mine", true, &[("bo", Role::Picker)]);
+    let bo = sign_in(&app, "bo").await;
+
+    let list = send(&app, get("/api/v1/projects", Some(&bo))).await;
+    let keys: Vec<&str> = list.body["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["mine"]);
+    let landing = send(&app, get("/", Some(&bo))).await;
+    assert!(!landing.text.contains(r#"data-project-key="public""#));
+    assert!(landing.text.contains(r#"data-project-key="mine""#));
+
+    // Unlisted, not hidden: the link works, for anyone.
+    let by_key = send(&app, get("/api/v1/projects/public", Some(&bo))).await;
+    assert_eq!(by_key.status, StatusCode::OK, "{}", by_key.text);
+    let page = send(&app, get("/p/public/", None)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+
+    // A server administrator still sees every project.
+    let anna = sign_in(&app, "anna").await;
+    let all = send(&app, get("/api/v1/projects", Some(&anna))).await;
+    assert_eq!(all.body["projects"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_site_without_accounts_lists_nothing() {
+    let (_dir, app) = site_with(Vec::new(), &["glac"], AccessOptions::default());
+    let landing = send(&app, get("/", None)).await;
+    assert_eq!(landing.status, StatusCode::OK, "{}", landing.text);
+    assert!(!landing.text.contains(r#"data-project-key="glac""#));
+    assert!(
+        landing.text.contains("opened by their link"),
+        "{}",
+        landing.text
+    );
+}
+
+#[tokio::test]
+async fn project_administration_of_a_private_project_is_a_404_to_a_non_member() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![activated("bo", false, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    set_members(dir.path(), "glac", true, &[]);
+    let bo = sign_in(&app, "bo").await;
+    let existing = send(&app, get("/api/v1/projects/glac/members", Some(&bo))).await;
+    let absent = send(&app, get("/api/v1/projects/nope/members", Some(&bo))).await;
+    assert_eq!(existing.status, StatusCode::NOT_FOUND, "{}", existing.text);
+    assert_eq!(existing.text, absent.text);
+    let anonymous = send(&app, get("/api/v1/projects/glac/members", None)).await;
+    assert_eq!(anonymous.text, absent.text);
+}
+
+#[tokio::test]
+async fn a_project_that_cannot_open_does_not_name_server_paths() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    // A pre-site account file, which a site refuses to serve.
+    std::fs::write(
+        dir.path().join("projects/glac/ridal_data/users.json"),
+        r#"{"users": []}"#,
+    )
+    .unwrap();
+    let anna = sign_in(&app, "anna").await;
+    let page = send(&app, get("/api/v1/projects/glac/datasets", Some(&anna))).await;
+    assert_eq!(page.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let root = dir.path().to_string_lossy().to_string();
+    assert!(!page.text.contains(&root), "{}", page.text);
+}
+
+#[tokio::test]
+async fn removing_an_account_removes_its_memberships() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac", "other"],
+        AccessOptions::default(),
+    );
+    set_members(dir.path(), "glac", true, &[("bo", Role::Admin)]);
+    let anna = sign_in(&app, "anna").await;
+    let removed = send(&app, delete("/api/v1/accounts/bo", Some(&anna))).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+
+    let site = Site::open(dir.path()).unwrap();
+    let glac = site.project(&key("glac")).unwrap();
+    let (set, _) = members::read(glac.documents()).unwrap().unwrap();
+    assert!(set.get(&id("bo")).is_none());
+    // A project bo never belonged to does not gain a membership file.
+    let other = site.project(&key("other")).unwrap();
+    assert!(members::read(other.documents()).unwrap().is_none());
+
+    // So an account made again under the name starts with nothing.
+    let again = send(
+        &app,
+        post_json("/api/v1/accounts", &json!({ "name": "bo" }), Some(&anna)),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::CREATED, "{}", again.text);
+    let (set, _) = members::read(glac.documents()).unwrap().unwrap();
+    assert!(set.get(&id("bo")).is_none());
+}
+
+#[tokio::test]
+async fn a_project_admin_cannot_hand_out_a_name_another_project_knows() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![activated("bo", false, &hash)],
+        &["glac", "other"],
+        AccessOptions::default(),
+    );
+    set_members(dir.path(), "glac", true, &[("bo", Role::Admin)]);
+    // A project copied in with a membership for a name no account has.
+    set_members(
+        dir.path(),
+        "other",
+        true,
+        &[("cy", Role::Admin), ("cy-01", Role::Admin)],
+    );
+    let bo = sign_in(&app, "bo").await;
+
+    let refused = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/invite",
+            &json!({ "name": "cy", "role": "picker" }),
+            Some(&bo),
+        ),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "name_in_use");
+
+    // A bulk batch steps around it rather than taking it.
+    let batch = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/bulk/invites",
+            &json!({ "prefix": "cy", "count": 1, "role": "picker" }),
+            Some(&bo),
+        ),
+    )
+    .await;
+    assert_eq!(batch.status, StatusCode::CREATED, "{}", batch.text);
+    assert_eq!(batch.body["users"][0]["name"], "cy-02");
 }
