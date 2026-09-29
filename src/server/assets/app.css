@@ -1001,27 +1001,18 @@ dialog th {
   font-size: var(--text-sm);
 }
 
+/* How many people belong to the project. A count only: the names are on the
+ * project's own settings page, for whoever administers it. */
+.project-members {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
 .project-actions {
   margin-left: auto;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-}
-
-.project-actions form {
-  display: flex;
-  gap: var(--space-1);
-}
-
-.project-actions input[type="text"] {
-  font: inherit;
-  max-width: 14rem;
-  padding: var(--space-1) var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface);
-  color: inherit;
 }
 
 .hint {

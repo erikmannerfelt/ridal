@@ -120,24 +120,56 @@
     return element.closest("li[data-project-key]");
   }
 
-  for (const form of document.querySelectorAll("form.rename-project")) {
-    form.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      clearError();
-      const card = projectOf(form);
-      const key = card.dataset.projectKey;
-      const status = card.querySelector(".project-status");
-      status.textContent = "Saving…";
+  /* Menu items close the menu they came from, the way a radargram's do:
+   * app.js only closes a menu on an outside click or Escape. */
+  function closeMenus() {
+    for (const menu of document.querySelectorAll("details.site-menu[open]")) {
+      menu.open = false;
+    }
+  }
+
+  /* Rename, archive and delete sit in the card's Edit menu, mirroring a
+   * radargram card. Rename opens a dialog rather than turning the title
+   * into an input, so the shared menu stays a menu. */
+  const renameDialog = byId("rename-project-dialog");
+  const renameName = byId("rename-project-name");
+  let renaming = null;
+
+  for (const button of document.querySelectorAll("button.rename-project")) {
+    button.addEventListener("click", () => {
+      const card = projectOf(button);
+      renaming = card;
+      renameName.value = card.querySelector(".project-name").textContent.trim();
+      byId("rename-project-key").textContent = card.dataset.projectKey;
+      byId("rename-project-error").hidden = true;
+      closeMenus();
+      renameDialog.showModal();
+      renameName.focus();
+      renameName.select();
+    });
+  }
+
+  if (byId("rename-project-save")) {
+    byId("rename-project-save").addEventListener("click", async () => {
+      if (!renaming) return;
+      const key = renaming.dataset.projectKey;
       try {
         await send("PATCH", RIDAL.siteApiPath("projects", key), {
-          name: form.elements.name.value.trim(),
+          name: renameName.value.trim(),
         });
         window.location.reload();
       } catch (error) {
-        showError(error.message);
-        status.textContent = "";
+        const box = byId("rename-project-error");
+        RIDAL.setMessage(box, error.message);
+        box.hidden = false;
       }
     });
+  }
+
+  if (byId("rename-project-close")) {
+    byId("rename-project-close").addEventListener("click", () =>
+      renameDialog.close(),
+    );
   }
 
   for (const button of document.querySelectorAll("button.archive-project")) {
@@ -146,6 +178,7 @@
       const card = projectOf(button);
       const key = card.dataset.projectKey;
       const archived = button.dataset.archived === "true";
+      closeMenus();
       const status = card.querySelector(".project-status");
       status.textContent = "Saving…";
       try {
@@ -168,6 +201,7 @@
       const card = projectOf(button);
       const key = card.dataset.projectKey;
       const name = card.querySelector(".project-name").textContent.trim();
+      closeMenus();
       const confirmed = window.confirm(
         `Delete the project "${name}" and everything in it?\n\nThis removes ` +
           `the project directory, including its interpretations and cache. ` +

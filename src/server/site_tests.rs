@@ -245,7 +245,10 @@ async fn a_server_admin_sees_every_project() {
     let cookie = sign_in(&app, "anna").await;
     let response = send(&app, get("/api/v1/projects", Some(&cookie))).await;
     assert_eq!(response.status, StatusCode::OK);
-    assert_eq!(response.body["projects"].as_array().unwrap().len(), 2);
+    let projects = response.body["projects"].as_array().unwrap();
+    assert_eq!(projects.len(), 2);
+    // The listing carries how many people belong, for the card's text.
+    assert_eq!(projects[0]["member_count"], 0);
 }
 
 #[tokio::test]
@@ -395,6 +398,24 @@ async fn a_server_admin_gets_the_project_controls_on_the_landing() {
     );
     assert!(
         page.text.contains(r#"data-project-key="glac""#),
+        "{}",
+        page.text
+    );
+    // The controls are one Edit menu, the way a radargram's are, and the
+    // card says how many members the project has.
+    assert!(page.text.contains(">Edit<"), "{}", page.text);
+    assert!(
+        page.text.contains(r#"class="rename-project""#),
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text.contains(r#"class="danger delete-project""#),
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text.contains(r#"class="project-members">0 members"#),
         "{}",
         page.text
     );

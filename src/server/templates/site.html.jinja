@@ -32,24 +32,31 @@
         <li class="project-card" data-project-key="{{ project.key }}">
           <a class="project-name" href="/p/{{ project.key }}/">{{ project.name }}</a>
           {% if project.archived %}<span class="project-badge">Archived</span>{% endif %}
+          <span class="project-members">{{ project.member_count }}
+            {{- " member" if project.member_count == 1 else " members" }}</span>
           {% if project.member %}<span class="project-role">{{ project.role }}</span>{% endif %}
           {% if server_admin %}
-            {#- Management lives here rather than on the project's own
-                settings page: archiving and deleting are site-level acts,
-                and the key is immutable so the display name is the only
-                editable part. -#}
+            {#- The management controls are the card's own Edit menu, the
+                same control a radargram card carries, so the two lists
+                behave alike. -#}
             <div class="project-actions">
-              <form class="rename-project" novalidate>
-                <label class="visually-hidden" for="rename-{{ project.key }}">Project name</label>
-                <input type="text" id="rename-{{ project.key }}" name="name"
-                       value="{{ project.name }}" autocomplete="off">
-                <button type="submit">Rename</button>
-              </form>
-              <button type="button" class="archive-project"
-                      data-archived="{{ 'true' if project.archived else 'false' }}">
-                {{ "Unarchive" if project.archived else "Archive" }}
-              </button>
-              <button type="button" class="danger delete-project">Delete</button>
+              <details class="site-menu card-menu">
+                <summary>Edit</summary>
+                <ul>
+                  <li>
+                    <button type="button" class="rename-project">Rename&hellip;</button>
+                  </li>
+                  <li>
+                    <button type="button" class="archive-project"
+                            data-archived="{{ 'true' if project.archived else 'false' }}">
+                      {%- if project.archived %}Unarchive{% else %}Archive{% endif -%}
+                    </button>
+                  </li>
+                  <li>
+                    <button type="button" class="danger delete-project">Delete&hellip;</button>
+                  </li>
+                </ul>
+              </details>
               <span class="row-status project-status"></span>
             </div>
           {% endif %}
@@ -87,6 +94,25 @@
         <span id="new-project-status" class="pick-status"></span>
       </form>
     </section>
+
+    {#- Renaming a project, opened from the card's Edit menu. A dialog rather
+        than an inline field: the key is immutable and worth naming, and the
+        menu stays a menu. -#}
+    <dialog id="rename-project-dialog">
+      <h2>Rename project</h2>
+      <p class="hint">
+        The display name, not the key (<code id="rename-project-key"></code>),
+        which names the directory and cannot change.
+      </p>
+      <div id="rename-project-error" class="warning" hidden></div>
+      <label>Name
+        <input type="text" id="rename-project-name" autocomplete="off">
+      </label>
+      <p>
+        <button type="button" id="rename-project-save">Save</button>
+        <button type="button" id="rename-project-close">Close</button>
+      </p>
+    </dialog>
   {% endif %}
 {% endblock %}
 {% block extrascript %}

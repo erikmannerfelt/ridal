@@ -560,6 +560,7 @@ fn project_entry(
             .unwrap_or_else(|| key.as_str().to_string()),
         "archived": site.site.is_archived(key),
         "member": member.is_some() || caller.server_admin,
+        "member_count": members.members.len(),
         "role": role.as_str(),
         "download": download.as_str(),
         "require_auth_to_read": members.require_auth_to_read,
