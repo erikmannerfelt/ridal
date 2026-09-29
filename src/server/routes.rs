@@ -444,7 +444,21 @@ fn resolve_export_defaults(state: &AppState, caller: &Caller) -> (String, String
 /// whether *you* want a dark screen, and the built-in answer is not a
 /// colour but "ask the browser", which `prefers-color-scheme` already
 /// does.
+///
+/// A site has its own per-account settings (#214), and its theme is
+/// genuinely site-wide: it is read here rather than from the project, so
+/// the same choice follows the person into every project. A lone project
+/// (`ridal gui`) has no site, so it keeps the project preference.
 pub fn resolve_theme(state: &AppState, caller: &Caller) -> String {
+    if let Some(site) = state.site.as_ref() {
+        return match caller.user.as_ref() {
+            Some(user) => crate::project::preferences::read_lenient(&site.store, user)
+                .theme
+                .filter(|theme| is_offered_theme(theme))
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+    }
     my_preferences(state, caller)
         .theme
         .filter(|theme| is_offered_theme(theme))

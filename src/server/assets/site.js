@@ -45,6 +45,37 @@
     return parsed;
   }
 
+  /* ---- My site settings --------------------------------------------- */
+
+  const siteSettingsForm = byId("my-site-settings-form");
+  if (siteSettingsForm) {
+    siteSettingsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearError();
+      const status = byId("site-settings-status");
+      status.textContent = "Saving…";
+      const theme = byId("site-theme").value || null;
+      try {
+        const saved = await send("PUT", RIDAL.siteApiPath("site", "preferences"), {
+          theme,
+        });
+        // Applied to the page being looked at, not only stored: a theme
+        // that took effect on the next page load would read as a setting
+        // that did not work. The server writes the same attribute into
+        // every page it renders from here on.
+        if (saved.theme) {
+          document.documentElement.dataset.theme = saved.theme;
+        } else {
+          delete document.documentElement.dataset.theme;
+        }
+        status.textContent = "Saved";
+      } catch (error) {
+        showError(error.message);
+        status.textContent = "";
+      }
+    });
+  }
+
   /* ---- New project -------------------------------------------------- */
 
   const newProjectForm = byId("new-project");

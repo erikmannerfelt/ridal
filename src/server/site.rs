@@ -39,7 +39,7 @@ use super::routes::{ApiError, PageError};
 use super::templates;
 use crate::identity::{ProjectKey, UserId};
 use crate::project::members;
-use crate::project::store::DocumentStore;
+use crate::project::store::{DocumentStore, Expectation};
 use crate::project::users::{self, DownloadScope, Role};
 use crate::site::accounts::{self, invite, Account, AccountError, AccountSet};
 use crate::site::{Site, SiteError};
@@ -271,8 +271,16 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         .route("/", get(landing))
         .route("/login", get(login_page))
         .route("/invite/{token}", get(invite_page))
+        // The site's own settings: the per-user, site-wide preferences and
+        // (for a server administrator) the accounts. Project settings stay
+        // under the project's key.
+        .route("/settings", get(site_settings_page))
         .route("/api/v1/health", get(super::routes::health))
         .route("/api/v1/site", get(site_info))
+        .route(
+            "/api/v1/site/preferences",
+            get(get_site_preferences).put(put_site_preferences),
+        )
         .route("/api/v1/projects", get(list_projects).post(create_project))
         .route(
             "/api/v1/projects/{key}",
@@ -433,6 +441,21 @@ fn site_page_bases() -> (String, String, String) {
     ("/api/v1".to_string(), "/api/v1".to_string(), String::new())
 }
 
+/// The theme a site page renders with (#214), or `""` to follow the device.
+///
+/// Site settings are per account and site-wide: the same value applies to
+/// every project, which is what makes the theme a *site* setting rather than
+/// one saved separately for each project.
+fn site_theme(site: &SiteState, user: Option<&UserId>) -> String {
+    let Some(user) = user else {
+        return String::new();
+    };
+    crate::project::preferences::read_lenient(site.site.store(), user)
+        .theme
+        .filter(|theme| super::routes::is_offered_theme(theme))
+        .unwrap_or_default()
+}
+
 /// `GET /` -- the landing page.
 ///
 /// A site that has accounts asks for a login first; one that does not (a
@@ -466,6 +489,7 @@ async fn landing(
             current_role => if caller.server_admin { "admin" } else { "viewer" },
             server_admin => caller.server_admin,
             authentication_configured => configured,
+            active_theme => site_theme(&site, caller.user.as_ref()),
             api_base => api_base,
             site_api_base => site_api_base,
             page_base => page_base,
@@ -510,6 +534,52 @@ fn project_entry(
         "download": download.as_str(),
         "require_auth_to_read": members.require_auth_to_read,
     }))
+}
+
+/// `GET /settings` -- the site's own settings page.
+///
+/// Personal, site-wide settings (the theme) for anyone signed in, and the
+/// accounts for a server administrator. A site with no accounts has nothing
+/// to sign in to, so it is sent back to the landing, which explains that.
+async fn site_settings_page(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+) -> Result<Response, PageError> {
+    let configured = accounts::is_configured(site.site.store()).unwrap_or(false);
+    if caller.user.is_none() {
+        return Ok(Redirect::to(if configured { "/login" } else { "/" }).into_response());
+    }
+
+    let keys = site
+        .site
+        .list()
+        .map_err(|e| PageError(ApiError::internal("site_error", e.to_string())))?;
+    let projects: Vec<serde_json::Value> = keys
+        .iter()
+        .filter_map(|key| project_entry(&site, key, &caller))
+        .collect();
+
+    let (api_base, site_api_base, page_base) = site_page_bases();
+    let html = render(
+        "site_settings.html.jinja",
+        minijinja::context! {
+            site_name => site.site.name(),
+            projects => projects,
+            roles => Role::ALL.map(Role::as_str),
+            download_scopes => DownloadScope::ALL.map(DownloadScope::as_str),
+            min_password_len => accounts::MIN_PASSWORD_LEN,
+            invite_ttl_days => invite::INVITE_TTL_DAYS,
+            current_user => caller.user.as_ref().map(|u| u.as_str()),
+            current_role => if caller.server_admin { "admin" } else { "viewer" },
+            server_admin => caller.server_admin,
+            authentication_configured => configured,
+            active_theme => site_theme(&site, caller.user.as_ref()),
+            api_base => api_base,
+            site_api_base => site_api_base,
+            page_base => page_base,
+        },
+    )?;
+    Ok(html.into_response())
 }
 
 /// `GET /login`
@@ -802,6 +872,71 @@ async fn site_info(
         "download_scopes": DownloadScope::ALL.map(DownloadScope::as_str),
         "invite_ttl_days": invite::INVITE_TTL_DAYS,
         "min_password_len": accounts::MIN_PASSWORD_LEN,
+    })))
+}
+
+#[derive(serde::Deserialize)]
+pub struct SitePreferencesBody {
+    /// `light`, `dark`, or absent/`null`/empty to follow the device.
+    #[serde(default)]
+    theme: Option<String>,
+}
+
+/// `GET /api/v1/site/preferences` -- the caller's own site-wide settings.
+async fn get_site_preferences(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+) -> Result<impl IntoResponse, ApiError> {
+    let Some(user) = caller.user.as_ref() else {
+        return Err(ApiError::unauthorized(
+            "authentication_required",
+            "Sign in to read your site settings.",
+        ));
+    };
+    let preferences = crate::project::preferences::read(site.site.store(), user)
+        .map_err(|e| ApiError::internal("preferences_read_failed", e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "user": user.as_str(),
+        "theme": preferences.theme,
+    })))
+}
+
+/// `PUT /api/v1/site/preferences`
+///
+/// A viewer may do this, exactly as with project preferences: choosing how
+/// you like to look at something is the floor of having an account.
+async fn put_site_preferences(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Json(body): Json<SitePreferencesBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let Some(user) = caller.user.as_ref() else {
+        return Err(ApiError::unauthorized(
+            "authentication_required",
+            "Sign in to change your site settings.",
+        ));
+    };
+    let mut stored = crate::project::preferences::read_lenient(site.site.store(), user);
+    stored.theme = match body.theme.as_deref() {
+        None | Some("") => None,
+        Some(name) => {
+            if !super::routes::is_offered_theme(name) {
+                return Err(ApiError::bad_request(
+                    "unknown_theme",
+                    format!(
+                        "'{name}' is not a theme. Use 'light', 'dark', or nothing at all \
+                         to follow the device."
+                    ),
+                ));
+            }
+            Some(name.to_string())
+        }
+    };
+    crate::project::preferences::write(site.site.store(), user, &stored, &Expectation::Any)
+        .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "user": user.as_str(),
+        "theme": stored.theme,
     })))
 }
 

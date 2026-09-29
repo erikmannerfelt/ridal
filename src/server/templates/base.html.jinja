@@ -60,9 +60,18 @@
             error page), which minijinja treats as falsy -- so the links
             simply come out bare there. -#}
         <ul>
-          <li><a href="{{ page_base|safe }}/{{ profile_query }}">Radargram catalog</a></li>
-          <li><a href="{{ page_base|safe }}/layers{{ profile_query }}">Layers</a></li>
-          <li><a href="{{ page_base|safe }}/settings{{ profile_query }}">Settings</a></li>
+          {%- if page_base %}
+            {#- Project pages: the catalog, its layers and its own settings. -#}
+            <li><a href="{{ page_base|safe }}/{{ profile_query }}">Radargram catalog</a></li>
+            <li><a href="{{ page_base|safe }}/layers{{ profile_query }}">Layers</a></li>
+            <li><a href="{{ page_base|safe }}/settings{{ profile_query }}">Settings</a></li>
+          {%- elif current_user %}
+            {#- Site pages (#214): there is no project to catalog, layer or
+                configure, so the menu offers the site home and the site's
+                own settings instead of links that go nowhere. -#}
+            <li><a href="{{ page_base|safe }}/">Projects</a></li>
+            <li><a href="{{ page_base|safe }}/settings">Settings</a></li>
+          {%- endif %}
           {#- The sign-in control is offered only where signing in can
               succeed. A project with no accounts has nothing to sign in to,
               and a link to a login page that always fails is worse than no

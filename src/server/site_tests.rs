@@ -127,6 +127,17 @@ fn post_json(uri: &str, body: &Value, cookie: Option<&str>) -> Request<Body> {
     builder.body(Body::from(body.to_string())).unwrap()
 }
 
+fn put_json(uri: &str, body: &Value, cookie: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method("PUT")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
+}
+
 fn cookie_pair(set_cookie: &str) -> String {
     set_cookie.split(';').next().unwrap().to_string()
 }
@@ -470,4 +481,101 @@ async fn a_project_admin_adds_and_lists_a_member() {
         .expect("the new member is listed");
     assert_eq!(found["role"], "picker");
     assert_eq!(found["download"], "picks");
+}
+
+#[tokio::test]
+async fn site_settings_require_a_login() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &[],
+        AccessOptions::default(),
+    );
+    let response = send(&app, get("/settings", None)).await;
+    assert_eq!(response.status, StatusCode::SEE_OTHER);
+    assert_eq!(response.location.as_deref(), Some("/login"));
+}
+
+#[tokio::test]
+async fn a_site_theme_is_personal_and_reaches_every_project() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+
+    let saved = send(
+        &app,
+        put_json(
+            "/api/v1/site/preferences",
+            &json!({ "theme": "dark" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["theme"], "dark");
+
+    // Site page: the landing renders the chosen theme on the root element.
+    let landing = send(&app, get("/", Some(&cookie))).await;
+    assert!(
+        landing.text.contains(r#"data-theme="dark""#),
+        "{}",
+        landing.text
+    );
+
+    // And it follows the person into a project, which is what makes it a
+    // site setting rather than one saved per project.
+    let project = send(&app, get("/p/glac/", Some(&cookie))).await;
+    assert_eq!(project.status, StatusCode::OK, "{}", project.text);
+    assert!(
+        project.text.contains(r#"data-theme="dark""#),
+        "{}",
+        project.text
+    );
+
+    // Clearing it goes back to following the device.
+    let cleared = send(
+        &app,
+        put_json(
+            "/api/v1/site/preferences",
+            &json!({ "theme": null }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert_eq!(cleared.body["theme"], Value::Null);
+    let landing = send(&app, get("/", Some(&cookie))).await;
+    assert!(!landing.text.contains(r#"data-theme="dark""#));
+}
+
+#[tokio::test]
+async fn the_site_menu_offers_site_links_not_project_ones() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let landing = send(&app, get("/", Some(&cookie))).await;
+    assert_eq!(landing.status, StatusCode::OK, "{}", landing.text);
+    assert!(
+        landing.text.contains(r#"href="/settings""#),
+        "{}",
+        landing.text
+    );
+    assert!(
+        !landing.text.contains(r#"href="/layers"#),
+        "the landing has no project to layer: {}",
+        landing.text
+    );
+    assert!(
+        !landing.text.contains("Radargram catalog"),
+        "{}",
+        landing.text
+    );
 }

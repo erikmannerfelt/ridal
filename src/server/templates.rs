@@ -56,6 +56,11 @@ pub fn environment() -> Environment<'static> {
     .expect("error template must parse");
     env.add_template("site.html.jinja", include_str!("templates/site.html.jinja"))
         .expect("site template must parse");
+    env.add_template(
+        "site_settings.html.jinja",
+        include_str!("templates/site_settings.html.jinja"),
+    )
+    .expect("site settings template must parse");
     env
 }
 
@@ -79,6 +84,7 @@ mod tests {
             "invite.html.jinja",
             "error.html.jinja",
             "site.html.jinja",
+            "site_settings.html.jinja",
         ] {
             assert!(env.get_template(name).is_ok(), "missing template {name}");
         }
@@ -110,6 +116,10 @@ mod tests {
             (
                 "settings.html.jinja",
                 include_str!("templates/settings.html.jinja"),
+            ),
+            (
+                "site_settings.html.jinja",
+                include_str!("templates/site_settings.html.jinja"),
             ),
             (
                 "login.html.jinja",

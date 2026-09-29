@@ -583,6 +583,10 @@ mod tests {
                 "site",
                 vec![app, ("site.js", include_str!("assets/site.js"))],
             ),
+            (
+                "site_settings",
+                vec![app, ("site.js", include_str!("assets/site.js"))],
+            ),
         ]
     }
 
@@ -694,6 +698,10 @@ mod tests {
                 include_str!("templates/error.html.jinja"),
             ),
             ("site.html.jinja", include_str!("templates/site.html.jinja")),
+            (
+                "site_settings.html.jinja",
+                include_str!("templates/site_settings.html.jinja"),
+            ),
         ] {
             for forbidden in [
                 "/api/v1/",

@@ -1,0 +1,46 @@
+{% extends "base.html.jinja" %}
+{% block title %}Settings - {{ site_name }}{% endblock %}
+{% block content %}
+  <h1>Settings</h1>
+
+  <dl class="card-meta settings-summary">
+    <dt>Site</dt><dd>{{ site_name }}</dd>
+    <dt>You</dt>
+    <dd>
+      {{ current_user }} <span class="hint">({{ current_role }})</span>
+    </dd>
+  </dl>
+
+  <div id="site-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+  {#- Personal settings that belong to the whole site rather than to one
+      project (#214). The theme is the first of them: choosing a dark screen
+      is about the reader, not the survey, so one choice follows them into
+      every project they can open. -#}
+  <section class="settings-section" id="my-site-settings-section">
+    <h2>My site settings</h2>
+    <p class="hint">
+      Yours alone, and the same on every project of this site. A project has
+      its own settings below this one on its own settings page.
+    </p>
+    <form id="my-site-settings-form" class="settings-form" novalidate>
+      <label class="settings-field">
+        <span class="settings-label">Theme</span>
+        <select id="site-theme">
+          <option value="" {% if not active_theme %}selected{% endif %}>Follow this device</option>
+          <option value="light" {% if active_theme == "light" %}selected{% endif %}>Light</option>
+          <option value="dark" {% if active_theme == "dark" %}selected{% endif %}>Dark</option>
+        </select>
+        <span class="hint">
+          &ldquo;Follow this device&rdquo; uses whatever your system asks
+          for, including when it changes during the day.
+        </span>
+      </label>
+      <button type="submit">Save site settings</button>
+      <span id="site-settings-status" class="pick-status"></span>
+    </form>
+  </section>
+{% endblock %}
+{% block extrascript %}
+  <script src="/static/site.js"></script>
+{% endblock %}
