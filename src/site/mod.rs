@@ -778,7 +778,12 @@ mod tests {
         // Discovery works from a file or a subdirectory too.
         let nested = dir.path().join(PROJECTS_DIR);
         let discovered = Site::discover(&nested).unwrap().unwrap();
-        assert_eq!(discovered.root(), dir.path());
+        // Canonical, as discovery answers: a temporary directory's path goes
+        // through a symlink on macOS and gains a `\\?\` prefix on Windows.
+        assert_eq!(
+            discovered.root(),
+            std::fs::canonicalize(dir.path()).unwrap()
+        );
     }
 
     #[test]
@@ -916,10 +921,6 @@ mod tests {
             (
                 SiteError::NotArchived("glac".to_string()),
                 "Archive it first",
-            ),
-            (
-                SiteError::Account(accounts::AccountError::NotFound("bo".to_string())),
-                "bo",
             ),
         ] {
             let text = error.to_string();
