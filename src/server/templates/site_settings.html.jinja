@@ -21,7 +21,7 @@
     <h2>My site settings</h2>
     <p class="hint">
       Yours alone, and the same on every project of this site. A project has
-      its own settings below this one on its own settings page.
+      its own settings on its own settings page.
     </p>
     <form id="my-site-settings-form" class="settings-form" novalidate>
       <label class="settings-field">
@@ -40,6 +40,155 @@
       <span id="site-settings-status" class="pick-status"></span>
     </form>
   </section>
+
+  {% if server_admin %}
+    {#- Accounts are server-wide (#214): they sign in once and are given a
+        role in each project. Creating one is an identity act, so it lives
+        here rather than on any project's settings page. -#}
+    <section class="settings-section" id="accounts-section">
+      <h2>Accounts</h2>
+      <p class="hint">
+        Everyone signs in with one of these, then sees the projects they are
+        a member of. An account that is not a server administrator still
+        needs a role in a project before it can open it.
+      </p>
+
+      <table id="accounts-table" class="layers-table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Server admin</th>
+            <th scope="col">Status</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      {#- The one moment an invite token exists: only its hash is stored,
+          so this is shown once and cannot be shown again. -#}
+      <div id="invite-result" class="warning" hidden>
+        <p>
+          <strong>Invite link for <span id="invite-who"></span>.</strong>
+          Send it however you already talk to that person. It works once
+          and expires in <span id="invite-days"></span> days, and it is as
+          sensitive as a password until then.
+        </p>
+        <p><code id="invite-link" class="path"></code></p>
+        <p class="hint">
+          This is the only time it is shown. If it is lost, issue another.
+        </p>
+      </div>
+
+      <form id="add-account" class="add-layer" novalidate>
+        <h3>Add an account</h3>
+        <p class="hint">
+          You create the account; they set their own password through a
+          one-time link, so no password is ever known to two people. The
+          project and role below are granted when the link is used, so an
+          account can arrive already belonging somewhere.
+        </p>
+        <div class="add-layer-fields">
+          <label>Name
+            <input type="text" name="name" required pattern="[a-z0-9_\-]+"
+                   placeholder="erik" autocomplete="off"
+                   autocapitalize="none" spellcheck="false">
+          </label>
+          <label>Project
+            <select name="project">
+              <option value="">No project</option>
+              {% for project in projects %}
+                <option value="{{ project.key }}">{{ project.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Role
+            <select name="role">
+              {% for role in roles %}
+                <option value="{{ role }}" {% if role == "picker" %}selected{% endif %}>{{ role }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Downloads
+            <select name="download">
+              {% for scope in download_scopes %}
+                <option value="{{ scope }}" {% if scope == "all" %}selected{% endif %}>{{ scope }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label class="checkbox bulk-random">
+            <input type="checkbox" name="server_admin">
+            Server administrator
+          </label>
+        </div>
+        <button type="submit">Create account and get a link</button>
+      </form>
+
+      {#- Bulk-specific warnings sit beside the control they are about,
+          rather than at the top of the page where they read as unrelated
+          to "Add several people". -#}
+      <div id="bulk-warning" class="warning" role="status" aria-live="polite" hidden></div>
+
+      <details class="bulk-users" id="bulk-users">
+        <summary>Add several people</summary>
+        <p class="hint">
+          Invite mode creates separate one-time links, so each person sets
+          their own password. Use password mode only for a small workshop:
+          the generated passwords must be printed or handed out by you.
+        </p>
+        <form id="bulk-account-form" class="add-layer" novalidate>
+          <div class="add-layer-fields">
+            <label class="checkbox bulk-random">
+              <input type="checkbox" id="bulk-random-names">
+              Use random usernames instead of the prefix
+            </label>
+            <label>Prefix
+              <input type="text" name="prefix" value="student" required
+                     pattern="[a-z0-9_\-]+" autocomplete="off"
+                     autocapitalize="none" spellcheck="false">
+            </label>
+            <label>Count
+              <input type="number" name="count" value="10" min="1" max="100" required>
+            </label>
+            <label>Project
+              <select name="project">
+                <option value="">No project</option>
+                {% for project in projects %}
+                  <option value="{{ project.key }}">{{ project.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Role
+              <select name="role">
+                {% for role in roles %}
+                  <option value="{{ role }}" {% if role == "picker" %}selected{% endif %}>{{ role }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Downloads
+              <select name="download">
+                {% for scope in download_scopes %}
+                  <option value="{{ scope }}" {% if scope == "all" %}selected{% endif %}>{{ scope }}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+          <div class="bulk-actions">
+            <button type="submit">Create invite links</button>
+            <button type="button" id="bulk-passwords" class="danger">
+              Create with generated passwords
+            </button>
+          </div>
+          <label class="settings-field checkbox bulk-risk">
+            <input type="checkbox" id="bulk-risk">
+            I understand that generated passwords are shared secrets and are
+            less safe than invite links.
+          </label>
+        </form>
+        <div id="bulk-result" class="bulk-result" hidden></div>
+      </details>
+    </section>
+  {% endif %}
 {% endblock %}
 {% block extrascript %}
   <script src="/static/site.js"></script>

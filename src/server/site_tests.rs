@@ -368,7 +368,7 @@ async fn a_server_admin_creates_an_account_and_its_invite() {
 }
 
 #[tokio::test]
-async fn a_server_admin_gets_the_project_and_account_controls_on_the_landing() {
+async fn a_server_admin_gets_the_project_controls_on_the_landing() {
     let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
@@ -379,9 +379,11 @@ async fn a_server_admin_gets_the_project_and_account_controls_on_the_landing() {
     let page = send(&app, get("/", Some(&cookie))).await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text);
     assert!(page.text.contains(r#"id="new-project""#), "{}", page.text);
+    // Creating accounts is an identity act and lives on the site settings
+    // page now, not on the landing.
     assert!(
-        page.text.contains(r#"id="accounts-section""#),
-        "{}",
+        !page.text.contains(r#"id="accounts-section""#),
+        "accounts moved to /settings: {}",
         page.text
     );
     // The project card carries its management controls, keyed by the
@@ -395,6 +397,31 @@ async fn a_server_admin_gets_the_project_and_account_controls_on_the_landing() {
         page.text.contains(r#"data-project-key="glac""#),
         "{}",
         page.text
+    );
+
+    let settings = send(&app, get("/settings", Some(&cookie))).await;
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.text);
+    assert!(
+        settings.text.contains(r#"id="accounts-section""#),
+        "{}",
+        settings.text
+    );
+    assert!(
+        settings.text.contains(r#"id="add-account""#),
+        "{}",
+        settings.text
+    );
+    assert!(
+        settings.text.contains(r#"id="bulk-account-form""#),
+        "{}",
+        settings.text
+    );
+    // The project/role assignment the create form offers: the project key is
+    // a select option, so the account can be created with a membership.
+    assert!(
+        settings.text.contains(r#"value="glac""#),
+        "{}",
+        settings.text
     );
 }
 
@@ -578,4 +605,211 @@ async fn the_site_menu_offers_site_links_not_project_ones() {
         "{}",
         landing.text
     );
+}
+
+#[tokio::test]
+async fn creating_an_account_with_a_project_grants_it_on_redemption() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let created = send(
+        &app,
+        post_json(
+            "/api/v1/accounts",
+            &json!({
+                "name": "bo",
+                "server_admin": false,
+                "project": "glac",
+                "role": "picker",
+                "download": "picks",
+            }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let token = created.body["invite_path"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let redeemed = send(
+        &app,
+        post_json(
+            "/api/v1/auth/invite",
+            &json!({ "token": token, "password": password() }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text);
+
+    let project = Site::open(_dir.path())
+        .unwrap()
+        .project(&key("glac"))
+        .unwrap();
+    let (members, _) = members::read(project.documents()).unwrap().unwrap();
+    assert_eq!(members.get(&id("bo")).unwrap().role, Role::Picker);
+}
+
+#[tokio::test]
+async fn bulk_invites_create_accounts_and_grant_the_project() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let created = send(
+        &app,
+        post_json(
+            "/api/v1/accounts/bulk/invites",
+            &json!({
+                "prefix": "student",
+                "count": 3,
+                "role": "picker",
+                "download": "picks",
+                "project": "glac",
+            }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let users = created.body["users"].as_array().unwrap();
+    assert_eq!(users.len(), 3);
+    assert_eq!(users[0]["name"], "student-01");
+
+    let token = users[0]["invite_path"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let redeemed = send(
+        &app,
+        post_json(
+            "/api/v1/auth/invite",
+            &json!({ "token": token, "password": password() }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text);
+
+    let project = Site::open(_dir.path())
+        .unwrap()
+        .project(&key("glac"))
+        .unwrap();
+    let (members, _) = members::read(project.documents()).unwrap().unwrap();
+    let member = members.get(&id("student-01")).expect("a membership");
+    assert_eq!(member.role, Role::Picker);
+    assert_eq!(member.download, DownloadScope::Picks);
+}
+
+#[tokio::test]
+async fn bulk_passwords_need_acknowledgement_and_refuse_admins() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+
+    let unacknowledged = send(
+        &app,
+        post_json(
+            "/api/v1/accounts/bulk/passwords",
+            &json!({ "prefix": "student", "count": 2, "role": "picker" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(unacknowledged.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        unacknowledged.body["error"]["code"],
+        "risk_acknowledgement_required"
+    );
+
+    let admin = send(
+        &app,
+        post_json(
+            "/api/v1/accounts/bulk/passwords",
+            &json!({
+                "prefix": "boss",
+                "count": 1,
+                "role": "admin",
+                "acknowledge_risk": true,
+            }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(admin.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        admin.body["error"]["code"],
+        "admin_bulk_passwords_forbidden"
+    );
+
+    let ok = send(
+        &app,
+        post_json(
+            "/api/v1/accounts/bulk/passwords",
+            &json!({
+                "prefix": "student",
+                "count": 2,
+                "role": "picker",
+                "project": "glac",
+                "acknowledge_risk": true,
+            }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(ok.status, StatusCode::OK, "{}", ok.text);
+    assert_eq!(ok.body["users"].as_array().unwrap().len(), 2);
+    assert!(
+        ok.body["advisory"].is_string(),
+        "the risk advisory is returned: {}",
+        ok.text
+    );
+
+    // There is no invite to redeem, so the membership is present at once.
+    let project = Site::open(_dir.path())
+        .unwrap()
+        .project(&key("glac"))
+        .unwrap();
+    let (members, _) = members::read(project.documents()).unwrap().unwrap();
+    assert_eq!(members.get(&id("student-01")).unwrap().role, Role::Picker);
+}
+
+#[tokio::test]
+async fn a_bulk_batch_requires_a_server_admin() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", false, &hash)],
+        &[],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let response = send(
+        &app,
+        post_json(
+            "/api/v1/accounts/bulk/invites",
+            &json!({ "prefix": "student", "count": 1, "role": "picker" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
 }

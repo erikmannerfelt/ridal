@@ -245,19 +245,27 @@ pub fn bulk_names_after(
 /// prefixes, so an administrator is never handed a smaller batch than asked
 /// for without being told.
 pub fn random_bulk_names(set: &UserSet, count: usize) -> Result<Vec<UserId>, UserError> {
+    random_bulk_names_from(set.users.iter().map(|user| &user.name), count)
+}
+
+/// [`random_bulk_names`] for any collection of taken names.
+///
+/// Split out so a site can draw from its account names, which are not a
+/// `UserSet` (#214). [`next_bulk_start_from`] is split the same way.
+pub fn random_bulk_names_from<'a>(
+    used: impl Iterator<Item = &'a UserId>,
+    count: usize,
+) -> Result<Vec<UserId>, UserError> {
     if count == 0 || count > MAX_BULK_ACCOUNTS {
         return Err(UserError::Rejected(format!(
             "A bulk operation must contain between 1 and {MAX_BULK_ACCOUNTS} accounts."
         )));
     }
+    let used: std::collections::HashSet<&str> = used.map(UserId::as_str).collect();
     let mut available: Vec<&str> = RANDOM_USERNAMES
         .iter()
         .copied()
-        .filter(|name| {
-            UserId::new(*name)
-                .map(|id| set.get(&id).is_none())
-                .unwrap_or(false)
-        })
+        .filter(|name| !used.contains(name))
         .collect();
     if count > available.len() {
         return Err(UserError::Rejected(format!(
@@ -537,16 +545,18 @@ impl UserSet {
 
 /// Return the first suffix not below an existing batch for `prefix`.
 pub fn next_bulk_start(set: &UserSet, prefix: &str) -> usize {
-    set.users
-        .iter()
-        .filter_map(|user| {
-            user.name
-                .as_str()
-                .strip_prefix(&format!("{prefix}-"))
-                .and_then(|suffix| suffix.parse::<usize>().ok())
-        })
-        .max()
-        .unwrap_or(0)
+    next_bulk_start_from(set.users.iter().map(|user| &user.name), prefix)
+}
+
+/// [`next_bulk_start`] for any collection of taken names (#214).
+pub fn next_bulk_start_from<'a>(used: impl Iterator<Item = &'a UserId>, prefix: &str) -> usize {
+    used.filter_map(|name| {
+        name.as_str()
+            .strip_prefix(&format!("{prefix}-"))
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+    })
+    .max()
+    .unwrap_or(0)
         + 1
 }
 

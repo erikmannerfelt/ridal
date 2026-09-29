@@ -87,65 +87,6 @@
         <span id="new-project-status" class="pick-status"></span>
       </form>
     </section>
-
-    {#- Accounts are server-wide (#214): they sign in once and are given a
-        role in each project. The project's own settings page is where a
-        membership is granted; this is where the account itself lives. -#}
-    <section class="settings-section" id="accounts-section">
-      <h2>Accounts</h2>
-      <p class="hint">
-        Everyone signs in with one of these, then sees the projects they are
-        a member of. An account that is not a server administrator still
-        needs a role in a project before it can open it.
-      </p>
-
-      <table id="accounts-table" class="layers-table">
-        <thead>
-          <tr>
-            <th scope="col">Name</th>
-            <th scope="col">Server admin</th>
-            <th scope="col">Status</th>
-            <th scope="col"><span class="visually-hidden">Actions</span></th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-
-      {#- The one moment an invite token exists: only its hash is stored,
-          so this is shown once and cannot be shown again. -#}
-      <div id="invite-result" class="warning" hidden>
-        <p>
-          <strong>Invite link for <span id="invite-who"></span>.</strong>
-          Send it however you already talk to that person. It works once
-          and expires in <span id="invite-days"></span> days, and it is as
-          sensitive as a password until then.
-        </p>
-        <p><code id="invite-link" class="path"></code></p>
-        <p class="hint">
-          This is the only time it is shown. If it is lost, issue another.
-        </p>
-      </div>
-
-      <form id="add-account" class="add-layer" novalidate>
-        <h3>Add an account</h3>
-        <p class="hint">
-          You create the account; they set their own password through a
-          one-time link, so no password is ever known to two people.
-        </p>
-        <div class="add-layer-fields">
-          <label>Name
-            <input type="text" name="name" required pattern="[a-z0-9_\-]+"
-                   placeholder="erik" autocomplete="off"
-                   autocapitalize="none" spellcheck="false">
-          </label>
-          <label class="checkbox bulk-random">
-            <input type="checkbox" name="server_admin">
-            Server administrator
-          </label>
-        </div>
-        <button type="submit">Create account and get a link</button>
-      </form>
-    </section>
   {% endif %}
 {% endblock %}
 {% block extrascript %}

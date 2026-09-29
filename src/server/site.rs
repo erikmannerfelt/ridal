@@ -154,6 +154,26 @@ fn site_error(error: SiteError) -> ApiError {
     }
 }
 
+/// Resolve an optional project key from a request body, refusing one that
+/// does not exist. Shared by account creation and the bulk routes, so a typo
+/// is reported the same way everywhere.
+fn resolve_optional_project(
+    site: &SiteState,
+    raw: Option<&str>,
+) -> Result<Option<ProjectKey>, ApiError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let key = ProjectKey::new(raw).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    if !site.site.project_path(&key).is_dir() {
+        return Err(ApiError::not_found(
+            "project_not_found",
+            format!("No project '{key}' in this site."),
+        ));
+    }
+    Ok(Some(key))
+}
+
 fn account_error(error: AccountError) -> ApiError {
     match &error {
         AccountError::Store(e) => ApiError::internal("store_failed", e.to_string()),
@@ -310,6 +330,16 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         .route(
             "/api/v1/accounts/{name}/invite",
             post(reissue_account_invite),
+        )
+        // Bulk creation mirrors the project endpoints that preceded it
+        // (#214): a batch of one-time invite links, or accounts with
+        // generated passwords for a workshop. Registered before the `{name}`
+        // routes would not matter -- matchit prefers a literal segment -- but
+        // the two-segment paths cannot collide with a single name anyway.
+        .route("/api/v1/accounts/bulk/invites", post(create_bulk_invites))
+        .route(
+            "/api/v1/accounts/bulk/passwords",
+            post(create_bulk_passwords),
         )
         .route("/api/v1/auth/me", get(me))
         .route("/api/v1/auth/login", post(login))
@@ -1390,20 +1420,7 @@ async fn create_account(
         .transpose()
         .map_err(|e| ApiError::bad_request("invalid_download_scope", e))?
         .unwrap_or_default();
-    let project = match body.project.as_deref() {
-        Some(raw) => {
-            let key = ProjectKey::new(raw)
-                .map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
-            if !site.site.project_path(&key).is_dir() {
-                return Err(ApiError::not_found(
-                    "project_not_found",
-                    format!("No project '{key}' in this site."),
-                ));
-            }
-            Some(key)
-        }
-        None => None,
-    };
+    let project = resolve_optional_project(&site, body.project.as_deref())?;
 
     let (token, invite) = match &project {
         Some(key) => invite::mint_for_project(auth::now(), key.clone(), role, download),
@@ -1535,6 +1552,219 @@ async fn reissue_account_invite(
         "invite_path": format!("/invite/{token}"),
         "invite_expires": expires,
         "invite_ttl_days": invite::INVITE_TTL_DAYS,
+    })))
+}
+
+/// A bulk creation request, shared in shape by the invite and password
+/// routes so the two read the same way.
+#[derive(serde::Deserialize)]
+pub struct BulkAccountsBody {
+    /// Ignored when `random_names` is set, and optional so a request can ask
+    /// for random accounts without sending an unused prefix.
+    #[serde(default)]
+    prefix: String,
+    count: usize,
+    #[serde(default)]
+    random_names: bool,
+    role: String,
+    #[serde(default)]
+    download: Option<String>,
+    /// When set, each invite grants this membership on redemption; a batch
+    /// of generated passwords is added to the project directly, since there
+    /// is no redemption step.
+    #[serde(default)]
+    project: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct BulkPasswordsBody {
+    #[serde(default)]
+    prefix: String,
+    count: usize,
+    #[serde(default)]
+    random_names: bool,
+    role: String,
+    #[serde(default)]
+    download: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    acknowledge_risk: bool,
+}
+
+fn parse_bulk_role_download(
+    role: &str,
+    download: Option<&str>,
+) -> Result<(Role, DownloadScope), ApiError> {
+    let role = Role::parse(role).map_err(|e| ApiError::bad_request("invalid_role", e))?;
+    let download = download
+        .map(DownloadScope::parse)
+        .transpose()
+        .map_err(|e| ApiError::bad_request("invalid_download_scope", e))?
+        .unwrap_or_default();
+    Ok((role, download))
+}
+
+fn bulk_error(error: users::UserError) -> ApiError {
+    ApiError::bad_request("invalid_bulk_accounts", error.to_string())
+}
+
+/// The names a batch will create, drawn from the site's existing accounts.
+fn bulk_account_names(
+    set: &AccountSet,
+    prefix: &str,
+    count: usize,
+    random_names: bool,
+) -> Result<Vec<UserId>, ApiError> {
+    if random_names {
+        users::random_bulk_names_from(set.users.iter().map(|account| &account.name), count)
+            .map_err(bulk_error)
+    } else {
+        let start =
+            users::next_bulk_start_from(set.users.iter().map(|account| &account.name), prefix);
+        users::bulk_names_after(prefix, count, start).map_err(bulk_error)
+    }
+}
+
+/// `POST /api/v1/accounts/bulk/invites` -- a batch of one-time invite links.
+async fn create_bulk_invites(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Json(body): Json<BulkAccountsBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_server_admin("create accounts")?;
+    let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
+    let project = resolve_optional_project(&site, body.project.as_deref())?;
+    let set = accounts::read(site.site.store())
+        .map_err(account_error)?
+        .map(|(set, _)| set)
+        .unwrap_or_default();
+    let names = bulk_account_names(&set, &body.prefix, body.count, body.random_names)?;
+
+    let minted: Vec<(UserId, String, invite::Invite)> = names
+        .iter()
+        .map(|name| {
+            let (token, invite) = match &project {
+                Some(key) => invite::mint_for_project(auth::now(), key.clone(), role, download),
+                None => invite::mint(auth::now(), None, None, None),
+            }
+            .map_err(|e| ApiError::internal("invite_failed", e))?;
+            Ok((name.clone(), token, invite))
+        })
+        .collect::<Result<_, ApiError>>()?;
+
+    accounts::update(site.site.store(), |set| {
+        if let Some((name, _, _)) = minted.iter().find(|(name, _, _)| set.get(name).is_some()) {
+            return Err(AccountError::Duplicate(name.to_string()));
+        }
+        for (name, _, invite) in &minted {
+            let mut account = Account::new(name.clone(), false);
+            account.invite = Some(invite.clone());
+            set.users.push(account);
+        }
+        Ok(())
+    })
+    .map_err(account_error)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "users": minted.iter().map(|(name, token, invite)| serde_json::json!({
+                "name": name.as_str(),
+                "invite_path": format!("/invite/{token}"),
+                "invite_expires": invite.expires,
+            })).collect::<Vec<_>>(),
+            "invite_ttl_days": invite::INVITE_TTL_DAYS,
+        })),
+    ))
+}
+
+/// `POST /api/v1/accounts/bulk/passwords` -- accounts with generated
+/// passwords, for a workshop where handing out links is impractical.
+async fn create_bulk_passwords(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Json(body): Json<BulkPasswordsBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_server_admin("create accounts")?;
+    if !body.acknowledge_risk {
+        return Err(ApiError::bad_request(
+            "risk_acknowledgement_required",
+            "Bulk passwords are less safe than invite links. Set acknowledge_risk \
+             to true only if you understand the risk.",
+        ));
+    }
+    let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
+    let advisory = users::bulk_risk_advisory(role).ok_or_else(|| {
+        ApiError::bad_request(
+            "admin_bulk_passwords_forbidden",
+            "Administrator accounts must be created with one-time invite links, \
+             not shared passwords.",
+        )
+    })?;
+    let project = resolve_optional_project(&site, body.project.as_deref())?;
+    let set = accounts::read(site.site.store())
+        .map_err(account_error)?
+        .map(|(set, _)| set)
+        .unwrap_or_default();
+    let names = bulk_account_names(&set, &body.prefix, body.count, body.random_names)?;
+
+    let generated: Vec<(UserId, String)> = names
+        .iter()
+        .map(|name| users::generate_password().map(|password| (name.clone(), password)))
+        .collect::<Result<_, _>>()
+        .map_err(bulk_error)?;
+    let to_hash = generated.clone();
+    let hashed = tokio::task::spawn_blocking(move || {
+        to_hash
+            .into_iter()
+            .map(|(name, password)| accounts::hash_password(&password).map(|hash| (name, hash)))
+            .collect::<Result<Vec<_>, AccountError>>()
+    })
+    .await
+    .map_err(|e| ApiError::internal("password_hash_task_failed", e.to_string()))?
+    .map_err(account_error)?;
+
+    accounts::update(site.site.store(), |set| {
+        if let Some((name, _)) = hashed.iter().find(|(name, _)| set.get(name).is_some()) {
+            return Err(AccountError::Duplicate(name.to_string()));
+        }
+        for ((name, _password), (_, hash)) in generated.iter().zip(&hashed) {
+            let mut account = Account::new(name.clone(), false);
+            account.password_hash = Some(hash.clone());
+            set.users.push(account);
+        }
+        Ok(())
+    })
+    .map_err(account_error)?;
+
+    // There is no invite to redeem, so a named project's membership is added
+    // now rather than on redemption.
+    if let Some(key) = &project {
+        let project = site.site.project(key).map_err(site_error)?;
+        members::update(project.documents(), |set| {
+            for name in &names {
+                match set.get_mut(name) {
+                    Some(member) => {
+                        member.role = role;
+                        member.download = download;
+                    }
+                    None => set
+                        .members
+                        .push(members::Member::new(name.clone(), role, download)),
+                }
+            }
+            Ok(())
+        })
+        .map_err(member_error)?;
+    }
+
+    Ok(Json(serde_json::json!({
+        "users": generated.iter().map(|(name, password)| serde_json::json!({
+            "name": name.as_str(),
+            "password": password,
+        })).collect::<Vec<_>>(),
+        "advisory": advisory,
     })))
 }
 

@@ -313,20 +313,201 @@
   }
 
   if (addAccountForm) {
+    const projectSelect = addAccountForm.elements.project;
+    const memberControls = [
+      addAccountForm.elements.role,
+      addAccountForm.elements.download,
+    ];
+    /* A role and download scope only mean something inside a project, so
+     * they are greyed out until one is chosen rather than looking like they
+     * still apply to an account with no membership. */
+    const syncProject = () => {
+      const hasProject = Boolean(projectSelect.value);
+      for (const control of memberControls) control.disabled = !hasProject;
+    };
+    projectSelect.addEventListener("change", syncProject);
+    syncProject();
+
     addAccountForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearError();
       const name = addAccountForm.elements.name.value.trim();
+      const project = projectSelect.value || null;
       try {
         const result = await send("POST", RIDAL.siteApiPath("accounts"), {
           name,
           server_admin: addAccountForm.elements.server_admin.checked,
+          project,
+          role: project ? addAccountForm.elements.role.value : null,
+          download: project ? addAccountForm.elements.download.value : null,
         });
         addAccountForm.reset();
+        syncProject();
         showInvite(name, result);
         await loadAccounts();
       } catch (error) {
         showError(error.message);
+      }
+    });
+  }
+
+  /* ---- Bulk account creation ---------------------------------------- *
+   *
+   * The same shape the project accounts page had before the site took over
+   * (#214): invite links are the safe default, generated passwords are
+   * offered for a workshop with the risk stated plainly. Both may name a
+   * project, granted on redemption for an invite and directly for a
+   * password.
+   */
+
+  function downloadCsv(filename, rows) {
+    const csv = rows
+      .map((row) =>
+        row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
+      )
+      .join("\n");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  function renderBulkResult(result, mode) {
+    const box = byId("bulk-result");
+    box.replaceChildren();
+    const heading = document.createElement("h3");
+    heading.textContent =
+      mode === "passwords" ? "Generated passwords" : "Invite links";
+    box.appendChild(heading);
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent =
+      mode === "passwords"
+        ? `${result.advisory} These passwords are shown once and are not stored.`
+        : "Each link works once. Send each person only their own link.";
+    box.appendChild(note);
+
+    const table = document.createElement("table");
+    table.className = "layers-table bulk-table";
+    const header = document.createElement("tr");
+    for (const label of mode === "passwords"
+      ? ["Name", "Password"]
+      : ["Name", "Invite link"]) {
+      const cell = document.createElement("th");
+      cell.textContent = label;
+      header.appendChild(cell);
+    }
+    table.appendChild(header);
+    const rows = [["name", mode === "passwords" ? "password" : "invite link"]];
+    for (const user of result.users || []) {
+      const row = document.createElement("tr");
+      const name = document.createElement("td");
+      name.textContent = user.name;
+      const value = document.createElement("td");
+      const text =
+        mode === "passwords"
+          ? user.password
+          : window.location.origin + user.invite_path;
+      value.textContent = text;
+      row.append(name, value);
+      table.appendChild(row);
+      rows.push([user.name, text]);
+    }
+    box.appendChild(table);
+    const actions = document.createElement("div");
+    actions.className = "bulk-actions";
+    const print = document.createElement("button");
+    print.type = "button";
+    print.textContent = "Print";
+    print.addEventListener("click", () => window.print());
+    const csv = document.createElement("button");
+    csv.type = "button";
+    csv.textContent = "Download CSV";
+    csv.addEventListener("click", () => downloadCsv(`ridal-${mode}.csv`, rows));
+    actions.append(print, csv);
+    box.appendChild(actions);
+    box.hidden = false;
+  }
+
+  const bulkForm = byId("bulk-account-form");
+  if (bulkForm) {
+    const bulkWarning = byId("bulk-warning");
+    const showBulkWarning = (message) => {
+      bulkWarning.textContent = message;
+      bulkWarning.hidden = false;
+    };
+    const clearBulkWarning = () => {
+      bulkWarning.hidden = true;
+      bulkWarning.textContent = "";
+    };
+
+    const randomNames = byId("bulk-random-names");
+    const prefixInput = bulkForm.elements.prefix;
+    /* Random names make the prefix irrelevant, so the field greys out
+     * rather than looking like it still contributes to the batch. */
+    const syncPrefixState = () => {
+      prefixInput.disabled = randomNames.checked;
+    };
+    randomNames.addEventListener("change", () => {
+      syncPrefixState();
+      clearBulkWarning();
+    });
+    syncPrefixState();
+
+    const bulkBody = () => ({
+      prefix: randomNames.checked ? "" : prefixInput.value.trim(),
+      count: Number(bulkForm.elements.count.value),
+      random_names: randomNames.checked,
+      role: bulkForm.elements.role.value,
+      download: bulkForm.elements.download.value,
+      project: bulkForm.elements.project.value || null,
+    });
+
+    bulkForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearBulkWarning();
+      try {
+        const result = await send(
+          "POST",
+          RIDAL.siteApiPath("accounts", "bulk", "invites"),
+          bulkBody(),
+        );
+        renderBulkResult(result, "invites");
+        await loadAccounts();
+      } catch (error) {
+        showBulkWarning(error.message);
+      }
+    });
+
+    /* Acknowledging the risk is the fix the warning asks for, so ticking
+     * the box takes the warning away rather than leaving it to be
+     * dismissed some other way. */
+    byId("bulk-risk").addEventListener("change", clearBulkWarning);
+
+    byId("bulk-passwords").addEventListener("click", async () => {
+      if (bulkForm.elements.role.value === "admin") {
+        showBulkWarning("Administrator accounts must use one-time invite links.");
+        return;
+      }
+      if (!byId("bulk-risk").checked) {
+        showBulkWarning(
+          "Generated passwords are shared secrets and less safe than invite " +
+            "links. Check the acknowledgement above, then press the button again.",
+        );
+        return;
+      }
+      clearBulkWarning();
+      try {
+        const result = await send(
+          "POST",
+          RIDAL.siteApiPath("accounts", "bulk", "passwords"),
+          { ...bulkBody(), acknowledge_risk: true },
+        );
+        renderBulkResult(result, "passwords");
+        await loadAccounts();
+      } catch (error) {
+        showBulkWarning(error.message);
       }
     });
   }
