@@ -1348,7 +1348,10 @@ async fn add_member(
     if accounts.get(&name).is_none() {
         return Err(ApiError::not_found(
             "account_not_found",
-            format!("No site account named '{name}'. Create it first."),
+            format!(
+                "No site account named '{name}'. Press 'Invite new member' to \
+                 create the account, or check the spelling."
+            ),
         ));
     }
 
@@ -1419,7 +1422,9 @@ async fn invite_member(
     if set.get(&name).is_some() {
         return Err(ApiError::conflict(
             "account_exists",
-            format!("'{name}' already has an account. Add them as a member instead."),
+            format!(
+                "'{name}' already has an account. Press 'Add member' to give them a role here."
+            ),
         ));
     }
 

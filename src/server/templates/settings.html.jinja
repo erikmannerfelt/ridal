@@ -492,6 +492,10 @@
           </div>
         </form>
 
+        {#- Refusals land here, beside the control that caused them: the page
+            is long and the box at the top is not where anyone is looking. -#}
+        <div id="member-error" class="warning" role="status" aria-live="polite" hidden></div>
+
         {#- The one moment a new member's invite token exists: only its hash
             is stored, so it is shown once and cannot be shown again. -#}
         <div id="invite-result" class="warning" hidden>

@@ -957,6 +957,44 @@ async fn a_project_admin_creates_an_account_for_their_project() {
     )
     .await;
     assert_eq!(again.status, StatusCode::CONFLICT);
+    assert!(
+        again.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Add member"),
+        "the refusal points at the other action: {}",
+        again.text
+    );
+}
+
+#[tokio::test]
+async fn adding_an_unknown_member_refuses_with_a_pointer_to_invite() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let response = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members",
+            &json!({ "name": "admin", "role": "admin", "download": "all" }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::NOT_FOUND, "{}", response.text);
+    assert_eq!(response.body["error"]["code"], "account_not_found");
+    assert!(
+        response.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Invite new member"),
+        "the refusal points at the action that creates the account: {}",
+        response.text
+    );
 }
 
 #[tokio::test]

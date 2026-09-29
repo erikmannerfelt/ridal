@@ -225,6 +225,23 @@
 
   const accountsTable = byId("accounts-table");
   const addAccountForm = byId("add-account");
+  const accountError = byId("account-error");
+
+  /* Account failures are shown beside the accounts section, not in the
+   * top-of-page box a reader on this section would never look at. */
+  const showAccountError = (message) => {
+    if (!accountError) return;
+    RIDAL.setMessage(accountError, message);
+    accountError.hidden = false;
+  };
+  const clearAccountError = () => {
+    if (!accountError) return;
+    accountError.hidden = true;
+    accountError.textContent = "";
+  };
+  if (addAccountForm) {
+    addAccountForm.elements.name.addEventListener("input", clearAccountError);
+  }
 
   function showInvite(name, result) {
     byId("invite-who").textContent = name;
@@ -316,6 +333,7 @@
 
   async function reissue(name) {
     clearError();
+    clearAccountError();
     try {
       const result = await send(
         "POST",
@@ -325,7 +343,7 @@
       showInvite(name, result);
       await loadAccounts();
     } catch (error) {
-      showError(error.message);
+      showAccountError(error.message);
     }
   }
 
@@ -337,11 +355,12 @@
     );
     if (!confirmed) return;
     clearError();
+    clearAccountError();
     try {
       await send("DELETE", RIDAL.siteApiPath("accounts", name), {});
       await loadAccounts();
     } catch (error) {
-      showError(error.message);
+      showAccountError(error.message);
     }
   }
 
@@ -364,6 +383,7 @@
     addAccountForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearError();
+      clearAccountError();
       const name = addAccountForm.elements.name.value.trim();
       const project = projectSelect.value || null;
       try {
@@ -378,7 +398,7 @@
         showInvite(name, result);
         await loadAccounts();
       } catch (error) {
-        showError(error.message);
+        showAccountError(error.message);
       }
     });
   }

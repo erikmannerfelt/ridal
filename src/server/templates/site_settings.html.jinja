@@ -136,6 +136,9 @@
         <button type="submit">Create account and get a link</button>
       </form>
 
+      {#- Refusals land here, beside the form that caused them. -#}
+      <div id="account-error" class="warning" role="status" aria-live="polite" hidden></div>
+
       {#- Bulk-specific warnings sit beside the control they are about,
           rather than at the top of the page where they read as unrelated
           to "Add several people". -#}

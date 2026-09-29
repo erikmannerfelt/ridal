@@ -835,9 +835,27 @@
   const membersForm = byId("add-member");
   const bulkForm = byId("bulk-member-form");
   const accessForm = byId("access-form");
+  const memberError = byId("member-error");
   let members = [];
   let roles = [];
   let downloadScopes = [];
+
+  /* Members failures are shown beside the Members section. The page is long,
+   * and `#settings-error` sits at the top where nobody looking at the table
+   * or the form would see it (#214 feedback). */
+  const showMemberError = (message) => {
+    if (!memberError) return;
+    RIDAL.setMessage(memberError, message);
+    memberError.hidden = false;
+  };
+  const clearMemberError = () => {
+    if (!memberError) return;
+    memberError.hidden = true;
+    memberError.textContent = "";
+  };
+  if (membersForm) {
+    membersForm.elements.name.addEventListener("input", clearMemberError);
+  }
 
   /* Read the membership list (a site) or the access policy alone (a lone
    * project). One fetch either way: both endpoints carry the policy and the
@@ -936,6 +954,7 @@
 
   async function updateMember(name, change, select, previous, status) {
     clearError();
+    clearMemberError();
     if (status) status.textContent = "Saving…";
     try {
       await send("PUT", RIDAL.apiPath("members", name), change);
@@ -946,7 +965,7 @@
       if (status) status.textContent = "Saved";
       await loadMembers();
     } catch (error) {
-      showError(error.message);
+      showMemberError(error.message);
       if (status) status.textContent = "";
       // Put the control back to what the server still believes, so the page
       // never shows a role that was refused.
@@ -964,11 +983,12 @@
     );
     if (!confirmed) return;
     clearError();
+    clearMemberError();
     try {
       await send("DELETE", RIDAL.apiPath("members", name), {});
       await loadMembers();
     } catch (error) {
-      showError(error.message);
+      showMemberError(error.message);
     }
   }
 
@@ -995,12 +1015,13 @@
     membersForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearError();
+      clearMemberError();
       try {
         await send("POST", RIDAL.apiPath("members"), memberBody());
         membersForm.reset();
         await loadMembers();
       } catch (error) {
-        showError(error.message);
+        showMemberError(error.message);
       }
     });
 
@@ -1010,6 +1031,7 @@
     if (inviteButton) {
       inviteButton.addEventListener("click", async () => {
         clearError();
+        clearMemberError();
         const name = membersForm.elements.name.value.trim();
         try {
           const result = await send(
@@ -1021,7 +1043,7 @@
           showMemberInvite(name, result);
           await loadMembers();
         } catch (error) {
-          showError(error.message);
+          showMemberError(error.message);
         }
       });
     }
