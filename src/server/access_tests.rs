@@ -364,7 +364,7 @@ async fn sign_in(app: &Router, name: &str) -> String {
 
 /// The caller's role in the project, as its settings report it.
 async fn role_of(app: &Router, session: Option<&str>) -> Value {
-    get(app, "/api/v1/project/settings", session).await.body["role"].clone()
+    get(app, "/api/v1/settings", session).await.body["role"].clone()
 }
 
 fn document(key: &str) -> Value {
@@ -793,7 +793,7 @@ async fn a_password_hash_never_leaves_the_process() {
         "/api/v1/site/memberships",
         "/api/v1/auth/me",
         "/api/v1/members",
-        "/api/v1/project/settings",
+        "/api/v1/settings",
     ] {
         let response = get(&app, uri, Some(&admin)).await;
         assert!(
@@ -959,7 +959,7 @@ async fn a_viewer_reads_a_picker_writes_and_an_operator_curates() {
     // The project defaults: operator, not picker.
     let refused = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_profile": "abslog"}),
         Some(&picker),
     )
@@ -967,7 +967,7 @@ async fn a_viewer_reads_a_picker_writes_and_an_operator_curates() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     let allowed = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_profile": "abslog"}),
         Some(&operator),
     )
@@ -1562,7 +1562,7 @@ async fn preferences_sit_between_the_request_and_the_project_default() {
     // The project default reaches everyone who has not chosen.
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_profile": "abslog"}),
         Some(&erik),
     )
@@ -1625,7 +1625,7 @@ async fn wanting_the_neutral_value_is_a_choice_rather_than_an_absence() {
 
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_xscale": 2.0}),
         Some(&erik),
     )
@@ -1883,7 +1883,7 @@ async fn the_download_defaults_cascade_from_the_project_to_the_person() {
 
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_spacing": "25", "default_format": "csv"}),
         Some(&erik),
     )
@@ -1951,7 +1951,7 @@ async fn the_basemap_resolves_through_the_same_cascade() {
     ]);
     let saved = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"basemaps": two, "default_basemap": "topo"}),
         Some(&erik),
     )
@@ -1993,7 +1993,7 @@ async fn the_basemap_resolves_through_the_same_cascade() {
     // rather than leaving that person's maps blank.
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"basemaps": [], "default_basemap": null}),
         Some(&erik),
     )
@@ -2059,7 +2059,7 @@ async fn an_admin_setting_the_project_default_does_not_overwrite_anyone() {
     .await;
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_profile": "abslog"}),
         Some(&erik),
     )
@@ -2203,7 +2203,7 @@ async fn ridal_gui_serves_its_project_to_the_local_person_with_no_login() {
     assert!(!catalog.text.contains(">Sign in<"), "{}", catalog.text);
     assert!(!catalog.text.contains(">Projects<"), "{}", catalog.text);
 
-    let settings = get(&app, "/api/v1/projects/default/project/settings", None).await;
+    let settings = get(&app, "/api/v1/projects/default/settings", None).await;
     assert_eq!(settings.body["user"], "default");
     assert_eq!(settings.body["role"], "operator");
     assert_eq!(settings.body["authentication_configured"], false);
@@ -2256,7 +2256,7 @@ async fn ridal_gui_ignores_memberships_and_leaves_them_alone() {
     .unwrap();
 
     let app = gui_router(dir.path(), AccessOptions::default());
-    let settings = get(&app, "/api/v1/projects/default/project/settings", None).await;
+    let settings = get(&app, "/api/v1/projects/default/settings", None).await;
     assert_eq!(settings.status, StatusCode::OK, "{}", settings.text);
     assert_eq!(settings.body["role"], "operator");
     let saved = put(
@@ -3426,7 +3426,7 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     ]);
 
     let op = sign_in(&app, "op").await;
-    let settings = get(&app, "/api/v1/project/settings", Some(&op)).await;
+    let settings = get(&app, "/api/v1/settings", Some(&op)).await;
     assert_eq!(settings.status, StatusCode::OK);
     assert_eq!(settings.body["can_edit_project"], true);
     assert_eq!(settings.body["can_edit_access"], false);
@@ -3449,7 +3449,7 @@ async fn only_an_admin_may_change_the_project_size_limit() {
 
     let refused = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"max_bytes": 1024u64}),
         Some(&op),
     )
@@ -3468,7 +3468,7 @@ async fn only_an_admin_may_change_the_project_size_limit() {
 
     let saved = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"max_bytes": 2048u64}),
         Some(&admin),
     )
@@ -3479,7 +3479,7 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     // `null` clears it, restoring the built-in default.
     let cleared = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"max_bytes": null}),
         Some(&admin),
     )

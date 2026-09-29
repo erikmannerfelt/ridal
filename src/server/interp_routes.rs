@@ -994,7 +994,7 @@ pub async fn interpretation_level2(
     Ok((headers, body))
 }
 
-/// `GET /api/v1/project/settings`
+/// `GET /api/v1/settings`
 ///
 /// Answers for a non-project catalog too, with `project: false` and no
 /// values, so the page can explain itself rather than 404.
@@ -1156,7 +1156,7 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-/// `PUT /api/v1/project/settings`
+/// `PUT /api/v1/settings`
 pub async fn put_settings(
     State(state): State<Arc<AppState>>,
     caller: Caller,

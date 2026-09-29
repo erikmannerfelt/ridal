@@ -333,7 +333,7 @@ fn resolve_optional_project(
     let Some(raw) = raw else {
         return Ok(None);
     };
-    let key = ProjectKey::new(raw).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(raw)?;
     if !site.site()?.project_path(&key).is_dir() {
         return Err(ApiError::not_found(
             "project_not_found",
@@ -342,6 +342,24 @@ fn resolve_optional_project(
     }
     site.require_project_writable(&key, "invite people into it")?;
     Ok(Some(key))
+}
+
+/// A project key from a path, refused in the usual envelope.
+fn parse_key(raw: &str) -> Result<ProjectKey, ApiError> {
+    ProjectKey::new(raw).map_err(|e| ApiError::bad_request("invalid_project_key", e))
+}
+
+/// An account name from a path or a body, refused in the usual envelope.
+fn parse_name(raw: &str, code: &'static str) -> Result<UserId, ApiError> {
+    UserId::new(raw).map_err(|e| ApiError::bad_request(code, e))
+}
+
+/// The site's accounts, or none at all when it has no account file yet.
+fn account_set(site: &SiteState) -> Result<AccountSet, ApiError> {
+    Ok(accounts::read(site.site()?.store())
+        .map_err(account_error)?
+        .map(|(set, _)| set)
+        .unwrap_or_default())
 }
 
 fn account_error(error: AccountError) -> ApiError {
@@ -586,10 +604,7 @@ fn local_page(path: &str) -> String {
 /// Rewrite a site path to the project-relative path its router expects.
 ///
 /// `/p/{key}/view/x` becomes `/view/x`; `/api/v1/projects/{key}/datasets`
-/// becomes `/api/v1/datasets`. The one irregular mapping is the project
-/// settings document: the site spells it `/api/v1/projects/{key}/settings`
-/// and the project router spells it `/api/v1/project/settings`, so the
-/// singular segment is put back here rather than renamed in the router.
+/// becomes `/api/v1/datasets`.
 fn split_project_path(path: &str) -> Option<(ProjectKey, String)> {
     let api = path.starts_with("/api/v1/projects/");
     let rest = if api {
@@ -603,13 +618,7 @@ fn split_project_path(path: &str) -> Option<(ProjectKey, String)> {
     };
     let key = ProjectKey::new(key).ok()?;
     let rewritten = if api {
-        if tail.is_empty() {
-            "/api/v1".to_string()
-        } else if tail == "/settings" {
-            "/api/v1/project/settings".to_string()
-        } else {
-            format!("/api/v1{tail}")
-        }
+        format!("/api/v1{tail}")
     } else if tail.is_empty() {
         "/".to_string()
     } else {
@@ -1236,7 +1245,7 @@ async fn project_audit_log(
     caller: SiteCaller,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     require_project_admin(&site, &key, &caller, "read the history")?;
     let log = site_audit::read(site.site()?.store())
         .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
@@ -1354,8 +1363,7 @@ async fn create_project(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "create a project")?;
     site.require_writable("create a project")?;
-    let key =
-        ProjectKey::new(&body.key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&body.key)?;
     let project = site
         .site()?
         .create_project(&key, body.name.as_deref(), caller.user.as_ref())
@@ -1383,7 +1391,7 @@ async fn project_info(
     caller: SiteCaller,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     project_entry(&site, &key, &caller, Lookup::ByKey)
         .map(Json)
         .ok_or_else(hidden_project)
@@ -1404,7 +1412,7 @@ async fn update_project(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "rename a project")?;
     site.require_writable("rename a project")?;
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     site.site()?
         .project(&key)
         .map_err(site_error)?
@@ -1430,7 +1438,7 @@ async fn archive_project(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "archive a project")?;
     site.require_writable("archive a project")?;
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     site.site()?.archive(&key).map_err(site_error)?;
     site.evict(&key);
     audit(
@@ -1454,7 +1462,7 @@ async fn unarchive_project(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "unarchive a project")?;
     site.require_writable("unarchive a project")?;
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     site.site()?.unarchive(&key).map_err(site_error)?;
     site.evict(&key);
     audit(
@@ -1479,7 +1487,7 @@ async fn delete_project(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "delete a project")?;
     site.require_writable("delete a project")?;
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     site.evict(&key);
     site.site()?.delete_project(&key).map_err(site_error)?;
     audit(
@@ -1577,7 +1585,7 @@ async fn list_members(
     caller: SiteCaller,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     let project = require_project_admin(&site, &key, &caller, "see the members")?;
     let configured = members::is_configured(project.documents()).map_err(member_error)?;
     let set = members::read(project.documents())
@@ -1604,7 +1612,7 @@ pub struct MemberBody {
 }
 
 fn parse_member_body(body: &MemberBody) -> Result<(UserId, Role, DownloadScope), ApiError> {
-    let name = UserId::new(&body.name).map_err(|e| ApiError::bad_request("invalid_member", e))?;
+    let name = parse_name(&body.name, "invalid_member")?;
     let role = Role::parse(&body.role).map_err(|e| ApiError::bad_request("invalid_role", e))?;
     let download = body
         .download
@@ -1623,17 +1631,14 @@ async fn add_member(
     Path(key): Path<String>,
     Json(body): Json<MemberBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     let project = require_project_admin(&site, &key, &caller, "add a member")?;
     site.require_project_writable(&key, "add a member")?;
     let (name, role, download) = parse_member_body(&body)?;
 
     // A membership names a site account, so the account must exist. Without
     // this a typo would write a member nobody can sign in as.
-    let accounts = accounts::read(site.site()?.store())
-        .map_err(account_error)?
-        .map(|(set, _)| set)
-        .unwrap_or_default();
+    let accounts = account_set(&site)?;
     if accounts.get(&name).is_none() {
         return Err(ApiError::not_found(
             "account_not_found",
@@ -1687,15 +1692,12 @@ async fn invite_member(
     Path(key): Path<String>,
     Json(body): Json<MemberBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     let project = require_project_admin(&site, &key, &caller, "invite a member")?;
     site.require_project_writable(&key, "invite a member")?;
     let (name, role, download) = parse_member_body(&body)?;
 
-    let set = accounts::read(site.site()?.store())
-        .map_err(account_error)?
-        .map(|(set, _)| set)
-        .unwrap_or_default();
+    let set = account_set(&site)?;
     if set.get(&name).is_some() {
         return Err(ApiError::conflict(
             "account_exists",
@@ -1777,10 +1779,10 @@ async fn update_member(
     Path((key, name)): Path<(String, String)>,
     Json(body): Json<UpdateMemberBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     let project = require_project_admin(&site, &key, &caller, "change a member")?;
     site.require_project_writable(&key, "change a member")?;
-    let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_member", e))?;
+    let name = parse_name(&name, "invalid_member")?;
     let role = body
         .role
         .as_deref()
@@ -1834,10 +1836,10 @@ async fn remove_member(
     caller: SiteCaller,
     Path((key, name)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     let project = require_project_admin(&site, &key, &caller, "remove a member")?;
     site.require_project_writable(&key, "remove a member")?;
-    let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_member", e))?;
+    let name = parse_name(&name, "invalid_member")?;
 
     members::update(project.documents(), |set| {
         if set.is_last_admin(&name) {
@@ -1877,7 +1879,7 @@ async fn put_project_access(
     Path(key): Path<String>,
     Json(body): Json<AccessBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     let project = require_project_admin(&site, &key, &caller, "change the access settings")?;
     site.require_project_writable(&key, "change the access settings")?;
     let anonymous_download = body
@@ -1927,10 +1929,7 @@ async fn list_accounts(
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "see the accounts")?;
-    let set = accounts::read(site.site()?.store())
-        .map_err(account_error)?
-        .map(|(set, _)| set)
-        .unwrap_or_default();
+    let set = account_set(&site)?;
     Ok(Json(serde_json::json!({
         "accounts": set.users.iter().map(Account::redacted).collect::<Vec<_>>(),
         "invite_ttl_days": invite::INVITE_TTL_DAYS,
@@ -1946,10 +1945,7 @@ async fn site_memberships(
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "see memberships")?;
-    let accounts = accounts::read(site.site()?.store())
-        .map_err(account_error)?
-        .map(|(set, _)| set)
-        .unwrap_or_default();
+    let accounts = account_set(&site)?;
     let keys = site.site()?.list().map_err(site_error)?;
 
     // Seeded from the accounts so one with no memberships still appears.
@@ -2038,7 +2034,7 @@ async fn create_account(
              the link.",
         ));
     }
-    let name = UserId::new(&body.name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
+    let name = parse_name(&body.name, "invalid_account")?;
     let role = body
         .role
         .as_deref()
@@ -2112,7 +2108,7 @@ async fn update_account(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "change an account")?;
     site.require_writable("change an account")?;
-    let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
+    let name = parse_name(&name, "invalid_account")?;
 
     let (redacted, changed) = accounts::update(site.site()?.store(), |set| {
         if let Some(admin) = body.server_admin {
@@ -2180,7 +2176,7 @@ async fn delete_account(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "remove an account")?;
     site.require_writable("remove an account")?;
-    let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
+    let name = parse_name(&name, "invalid_account")?;
     let removed_from = site.site()?.remove_account(&name).map_err(site_error)?;
     for key in &removed_from {
         audit(
@@ -2214,7 +2210,7 @@ async fn reissue_account_invite(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "reset a password")?;
     site.require_writable("reset a password")?;
-    let name = UserId::new(&name).map_err(|e| ApiError::bad_request("invalid_account", e))?;
+    let name = parse_name(&name, "invalid_account")?;
     let (token, invite) = invite::mint(auth::now(), None, None, None)
         .map_err(|e| ApiError::internal("invite_failed", e))?;
     let expires = invite.expires;
@@ -2359,10 +2355,7 @@ async fn bulk_invites(
     body: BulkAccountsBody,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
-    let set = accounts::read(site.site()?.store())
-        .map_err(account_error)?
-        .map(|(set, _)| set)
-        .unwrap_or_default();
+    let set = account_set(&site)?;
     let names = bulk_account_names(
         &taken_names(&site, &set)?,
         &body.prefix,
@@ -2438,7 +2431,7 @@ async fn create_project_bulk_invites(
     Path(key): Path<String>,
     Json(body): Json<BulkAccountsBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     require_project_admin(&site, &key, &caller, "create accounts")?;
     site.require_project_writable(&key, "create accounts")?;
     bulk_invites(site, Some(key), actor(&caller), body).await
@@ -2467,10 +2460,7 @@ async fn bulk_passwords(
              not shared passwords.",
         )
     })?;
-    let set = accounts::read(site.site()?.store())
-        .map_err(account_error)?
-        .map(|(set, _)| set)
-        .unwrap_or_default();
+    let set = account_set(&site)?;
     let names = bulk_account_names(
         &taken_names(&site, &set)?,
         &body.prefix,
@@ -2563,7 +2553,7 @@ async fn create_project_bulk_passwords(
     Path(key): Path<String>,
     Json(body): Json<BulkPasswordsBody>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    let key = parse_key(&key)?;
     require_project_admin(&site, &key, &caller, "create accounts")?;
     site.require_project_writable(&key, "create accounts")?;
     bulk_passwords(site, Some(key), actor(&caller), body).await
@@ -2582,9 +2572,8 @@ mod tests {
         let (_, path) = split_project_path("/api/v1/projects/glac").unwrap();
         assert_eq!(path, "/api/v1");
 
-        // The one irregular mapping: the settings document.
         let (_, path) = split_project_path("/api/v1/projects/glac/settings").unwrap();
-        assert_eq!(path, "/api/v1/project/settings");
+        assert_eq!(path, "/api/v1/settings");
 
         let (key, path) = split_project_path("/p/glac/view/line-01").unwrap();
         assert_eq!(key.as_str(), "glac");

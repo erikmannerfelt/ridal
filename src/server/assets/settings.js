@@ -187,7 +187,7 @@
     clearError();
     let settings;
     try {
-      settings = await RIDAL.fetchJson(RIDAL.apiPath("project", "settings"));
+      settings = await RIDAL.fetchJson(RIDAL.apiPath("settings"));
     } catch (error) {
       showError(`Could not load settings: ${error.message}`);
       return;
@@ -342,7 +342,7 @@
       clearError();
       setStatus("settings-status", "Saving…");
       try {
-        const saved = await send("PUT", RIDAL.apiPath("project", "settings"), {
+        const saved = await send("PUT", RIDAL.apiPath("settings"), {
           default_profile: byId("default-profile").value || null,
           default_xscale: Number(byId("default-xscale").value) || null,
           default_spacing: byId("default-spacing").value || null,
@@ -386,7 +386,7 @@
         return;
       }
       try {
-        const saved = await send("PUT", RIDAL.apiPath("project", "settings"), {
+        const saved = await send("PUT", RIDAL.apiPath("settings"), {
           max_bytes: bytes,
         });
         byId("storage-used").textContent = formatBytes(saved.size_bytes);
@@ -583,7 +583,7 @@
       clearError();
       setStatus("basemap-status", "Saving…");
       try {
-        const saved = await send("PUT", RIDAL.apiPath("project", "settings"), {
+        const saved = await send("PUT", RIDAL.apiPath("settings"), {
           // Only the basemap half is sent; the render defaults above have
           // their own form, and the API leaves alone what a request does
           // not mention.
@@ -779,7 +779,7 @@
       clearError();
       setStatus("overlay-status", "Saving…");
       try {
-        const saved = await send("PUT", RIDAL.apiPath("project", "settings"), { overlays });
+        const saved = await send("PUT", RIDAL.apiPath("settings"), { overlays });
         await load("basemaps-section");
         setStatus(
           "overlay-status",

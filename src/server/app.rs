@@ -845,7 +845,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/layers", get(super::routes::layers_page))
         .route("/settings", get(super::routes::settings_page))
         .route(
-            "/api/v1/project/settings",
+            "/api/v1/settings",
             get(super::interp_routes::get_settings).put(super::interp_routes::put_settings),
         )
         .route(
