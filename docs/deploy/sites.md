@@ -36,7 +36,7 @@ empty project directory, and you can copy an existing project into
   ridal-site.toml      the site: its name and which projects are archived
   accounts.json        everyone who can sign in (readable by its owner only)
   session.key          signs login cookies (readable by its owner only)
-  audit.json           who changed accounts, memberships and projects
+  audit.jsonl          who changed accounts, memberships and projects
   preferences/
     <name>.json        one person's site-wide settings, such as the theme
   projects/
@@ -91,7 +91,9 @@ or resetting a password stays with a server administrator on site settings.
 ## History
 
 Every change to accounts, memberships and projects is appended to
-`audit.json` at the site root, with who did it and when. Server
+`audit.jsonl` at the site root, one line per change, with who did it and
+when. Once the file reaches 2 MiB it is renamed to `audit.1.jsonl`, replacing
+the one before, so the history kept is bounded. Server
 administrators can read the whole log under **History** on site settings;
 project administrators see their own project's slice under **History** on
 the project's settings page.

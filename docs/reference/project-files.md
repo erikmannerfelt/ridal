@@ -72,7 +72,8 @@ my_site/
   ridal-site.toml      the site's name, format version and archived keys
   accounts.json        every account (readable by its owner only)
   session.key          signs everyone's login cookie (readable by its owner only)
-  audit.json           who changed accounts, memberships and projects
+  audit.jsonl          who changed accounts, memberships and projects
+  audit.1.jsonl        the previous history, once audit.jsonl reached 2 MiB
   preferences/
     <name>.json        one person's site-wide settings, such as the theme
   projects/
@@ -91,9 +92,10 @@ list — makes a project read-only without changing the directory, so it stays
 portable.
 
 `accounts.json` and the site's `session.key` are written readable by their
-owner only, exactly as a lone project's secrets are. The `audit.json` is a
-record, not a security control: anyone who can edit the site directory can
-edit it.
+owner only. `audit.jsonl` is JSON Lines, one entry per line, appended to
+and never rewritten; a line that does not parse is skipped when it is read.
+It is a record, not a security control: anyone who can edit the site
+directory can edit it.
 
 ## `ridal.toml`
 

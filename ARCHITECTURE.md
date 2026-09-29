@@ -75,7 +75,7 @@ against synthetic arrays with no HTTP server anywhere near the tests.
 
 One server hosts many projects from one root. A **site** is a directory with
 a `ridal-site.toml`, an `accounts.json`, a site `session.key`, an
-`audit.json`, and a `projects/` directory of ordinary project directories.
+`audit.jsonl`, and a `projects/` directory of ordinary project directories.
 `ridal server start` takes a site; `ridal gui` remains the single-project
 path. The split is state, not only layout:
 
@@ -115,8 +115,10 @@ path. The split is state, not only layout:
   (`preferences/<name>.json` at the site root): the theme is one choice that
   follows a person into every project. Project preferences stay per project.
 - **The ledger** (`src/site/audit.rs`) appends every account, membership,
-  project-lifecycle and access change to the site root's `audit.json`, with
-  the actor. Server administrators read it whole; project administrators read
+  project-lifecycle and access change to the site root's `audit.jsonl`, with
+  the actor. JSON Lines, appended and never rewritten, so an append costs the
+  same however long the history is and an interrupted one damages only its
+  own line; the file is rotated to `audit.1.jsonl` at 2 MiB. Server administrators read it whole; project administrators read
   their project's slice. Like the per-project catalog audit, it is a record to
   work out what happened, **not** a security control.
 

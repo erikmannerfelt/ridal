@@ -1065,8 +1065,8 @@ async fn site_info(
     })))
 }
 
-/// How much history one request returns. The log keeps the most recent
-/// [`site_audit::MAX_ENTRIES`]; a page shows the recent end of it.
+/// How much history one request returns. The log keeps roughly the last
+/// two [`site_audit::MAX_BYTES`]; a page shows the recent end of it.
 const AUDIT_PAGE: usize = 500;
 
 /// `GET /api/v1/site/audit` -- the site's account and project history, for a
@@ -1076,7 +1076,7 @@ async fn site_audit_log(
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
     caller.require_server_admin("read the history")?;
-    let (log, _) = site_audit::read(site.site.store())
+    let log = site_audit::read(site.site.store())
         .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
     let entries: Vec<&site_audit::Entry> = log.entries.iter().rev().take(AUDIT_PAGE).collect();
     Ok(Json(serde_json::json!({ "entries": entries })))
@@ -1091,7 +1091,7 @@ async fn project_audit_log(
 ) -> Result<impl IntoResponse, ApiError> {
     let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     require_project_admin(&site, &key, &caller, "read the history")?;
-    let (log, _) = site_audit::read(site.site.store())
+    let log = site_audit::read(site.site.store())
         .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
     let entries: Vec<&site_audit::Entry> = log
         .entries

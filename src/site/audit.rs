@@ -1,13 +1,24 @@
 //! Who changed the site's accounts and projects, and when (#214).
 //!
 //! ```text
-//! audit.json
+//! audit.jsonl      the current log, one JSON entry per line
+//! audit.1.jsonl    the previous one, once the current one has filled up
 //! ```
 //!
 //! Accounts and memberships are what goes wrong quietly: a name stops being
 //! a member, an administrator appears, a project disappears, and the first
 //! question is who did it. Ridal's per-project audit answers "who changed
 //! the catalog"; this one answers "who changed who", at the site root.
+//!
+//! # Format
+//!
+//! JSON Lines, appended to and never rewritten. An append costs the same
+//! however long the history is, and an interrupted one can damage only the
+//! line it was writing, which [`read`] skips. When the current file passes
+//! [`MAX_BYTES`] it is renamed to `audit.1.jsonl`, replacing the one before,
+//! so the history is bounded at about twice that. A rename loses nothing: an
+//! append that opened the file just before it lands in the renamed file,
+//! which is still read.
 //!
 //! # What this is not
 //!
@@ -25,21 +36,24 @@
     )
 )]
 
-use std::path::PathBuf;
+use std::io::{Read, Seek, Write};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ProjectKey;
-use crate::project::store::{DocumentStore, Expectation, StoreError};
+use crate::project::store::DocumentStore;
 use crate::project::users::{DownloadScope, Role};
 
-/// The document's path, relative to the site root.
-pub const FILE: &str = "audit.json";
+/// The current log, relative to the site root.
+pub const FILE: &str = "audit.jsonl";
 
-/// The most entries kept, trimmed from the front. The same bound and the
-/// same reasoning as the project audit: this file is rewritten whole on
-/// every append, so an unbounded one eventually stops being written.
-pub const MAX_ENTRIES: usize = 10_000;
+/// The previous log, kept when the current one is rotated.
+pub const PREVIOUS_FILE: &str = "audit.1.jsonl";
+
+/// The size at which the current log is rotated. An entry is a couple of
+/// hundred bytes, so this keeps something like the last 10 000-20 000.
+pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 /// What was done.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,78 +147,65 @@ impl Entry {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// The history, oldest first.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Log {
-    #[serde(default)]
     pub entries: Vec<Entry>,
 }
 
-#[derive(Debug)]
-pub enum AuditError {
-    Store(StoreError),
-    Malformed { path: PathBuf, message: String },
+/// Read the whole history, oldest first.
+///
+/// A line that does not parse is skipped rather than failing the read: the
+/// one way it arises in normal operation is an append interrupted part-way,
+/// and one lost entry should not hide every other.
+pub fn read(store: &DocumentStore) -> std::io::Result<Log> {
+    let mut entries = Vec::new();
+    for name in [PREVIOUS_FILE, FILE] {
+        let text = match std::fs::read_to_string(store.root().join(name)) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        entries.extend(
+            text.lines()
+                .filter_map(|line| serde_json::from_str::<Entry>(line).ok()),
+        );
+    }
+    Ok(Log { entries })
 }
 
-impl std::fmt::Display for AuditError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AuditError::Store(e) => write!(f, "{e}"),
-            AuditError::Malformed { path, message } => write!(
-                f,
-                "{} is not a valid site audit log: {message}",
-                path.display()
-            ),
+/// Append one entry, rotating the log first if it has filled up.
+pub fn append(store: &DocumentStore, entry: &Entry) -> std::io::Result<()> {
+    let path = store.root().join(FILE);
+    rotate_if_full(&path, &store.root().join(PREVIOUS_FILE))?;
+    let mut line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
+    line.push('\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .append(true)
+        .open(&path)?;
+    // A previous append interrupted mid-line would otherwise swallow this
+    // entry into the same unparsable line.
+    if file.metadata()?.len() > 0 {
+        let mut last = [0u8; 1];
+        file.seek(std::io::SeekFrom::End(-1))?;
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            line.insert(0, '\n');
         }
     }
+    // One `write_all` of one line to a file opened for appending, so
+    // concurrent writers (the server and the CLI) interleave whole lines.
+    file.write_all(line.as_bytes())
 }
 
-impl std::error::Error for AuditError {}
-
-impl From<StoreError> for AuditError {
-    fn from(e: StoreError) -> Self {
-        AuditError::Store(e)
-    }
-}
-
-fn path_of() -> PathBuf {
-    PathBuf::from(FILE)
-}
-
-/// Read the log, with the version to write back against.
-pub fn read(store: &DocumentStore) -> Result<(Log, Expectation), AuditError> {
-    let relative = path_of();
-    let Some(stored) = store.read(&relative)? else {
-        return Ok((Log::default(), Expectation::Absent));
-    };
-    let parsed: Log = serde_json::from_str(&stored.text).map_err(|e| AuditError::Malformed {
-        path: store.root().join(&relative),
-        message: e.to_string(),
-    })?;
-    Ok((parsed, Expectation::Version(stored.version)))
-}
-
-/// Append one entry, read-modify-write against the version read and retried
-/// on conflict, like every other document here.
-pub fn append(store: &DocumentStore, entry: Entry) -> Result<(), AuditError> {
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
-        let (mut log, expectation) = read(store)?;
-        log.entries.push(entry.clone());
-        if log.entries.len() > MAX_ENTRIES {
-            let excess = log.entries.len() - MAX_ENTRIES;
-            log.entries.drain(..excess);
-        }
-        let mut text = serde_json::to_string_pretty(&log).map_err(|e| AuditError::Malformed {
-            path: store.root().join(path_of()),
-            message: e.to_string(),
-        })?;
-        text.push('\n');
-        match store.write(&path_of(), &text, &expectation) {
-            Ok(_) => return Ok(()),
-            Err(StoreError::Conflict { .. }) if attempts < 3 => continue,
-            Err(e) => return Err(e.into()),
-        }
+fn rotate_if_full(path: &Path, previous: &Path) -> std::io::Result<()> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() >= MAX_BYTES => std::fs::rename(path, previous),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
 }
 
@@ -212,7 +213,7 @@ pub fn append(store: &DocumentStore, entry: Entry) -> Result<(), AuditError> {
 /// happened by the time this is called, so a failure here must not report a
 /// failure that did not occur.
 pub fn record(store: &DocumentStore, entry: Entry) {
-    if let Err(e) = append(store, entry) {
+    if let Err(e) = append(store, &entry) {
         eprintln!("Warning: could not write to the site audit log: {e}");
     }
 }
@@ -234,63 +235,77 @@ mod tests {
     #[test]
     fn a_site_with_no_history_reads_as_empty() {
         let (_dir, store) = store();
-        let (log, expectation) = read(&store).unwrap();
-        assert!(log.entries.is_empty());
-        assert!(matches!(expectation, Expectation::Absent));
+        assert!(read(&store).unwrap().entries.is_empty());
     }
 
     #[test]
     fn entries_accumulate_with_their_details() {
-        let (_dir, store) = store();
+        let (dir, store) = store();
         let key = ProjectKey::new("glac").unwrap();
         append(
             &store,
-            Entry::new("anna", Action::MembershipAdded, "bo")
+            &Entry::new("anna", Action::MembershipAdded, "bo")
                 .project(&key)
                 .membership(Role::Picker, DownloadScope::Picks),
         )
         .unwrap();
-        append(&store, Entry::new("cli", Action::AccountRemoved, "bo")).unwrap();
+        append(&store, &Entry::new("cli", Action::AccountRemoved, "bo")).unwrap();
 
-        let (log, _) = read(&store).unwrap();
+        let log = read(&store).unwrap();
         assert_eq!(log.entries.len(), 2);
         assert_eq!(log.entries[0].actor, "anna");
         assert_eq!(log.entries[0].project.as_ref().unwrap().as_str(), "glac");
         assert_eq!(log.entries[0].role, Some(Role::Picker));
         assert_eq!(log.entries[1].action, Action::AccountRemoved);
+        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert_eq!(text.lines().count(), 2);
     }
 
     #[test]
-    fn the_log_is_trimmed_from_the_front() {
-        let (_dir, store) = store();
-        let mut log = Log::default();
-        for i in 0..MAX_ENTRIES {
-            log.entries.push(Entry::new(
-                "cli",
-                Action::AccountCreated,
-                format!("u{i:05}"),
-            ));
-        }
-        let text = format!("{}\n", serde_json::to_string(&log).unwrap());
-        store.write(&path_of(), &text, &Expectation::Any).unwrap();
-
-        append(&store, Entry::new("cli", Action::AccountRemoved, "newest")).unwrap();
-
-        let (log, _) = read(&store).unwrap();
-        assert_eq!(log.entries.len(), MAX_ENTRIES);
-        assert_eq!(log.entries.last().unwrap().subject, "newest");
-    }
-
-    #[test]
-    fn a_failure_to_log_does_not_fail_the_thing_it_logs() {
+    fn a_torn_line_costs_only_itself() {
         let (dir, store) = store();
-        store
-            .write(&path_of(), "{ not json", &Expectation::Any)
-            .unwrap();
-        assert!(append(&store, Entry::new("cli", Action::ProjectDeleted, "glac")).is_err());
-        record(&store, Entry::new("cli", Action::ProjectDeleted, "glac"));
-        assert!(std::fs::read_to_string(dir.path().join(FILE))
+        append(&store, &Entry::new("cli", Action::ProjectCreated, "a")).unwrap();
+        // An append interrupted part-way through its line.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join(FILE))
             .unwrap()
-            .starts_with("{ not json"));
+            .write_all(br#"{"at":"2026-"#)
+            .unwrap();
+        record(&store, Entry::new("cli", Action::ProjectCreated, "b"));
+
+        let subjects: Vec<String> = read(&store)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| entry.subject)
+            .collect();
+        assert_eq!(subjects, ["a", "b"]);
+    }
+
+    #[test]
+    fn a_full_log_is_rotated_and_still_read() {
+        let (dir, store) = store();
+        append(&store, &Entry::new("cli", Action::ProjectCreated, "old")).unwrap();
+        let padding = format!("{}\n", "x".repeat(MAX_BYTES as usize));
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join(FILE))
+            .unwrap()
+            .write_all(padding.as_bytes())
+            .unwrap();
+
+        append(&store, &Entry::new("cli", Action::ProjectCreated, "new")).unwrap();
+        assert!(dir.path().join(PREVIOUS_FILE).is_file());
+        let current = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
+        assert_eq!(current.lines().count(), 1);
+
+        let subjects: Vec<String> = read(&store)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| entry.subject)
+            .collect();
+        assert_eq!(subjects, ["old", "new"]);
     }
 }
