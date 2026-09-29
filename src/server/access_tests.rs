@@ -3527,13 +3527,12 @@ async fn an_uploaded_radargram_appears_without_a_restart() {
     assert!(!radargrams(dir.path()).join("new.nc").exists());
 
     // And it is recorded.
-    let log: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(data(dir.path()).join("audit.json")).unwrap(),
-    )
-    .unwrap();
-    let entries = log["entries"].as_array().unwrap();
-    assert_eq!(entries.last().unwrap()["action"], "added");
-    assert_eq!(entries.last().unwrap()["user"], "erik");
+    let entries = crate::project::audit::read(open_project(dir.path()).documents()).unwrap();
+    assert_eq!(
+        entries.last().unwrap().action,
+        crate::project::audit::Action::Added
+    );
+    assert_eq!(entries.last().unwrap().user, "erik");
 }
 
 #[tokio::test]

@@ -10,7 +10,7 @@ my_survey/
   line_01.nc ...                  your processed files, untouched
   ridal.toml                      marks the project, and holds its settings
   ridal_data/                     everything Ridal owns
-    .gitignore                    keeps the cache and secrets out of git
+    .gitignore                    keeps the cache and memberships out of git
     interpretations/
       <radargram_id>/
         <user>.gprinterp.json     one interpretation per person
@@ -23,7 +23,7 @@ my_survey/
     users.json                    this project's members, and its access policy
     overrides.json                corrected radargram and group metadata
     revisions/, revisions.json    earlier revisions of replaced radargrams
-    audit.json                    who added or removed radargrams, and when
+    audit.jsonl                   who added or removed radargrams, and when
     catalog-summary.json          how many radargrams the catalog holds
     radargrams/                   radargrams uploaded through the browser
     cache/                        derived data; safe to delete
@@ -90,10 +90,13 @@ portable.
 
 `accounts.json` and the site's `session.key` are **secrets**, written
 readable by their owner only; keep them out of version control. Deleting
-`session.key` signs everyone out. `audit.jsonl` is JSON Lines, one entry per line, appended to
-and never rewritten; a line that does not parse is skipped when it is read.
-It is a record, not a security control: anyone who can edit the site
-directory can edit it.
+`session.key` signs everyone out.
+
+Both histories -- the site's `audit.jsonl` and each project's -- are JSON
+Lines, one entry per line, appended to and never rewritten; a line that
+does not parse is skipped when it is read. At 2 MiB the file is renamed to
+`audit.1.jsonl`, replacing the one before. They are records, not a security
+control: anyone who can edit the directory can edit them.
 
 ## `ridal.toml`
 

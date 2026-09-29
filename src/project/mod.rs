@@ -85,6 +85,7 @@ pub mod basemaps;
 pub mod catalog_summary;
 pub mod derived;
 pub mod interpretations;
+pub mod jsonl;
 pub mod layers;
 pub mod members;
 pub mod migrate;

@@ -21,8 +21,8 @@ $ ridal server start /srv/ridal
 
 `site init` writes the marker and an empty `projects/` directory. The first
 account must be a server administrator, since there is nobody yet who could
-approve it in the browser; `site account add` prints a one-time invite link,
-the same way a project's first account used to. `site project add` creates an
+approve it in the browser; `site account add` prints a one-time invite link.
+`site project add` creates an
 empty project directory, and you can copy an existing project into
 `projects/<key>/` instead if you already have one.
 
@@ -81,8 +81,7 @@ Two separate things decide what someone can do:
   project. Granting it is a deliberate step: the account must already have a
   password, and the change is confirmed in the browser.
 - A **project role** — `viewer`, `picker`, `operator` or `admin` — and a
-  **download scope**, held per project. These are the same roles and scopes
-  a lone project has; see {doc}`accounts`.
+  **download scope**, held per project; see {doc}`accounts`.
 
 A project administrator (a member with the `admin` role) manages their own
 project's people, and can create an account for it — but only that one
@@ -101,7 +100,7 @@ the project's settings page.
 
 It is a record to work out what happened, **not a security control**: anyone
 who can edit the site directory can edit the file, and Ridal has no
-tamper-evidence to offer. The same is true of a project's `audit.json`,
+tamper-evidence to offer. The same is true of a project's `audit.jsonl`,
 which records changes to its radargrams.
 
 ## Archiving and deleting

@@ -12,13 +12,9 @@
 //!
 //! # Format
 //!
-//! JSON Lines, appended to and never rewritten. An append costs the same
-//! however long the history is, and an interrupted one can damage only the
-//! line it was writing, which [`read`] skips. When the current file passes
-//! [`MAX_BYTES`] it is renamed to `audit.1.jsonl`, replacing the one before,
-//! so the history is bounded at about twice that. A rename loses nothing: an
-//! append that opened the file just before it lands in the renamed file,
-//! which is still read.
+//! JSON Lines, appended to and never rewritten, and rotated when it fills
+//! up: see [`crate::project::jsonl`], which the project's catalog history
+//! shares.
 //!
 //! # What this is not
 //!
@@ -36,24 +32,12 @@
     )
 )]
 
-use std::io::{Read, Seek, Write};
-use std::path::Path;
-
 use serde::{Deserialize, Serialize};
 
 use crate::identity::ProjectKey;
+use crate::project::jsonl;
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::DocumentStore;
-
-/// The current log, relative to the site root.
-pub const FILE: &str = "audit.jsonl";
-
-/// The previous log, kept when the current one is rotated.
-pub const PREVIOUS_FILE: &str = "audit.1.jsonl";
-
-/// The size at which the current log is rotated. An entry is a couple of
-/// hundred bytes, so this keeps something like the last 10 000-20 000.
-pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
 
 /// What was done.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -154,66 +138,17 @@ pub struct Log {
 }
 
 /// Read the whole history, oldest first.
-///
-/// A line that does not parse is skipped rather than failing the read: the
-/// one way it arises in normal operation is an append interrupted part-way,
-/// and one lost entry should not hide every other.
 pub fn read(store: &DocumentStore) -> std::io::Result<Log> {
-    let mut entries = Vec::new();
-    for name in [PREVIOUS_FILE, FILE] {
-        let text = match std::fs::read_to_string(store.root().join(name)) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e),
-        };
-        entries.extend(
-            text.lines()
-                .filter_map(|line| serde_json::from_str::<Entry>(line).ok()),
-        );
-    }
-    Ok(Log { entries })
-}
-
-/// Append one entry, rotating the log first if it has filled up.
-pub fn append(store: &DocumentStore, entry: &Entry) -> std::io::Result<()> {
-    let path = store.root().join(FILE);
-    rotate_if_full(&path, &store.root().join(PREVIOUS_FILE))?;
-    let mut line = serde_json::to_string(entry).map_err(std::io::Error::other)?;
-    line.push('\n');
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .read(true)
-        .append(true)
-        .open(&path)?;
-    // A previous append interrupted mid-line would otherwise swallow this
-    // entry into the same unparsable line.
-    if file.metadata()?.len() > 0 {
-        let mut last = [0u8; 1];
-        file.seek(std::io::SeekFrom::End(-1))?;
-        file.read_exact(&mut last)?;
-        if last[0] != b'\n' {
-            line.insert(0, '\n');
-        }
-    }
-    // One `write_all` of one line to a file opened for appending, so
-    // concurrent writers (the server and the CLI) interleave whole lines.
-    file.write_all(line.as_bytes())
-}
-
-fn rotate_if_full(path: &Path, previous: &Path) -> std::io::Result<()> {
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.len() >= MAX_BYTES => std::fs::rename(path, previous),
-        Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
-    }
+    Ok(Log {
+        entries: jsonl::read(store)?,
+    })
 }
 
 /// Append without failing the operation it describes. The change has already
 /// happened by the time this is called, so a failure here must not report a
 /// failure that did not occur.
 pub fn record(store: &DocumentStore, entry: Entry) {
-    if let Err(e) = append(store, &entry) {
+    if let Err(e) = jsonl::append(store, &entry) {
         eprintln!("Warning: could not write to the site audit log: {e}");
     }
 }
@@ -226,30 +161,18 @@ pub fn now_rfc3339() -> String {
 mod tests {
     use super::*;
 
-    fn store() -> (tempfile::TempDir, DocumentStore) {
+    #[test]
+    fn entries_keep_their_details() {
         let dir = tempfile::tempdir().unwrap();
         let store = DocumentStore::new(dir.path().to_path_buf());
-        (dir, store)
-    }
-
-    #[test]
-    fn a_site_with_no_history_reads_as_empty() {
-        let (_dir, store) = store();
-        assert!(read(&store).unwrap().entries.is_empty());
-    }
-
-    #[test]
-    fn entries_accumulate_with_their_details() {
-        let (dir, store) = store();
         let key = ProjectKey::new("glac").unwrap();
-        append(
+        record(
             &store,
-            &Entry::new("anna", Action::MembershipAdded, "bo")
+            Entry::new("anna", Action::MembershipAdded, "bo")
                 .project(&key)
                 .membership(Role::Picker, DownloadScope::Picks),
-        )
-        .unwrap();
-        append(&store, &Entry::new("cli", Action::AccountRemoved, "bo")).unwrap();
+        );
+        record(&store, Entry::new("cli", Action::AccountRemoved, "bo"));
 
         let log = read(&store).unwrap();
         assert_eq!(log.entries.len(), 2);
@@ -257,55 +180,6 @@ mod tests {
         assert_eq!(log.entries[0].project.as_ref().unwrap().as_str(), "glac");
         assert_eq!(log.entries[0].role, Some(Role::Picker));
         assert_eq!(log.entries[1].action, Action::AccountRemoved);
-        let text = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
-        assert_eq!(text.lines().count(), 2);
-    }
-
-    #[test]
-    fn a_torn_line_costs_only_itself() {
-        let (dir, store) = store();
-        append(&store, &Entry::new("cli", Action::ProjectCreated, "a")).unwrap();
-        // An append interrupted part-way through its line.
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(dir.path().join(FILE))
-            .unwrap()
-            .write_all(br#"{"at":"2026-"#)
-            .unwrap();
-        record(&store, Entry::new("cli", Action::ProjectCreated, "b"));
-
-        let subjects: Vec<String> = read(&store)
-            .unwrap()
-            .entries
-            .into_iter()
-            .map(|entry| entry.subject)
-            .collect();
-        assert_eq!(subjects, ["a", "b"]);
-    }
-
-    #[test]
-    fn a_full_log_is_rotated_and_still_read() {
-        let (dir, store) = store();
-        append(&store, &Entry::new("cli", Action::ProjectCreated, "old")).unwrap();
-        let padding = format!("{}\n", "x".repeat(MAX_BYTES as usize));
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(dir.path().join(FILE))
-            .unwrap()
-            .write_all(padding.as_bytes())
-            .unwrap();
-
-        append(&store, &Entry::new("cli", Action::ProjectCreated, "new")).unwrap();
-        assert!(dir.path().join(PREVIOUS_FILE).is_file());
-        let current = std::fs::read_to_string(dir.path().join(FILE)).unwrap();
-        assert_eq!(current.lines().count(), 1);
-
-        let subjects: Vec<String> = read(&store)
-            .unwrap()
-            .entries
-            .into_iter()
-            .map(|entry| entry.subject)
-            .collect();
-        assert_eq!(subjects, ["old", "new"]);
+        assert!(dir.path().join(jsonl::FILE).is_file());
     }
 }
