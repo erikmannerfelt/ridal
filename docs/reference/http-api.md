@@ -202,3 +202,46 @@ They share these query parameters:
 | `GET` | `/api/v1/datasets/{radargram_id}/derived/level2` | download `results` | Derived layers as points. Query: `include_unlisted`. |
 | `GET` | `/api/v1/groups/{group}/level2` | download `derived` | Every interpreted radargram in a group, merged. Query: `user` (default: the caller), `every_user` (`admin` only), `derived`, `include_unlisted`. |
 | `GET` | `/api/v1/catalog/level2` | download `derived` | Every interpreted radargram being served, merged. Same query as the group export. |
+
+## Site server
+
+`ridal server start <site>` serves many projects from one root. A project's
+pages live under `/p/{key}/…` and its API under `/api/v1/projects/{key}/…`;
+the tables above describe that project-relative shape. This section lists the
+endpoints that belong to the *site* rather than to any one project.
+
+A **server administrator** is the `server_admin` flag on an account, which
+is separate from a project role. A **project administrator** is a member
+with the `admin` role in that project. A server administrator acts as a
+project administrator in every project.
+
+| Method | Path | Needs | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/site` | anyone | The site's name, whether it has accounts, and who the caller is. |
+| `GET` | `/api/v1/site/preferences` | signed in | The caller's own site-wide settings, currently the theme. |
+| `PUT` | `/api/v1/site/preferences` | signed in | Change them. Any role may. |
+| `GET` | `/api/v1/site/audit` | server administrator | The site's account, membership and project history, most recent first. |
+| `GET` | `/api/v1/site/memberships` | server administrator | Every account and the projects it belongs to. |
+| `GET` | `/api/v1/accounts` | server administrator | Every account, without hashes or invite tokens. |
+| `POST` | `/api/v1/accounts` | server administrator | Create an account and mint its invite, optionally naming a project, role and download. It cannot create a server administrator. |
+| `POST` | `/api/v1/accounts/bulk/invites` | server administrator | Create several invite-only accounts at once. |
+| `POST` | `/api/v1/accounts/bulk/passwords` | server administrator | Create several accounts with generated passwords. |
+| `PUT` | `/api/v1/accounts/{name}` | server administrator | Change the server-administrator flag. Refused if it would leave the site with none, or while the account has an invite outstanding. |
+| `DELETE` | `/api/v1/accounts/{name}` | server administrator | Remove an account. Memberships and picks are left in place. |
+| `POST` | `/api/v1/accounts/{name}/invite` | server administrator | Issue a new invite link, for a reset or a lost one. |
+| `GET` | `/api/v1/projects` | anyone | The projects the caller may see. |
+| `POST` | `/api/v1/projects` | server administrator | Create a project at a key. |
+| `GET` | `/api/v1/projects/{key}` | member, or server administrator | One project. |
+| `PATCH` | `/api/v1/projects/{key}` | server administrator | Rename its display name; the key does not change. |
+| `DELETE` | `/api/v1/projects/{key}` | server administrator | Delete it and everything it owns. |
+| `POST` | `/api/v1/projects/{key}/archive` | server administrator | Make the project read-only. |
+| `POST` | `/api/v1/projects/{key}/unarchive` | server administrator | Reverse an archive. |
+| `GET` | `/api/v1/projects/{key}/members` | project administrator | The membership list and access policy. |
+| `POST` | `/api/v1/projects/{key}/members` | project administrator | Add or update an existing account's membership. |
+| `POST` | `/api/v1/projects/{key}/members/invite` | project administrator | Create an account and invite it into this project only. |
+| `POST` | `/api/v1/projects/{key}/members/bulk/invites` | project administrator | Bulk-create accounts, each granted this project only. |
+| `POST` | `/api/v1/projects/{key}/members/bulk/passwords` | project administrator | Bulk-create accounts with generated passwords, each granted this project only. |
+| `PUT` | `/api/v1/projects/{key}/members/{name}` | project administrator | Change a member's role or download scope. |
+| `DELETE` | `/api/v1/projects/{key}/members/{name}` | project administrator | Remove the membership. The account itself remains. |
+| `PUT` | `/api/v1/projects/{key}/access` | project administrator | The project's read and anonymous-download policy. |
+| `GET` | `/api/v1/projects/{key}/audit` | project administrator | This project's slice of the site history. |

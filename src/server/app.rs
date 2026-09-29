@@ -2000,11 +2000,11 @@ mod http_reference_tests {
 
     type Endpoint = (String, String);
 
-    /// `(METHOD, path)` for every `/api` route, read from this file's source.
-    /// The router offers no way to list its routes at runtime.
-    fn routed() -> BTreeSet<Endpoint> {
-        let source = include_str!("app.rs");
-        let start = source.find("pub fn build_router").unwrap();
+    /// `(METHOD, path)` for every `/api` route in the router a `marker`
+    /// names, read from that module's source. The router offers no way to
+    /// list its routes at runtime.
+    fn routes_in(source: &str, marker: &str) -> BTreeSet<Endpoint> {
+        let start = source.find(marker).unwrap();
         let end = start + source[start..].find("\n}\n").unwrap();
         let mut rest = &source[start..end];
         let mut endpoints = BTreeSet::new();
@@ -2029,7 +2029,7 @@ mod http_reference_tests {
             }
             let handlers = &rest[close..stop];
             if path.starts_with("/api/") {
-                for method in ["get", "post", "put", "delete"] {
+                for method in ["get", "post", "put", "delete", "patch"] {
                     let called = handlers.split(|c: char| !c.is_ascii_alphanumeric() && c != '_');
                     if called.clone().any(|word| word == method) {
                         endpoints.insert((method.to_uppercase(), path.to_string()));
@@ -2038,6 +2038,19 @@ mod http_reference_tests {
             }
             rest = &rest[stop..];
         }
+        endpoints
+    }
+
+    /// Both routers: the single-project one in this file, and the site's
+    /// `build_site_router`, whose `/api/v1/projects/{key}/…` routes a site
+    /// adds. The project-relative routes it delegates to the fallback are
+    /// the ones documented from `app.rs` above.
+    fn routed() -> BTreeSet<Endpoint> {
+        let mut endpoints = routes_in(include_str!("app.rs"), "pub fn build_router");
+        endpoints.extend(routes_in(
+            include_str!("site.rs"),
+            "pub fn build_site_router",
+        ));
         endpoints
     }
 
