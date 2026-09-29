@@ -1,11 +1,17 @@
 # Accounts and permissions
 
-Until a project has accounts, everyone who opens it is the same user, called
-`default`, and there is no password. `default` can pick, edit layers and
-change the project's settings. That is exactly right when you work on your
-own computer. As soon as other people can reach the server, give the project
-real accounts, so that everyone signs in as themselves and can only do what
-their role allows.
+There are two separate ideas, and keeping them apart makes everything else
+simpler:
+
+- A **site account** is a person: a name and a password, at the site root.
+- A **membership** is that person's role in one project. A project holds
+  members; it never holds a password, so it stays portable.
+
+Until a site has accounts, everyone who opens it is the same anonymous
+reader. A lone project served with `ridal gui` behaves the same way, with an
+implicit `default` user who can do everything. That is exactly right on your
+own computer. As soon as other people can reach the server, make a
+[site](sites) and give it accounts.
 
 :::{important}
 Accounts use passwords, and passwords must only travel over HTTPS. Read
@@ -14,11 +20,11 @@ Accounts use passwords, and passwords must only travel over HTTPS. Read
 
 ## The first administrator
 
-The first account has to be made on the machine that holds the project,
-since there is nobody yet who could approve it in the browser:
+The first account has to be made on the machine that holds the site, since
+there is nobody yet who could approve it in the browser:
 
 ```console
-$ ridal project user add jane --role admin
+$ ridal site account add jane --server-admin --path /srv/ridal
 ```
 
 This prints a one-time invite link, as a path like `/invite/…`. Put the
@@ -26,29 +32,43 @@ address people use to reach the server in front of it, and send it to Jane
 the way you would send a password. She opens it, chooses her own password,
 and is signed in. The link works once and expires after 7 days.
 
-From then on, the project has accounts. The `default` user no longer exists,
-anyone who is not signed in can only read, and an administrator can add
-everyone else from **Settings → Access** in the browser.
+From then on, the site has a **server administrator**, who creates projects
+and accounts and acts as an administrator in every project. New accounts are
+made in the browser at **Settings → Accounts**; see below.
 
-## Roles
+## Server administrators
 
-Each account has one role, and each role can do everything the roles above it
-can:
+The server-administrator flag on an account is not a project role. A server
+administrator creates projects and accounts, renames, archives and deletes
+projects, and has every project's `admin` rights without needing a
+membership.
+
+Granting it is deliberately deliberate. The account must already have set a
+password — never an invite, whose link would otherwise hand the whole site
+to whoever used it — and the change is confirmed in the browser. The last
+server administrator cannot be demoted or removed, or nobody could manage
+the site.
+
+## Project roles
+
+Each membership has one role, and each role can do everything the roles
+above it can:
 
 | Role | Can |
 |---|---|
 | `viewer` | Browse the catalog, open radargrams, and set their own display preferences. |
 | `picker` | Pick and save their own interpretations, and make private derived items. |
 | `operator` | Upload, replace and remove radargrams, correct their metadata, define layers and project-wide derived items, and change the project's settings. |
-| `admin` | Manage accounts and the access settings, release derived results computed from everyone's picks, and set the project's size limit. |
+| `admin` | Manage this project's members and access settings, release derived results computed from everyone's picks, and set the project's size limit. |
 
 Nobody can change someone else's picks, not even an administrator. An
 interpretation belongs to the person who drew it.
 
 ## Downloads
 
-Separately from their role, each account has a **download scope**, which says
-what it may take away from the server. Each scope includes the ones before it:
+Separately from their role, each membership has a **download scope**, which
+says what that person may take away from the project. Each scope includes
+the ones before it:
 
 | Scope | Can download |
 |---|---|
@@ -80,13 +100,13 @@ A download scope controls downloading, not seeing. Anyone who can open a
 radargram is already looking at its image and its track, and someone
 determined could save those piece by piece. Use download scopes to keep bulk
 downloads deliberate, and to say what the project expects of people. If
-someone should not have the data at all, do not give them an account.
+someone should not have the data at all, do not make them a member.
 :::
 
 ## People who are not signed in
 
-Under **Settings → Access**, **People who are not signed in** has two
-project-wide settings:
+Under a project's **Settings → Access**, **People who are not signed in** has
+two project-wide settings:
 
 **Require a login to read the catalog**
 : Off by default, so anyone can read the catalog and only signed-in people can
@@ -99,68 +119,71 @@ project-wide settings:
 
 ## Managing accounts
 
-An administrator does all of this under **Settings → Access**. Changes to
-roles and download scopes apply as soon as they are made, and reach the
-person on their next request, even if they are already signed in.
+A server administrator does this under **Settings → Accounts**. Creating an
+account can name a project and role, so it arrives already belonging
+somewhere; the invite link that follows is shown only once. Changes to the
+server-administrator flag take effect on that person's next request, even if
+they are already signed in.
 
-To add someone, choose their name, role and download scope under **Add
-someone**, and send them the invite link that appears. It is shown only once.
-If it is lost, issue another.
-
-To reset a password, issue a new invite link for that person. Their old
+To reset a password, issue a new invite link for that account. The old
 password keeps working until the new link is used, so a lost email never
 locks anyone out.
 
 Removing an account keeps that person's interpretations, still under their
-name, since picks are part of the project's results rather than of the
-account. Only their display preferences are deleted.
-
-Ridal refuses to remove or demote the last administrator.
+name, since picks are part of the results rather than of the account. Their
+memberships are left in place too, so recreating the same name reconnects
+them.
 
 The same can be done from the command line on the server:
 
 | Task | Command |
 |---|---|
-| Add someone | `ridal project user add jane --role picker` |
-| List accounts | `ridal project user list` |
-| Change a role or download scope | `ridal project user set jane --role operator --download results` |
-| Issue a new invite link | `ridal project user reset jane` |
-| Remove an account | `ridal project user remove jane` |
+| Add someone | `ridal site account add jane --path /srv/ridal` |
+| List accounts | `ridal site account list /srv/ridal` |
+| Grant or revoke server administration | `ridal site account set jane --server-admin` / `--no-server-admin` |
+| Issue a new invite link | `ridal site account reset jane --path /srv/ridal` |
+| Remove an account | `ridal site account remove jane --path /srv/ridal` |
+
+## Managing a project's members
+
+Under a project's **Settings → Members**, an administrator of that project
+changes each member's role and download scope, which apply as soon as they
+are made. **Add member** gives an existing site account a place in this
+project. **Invite new member** creates a brand-new account and a link that
+grants only this project, with the role and download scope chosen here.
+
+A project administrator can do this without being a server administrator,
+and can remove a membership — but not the account itself. Deleting,
+resetting and promoting accounts stays with a server administrator on site
+settings.
 
 ## A class or workshop
 
-To give a group of people accounts at once, open **Add several people** under
-**Settings → Access**. Choose how many accounts, their role and download
-scope, and either a name prefix, which gives `student-01`, `student-02` and
-so on, or random friendly usernames. **Create invite links** then gives every
-account its own one-time link, so that each person sets their own password.
+To give a group of people accounts at once, a server administrator opens
+**Settings → Accounts → Add several people**, and a project administrator
+opens **Settings → Members → Add several people** (which grants only that
+project). Choose how many accounts, their role and download scope, and
+either a name prefix, which gives `student-01`, `student-02` and so on, or
+random friendly usernames. **Create invite links** then gives every account
+its own one-time link, so that each person sets their own password.
 
 If handing out links is impractical, **Create with generated passwords**
 makes the passwords for you instead, after you confirm that you understand
 the risk. Shared passwords are weaker than invite links, since you know them
-too, so keep them to short, supervised sessions.
-
-On the command line, the same is:
-
-```console
-$ ridal project user add-bulk --count 20 --prefix student
-```
-
-`--random-names` uses friendly usernames instead of the prefix. `--passwords`
-generates passwords, and must be given together with
-`--i-know-what-i-am-doing`. The passwords are written to `passwords.txt`
-rather than printed, since terminals are often logged. Hand them out, then
-delete the file.
+too, so keep them to short, supervised sessions. Administrator accounts are
+never made this way.
 
 ## Sessions and passwords
 
 A sign-in lasts 14 days. Passwords are stored only as Argon2id hashes, and
-invite links only as hashes, in `ridal_data/users.json`, which is readable by
-its owner only. Deleting `ridal_data/session.key` signs everyone out.
+invite links only as hashes, in the site's `accounts.json`, which is readable
+by its owner only. A project's `ridal_data/users.json` holds only memberships
+and the access policy — no passwords. Deleting the site's `session.key`
+signs everyone out.
 
-## Publishing a finished project
+## Publishing a finished site
 
 `ridal server start --read-only` makes everyone a `viewer`, whatever their
-account says, and accepts no changes at all. A read-only server needs no
-accounts, so it is a simple way to publish a finished project for others to
+account says, and accepts no changes at all. A read-only site needs no
+accounts, so it is a simple way to publish finished projects for others to
 browse. It still belongs behind HTTPS.

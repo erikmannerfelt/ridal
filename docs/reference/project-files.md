@@ -20,17 +20,20 @@ my_survey/
       derived.json                derived items
     preferences/
       <user>.json                 one person's display preferences
-    users.json                    accounts and access policy
-    session.key                   signs login cookies
+    users.json                    this project's members, and its access policy
+    session.key                   signs login cookies (a lone project only)
     overrides.json                corrected radargram and group metadata
     revisions/, revisions.json    earlier revisions of replaced radargrams
     audit.json                    who added or removed radargrams, and when
+    catalog-summary.json          how many radargrams the catalog holds
     radargrams/                   radargrams uploaded through the browser
     cache/                        derived data; safe to delete
 ```
 
-Several of these only appear once they are needed. For example, a project
-that has never had accounts has no `users.json` or `session.key`.
+Several of these only appear once they are needed. `users.json` is written
+when the project gets its first member; `session.key` only exists for a
+project served on its own, since a [site](../deploy/sites) signs everyone in
+at the site root instead.
 
 ## What to keep
 
@@ -41,16 +44,56 @@ control if the project is in a git repository. The `.gitignore` that
 
 `cache/` is **derived**. Deleting it is always safe; Ridal rebuilds it. It
 contains a `CACHEDIR.TAG`, so backup tools that honour the convention skip it.
+`catalog-summary.json` is derived too: it is the catalog's size, rewritten
+whenever the catalog is scanned, and read by the site landing page so that it
+does not have to open every project.
 
-`users.json` and `session.key` are **secrets**. Ridal creates both readable
-by their owner only, and the `.gitignore` keeps them out of git. Deleting
-`session.key` signs everyone out.
+`session.key` (for a project served on its own) and a site's `accounts.json`
+and `session.key` are **secrets**. Ridal creates them readable by their owner
+only, and the `.gitignore` keeps them out of git. Deleting `session.key`
+signs everyone out. A project's `users.json` holds only members and the
+access policy — no passwords — once the project belongs to a site.
 
 :::{note}
 Projects made with Ridal 0.6 kept these entries directly beside `ridal.toml`.
 Ridal refuses to open such a project rather than showing it as empty.
 `ridal project migrate` moves it into `ridal_data/`.
 :::
+
+## A site
+
+A **site** is a directory with a `ridal-site.toml` and a `projects/`
+directory of ordinary projects. `ridal site init` creates one; see
+{doc}`../deploy/sites` for what it is for. It owns identity, and each project
+owns its data:
+
+```text
+my_site/
+  ridal-site.toml      the site's name, format version and archived keys
+  accounts.json        every account (readable by its owner only)
+  session.key          signs everyone's login cookie (readable by its owner only)
+  audit.json           who changed accounts, memberships and projects
+  preferences/
+    <name>.json        one person's site-wide settings, such as the theme
+  projects/
+    dronbreen/
+      ridal.toml
+      ridal_data/
+        users.json     members of this project, and its access policy
+        ...
+    share-anna/
+```
+
+Adding or removing a project is a directory move: `ridal site project add`
+creates an empty one, and copying an existing project directory into
+`projects/` adds it. Archiving — recorded in `ridal-site.toml`'s `archived`
+list — makes a project read-only without changing the directory, so it stays
+portable.
+
+`accounts.json` and the site's `session.key` are written readable by their
+owner only, exactly as a lone project's secrets are. The `audit.json` is a
+record, not a security control: anyone who can edit the site directory can
+edit it.
 
 ## `ridal.toml`
 

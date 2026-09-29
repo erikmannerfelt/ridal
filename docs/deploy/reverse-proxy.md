@@ -24,10 +24,10 @@ browser ──HTTPS──▶ reverse proxy ──HTTP──▶ Ridal on 127.0.0.
 ```
 
 Ridal guards against the obvious mistakes. Asked to listen on a network
-address rather than `127.0.0.1`, it refuses to start if the project has
-accounts, unless given `--allow-insecure-login`, and it refuses to start
-for a project without accounts, unless given `--read-only`, since anyone who
-could reach it could change the interpretations.
+address rather than `127.0.0.1`, a site refuses to start if it has accounts,
+unless given `--allow-insecure-login`, and it refuses to start for a site
+without accounts, unless given `--read-only`, since anyone who could reach it
+could change the interpretations.
 
 What Ridal **cannot** check is the proxy. Behind a proxy, every request
 reaches Ridal over plain HTTP from the local machine, whether the browser
@@ -47,7 +47,7 @@ Configuring the proxy for HTTPS, and only HTTPS, is up to you.
   it cannot tell whether the browser used HTTPS.
 - Keep Ridal on `127.0.0.1` (the default for `ridal server start`), so that
   it cannot be reached except through the proxy.
-- Treat invite links like passwords. `ridal project user add` prints only the
+- Treat invite links like passwords. `ridal site account add` prints only the
   path, `/invite/...`; put your `https://` address in front of it, and send
   it the way you would send a password.
 - Only use `--allow-insecure-login` when TLS really is handled in front of
