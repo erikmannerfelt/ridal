@@ -38,7 +38,7 @@ use crate::interp::derived_points::{self, DerivedPointsExport};
 use crate::interp::level2::{self, RadargramGeometry};
 use crate::interp::{source, writer};
 use crate::project::derived::{self, Audience, DerivedError, DerivedItem, DerivedSet, Scope};
-use crate::project::users::{DownloadScope, Role};
+use crate::project::roles::{DownloadScope, Role};
 use crate::project::{interpretations, layers};
 
 fn derived_error(error: DerivedError) -> ApiError {

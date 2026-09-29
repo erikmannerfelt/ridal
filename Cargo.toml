@@ -61,6 +61,11 @@ rhai = { version = "1", features = ["sync", "internals"] }
 
 # Web server and browser GUI (feature "server"). See tracking issue #115.
 axum = { version = "0.8", optional = true }
+# `ServiceExt::oneshot`, so the site router can delegate a project's routes to
+# that project's own `build_router` by rewriting the URI and calling it
+# in-process (#214). A dev-dependency too, where the route tests use the same
+# method directly.
+tower = { version = "0.5", features = ["util"], optional = true }
 # "time" is for the render-permit acquisition timeout in routes.rs, which
 # turns an overloaded server into a 503 instead of an unbounded queue.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs"], optional = true }
@@ -123,6 +128,7 @@ python = ["pyo3", "numpy"]
 server = [
     "argon2",
     "axum",
+    "tower",
     "futures-util",
     "tokio",
     "tokio-util",

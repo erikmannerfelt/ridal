@@ -962,6 +962,73 @@ dialog th {
   max-width: 60ch;
 }
 
+/* The landing page's project list (#214). A card per project rather than a
+ * table: the row holds a link, a badge and, for a server administrator,
+ * management controls that a comparison layout would not fit. */
+.project-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: var(--space-3);
+  max-width: 60rem;
+}
+
+.project-card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-md);
+}
+
+.project-name {
+  font-weight: 600;
+  font-size: var(--text-lg);
+}
+
+.project-badge {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.project-role {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+/* How many people belong to the project, and how many radargrams its
+ * catalog holds. Counts only: the names are on the project's own settings
+ * page, and the radargrams on its catalog. */
+.project-members,
+.project-radargrams {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.project-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* The read-only memberships overview on the site settings page: one line per
+ * account, so it reads as a directory rather than a document. */
+.membership-list {
+  margin: var(--space-3) 0;
+  padding-left: var(--space-5);
+  max-width: 60rem;
+}
+
+.membership-list li {
+  margin-bottom: var(--space-1);
+}
+
 .hint {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
@@ -1425,18 +1492,22 @@ button.danger:disabled {
   font-size: var(--text-sm);
 }
 
-/* The Access section stacks three blocks that arrived from two different
- * places -- a form styled like the layers page's and one styled like the
- * settings page's -- and they were laid out to different widths and with
- * no gap, so two grey panels of different sizes met edge to edge and read
- * as one broken thing. One width, one gap. */
+/* The Members and Access sections stack grey blocks that arrived from
+ * different places -- a form styled like the layers page's and one styled
+ * like the settings page's -- and they were laid out to different widths
+ * and with no gap, so two grey panels of different sizes met edge to edge
+ * and read as one broken thing. One width, one gap. */
+#members-section .add-layer,
+#members-section .settings-form,
+#members-section .warning,
 #access-section .add-layer,
 #access-section .settings-form,
-#access-section .bulk-users,
 #access-section .warning {
   max-width: 44rem;
 }
 
+#members-section .add-layer,
+#members-section .settings-form,
 #access-section .add-layer,
 #access-section .settings-form {
   margin-top: var(--space-5);

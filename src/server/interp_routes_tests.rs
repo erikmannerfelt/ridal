@@ -1416,7 +1416,7 @@ async fn dataset_downloads_work_without_a_project() {
 async fn the_default_profile_round_trips_through_the_settings_api() {
     let (dir, app) = project_app(true);
 
-    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (status, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["project"], true);
     // Split since #131: what the Project section may do is an operator
@@ -1434,14 +1434,14 @@ async fn the_default_profile_round_trips_through_the_settings_api() {
 
     let (status, _, _) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_profile": "abslog"}),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(body["default_profile"], "abslog");
 
     // And on disk, so it survives a restart.
@@ -1633,7 +1633,7 @@ async fn another_users_interpretation_can_still_be_read() {
 async fn the_default_horizontal_scale_round_trips_and_reaches_the_viewer() {
     let (dir, app) = project_app(true);
 
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     assert!(body["default_xscale"].is_null(), "unset to begin with");
     assert!(
         body["xscales"]
@@ -1646,14 +1646,14 @@ async fn the_default_horizontal_scale_round_trips_and_reaches_the_viewer() {
 
     let (status, _, _) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_xscale": 2.0}),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(body["default_xscale"], 2.0);
     let marker = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
     assert!(marker.contains("default_xscale = 2.0"), "{marker}");
@@ -1674,7 +1674,7 @@ async fn one_times_is_stored_as_no_preference_and_odd_scales_are_refused() {
     let (dir, app) = project_app(true);
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_xscale": 4.0}),
         None,
     )
@@ -1684,7 +1684,7 @@ async fn one_times_is_stored_as_no_preference_and_odd_scales_are_refused() {
     // leaves the file rather than being written as 1.0.
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_xscale": 1.0}),
         None,
     )
@@ -1704,7 +1704,7 @@ async fn one_times_is_stored_as_no_preference_and_odd_scales_are_refused() {
     // stretched with no dropdown entry to undo it.
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_xscale": 3.7}),
         None,
     )
@@ -1721,7 +1721,7 @@ async fn the_default_profile_is_what_pages_render_with() {
     let (_dir, app) = project_app(true);
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_profile": "abslog"}),
         None,
     )
@@ -1749,7 +1749,7 @@ async fn an_unknown_default_profile_is_refused() {
     let (_dir, app) = project_app(true);
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_profile": "nope"}),
         None,
     )
@@ -1762,7 +1762,7 @@ async fn an_unknown_default_profile_is_refused() {
 #[serial_test::serial(netcdf)]
 async fn the_default_profile_can_be_cleared() {
     let (_dir, app) = project_app(true);
-    let settings = "/api/v1/project/settings";
+    let settings = "/api/v1/settings";
     put(
         &app,
         settings,
@@ -1788,7 +1788,7 @@ async fn settings_are_read_only_where_writes_are() {
     let (_dir, app) = project_app(false);
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_profile": "abslog"}),
         None,
     )
@@ -1797,7 +1797,7 @@ async fn settings_are_read_only_where_writes_are() {
     assert_eq!(body["error"]["code"], "read_only");
 
     // Reading still works, and the page says why the form is inert.
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(body["can_edit_project"], false);
     let (status, html) = page(&app, "/settings").await;
     assert_eq!(status, StatusCode::OK);
@@ -1820,7 +1820,7 @@ async fn basemaps_round_trip_through_the_settings_api() {
 
     // A project that has defined none still offers the built-in, or every
     // map in the GUI would draw nothing.
-    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (status, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["basemaps"].as_array().unwrap().len(), 1);
     assert_eq!(body["basemaps"][0]["id"], "esri-world-imagery");
@@ -1829,7 +1829,7 @@ async fn basemaps_round_trip_through_the_settings_api() {
 
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({
             "basemaps": [a_basemap("osm")],
             "default_basemap": "osm",
@@ -1839,7 +1839,7 @@ async fn basemaps_round_trip_through_the_settings_api() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     // Both lists: what may be chosen (with the built-in first) and what may
     // be edited (the project's own).
     let offered: Vec<&str> = body["basemaps"]
@@ -1884,7 +1884,7 @@ async fn a_basemap_that_could_not_be_drawn_is_refused() {
     ] {
         let (status, _, body) = put(
             &app,
-            "/api/v1/project/settings",
+            "/api/v1/settings",
             &serde_json::json!({"basemaps": [entry]}),
             None,
         )
@@ -1894,7 +1894,7 @@ async fn a_basemap_that_could_not_be_drawn_is_refused() {
     }
 
     // And nothing was stored on the way to refusing.
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(body["project_basemaps"].as_array().unwrap().len(), 0);
 }
 
@@ -1904,7 +1904,7 @@ async fn a_default_basemap_nothing_offers_is_refused() {
     let (_dir, app) = project_app(true);
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_basemap": "nope"}),
         None,
     )
@@ -1920,7 +1920,7 @@ async fn each_half_of_the_settings_page_leaves_the_other_alone() {
     // than "clear it", or saving a basemap would quietly drop the project's
     // default profile -- and nobody would connect the two.
     let (_dir, app) = project_app(true);
-    let settings = "/api/v1/project/settings";
+    let settings = "/api/v1/settings";
 
     put(
         &app,
@@ -1965,7 +1965,7 @@ async fn removing_a_basemap_that_was_the_default_does_not_fail() {
     // An unset default means the first offered, which is where a dangling
     // one would land anyway -- so this is a removal, not a conflict.
     let (_dir, app) = project_app(true);
-    let settings = "/api/v1/project/settings";
+    let settings = "/api/v1/settings";
     put(
         &app,
         settings,
@@ -2002,7 +2002,7 @@ async fn a_hand_broken_basemap_costs_that_basemap_and_not_the_page() {
     // Reopened, because the config is read when the project is opened.
     let app = app_for(dir.path(), true);
 
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     let offered: Vec<&str> = body["basemaps"]
         .as_array()
         .unwrap()
@@ -2027,7 +2027,7 @@ async fn overlays_round_trip_and_reach_every_page_with_a_map() {
     // the catalog and the viewer can switch on.
     let (dir, app) = project_app(true);
 
-    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (status, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["overlays"].as_array().unwrap().len(), 0);
 
@@ -2043,7 +2043,7 @@ async fn overlays_round_trip_and_reach_every_page_with_a_map() {
     });
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({ "overlays": [stakes] }),
         None,
     )
@@ -2087,7 +2087,7 @@ async fn an_overlay_that_could_not_be_drawn_is_refused() {
     ] {
         let (status, _, body) = put(
             &app,
-            "/api/v1/project/settings",
+            "/api/v1/settings",
             &serde_json::json!({ "overlays": [entry] }),
             None,
         )
@@ -2096,7 +2096,7 @@ async fn an_overlay_that_could_not_be_drawn_is_refused() {
         assert_eq!(body["error"]["code"], "invalid_overlay", "{body}");
     }
 
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(body["overlays"].as_array().unwrap().len(), 0);
 }
 
@@ -2106,7 +2106,7 @@ async fn saving_overlays_leaves_the_basemaps_alone_and_the_other_way_round() {
     // Three sections of one settings page write one file. Each sends only
     // its own half, and must not clear the others'.
     let (_dir, app) = project_app(true);
-    let settings = "/api/v1/project/settings";
+    let settings = "/api/v1/settings";
 
     put(
         &app,
@@ -2159,7 +2159,7 @@ async fn a_hand_broken_overlay_costs_that_overlay_and_not_the_page() {
     .unwrap();
 
     let app = app_for(dir.path(), true);
-    let (_, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (_, _, body) = get(&app, "/api/v1/settings").await;
     // Both are listed for editing -- the broken one has to be reachable to
     // be fixed -- while only the usable one is served to the maps.
     assert_eq!(body["overlays"].as_array().unwrap().len(), 2, "{body}");
@@ -2180,7 +2180,7 @@ async fn the_download_defaults_round_trip_and_reach_both_dialogs() {
     // than on Ridal's answer every time.
     let (dir, app) = project_app(true);
 
-    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (status, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(status, StatusCode::OK);
     assert!(body["default_spacing"].is_null(), "unset to begin with");
     assert!(
@@ -2194,7 +2194,7 @@ async fn the_download_defaults_round_trip_and_reach_both_dialogs() {
 
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_spacing": "10", "default_format": "csv"}),
         None,
     )
@@ -2239,7 +2239,7 @@ async fn a_download_default_the_dialogs_do_not_offer_is_refused() {
             "unknown_format",
         ),
     ] {
-        let (status, _, answer) = put(&app, "/api/v1/project/settings", &body, None).await;
+        let (status, _, answer) = put(&app, "/api/v1/settings", &body, None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
         assert_eq!(answer["error"]["code"], code, "{answer}");
     }
@@ -2254,7 +2254,7 @@ async fn the_neutral_download_defaults_are_stored_as_absence() {
     let (dir, app) = project_app(true);
     let (status, _, body) = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &serde_json::json!({"default_spacing": "auto", "default_format": "geojson"}),
         None,
     )
@@ -2307,7 +2307,7 @@ async fn a_page_follows_the_device_until_a_theme_is_chosen() {
 #[serial_test::serial(netcdf)]
 async fn a_bare_catalog_has_nothing_to_configure() {
     let (_dir, app) = bare_app();
-    let (status, _, body) = get(&app, "/api/v1/project/settings").await;
+    let (status, _, body) = get(&app, "/api/v1/settings").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["project"], false);
 

@@ -1,10 +1,11 @@
 # Running a server
 
-Sharing a project with colleagues over the network.
+Sharing projects with colleagues over the network.
 
 ```{toctree}
 :maxdepth: 1
 
+sites
 server
 accounts
 reverse-proxy

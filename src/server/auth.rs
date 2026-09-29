@@ -20,9 +20,19 @@
 //! before it expires, so deleting a user or demoting them would not take
 //! effect until their cookie aged out. Each account carries a credential
 //! version; the cookie carries the version it was minted at, and
-//! verification compares the two against `users.json`, which is a small file
-//! the server reads anyway. Changing a password, a role or a download scope
-//! bumps it, so user management takes effect immediately.
+//! verification compares the two against the site's `accounts.json`, which
+//! is a small file the server reads anyway. Changing a password or the
+//! server-administrator flag bumps it, and a membership is read afresh on
+//! every request, so account management takes effect immediately.
+//!
+//! # Where identity is decided
+//!
+//! Accounts belong to a site (#214). The site resolves the account behind a
+//! request once, works out the project [`Caller`] from it and the project's
+//! memberships ([`project_caller`]), and hands that to the project's router
+//! in the request extensions. A project never reads an account or a cookie
+//! itself. `ridal gui` has no accounts at all: its one person is the local
+//! [`DEFAULT_USER`](crate::identity::DEFAULT_USER) ([`local_caller`]).
 //!
 //! # Transport
 //!
@@ -48,15 +58,16 @@ use axum::response::{IntoResponse, Redirect, Response};
 use super::app::AppState;
 use super::routes::ApiError;
 use crate::identity::UserId;
+use crate::project::members;
+use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{DocumentStore, Expectation};
-use crate::project::users::{self, DownloadScope, Role, UserSet};
 use crate::project::Project;
+use crate::site::accounts;
 
 /// Name of the session cookie.
 pub const SESSION_COOKIE: &str = "ridal_session";
 
-/// The key file, relative to the project root. Created on first login, so a
-/// project that never authenticates never grows one.
+/// The key file, relative to the site root. Created on first sign-in.
 pub const SESSION_KEY_FILE: &str = "session.key";
 
 /// How long a session lasts. Long enough that a working week does not mean
@@ -81,7 +92,7 @@ impl std::fmt::Debug for SessionKey {
 }
 
 impl SessionKey {
-    /// Read the project's key, creating one if there is none.
+    /// Read the site's key, creating one if there is none.
     ///
     /// Stored as hex through the document store, which gives the atomic
     /// write and the owner-only mode for free. A key file that exists but
@@ -91,7 +102,7 @@ impl SessionKey {
     pub fn load_or_create(store: &DocumentStore) -> Result<SessionKey, String> {
         let path = Path::new(SESSION_KEY_FILE);
         if let Some(document) = store.read(path).map_err(|e| e.to_string())? {
-            return users::from_hex_32(&document.text)
+            return accounts::from_hex_32(&document.text)
                 .map(SessionKey)
                 .ok_or_else(|| {
                     format!(
@@ -105,7 +116,7 @@ impl SessionKey {
         let mut bytes = [0u8; 32];
         getrandom::fill(&mut bytes)
             .map_err(|e| format!("could not read system randomness: {e}"))?;
-        let text = format!("{}\n", users::to_hex(&bytes));
+        let text = format!("{}\n", accounts::to_hex(&bytes));
         match store.write_private(path, &text, &Expectation::Absent) {
             Ok(_) => Ok(SessionKey(bytes)),
             // Another process created it between the read and the write.
@@ -116,25 +127,12 @@ impl SessionKey {
                     .read(path)
                     .map_err(|e| e.to_string())?
                     .ok_or_else(|| "the session key vanished as it was written".to_string())?;
-                users::from_hex_32(&document.text)
+                accounts::from_hex_32(&document.text)
                     .map(SessionKey)
                     .ok_or_else(|| "the session key was written malformed".to_string())
             }
             Err(e) => Err(e.to_string()),
         }
-    }
-
-    /// A key for this process only, written nowhere (#187).
-    ///
-    /// What `ridal gui` signs with. Sessions last as long as the server
-    /// does, which is the honest lifetime for a viewer somebody started on
-    /// their own machine -- and it keeps a signing key out of a directory
-    /// that gets zipped and shared.
-    pub fn ephemeral() -> Result<SessionKey, String> {
-        let mut bytes = [0u8; 32];
-        getrandom::fill(&mut bytes)
-            .map_err(|e| format!("could not read system randomness: {e}"))?;
-        Ok(SessionKey(bytes))
     }
 
     fn sign(&self, user: &UserId, credential_version: u64, expires: i64) -> blake3::Hash {
@@ -192,7 +190,7 @@ pub fn cleared_cookie() -> String {
 }
 
 /// The value of one cookie from a request's `Cookie` header.
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(super) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -210,6 +208,9 @@ pub enum RoleCap {
     ReadOnlyServer,
     /// The catalog is not a project, so there is nowhere to write.
     NotAProject,
+    /// The project is archived: read-only, interpretations still
+    /// exportable (#214).
+    Archived,
 }
 
 /// Who is asking, and what they may do.
@@ -222,15 +223,21 @@ pub struct Caller {
     /// `None` for an anonymous reader, who has no preferences and can write
     /// nothing.
     pub user: Option<UserId>,
-    /// What the account says, before any server-wide cap.
-    pub account_role: Role,
+    /// Whether this account administers the whole site (#214): it creates
+    /// projects and accounts and acts as an administrator in every project.
+    pub server_admin: bool,
+    /// Whether the caller may see this project at all. False for a
+    /// non-member of a project that requires a login; the middleware answers
+    /// `404` rather than `403`, so the project's existence does not leak.
+    /// Always true outside a site.
+    pub visible: bool,
     /// What this caller may actually do here and now.
     pub role: Role,
     pub download: DownloadScope,
-    /// Set when [`Self::role`] is below [`Self::account_role`], so a refusal
-    /// can explain which of the two reasons it was.
+    /// Set when [`Self::role`] is capped below what the membership grants,
+    /// so a refusal can explain which of the two reasons it was.
     pub cap: Option<RoleCap>,
-    /// Whether the project has any accounts at all. Decides whether an
+    /// Whether the site has any accounts at all. Decides whether an
     /// anonymous caller is offered a login or told there is nothing to log
     /// in to.
     pub authentication_configured: bool,
@@ -238,11 +245,11 @@ pub struct Caller {
     /// by the middleware.
     ///
     /// It is not a property of the caller, and sits on this struct anyway
-    /// for two reasons: it comes out of the same `users.json` read, so
-    /// asking separately would parse the file twice on every request
-    /// including every image chunk; and two reads could disagree with each
-    /// other within one request, which is a strange way to decide whether
-    /// that request is allowed.
+    /// for two reasons: it comes out of the same membership read, so asking
+    /// separately would parse the file twice on every request including
+    /// every image chunk; and two reads could disagree with each other
+    /// within one request, which is a strange way to decide whether that
+    /// request is allowed.
     pub requires_login_to_read: bool,
 }
 
@@ -293,6 +300,13 @@ impl Caller {
                 "read_only",
                 format!("This server was started read-only, so you cannot {action}."),
             )),
+            Some(RoleCap::Archived) => Err(ApiError::forbidden(
+                "archived",
+                format!(
+                    "This project is archived, so you cannot {action}. An archived \
+                     project is read-only; its interpretations can still be exported."
+                ),
+            )),
             None if !self.is_authenticated() => Err(ApiError::unauthorized(
                 "authentication_required",
                 format!("Sign in to {action}."),
@@ -331,130 +345,139 @@ impl Caller {
     }
 }
 
-/// Resolve who is asking.
+/// The one person using `ridal gui`, or a project router built on its own
+/// (as the route tests do).
 ///
-/// Reads `users.json` per request. That is a small JSON file parsed on each
-/// call, which is the cost of revocation taking effect immediately rather
-/// than when a cookie ages out -- and it is the same order of work as the
-/// interpretation documents these routes already read. A cache here would
-/// have to be invalidated by the very writes it exists to notice.
-pub fn resolve(state: &AppState, headers: &HeaderMap, now: i64) -> Caller {
-    let Some(project) = state.project.as_ref() else {
-        // A bare directory of radargrams. There is no store to read and
-        // nothing to write, so every caller is a viewer.
+/// There are no accounts to sign in to: the person at the machine is the
+/// local [`DEFAULT_USER`](crate::identity::DEFAULT_USER) with everything an
+/// unauthenticated Ridal has always allowed. Not `admin`, because what that
+/// would add -- members and the access policy -- is about accounts a lone
+/// project does not have. A bare directory of radargrams has nowhere to
+/// write, so there everyone is a viewer.
+pub fn local_caller(has_project: bool, read_only: bool) -> Caller {
+    if !has_project {
         return Caller {
             user: None,
-            account_role: Role::Viewer,
+            server_admin: false,
+            visible: true,
             role: Role::Viewer,
             download: DownloadScope::All,
             cap: Some(RoleCap::NotAProject),
             authentication_configured: false,
             requires_login_to_read: false,
         };
-    };
-
-    // A user file that will not parse must fail *closed*, and closed here
-    // means more than "nobody is signed in".
-    //
-    // `UserSet::default()` was the obvious answer and the wrong one: its
-    // defaults are the permissive ones -- public read, anonymous downloads
-    // of everything -- which are right for a project that chose them and
-    // exactly backwards for one whose policy just became unreadable. A
-    // project that had required a login would have started serving its
-    // catalog to anyone the moment the file was damaged.
-    //
-    // So a damaged file denies everything until it is fixed: no accounts to
-    // match, no public read, no anonymous download. `launch` refuses to
-    // start on an unparsable file for the same reason, which is where an
-    // operator will actually see it; this covers the file being damaged
-    // under a running server.
-    let configured = match users::read(project.documents()) {
-        Ok(Some((set, _))) => Some(set),
-        Ok(None) => None,
-        Err(_) => Some(UserSet {
-            require_auth_to_read: true,
-            anonymous_download: DownloadScope::None,
-            users: Vec::new(),
-        }),
-    };
-
-    let (user, account_role, download) = match &configured {
-        None => (
-            // The migration case, and `ridal gui`'s no-login-step case: the
-            // local default user, with everything an unauthenticated Ridal
-            // has always allowed. Not `admin`, because the access settings
-            // it would unlock are about accounts this project does not have.
-            UserId::new(crate::identity::DEFAULT_USER).ok(),
-            Role::Operator,
-            DownloadScope::All,
-        ),
-        Some(set) => match authenticated_user(state, set, headers, now) {
-            Some(user) => (Some(user.name.clone()), user.role, user.download),
-            None => (None, Role::Viewer, set.anonymous_download),
-        },
-    };
-
-    // The cap is recorded whenever the server is read-only, not only when
-    // it actually lowers this caller's role. An anonymous caller is already
-    // a viewer, so the cap changes nothing about what they may do -- but it
-    // changes what they are *told*: without it, asking to write answers
-    // "sign in and try again", and signing in cannot make a write succeed
-    // on a read-only server. Reads are unaffected either way, because
-    // `require` checks the effective role before it looks at the cap.
-    let (role, cap) = if state.access.read_only {
-        (
-            account_role.min(Role::Viewer),
-            Some(RoleCap::ReadOnlyServer),
-        )
+    }
+    let (role, cap) = if read_only {
+        (Role::Viewer, Some(RoleCap::ReadOnlyServer))
     } else {
-        (account_role, None)
+        (Role::Operator, None)
     };
-
     Caller {
-        user,
-        account_role,
+        user: UserId::new(crate::identity::DEFAULT_USER).ok(),
+        server_admin: false,
+        visible: true,
         role,
-        download,
+        download: DownloadScope::All,
         cap,
-        requires_login_to_read: configured
-            .as_ref()
-            .is_some_and(|set| set.require_auth_to_read),
-        authentication_configured: configured.is_some(),
+        authentication_configured: false,
+        requires_login_to_read: false,
     }
 }
 
-/// The account a request's session cookie attests to, if it still holds.
-fn authenticated_user<'a>(
-    state: &AppState,
-    set: &'a UserSet,
+/// Who a site account is, as the site resolved it from the session cookie.
+pub struct SiteIdentity<'a> {
+    /// The signed-in account, or `None` for an anonymous caller.
+    pub user: Option<&'a UserId>,
+    pub server_admin: bool,
+    /// Whether the site has an account file at all.
+    pub accounts_configured: bool,
+}
+
+/// What a site account may do in one project (#214).
+///
+/// A server administrator acts as an administrator in every project, with
+/// nothing withheld. Anyone else gets their membership, or -- when the
+/// project is readable without a login -- the anonymous viewer role and
+/// download scope. A non-member of a project that requires a login is not
+/// visible, which the middleware turns into a `404` rather than naming the
+/// project and refusing it.
+///
+/// Reads the membership file per request: a small JSON file, and the cost
+/// of a change taking effect at once rather than when a cookie ages out. A
+/// file that will not parse fails closed ([`members::read_for_access`]).
+pub fn project_caller(
+    identity: &SiteIdentity<'_>,
+    project: Option<&Project>,
+    archived: bool,
+    read_only: bool,
+) -> Caller {
+    let members = project
+        .map(|project| members::read_for_access(project.documents()))
+        .unwrap_or_default();
+    let member = identity.user.and_then(|name| members.get(name));
+
+    let (granted, download) = if identity.server_admin {
+        (Role::Admin, DownloadScope::All)
+    } else if let Some(member) = member {
+        (member.role, member.download)
+    } else {
+        (Role::Viewer, members.anonymous_download)
+    };
+    let visible = identity.server_admin || member.is_some() || !members.require_auth_to_read;
+
+    // The cap is recorded whenever it applies, not only when it actually
+    // lowers the role, so a refusal names the reason rather than suggesting
+    // a sign-in that cannot help.
+    let (role, cap) = if read_only {
+        (granted.min(Role::Viewer), Some(RoleCap::ReadOnlyServer))
+    } else if archived {
+        (granted.min(Role::Viewer), Some(RoleCap::Archived))
+    } else {
+        (granted, None)
+    };
+
+    Caller {
+        user: identity.user.cloned(),
+        server_admin: identity.server_admin,
+        visible,
+        role,
+        download,
+        cap,
+        requires_login_to_read: members.require_auth_to_read,
+        authentication_configured: identity.accounts_configured,
+    }
+}
+
+/// The account behind a request's session cookie, if the signature holds and
+/// the account's credential version still matches the one it was minted at.
+///
+/// The version check is the revocation: a cookie minted before a password
+/// change, a demotion or a deletion names a version the account no longer
+/// has, or an account that is gone.
+pub fn signed_in<'a>(
+    accounts: &'a accounts::AccountSet,
+    key: &SessionKey,
     headers: &HeaderMap,
     now: i64,
-) -> Option<&'a users::User> {
+) -> Option<&'a accounts::Account> {
     let cookie = cookie_value(headers, SESSION_COOKIE)?;
-    let key = state.session_key().ok()?;
     let (name, version) = key.verify(&cookie, now)?;
-    let user = set.get(&name)?;
-    // The revocation check. A cookie minted before a password change, a
-    // demotion or a deletion names a version the account no longer has.
-    (user.credential_version == version).then_some(user)
+    let account = accounts.get(&name)?;
+    (account.credential_version == version).then_some(account)
 }
 
 /// Paths reachable without a session even when the project requires one to
-/// read.
-///
-/// The login page has to render, its form has to post, an invite has to be
-/// redeemable by someone with no account yet, and the page needs its own CSS
-/// -- a login screen that 401s its own stylesheet is not a login screen.
+/// read: the health check, and the assets a page needs to render at all.
 fn is_public_path(path: &str) -> bool {
-    path == "/login"
-        || path == "/favicon.ico"
-        || path == "/api/v1/health"
-        || path.starts_with("/static/")
-        || path.starts_with("/invite/")
-        || path.starts_with("/api/v1/auth/")
+    path == "/favicon.ico" || path == "/api/v1/health" || path.starts_with("/static/")
 }
 
-/// Resolve the caller once and hand it to every handler.
+/// Hand every handler its [`Caller`].
+///
+/// A project served by a site receives the caller the site resolved
+/// ([`project_caller`]); one that arrives without it fails closed, since the
+/// site is the only thing that may decide who someone is. A project served
+/// on its own is the local person ([`local_caller`]).
 ///
 /// Also enforces the one policy that has to apply to whole pages rather than
 /// to single routes: a project may require a login to read at all. Doing it
@@ -464,28 +487,75 @@ pub async fn middleware(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let caller = resolve(&state, request.headers(), now());
     let path = request.uri().path().to_string();
-
-    if caller.requires_login_to_read && !caller.is_authenticated() && !is_public_path(&path) {
-        return if path.starts_with("/api/") {
-            ApiError::unauthorized(
-                "authentication_required",
-                "This project requires a login to read.",
+    let caller = match (request.extensions().get::<Caller>(), &state.site) {
+        (Some(caller), _) => caller.clone(),
+        (None, None) => local_caller(state.project.is_some(), state.access.read_only),
+        (None, Some(_)) => {
+            return ApiError::internal(
+                "caller_unresolved",
+                "The request reached a project without an identity from its site. \
+                 This is a bug in how the router was assembled.",
             )
             .into_response()
-        } else {
-            // A person who followed a link wants the page, not a status
-            // code. `next` is dropped rather than round-tripped: reflecting
-            // a URL out of a request and back into a redirect is how open
-            // redirects happen, and the catalog is one click from the login
-            // page anyway.
-            Redirect::to("/login").into_response()
-        };
+        }
+    };
+
+    // Someone not signed in, on a project that needs a login, is asked to
+    // sign in. Asked before visibility is considered: they are not visible
+    // either, but "sign in" is the answer that can help, and the site gives
+    // the same answer for a key that does not exist, so it says nothing
+    // about which projects do.
+    if caller.requires_login_to_read
+        && !caller.is_authenticated()
+        && caller.authentication_configured
+        && !is_public_path(&path)
+    {
+        return login_required(&path);
+    }
+
+    // A project the caller may not see answers 404, not 403, so its
+    // existence does not leak (#214). A readable key is not a secret; access
+    // comes from membership.
+    if !caller.visible {
+        return hidden_project(&path);
     }
 
     request.extensions_mut().insert(caller);
     next.run(request).await
+}
+
+/// The answer to someone not signed in who asks for a project that needs a
+/// login: the login page for a page, a `401` for the API.
+pub fn login_required(path: &str) -> Response {
+    if path.starts_with("/api/") {
+        ApiError::unauthorized(
+            "authentication_required",
+            "This project requires a login to read.",
+        )
+        .into_response()
+    } else {
+        // A person who followed a link wants the page, not a status code.
+        // `next` is dropped rather than round-tripped: reflecting a URL out
+        // of a request and back into a redirect is how open redirects
+        // happen, and the site's projects are one click from the login page
+        // anyway.
+        Redirect::to("/login").into_response()
+    }
+}
+
+/// The answer for a project the caller may not see: the same `404` as for
+/// one that does not exist.
+pub fn hidden_project(path: &str) -> Response {
+    let error = ApiError::not_found(
+        "project_not_found",
+        "No such project, or you are not a member of it.",
+    );
+    if path.starts_with("/api/") {
+        error.into_response()
+    } else {
+        super::routes::PageError(error).into_response()
+    }
 }
 
 /// Seconds since the epoch.
@@ -509,13 +579,6 @@ impl<S: Send + Sync> FromRequestParts<S> for Caller {
             )
         })
     }
-}
-
-/// Load or create the signing key for a project.
-///
-/// Lazy, so a project that never authenticates never grows a `session.key`.
-pub fn project_session_key(project: &Project) -> Result<SessionKey, String> {
-    SessionKey::load_or_create(project.documents())
 }
 
 #[cfg(test)]
@@ -676,15 +739,8 @@ mod tests {
     }
 
     #[test]
-    fn the_login_page_and_its_assets_stay_reachable_without_one() {
-        for path in [
-            "/login",
-            "/static/app.css",
-            "/static/login.js",
-            "/invite/abc123",
-            "/api/v1/auth/login",
-            "/favicon.ico",
-        ] {
+    fn a_pages_assets_stay_reachable_without_a_session() {
+        for path in ["/static/app.css", "/static/login.js", "/favicon.ico"] {
             assert!(is_public_path(path), "{path}");
         }
         for path in ["/", "/view/line-01", "/api/v1/datasets", "/settings"] {
@@ -693,10 +749,72 @@ mod tests {
     }
 
     #[test]
+    fn the_local_person_operates_a_project_and_views_a_bare_directory() {
+        let local = local_caller(true, false);
+        assert_eq!(local.display_name(), crate::identity::DEFAULT_USER);
+        assert_eq!(local.role, Role::Operator);
+        assert!(!local.authentication_configured);
+
+        let read_only = local_caller(true, true);
+        assert_eq!(read_only.role, Role::Viewer);
+        assert_eq!(read_only.cap, Some(RoleCap::ReadOnlyServer));
+
+        let bare = local_caller(false, false);
+        assert!(bare.user.is_none());
+        assert_eq!(bare.cap, Some(RoleCap::NotAProject));
+    }
+
+    #[test]
+    fn a_site_caller_is_their_membership_capped_by_the_server_and_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        members::update(project.documents(), |set| {
+            set.require_auth_to_read = true;
+            set.upsert(&user("anna"), Role::Picker, DownloadScope::Picks);
+            Ok(())
+        })
+        .unwrap();
+        fn identity(name: &UserId, server_admin: bool) -> SiteIdentity<'_> {
+            SiteIdentity {
+                user: Some(name),
+                server_admin,
+                accounts_configured: true,
+            }
+        }
+        let (anna, bo, cy) = (&user("anna"), &user("bo"), &user("cy"));
+
+        let member = project_caller(&identity(anna, false), Some(&project), false, false);
+        assert!(member.visible);
+        assert_eq!(
+            (member.role, member.download),
+            (Role::Picker, DownloadScope::Picks)
+        );
+
+        // Not a member of a project that requires a login: invisible.
+        let stranger = project_caller(&identity(bo, false), Some(&project), false, false);
+        assert!(!stranger.visible);
+
+        // A server administrator is an administrator everywhere...
+        let admin = project_caller(&identity(cy, true), Some(&project), false, false);
+        assert!(admin.visible);
+        assert_eq!(admin.role, Role::Admin);
+        // ...until the project is archived or the server read-only, and the
+        // refusal says which.
+        let archived = project_caller(&identity(cy, true), Some(&project), true, false);
+        assert_eq!(
+            (archived.role, archived.cap),
+            (Role::Viewer, Some(RoleCap::Archived))
+        );
+        let read_only = project_caller(&identity(cy, true), Some(&project), true, true);
+        assert_eq!(read_only.cap, Some(RoleCap::ReadOnlyServer));
+    }
+
+    #[test]
     fn a_refusal_says_which_of_the_reasons_it_was() {
         let base = Caller {
             user: None,
-            account_role: Role::Viewer,
+            server_admin: false,
+            visible: true,
             role: Role::Viewer,
             download: DownloadScope::All,
             cap: None,
@@ -711,7 +829,6 @@ mod tests {
 
         let signed_in = Caller {
             user: Some(user("student")),
-            account_role: Role::Picker,
             role: Role::Picker,
             ..base.clone()
         };
@@ -724,7 +841,6 @@ mod tests {
 
         let read_only = Caller {
             user: Some(user("erik")),
-            account_role: Role::Admin,
             role: Role::Viewer,
             cap: Some(RoleCap::ReadOnlyServer),
             ..base.clone()
@@ -751,7 +867,8 @@ mod tests {
     fn download_scope_refusals_distinguish_anonymous_from_restricted() {
         let anonymous = Caller {
             user: None,
-            account_role: Role::Viewer,
+            server_admin: false,
+            visible: true,
             role: Role::Viewer,
             download: DownloadScope::None,
             cap: None,

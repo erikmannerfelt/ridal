@@ -37,7 +37,6 @@
    * and so these lists cannot drift from the download dialogs' (#166). */
   let spacings = [];
   let formats = [];
-  let themes = [];
   /* Two lists, as the settings endpoint answers them: `offeredBasemaps` is
    * what can be chosen (the project's, plus the built-in), and `basemaps` is
    * the project's own editable entries. Only the second is ever sent back. */
@@ -188,7 +187,7 @@
     clearError();
     let settings;
     try {
-      settings = await RIDAL.fetchJson("/api/v1/project/settings");
+      settings = await RIDAL.fetchJson(RIDAL.apiPath("settings"));
     } catch (error) {
       showError(`Could not load settings: ${error.message}`);
       return;
@@ -224,16 +223,9 @@
     renderOverlays();
     spacings = settings.spacings || [];
     formats = settings.formats || [];
-    themes = (settings.themes || []).map((name) => ({
-      value: name,
-      // Capitalised here rather than server-side: these are two words shown
-      // in one dropdown, not a vocabulary anything else reads.
-      label: name.charAt(0).toUpperCase() + name.slice(1),
-    }));
 
     fillProfiles(byId("my-profile"), "Project default", settings.my_profile);
     fillScales(byId("my-xscale"), settings.my_xscale, "Project default");
-    fillOptions(byId("my-theme"), themes, settings.my_theme, "Follow this device");
     // Absent means shown, which is what the viewer did before the toggle
     // existed -- so only an explicit `false` unticks it.
     const showPicks = byId("my-show-picks");
@@ -277,7 +269,37 @@
     }
     setStatus("storage-status", "");
 
-    if (canEditAccess) await loadAccess();
+    if (canEditAccess) await loadMembers();
+  }
+
+  /* The theme is a site-wide, personal setting (#214), so it has its own
+   * form and its own endpoint. "My project settings" carries the rest.
+   * Under `ridal gui` the site is this one project, and the same endpoint
+   * keeps the theme with it. */
+  const siteSettingsForm = byId("my-site-settings-form");
+  if (siteSettingsForm) {
+    siteSettingsForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearError();
+      setStatus("site-settings-status", "Saving…");
+      const theme = byId("site-theme").value || null;
+      try {
+        const saved = await send(
+          "PUT",
+          RIDAL.siteApiPath("site", "preferences"),
+          { theme },
+        );
+        if (saved.theme) {
+          document.documentElement.dataset.theme = saved.theme;
+        } else {
+          delete document.documentElement.dataset.theme;
+        }
+        setStatus("site-settings-status", "Saved");
+      } catch (error) {
+        showError(error.message);
+        setStatus("site-settings-status", "");
+      }
+    });
   }
 
   if (myForm) {
@@ -285,33 +307,25 @@
       event.preventDefault();
       clearError();
       setStatus("my-settings-status", "Saving…");
+      // The theme is set in "My site settings", so this body never mentions
+      // it and a save here leaves the theme alone.
+      const body = {
+        render_profile: byId("my-profile").value || null,
+        x_scale: Number(byId("my-xscale").value) || null,
+        show_picks: byId("my-show-picks").checked,
+        level2_spacing: byId("my-spacing").value || null,
+        level2_format: byId("my-format").value || null,
+        basemap: byId("my-basemap").value || null,
+      };
       try {
-        const saved = await send("PUT", "/api/v1/preferences", {
-          render_profile: byId("my-profile").value || null,
-          x_scale: Number(byId("my-xscale").value) || null,
-          theme: byId("my-theme").value || null,
-          show_picks: byId("my-show-picks").checked,
-          level2_spacing: byId("my-spacing").value || null,
-          level2_format: byId("my-format").value || null,
-          basemap: byId("my-basemap").value || null,
-        });
+        const saved = await send("PUT", RIDAL.apiPath("preferences"), body);
         byId("my-profile").value = saved.render_profile || "";
         // Read back as sent, including an explicit 1x -- and as "Project
         // default" when it was cleared.
         byId("my-xscale").value = saved.x_scale ? String(saved.x_scale) : "";
-        byId("my-theme").value = saved.theme || "";
         byId("my-show-picks").checked = saved.show_picks !== false;
         byId("my-spacing").value = saved.level2_spacing || "";
         byId("my-format").value = saved.level2_format || "";
-        // Applied to the page being looked at, not only stored: a theme
-        // that took effect on the next page load would read as a setting
-        // that did not work. The server writes the same attribute into
-        // every page it renders from here on.
-        if (saved.theme) {
-          document.documentElement.dataset.theme = saved.theme;
-        } else {
-          delete document.documentElement.dataset.theme;
-        }
         byId("my-basemap").value = saved.basemap || "";
         setStatus("my-settings-status", "Saved");
       } catch (error) {
@@ -328,7 +342,7 @@
       clearError();
       setStatus("settings-status", "Saving…");
       try {
-        const saved = await send("PUT", "/api/v1/project/settings", {
+        const saved = await send("PUT", RIDAL.apiPath("settings"), {
           default_profile: byId("default-profile").value || null,
           default_xscale: Number(byId("default-xscale").value) || null,
           default_spacing: byId("default-spacing").value || null,
@@ -372,7 +386,7 @@
         return;
       }
       try {
-        const saved = await send("PUT", "/api/v1/project/settings", {
+        const saved = await send("PUT", RIDAL.apiPath("settings"), {
           max_bytes: bytes,
         });
         byId("storage-used").textContent = formatBytes(saved.size_bytes);
@@ -569,7 +583,7 @@
       clearError();
       setStatus("basemap-status", "Saving…");
       try {
-        const saved = await send("PUT", "/api/v1/project/settings", {
+        const saved = await send("PUT", RIDAL.apiPath("settings"), {
           // Only the basemap half is sent; the render defaults above have
           // their own form, and the API leaves alone what a request does
           // not mention.
@@ -765,7 +779,7 @@
       clearError();
       setStatus("overlay-status", "Saving…");
       try {
-        const saved = await send("PUT", "/api/v1/project/settings", { overlays });
+        const saved = await send("PUT", RIDAL.apiPath("settings"), { overlays });
         await load("basemaps-section");
         setStatus(
           "overlay-status",
@@ -781,57 +795,90 @@
     });
   }
 
-  /* ---- Access ------------------------------------------------------- */
+  /* ---- Members and access ------------------------------------------- *
+   *
+   * A project holds memberships, not passwords (#214): who may do what
+   * here names an account on the site, which is created and reset on the
+   * site home. Role and download apply on change, the way the old people
+   * table worked; the policy form at the bottom is the one setting with a
+   * Save button.
+   *
+   * Only in a site: a project served by `ridal gui` has no accounts, so the
+   * page leaves both sections out there.
+   */
 
-  let access = null;
+  const membersSection = byId("members-section");
+  const membersForm = byId("add-member");
+  const bulkForm = byId("bulk-member-form");
+  const accessForm = byId("access-form");
+  const memberError = byId("member-error");
+  let members = [];
+  let roles = [];
+  let downloadScopes = [];
 
-  async function loadAccess() {
+  /* Members failures are shown beside the Members section. The page is long,
+   * and `#settings-error` sits at the top where nobody looking at the table
+   * or the form would see it (#214 feedback). */
+  const showMemberError = (message) => {
+    if (!memberError) return;
+    RIDAL.setMessage(memberError, message);
+    memberError.hidden = false;
+  };
+  const clearMemberError = () => {
+    if (!memberError) return;
+    memberError.hidden = true;
+    memberError.textContent = "";
+  };
+  if (membersForm) {
+    membersForm.elements.name.addEventListener("input", clearMemberError);
+  }
+
+  /* Read the membership list, which also carries the access policy and the
+   * role/download vocabularies the controls are built from. */
+  async function loadMembers() {
+    let access;
     try {
-      access = await RIDAL.fetchJson("/api/v1/users");
+      access = await RIDAL.fetchJson(RIDAL.apiPath("members"));
     } catch (error) {
-      showError(`Could not load accounts: ${error.message}`);
+      showError(`Could not load members: ${error.message}`);
       return;
     }
+    roles = access.roles || [];
+    downloadScopes = access.download_scopes || [];
+    members = access.members || [];
 
-    const addForm = byId("add-user");
-    if (addForm) {
-      fillNames(addForm.elements.role, access.roles || [], "picker");
-      // `all` to match what the API does when the field is omitted, and
-      // what the README says a new account gets. The form always submits
-      // its selection, so a different preselection here would silently
-      // be the real default and the documented one would be fiction.
-      fillNames(addForm.elements.download, access.download_scopes || [], "all");
+    if (membersForm) {
+      fillNames(membersForm.elements.role, roles, "picker");
+      // `all` to match what the API does when the field is omitted.
+      fillNames(membersForm.elements.download, downloadScopes, "all");
     }
-    const bulkForm = byId("bulk-user-form");
     if (bulkForm) {
-      fillNames(bulkForm.elements.role, access.roles || [], "picker");
-      fillNames(bulkForm.elements.download, access.download_scopes || [], "all");
-      const max = access.bulk?.max_accounts || 100;
-      bulkForm.elements.count.max = String(max);
+      fillNames(bulkForm.elements.role, roles, "picker");
+      fillNames(bulkForm.elements.download, downloadScopes, "all");
     }
     fillNames(
       byId("anonymous-download"),
-      access.download_scopes || [],
+      downloadScopes,
       access.anonymous_download,
     );
     byId("require-auth").checked = Boolean(access.require_auth_to_read);
 
-    renderUsers();
+    renderMembers();
   }
 
-  function renderUsers() {
-    const body = byId("users-table").querySelector("tbody");
+  function renderMembers() {
+    const table = byId("members-table");
+    if (!table) return;
+    const body = table.querySelector("tbody");
     body.replaceChildren();
-    for (const user of access.users || []) {
-      body.appendChild(userRow(user));
-    }
+    for (const member of members) body.appendChild(memberRow(member));
   }
 
-  function userRow(user) {
+  function memberRow(member) {
     const row = document.createElement("tr");
 
     const name = document.createElement("td");
-    name.textContent = user.name;
+    name.textContent = member.name;
     row.appendChild(name);
 
     /* Both selects apply on change rather than waiting for a Save, so
@@ -845,72 +892,53 @@
       const status = document.createElement("span");
       status.className = "row-status";
       select.addEventListener("change", () =>
-        updateUser(user.name, change(select.value), select, selected, status),
+        updateMember(member.name, change(select.value), select, selected, status),
       );
       cell.append(select, status);
       return cell;
     };
 
     row.appendChild(
-      cellWithSelect(access.roles || [], user.role, (value) => ({ role: value })),
+      cellWithSelect(roles, member.role, (value) => ({ role: value })),
     );
     row.appendChild(
-      cellWithSelect(access.download_scopes || [], user.download, (value) => ({
+      cellWithSelect(downloadScopes, member.download, (value) => ({
         download: value,
       })),
     );
 
-    const status = document.createElement("td");
-    // Three states worth telling apart: never activated, active, and active
-    // with a reset outstanding.
-    if (!user.activated) {
-      status.textContent = user.invite_pending
-        ? "invited, not yet activated"
-        : "no password and no invite";
-    } else {
-      status.textContent = user.invite_pending ? "reset pending" : "active";
-    }
-    row.appendChild(status);
-
-    /* One shape for both, differing only in colour: they are the same
-     * kind of control and one of them is more serious, which is what the
-     * colour is for. */
+    /* One shape for the action, matching the old people table: the same
+     * kind of control, and a change to the membership rather than to the
+     * account. */
     const actions = document.createElement("td");
     const group = document.createElement("div");
     group.className = "row-actions";
-
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.textContent = user.activated ? "Reset password" : "New invite link";
-    reset.addEventListener("click", () => reissue(user.name));
-    group.appendChild(reset);
-
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "danger";
     remove.textContent = "Remove";
-    remove.addEventListener("click", () => removeUser(user.name));
+    remove.addEventListener("click", () => removeMember(member.name));
     group.appendChild(remove);
-
     actions.appendChild(group);
     row.appendChild(actions);
 
     return row;
   }
 
-  async function updateUser(name, change, select, previous, status) {
+  async function updateMember(name, change, select, previous, status) {
     clearError();
+    clearMemberError();
     if (status) status.textContent = "Saving…";
     try {
-      await send("PUT", `/api/v1/users/${encodeURIComponent(name)}`, change);
+      await send("PUT", RIDAL.apiPath("members", name), change);
       // Redrawn from the server's answer, which also replaces this row --
       // so the "Saved" below is set on a row that is about to go. It is
       // still worth setting: a refusal leaves the old row in place, and
       // the difference between the two outcomes is the point.
       if (status) status.textContent = "Saved";
-      await loadAccess();
+      await loadMembers();
     } catch (error) {
-      showError(error.message);
+      showMemberError(error.message);
       if (status) status.textContent = "";
       // Put the control back to what the server still believes, so the page
       // never shows a role that was refused.
@@ -918,8 +946,27 @@
     }
   }
 
-  function showInvite(name, result) {
-    const box = byId("invite-result");
+  async function removeMember(name) {
+    // Worth a confirmation, and worth saying what it does not do: the picks
+    // are attributed data and stay, and the account itself is untouched.
+    const confirmed = window.confirm(
+      `Remove "${name}" from this project?\n\nTheir interpretations are kept ` +
+        `-- removing a member does not unmake the picks, and their account ` +
+        `and access to other projects are left alone.`,
+    );
+    if (!confirmed) return;
+    clearError();
+    clearMemberError();
+    try {
+      await send("DELETE", RIDAL.apiPath("members", name), {});
+      await loadMembers();
+    } catch (error) {
+      showMemberError(error.message);
+    }
+  }
+
+  /* The one moment a new member's invite token exists; it is shown once. */
+  function showMemberInvite(name, result) {
     byId("invite-who").textContent = name;
     byId("invite-days").textContent = String(result.invite_ttl_days);
     // Built from this page's own origin rather than from anything the
@@ -927,66 +974,62 @@
     // reliable idea what address the browser reached it on.
     byId("invite-link").textContent =
       window.location.origin + result.invite_path;
-    box.hidden = false;
+    byId("invite-result").hidden = false;
   }
 
-  async function reissue(name) {
-    clearError();
-    try {
-      const result = await send(
-        "POST",
-        `/api/v1/users/${encodeURIComponent(name)}/invite`,
-        {},
-      );
-      showInvite(name, result);
-      await loadAccess();
-    } catch (error) {
-      showError(error.message);
-    }
-  }
+  if (membersForm) {
+    const memberBody = () => ({
+      name: membersForm.elements.name.value.trim(),
+      role: membersForm.elements.role.value,
+      download: membersForm.elements.download.value,
+    });
 
-  async function removeUser(name) {
-    // Worth a confirmation, and worth saying what it does not do: the picks
-    // are attributed data and stay.
-    const confirmed = window.confirm(
-      `Remove the account "${name}"?\n\nTheir interpretations are kept — an ` +
-        `account going away does not unmake the picks. Only the account and ` +
-        `their personal settings are removed.`,
-    );
-    if (!confirmed) return;
-    clearError();
-    try {
-      await send("DELETE", `/api/v1/users/${encodeURIComponent(name)}`, {});
-      await loadAccess();
-    } catch (error) {
-      showError(error.message);
-    }
-  }
-
-  const addForm = byId("add-user");
-  if (addForm) {
-    addForm.addEventListener("submit", async (event) => {
+    /* Add an existing site account to this project. */
+    membersForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearError();
-      const name = addForm.elements.name.value.trim();
+      clearMemberError();
       try {
-        const result = await send("POST", "/api/v1/users", {
-          name,
-          role: addForm.elements.role.value,
-          download: addForm.elements.download.value,
-        });
-        addForm.reset();
-        showInvite(name, result);
-        await loadAccess();
+        await send("POST", RIDAL.apiPath("members"), memberBody());
+        membersForm.reset();
+        await loadMembers();
       } catch (error) {
-        showError(error.message);
+        showMemberError(error.message);
       }
     });
+
+    /* Or create the account and invite it into this project alone. A
+     * project administrator cannot grant more than that from here. */
+    const inviteButton = byId("invite-member");
+    if (inviteButton) {
+      inviteButton.addEventListener("click", async () => {
+        clearError();
+        clearMemberError();
+        const name = membersForm.elements.name.value.trim();
+        try {
+          const result = await send(
+            "POST",
+            RIDAL.apiPath("members", "invite"),
+            memberBody(),
+          );
+          membersForm.reset();
+          showMemberInvite(name, result);
+          await loadMembers();
+        } catch (error) {
+          showMemberError(error.message);
+        }
+      });
+    }
   }
 
+  /* Bulk creation, scoped to this project: the same panel the site's own
+   * accounts page has, but each account it makes belongs here and nowhere
+   * else. */
   function downloadCsv(filename, rows) {
     const csv = rows
-      .map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","))
+      .map((row) =>
+        row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
+      )
       .join("\n");
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
@@ -999,19 +1042,23 @@
     const box = byId("bulk-result");
     box.replaceChildren();
     const heading = document.createElement("h3");
-    heading.textContent = mode === "passwords" ? "Generated passwords" : "Invite links";
+    heading.textContent =
+      mode === "passwords" ? "Generated passwords" : "Invite links";
     box.appendChild(heading);
     const note = document.createElement("p");
     note.className = "hint";
-    note.textContent = mode === "passwords"
-      ? `${result.advisory} These passwords are shown once and are not stored.`
-      : "Each link works once. Send each person only their own link.";
+    note.textContent =
+      mode === "passwords"
+        ? `${result.advisory} These passwords are shown once and are not stored.`
+        : "Each link works once. Send each person only their own link.";
     box.appendChild(note);
 
     const table = document.createElement("table");
     table.className = "layers-table bulk-table";
     const header = document.createElement("tr");
-    for (const label of mode === "passwords" ? ["Name", "Password"] : ["Name", "Invite link"]) {
+    for (const label of mode === "passwords"
+      ? ["Name", "Password"]
+      : ["Name", "Invite link"]) {
       const cell = document.createElement("th");
       cell.textContent = label;
       header.appendChild(cell);
@@ -1023,9 +1070,10 @@
       const name = document.createElement("td");
       name.textContent = user.name;
       const value = document.createElement("td");
-      const text = mode === "passwords"
-        ? user.password
-        : window.location.origin + user.invite_path;
+      const text =
+        mode === "passwords"
+          ? user.password
+          : window.location.origin + user.invite_path;
       value.textContent = text;
       row.append(name, value);
       table.appendChild(row);
@@ -1047,11 +1095,7 @@
     box.hidden = false;
   }
 
-  const bulkForm = byId("bulk-user-form");
   if (bulkForm) {
-    /* Bulk warnings belong beside "Add several people", not at the top of
-     * the page: an error about a checkbox here read as an unrelated page
-     * fault when it was shown up there. */
     const bulkWarning = byId("bulk-warning");
     const showBulkWarning = (message) => {
       bulkWarning.textContent = message;
@@ -1064,10 +1108,6 @@
 
     const randomNames = byId("bulk-random-names");
     const prefixInput = bulkForm.elements.prefix;
-    /* Random names make the prefix irrelevant, so the field greys out rather
-     * than looking like it still contributes to the batch. Synced on load as
-     * well as on change, so a restored form cannot leave the box checked
-     * with an editable prefix beside it. */
     const syncPrefixState = () => {
       prefixInput.disabled = randomNames.checked;
     };
@@ -1080,26 +1120,27 @@
     const bulkBody = () => ({
       prefix: randomNames.checked ? "" : prefixInput.value.trim(),
       count: Number(bulkForm.elements.count.value),
+      random_names: randomNames.checked,
       role: bulkForm.elements.role.value,
       download: bulkForm.elements.download.value,
-      random_names: randomNames.checked,
     });
 
     bulkForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearBulkWarning();
       try {
-        const result = await send("POST", "/api/v1/users/bulk/invites", bulkBody());
+        const result = await send(
+          "POST",
+          RIDAL.apiPath("members", "bulk", "invites"),
+          bulkBody(),
+        );
         renderBulkResult(result, "invites");
-        await loadAccess();
+        await loadMembers();
       } catch (error) {
         showBulkWarning(error.message);
       }
     });
 
-    /* Acknowledging the risk is the fix the warning asks for, so ticking
-     * the box takes the warning away rather than leaving it to be
-     * dismissed some other way. */
     byId("bulk-risk").addEventListener("change", clearBulkWarning);
 
     byId("bulk-passwords").addEventListener("click", async () => {
@@ -1109,33 +1150,33 @@
       }
       if (!byId("bulk-risk").checked) {
         showBulkWarning(
-          "Generated passwords are shared secrets and less safe than invite links. " +
-            "Check the acknowledgement above, then press the button again.",
+          "Generated passwords are shared secrets and less safe than invite " +
+            "links. Check the acknowledgement above, then press the button again.",
         );
         return;
       }
       clearBulkWarning();
       try {
-        const result = await send("POST", "/api/v1/users/bulk/passwords", {
-          ...bulkBody(),
-          acknowledge_risk: true,
-        });
+        const result = await send(
+          "POST",
+          RIDAL.apiPath("members", "bulk", "passwords"),
+          { ...bulkBody(), acknowledge_risk: true },
+        );
         renderBulkResult(result, "passwords");
-        await loadAccess();
+        await loadMembers();
       } catch (error) {
         showBulkWarning(error.message);
       }
     });
   }
 
-  const accessForm = byId("access-form");
   if (accessForm) {
     accessForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearError();
       setStatus("access-status", "Saving…");
       try {
-        await send("PUT", "/api/v1/access", {
+        await send("PUT", RIDAL.apiPath("access"), {
           require_auth_to_read: byId("require-auth").checked,
           anonymous_download: byId("anonymous-download").value,
         });
@@ -1143,6 +1184,25 @@
       } catch (error) {
         showError(error.message);
         setStatus("access-status", "");
+      }
+    });
+  }
+
+  /* This project's slice of the site ledger, loaded when first opened. */
+  const history = byId("history");
+  if (history) {
+    let loaded = false;
+    history.addEventListener("toggle", async () => {
+      if (!history.open || loaded) return;
+      loaded = true;
+      const box = byId("history-table");
+      try {
+        const body = await RIDAL.fetchJson(RIDAL.apiPath("audit"));
+        box.replaceChildren(RIDAL.historyTable(body.entries || []));
+      } catch (error) {
+        loaded = false;
+        box.replaceChildren();
+        showError(`Could not load the history: ${error.message}`);
       }
     });
   }

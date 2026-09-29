@@ -28,6 +28,8 @@ pub enum Commands {
     Interp(InterpArgs),
     /// Create and inspect Ridal projects
     Project(ProjectArgs),
+    /// Create and manage a Ridal site: one server, many projects (#214)
+    Site(SiteArgs),
     /// Open a local browser GUI for one radargram or a directory of them
     #[cfg(feature = "server")]
     Gui(GuiArgs),
@@ -85,144 +87,6 @@ pub enum ProjectCommand {
     Info(ProjectInfoArgs),
     /// Move a project created by an older Ridal into its data directory
     Migrate(ProjectMigrateArgs),
-    /// Manage who may use the project's server
-    User(ProjectUserArgs),
-}
-
-#[derive(Debug, clap::Args)]
-pub struct ProjectUserArgs {
-    #[command(subcommand)]
-    pub command: ProjectUserCommand,
-}
-
-/// Account management from the command line.
-///
-/// This exists because of the chicken-and-egg at the start: a project's
-/// first administrator cannot be created through the browser, since there is
-/// no administrator to authorise it. It happens on the machine itself, which
-/// is the one place where access already implies authority.
-///
-/// Deliberately no `set-password`. A password is set by its owner through a
-/// one-time link, so it is never known to two people and there is no default
-/// to forget to change; a command that took one would undo that.
-#[derive(Debug, Subcommand)]
-pub enum ProjectUserCommand {
-    /// Create an account and print a one-time invite link
-    Add(ProjectUserAddArgs),
-    /// Create several accounts and print their invite links or passwords
-    AddBulk(ProjectUserAddBulkArgs),
-    /// List the accounts and what each may do
-    List(ProjectUserListArgs),
-    /// Change someone's role or download scope
-    Set(ProjectUserSetArgs),
-    /// Issue a fresh invite link, for a password reset or a lost one
-    Reset(ProjectUserResetArgs),
-    /// Remove an account. Their interpretations are kept.
-    Remove(ProjectUserRemoveArgs),
-}
-
-#[derive(Debug, clap::Args)]
-pub struct ProjectUserAddArgs {
-    /// The account name. Lowercase letters, digits, '-' and '_'; it is used
-    /// as a filename inside the project.
-    pub name: String,
-
-    /// What they may do: viewer, picker, operator or admin. Each level
-    /// includes the ones below it.
-    #[arg(long, default_value = "picker")]
-    pub role: String,
-
-    /// What they may download: none, results, picks, derived or all.
-    #[arg(long, default_value = "all")]
-    pub download: String,
-
-    /// A path inside the project. The project is found by searching upwards.
-    #[arg(long, default_value = ".")]
-    pub path: PathBuf,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct ProjectUserAddBulkArgs {
-    /// Generate names as prefix-01, prefix-02, and so on.
-    #[arg(long, default_value = "student")]
-    pub prefix: String,
-
-    /// Draw names from a fixed pool of friendly usernames instead of the
-    /// prefix. Fails if fewer unused names remain than were requested.
-    #[arg(long)]
-    pub random_names: bool,
-
-    /// Number of accounts to create.
-    #[arg(long)]
-    pub count: usize,
-
-    /// What they may do: viewer, picker, operator or admin.
-    #[arg(long, default_value = "picker")]
-    pub role: String,
-
-    /// What they may download: none, results, picks, derived or all.
-    #[arg(long, default_value = "all")]
-    pub download: String,
-
-    /// Generate shared passwords instead of one-time invite links.
-    #[arg(long)]
-    pub passwords: bool,
-
-    /// Required acknowledgement for generated shared passwords.
-    #[arg(long)]
-    pub i_know_what_i_am_doing: bool,
-
-    /// Where password mode writes `name<TAB>password` lines. They are never
-    /// printed to the terminal, which is often captured in a log; hand the
-    /// file out and then delete it.
-    #[arg(long, default_value = "passwords.txt")]
-    pub out: PathBuf,
-
-    /// A path inside the project. The project is found by searching upwards.
-    #[arg(long, default_value = ".")]
-    pub path: PathBuf,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct ProjectUserListArgs {
-    /// A path inside the project. The project is found by searching upwards.
-    #[arg(default_value = ".")]
-    pub path: PathBuf,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct ProjectUserSetArgs {
-    pub name: String,
-
-    /// New role: viewer, picker, operator or admin.
-    #[arg(long)]
-    pub role: Option<String>,
-
-    /// New download scope: none, results, picks, derived or all.
-    #[arg(long)]
-    pub download: Option<String>,
-
-    /// A path inside the project. The project is found by searching upwards.
-    #[arg(long, default_value = ".")]
-    pub path: PathBuf,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct ProjectUserResetArgs {
-    pub name: String,
-
-    /// A path inside the project. The project is found by searching upwards.
-    #[arg(long, default_value = ".")]
-    pub path: PathBuf,
-}
-
-#[derive(Debug, clap::Args)]
-pub struct ProjectUserRemoveArgs {
-    pub name: String,
-
-    /// A path inside the project. The project is found by searching upwards.
-    #[arg(long, default_value = ".")]
-    pub path: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -252,6 +116,206 @@ pub struct ProjectMigrateArgs {
     /// Print what would move, without moving anything.
     #[arg(long)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteArgs {
+    #[command(subcommand)]
+    pub command: SiteCommand,
+}
+
+/// A site is identity and hosting: server-wide accounts, one session key,
+/// and the projects themselves under `projects/`. A project stays portable;
+/// inside a site it is addressed by an immutable key.
+#[derive(Debug, Subcommand)]
+pub enum SiteCommand {
+    /// Create a site (a `ridal-site.toml` marker and a `projects/` directory)
+    Init(SiteInitArgs),
+    /// Manage server-wide accounts
+    Account(SiteAccountArgs),
+    /// Manage the site's projects
+    Project(SiteProjectArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteInitArgs {
+    /// Directory to create the site in. Created if it does not exist.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Human-facing site name. Cosmetic.
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountArgs {
+    #[command(subcommand)]
+    pub command: SiteAccountCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SiteAccountCommand {
+    /// Create an account and print a one-time invite link
+    Add(SiteAccountAddArgs),
+    /// Create several accounts, for a class or a workshop, with invite links
+    /// or generated passwords
+    AddBulk(SiteAccountAddBulkArgs),
+    /// List the accounts
+    List(SiteAccountListArgs),
+    /// Grant or revoke server administration
+    Set(SiteAccountSetArgs),
+    /// Issue a fresh invite link, for a password reset or a lost one
+    Reset(SiteAccountResetArgs),
+    /// Remove an account. It is removed from every project.
+    Remove(SiteAccountResetArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountAddArgs {
+    /// The account name. Lowercase letters, digits, '-' and '_'.
+    pub name: String,
+
+    /// Make this a server administrator: they create projects and accounts,
+    /// and act as an administrator in every project.
+    #[arg(long)]
+    pub server_admin: bool,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountAddBulkArgs {
+    /// Number of accounts to create.
+    #[arg(long)]
+    pub count: usize,
+
+    /// Name them prefix-01, prefix-02, and so on, after any that exist.
+    #[arg(long, default_value = "student")]
+    pub prefix: String,
+
+    /// Draw names from a fixed pool of friendly usernames instead of the
+    /// prefix. Fails if fewer unused names remain than were requested.
+    #[arg(long)]
+    pub random_names: bool,
+
+    /// Make each account a member of this project (its key). Without it, the
+    /// accounts belong to no project until one adds them.
+    #[arg(long)]
+    pub project: Option<String>,
+
+    /// Their role in --project: viewer, picker, operator or admin.
+    #[arg(long, default_value = "picker")]
+    pub role: String,
+
+    /// What they may download from --project: none, results, picks, derived
+    /// or all.
+    #[arg(long, default_value = "all")]
+    pub download: String,
+
+    /// Generate shared passwords instead of one-time invite links.
+    #[arg(long)]
+    pub passwords: bool,
+
+    /// Required with --passwords: generated passwords are shared secrets.
+    #[arg(long)]
+    pub i_know_what_i_am_doing: bool,
+
+    /// Where --passwords writes `name<TAB>password` lines. They are never
+    /// printed to the terminal, which is often captured in a log; hand the
+    /// file out and then delete it.
+    #[arg(long, default_value = "passwords.txt")]
+    pub out: PathBuf,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountListArgs {
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountSetArgs {
+    pub name: String,
+
+    /// Grant server administration.
+    #[arg(long)]
+    pub server_admin: bool,
+
+    /// Revoke server administration.
+    #[arg(long, conflicts_with = "server_admin")]
+    pub no_server_admin: bool,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteAccountResetArgs {
+    pub name: String,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteProjectArgs {
+    #[command(subcommand)]
+    pub command: SiteProjectCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SiteProjectCommand {
+    /// Create an empty project at a key
+    Add(SiteProjectAddArgs),
+    /// List the site's projects
+    List(SiteProjectListArgs),
+    /// Make a project read-only, keeping its interpretations exportable
+    Archive(SiteProjectKeyArgs),
+    /// Reverse `archive`
+    Unarchive(SiteProjectKeyArgs),
+    /// Delete an archived project and everything it owns, for good
+    Delete(SiteProjectKeyArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteProjectAddArgs {
+    /// The project's immutable key (lowercase letters, digits, '-' and '_').
+    pub key: String,
+
+    /// Human-facing display name. Cosmetic and editable.
+    #[arg(long)]
+    pub name: Option<String>,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteProjectListArgs {
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteProjectKeyArgs {
+    /// The project's key.
+    pub key: String,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -733,19 +797,12 @@ pub fn run(arguments: Args) -> Result<(), String> {
             ProjectCommand::Init(args) => project_init_command(&args),
             ProjectCommand::Info(args) => project_info_command(&args),
             ProjectCommand::Migrate(args) => project_migrate_command(&args),
-            ProjectCommand::User(args) => match args.command {
-                ProjectUserCommand::Add(args) => project_user_add_command(&args),
-                ProjectUserCommand::AddBulk(args) => project_user_add_bulk_command(&args),
-                ProjectUserCommand::List(args) => project_user_list_command(&args),
-                ProjectUserCommand::Set(args) => project_user_set_command(&args),
-                ProjectUserCommand::Reset(args) => project_user_reset_command(&args),
-                ProjectUserCommand::Remove(args) => project_user_remove_command(&args),
-            },
         },
         #[cfg(feature = "server")]
         Commands::Gui(args) => gui_command(args),
         #[cfg(feature = "server")]
         Commands::Server(args) => server_command(args),
+        Commands::Site(args) => site_command(args),
     }
 }
 
@@ -1197,59 +1254,11 @@ mod tests {
     use super::*;
     use clap::Parser;
 
-    /// A project to run `ridal project user` against.
+    #[cfg(feature = "server")]
     fn project_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         crate::project::Project::init(dir.path(), Some("test")).unwrap();
         dir
-    }
-
-    /// Where a project's accounts live, which since #187 is inside its
-    /// data directory rather than loose in the project root.
-    fn users_file(dir: &tempfile::TempDir) -> std::path::PathBuf {
-        dir.path()
-            .join(crate::project::DEFAULT_DATA_DIR)
-            .join(crate::project::users::USERS_FILE)
-    }
-
-    fn accounts(dir: &tempfile::TempDir) -> crate::project::users::UserSet {
-        let project = crate::project::Project::open(dir.path()).unwrap();
-        crate::project::users::read(project.documents())
-            .unwrap()
-            .map(|(set, _)| set)
-            .unwrap_or_default()
-    }
-
-    fn add(dir: &tempfile::TempDir, name: &str, role: &str) -> Result<(), String> {
-        super::project_user_add_command(&ProjectUserAddArgs {
-            name: name.to_string(),
-            role: role.to_string(),
-            download: "all".to_string(),
-            path: dir.path().to_path_buf(),
-        })
-    }
-
-    /// Run `ridal project user add-bulk` with the acknowledgement tied to
-    /// password mode, which is the only way it is ever useful.
-    fn add_bulk(
-        dir: &tempfile::TempDir,
-        prefix: &str,
-        count: usize,
-        role: &str,
-        passwords: bool,
-        random_names: bool,
-    ) -> Result<(), String> {
-        super::project_user_add_bulk_command(&ProjectUserAddBulkArgs {
-            prefix: prefix.to_string(),
-            random_names,
-            count,
-            role: role.to_string(),
-            download: "all".to_string(),
-            passwords,
-            i_know_what_i_am_doing: passwords,
-            out: dir.path().join("passwords.txt"),
-            path: dir.path().to_path_buf(),
-        })
     }
 
     #[cfg(feature = "server")]
@@ -1317,376 +1326,254 @@ mod tests {
         .unwrap();
     }
 
-    #[test]
-    fn adding_the_first_administrator_is_what_turns_authentication_on() {
-        // The bootstrap, and the only way out of the chicken-and-egg: there
-        // is no administrator to authorise creating the first one, so it
-        // happens on the machine itself.
-        let dir = project_dir();
-        assert!(!users_file(&dir).exists());
-
-        add(&dir, "erik", "admin").unwrap();
-
-        let set = accounts(&dir);
-        assert_eq!(set.users.len(), 1);
-        assert_eq!(set.users[0].role, crate::project::users::Role::Admin);
-        // Created without a password, with an invite outstanding. There is
-        // deliberately no default password to forget to change.
-        assert!(!set.users[0].is_activated());
-        assert!(set.users[0].invite.is_some());
-    }
-
-    #[test]
-    fn the_first_account_must_be_able_to_administer_the_project() {
-        // Creating any account switches authentication on for the whole
-        // project. Typing the default role would otherwise produce a
-        // project nobody can manage from the browser, reachable by
-        // omitting a flag.
-        let dir = project_dir();
-        let error = add(&dir, "student", "picker").unwrap_err();
-        assert!(
-            error.contains("only account") || error.contains("first account"),
-            "{error}"
-        );
-        assert!(error.contains("--role admin"), "{error}");
-        // And nothing was written, so the project is still open rather
-        // than half-converted.
-        assert!(!users_file(&dir).exists());
-
-        // With an administrator in place, the same command is fine.
-        add(&dir, "erik", "admin").unwrap();
-        add(&dir, "student", "picker").unwrap();
-        assert_eq!(accounts(&dir).users.len(), 2);
-    }
-
-    #[test]
-    fn a_duplicate_name_is_refused_rather_than_replacing_the_account() {
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-        let error = add(&dir, "erik", "picker").unwrap_err();
-        assert!(error.contains("already"), "{error}");
-        assert_eq!(
-            accounts(&dir).users[0].role,
-            crate::project::users::Role::Admin,
-            "the existing account must be untouched"
-        );
-    }
-
-    #[test]
-    fn an_unknown_role_or_scope_lists_the_ones_that_exist() {
-        let dir = project_dir();
-        let error = add(&dir, "erik", "editor").unwrap_err();
-        // `editor` is the one someone will reach for, and the message has to
-        // point at `operator` rather than just saying no.
-        assert!(error.contains("operator"), "{error}");
-
-        let error = super::project_user_add_command(&ProjectUserAddArgs {
-            name: "erik".to_string(),
-            role: "picker".to_string(),
-            download: "everything".to_string(),
-            path: dir.path().to_path_buf(),
-        })
-        .unwrap_err();
-        assert!(error.contains("derived"), "{error}");
-    }
-
-    #[test]
-    fn a_reset_replaces_the_outstanding_invite_rather_than_adding_one() {
-        // Two live tokens for one account would make "single use" a lie.
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-        let first = accounts(&dir).users[0].invite.clone().unwrap();
-
-        super::project_user_reset_command(&ProjectUserResetArgs {
-            name: "erik".to_string(),
-            path: dir.path().to_path_buf(),
-        })
-        .unwrap();
-
-        let second = accounts(&dir).users[0].invite.clone().unwrap();
-        assert_ne!(first.token_hash, second.token_hash);
-    }
-
-    #[test]
-    fn changing_a_role_signs_their_sessions_out() {
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-        add(&dir, "student", "picker").unwrap();
-        let before = accounts(&dir).users[1].credential_version;
-
-        super::project_user_set_command(&ProjectUserSetArgs {
-            name: "student".to_string(),
-            role: Some("viewer".to_string()),
-            download: None,
-            path: dir.path().to_path_buf(),
-        })
-        .unwrap();
-
-        let after = &accounts(&dir).users[1];
-        assert_eq!(after.role, crate::project::users::Role::Viewer);
-        assert!(
-            after.credential_version > before,
-            "a demotion must reach an open session"
-        );
-    }
-
-    #[test]
-    fn setting_nothing_is_refused_rather_than_silently_doing_nothing() {
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-        let error = super::project_user_set_command(&ProjectUserSetArgs {
-            name: "erik".to_string(),
-            role: None,
-            download: None,
-            path: dir.path().to_path_buf(),
-        })
-        .unwrap_err();
-        assert!(error.contains("--role"), "{error}");
-    }
-
-    #[test]
-    fn the_last_administrator_cannot_be_demoted_or_removed_from_the_command_line_either() {
-        // The same guard the HTTP route applies. Without it here, the
-        // command line would be a way around the check rather than the
-        // place it is most likely to be needed.
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-        add(&dir, "student", "picker").unwrap();
-
-        let error = super::project_user_set_command(&ProjectUserSetArgs {
-            name: "erik".to_string(),
-            role: Some("operator".to_string()),
-            download: None,
-            path: dir.path().to_path_buf(),
-        })
-        .unwrap_err();
-        assert!(error.contains("only administrator"), "{error}");
-
-        let error = super::project_user_remove_command(&ProjectUserRemoveArgs {
-            name: "erik".to_string(),
-            path: dir.path().to_path_buf(),
-        })
-        .unwrap_err();
-        assert!(error.contains("only administrator"), "{error}");
-    }
-
-    #[test]
-    fn removing_an_account_keeps_the_interpretations_it_authored() {
-        // Attributed scientific data. The person leaving does not unmake it.
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-        add(&dir, "student", "picker").unwrap();
-
-        let project = crate::project::Project::open(dir.path()).unwrap();
-        let radargram = crate::identity::RadargramId::new("line-01").unwrap();
-        let user = crate::identity::UserId::new("student").unwrap();
-        project
-            .documents()
-            .write(
-                std::path::Path::new("interpretations/line-01/student.gprinterp.json"),
-                r#"{"key":"line-01","features":[]}"#,
-                &crate::project::store::Expectation::Any,
-            )
-            .unwrap();
-
-        super::project_user_remove_command(&ProjectUserRemoveArgs {
-            name: "student".to_string(),
-            path: dir.path().to_path_buf(),
-        })
-        .unwrap();
-
-        assert!(accounts(&dir).get(&user).is_none());
-        assert_eq!(
-            crate::project::interpretations::list_users(project.documents(), &radargram).unwrap(),
-            vec!["student".to_string()],
-            "the picks must outlive the account"
-        );
-    }
-
-    #[test]
-    fn a_user_command_outside_a_project_says_how_to_make_one() {
+    /// A site with a server administrator and one project, `glac`.
+    fn site_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        let error = add(&dir, "erik", "admin").unwrap_err();
-        assert!(error.contains("ridal project init"), "{error}");
-    }
-
-    #[test]
-    fn user_subcommands_parse() {
-        let args = Args::parse_from(["ridal", "project", "user", "add", "erik", "--role", "admin"]);
-        match args.command {
-            Commands::Project(project) => match project.command {
-                ProjectCommand::User(user) => match user.command {
-                    ProjectUserCommand::Add(add) => {
-                        assert_eq!(add.name, "erik");
-                        assert_eq!(add.role, "admin");
-                        // The default that matters: a new account can
-                        // download everything unless someone decides
-                        // otherwise, which is what every Ridal did before.
-                        assert_eq!(add.download, "all");
-                    }
-                    other => panic!("{other:?}"),
-                },
-                other => panic!("{other:?}"),
-            },
-            _ => panic!("expected a project command"),
-        }
-    }
-
-    #[test]
-    fn bulk_user_command_parses_its_safety_flag() {
-        let args = Args::parse_from([
-            "ridal",
-            "project",
-            "user",
-            "add-bulk",
-            "--count",
-            "3",
-            "--prefix",
-            "student",
-            "--random-names",
-            "--passwords",
-            "--i-know-what-i-am-doing",
-        ]);
-        match args.command {
-            Commands::Project(project) => match project.command {
-                ProjectCommand::User(user) => match user.command {
-                    ProjectUserCommand::AddBulk(bulk) => {
-                        assert_eq!(bulk.count, 3);
-                        assert!(bulk.random_names);
-                        assert!(bulk.passwords);
-                        assert!(bulk.i_know_what_i_am_doing);
-                    }
-                    _ => panic!("expected add-bulk"),
-                },
-                _ => panic!("expected project user add-bulk"),
-            },
-            _ => panic!("expected project user add-bulk"),
-        }
-    }
-
-    #[test]
-    fn bulk_invites_from_the_command_line_create_each_account_and_continue() {
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-
-        add_bulk(&dir, "student", 3, "picker", false, false).unwrap();
-        let set = accounts(&dir);
-        assert_eq!(set.users.len(), 4);
-        let invited: Vec<_> = set
-            .users
-            .iter()
-            .filter(|user| user.name.as_str().starts_with("student-"))
-            .collect();
-        assert_eq!(invited.len(), 3);
-        assert!(
-            invited
-                .iter()
-                .all(|user| user.invite.is_some() && !user.is_activated()),
-            "an invite batch must not have passwords yet"
-        );
-
-        // A second run continues rather than colliding.
-        add_bulk(&dir, "student", 2, "picker", false, false).unwrap();
-        let set = accounts(&dir);
-        let id = |name: &str| crate::identity::UserId::new(name).unwrap();
-        assert!(set.get(&id("student-04")).is_some());
-        assert!(set.get(&id("student-05")).is_some());
-    }
-
-    #[test]
-    fn bulk_random_names_from_the_command_line_use_the_fixed_pool() {
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-
-        add_bulk(&dir, "student", 3, "viewer", false, true).unwrap();
-        let set = accounts(&dir);
-        let drawn: Vec<_> = set
-            .users
-            .iter()
-            .filter(|user| user.name.as_str() != "erik")
-            .collect();
-        assert_eq!(drawn.len(), 3);
-        for user in drawn {
-            assert!(
-                crate::project::users::RANDOM_USERNAMES.contains(&user.name.as_str()),
-                "{} is not from the pool",
-                user.name
-            );
-        }
-    }
-
-    #[test]
-    fn bulk_passwords_need_the_acknowledgement_flag() {
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-        let error = super::project_user_add_bulk_command(&ProjectUserAddBulkArgs {
-            prefix: "student".to_string(),
-            random_names: false,
-            count: 2,
-            role: "viewer".to_string(),
-            download: "all".to_string(),
-            passwords: true,
-            i_know_what_i_am_doing: false,
-            out: dir.path().join("passwords.txt"),
-            path: dir.path().to_path_buf(),
+        let site = crate::site::Site::init(dir.path(), Some("test")).unwrap();
+        crate::site::accounts::update(site.store(), |set| {
+            set.users.push(crate::site::accounts::Account::new(
+                crate::identity::UserId::new("anna").unwrap(),
+                true,
+            ));
+            Ok(())
         })
-        .unwrap_err();
-        assert!(error.contains("--i-know-what-i-am-doing"), "{error}");
+        .unwrap();
+        site.create_project(
+            &crate::identity::ProjectKey::new("glac").unwrap(),
+            None,
+            None,
+        )
+        .unwrap();
+        dir
+    }
+
+    fn add_bulk(dir: &std::path::Path, extra: &[&str]) -> Result<(), String> {
+        let mut argv = vec![
+            "ridal",
+            "site",
+            "account",
+            "add-bulk",
+            "--path",
+            dir.to_str().unwrap(),
+        ];
+        argv.extend_from_slice(extra);
+        match Args::try_parse_from(argv).unwrap().command {
+            Commands::Site(SiteArgs {
+                command:
+                    SiteCommand::Account(SiteAccountArgs {
+                        command: SiteAccountCommand::AddBulk(args),
+                    }),
+            }) => super::site_account_add_bulk_command(&args),
+            other => panic!("expected site account add-bulk, got {other:?}"),
+        }
+    }
+
+    fn site_accounts(dir: &std::path::Path) -> crate::site::accounts::AccountSet {
+        let site = crate::site::Site::open(dir).unwrap();
+        crate::site::accounts::read(site.store())
+            .unwrap()
+            .unwrap()
+            .0
     }
 
     #[test]
-    fn bulk_password_mode_refuses_administrators() {
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
-        let error = add_bulk(&dir, "boss", 1, "admin", true, false).unwrap_err();
-        assert!(error.contains("Administrator"), "{error}");
-    }
+    fn bulk_invites_from_the_command_line_carry_the_project() {
+        let dir = site_dir();
+        add_bulk(
+            dir.path(),
+            &["--count", "3", "--project", "glac", "--role", "viewer"],
+        )
+        .unwrap();
+        // Continuing a batch numbers after it rather than colliding.
+        add_bulk(dir.path(), &["--count", "1"]).unwrap();
 
-    #[test]
-    fn bulk_requires_an_existing_administrator() {
-        let dir = project_dir();
-        let error = add_bulk(&dir, "student", 2, "picker", false, false).unwrap_err();
-        assert!(error.contains("administrator"), "{error}");
+        let set = site_accounts(dir.path());
+        let names: Vec<&str> = set.users.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "anna",
+                "student-01",
+                "student-02",
+                "student-03",
+                "student-04"
+            ]
+        );
+        let invite = set.users[1].invite.as_ref().expect("an invite");
+        assert_eq!(invite.project.as_ref().unwrap().as_str(), "glac");
+        assert_eq!(invite.role, Some(crate::project::roles::Role::Viewer));
+        assert!(set.users[4].invite.as_ref().unwrap().project.is_none());
+        assert!(set.users.iter().skip(1).all(|a| a.password_hash.is_none()));
     }
 
     #[cfg(feature = "server")]
     #[test]
-    fn bulk_passwords_activate_accounts_and_write_a_handout() {
-        let dir = project_dir();
-        add(&dir, "erik", "admin").unwrap();
+    fn bulk_passwords_need_the_flag_refuse_admins_and_write_a_handout() {
+        let dir = site_dir();
+        let out = dir.path().join("handout.txt");
+        let out = out.to_str().unwrap();
+        let passwords = ["--count", "2", "--passwords", "--project", "glac"];
 
-        add_bulk(&dir, "student", 2, "viewer", true, false).unwrap();
-        let set = accounts(&dir);
-        let students: Vec<_> = set
-            .users
-            .iter()
-            .filter(|user| user.name.as_str().starts_with("student-"))
-            .collect();
-        assert_eq!(students.len(), 2);
-        for user in &students {
-            assert!(user.is_activated(), "{} has no password", user.name);
-            assert!(user.invite.is_none());
-            assert!(
-                user.password_hash
-                    .as_deref()
-                    .is_some_and(|hash| hash.starts_with("$argon2id$")),
-                "{} is not Argon2id-hashed",
-                user.name
-            );
-        }
+        let refused = add_bulk(dir.path(), &passwords).unwrap_err();
+        assert!(refused.contains("--i-know-what-i-am-doing"), "{refused}");
 
-        // The plaintext goes to the handout file and nowhere in users.json.
-        let handout =
-            std::fs::read_to_string(dir.path().join("passwords.txt")).expect("a handout file");
-        assert_eq!(handout.lines().count(), 2);
-        let users_text = std::fs::read_to_string(users_file(&dir)).unwrap();
-        for line in handout.lines() {
-            let (_, password) = line.split_once('\t').expect("name<TAB>password");
-            assert!(
-                !users_text.contains(password),
-                "a generated password reached users.json"
-            );
+        let mut admins = passwords.to_vec();
+        admins.extend(["--i-know-what-i-am-doing", "--role", "admin"]);
+        let refused = add_bulk(dir.path(), &admins).unwrap_err();
+        assert!(refused.contains("invite links"), "{refused}");
+        assert_eq!(site_accounts(dir.path()).users.len(), 1, "nothing created");
+
+        let mut ok = passwords.to_vec();
+        ok.extend(["--i-know-what-i-am-doing", "--out", out]);
+        add_bulk(dir.path(), &ok).unwrap();
+
+        let handout = std::fs::read_to_string(out).unwrap();
+        let lines: Vec<&str> = handout.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let (name, password) = lines[0].split_once('\t').unwrap();
+        let set = site_accounts(dir.path());
+        let account = set
+            .get(&crate::identity::UserId::new(name).unwrap())
+            .unwrap();
+        assert!(crate::site::accounts::verify_password(account, password));
+
+        // No invite to redeem, so the membership is there already.
+        let site = crate::site::Site::open(dir.path()).unwrap();
+        let project = site
+            .project(&crate::identity::ProjectKey::new("glac").unwrap())
+            .unwrap();
+        let (members, _) = crate::project::members::read(project.documents())
+            .unwrap()
+            .unwrap();
+        assert_eq!(members.members.len(), 2);
+    }
+
+    /// Run one `ridal site …` command line.
+    fn site(argv: &[&str]) -> Result<(), String> {
+        let mut full = vec!["ridal", "site"];
+        full.extend_from_slice(argv);
+        match Args::try_parse_from(full).unwrap().command {
+            Commands::Site(args) => super::site_command(args),
+            other => panic!("expected a site command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_site_is_managed_from_the_command_line_end_to_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        let name = |name: &str| crate::identity::UserId::new(name).unwrap();
+        let key = |key: &str| crate::identity::ProjectKey::new(key).unwrap();
+
+        site(&["init", root, "--name", "Course"]).unwrap();
+        assert!(site(&["init", root]).is_err(), "a site is made once");
+
+        // The first account has to be able to administer the site.
+        let refused = site(&["account", "add", "bo", "--path", root]).unwrap_err();
+        assert!(refused.contains("--server-admin"), "{refused}");
+        site(&["account", "add", "anna", "--server-admin", "--path", root]).unwrap();
+        site(&["account", "add", "bo", "--path", root]).unwrap();
+        assert!(site(&["account", "add", "bo", "--path", root]).is_err());
+        site(&["account", "list", root]).unwrap();
+
+        // Server administration: granted, and never taken from the last one.
+        assert!(site(&["account", "set", "bo", "--path", root]).is_err());
+        site(&["account", "set", "bo", "--server-admin", "--path", root]).unwrap();
+        site(&["account", "set", "bo", "--no-server-admin", "--path", root]).unwrap();
+        let refused = site(&[
+            "account",
+            "set",
+            "anna",
+            "--no-server-admin",
+            "--path",
+            root,
+        ])
+        .unwrap_err();
+        assert!(refused.contains("only server administrator"), "{refused}");
+        assert!(site(&["account", "set", "cy", "--server-admin", "--path", root]).is_err());
+        site(&["account", "reset", "bo", "--path", root]).unwrap();
+        assert!(site(&["account", "reset", "cy", "--path", root]).is_err());
+
+        // Projects, and the two steps to remove one.
+        site(&["project", "list", root]).unwrap();
+        site(&[
+            "project",
+            "add",
+            "glac",
+            "--name",
+            "Glaciology",
+            "--path",
+            root,
+        ])
+        .unwrap();
+        site(&["project", "archive", "glac", "--path", root]).unwrap();
+        site(&["project", "list", root]).unwrap();
+        site(&["project", "unarchive", "glac", "--path", root]).unwrap();
+        let refused = site(&["project", "delete", "glac", "--path", root]).unwrap_err();
+        assert!(refused.contains("Archive it first"), "{refused}");
+
+        // An archived project takes no new people.
+        site(&["project", "archive", "glac", "--path", root]).unwrap();
+        let refused = site(&[
+            "account",
+            "add-bulk",
+            "--count",
+            "1",
+            "--project",
+            "glac",
+            "--path",
+            root,
+        ])
+        .unwrap_err();
+        assert!(refused.contains("archived"), "{refused}");
+        site(&["project", "unarchive", "glac", "--path", root]).unwrap();
+
+        // Removing an account takes its membership with it.
+        let opened = crate::site::Site::open(dir.path()).unwrap();
+        let project = opened.project(&key("glac")).unwrap();
+        crate::project::members::update(project.documents(), |set| {
+            set.upsert(
+                &name("bo"),
+                crate::project::roles::Role::Picker,
+                crate::project::roles::DownloadScope::All,
+            );
+            Ok(())
+        })
+        .unwrap();
+        super::project_info_command(&ProjectInfoArgs {
+            path: project.root().to_path_buf(),
+        })
+        .unwrap();
+        site(&["account", "remove", "bo", "--path", root]).unwrap();
+        let (members, _) = crate::project::members::read(project.documents())
+            .unwrap()
+            .unwrap();
+        assert!(members.get(&name("bo")).is_none());
+        assert!(site(&["account", "remove", "bo", "--path", root]).is_err());
+
+        site(&["project", "archive", "glac", "--path", root]).unwrap();
+        site(&["project", "delete", "glac", "--path", root]).unwrap();
+        assert!(!dir.path().join("projects/glac").exists());
+
+        // Every change above is in the history, attributed to the command line.
+        let log = crate::site::audit::read(opened.store()).unwrap();
+        assert!(log.entries.len() >= 10, "{:?}", log.entries);
+        assert!(log.entries.iter().all(|entry| entry.actor == "cli"));
+    }
+
+    #[test]
+    fn a_site_command_outside_a_site_says_how_to_make_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let refused = site(&["account", "list", dir.path().to_str().unwrap()]).unwrap_err();
+        assert!(refused.contains("ridal site init"), "{refused}");
+    }
+
+    #[test]
+    fn a_batch_cannot_be_a_sites_first_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::site::Site::init(dir.path(), None).unwrap();
+        let refused = add_bulk(dir.path(), &["--count", "2"]).unwrap_err();
+        assert!(refused.contains("--server-admin"), "{refused}");
     }
 
     #[cfg(feature = "server")]
@@ -2081,23 +1968,15 @@ fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
         println!("Interpretations: none yet");
     }
 
-    // Said here too, because "who can reach this" is the first question
-    // anyone asks about a project they are about to serve, and the answer
-    // for a project with no accounts is "everyone who can reach the port".
-    match crate::project::users::read(project.documents()).map_err(|e| e.to_string())? {
+    // Who may use it inside a site. Memberships name site accounts, so a
+    // project on its own (`ridal gui`) has only its one local person.
+    match crate::project::members::read(project.documents()).map_err(|e| e.to_string())? {
         Some((set, _)) => {
-            println!("Accounts: {}", set.users.len());
-            for user in &set.users {
-                let state = if user.is_activated() {
-                    "active"
-                } else if user.invite.is_some() {
-                    "invited"
-                } else {
-                    "no password, no invite"
-                };
+            println!("Members (when served by a site): {}", set.members.len());
+            for member in &set.members {
                 println!(
-                    "  {} ({}, downloads: {}, {state})",
-                    user.name, user.role, user.download
+                    "  {} ({}, downloads: {})",
+                    member.name, member.role, member.download
                 );
             }
             println!(
@@ -2109,33 +1988,9 @@ fn project_info_command(args: &ProjectInfoArgs) -> Result<(), String> {
                 }
             );
         }
-        None => println!(
-            "Accounts: none -- everyone is '{}'. Create the first with \
-             `ridal project user add <name> --role admin`.",
-            crate::identity::DEFAULT_USER
-        ),
+        None => println!("Members: none"),
     }
     Ok(())
-}
-
-/// Open the project containing `path`, or say how to make one.
-fn open_project(path: &std::path::Path) -> Result<crate::project::Project, String> {
-    crate::project::Project::discover(path)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| {
-            format!(
-                "No Ridal project at or above {}. Run `ridal project init` to create one.",
-                path.display()
-            )
-        })
-}
-
-fn parse_role(value: &str) -> Result<crate::project::users::Role, String> {
-    crate::project::users::Role::parse(value)
-}
-
-fn parse_download(value: &str) -> Result<crate::project::users::DownloadScope, String> {
-    crate::project::users::DownloadScope::parse(value)
 }
 
 /// Print an invite link the way it can actually be used.
@@ -2146,7 +2001,7 @@ fn parse_download(value: &str) -> Result<crate::project::users::DownloadScope, S
 /// that looks authoritative and is wrong is worse than one that is
 /// obviously a fragment.
 fn print_invite(name: &str, token: &str, expires: i64) {
-    let days = crate::project::users::INVITE_TTL_DAYS;
+    let days = crate::site::accounts::invite::INVITE_TTL_DAYS;
     println!("Invite link for '{name}' (valid {days} days, single use):");
     println!("  /invite/{token}");
     println!("Prefix it with the address the server is reached on, e.g.");
@@ -2162,163 +2017,167 @@ fn print_invite(name: &str, token: &str, expires: i64) {
     );
 }
 
-fn project_user_add_command(args: &ProjectUserAddArgs) -> Result<(), String> {
-    let project = open_project(&args.path)?;
-    let name = crate::identity::UserId::new(args.name.clone())?;
-    let role = parse_role(&args.role)?;
-    let download = parse_download(&args.download)?;
-
-    let existing =
-        crate::project::users::is_configured(project.documents()).map_err(|e| e.to_string())?;
-    let (token, invite) = crate::project::users::mint_invite(chrono::Utc::now().timestamp())
-        .map_err(|e| e.to_string())?;
-
-    crate::project::users::update(project.documents(), |set| {
-        if set.get(&name).is_some() {
-            return Err(crate::project::users::UserError::Duplicate(
-                name.to_string(),
-            ));
-        }
-        // Creating any account switches authentication on for the whole
-        // project. If that first one cannot administer, the project becomes
-        // one where nobody can manage accounts or access policy from the
-        // browser -- recoverable only by coming back to this command, which
-        // is a strange state to reach by typing the default role.
-        if role < crate::project::users::Role::Admin
-            && !set
-                .users
-                .iter()
-                .any(|user| user.role == crate::project::users::Role::Admin)
-        {
-            return Err(crate::project::users::UserError::Rejected(format!(
-                "'{name}' would be the first account, and a {role} cannot manage \
-                 accounts or access settings. Creating it would switch \
-                 authentication on for this project with nobody able to \
-                 administer it. Create an administrator first:\n  \
-                 ridal project user add {name} --role admin"
-            )));
-        }
-        let mut user = crate::project::users::User::new(name.clone(), role, download);
-        user.invite = Some(invite.clone());
-        set.users.push(user);
-        Ok(())
-    })
-    .map_err(|e| e.to_string())?;
-
-    println!("Created '{name}' as {role} (downloads: {download}).");
-    println!();
-    print_invite(name.as_str(), &token, invite.expires);
-
-    // The moment a project stops being open, which is a bigger change than
-    // "one account exists" and is worth saying out loud once.
-    if !existing {
-        println!();
-        println!(
-            "This project now requires authentication. Anyone who was writing as \
-             '{}' will need an account; their existing interpretations are \
-             untouched and still stored under that name.",
-            crate::identity::DEFAULT_USER
-        );
-        // Deliberately *not* "restart the server". A running server reads
-        // the account file on every request, so this has already taken
-        // effect -- and telling an operator to restart invites them to
-        // believe it has not and go looking for why.
-        println!(
-            "A server already running on this project picks that up on its next \
-             request; there is nothing to restart."
-        );
+fn site_command(args: SiteArgs) -> Result<(), String> {
+    match args.command {
+        SiteCommand::Init(args) => site_init_command(&args),
+        SiteCommand::Account(args) => match args.command {
+            SiteAccountCommand::Add(args) => site_account_add_command(&args),
+            SiteAccountCommand::AddBulk(args) => site_account_add_bulk_command(&args),
+            SiteAccountCommand::List(args) => site_account_list_command(&args),
+            SiteAccountCommand::Set(args) => site_account_set_command(&args),
+            SiteAccountCommand::Reset(args) => site_account_reset_command(&args),
+            SiteAccountCommand::Remove(args) => site_account_remove_command(&args),
+        },
+        SiteCommand::Project(args) => match args.command {
+            SiteProjectCommand::Add(args) => site_project_add_command(&args),
+            SiteProjectCommand::List(args) => site_project_list_command(&args),
+            SiteProjectCommand::Archive(args) => site_project_archive_command(&args, true),
+            SiteProjectCommand::Unarchive(args) => site_project_archive_command(&args, false),
+            SiteProjectCommand::Delete(args) => site_project_delete_command(&args),
+        },
     }
+}
+
+/// Open the site containing `path`, or say how to make one.
+fn open_site(path: &std::path::Path) -> Result<crate::site::Site, String> {
+    crate::site::Site::discover(path)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "No Ridal site at or above {}. Run `ridal site init` to create one.",
+                path.display()
+            )
+        })
+}
+
+fn site_init_command(args: &SiteInitArgs) -> Result<(), String> {
+    let site =
+        crate::site::Site::init(&args.path, args.name.as_deref()).map_err(|e| e.to_string())?;
+    println!("Created a Ridal site at {}", site.root().display());
+    println!(
+        "Next, create a server administrator:\n  ridal site account add <name> --server-admin"
+    );
     Ok(())
 }
 
-fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), String> {
-    let project = open_project(&args.path)?;
-    let existing = crate::project::users::read(project.documents())
-        .map_err(|e| e.to_string())?
-        .map(|(set, _)| set)
-        .unwrap_or_default();
-    let names = if args.random_names {
-        crate::project::users::random_bulk_names(&existing, args.count)
-            .map_err(|e| e.to_string())?
-    } else {
-        let start = crate::project::users::next_bulk_start(&existing, &args.prefix);
-        crate::project::users::bulk_names_after(&args.prefix, args.count, start)
-            .map_err(|e| e.to_string())?
-    };
-    let role = parse_role(&args.role)?;
-    let download = parse_download(&args.download)?;
+fn site_account_add_command(args: &SiteAccountAddArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let (token, invite) =
+        crate::site::accounts::invite::mint(chrono::Utc::now().timestamp(), None, None, None)?;
+    crate::site::accounts::update(site.store(), |set| {
+        use crate::site::accounts::AccountError;
+        if set.get(&name).is_some() {
+            return Err(AccountError::Duplicate(name.to_string()));
+        }
+        // An account that cannot administer the site would leave nobody
+        // able to create projects or accounts. The first account is the
+        // administrator's, exactly as the first project account was.
+        if !args.server_admin && !set.has_server_admin() {
+            return Err(AccountError::Rejected(format!(
+                "'{name}' would be the first account, and without --server-admin it \
+                 could not create projects or accounts. Create an administrator \
+                 first:\n  ridal site account add {name} --server-admin"
+            )));
+        }
+        let mut account = crate::site::accounts::Account::new(name.clone(), args.server_admin);
+        account.invite = Some(invite.clone());
+        set.users.push(account);
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    let mut entry = crate::site::audit::Entry::new(
+        "cli",
+        crate::site::audit::Action::AccountCreated,
+        name.as_str(),
+    );
+    if args.server_admin {
+        entry = entry.note("server administrator");
+    }
+    crate::site::audit::record(site.store(), entry);
+    print_invite(name.as_str(), &token, invite.expires);
+    Ok(())
+}
 
+fn site_account_add_bulk_command(args: &SiteAccountAddBulkArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let role = crate::project::roles::Role::parse(&args.role)?;
+    let download = crate::project::roles::DownloadScope::parse(&args.download)?;
+    let project = match args.project.as_deref() {
+        Some(raw) => {
+            let key = crate::identity::ProjectKey::new(raw)?;
+            // Opened, not merely checked for: a project the site would refuse
+            // to serve is no place to add members.
+            site.project(&key).map_err(|e| e.to_string())?;
+            if site.is_archived(&key) {
+                return Err(format!(
+                    "Project '{key}' is archived. Unarchive it before adding people to it."
+                ));
+            }
+            Some(key)
+        }
+        None => None,
+    };
     if args.passwords && !args.i_know_what_i_am_doing {
         return Err(
-            "Generated passwords are shared secrets. Re-run with --i-know-what-i-am-doing, or use invite links instead."
+            "Generated passwords are shared secrets. Re-run with --i-know-what-i-am-doing, \
+             or leave out --passwords to use invite links instead."
                 .to_string(),
         );
     }
-    // `bulk_risk_advisory` has no advice for an administrator, because there is
-    // no acceptable way to hand one a shared password: it is a standing key to
-    // the whole project. Refuse before any account is created.
-    if args.passwords && crate::project::users::bulk_risk_advisory(role).is_none() {
-        return Err(
-            "Administrator accounts must be created with one-time invite links, not shared passwords."
-                .to_string(),
-        );
+    // Like `site account add`: a batch cannot be the site's first accounts,
+    // because none of them would be able to administer it.
+    let has_admin = crate::site::accounts::read(site.store())
+        .map_err(|e| e.to_string())?
+        .is_some_and(|(set, _)| set.has_server_admin());
+    if !has_admin {
+        return Err("Create a server administrator first:\n  \
+                    ridal site account add <name> --server-admin"
+            .to_string());
     }
+
+    let prefix = (!args.random_names).then_some(args.prefix.as_str());
+    let names = site
+        .batch_names(prefix, args.count)
+        .map_err(|e| e.to_string())?;
+    let grant = crate::site::Grant {
+        project: project.clone(),
+        role,
+        download,
+    };
+    let record = |name: &crate::identity::UserId, note: &str| {
+        let mut entry = crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::AccountCreated,
+            name.as_str(),
+        )
+        .note(note);
+        if let Some(key) = &project {
+            entry = entry.project(key).membership(role, download);
+        }
+        crate::site::audit::record(site.store(), entry);
+    };
 
     if args.passwords {
         #[cfg(not(feature = "server"))]
-        return Err("Password mode is unavailable in a CLI-only build.".to_string());
+        return Err("Password mode needs a build with the server feature.".to_string());
 
         #[cfg(feature = "server")]
         {
-            let generated = names
-                .iter()
-                .map(|name| {
-                    crate::project::users::generate_password()
-                        .map(|password| (name.clone(), password))
-                })
-                .collect::<Result<Vec<_>, _>>()
+            let generated = site
+                .password_batch(&names, &grant)
                 .map_err(|e| e.to_string())?;
-            let hashed = generated
-                .iter()
-                .map(|(name, password)| {
-                    crate::project::users::hash_password(password).map(|hash| (name.clone(), hash))
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            crate::project::users::update(project.documents(), |set| {
-                if !set.users.iter().any(|user| user.role == crate::project::users::Role::Admin) {
-                    return Err(crate::project::users::UserError::Rejected(
-                        "Create an administrator first with `ridal project user add <name> --role admin`."
-                            .to_string(),
-                    ));
-                }
-                if let Some((name, _)) = hashed.iter().find(|(name, _)| set.get(name).is_some()) {
-                    return Err(crate::project::users::UserError::Duplicate(
-                        name.to_string(),
-                    ));
-                }
-                for ((name, _), (_, hash)) in generated.iter().zip(&hashed) {
-                    let mut user = crate::project::users::User::new(name.clone(), role, download);
-                    user.password_hash = Some(hash.clone());
-                    set.users.push(user);
-                }
-                Ok(())
-            })
-            .map_err(|e| e.to_string())?;
             // Written to a file rather than echoed: a terminal is a log, and
             // standard output is routinely captured. The file is the
             // handout, and the operator deletes it after distributing.
             let mut handout = String::new();
             for (name, password) in &generated {
-                handout.push_str(name.as_str());
-                handout.push('\t');
-                handout.push_str(password);
-                handout.push('\n');
+                record(name, "bulk generated password");
+                handout.push_str(&format!("{name}\t{password}\n"));
             }
             std::fs::write(&args.out, handout)
                 .map_err(|e| format!("could not write {}: {e}", args.out.display()))?;
-            // `None` is unreachable: administrators were refused above.
-            if let Some(advisory) = crate::project::users::bulk_risk_advisory(role) {
+            if let Some(advisory) = crate::site::accounts::bulk::bulk_risk_advisory(role) {
                 println!("{advisory}");
             }
             println!(
@@ -2334,203 +2193,237 @@ fn project_user_add_bulk_command(args: &ProjectUserAddBulkArgs) -> Result<(), St
         }
     }
 
-    let minted = names
-        .iter()
-        .map(|name| {
-            crate::project::users::mint_invite(chrono::Utc::now().timestamp())
-                .map(|(token, invite)| (name.clone(), token, invite))
-        })
-        .collect::<Result<Vec<_>, _>>()
+    let minted = site
+        .invite_batch(&names, &grant)
         .map_err(|e| e.to_string())?;
-    crate::project::users::update(project.documents(), |set| {
-        if !set
-            .users
-            .iter()
-            .any(|user| user.role == crate::project::users::Role::Admin)
+    println!("Invite links let each person set their own password.");
+    for (name, token, expires) in &minted {
+        record(name, "bulk invite");
+        print_invite(name.as_str(), token, *expires);
+    }
+    Ok(())
+}
+
+fn site_account_list_command(args: &SiteAccountListArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let Some((set, _version)) =
+        crate::site::accounts::read(site.store()).map_err(|e| e.to_string())?
+    else {
+        println!(
+            "No accounts yet. Create one with `ridal site account add <name> --server-admin`."
+        );
+        return Ok(());
+    };
+    if set.users.is_empty() {
+        println!("No accounts.");
+        return Ok(());
+    }
+    // `person` rather than `account`: CodeQL's cleartext-logging query reads
+    // a variable called `account` as sensitive by its name, and what is
+    // printed here is only the name and what state the account is in.
+    for person in &set.users {
+        let admin = if person.server_admin {
+            " [server admin]"
+        } else {
+            ""
+        };
+        let state = if person.is_activated() {
+            "active"
+        } else if person.invite.is_some() {
+            "invite pending"
+        } else {
+            "no password"
+        };
+        println!("{}{} ({state})", person.name, admin);
+    }
+    Ok(())
+}
+
+fn site_account_set_command(args: &SiteAccountSetArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let wanted = if args.no_server_admin {
+        false
+    } else if args.server_admin {
+        true
+    } else {
+        return Err("Pass --server-admin or --no-server-admin.".to_string());
+    };
+    crate::site::accounts::update(site.store(), |set| {
+        use crate::site::accounts::AccountError;
+        // The last administrator cannot demote themselves, or the site has
+        // nobody who can create projects or accounts.
+        if !wanted
+            && !set.has_another_admin(&name)
+            && set.get(&name).is_some_and(|account| account.server_admin)
         {
-            return Err(crate::project::users::UserError::Rejected(
-                "Create an administrator first with `ridal project user add <name> --role admin`."
+            return Err(AccountError::Rejected(
+                "This is the only server administrator. Grant \
+                 --server-admin to somebody else first."
                     .to_string(),
             ));
         }
-        if set.users.iter().any(|user| names.contains(&user.name)) {
-            let name = names
-                .iter()
-                .find(|name| set.get(name).is_some())
-                .expect("the collision was just found");
-            return Err(crate::project::users::UserError::Duplicate(
-                name.to_string(),
-            ));
-        }
-        for (name, _, invite) in &minted {
-            let mut user = crate::project::users::User::new(name.clone(), role, download);
-            user.invite = Some(invite.clone());
-            set.users.push(user);
-        }
+        let account = set
+            .get_mut(&name)
+            .ok_or_else(|| AccountError::NotFound(name.to_string()))?;
+        account.server_admin = wanted;
+        // A live session must not keep authority it no longer has.
+        account.credential_version += 1;
         Ok(())
     })
     .map_err(|e| e.to_string())?;
-    println!("Invite links let each person set their own password.");
-    for (name, token, invite) in minted {
-        print_invite(name.as_str(), &token, invite.expires);
-    }
-    Ok(())
-}
-
-fn project_user_list_command(args: &ProjectUserListArgs) -> Result<(), String> {
-    let project = open_project(&args.path)?;
-    let Some((set, _)) =
-        crate::project::users::read(project.documents()).map_err(|e| e.to_string())?
-    else {
-        println!(
-            "This project has no accounts, so everyone using its server is '{}'.",
-            crate::identity::DEFAULT_USER
-        );
-        println!("Create the first with `ridal project user add <name> --role admin`.");
-        return Ok(());
-    };
-
-    if set.users.is_empty() {
-        println!("No accounts. Nobody can sign in, including to create one.");
-        println!("Add one with `ridal project user add <name> --role admin`.");
-    }
-    for user in &set.users {
-        let state = if user.is_activated() {
-            if user.invite.is_some() {
-                "active, reset pending"
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            if wanted {
+                crate::site::audit::Action::ServerAdminGranted
             } else {
-                "active"
-            }
-        } else if user.invite.is_some() {
-            "invited, not yet activated"
-        } else {
-            "no password and no invite -- issue one with `ridal project user reset`"
-        };
-        println!(
-            "{}\t{}\tdownloads: {}\t{state}",
-            user.name, user.role, user.download
+                crate::site::audit::Action::ServerAdminRevoked
+            },
+            name.as_str(),
+        ),
+    );
+    Ok(())
+}
+
+fn site_account_reset_command(args: &SiteAccountResetArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let (token, invite) =
+        crate::site::accounts::invite::mint(chrono::Utc::now().timestamp(), None, None, None)?;
+    crate::site::accounts::update(site.store(), |set| {
+        use crate::site::accounts::AccountError;
+        let account = set
+            .get_mut(&name)
+            .ok_or_else(|| AccountError::NotFound(name.to_string()))?;
+        account.invite = Some(invite.clone());
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::InviteIssued,
+            name.as_str(),
+        ),
+    );
+    print_invite(name.as_str(), &token, invite.expires);
+    Ok(())
+}
+
+fn site_account_remove_command(args: &SiteAccountResetArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.name.clone())?;
+    let removed_from = site.remove_account(&name).map_err(|e| e.to_string())?;
+    for key in &removed_from {
+        crate::site::audit::record(
+            site.store(),
+            crate::site::audit::Entry::new(
+                "cli",
+                crate::site::audit::Action::MembershipRemoved,
+                name.as_str(),
+            )
+            .project(key)
+            .note("account removed"),
         );
     }
-    println!();
-    println!(
-        "Public read: {}",
-        if set.require_auth_to_read {
-            "no, a login is required"
-        } else {
-            "yes"
-        }
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::AccountRemoved,
+            name.as_str(),
+        ),
     );
-    println!("Anonymous downloads: {}", set.anonymous_download);
+    println!("Removed account '{name}'.");
     Ok(())
 }
 
-fn project_user_set_command(args: &ProjectUserSetArgs) -> Result<(), String> {
-    if args.role.is_none() && args.download.is_none() {
-        return Err("Nothing to change. Pass --role, --download, or both.".to_string());
-    }
-    let project = open_project(&args.path)?;
-    let name = crate::identity::UserId::new(args.name.clone())?;
-    let role = args.role.as_deref().map(parse_role).transpose()?;
-    let download = args.download.as_deref().map(parse_download).transpose()?;
-
-    let updated = crate::project::users::update(project.documents(), |set| {
-        // The same guard the HTTP route applies: demoting the last
-        // administrator locks the access settings away from everyone.
-        if role.is_some_and(|role| role < crate::project::users::Role::Admin)
-            && set
-                .get(&name)
-                .is_some_and(|user| user.role == crate::project::users::Role::Admin)
-            && !set.has_another_admin(&name)
-        {
-            return Err(crate::project::users::UserError::Rejected(format!(
-                "'{name}' is the only administrator. Promote someone else first."
-            )));
-        }
-        let user = set
-            .get_mut(&name)
-            .ok_or_else(|| crate::project::users::UserError::NotFound(name.to_string()))?;
-        let mut changed = false;
-        if let Some(role) = role {
-            changed |= user.role != role;
-            user.role = role;
-        }
-        if let Some(download) = download {
-            changed |= user.download != download;
-            user.download = download;
-        }
-        // Bumped so the change reaches an already signed-in person on their
-        // next request rather than when their cookie ages out.
-        if changed {
-            user.credential_version += 1;
-        }
-        Ok(user.clone())
-    })
-    .map_err(|e| e.to_string())?;
-
-    println!(
-        "'{}' is now {} (downloads: {}).",
-        updated.name, updated.role, updated.download
-    );
-    if updated.credential_version > 1 {
-        println!("Any session they had open has been signed out.");
-    }
-    Ok(())
-}
-
-fn project_user_reset_command(args: &ProjectUserResetArgs) -> Result<(), String> {
-    let project = open_project(&args.path)?;
-    let name = crate::identity::UserId::new(args.name.clone())?;
-    let (token, invite) = crate::project::users::mint_invite(chrono::Utc::now().timestamp())
+fn site_project_add_command(args: &SiteProjectAddArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let key = crate::identity::ProjectKey::new(args.key.clone())?;
+    let project = site
+        .create_project(&key, args.name.as_deref(), None)
         .map_err(|e| e.to_string())?;
-
-    crate::project::users::update(project.documents(), |set| {
-        let user = set
-            .get_mut(&name)
-            .ok_or_else(|| crate::project::users::UserError::NotFound(name.to_string()))?;
-        // Replaces any outstanding invite rather than adding one, so
-        // "send another link" cannot leave two live tokens for one account.
-        user.invite = Some(invite.clone());
-        Ok(())
-    })
-    .map_err(|e| e.to_string())?;
-
-    print_invite(name.as_str(), &token, invite.expires);
-    println!();
-    println!(
-        "Their current password keeps working until this link is used. \
-         Redeeming it sets a new one and signs out any session they had open."
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::ProjectCreated,
+            key.as_str(),
+        ),
     );
+    println!("Created project '{}' at {}", key, project.root().display());
     Ok(())
 }
 
-fn project_user_remove_command(args: &ProjectUserRemoveArgs) -> Result<(), String> {
-    let project = open_project(&args.path)?;
-    let name = crate::identity::UserId::new(args.name.clone())?;
-
-    crate::project::users::update(project.documents(), |set| {
-        let Some(user) = set.get(&name) else {
-            return Err(crate::project::users::UserError::NotFound(name.to_string()));
+fn site_project_list_command(args: &SiteProjectListArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let keys = site.list().map_err(|e| e.to_string())?;
+    if keys.is_empty() {
+        println!("No projects yet. Create one with `ridal site project add <key>`.");
+        return Ok(());
+    }
+    for key in keys {
+        let name = site
+            .project(&key)
+            .ok()
+            .and_then(|project| project.config().project.name.clone())
+            .unwrap_or_else(|| key.to_string());
+        let archived = if site.is_archived(&key) {
+            " [archived]"
+        } else {
+            ""
         };
-        if user.role == crate::project::users::Role::Admin && !set.has_another_admin(&name) {
-            return Err(crate::project::users::UserError::Rejected(format!(
-                "'{name}' is the only administrator. Promote someone else first."
-            )));
-        }
-        set.users.retain(|user| user.name != name);
-        Ok(())
-    })
-    .map_err(|e| e.to_string())?;
+        println!("{key}  {name}{archived}");
+    }
+    Ok(())
+}
 
-    let _ = crate::project::preferences::remove(project.documents(), &name);
+fn site_project_archive_command(args: &SiteProjectKeyArgs, archive: bool) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let key = crate::identity::ProjectKey::new(args.key.clone())?;
+    if archive {
+        site.archive(&key).map_err(|e| e.to_string())?;
+        crate::site::audit::record(
+            site.store(),
+            crate::site::audit::Entry::new(
+                "cli",
+                crate::site::audit::Action::ProjectArchived,
+                key.as_str(),
+            ),
+        );
+        println!("Archived '{key}' (read-only).");
+    } else {
+        site.unarchive(&key).map_err(|e| e.to_string())?;
+        crate::site::audit::record(
+            site.store(),
+            crate::site::audit::Entry::new(
+                "cli",
+                crate::site::audit::Action::ProjectUnarchived,
+                key.as_str(),
+            ),
+        );
+        println!("Unarchived '{key}'.");
+    }
+    Ok(())
+}
 
-    println!("Removed the account '{name}'.");
-    // Worth stating rather than leaving to be discovered: a departed user's
-    // picks are attributed scientific data and the account going away does
-    // not unmake them.
-    println!(
-        "Their interpretations are kept, still stored under '{name}'. Only the \
-         account and their personal settings are gone."
+fn site_project_delete_command(args: &SiteProjectKeyArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let key = crate::identity::ProjectKey::new(args.key.clone())?;
+    site.delete_project(&key).map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::ProjectDeleted,
+            key.as_str(),
+        ),
     );
+    println!("Deleted project '{key}'.");
     Ok(())
 }
 

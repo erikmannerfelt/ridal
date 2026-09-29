@@ -1,0 +1,240 @@
+{% extends "base.html.jinja" %}
+{% block title %}Settings - {{ site_name }}{% endblock %}
+{% block content %}
+  <h1>Settings</h1>
+
+  <dl class="card-meta settings-summary">
+    <dt>Site</dt><dd>{{ site_name }}</dd>
+    <dt>You</dt>
+    <dd>
+      {{ current_user }} <span class="hint">({{ current_role }})</span>
+    </dd>
+  </dl>
+
+  <div id="site-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+  {#- Personal settings that belong to the whole site rather than to one
+      project (#214). The theme is the first of them: choosing a dark screen
+      is about the reader, not the survey, so one choice follows them into
+      every project they can open. -#}
+  <section class="settings-section" id="my-site-settings-section">
+    <h2>My site settings</h2>
+    <p class="hint">
+      Yours alone, and the same on every project of this site. A project has
+      its own settings on its own settings page.
+    </p>
+    <form id="my-site-settings-form" class="settings-form" novalidate>
+      <label class="settings-field">
+        <span class="settings-label">Theme</span>
+        <select id="site-theme">
+          <option value="" {% if not active_theme %}selected{% endif %}>Follow this device</option>
+          <option value="light" {% if active_theme == "light" %}selected{% endif %}>Light</option>
+          <option value="dark" {% if active_theme == "dark" %}selected{% endif %}>Dark</option>
+        </select>
+        <span class="hint">
+          &ldquo;Follow this device&rdquo; uses whatever your system asks
+          for, including when it changes during the day.
+        </span>
+      </label>
+      <button type="submit">Save site settings</button>
+      <span id="site-settings-status" class="pick-status"></span>
+    </form>
+  </section>
+
+  {% if server_admin %}
+    {#- Accounts are server-wide (#214): they sign in once and are given a
+        role in each project. Creating one is an identity act, so it lives
+        here rather than on any project's settings page. -#}
+    <section class="settings-section" id="accounts-section">
+      <h2>Accounts</h2>
+      <p class="hint">
+        Everyone signs in with one of these, then sees the projects they are
+        a member of. An account that is not a server administrator still
+        needs a role in a project before it can open it.
+      </p>
+
+      <table id="accounts-table" class="layers-table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col">Server admin</th>
+            <th scope="col">Status</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      {#- A read-only overview of who belongs where. Loaded when opened, so
+          the accounts table stays quick for anyone who does not look. -#}
+      <details id="memberships" class="bulk-users">
+        <summary>Memberships</summary>
+        <p class="hint">
+          Every account and the projects it belongs to. Editable from each
+          project's own settings page.
+        </p>
+        <div id="memberships-overview"></div>
+      </details>
+
+      {#- The one moment an invite token exists: only its hash is stored,
+          so this is shown once and cannot be shown again. -#}
+      <div id="invite-result" class="warning" hidden>
+        <p>
+          <strong>Invite link for <span id="invite-who"></span>.</strong>
+          Send it however you already talk to that person. It works once
+          and expires in <span id="invite-days"></span> days, and it is as
+          sensitive as a password until then.
+        </p>
+        <p><code id="invite-link" class="path"></code></p>
+        <p class="hint">
+          This is the only time it is shown. If it is lost, issue another.
+        </p>
+      </div>
+
+      <form id="add-account" class="add-layer" novalidate>
+        <h3>Add an account</h3>
+        <p class="hint">
+          You create the account; they set their own password through a
+          one-time link, so no password is ever known to two people. The
+          project and role below are granted when the link is used, so an
+          account can arrive already belonging somewhere.
+        </p>
+        <div class="add-layer-fields">
+          <label>Name
+            <input type="text" name="name" required pattern="[a-z0-9_\-]+"
+                   placeholder="erik" autocomplete="off"
+                   autocapitalize="none" spellcheck="false">
+          </label>
+          <label>Project
+            <select name="project">
+              <option value="">No project</option>
+              {% for project in projects %}
+                <option value="{{ project.key }}">{{ project.name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Role
+            <select name="role">
+              {% for role in roles %}
+                <option value="{{ role }}" {% if role == "picker" %}selected{% endif %}>{{ role }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <label>Downloads
+            <select name="download">
+              {% for scope in download_scopes %}
+                <option value="{{ scope }}" {% if scope == "all" %}selected{% endif %}>{{ scope }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <p class="hint">
+          Server administrator rights are granted after the account has a
+          password, from the list above &mdash; never to an invite, whose
+          link would then carry the whole site with it.
+        </p>
+        <button type="submit">Create account and get a link</button>
+      </form>
+
+      {#- Refusals land here, beside the form that caused them. -#}
+      <div id="account-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+      {#- Bulk-specific warnings sit beside the control they are about,
+          rather than at the top of the page where they read as unrelated
+          to "Add several people". -#}
+      <div id="bulk-warning" class="warning" role="status" aria-live="polite" hidden></div>
+
+      <details class="bulk-users" id="bulk-users">
+        <summary>Add several people</summary>
+        <p class="hint">
+          Invite mode creates separate one-time links, so each person sets
+          their own password. Use password mode only for a small workshop:
+          the generated passwords must be printed or handed out by you.
+        </p>
+        <form id="bulk-account-form" class="add-layer" novalidate>
+          <div class="add-layer-fields">
+            <label class="checkbox bulk-random">
+              <input type="checkbox" id="bulk-random-names">
+              Use random usernames instead of the prefix
+            </label>
+            <label>Prefix
+              <input type="text" name="prefix" value="student" required
+                     pattern="[a-z0-9_\-]+" autocomplete="off"
+                     autocapitalize="none" spellcheck="false">
+            </label>
+            <label>Count
+              <input type="number" name="count" value="10" min="1" max="100" required>
+            </label>
+            <label>Project
+              <select name="project">
+                <option value="">No project</option>
+                {% for project in projects %}
+                  <option value="{{ project.key }}">{{ project.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Role
+              <select name="role">
+                {% for role in roles %}
+                  <option value="{{ role }}" {% if role == "picker" %}selected{% endif %}>{{ role }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Downloads
+              <select name="download">
+                {% for scope in download_scopes %}
+                  <option value="{{ scope }}" {% if scope == "all" %}selected{% endif %}>{{ scope }}</option>
+                {% endfor %}
+              </select>
+            </label>
+          </div>
+          <div class="bulk-actions">
+            <button type="submit">Create invite links</button>
+            <button type="button" id="bulk-passwords" class="danger">
+              Create with generated passwords
+            </button>
+          </div>
+          <label class="settings-field checkbox bulk-risk">
+            <input type="checkbox" id="bulk-risk">
+            I understand that generated passwords are shared secrets and are
+            less safe than invite links.
+          </label>
+        </form>
+        <div id="bulk-result" class="bulk-result" hidden></div>
+      </details>
+    </section>
+
+    {#- The site's ledger: who created, removed or changed accounts,
+        memberships and projects. Read-only, and honest about what it is:
+        anyone who can edit the site directory can edit this file too. -#}
+    <section class="settings-section" id="history-section">
+      <h2>History</h2>
+      <p class="hint">
+        What has happened to accounts, memberships and projects, most recent
+        first. It is a record to work out what happened, not a security
+        control: it can be edited by anyone with access to the site
+        directory.
+      </p>
+      <details id="history" class="bulk-users">
+        <summary>Show the history</summary>
+        <div id="history-table"></div>
+      </details>
+    </section>
+
+    {#- Making or unmaking a server administrator is the one account change
+        that reaches every project, so it is confirmed rather than applied on
+        a checkbox click. -#}
+    <dialog id="admin-confirm-dialog">
+      <h2 id="admin-confirm-title">Change server administration</h2>
+      <p id="admin-confirm-message"></p>
+      <div id="admin-confirm-error" class="warning" hidden></div>
+      <p>
+        <button type="button" id="admin-confirm-ok">Confirm</button>
+        <button type="button" id="admin-confirm-cancel">Cancel</button>
+      </p>
+    </dialog>
+  {% endif %}
+{% endblock %}
+{% block extrascript %}
+  <script src="/static/site.js"></script>
+{% endblock %}

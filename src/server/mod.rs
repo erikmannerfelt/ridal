@@ -11,10 +11,12 @@
 //! # How a request is served
 //!
 //! 1. [`launch`] starts the Axum server for either launch mode (`ridal
-//!    gui` opens a browser on an ephemeral port; `ridal server start`
-//!    binds a fixed port and stays up) and builds one shared
-//!    [`app::AppState`], discovering every radargram under the given root
-//!    eagerly at startup rather than lazily per request.
+//!    gui` serves one project on an ephemeral port; `ridal server start`
+//!    serves a site of projects on a fixed port). Both go through
+//!    [`site::build_site_router`], which resolves who is asking and hands
+//!    each project's requests to that project's own router, built over one
+//!    [`app::AppState`] that discovers every radargram in the project
+//!    eagerly when it is opened rather than lazily per request.
 //! 2. [`catalog`] does that discovery: it walks a directory (or accepts a
 //!    single file), using [`crate::io::inspect_ridal_netcdf`] to recognise
 //!    processed output. That function -- and the validated
@@ -54,12 +56,11 @@
 //! where needed, a real NetCDF file. [`crate::render`] and [`crate::source`]
 //! followed that rule so completely that they no longer live here at all.
 
+#[cfg(test)]
+mod access_tests;
 pub mod app;
 pub mod assets;
 pub mod auth;
-pub mod auth_routes;
-#[cfg(test)]
-mod auth_routes_tests;
 pub mod catalog;
 pub mod derived_routes;
 #[cfg(test)]
@@ -70,8 +71,12 @@ mod interp_routes_tests;
 pub mod launch;
 pub mod lifecycle_routes;
 pub mod overrides_routes;
+pub mod preference_routes;
 pub mod render_service;
 pub mod replace_routes;
 pub mod routes;
+pub mod site;
+#[cfg(test)]
+mod site_tests;
 pub mod templates;
 pub mod track;

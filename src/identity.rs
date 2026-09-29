@@ -375,6 +375,7 @@ macro_rules! slug_newtype {
 slug_newtype!(RadargramId, "radargram ID");
 slug_newtype!(GroupId, "group");
 slug_newtype!(UserId, "user");
+slug_newtype!(ProjectKey, "project key");
 
 /// The author recorded when Ridal has no authentication to ask.
 ///

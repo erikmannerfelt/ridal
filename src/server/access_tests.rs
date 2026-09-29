@@ -1,16 +1,22 @@
-//! HTTP-level tests for authentication, roles and download scopes (#131).
+//! HTTP-level tests for roles and download scopes in a project (#131), and
+//! for signing in to the site that serves it (#214).
 //!
-//! Driven through the real Axum router with `ServiceExt::oneshot`, so the
+//! Driven through the real site router with `ServiceExt::oneshot`, so the
 //! status codes, cookies and error envelopes are the ones a browser will
-//! actually see -- and so the identity middleware is in the path, which is
-//! where every one of these decisions is actually made.
+//! actually see -- and so the site's identity resolution and the project's
+//! middleware are both in the path, which is where every one of these
+//! decisions is actually made.
+//!
+//! Each test serves one project, [`PROJECT`], from a site. Requests are
+//! written in the project's own shape -- `/api/v1/datasets`,
+//! `/view/line-01` -- and [`scoped`] puts them under the project's key, the
+//! way the page's base URLs do; the site's own routes pass through.
 //!
 //! Every test builds an `AppState`, which creates and opens a NetCDF.
 //! netcdf-c is not thread-safe, so they carry the same
 //! `#[serial_test::serial(netcdf)]` guard as the tests in `app.rs`.
 
 use std::path::Path as StdPath;
-use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -18,26 +24,37 @@ use axum::Router;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use super::app::{build_router, AccessOptions, AppState};
-use crate::identity::UserId;
-use crate::project::store::Expectation;
-use crate::project::users::{self, DownloadScope, Invite, Role, User, UserSet};
+use super::app::{AccessOptions, AppState};
+use super::site::{build_site_router, SiteState};
+use crate::identity::{ProjectKey, UserId};
+use crate::project::members;
+use crate::project::roles::{DownloadScope, Role};
 use crate::project::Project;
 use crate::server::render_service::RenderServiceConfig;
+use crate::site::accounts::{self, bulk, invite::Invite, Account};
+use crate::site::Site;
 
 const RADARGRAM: &str = "line-01";
 
-/// Where a project keeps everything Ridal owns, since #187 moved it out of
+/// The one project every test serves.
+pub(super) const PROJECT: &str = "glac";
+
+/// The project's directory, inside the site at `root`.
+pub(super) fn project_root(root: &StdPath) -> std::path::PathBuf {
+    root.join(crate::site::PROJECTS_DIR).join(PROJECT)
+}
+
+/// Where the project keeps everything Ridal owns, since #187 moved it out of
 /// the project root. Tests reach past the API to assert on files on disk --
 /// the layout is part of the contract -- so they need the same answer the
 /// code has.
-fn data(root: &StdPath) -> std::path::PathBuf {
-    root.join(crate::project::DEFAULT_DATA_DIR)
+pub(super) fn data(root: &StdPath) -> std::path::PathBuf {
+    project_root(root).join(crate::project::DEFAULT_DATA_DIR)
 }
 
 /// Where a freshly initialized project keeps its radargrams, and where an
 /// upload from the browser lands.
-fn radargrams(root: &StdPath) -> std::path::PathBuf {
+pub(super) fn radargrams(root: &StdPath) -> std::path::PathBuf {
     data(root).join(crate::project::DEFAULT_RADARGRAM_DIR)
 }
 
@@ -48,7 +65,7 @@ fn radargrams(root: &StdPath) -> std::path::PathBuf {
 /// and the code scanner over this repository cannot tell a fixture from a
 /// credential shipped by mistake, so a literal costs a real alert
 /// somewhere else its attention.
-fn password() -> &'static str {
+pub(super) fn password() -> &'static str {
     static PASSWORD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     PASSWORD.get_or_init(|| {
         let mut bytes = [0u8; 12];
@@ -72,23 +89,77 @@ fn write_test_nc(path: &StdPath, radargram_id: &str) {
         .unwrap();
 }
 
-fn id(name: &str) -> UserId {
+pub(super) fn id(name: &str) -> UserId {
     UserId::new(name).unwrap()
+}
+
+pub(super) fn project_key() -> ProjectKey {
+    ProjectKey::new(PROJECT).unwrap()
+}
+
+/// Someone in these tests: a site account, and their membership in the
+/// project. An `admin` is a server administrator as well, since managing
+/// accounts belongs to one.
+#[derive(Clone)]
+pub(super) struct User {
+    pub(super) name: UserId,
+    pub(super) role: Role,
+    pub(super) download: DownloadScope,
+    pub(super) password_hash: Option<String>,
+    pub(super) invite: Option<Invite>,
+}
+
+impl User {
+    pub(super) fn new(name: UserId, role: Role, download: DownloadScope) -> Self {
+        Self {
+            name,
+            role,
+            download,
+            password_hash: None,
+            invite: None,
+        }
+    }
+
+    fn account(&self) -> Account {
+        let mut account = Account::new(self.name.clone(), self.role == Role::Admin);
+        account.password_hash = self.password_hash.clone();
+        account.invite = self.invite.clone();
+        account
+    }
+}
+
+/// The project's people and its access policy.
+#[derive(Default)]
+pub(super) struct UserSet {
+    pub(super) require_auth_to_read: bool,
+    pub(super) anonymous_download: DownloadScope,
+    pub(super) users: Vec<User>,
 }
 
 /// An activated account. The hash is passed in so a test with several
 /// accounts pays for Argon2id once rather than once per person.
-fn activated(name: &str, role: Role, download: DownloadScope, hash: &str) -> User {
+pub(super) fn activated(name: &str, role: Role, download: DownloadScope, hash: &str) -> User {
     let mut user = User::new(id(name), role, download);
     user.password_hash = Some(hash.to_string());
     user
 }
 
-/// A project with one radargram and the given accounts.
-///
-/// `users` being non-empty is what makes this an authenticated project:
-/// writing the file at all is the opt-in, which is why the tests that need
-/// today's unauthenticated behaviour use `interp_routes_tests` instead.
+/// A site holding the one project, empty, for a test to fill before it
+/// builds a server over it with [`site_router`].
+pub(super) fn new_site() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let site = Site::init(dir.path(), Some("test")).unwrap();
+    site.create_project(&project_key(), Some("test"), None)
+        .unwrap();
+    dir
+}
+
+/// The project, as the site opens it.
+pub(super) fn open_project(root: &StdPath) -> Project {
+    Site::open(root).unwrap().project(&project_key()).unwrap()
+}
+
+/// A site with one project, holding one radargram, and the given people.
 fn app_with(users: Vec<User>) -> (tempfile::TempDir, Router) {
     app_with_set(UserSet {
         users,
@@ -101,22 +172,50 @@ fn app_with_set(set: UserSet) -> (tempfile::TempDir, Router) {
 }
 
 fn app_with_set_and_access(set: UserSet, access: AccessOptions) -> (tempfile::TempDir, Router) {
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
+    let dir = new_site();
     write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(project.documents(), &set, &Expectation::Any).unwrap();
+    write_people(dir.path(), &set);
+    let router = site_router(dir.path(), access);
+    (dir, router)
+}
 
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            access,
-        )
-        .unwrap(),
-    );
-    (dir, build_router(state))
+/// Write `set` as the site's accounts and the project's memberships.
+pub(super) fn write_people(root: &StdPath, set: &UserSet) {
+    let site = Site::open(root).unwrap();
+    if !set.users.is_empty() {
+        accounts::update(site.store(), |accounts| {
+            accounts.users = set.users.iter().map(User::account).collect();
+            Ok(())
+        })
+        .unwrap();
+    }
+    let project = site.project(&project_key()).unwrap();
+    members::update(project.documents(), |members| {
+        members.require_auth_to_read = set.require_auth_to_read;
+        members.anonymous_download = set.anonymous_download;
+        members.members = set
+            .users
+            .iter()
+            .map(|user| members::Member::new(user.name.clone(), user.role, user.download))
+            .collect();
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// A server over the site at `root`, as `ridal server start` builds one.
+pub(super) fn site_router(root: &StdPath, access: AccessOptions) -> Router {
+    let site = Site::open(root).unwrap();
+    build_site_router(SiteState::new(site, access, RenderServiceConfig::default()))
+}
+
+/// A `ridal gui` over the project at `root`, served at `/p/default/`.
+pub(super) fn gui_router(root: &StdPath, access: AccessOptions) -> Router {
+    let project = Project::discover(root).unwrap();
+    let state =
+        AppState::build_with_project(root, &RenderServiceConfig::default(), project, access)
+            .unwrap();
+    build_site_router(SiteState::local(state))
 }
 
 /// The parts of a response these tests assert on.
@@ -160,8 +259,33 @@ fn cookie_pair(set_cookie: &str) -> String {
     set_cookie.split(';').next().unwrap().to_string()
 }
 
+/// Put a project-relative path under [`PROJECT`]'s key, as the page's base
+/// URLs do. The site's own routes, and a path already under a key, are left
+/// as they are.
+pub(super) fn scoped(uri: &str) -> String {
+    const SITE: [&str; 10] = [
+        "/api/v1/auth/",
+        "/api/v1/accounts",
+        "/api/v1/site",
+        "/api/v1/projects",
+        "/api/v1/health",
+        "/login",
+        "/invite/",
+        "/static/",
+        "/favicon.ico",
+        "/p/",
+    ];
+    if SITE.iter().any(|prefix| uri.starts_with(prefix)) {
+        uri.to_string()
+    } else if let Some(rest) = uri.strip_prefix("/api/v1/") {
+        format!("/api/v1/projects/{PROJECT}/{rest}")
+    } else {
+        format!("/p/{PROJECT}{uri}")
+    }
+}
+
 fn request(method: &str, uri: &str, session: Option<&str>) -> axum::http::request::Builder {
-    let mut builder = Request::builder().method(method).uri(uri);
+    let mut builder = Request::builder().method(method).uri(scoped(uri));
     if let Some(session) = session {
         builder = builder.header(header::COOKIE, session);
     }
@@ -238,6 +362,11 @@ async fn sign_in(app: &Router, name: &str) -> String {
     cookie_pair(&response.cookie.expect("a login must set a cookie"))
 }
 
+/// The caller's role in the project, as its settings report it.
+async fn role_of(app: &Router, session: Option<&str>) -> Value {
+    get(app, "/api/v1/settings", session).await.body["role"].clone()
+}
+
 fn document(key: &str) -> Value {
     json!({
         "key": key,
@@ -262,7 +391,7 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
     // (created from the command line, simulated here by writing the file),
     // creates an account, hands over a link, and the link is what sets the
     // password. No password is ever known to two people.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -273,14 +402,14 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
 
     let created = post(
         &app,
-        "/api/v1/users",
-        &json!({"name": "student", "role": "picker", "download": "derived"}),
+        "/api/v1/accounts",
+        &json!({"name": "student", "project": PROJECT, "role": "picker", "download": "derived"}),
         Some(&admin),
     )
     .await;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
-    assert_eq!(created.body["user"]["activated"], false);
-    assert_eq!(created.body["user"]["invite_pending"], true);
+    assert_eq!(created.body["account"]["activated"], false);
+    assert_eq!(created.body["account"]["invite_pending"], true);
 
     // The token exists exactly here and nowhere else: only its hash is
     // stored. A path rather than a URL, because Ridal sits behind a proxy
@@ -317,7 +446,8 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
     let session = cookie_pair(&redeemed.cookie.expect("redeeming signs you in"));
     let me = get(&app, "/api/v1/auth/me", Some(&session)).await;
     assert_eq!(me.body["user"], "student");
-    assert_eq!(me.body["role"], "picker");
+    // And a member of the project the invite named, as what it said.
+    assert_eq!(role_of(&app, Some(&session)).await, "picker");
 
     // And the token is consumed.
     let again = post(
@@ -338,7 +468,7 @@ async fn an_invite_is_the_only_way_a_password_is_ever_set() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn bulk_invites_are_atomic_and_store_only_token_hashes() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -348,7 +478,7 @@ async fn bulk_invites_are_atomic_and_store_only_token_hashes() {
     let admin = sign_in(&app, "erik").await;
     let created = post(
         &app,
-        "/api/v1/users/bulk/invites",
+        "/api/v1/accounts/bulk/invites",
         &json!({"prefix":"student","count":3,"role":"picker","download":"all"}),
         Some(&admin),
     )
@@ -356,15 +486,15 @@ async fn bulk_invites_are_atomic_and_store_only_token_hashes() {
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
     assert_eq!(created.body["users"].as_array().unwrap().len(), 3);
 
-    let listed = get(&app, "/api/v1/users", Some(&admin)).await;
+    let listed = get(&app, "/api/v1/accounts", Some(&admin)).await;
     assert_eq!(listed.status, StatusCode::OK);
-    assert_eq!(listed.body["users"].as_array().unwrap().len(), 4);
+    assert_eq!(listed.body["accounts"].as_array().unwrap().len(), 4);
     assert!(listed.text.contains("student-01"));
     assert!(!listed.text.contains("token_hash"));
 
     let continued = post(
         &app,
-        "/api/v1/users/bulk/invites",
+        "/api/v1/accounts/bulk/invites",
         &json!({"prefix":"student","count":2,"role":"picker"}),
         Some(&admin),
     )
@@ -377,7 +507,7 @@ async fn bulk_invites_are_atomic_and_store_only_token_hashes() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn bulk_invites_can_draw_random_usernames() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -389,7 +519,7 @@ async fn bulk_invites_can_draw_random_usernames() {
     // No prefix is sent at all: random mode must not require one.
     let created = post(
         &app,
-        "/api/v1/users/bulk/invites",
+        "/api/v1/accounts/bulk/invites",
         &json!({"random_names":true,"count":3,"role":"viewer"}),
         Some(&admin),
     )
@@ -405,15 +535,15 @@ async fn bulk_invites_can_draw_random_usernames() {
     names.dedup();
     assert_eq!(names.len(), 3, "a batch must not repeat a name");
     for name in &names {
-        assert!(users::RANDOM_USERNAMES.contains(&name.as_str()), "{name}");
+        assert!(bulk::RANDOM_USERNAMES.contains(&name.as_str()), "{name}");
     }
 
     // The pool is finite, and asking for more than remains says so and points
     // at prefixes instead of returning a short batch.
     let too_many = post(
         &app,
-        "/api/v1/users/bulk/invites",
-        &json!({"random_names":true,"count":users::RANDOM_USERNAMES.len(),"role":"viewer"}),
+        "/api/v1/accounts/bulk/invites",
+        &json!({"random_names":true,"count":bulk::RANDOM_USERNAMES.len(),"role":"viewer"}),
         Some(&admin),
     )
     .await;
@@ -429,7 +559,7 @@ async fn bulk_invites_can_draw_random_usernames() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -439,7 +569,7 @@ async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
     let admin = sign_in(&app, "erik").await;
     let missing = post(
         &app,
-        "/api/v1/users/bulk/passwords",
+        "/api/v1/accounts/bulk/passwords",
         &json!({"prefix":"student","count":2,"role":"viewer","acknowledge_risk":false}),
         Some(&admin),
     )
@@ -448,7 +578,7 @@ async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
 
     let forbidden = post(
         &app,
-        "/api/v1/users/bulk/passwords",
+        "/api/v1/accounts/bulk/passwords",
         &json!({"prefix":"admin","count":1,"role":"admin","acknowledge_risk":true}),
         Some(&admin),
     )
@@ -457,7 +587,7 @@ async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
 
     let created = post(
         &app,
-        "/api/v1/users/bulk/passwords",
+        "/api/v1/accounts/bulk/passwords",
         &json!({"prefix":"student","count":2,"role":"viewer","acknowledge_risk":true}),
         Some(&admin),
     )
@@ -465,9 +595,9 @@ async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
     assert_eq!(created.status, StatusCode::OK, "{}", created.text);
     let users = created.body["users"].as_array().unwrap();
     assert_eq!(users.len(), 2);
-    assert!(users[0]["password"].as_str().unwrap().len() >= users::MIN_PASSWORD_LEN);
+    assert!(users[0]["password"].as_str().unwrap().len() >= accounts::MIN_PASSWORD_LEN);
 
-    let listed = get(&app, "/api/v1/users", Some(&admin)).await;
+    let listed = get(&app, "/api/v1/accounts", Some(&admin)).await;
     for user in users {
         assert!(!listed.text.contains(user["password"].as_str().unwrap()));
     }
@@ -476,7 +606,7 @@ async fn bulk_passwords_require_acknowledgement_and_refuse_admins() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn bulk_requests_validate_the_role_and_the_size() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -487,7 +617,7 @@ async fn bulk_requests_validate_the_role_and_the_size() {
 
     let bad_role = post(
         &app,
-        "/api/v1/users/bulk/invites",
+        "/api/v1/accounts/bulk/invites",
         &json!({"prefix":"student","count":1,"role":"wizard"}),
         Some(&admin),
     )
@@ -501,7 +631,7 @@ async fn bulk_requests_validate_the_role_and_the_size() {
 
     let bad_download = post(
         &app,
-        "/api/v1/users/bulk/invites",
+        "/api/v1/accounts/bulk/invites",
         &json!({"prefix":"student","count":1,"role":"viewer","download":"everything"}),
         Some(&admin),
     )
@@ -515,8 +645,8 @@ async fn bulk_requests_validate_the_role_and_the_size() {
 
     let too_many = post(
         &app,
-        "/api/v1/users/bulk/invites",
-        &json!({"prefix":"student","count":users::MAX_BULK_ACCOUNTS + 1,"role":"viewer"}),
+        "/api/v1/accounts/bulk/invites",
+        &json!({"prefix":"student","count":bulk::MAX_BULK_ACCOUNTS + 1,"role":"viewer"}),
         Some(&admin),
     )
     .await;
@@ -531,13 +661,16 @@ async fn bulk_requests_validate_the_role_and_the_size() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_expired_invite_is_refused() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let mut stale = activated("student", Role::Picker, DownloadScope::All, &hash);
     stale.password_hash = None;
     stale.invite = Some(Invite {
         token_hash: blake3::hash(b"stale-token").to_hex().to_string(),
         // Long past.
         expires: 1,
+        project: None,
+        role: None,
+        download: None,
     });
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
@@ -560,7 +693,7 @@ async fn an_expired_invite_is_refused() {
 async fn a_wrong_password_and_an_unknown_name_are_refused_identically() {
     // Otherwise the login form is a way to enumerate who has an account and
     // who has not signed up yet.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -601,7 +734,7 @@ async fn an_unknown_name_costs_the_same_as_a_wrong_password() {
     // Argon2id dominates both paths by design, so "same order of
     // magnitude" is the assertion that means something; a tight bound
     // would flake on a shared CI runner.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         // Created but never activated: the third path, which must also not
@@ -646,7 +779,7 @@ async fn an_unknown_name_costs_the_same_as_a_wrong_password() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_password_hash_never_leaves_the_process() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -656,9 +789,11 @@ async fn a_password_hash_never_leaves_the_process() {
     let admin = sign_in(&app, "erik").await;
 
     for uri in [
-        "/api/v1/users",
+        "/api/v1/accounts",
+        "/api/v1/site/memberships",
         "/api/v1/auth/me",
-        "/api/v1/project/settings",
+        "/api/v1/members",
+        "/api/v1/settings",
     ] {
         let response = get(&app, uri, Some(&admin)).await;
         assert!(
@@ -684,7 +819,7 @@ async fn a_password_hash_never_leaves_the_process() {
 async fn picks_belong_to_the_person_who_drew_them_and_not_even_an_admin_may_edit_them() {
     // Per-user by design, and a property of the data rather than a
     // permission: there is deliberately no role that can overrule it.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -727,7 +862,7 @@ async fn the_path_parameter_is_no_longer_the_authorisation() {
     // Without a session the path used to be all the authorisation there
     // was: `PUT .../interpretations/erik` would write Erik's document for
     // anyone who asked.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Picker,
@@ -749,7 +884,7 @@ async fn the_path_parameter_is_no_longer_the_authorisation() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_forged_cookie_is_not_a_session() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -761,14 +896,14 @@ async fn a_forged_cookie_is_not_a_session() {
     let forged = format!("ridal_session=erik.1.9999999999.{}", "a".repeat(64));
     let me = get(&app, "/api/v1/auth/me", Some(&forged)).await;
     assert_eq!(me.body["authenticated"], false);
-    assert_eq!(me.body["role"], "viewer");
+    assert_eq!(role_of(&app, Some(&forged)).await, "viewer");
 }
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_viewer_reads_a_picker_writes_and_an_operator_curates() {
     // The ladder, at the three places it actually bites.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("watcher", Role::Viewer, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -824,7 +959,7 @@ async fn a_viewer_reads_a_picker_writes_and_an_operator_curates() {
     // The project defaults: operator, not picker.
     let refused = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_profile": "abslog"}),
         Some(&picker),
     )
@@ -832,39 +967,40 @@ async fn a_viewer_reads_a_picker_writes_and_an_operator_curates() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
     let allowed = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_profile": "abslog"}),
         Some(&operator),
     )
     .await;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.text);
 
-    // Accounts: admin only, and an operator is not one.
-    let refused = get(&app, "/api/v1/users", Some(&operator)).await;
+    // Members: admin only, and an operator is not one.
+    let refused = get(&app, "/api/v1/members", Some(&operator)).await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
-    assert!(refused.text.contains("admin"), "{}", refused.text);
+    assert!(refused.text.contains("administrator"), "{}", refused.text);
 }
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_demotion_takes_effect_on_the_next_request_not_when_the_cookie_expires() {
-    // What the credential version in the cookie buys: user management that
-    // actually manages, rather than taking effect at some point in the next
-    // fortnight.
-    let hash = users::hash_password(password()).unwrap();
+    // User management that actually manages, rather than taking effect at
+    // some point in the next fortnight. A membership is read per request, so
+    // a demotion in the project reaches a live session at once; a server
+    // administrator losing the flag has their cookie's credential version
+    // go stale, so their session ends.
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
+        activated("anna", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
     ]);
     let admin = sign_in(&app, "erik").await;
     let student = sign_in(&app, "student").await;
-
-    let before = get(&app, "/api/v1/auth/me", Some(&student)).await;
-    assert_eq!(before.body["role"], "picker");
+    assert_eq!(role_of(&app, Some(&student)).await, "picker");
 
     let demoted = put(
         &app,
-        "/api/v1/users/student",
+        "/api/v1/members/student",
         &json!({"role": "viewer"}),
         Some(&admin),
     )
@@ -872,12 +1008,7 @@ async fn a_demotion_takes_effect_on_the_next_request_not_when_the_cookie_expires
     assert_eq!(demoted.status, StatusCode::OK, "{}", demoted.text);
 
     // The same cookie, one request later.
-    let after = get(&app, "/api/v1/auth/me", Some(&student)).await;
-    assert_eq!(
-        after.body["authenticated"], false,
-        "the old cookie names a credential version the account no longer has"
-    );
-
+    assert_eq!(role_of(&app, Some(&student)).await, "viewer");
     let refused = put(
         &app,
         &interpretation_uri("student"),
@@ -885,19 +1016,31 @@ async fn a_demotion_takes_effect_on_the_next_request_not_when_the_cookie_expires
         Some(&student),
     )
     .await;
-    assert_eq!(refused.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
 
-    // Signing in again gets a cookie at the new version, with the new role.
-    let student = sign_in(&app, "student").await;
-    let now = get(&app, "/api/v1/auth/me", Some(&student)).await;
-    assert_eq!(now.body["role"], "viewer");
+    // Server administration is a property of the account, so revoking it
+    // signs that account out.
+    let anna = sign_in(&app, "anna").await;
+    let revoked = put(
+        &app,
+        "/api/v1/accounts/anna",
+        &json!({"server_admin": false}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.text);
+    let after = get(&app, "/api/v1/auth/me", Some(&anna)).await;
+    assert_eq!(
+        after.body["authenticated"], false,
+        "the old cookie names a credential version the account no longer has"
+    );
 }
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_departed_users_picks_survive_the_account() {
     // Attributed scientific data. Removing the person must not destroy it.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -921,7 +1064,7 @@ async fn a_departed_users_picks_survive_the_account() {
     )
     .await;
 
-    let removed = delete(&app, "/api/v1/users/student", Some(&admin)).await;
+    let removed = delete(&app, "/api/v1/accounts/student", Some(&admin)).await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
 
     // The account is gone and its session with it.
@@ -949,9 +1092,9 @@ async fn a_departed_users_picks_survive_the_account() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_last_administrator_cannot_be_demoted_or_removed() {
-    // Either would lock the access settings away from everyone, with no way
-    // back short of editing users.json by hand.
-    let hash = users::hash_password(password()).unwrap();
+    // Either would leave the project with nobody to manage its members but
+    // a server administrator.
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -960,7 +1103,7 @@ async fn the_last_administrator_cannot_be_demoted_or_removed() {
 
     let demote = put(
         &app,
-        "/api/v1/users/erik",
+        "/api/v1/members/erik",
         &json!({"role": "operator"}),
         Some(&admin),
     )
@@ -972,20 +1115,20 @@ async fn the_last_administrator_cannot_be_demoted_or_removed() {
         demote.text
     );
 
-    let remove = delete(&app, "/api/v1/users/erik", Some(&admin)).await;
+    let remove = delete(&app, "/api/v1/members/erik", Some(&admin)).await;
     assert_eq!(remove.status, StatusCode::BAD_REQUEST);
 
     // With a second administrator, both become possible.
     put(
         &app,
-        "/api/v1/users/student",
+        "/api/v1/members/student",
         &json!({"role": "admin"}),
         Some(&admin),
     )
     .await;
     let demote = put(
         &app,
-        "/api/v1/users/erik",
+        "/api/v1/members/erik",
         &json!({"role": "operator"}),
         Some(&admin),
     )
@@ -1000,7 +1143,7 @@ async fn download_scope_gates_the_downloads_and_not_the_viewer() {
     // and states an intent. It cannot stop someone who can open the page,
     // and gating what the viewer draws with would break the viewer for
     // everyone below "all".
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("nothing", Role::Picker, DownloadScope::None, &hash),
         activated("picks", Role::Picker, DownloadScope::Picks, &hash),
@@ -1106,7 +1249,7 @@ async fn own_picks_are_readable_without_a_download_scope_but_not_as_a_file() {
     // working. The documentation says so, because it means `none` does not
     // keep a person's own picks on the server -- only the file download is
     // gated.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("nothing", Role::Picker, DownloadScope::None, &hash),
         activated("other", Role::Picker, DownloadScope::None, &hash),
@@ -1143,7 +1286,7 @@ async fn a_download_the_caller_may_not_have_is_not_offered() {
     // promise; one that answers with an error dialog teaches someone about
     // a permission in the worst possible way, and looks like a bug rather
     // than a policy.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("everything", Role::Picker, DownloadScope::All, &hash),
         activated("derived", Role::Picker, DownloadScope::Derived, &hash),
@@ -1198,7 +1341,7 @@ async fn an_anonymous_reader_is_not_offered_a_download_of_their_own_picks() {
     // has no "mine" to resolve -- the route can only answer 400. Rather
     // than let the catalog offer a button that always fails, the control
     // is absent, which is what Erik saw and reported.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -1230,7 +1373,7 @@ async fn an_anonymous_reader_is_not_offered_a_download_of_their_own_picks() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_anonymous_reader_downloads_what_the_project_allows_them() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_set(UserSet {
         anonymous_download: DownloadScope::Derived,
         users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
@@ -1285,7 +1428,7 @@ async fn interpretation_documents_are_not_readable_below_the_picks_scope() {
     // download-scope ladder. Own picks stay readable regardless -- otherwise
     // a picker with a restricted download scope could not open their own
     // document to work.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_set(UserSet {
         anonymous_download: DownloadScope::Results,
         users: vec![
@@ -1358,7 +1501,7 @@ async fn interpretation_documents_are_not_readable_below_the_picks_scope() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn requiring_a_login_to_read_hides_everything_but_the_way_in() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_set(UserSet {
         require_auth_to_read: true,
         users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
@@ -1400,7 +1543,7 @@ async fn requiring_a_login_to_read_hides_everything_but_the_way_in() {
 async fn preferences_sit_between_the_request_and_the_project_default() {
     // The cascade, all four layers, against the value a page actually
     // renders with.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Operator, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -1419,7 +1562,7 @@ async fn preferences_sit_between_the_request_and_the_project_default() {
     // The project default reaches everyone who has not chosen.
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_profile": "abslog"}),
         Some(&erik),
     )
@@ -1471,7 +1614,7 @@ async fn wanting_the_neutral_value_is_a_choice_rather_than_an_absence() {
     // absence means *deferring*. 1x used to be collapsed to absence on the
     // grounds that it is the neutral value, which made "I want 1x"
     // unsayable in a project whose default is 2x.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, app) = app_with(vec![
         activated("erik", Role::Operator, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -1482,7 +1625,7 @@ async fn wanting_the_neutral_value_is_a_choice_rather_than_an_absence() {
 
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_xscale": 2.0}),
         Some(&erik),
     )
@@ -1528,7 +1671,7 @@ async fn a_preference_save_leaves_the_settings_it_does_not_mention_alone() {
     // Absent used to mean "clear it", which made the endpoint a trap for
     // anything but the one page that sends every field: `PUT
     // {"theme":"dark"}` silently wiped the profile and the scale with it.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Operator,
@@ -1577,7 +1720,7 @@ async fn a_preference_save_leaves_the_settings_it_does_not_mention_alone() {
 async fn the_signed_in_theme_reaches_the_login_page_too() {
     // It is the way *out* as much as the way in, so a person who chose dark
     // should not get one light screen on the way past it (#141).
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -1587,7 +1730,7 @@ async fn the_signed_in_theme_reaches_the_login_page_too() {
     let erik = sign_in(&app, "erik").await;
     put(
         &app,
-        "/api/v1/preferences",
+        "/api/v1/site/preferences",
         &json!({"theme": "dark"}),
         Some(&erik),
     )
@@ -1611,7 +1754,7 @@ async fn a_chosen_theme_reaches_every_page_and_only_that_person() {
     // #141. Written by the server onto the root element rather than applied
     // by a script, so the page arrives in the right colours instead of
     // flashing the wrong ones -- which is the thing worth pinning.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Operator, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -1621,7 +1764,7 @@ async fn a_chosen_theme_reaches_every_page_and_only_that_person() {
 
     let saved = put(
         &app,
-        "/api/v1/preferences",
+        "/api/v1/site/preferences",
         &json!({"theme": "dark"}),
         Some(&student),
     )
@@ -1635,7 +1778,8 @@ async fn a_chosen_theme_reaches_every_page_and_only_that_person() {
             "{uri} did not carry the chosen theme"
         );
     }
-    // For them alone: a theme is about a person, not about the project.
+    // For them alone: a theme is about a person, not about the project. It
+    // is a site setting (#214), so the one choice reaches every page.
     let page = get(&app, "/", Some(&erik)).await;
     assert!(!page.text.contains("data-theme"), "{}", page.text);
 
@@ -1643,7 +1787,7 @@ async fn a_chosen_theme_reaches_every_page_and_only_that_person() {
     // of the attribute rather than a third value.
     put(
         &app,
-        "/api/v1/preferences",
+        "/api/v1/site/preferences",
         &json!({"theme": null}),
         Some(&student),
     )
@@ -1654,7 +1798,7 @@ async fn a_chosen_theme_reaches_every_page_and_only_that_person() {
     // And a theme nothing renders is refused rather than stored.
     let refused = put(
         &app,
-        "/api/v1/preferences",
+        "/api/v1/site/preferences",
         &json!({"theme": "sepia"}),
         Some(&student),
     )
@@ -1669,7 +1813,7 @@ async fn hiding_the_interpretations_is_remembered_per_person() {
     // #143. Only "hidden" is stored: shown is what the viewer did before
     // the toggle existed, so it stays the answer for anyone who has not
     // chosen.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, app) = app_with(vec![
         activated("erik", Role::Picker, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -1722,7 +1866,7 @@ async fn the_download_defaults_cascade_from_the_project_to_the_person() {
     // #166, through the same cascade as every other setting: the project
     // says what a survey exports, a person may disagree, and the dialog
     // still wins for one download.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Operator, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -1739,7 +1883,7 @@ async fn the_download_defaults_cascade_from_the_project_to_the_person() {
 
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_spacing": "25", "default_format": "csv"}),
         Some(&erik),
     )
@@ -1781,7 +1925,7 @@ async fn the_basemap_resolves_through_the_same_cascade() {
     // #177 added a third preference, and the point of naming the cascade was
     // that adding one is a call rather than a fourth chance to get the order
     // wrong. This is that claim, checked against what a page carries.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Operator, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -1807,7 +1951,7 @@ async fn the_basemap_resolves_through_the_same_cascade() {
     ]);
     let saved = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"basemaps": two, "default_basemap": "topo"}),
         Some(&erik),
     )
@@ -1849,7 +1993,7 @@ async fn the_basemap_resolves_through_the_same_cascade() {
     // rather than leaving that person's maps blank.
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"basemaps": [], "default_basemap": null}),
         Some(&erik),
     )
@@ -1872,7 +2016,7 @@ async fn a_basemap_preference_nothing_offers_is_refused() {
     // The same rule as an unknown profile: the layer control only lists what
     // is offered, so a stored id nothing matches would be unfixable from the
     // page that set it.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Operator,
@@ -1898,7 +2042,7 @@ async fn an_admin_setting_the_project_default_does_not_overwrite_anyone() {
     // The alternative -- a project default that stamps over personal
     // choices -- would make the operator's save button destructive in a way
     // nothing in the UI could warn about convincingly.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![
         activated("erik", Role::Operator, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -1915,7 +2059,7 @@ async fn an_admin_setting_the_project_default_does_not_overwrite_anyone() {
     .await;
     put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"default_profile": "abslog"}),
         Some(&erik),
     )
@@ -1928,7 +2072,7 @@ async fn an_admin_setting_the_project_default_does_not_overwrite_anyone() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_anonymous_reader_has_nowhere_to_keep_a_preference() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -1954,7 +2098,7 @@ async fn an_anonymous_reader_has_nowhere_to_keep_a_preference() {
 async fn a_merged_download_asks_whose_picks_when_nobody_is_signed_in() {
     // "Mine" has no meaning for an anonymous reader, and guessing would
     // hand back an empty file that looks complete.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -1971,7 +2115,7 @@ async fn a_merged_download_asks_whose_picks_when_nobody_is_signed_in() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn signing_out_clears_the_cookie_and_the_session_with_it() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -1996,212 +2140,193 @@ async fn signing_out_clears_the_cookie_and_the_session_with_it() {
 async fn a_session_survives_a_restart() {
     // The reason a signed cookie is the smaller option: the key is on disk,
     // so nothing about sessions has to be.
-    let hash = users::hash_password(password()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-
-    let build = || {
-        let project = Project::discover(dir.path()).unwrap().unwrap();
-        let state = Arc::new(
-            AppState::build_with_project(
-                dir.path(),
-                &RenderServiceConfig::default(),
-                Some(project),
-                AccessOptions::default(),
-            )
-            .unwrap(),
-        );
-        build_router(state)
-    };
-
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
-        &UserSet {
-            users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
-            ..UserSet::default()
-        },
-        &Expectation::Any,
-    )
-    .unwrap();
-    drop(project);
-
-    let first = build();
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, first) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
     let session = sign_in(&first, "erik").await;
 
-    // A second server over the same project, as a restart would be.
-    let second = build();
+    // A second server over the same site, as a restart would be.
+    let second = site_router(dir.path(), AccessOptions::default());
     let me = get(&second, "/api/v1/auth/me", Some(&session)).await;
     assert_eq!(me.body["user"], "erik", "a restart signed everyone out");
+
+    // The key lives at the site root, readable by its owner only, and never
+    // in a project, whose directory is meant to be portable.
+    let key = dir.path().join(crate::server::auth::SESSION_KEY_FILE);
+    assert!(key.exists());
+    assert!(!data(dir.path()).join("session.key").exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&key).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
+    }
 }
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
-async fn a_project_with_no_accounts_offers_no_login_and_still_writes() {
-    // The migration rule: upgrading Ridal must not lock anyone out of their
-    // own data, and `ridal gui` must keep working with no login step.
+async fn ridal_gui_serves_its_project_to_the_local_person_with_no_login() {
+    // `ridal gui` has no accounts: the person at the machine is the local
+    // default user, the project lives at `/p/default/`, and nothing asks
+    // anyone to sign in.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
+    let data_dir = dir.path().join(crate::project::DEFAULT_DATA_DIR);
+    write_test_nc(
+        &data_dir
+            .join(crate::project::DEFAULT_RADARGRAM_DIR)
+            .join("line-01.nc"),
+        RADARGRAM,
     );
-    let app = build_router(state);
+    let app = gui_router(dir.path(), AccessOptions::default());
 
-    let me = get(&app, "/api/v1/auth/me", None).await;
-    assert_eq!(me.body["user"], "default");
-    assert_eq!(me.body["role"], "operator");
-    assert_eq!(me.body["authentication_configured"], false);
+    // `/` itself, not the project page `scoped` would make of it.
+    let home = send(
+        &app,
+        Request::builder().uri("/").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(home.status, StatusCode::SEE_OTHER);
+    let catalog = get(&app, "/p/default/", None).await;
+    assert_eq!(catalog.status, StatusCode::OK, "{}", catalog.text);
+    // The page builds its links from its own key.
+    assert!(
+        catalog.text.contains(r#"data-page-base="/p/default""#),
+        "{}",
+        catalog.text
+    );
+    // No sign-in link, and no way back to a site there is not.
+    assert!(!catalog.text.contains(">Sign in<"), "{}", catalog.text);
+    assert!(!catalog.text.contains(">Projects<"), "{}", catalog.text);
+
+    let settings = get(&app, "/api/v1/projects/default/settings", None).await;
+    assert_eq!(settings.body["user"], "default");
+    assert_eq!(settings.body["role"], "operator");
+    assert_eq!(settings.body["authentication_configured"], false);
+    assert_eq!(settings.body["can_edit_access"], false);
 
     let saved = put(
         &app,
-        &interpretation_uri("default"),
+        "/api/v1/projects/default/datasets/line-01/interpretations/default",
         &document(RADARGRAM),
         None,
     )
     .await;
     assert_eq!(saved.status, StatusCode::CREATED, "{}", saved.text);
 
-    // No `users.json` was created by serving, only by an administrator
-    // deciding to create one.
-    assert!(!data(dir.path()).join("users.json").exists());
-    // And no session key either: a project that never authenticates never
-    // grows one.
-    assert!(!data(dir.path()).join("session.key").exists());
-
-    // The login page explains rather than offering a form that cannot work.
+    // The site's own management is not there to be reached.
+    for uri in ["/api/v1/accounts", "/api/v1/projects"] {
+        assert_eq!(
+            get(&app, uri, None).await.status,
+            StatusCode::NOT_FOUND,
+            "{uri}"
+        );
+    }
     let login = get(&app, "/login", None).await;
-    assert_eq!(login.status, StatusCode::OK);
     assert!(login.text.contains("no accounts"), "{}", login.text);
+
+    // Serving wrote no secret and no membership file into the project.
+    assert!(!data_dir.join("users.json").exists());
+    assert!(!data_dir.join("session.key").exists());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn ridal_gui_ignores_memberships_and_leaves_them_alone() {
+    // A project taken out of a site keeps its memberships, and `ridal gui`
+    // neither applies them -- there is no one to sign in as -- nor rewrites
+    // them, so the project can go back into its site unchanged.
+    let dir = tempfile::tempdir().unwrap();
+    let project = Project::init(dir.path(), Some("test")).unwrap();
+    members::update(project.documents(), |set| {
+        set.require_auth_to_read = true;
+        set.upsert(&id("anna"), Role::Admin, DownloadScope::All);
+        Ok(())
+    })
+    .unwrap();
+    let before = std::fs::read_to_string(
+        dir.path()
+            .join(crate::project::DEFAULT_DATA_DIR)
+            .join("users.json"),
+    )
+    .unwrap();
+
+    let app = gui_router(dir.path(), AccessOptions::default());
+    let settings = get(&app, "/api/v1/projects/default/settings", None).await;
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.text);
+    assert_eq!(settings.body["role"], "operator");
+    let saved = put(
+        &app,
+        "/api/v1/site/preferences",
+        &json!({"theme": "dark"}),
+        None,
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+
+    let after = std::fs::read_to_string(
+        dir.path()
+            .join(crate::project::DEFAULT_DATA_DIR)
+            .join("users.json"),
+    )
+    .unwrap();
+    assert_eq!(before, after);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn ridal_gui_keeps_the_theme_with_the_project() {
+    // "My site settings" under `ridal gui` belong to its one project: the
+    // theme saved there is the one every page of it renders with.
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    let app = gui_router(dir.path(), AccessOptions::default());
+
+    let saved = put(
+        &app,
+        "/api/v1/site/preferences",
+        &json!({"theme": "dark"}),
+        None,
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    let page = get(&app, "/p/default/settings", None).await;
     assert!(
-        login.text.contains("ridal project user add"),
+        page.text.contains("<html lang=\"en\" data-theme=\"dark\">"),
         "{}",
-        login.text
+        page.text
     );
-    // And the header offers no sign-in link, since there is nothing to sign
-    // in to.
-    let index = get(&app, "/", None).await;
-    assert!(!index.text.contains(">Sign in<"), "{}", index.text);
-}
-
-#[tokio::test]
-#[serial_test::serial(netcdf)]
-async fn an_offline_session_signs_its_cookies_with_a_key_it_never_writes_down() {
-    // `ridal gui` runs in the user's own survey directory, and that
-    // directory gets zipped, synced and mailed around (#187). A signing key
-    // in one is a leaked signing key, so offline mode keeps it in memory:
-    // sessions work for as long as the server runs, and stop when it does.
-    let hash = users::hash_password(password()).unwrap();
-    let (dir, app) = app_with_set_and_access(
-        UserSet {
-            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
-            ..UserSet::default()
-        },
-        AccessOptions {
-            persist_sessions: false,
-            ..AccessOptions::default()
-        },
-    );
-
-    let erik = sign_in(&app, "erik").await;
-    let me = get(&app, "/api/v1/auth/me", Some(&erik)).await;
-    assert_eq!(me.body["user"], "erik", "{}", me.text);
-
-    assert!(
-        !data(dir.path()).join("session.key").exists(),
-        "offline mode must not leave a signing key in the project"
-    );
-    // The accounts file is the user's own decision and stays on disk; only
-    // the secret Ridal generates is withheld.
-    assert!(data(dir.path()).join("users.json").exists());
-}
-
-#[tokio::test]
-#[serial_test::serial(netcdf)]
-async fn a_served_project_keeps_its_signing_key_so_a_restart_does_not_sign_everyone_out() {
-    // The other half: `ridal server start` is a deployment whose sessions
-    // are expected to outlive a restart, and whose project directory is the
-    // operator's rather than a survey directory being passed around.
-    let hash = users::hash_password(password()).unwrap();
-    let (dir, app) = app_with_set_and_access(
-        UserSet {
-            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
-            ..UserSet::default()
-        },
-        AccessOptions {
-            persist_sessions: true,
-            ..AccessOptions::default()
-        },
-    );
-
-    sign_in(&app, "erik").await;
-
-    // In the data directory, which is what the `.gitignore` written at init
-    // covers -- and never in the project root.
-    assert!(data(dir.path()).join("session.key").exists());
-    assert!(!dir.path().join("session.key").exists());
 }
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_first_account_takes_effect_without_a_restart() {
-    // What lets `ridal project user add` say there is nothing to restart.
-    // The account file is read per request, so a server already serving an
-    // open project becomes an authenticated one the moment the file
+    // What lets `ridal site account add` say there is nothing to restart.
+    // The account file is read per request, so a server already serving a
+    // read-only site becomes one people can sign in to the moment the file
     // appears beneath it.
-    let hash = users::hash_password(password()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
-    let app = build_router(state);
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = app_with(Vec::new());
 
-    // Open to begin with: everyone is the local default user and can write.
     let before = get(&app, "/api/v1/auth/me", None).await;
-    assert_eq!(before.body["user"], "default");
-    assert_eq!(before.body["role"], "operator");
+    assert_eq!(before.body["authentication_configured"], false);
 
     // An administrator appears, as the command line would create one --
     // without this server being told.
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
+    write_people(
+        dir.path(),
         &UserSet {
             users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
-    drop(project);
+    );
 
     let after = get(&app, "/api/v1/auth/me", None).await;
-    assert_eq!(
-        after.body["user"],
-        Value::Null,
-        "no longer the default user"
-    );
-    assert_eq!(after.body["role"], "viewer");
     assert_eq!(after.body["authentication_configured"], true);
-
-    // And the same running server can sign that account in.
     let session = sign_in(&app, "erik").await;
     assert_eq!(
         get(&app, "/api/v1/auth/me", Some(&session)).await.body["user"],
@@ -2211,27 +2336,19 @@ async fn the_first_account_takes_effect_without_a_restart() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
-async fn a_damaged_user_file_denies_everything_rather_than_opening_it() {
-    // The failure mode worth naming: `UserSet::default()` looks like a
-    // safe fallback and is the permissive one -- public read, anonymous
+async fn a_damaged_membership_file_denies_everything_rather_than_opening_it() {
+    // The failure mode worth naming: an empty policy looks like a safe
+    // fallback and is the permissive one -- public read, anonymous
     // downloads of everything. A project that had required a login would
     // have started serving its catalog to anyone the moment its policy
     // file was damaged.
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(project.documents(), &UserSet::default(), &Expectation::Any).unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
-    let app = build_router(state);
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Admin,
+        DownloadScope::All,
+        &hash,
+    )]);
 
     // Readable while the file is intact.
     assert_eq!(
@@ -2268,33 +2385,17 @@ async fn a_bind_that_cannot_carry_a_password_refuses_one_per_request() {
     // with no accounts starts legitimately, and the first administrator
     // can be created while it runs. The guard has to be asked on the
     // request, not remembered from boot.
-    let hash = users::hash_password(password()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
-        &UserSet {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_set_and_access(
+        UserSet {
             users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions {
-                allow_password_login: false,
-                ..AccessOptions::default()
-            },
-        )
-        .unwrap(),
+        AccessOptions {
+            allow_password_login: false,
+            ..AccessOptions::default()
+        },
     );
-    let app = build_router(state);
 
     let refused = post(
         &app,
@@ -2334,7 +2435,7 @@ async fn an_invalid_invite_is_refused_without_hashing_the_password() {
     // token let an unauthenticated caller spend a hash of the server's CPU
     // per request. Timed rather than asserted structurally, because the
     // property *is* the cost.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with(vec![activated(
         "erik",
         Role::Admin,
@@ -2356,7 +2457,7 @@ async fn an_invalid_invite_is_refused_without_hashing_the_password() {
     // What one hash actually costs on this machine, measured rather than
     // assumed -- the parameters are the crate's defaults and will change.
     let start = std::time::Instant::now();
-    users::hash_password(&format!("{}-cost", password())).unwrap();
+    accounts::hash_password(&format!("{}-cost", password())).unwrap();
     let hashing = start.elapsed();
 
     assert!(
@@ -2374,33 +2475,17 @@ async fn a_read_only_server_tells_an_anonymous_caller_the_truth() {
     // answering "sign in and try again" sends someone down a road with no
     // end. The refusal has to name the flag even for a caller who has no
     // account at all.
-    let hash = users::hash_password(password()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
-        &UserSet {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_set_and_access(
+        UserSet {
             users: vec![activated("erik", Role::Picker, DownloadScope::All, &hash)],
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions {
-                read_only: true,
-                ..AccessOptions::default()
-            },
-        )
-        .unwrap(),
+        AccessOptions {
+            read_only: true,
+            ..AccessOptions::default()
+        },
     );
-    let app = build_router(state);
 
     let refused = put(
         &app,
@@ -2427,38 +2512,20 @@ async fn a_read_only_server_tells_an_anonymous_caller_the_truth() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_read_only_server_caps_even_an_administrator() {
-    let hash = users::hash_password(password()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
-        &UserSet {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = app_with_set_and_access(
+        UserSet {
             users: vec![activated("erik", Role::Admin, DownloadScope::All, &hash)],
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions {
-                read_only: true,
-                ..AccessOptions::default()
-            },
-        )
-        .unwrap(),
+        AccessOptions {
+            read_only: true,
+            ..AccessOptions::default()
+        },
     );
-    let app = build_router(state);
 
     let session = sign_in(&app, "erik").await;
-    let me = get(&app, "/api/v1/auth/me", Some(&session)).await;
-    assert_eq!(me.body["account_role"], "admin", "the account is unchanged");
-    assert_eq!(me.body["role"], "viewer", "what they may do here is not");
+    assert_eq!(role_of(&app, Some(&session)).await, "viewer");
 
     let refused = put(
         &app,
@@ -2484,8 +2551,7 @@ async fn a_read_only_server_caps_even_an_administrator() {
 fn app_with_an_unlisted_radargram(set: UserSet) -> (tempfile::TempDir, Router) {
     use crate::project::overrides::{self, RadargramOverride};
 
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
+    let dir = new_site();
     // With coordinate axes, so the group map has tracks to draw: whether an
     // unlisted radargram reaches that map is one of the things this fixture
     // is for.
@@ -2496,8 +2562,8 @@ fn app_with_an_unlisted_radargram(set: UserSet) -> (tempfile::TempDir, Router) {
             None,
         );
     }
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(project.documents(), &set, &Expectation::Any).unwrap();
+    write_people(dir.path(), &set);
+    let project = open_project(dir.path());
     overrides::update(project.documents(), |o| {
         o.radargrams.insert(
             crate::identity::RadargramId::new("line-02").unwrap(),
@@ -2510,22 +2576,14 @@ fn app_with_an_unlisted_radargram(set: UserSet) -> (tempfile::TempDir, Router) {
     })
     .unwrap();
 
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
-    (dir, build_router(state))
+    let router = site_router(dir.path(), AccessOptions::default());
+    (dir, router)
 }
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_unlisted_radargram_is_absent_from_a_pickers_listing_and_present_for_an_operator() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![
             activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -2562,7 +2620,7 @@ async fn an_unlisted_radargram_is_absent_from_a_pickers_listing_and_present_for_
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_operator_can_rename_a_radargram_without_restarting_the_server() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![
             activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -2631,7 +2689,7 @@ async fn an_operator_can_rename_a_radargram_without_restarting_the_server() {
 async fn an_operator_can_set_and_revert_an_elevation_range() {
     // #168: the elevation range lives on the same properties document as
     // display_name/group, edited and reverted the same way.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
         ..UserSet::default()
@@ -2712,8 +2770,7 @@ async fn a_bad_elevation_window_is_reported_as_a_window_problem_not_an_unsupport
     // examined, so only a fixture like this can pin the HTTP mapping for
     // `topo_window_invalid` -- which is the code the viewer keys its
     // visible warning off.
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
+    let dir = new_site();
 
     let path = radargrams(dir.path()).join("topo-line.nc");
     let (n_samples, n_traces) = (16usize, 32usize);
@@ -2755,28 +2812,16 @@ async fn a_bad_elevation_window_is_reported_as_a_window_problem_not_an_unsupport
             .unwrap();
     }
 
-    let hash = users::hash_password(password()).unwrap();
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
+    let hash = accounts::hash_password(password()).unwrap();
+    write_people(
+        dir.path(),
         &UserSet {
             users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
-
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
     );
-    let app = build_router(state);
+
+    let app = site_router(dir.path(), AccessOptions::default());
     let erik = sign_in(&app, "erik").await;
 
     // With no window configured the view resolves fine.
@@ -2829,7 +2874,7 @@ async fn a_bad_elevation_window_is_reported_as_a_window_problem_not_an_unsupport
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_picker_cannot_edit_properties() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![
             activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -2860,7 +2905,7 @@ async fn a_picker_cannot_edit_properties() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn moving_a_radargram_into_a_named_group_takes_effect_at_once() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
         ..UserSet::default()
@@ -2899,7 +2944,7 @@ async fn an_unlisted_radargram_is_off_the_group_map_too() {
     // one listed member and one unlisted one still renders for a `picker`,
     // so without filtering the map endpoint their track would be drawn --
     // the one thing unlisting does claim to prevent.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![
             activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -2955,7 +3000,7 @@ async fn an_unlisted_radargram_is_off_the_group_map_too() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn unlisting_takes_a_radargram_out_of_a_pickers_listing_at_once() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![
             activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -2998,7 +3043,7 @@ async fn an_operator_can_rename_a_group_in_one_place() {
     // The point of keeping a group's name with the group: one save, and
     // every member reports the new name. Renaming it through a member would
     // work too, but it reads as though the name belonged to that radargram.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![
             activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -3063,7 +3108,7 @@ async fn an_operator_can_rename_a_group_in_one_place() {
 async fn ungrouped_is_not_a_group_to_rename() {
     // `_none` is the absence of a group, not one that lost its name, and
     // saying so is more use than "not found".
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
         ..UserSet::default()
@@ -3089,7 +3134,7 @@ async fn ungrouped_is_not_a_group_to_rename() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_picker_cannot_rename_a_group() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![
             activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -3131,7 +3176,7 @@ async fn merged_downloads_leave_unlisted_members_out_and_say_how_many() {
     // looks complete. Counted rather than named in the header: the omission
     // is the point, and listing the ids would undo it for whoever
     // downloaded the file.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, app) = app_with_an_unlisted_radargram(UserSet {
         users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
         ..UserSet::default()
@@ -3184,9 +3229,8 @@ async fn a_warning_naming_an_unlisted_radargram_is_not_shown_to_a_picker() {
     // the listing just dropped would put it straight back.
     use crate::project::overrides::{self, RadargramOverride};
 
-    let hash = users::hash_password(password()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
+    let dir = new_site();
     // Two radargrams, plus a third carrying the same id as the second --
     // which is what makes the catalog warn about that id by name. Written
     // before the state is built, since discovery happens once.
@@ -3201,9 +3245,8 @@ async fn a_warning_naming_an_unlisted_radargram_is_not_shown_to_a_picker() {
             None,
         );
     }
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
+    write_people(
+        dir.path(),
         &UserSet {
             users: vec![
                 activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -3211,9 +3254,8 @@ async fn a_warning_naming_an_unlisted_radargram_is_not_shown_to_a_picker() {
             ],
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
+    );
+    let project = open_project(dir.path());
     overrides::update(project.documents(), |o| {
         o.radargrams.insert(
             crate::identity::RadargramId::new("line-02").unwrap(),
@@ -3225,16 +3267,7 @@ async fn a_warning_naming_an_unlisted_radargram_is_not_shown_to_a_picker() {
         Ok(())
     })
     .unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
-    let app = build_router(state);
+    let app = site_router(dir.path(), AccessOptions::default());
 
     let erik = sign_in(&app, "erik").await;
     let seen = get(&app, "/api/v1/datasets", Some(&erik)).await;
@@ -3264,10 +3297,9 @@ async fn a_radargram_from_an_external_root_says_it_is_not_in_the_project() {
     // removed, one in an archive can only be ignored, because Ridal never
     // writes outside the project. The UI has to offer different words for
     // those, and this is what it asks.
-    let hash = users::hash_password(password()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
+    let dir = new_site();
     let archive = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
     super::interp_routes_tests::write_test_nc_with_axes(
         &radargrams(dir.path()).join("ours.nc"),
         "ours",
@@ -3279,7 +3311,7 @@ async fn a_radargram_from_an_external_root_says_it_is_not_in_the_project() {
         None,
     );
     std::fs::write(
-        dir.path().join("ridal.toml"),
+        project_root(dir.path()).join("ridal.toml"),
         format!(
             "[project]\nname = \"test\"\n\n[radargrams]\nroots = [\"radargrams\", \"{}\"]\n",
             archive.path().display()
@@ -3287,26 +3319,14 @@ async fn a_radargram_from_an_external_root_says_it_is_not_in_the_project() {
     )
     .unwrap();
 
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
+    write_people(
+        dir.path(),
         &UserSet {
             users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
     );
-    let app = build_router(state);
+    let app = site_router(dir.path(), AccessOptions::default());
     let erik = sign_in(&app, "erik").await;
 
     let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
@@ -3344,9 +3364,8 @@ fn lifecycle_app_with_cap(
     users: Vec<User>,
     max_bytes: Option<u64>,
 ) -> (tempfile::TempDir, tempfile::TempDir, Router) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = new_site();
     let archive = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
     super::interp_routes_tests::write_test_nc_with_axes(
         &radargrams(dir.path()).join("ours.nc"),
         "ours",
@@ -3358,7 +3377,7 @@ fn lifecycle_app_with_cap(
         None,
     );
     std::fs::write(
-        dir.path().join("ridal.toml"),
+        project_root(dir.path()).join("ridal.toml"),
         format!(
             "[project]\nname = \"test\"\nformat_version = 1\n\n[radargrams]\n\
              roots = [\"{}/{}\", \"{}\"]\n{}",
@@ -3372,26 +3391,15 @@ fn lifecycle_app_with_cap(
     )
     .unwrap();
 
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
+    write_people(
+        dir.path(),
         &UserSet {
             users,
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
     );
-    (dir, archive, build_router(state))
+    let app = site_router(dir.path(), AccessOptions::default());
+    (dir, archive, app)
 }
 
 async fn post_bytes(app: &Router, uri: &str, body: Vec<u8>, session: Option<&str>) -> Response {
@@ -3411,14 +3419,14 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     // #173: the cap is operator-visible but admin-editable. An operator who
     // submits it anyway is refused -- the server, not the hidden control, is
     // the gate.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, _archive, app) = lifecycle_app(vec![
         activated("op", Role::Operator, DownloadScope::All, &hash),
         activated("admin", Role::Admin, DownloadScope::All, &hash),
     ]);
 
     let op = sign_in(&app, "op").await;
-    let settings = get(&app, "/api/v1/project/settings", Some(&op)).await;
+    let settings = get(&app, "/api/v1/settings", Some(&op)).await;
     assert_eq!(settings.status, StatusCode::OK);
     assert_eq!(settings.body["can_edit_project"], true);
     assert_eq!(settings.body["can_edit_access"], false);
@@ -3441,7 +3449,7 @@ async fn only_an_admin_may_change_the_project_size_limit() {
 
     let refused = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"max_bytes": 1024u64}),
         Some(&op),
     )
@@ -3452,10 +3460,15 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     let admin = sign_in(&app, "admin").await;
     let page = get(&app, "/settings", Some(&admin)).await;
     assert!(page.text.contains(r#"id="storage-max""#), "{}", page.text);
+    // The theme is a site setting (#214), offered here as one, and the
+    // menu leads back to the site.
+    assert!(page.text.contains(r#"id="site-theme""#), "{}", page.text);
+    assert!(!page.text.contains(r#"id="my-theme""#), "{}", page.text);
+    assert!(page.text.contains(">Projects<"), "{}", page.text);
 
     let saved = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"max_bytes": 2048u64}),
         Some(&admin),
     )
@@ -3466,7 +3479,7 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     // `null` clears it, restoring the built-in default.
     let cleared = put(
         &app,
-        "/api/v1/project/settings",
+        "/api/v1/settings",
         &json!({"max_bytes": null}),
         Some(&admin),
     )
@@ -3481,7 +3494,7 @@ async fn only_an_admin_may_change_the_project_size_limit() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_uploaded_radargram_appears_without_a_restart() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -3514,13 +3527,12 @@ async fn an_uploaded_radargram_appears_without_a_restart() {
     assert!(!radargrams(dir.path()).join("new.nc").exists());
 
     // And it is recorded.
-    let log: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(data(dir.path()).join("audit.json")).unwrap(),
-    )
-    .unwrap();
-    let entries = log["entries"].as_array().unwrap();
-    assert_eq!(entries.last().unwrap()["action"], "added");
-    assert_eq!(entries.last().unwrap()["user"], "erik");
+    let entries = crate::project::audit::read(open_project(dir.path()).documents()).unwrap();
+    assert_eq!(
+        entries.last().unwrap().action,
+        crate::project::audit::Action::Added
+    );
+    assert_eq!(entries.last().unwrap().user, "erik");
 }
 
 #[tokio::test]
@@ -3528,7 +3540,7 @@ async fn an_uploaded_radargram_appears_without_a_restart() {
 async fn an_upload_that_is_not_a_ridal_radargram_leaves_nothing_behind() {
     // Every refusal happens after the file exists, so the one thing that
     // must always hold is that nothing is left in the radargram directory.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -3565,7 +3577,7 @@ async fn an_upload_of_a_legacy_ridal_file_is_refused_with_a_reprocess_message() 
     // Distinct from the generic "not a ridal radargram" case (#167): an old
     // ridal file is recognizable as ridal output, so the refusal should say
     // so and point at reprocessing, not just "no radargram id".
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -3607,7 +3619,7 @@ async fn an_upload_of_a_valid_but_unrelated_netcdf_is_refused_as_not_ridal() {
     // the legacy case above: this file parses fine as NetCDF and still has
     // none of ridal's attributes at all, so it should land on the plain
     // "not one Ridal processed" answer (#167).
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -3648,7 +3660,7 @@ async fn an_upload_of_a_valid_but_unrelated_netcdf_is_refused_as_not_ridal() {
 async fn an_upload_colliding_with_an_existing_id_is_refused() {
     // Refused while the operator is standing there and can rename it,
     // rather than left to become a duplicate-id warning later.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -3679,7 +3691,7 @@ async fn removing_a_project_radargram_deletes_the_file_and_keeps_the_picks() {
     // The hazard is not wasted space: it is a different file arriving later
     // under the same id and orphaned picks reattaching to data they were
     // never drawn on.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -3726,7 +3738,7 @@ async fn removing_an_external_radargram_ignores_it_and_leaves_the_file_alone() {
     // Ridal never writes outside the project. The most "remove" can mean
     // there is "stop serving it", and the response says so rather than
     // implying the file is gone.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -3774,7 +3786,7 @@ async fn removing_an_external_radargram_ignores_it_and_leaves_the_file_alone() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_upload_past_the_project_cap_is_refused_before_it_is_written() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     // A cap the project has already passed, so there is no room at all.
     let (dir, _archive, app) = lifecycle_app_with_cap(
         vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
@@ -3809,7 +3821,7 @@ async fn an_upload_past_the_project_cap_is_refused_before_it_is_written() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_picker_can_neither_add_nor_remove() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, _archive, app) = lifecycle_app(vec![activated(
         "student",
         Role::Picker,
@@ -3857,48 +3869,26 @@ async fn serving_one_file_inside_a_project_still_knows_it_is_the_project() {
     // and every radargram in it reported `in_project: false` -- which is
     // the flag the UI uses to choose between deleting a file and merely
     // not serving it.
-    let hash = users::hash_password(password()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    super::interp_routes_tests::write_test_nc_with_axes(
-        &radargrams(dir.path()).join("ours.nc"),
-        "ours",
-        None,
-    );
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
-        &UserSet {
-            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
-            ..UserSet::default()
-        },
-        &Expectation::Any,
-    )
-    .unwrap();
+    let radargrams = dir
+        .path()
+        .join(crate::project::DEFAULT_DATA_DIR)
+        .join(crate::project::DEFAULT_RADARGRAM_DIR);
+    for id in ["ours", "theirs"] {
+        super::interp_routes_tests::write_test_nc_with_axes(
+            &radargrams.join(format!("{id}.nc")),
+            id,
+            None,
+        );
+    }
 
-    // A second radargram, and the server pointed at the *first file*
-    // rather than a directory -- which `Project::discover` supports, since
-    // it searches upwards for the marker.
-    super::interp_routes_tests::write_test_nc_with_axes(
-        &radargrams(dir.path()).join("theirs.nc"),
-        "theirs",
-        None,
-    );
-    let inside = radargrams(dir.path()).join("ours.nc");
-    let project = Project::discover(&inside).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            &inside,
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
-    let app = build_router(state);
-    let erik = sign_in(&app, "erik").await;
+    // The server pointed at the *first file* rather than a directory --
+    // which `Project::discover` supports, since it searches upwards for the
+    // marker.
+    let app = gui_router(&radargrams.join("ours.nc"), AccessOptions::default());
 
-    let listing = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let listing = get(&app, "/api/v1/projects/default/datasets", None).await;
     let entries = listing.body["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 2, "both are found: {entries:?}");
     for entry in entries {
@@ -3917,7 +3907,7 @@ async fn an_upload_of_an_ignored_id_is_refused_rather_than_installed_and_hidden(
     // The upload was accepted, installed, and then hidden again by the very
     // ignore that made the id look available: 201 Created for a radargram
     // that never appeared.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -3952,7 +3942,7 @@ async fn an_interrupted_upload_leaves_no_temporary_file_behind() {
     // result, so an oversized body returned through `?` while the temporary
     // was still on disk -- and with a `.nc` suffix it would then have been
     // discovered as a radargram.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app_with_cap(
         vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
         Some(1024),
@@ -3982,7 +3972,7 @@ async fn an_upload_will_not_follow_a_symlinked_radargram_directory_out_of_the_pr
     // and the upload lands in someone else's archive.
     #[cfg(unix)]
     {
-        let hash = users::hash_password(password()).unwrap();
+        let hash = accounts::hash_password(password()).unwrap();
         let (dir, _archive, app) = lifecycle_app(vec![activated(
             "erik",
             Role::Operator,
@@ -4022,7 +4012,7 @@ async fn removing_a_radargram_keeps_its_axes_so_the_picks_stay_carryable() {
     // the reason the snapshot is taken unconditionally rather than only
     // when something references the revision: someone with the viewer open
     // has not saved yet, and their PUT arrives after the file is gone.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4079,7 +4069,7 @@ async fn removing_a_radargram_keeps_its_axes_so_the_picks_stay_carryable() {
 async fn a_viewer_can_read_the_history_but_not_change_it() {
     // Which revisions a radargram has had is provenance about data people
     // are already being shown, not an operator's working notes.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, _archive, app) = lifecycle_app(vec![
         activated("reader", Role::Viewer, DownloadScope::None, &hash),
         activated("erik", Role::Operator, DownloadScope::All, &hash),
@@ -4107,7 +4097,7 @@ async fn a_radargram_that_has_never_been_removed_still_has_a_current_revision() 
     // removed, so `/revisions` had nothing to say about a radargram that
     // had simply always been there -- and a later supersession had no
     // earlier record to compare its checksum against.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4140,7 +4130,7 @@ async fn restoring_an_ignored_radargram_stops_its_history_saying_it_is_gone() {
     // An ignore supersedes the revision. Lifting it makes that revision
     // current again, and a record still marked superseded would have the
     // history contradict the catalog that is serving it.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4186,7 +4176,7 @@ async fn a_removal_is_refused_when_the_axes_it_declares_cannot_be_kept() {
     // without it no document drawn on this revision can be carried onto a
     // later one. A full disk or an unwritable `revisions/` therefore has to
     // stop the deletion rather than warn past it.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4250,7 +4240,7 @@ async fn a_staged_replacement_is_not_served_as_a_radargram() {
     // would be catalogued immediately as a duplicate of its own target --
     // and the operator would be told their id already exists, by the file
     // they just uploaded.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4296,7 +4286,7 @@ async fn replacing_a_radargram_leaves_every_pick_exactly_as_drawn() {
     // would launder an approximation into ground truth; it compounds on the
     // next replace; and it cannot be undone. The file changes and the
     // documents do not.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4382,7 +4372,7 @@ async fn a_replacement_for_a_different_radargram_is_refused() {
     // Without this, replacing `ours` with a file whose id is something else
     // installs it at `ours.nc`, and the catalog then disagrees with the
     // file about what it is.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4412,7 +4402,7 @@ async fn a_replacement_for_a_different_radargram_is_refused() {
 async fn a_replacement_that_is_a_legacy_ridal_file_is_refused_with_a_reprocess_message() {
     // Same distinction as the upload route (#167): an old ridal file gets a
     // specific "reprocess it" answer, not the generic not-ridal message.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4450,7 +4440,7 @@ async fn a_replacement_that_is_a_valid_but_unrelated_netcdf_is_refused_as_not_ri
     // Same distinction as the upload route's equivalent test (#167): a file
     // that parses fine as NetCDF but has none of ridal's attributes at all
     // should land on the plain "not one Ridal processed" answer.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4484,7 +4474,7 @@ async fn a_replacement_that_is_a_valid_but_unrelated_netcdf_is_refused_as_not_ri
 async fn a_radargram_outside_the_project_cannot_be_replaced() {
     // Ridal never writes outside the project, so the honest answer is a
     // refusal rather than a replace that lands somewhere else.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4509,7 +4499,7 @@ async fn a_radargram_outside_the_project_cannot_be_replaced() {
 async fn a_discarded_replacement_is_given_back() {
     // An abandoned dialog should not leave a radargram-sized file in the
     // project. The sweep catches it eventually; this is the immediate path.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4545,7 +4535,7 @@ async fn a_discarded_replacement_is_given_back() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn only_an_operator_may_replace_a_radargram() {
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, _archive, app) = lifecycle_app(vec![
         activated("student", Role::Picker, DownloadScope::All, &hash),
         activated("erik", Role::Operator, DownloadScope::All, &hash),
@@ -4572,7 +4562,7 @@ async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
     //
     // The dialog disables its button for this, but a disabled button is a
     // courtesy and committing deletes the old file. Refused here too.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4630,35 +4620,22 @@ async fn an_uncorrected_revision_can_be_replaced() {
     // whichever anchor the revision offers, and names it, because a
     // corrected and an uncorrected revision can carry numerically similar
     // values meaning entirely different things.
-    let hash = users::hash_password(password()).unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    Project::init(dir.path(), Some("test")).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
+    let dir = new_site();
     // The radargram being replaced has never had a zero correction.
     super::interp_routes_tests::write_test_nc_uncorrected(
         &radargrams(dir.path()).join("ours.nc"),
         "ours",
         "2026-01-01T00:00:00Z",
     );
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    users::write(
-        project.documents(),
+    write_people(
+        dir.path(),
         &UserSet {
             users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
             ..UserSet::default()
         },
-        &Expectation::Any,
-    )
-    .unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
     );
-    let app = build_router(state);
+    let app = site_router(dir.path(), AccessOptions::default());
     let erik = sign_in(&app, "erik").await;
 
     // A corrected revision replacing it: the two share no travel-time
@@ -4725,7 +4702,7 @@ async fn carried_picks_can_be_adopted_onto_the_current_revision() {
     // The three objections are answered rather than ignored: the document
     // records that it was carried, records what from, and the version as
     // drawn is archived first.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4863,7 +4840,7 @@ async fn nobody_may_adopt_someone_elses_picks() {
     // Interpretations belong to whoever drew them, and adopting writes to
     // one. Not even an admin, which is the same rule `writing_as` enforces
     // for saving -- a property of the data model rather than a permission.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, _archive, app) = lifecycle_app(vec![
         activated("erik", Role::Admin, DownloadScope::All, &hash),
         activated("student", Role::Picker, DownloadScope::All, &hash),
@@ -4899,7 +4876,7 @@ async fn an_edit_made_over_a_carried_view_survives_adopting() {
     // An edit made over a carried view is made by dragging a vertex across
     // *this* revision, so it is already in this revision's index space and
     // there is nothing to carry about it.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -4994,7 +4971,7 @@ async fn adopting_from_a_page_left_open_across_a_replace_is_refused() {
     // was looking at. A tab open across a replace would otherwise adopt
     // coordinates validated against a file that is no longer there, and
     // the provenance would record it as deliberate.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (_dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -5071,7 +5048,7 @@ async fn a_report_measured_against_a_superseded_revision_is_not_committed() {
     // without checking the first half lets another replace landing in
     // between turn an approved A -> C into an unapproved B -> C, and the
     // operator read what would happen to picks drawn on A.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -5142,7 +5119,7 @@ async fn adopting_from_a_page_that_missed_a_save_is_refused() {
     // another tab saved, it used to overwrite the newer version --
     // archived, but replaced without anybody being told, where an ordinary
     // save in the same position is refused with 412.
-    let hash = users::hash_password(password()).unwrap();
+    let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
@@ -5228,4 +5205,44 @@ async fn adopting_from_a_page_that_missed_a_save_is_refused() {
             .exists(),
         "a refused adoption leaves no stray archived copy"
     );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_preference_nothing_offers_is_refused_rather_than_stored() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = app_with(vec![activated(
+        "erik",
+        Role::Picker,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    for (body, code) in [
+        (
+            json!({"render_profile": "no-such-profile"}),
+            "unknown_profile",
+        ),
+        (json!({"x_scale": 7.25}), "unknown_xscale"),
+        (json!({"theme": "sepia"}), "unknown_theme"),
+        (json!({"level2_format": "xlsx"}), "unknown_format"),
+    ] {
+        let refused = put(&app, "/api/v1/preferences", &body, Some(&erik)).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{body}: {}",
+            refused.text
+        );
+        assert_eq!(refused.body["error"]["code"], code, "{body}");
+    }
+    // Someone who is not signed in has nowhere to keep one.
+    let anonymous = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"render_profile": null}),
+        None,
+    )
+    .await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
 }

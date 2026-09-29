@@ -13,7 +13,8 @@ use axum::Router;
 use tokio::sync::Semaphore;
 
 use super::catalog::{Catalog, CatalogRoot, RevisionId};
-use crate::identity::RadargramId;
+use crate::identity::{ProjectKey, RadargramId};
+use crate::project::store::DocumentStore;
 use crate::server::render_service::{RenderService, RenderServiceConfig};
 use crate::source::{AmplitudeSource, SourceReader};
 
@@ -44,32 +45,30 @@ pub struct AccessOptions {
     /// request, so a guard sampled at boot would be bypassed by exactly
     /// the sequence that makes it matter.
     pub allow_password_login: bool,
-    /// Whether the key that signs session cookies is kept in the project,
-    /// or generated at startup and held only in memory (#187).
-    ///
-    /// False for `ridal gui`. A survey directory gets zipped, synced and
-    /// mailed around, and a signing key inside one is a leaked signing key
-    /// -- so the offline mode that writes into the user's own directory
-    /// writes no secret there at all. The cost is that a `ridal gui`
-    /// restart signs its own sessions out, which for a session that lives
-    /// as long as the window is open is not much of a cost.
-    ///
-    /// True for `ridal server start`, where sessions outliving a restart is
-    /// the point and the project directory is the operator's.
-    pub persist_sessions: bool,
 }
 
 impl Default for AccessOptions {
-    /// Writable, logins permitted, sessions persisted. The loopback case,
-    /// and what tests want: a bind that is either genuinely local or behind
-    /// a proxy.
+    /// Writable, logins permitted. The loopback case, and what tests want:
+    /// a bind that is either genuinely local or behind a proxy.
     fn default() -> Self {
         Self {
             read_only: false,
             allow_password_login: true,
-            persist_sessions: true,
         }
     }
+}
+
+/// The site a project is served from, when it is (#214).
+///
+/// A project served by a site receives its caller from the site (see
+/// [`super::auth::project_caller`]), so this carries only what the project's
+/// own pages need: where the site keeps each account's site-wide settings,
+/// and whether the project is archived.
+pub struct SiteContext {
+    /// The site root, which holds each account's site-wide preferences.
+    pub store: DocumentStore,
+    /// Archived projects are read-only and named as such in a refusal.
+    pub archived: bool,
 }
 
 pub struct AppState {
@@ -132,13 +131,12 @@ pub struct AppState {
     /// parallel gate is how the two drift apart. See
     /// [`super::auth::Caller`].
     pub access: AccessOptions,
-    /// The key that signs session cookies, loaded on first use.
-    ///
-    /// Lazy so a project that never authenticates never grows a
-    /// `session.key`, and behind a lock rather than a `OnceLock` so a
-    /// failure to read it is retried on the next login instead of being
-    /// cached forever.
-    session_key: Mutex<Option<super::auth::SessionKey>>,
+    /// The key this project is served under: `/p/{key}` for its pages and
+    /// `/api/v1/projects/{key}` for its API. `default` for `ridal gui`.
+    pub key: ProjectKey,
+    /// The site this project is served from, when it is (#214). `None` is
+    /// `ridal gui`, whose one person is the local user.
+    pub site: Option<Arc<SiteContext>>,
     /// Bounds how many renders may be in flight at once, across every
     /// radargram, sized from `--n-workers`.
     ///
@@ -150,6 +148,21 @@ pub struct AppState {
     /// band in memory. The permit is acquired *before* spawning so a
     /// client that disconnects while queued never starts one at all.
     pub render_permits: Arc<Semaphore>,
+}
+
+/// Record a project's catalog size after a scan, for the site landing
+/// (#214). Best effort: a failure costs the landing one count, not the
+/// project its catalog.
+fn record_catalog_summary(project: Option<&crate::project::Project>, catalog: &Catalog) {
+    let Some(project) = project else {
+        return;
+    };
+    let summary = crate::project::catalog_summary::Summary {
+        radargrams: catalog.entries.len(),
+    };
+    if let Err(e) = crate::project::catalog_summary::write(project.documents(), &summary) {
+        eprintln!("Warning: could not record the catalog summary: {e}");
+    }
 }
 
 impl AppState {
@@ -272,6 +285,7 @@ impl AppState {
         }
 
         let catalog = Catalog::discover_roots(&roots, &overrides);
+        record_catalog_summary(project.as_ref(), &catalog);
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
@@ -319,8 +333,9 @@ impl AppState {
                 radargrams,
             })),
             access,
-            session_key: Mutex::new(None),
             project,
+            key: ProjectKey::new(DEFAULT_PROJECT_KEY).expect("the default key is a valid slug"),
+            site: None,
             // `.max(1)`: a zero-permit semaphore would deadlock every
             // render forever. The CLI rejects `--n-workers 0` with a
             // clear message, so this only guards programmatic callers.
@@ -441,6 +456,7 @@ impl AppState {
             .map(|p| crate::project::overrides::read_lenient(p.documents()))
             .unwrap_or_default();
         let catalog = Catalog::discover_roots(&self.roots, &overrides);
+        record_catalog_summary(self.project.as_ref(), &catalog);
 
         let existing = self.catalog();
         let mut radargrams = HashMap::new();
@@ -542,35 +558,32 @@ impl AppState {
         self.roots.get(entry.root).is_some_and(|root| root.writable)
     }
 
-    /// The key that signs this project's session cookies, creating it on
-    /// first use.
-    ///
-    /// Errors rather than returning `None` for a catalog with no project:
-    /// nothing should be asking for a session key there, and answering
-    /// "there is no key" would read as "this cookie is fine".
-    pub fn session_key(&self) -> Result<super::auth::SessionKey, String> {
-        let project = self
-            .project
-            .as_ref()
-            .ok_or_else(|| "this catalog is not a project, so it has no sessions".to_string())?;
-        let mut guard = self
-            .session_key
-            .lock()
-            .map_err(|_| "the session key lock was poisoned by a panic".to_string())?;
-        if let Some(key) = guard.as_ref() {
-            return Ok(key.clone());
-        }
-        // Either way it is cached above, so every session this process
-        // mints is signed with one key -- an ephemeral key that changed
-        // per request would sign each caller out of the page they were on.
-        let key = if self.access.persist_sessions {
-            super::auth::project_session_key(project)?
-        } else {
-            super::auth::SessionKey::ephemeral()?
-        };
-        *guard = Some(key.clone());
-        Ok(key)
+    /// Serve this project under `key` in a site (#214). A builder method
+    /// rather than a `build_with_project` parameter, so the many callers and
+    /// tests that serve a project on its own are untouched.
+    pub fn with_site(mut self, key: ProjectKey, site: Arc<SiteContext>) -> Self {
+        self.key = key;
+        self.site = Some(site);
+        self
     }
+
+    /// Share one render-permit budget with the rest of a site (#214).
+    ///
+    /// A site builds a separate [`AppState`] per project but wants
+    /// `--n-workers` to bound the whole server, not each project
+    /// independently -- otherwise N projects allow N times the concurrent
+    /// renders the operator asked for. `ridal gui` and the tests leave this
+    /// alone and keep the budget `build_with_project` sized for one project.
+    pub fn with_render_permits(mut self, permits: Arc<Semaphore>) -> Self {
+        self.render_permits = permits;
+        self
+    }
+
+    /// How this project's render services are configured.
+    pub fn render_config(&self) -> RenderServiceConfig {
+        self.render_config
+    }
+
     /// The catalog and its services as they are right now.
     ///
     /// Every read goes through here rather than through a field, so there
@@ -775,11 +788,16 @@ impl MergeScope {
 /// every ungrouped radargram in the catalog is not one group.
 pub const NO_GROUP_ID: &str = "_none";
 
-/// Build the complete Axum application over `state`.
-pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
+/// The key `ridal gui` serves its one project under, at `/p/default/`.
+pub const DEFAULT_PROJECT_KEY: &str = "default";
+
+/// The static assets and favicon.
+///
+/// Stateless, so the project router and the site router share one definition
+/// rather than each listing the same dozen `/static/*` routes (#214). Merged
+/// after `.with_state`, so the two routers' state types line up.
+pub fn static_router() -> Router {
     Router::new()
-        .route("/", get(super::routes::index_page))
-        .route("/view/{radargram_id}", get(super::routes::viewer_page))
         .route("/static/leaflet.js", get(super::assets::leaflet_js))
         .route("/static/leaflet.css", get(super::assets::leaflet_css))
         .route("/static/app.css", get(super::assets::app_css))
@@ -788,6 +806,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/static/viewer.js", get(super::assets::viewer_js))
         .route("/static/picker.js", get(super::assets::picker_js))
         .route("/static/panel.js", get(super::assets::panel_js))
+        .route("/static/login.js", get(super::assets::login_js))
+        .route("/static/settings.js", get(super::assets::settings_js))
+        .route("/static/site.js", get(super::assets::site_js))
+        .route("/static/layers.js", get(super::assets::layers_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -807,63 +829,25 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         )
         .route("/static/images/logo.svg", get(super::assets::logo_svg))
         .route("/favicon.ico", get(super::assets::favicon))
+}
+
+/// Build the complete Axum application over `state`.
+pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
+    Router::new()
+        .route("/", get(super::routes::index_page))
+        .route("/view/{radargram_id}", get(super::routes::viewer_page))
         .route("/api/v1/health", get(super::routes::health))
-        // Authentication. The write routes below did not change shape when
-        // this arrived (#131): the path still names the user, and only the
-        // body of `current_user` moved.
-        .route("/login", get(super::auth_routes::login_page))
-        .route("/invite/{token}", get(super::auth_routes::invite_page))
-        .route("/static/login.js", get(super::assets::login_js))
-        .route("/api/v1/auth/me", get(super::auth_routes::me))
-        .route(
-            "/api/v1/auth/login",
-            axum::routing::post(super::auth_routes::login),
-        )
-        .route(
-            "/api/v1/auth/logout",
-            axum::routing::post(super::auth_routes::logout),
-        )
-        .route(
-            "/api/v1/auth/invite",
-            axum::routing::post(super::auth_routes::redeem_invite),
-        )
-        .route(
-            "/api/v1/users",
-            get(super::auth_routes::list_users).post(super::auth_routes::create_user),
-        )
-        .route(
-            "/api/v1/users/bulk/invites",
-            axum::routing::post(super::auth_routes::create_bulk_invites),
-        )
-        .route(
-            "/api/v1/users/bulk/passwords",
-            axum::routing::post(super::auth_routes::create_bulk_passwords),
-        )
-        .route(
-            "/api/v1/users/{name}",
-            axum::routing::put(super::auth_routes::update_user)
-                .delete(super::auth_routes::delete_user),
-        )
-        .route(
-            "/api/v1/users/{name}/invite",
-            axum::routing::post(super::auth_routes::reissue_invite),
-        )
-        .route(
-            "/api/v1/access",
-            axum::routing::put(super::auth_routes::put_access),
-        )
         .route(
             "/api/v1/preferences",
-            get(super::auth_routes::get_preferences).put(super::auth_routes::put_preferences),
+            get(super::preference_routes::get_preferences)
+                .put(super::preference_routes::put_preferences),
         )
         .route("/layers", get(super::routes::layers_page))
         .route("/settings", get(super::routes::settings_page))
-        .route("/static/settings.js", get(super::assets::settings_js))
         .route(
-            "/api/v1/project/settings",
+            "/api/v1/settings",
             get(super::interp_routes::get_settings).put(super::interp_routes::put_settings),
         )
-        .route("/static/layers.js", get(super::assets::layers_js))
         .route(
             "/api/v1/layers",
             get(super::interp_routes::get_layers).put(super::interp_routes::put_layers),
@@ -1032,6 +1016,11 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             super::auth::middleware,
         ))
         .with_state(state)
+        // Stateless assets, merged last so their paths are served without
+        // the identity middleware. Nothing under `/static` or the favicon
+        // was ever gated by it (`auth::is_public_path`), so this only saves
+        // a `users.json` read per asset (#214).
+        .merge(static_router())
 }
 
 /// A radargram ID from the URL is validated the same way an explicit
@@ -1498,7 +1487,9 @@ mod tests {
             let html = String::from_utf8(body.to_vec()).unwrap();
 
             assert!(
-                html.contains("/api/v1/datasets/thumb-test-a/views/standard/overview"),
+                html.contains(
+                    "/api/v1/projects/default/datasets/thumb-test-a/views/standard/overview"
+                ),
                 "index must embed the overview image URL"
             );
             assert!(
@@ -1539,9 +1530,9 @@ mod tests {
             // and the card's own link, so opening a radargram keeps the
             // profile the index was browsing in.
             assert!(html.contains(
-                "/api/v1/datasets/profile-test-a/views/standard/overview?profile=positive"
+                "/api/v1/projects/default/datasets/profile-test-a/views/standard/overview?profile=positive"
             ));
-            assert!(html.contains("/view/profile-test-a?profile=positive"));
+            assert!(html.contains("/p/default/view/profile-test-a?profile=positive"));
             assert!(
                 html.contains("value=\"positive\" selected"),
                 "the switcher must reflect the active profile"
@@ -1896,11 +1887,11 @@ mod http_reference_tests {
 
     type Endpoint = (String, String);
 
-    /// `(METHOD, path)` for every `/api` route, read from this file's source.
-    /// The router offers no way to list its routes at runtime.
-    fn routed() -> BTreeSet<Endpoint> {
-        let source = include_str!("app.rs");
-        let start = source.find("pub fn build_router").unwrap();
+    /// `(METHOD, path)` for every `/api` route in the router a `marker`
+    /// names, read from that module's source. The router offers no way to
+    /// list its routes at runtime.
+    fn routes_in(source: &str, marker: &str) -> BTreeSet<Endpoint> {
+        let start = source.find(marker).unwrap();
         let end = start + source[start..].find("\n}\n").unwrap();
         let mut rest = &source[start..end];
         let mut endpoints = BTreeSet::new();
@@ -1925,7 +1916,7 @@ mod http_reference_tests {
             }
             let handlers = &rest[close..stop];
             if path.starts_with("/api/") {
-                for method in ["get", "post", "put", "delete"] {
+                for method in ["get", "post", "put", "delete", "patch"] {
                     let called = handlers.split(|c: char| !c.is_ascii_alphanumeric() && c != '_');
                     if called.clone().any(|word| word == method) {
                         endpoints.insert((method.to_uppercase(), path.to_string()));
@@ -1934,6 +1925,19 @@ mod http_reference_tests {
             }
             rest = &rest[stop..];
         }
+        endpoints
+    }
+
+    /// Both routers: the single-project one in this file, and the site's
+    /// `build_site_router`, whose `/api/v1/projects/{key}/…` routes a site
+    /// adds. The project-relative routes it delegates to the fallback are
+    /// the ones documented from `app.rs` above.
+    fn routed() -> BTreeSet<Endpoint> {
+        let mut endpoints = routes_in(include_str!("app.rs"), "pub fn build_router");
+        endpoints.extend(routes_in(
+            include_str!("site.rs"),
+            "pub fn build_site_router",
+        ));
         endpoints
     }
 

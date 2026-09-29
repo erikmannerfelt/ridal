@@ -37,7 +37,7 @@ use super::routes::ApiError;
 use crate::identity::RadargramId;
 use crate::io::RidalNetcdfKind;
 use crate::project::revisions::{self, ledger};
-use crate::project::users::Role;
+use crate::project::roles::Role;
 use crate::project::{audit, interpretations, overrides};
 
 /// How much of an upload is read before the size cap is consulted again.

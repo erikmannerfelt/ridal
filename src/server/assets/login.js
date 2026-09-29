@@ -63,7 +63,7 @@
       clear(errorBox);
       setStatus(status, "Signing in…");
       try {
-        await post("/api/v1/auth/login", {
+        await post(RIDAL.siteApiPath("auth", "login"), {
           name: box("login-name").value.trim(),
           password: box("login-password").value,
         });
@@ -86,7 +86,7 @@
       event.preventDefault();
       setStatus(status, "Signing out…");
       try {
-        await post("/api/v1/auth/logout", {});
+        await post(RIDAL.siteApiPath("auth", "logout"), {});
       } catch {
         // Signing out has one sensible outcome, and the cookie is cleared
         // by the response either way. Reloading shows whatever is true.
@@ -113,7 +113,7 @@
 
       setStatus(status, "Setting your password…");
       try {
-        await post("/api/v1/auth/invite", {
+        await post(RIDAL.siteApiPath("auth", "invite"), {
           token: inviteForm.dataset.token,
           password,
         });

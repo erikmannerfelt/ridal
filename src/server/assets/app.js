@@ -114,6 +114,17 @@ const RIDAL = Object.freeze({
   cursorColor: "#ff3b30",
   cursorRadius: 6,
 
+  /* Where this page's URLs live, written on the body by the server (#214).
+   * `apiBase` is project-scoped, `siteApiBase` is not, and `pageBase` is the
+   * prefix for project pages (`""` at the root, `/p/{key}` on a site). Kept
+   * on the page rather than spelled out in each script so relocating the
+   * routes -- a project key in the path, or Ridal under a reverse-proxy
+   * subpath -- is a server change. The literals are the fallback for a page
+   * rendered without the attributes. */
+  apiBase: document.body.dataset.apiBase || "/api/v1",
+  siteApiBase: document.body.dataset.siteApiBase || "/api/v1",
+  pageBase: document.body.dataset.pageBase || "",
+
   /* The basemaps this page may draw on, as the server resolved them (#177):
    * the project's own, with Ridal's built-in ESRI World Imagery first unless
    * the project switched it off. Every optional value arrives resolved, so
@@ -203,6 +214,58 @@ const RIDAL = Object.freeze({
       line.textContent = paragraph;
       element.appendChild(line);
     }
+  },
+
+  /** A table of site-audit entries, most recent first.
+   *
+   * The server sends the entries already reversed; this lays them out. The
+   * action is a snake_case enum, shown as words, and the detail column
+   * carries the role/download or a free-text note when there is one. */
+  historyTable(entries) {
+    const table = document.createElement("table");
+    table.className = "layers-table";
+    const header = document.createElement("tr");
+    for (const label of ["When", "Who", "What", "About", "Project", "Detail"]) {
+      const th = document.createElement("th");
+      th.scope = "col";
+      th.textContent = label;
+      header.appendChild(th);
+    }
+    table.appendChild(header);
+    if (entries.length === 0) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 6;
+      cell.className = "hint";
+      cell.textContent = "Nothing has been recorded yet.";
+      row.appendChild(cell);
+      table.appendChild(row);
+      return table;
+    }
+    for (const entry of entries) {
+      const row = document.createElement("tr");
+      const detail = [];
+      if (entry.role) detail.push(`${entry.role} · ${entry.download || ""}`);
+      if (entry.note) detail.push(entry.note);
+      // Seconds precision and a space instead of the T: this is read at a
+      // glance, and the timezone is always UTC.
+      const when = String(entry.at || "").replace("T", " ").slice(0, 19);
+      for (const [text, klass] of [
+        [when, ""],
+        [entry.actor || "", ""],
+        [String(entry.action || "").replaceAll("_", " "), ""],
+        [entry.subject || "", ""],
+        [entry.project || "", ""],
+        [detail.join(" — "), "hint"],
+      ]) {
+        const cell = document.createElement("td");
+        cell.textContent = text;
+        if (klass) cell.className = klass;
+        row.appendChild(cell);
+      }
+      table.appendChild(row);
+    }
+    return table;
   },
 
   /** The message for an error response that Ridal did not write.
@@ -919,7 +982,22 @@ const RIDAL = Object.freeze({
    * came from, which is the only version of this that stays true.
    */
   apiPath(...segments) {
-    return `/api/v1/${segments.map((s) => encodeURIComponent(s)).join("/")}`;
+    return `${RIDAL.apiBase}/${segments.map((s) => encodeURIComponent(s)).join("/")}`;
+  },
+
+  /** The same for a site-level endpoint (accounts, auth). Separate from
+   * [`apiPath`] because a site's project data lives under a key while its
+   * accounts and login do not (#214). */
+  siteApiPath(...segments) {
+    return `${RIDAL.siteApiBase}/${segments.map((s) => encodeURIComponent(s)).join("/")}`;
+  },
+
+  /** A project page path, for the links that used to be spelled out
+   * (the old root /view/{id}, /layers and /settings). Segments are encoded
+   * like [`apiPath`]'s. */
+  pagePath(...segments) {
+    const suffix = segments.map((s) => encodeURIComponent(s)).join("/");
+    return suffix ? `${RIDAL.pageBase}/${suffix}` : `${RIDAL.pageBase}/`;
   },
 
   /** A byte count as something a person reads. `null`/`undefined` is an
@@ -989,11 +1067,10 @@ const RIDAL = Object.freeze({
    * time would keep showing the profile that was active then. */
   popupContent(radargramId, label, profile) {
     const query = profile ? `?profile=${encodeURIComponent(profile)}` : "";
-    const id = encodeURIComponent(radargramId);
 
     const link = document.createElement("a");
     link.className = "popup-link";
-    link.href = `/view/${id}${query}`;
+    link.href = `${RIDAL.pagePath("view", radargramId)}${query}`;
     // A text node: markup in a display name is shown, never run.
     link.appendChild(document.createTextNode(label));
 
@@ -1530,7 +1607,7 @@ const RIDAL = Object.freeze({
       if (index >= 0) next[index] = { ...next[index], ...item };
       else next.push(item);
       try {
-        await RIDAL.fetchJson("/api/v1/derived", {
+        await RIDAL.fetchJson(RIDAL.apiPath("derived"), {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({

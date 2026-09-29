@@ -1,0 +1,134 @@
+{% extends "base.html.jinja" %}
+{% block title %}{{ site_name }} - Ridal{% endblock %}
+{% block content %}
+  <h1>{{ site_name }}</h1>
+
+  {% if not authentication_configured %}
+    {#- A site with no accounts is the public read-only arrangement Ridal
+        already had: everyone is the anonymous viewer. Said plainly rather
+        than shown as a sign-in that cannot work. -#}
+    <div class="warning">
+      <p>
+        This site has no accounts. It is served read-only to everyone.
+      </p>
+      <p>
+        An administrator creates the first one from the command line, on the
+        machine serving this site:
+      </p>
+      <pre><code>ridal site account add &lt;name&gt; --server-admin</code></pre>
+    </div>
+  {% elif current_user %}
+    <p class="lede">
+      You are signed in as <strong>{{ current_user }}</strong>
+      ({{ current_role }}).
+    </p>
+  {% endif %}
+
+  <div id="site-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+  {% if projects %}
+    <ul class="project-list">
+      {% for project in projects %}
+        <li class="project-card" data-project-key="{{ project.key }}">
+          <a class="project-name" href="/p/{{ project.key }}/">{{ project.name }}</a>
+          {% if project.archived %}<span class="project-badge">Archived</span>{% endif %}
+          <span class="project-members">{{ project.member_count }}
+            {{- " member" if project.member_count == 1 else " members" }}</span>
+          {#- The catalog size, from the summary a scan leaves behind. A
+              project copied in and never opened has no summary yet, so it
+              says so rather than claiming zero. -#}
+          <span class="project-radargrams">{% if project.radargram_count is none %}&mdash; radargrams<span class="visually-hidden"> (not scanned yet)</span>{% else %}{{ project.radargram_count }}{{ " radargram" if project.radargram_count == 1 else " radargrams" }}{% endif %}</span>
+          {% if project.member %}<span class="project-role">{{ project.role }}</span>{% endif %}
+          {% if server_admin %}
+            {#- The management controls are the card's own Edit menu, the
+                same control a radargram card carries, so the two lists
+                behave alike. -#}
+            <div class="project-actions">
+              <details class="site-menu card-menu">
+                <summary>Edit</summary>
+                <ul>
+                  <li>
+                    <button type="button" class="rename-project">Rename&hellip;</button>
+                  </li>
+                  <li>
+                    <button type="button" class="archive-project"
+                            data-archived="{{ 'true' if project.archived else 'false' }}">
+                      {%- if project.archived %}Unarchive{% else %}Archive{% endif -%}
+                    </button>
+                  </li>
+                  {#- Deleting is the second step, offered only once a
+                      project is archived (read-only, still exportable). -#}
+                  {% if project.archived %}
+                  <li>
+                    <button type="button" class="danger delete-project">Delete&hellip;</button>
+                  </li>
+                  {% endif %}
+                </ul>
+              </details>
+              <span class="row-status project-status"></span>
+            </div>
+          {% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% elif server_admin %}
+    <p class="lede">There are no projects here yet.</p>
+  {% elif current_user %}
+    {#- Only memberships are listed. A public project is reachable by its
+        link but never listed, so this says nothing about what exists. -#}
+    <p class="lede">You are not a member of any project yet.</p>
+  {% else %}
+    <p class="lede">Projects here are opened by their link.</p>
+  {% endif %}
+
+  {% if server_admin %}
+    <section class="settings-section" id="new-project-section">
+      <h2>New project</h2>
+      <p class="hint">
+        A project is a directory under <code>projects/</code>. The key names
+        that directory and cannot be changed later; the name is what people
+        see, and can be edited at any time.
+      </p>
+      <form id="new-project" class="add-layer" novalidate>
+        <div class="add-layer-fields">
+          <label>Name
+            <input type="text" name="name" required
+                   placeholder="Glaciology 2026" autocomplete="off">
+          </label>
+          {#- The name comes first because the key is derived from it: the
+              key box's placeholder shows what will be used if it is left
+              alone, which is the answer almost everyone wants. -#}
+          <label>Key (from the name)
+            <input type="text" name="key" pattern="[a-z0-9_\-]+"
+                   placeholder="glac-2026" autocomplete="off"
+                   autocapitalize="none" spellcheck="false">
+          </label>
+        </div>
+        <button type="submit">Create project</button>
+        <span id="new-project-status" class="pick-status"></span>
+      </form>
+    </section>
+
+    {#- Renaming a project, opened from the card's Edit menu. A dialog rather
+        than an inline field: the key is immutable and worth naming, and the
+        menu stays a menu. -#}
+    <dialog id="rename-project-dialog">
+      <h2>Rename project</h2>
+      <p class="hint">
+        The display name, not the key (<code id="rename-project-key"></code>),
+        which names the directory and cannot change.
+      </p>
+      <div id="rename-project-error" class="warning" hidden></div>
+      <label>Name
+        <input type="text" id="rename-project-name" autocomplete="off">
+      </label>
+      <p>
+        <button type="button" id="rename-project-save">Save</button>
+        <button type="button" id="rename-project-close">Close</button>
+      </p>
+    </dialog>
+  {% endif %}
+{% endblock %}
+{% block extrascript %}
+  <script src="/static/site.js"></script>
+{% endblock %}

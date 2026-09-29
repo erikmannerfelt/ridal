@@ -19,18 +19,16 @@
 //!         default.gprinterp.json            one document per user
 //!     layers/
 //!       layers.json                         project-scoped layer vocabulary
-//!     users.json                            accounts and access policy (0600)
-//!     session.key                           signs session cookies (0600)
+//!     users.json                            memberships and access policy
 //!     preferences/
 //!       erik.json                           one person's viewing preferences
 //!     cache/                                derived data; safe to delete
 //! ```
 //!
-//! `users.json` and `session.key` are absent until a project opts into
-//! authentication, which is what keeps every project that predates it
-//! working exactly as it did (#131). `ridal gui` never writes either: it
-//! signs its cookies with a key generated at startup and kept in memory, so
-//! a survey directory that gets zipped and shared carries no secret.
+//! A project holds no secrets. `users.json` appears only when a site gives
+//! the project members (#214), and names accounts that live in the site;
+//! `ridal gui` never writes it and ignores it, so a survey directory that
+//! gets zipped and shared carries nothing that signs anyone in.
 //!
 //! # Why an explicit marker
 //!
@@ -84,16 +82,19 @@
 
 pub mod audit;
 pub mod basemaps;
+pub mod catalog_summary;
 pub mod derived;
 pub mod interpretations;
+pub mod jsonl;
 pub mod layers;
+pub mod members;
 pub mod migrate;
 pub mod overlays;
 pub mod overrides;
 pub mod preferences;
 pub mod revisions;
+pub mod roles;
 pub mod store;
-pub mod users;
 
 use std::path::{Path, PathBuf};
 
@@ -140,11 +141,13 @@ const DATA_GITIGNORE: &str = "\
 
 # Derived data. Safe to delete at any time; Ridal rebuilds it.
 cache/
+# A project's catalog size, refreshed whenever the catalog is scanned; the
+# site landing reads it rather than opening every project.
+catalog-summary.json
 # Uploads part-way through being staged.
 .staging/
-# Secrets. A signing key or a password hash in a shared repository is a
-# leaked one.
-session.key
+# Who may use the project inside a site. It names the site's accounts,
+# which are the site's business rather than the survey's.
 users.json
 ";
 
@@ -267,6 +270,20 @@ pub struct ProjectSection {
     /// anyone can read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
+
+    /// The site account that created this project, when one did (#214).
+    /// Unset for a project made with `ridal project init` or
+    /// `ridal site project add`, which no account runs.
+    ///
+    /// Recorded so a later "may delete their own project" is a check
+    /// against this rather than a guess, and kept in the project rather than
+    /// the site so it moves with the directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<crate::identity::UserId>,
+
+    /// When the project was created inside a site, as RFC 3339 (#214).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -816,6 +833,16 @@ impl Project {
             })?;
         }
         write_data_gitignore(&data_dir)?;
+        // A new project has an empty catalog. Recording that lets its card
+        // say "0 radargrams" before anyone has opened it, rather than "—".
+        catalog_summary::write(
+            &DocumentStore::new(data_dir.clone()),
+            &catalog_summary::Summary::default(),
+        )
+        .map_err(|e| ProjectError::Io {
+            path: data_dir.clone(),
+            message: e.to_string(),
+        })?;
 
         let radargram_root = format!("{DEFAULT_DATA_DIR}/{DEFAULT_RADARGRAM_DIR}");
         let config = ProjectConfig {
@@ -825,6 +852,9 @@ impl Project {
                 // Left unset so a project that never moved it follows the
                 // default, exactly as the cache does.
                 data_dir: None,
+                // Set by `Site::create_project`, which knows who asked.
+                created_by: None,
+                created: None,
             },
             radargrams: RadargramsSection {
                 roots: vec![radargram_root.clone()],
@@ -1076,6 +1106,38 @@ impl Project {
                 .and_then(|bytes| i64::try_from(bytes).ok())
                 .map(toml_edit::value);
             set_or_clear(document, "radargrams", "max_bytes", item);
+            Ok(())
+        })
+    }
+
+    /// Set or clear the project's display name (#214).
+    ///
+    /// Cosmetic only: the identity of a project inside a site is its
+    /// directory-derived key, and this is the label people read. Reached
+    /// through the site's project settings, so a CLI-only build never calls
+    /// it.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn set_name(&self, name: Option<&str>) -> Result<(), ProjectError> {
+        self.edit_marker(|document| {
+            set_or_clear(document, "project", "name", name.map(toml_edit::value));
+            Ok(())
+        })
+    }
+
+    /// Record who created this project inside a site, and when (#214).
+    pub fn set_creator(
+        &self,
+        by: Option<&crate::identity::UserId>,
+        at: &str,
+    ) -> Result<(), ProjectError> {
+        self.edit_marker(|document| {
+            set_or_clear(
+                document,
+                "project",
+                "created_by",
+                by.map(|user| toml_edit::value(user.as_str())),
+            );
+            set_or_clear(document, "project", "created", Some(toml_edit::value(at)));
             Ok(())
         })
     }
@@ -1430,12 +1492,12 @@ mod tests {
     }
 
     #[test]
-    fn init_writes_a_gitignore_that_keeps_the_cache_and_the_secrets_out() {
+    fn init_writes_a_gitignore_that_keeps_the_cache_and_the_memberships_out() {
         let dir = tempfile::tempdir().unwrap();
         let project = Project::init(dir.path(), None).unwrap();
 
         let text = std::fs::read_to_string(project.data_dir().join(".gitignore")).unwrap();
-        for ignored in ["cache/", "session.key", "users.json", ".staging/"] {
+        for ignored in ["cache/", "catalog-summary.json", "users.json", ".staging/"] {
             assert!(text.contains(ignored), "{ignored} is missing from {text}");
         }
         // Interpretations are the opposite case: authored work that ought

@@ -29,11 +29,40 @@
   <div id="settings-error" class="warning" role="status" aria-live="polite" hidden></div>
 
   {% if project %}
+    {#- Personal settings that belong to the whole site (#214), shown here
+        as well as on the site's own settings page: one value, reachable
+        from wherever a person happens to be. Under `ridal gui` the "site"
+        is this one project, and the value is kept with it. -#}
+    {% if signed_in %}
+      <section class="settings-section" id="my-site-settings-section">
+        <h2>My site settings</h2>
+        <p class="hint">
+          Yours alone, and the same on every project of this site.
+        </p>
+        <form id="my-site-settings-form" class="settings-form" novalidate>
+          <label class="settings-field">
+            <span class="settings-label">Theme</span>
+            <select id="site-theme">
+              <option value="" {% if not active_theme %}selected{% endif %}>Follow this device</option>
+              <option value="light" {% if active_theme == "light" %}selected{% endif %}>Light</option>
+              <option value="dark" {% if active_theme == "dark" %}selected{% endif %}>Dark</option>
+            </select>
+            <span class="hint">
+              &ldquo;Follow this device&rdquo; uses whatever your system asks
+              for, including when it changes during the day.
+            </span>
+          </label>
+          <button type="submit">Save site settings</button>
+          <span id="site-settings-status" class="pick-status"></span>
+        </form>
+      </section>
+    {% endif %}
+
     {#- Section one: preferences. Everyone who has an account gets these,
         because choosing how you like to look at something is the floor of
         what having an account means rather than a permission. -#}
-    <section class="settings-section">
-      <h2>My settings</h2>
+    <section class="settings-section" id="my-project-settings-section">
+      <h2>My project settings</h2>
       {% if signed_in %}
         <p class="hint">
           Yours alone. They override the project defaults below for you, and
@@ -56,19 +85,6 @@
             <select id="my-xscale">
               <option value="">Loading&hellip;</option>
             </select>
-          </label>
-          {#- #141. "Follow this device" is the absence of a choice rather
-              than a third theme, which is what lets a laptop that switches
-              at dusk keep switching. -#}
-          <label class="settings-field">
-            <span class="settings-label">Theme</span>
-            <select id="my-theme">
-              <option value="">Loading&hellip;</option>
-            </select>
-            <span class="hint">
-              &ldquo;Follow this device&rdquo; uses whatever your system asks
-              for, including when it changes during the day.
-            </span>
           </label>
           {#- #143. A starting state, not a lock: the viewer has its own
               toggle, and picking brings the lines back by itself. -#}
@@ -102,6 +118,8 @@
               GeoJSON in WGS84 is the portable choice and what RFC 7946
               requires; the native variant writes the radargram&rsquo;s own
               projected coordinates instead.
+            </span>
+          </label>
           <label class="settings-field">
             <span class="settings-label">Basemap</span>
             <select id="my-basemap">
@@ -393,15 +411,19 @@
       {% endif %}
     </section>
 
-    {#- Section three: who may do what. A distinct area rather than a few
-        more fields, because everything in it is about people rather than
-        about the project's data, and it is the only part where a mistake
-        locks someone out. -#}
-    {% if can_edit_access %}
-      <section class="settings-section" id="access-section">
-        <h2>Access</h2>
-
-        <h3>People</h3>
+    {#- Members are a site concept (#214): who belongs to this project and
+        what they may do here. `ridal gui` has no accounts, so the section
+        is absent there rather than pointing at an API that does not
+        exist. -#}
+    {% if site_managed and can_edit_access %}
+      <section class="settings-section" id="members-section">
+        <h2>Members</h2>
+        <p class="hint">
+          Who belongs to this project, and what each may do here. A member is
+          an account on the site; create accounts, reset passwords and
+          appoint server administrators from
+          <a href="{{ site_settings_href }}">site settings</a>.
+        </p>
         {#- Said before the table rather than discovered after it. The
             role and download controls are selects that apply on change,
             and there is a Save button further down this page for a
@@ -413,39 +435,27 @@
           their next request, including one already signed in.
         </p>
 
-        <table id="users-table" class="layers-table">
+        <table id="members-table" class="layers-table">
           <thead>
             <tr>
               <th scope="col">Name</th>
               <th scope="col">Role</th>
               <th scope="col">Downloads</th>
-              <th scope="col">Status</th>
               <th scope="col"><span class="visually-hidden">Actions</span></th>
             </tr>
           </thead>
           <tbody></tbody>
         </table>
 
-        {#- The one moment an invite token exists: only its hash is stored,
-            so this is shown once and cannot be shown again. -#}
-        <div id="invite-result" class="warning" hidden>
-          <p>
-            <strong>Invite link for <span id="invite-who"></span>.</strong>
-            Send it however you already talk to that person. It works once
-            and expires in <span id="invite-days"></span> days, and it is as
-            sensitive as a password until then.
-          </p>
-          <p><code id="invite-link" class="path"></code></p>
+        <form id="add-member" class="add-layer" novalidate>
+          <h3>Add or invite someone</h3>
           <p class="hint">
-            This is the only time it is shown. If it is lost, issue another.
-          </p>
-        </div>
-
-        <form id="add-user" class="add-layer" novalidate>
-          <h3>Add someone</h3>
-          <p class="hint">
-            You create the account; they set their own password through a
-            one-time link, so no password is ever known to two people.
+            <strong>Add member</strong> gives an existing site account a role
+            here. <strong>Invite new member</strong> creates the account and a
+            one-time link that grants only this project, with the role and
+            downloads below. Deleting an account or resetting its password
+            stays with a server administrator on
+            <a href="{{ site_settings_href }}">site settings</a>.
           </p>
           <div class="add-layer-fields">
             <label>Name
@@ -460,12 +470,35 @@
               <select name="download"></select>
             </label>
           </div>
-          <button type="submit">Create account and get a link</button>
+          <div class="bulk-actions">
+            <button type="submit">Add member</button>
+            <button type="button" id="invite-member">Invite new member</button>
+          </div>
         </form>
 
-        {#- Bulk-specific warnings sit beside the control they are about,
-            rather than at the top of the page where they read as unrelated
-            to "Add several people". -#}
+        {#- Refusals land here, beside the control that caused them: the page
+            is long and the box at the top is not where anyone is looking. -#}
+        <div id="member-error" class="warning" role="status" aria-live="polite" hidden></div>
+
+        {#- The one moment a new member's invite token exists: only its hash
+            is stored, so it is shown once and cannot be shown again. -#}
+        <div id="invite-result" class="warning" hidden>
+          <p>
+            <strong>Invite link for <span id="invite-who"></span>.</strong>
+            Send it however you already talk to that person. It works once
+            and expires in <span id="invite-days"></span> days, and it is as
+            sensitive as a password until then.
+          </p>
+          <p><code id="invite-link" class="path"></code></p>
+          <p class="hint">
+            This is the only time it is shown. If it is lost, a server
+            administrator can issue another from site settings.
+          </p>
+        </div>
+
+        {#- Bulk warnings sit beside the control they are about, rather than
+            at the top of the page where they read as unrelated to "Add
+            several people". -#}
         <div id="bulk-warning" class="warning" role="status" aria-live="polite" hidden></div>
 
         <details class="bulk-users" id="bulk-users">
@@ -474,8 +507,9 @@
             Invite mode creates separate one-time links, so each person sets
             their own password. Use password mode only for a small workshop:
             the generated passwords must be printed or handed out by you.
+            Every account is added to this project only.
           </p>
-          <form id="bulk-user-form" class="add-layer" novalidate>
+          <form id="bulk-member-form" class="add-layer" novalidate>
             <div class="add-layer-fields">
               <label class="checkbox bulk-random">
                 <input type="checkbox" id="bulk-random-names">
@@ -510,6 +544,34 @@
           </form>
           <div id="bulk-result" class="bulk-result" hidden></div>
         </details>
+      </section>
+
+      {#- This project's slice of the site ledger: who joined, left, or had a
+          role changed here. The account-wide history is on site settings,
+          for a server administrator. -#}
+      <section class="settings-section" id="history-section">
+        <h2>History</h2>
+        <p class="hint">
+          Who joined, left, or changed role in this project, most recent
+          first. It is a record to work out what happened, not a security
+          control: it can be edited by anyone with access to the site
+          directory.
+        </p>
+        <details id="history" class="bulk-users">
+          <summary>Show the history</summary>
+          <div id="history-table"></div>
+        </details>
+      </section>
+    {% endif %}
+
+    {#- The project-wide policy. A distinct area rather than a few more
+        fields: everything in it is about people rather than the project's
+        data, and it is the only part of settings where a mistake locks
+        someone out. Only in a site: it is about accounts, which a project
+        served by `ridal gui` does not have. -#}
+    {% if site_managed and can_edit_access %}
+      <section class="settings-section" id="access-section">
+        <h2>Access</h2>
 
         {#- The heading lives *inside* the container rather than above it,
             so the grey block and its Save button are visibly one thing

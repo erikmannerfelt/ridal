@@ -14,7 +14,12 @@ machine-readable OpenAPI description is planned.
 ## Conventions
 
 Base path
-: Every endpoint is under `/api/v1`. Paths below are written in full.
+: Every endpoint is under `/api/v1`. A project's endpoints are served under
+  its key, at `/api/v1/projects/{key}/…`; the tables below write them in
+  the project's own shape, so `/api/v1/datasets` is
+  `/api/v1/projects/{key}/datasets`. `ridal gui` serves its one project as
+  `default`. The site's own endpoints, in {ref}`the last section
+  <site-server>`, are at `/api/v1` itself.
 
 Path parameters
 : `{radargram_id}` is a radargram's id, `{group}` a group's id, `{user}` an
@@ -32,17 +37,17 @@ Errors
 
 Signing in
 : `POST /api/v1/auth/login` sets a `ridal_session` cookie, which is then
-  sent with every request. A project without accounts has no logins, and
-  every request acts as the single local user.
+  sent with every request. Accounts belong to a site; `ridal gui` has none,
+  and every request acts as the single local user, an `operator`.
 
 Permissions
-: Each account has a **role**: `viewer` < `picker` < `operator` < `admin`,
-  where each includes the ones before it. It also has a **download scope**:
-  `none` < `results` < `picks` < `derived` < `all`. A server started with
-  `--read-only` treats everyone as a `viewer`. The *Needs* column below gives
-  the role or scope an endpoint checks; "anyone" means anyone who may read
-  the catalog, which on a project that requires a login means anyone signed
-  in.
+: Each project membership has a **role**: `viewer` < `picker` < `operator`
+  < `admin`, where each includes the ones before it. It also has a
+  **download scope**: `none` < `results` < `picks` < `derived` < `all`. A
+  server started with `--read-only` treats everyone as a `viewer`, and so
+  does an archived project. The *Needs* column below gives the role or scope
+  an endpoint checks; "anyone" means anyone who may read the catalog, which
+  on a project that requires a login means its members.
 
 Status codes for refusals
 : `401` means signing in would help; `403` means it would not (the role or
@@ -67,27 +72,15 @@ Concurrent edits
 
 ## Signing in
 
-These endpoints never require a login, since they are how one happens.
+These are the site's, at `/api/v1/auth` rather than under a project, and
+never require a login, since they are how one happens.
 
 | Method | Path | Needs | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/auth/me` | nobody | Who the server thinks is calling: their name, effective and account role, download scope, whether they are signed in, and whether the project has accounts at all. |
+| `GET` | `/api/v1/auth/me` | nobody | Who the site thinks is calling: their name, whether they are signed in, whether they are a server administrator, and whether the site has accounts at all. |
 | `POST` | `/api/v1/auth/login` | nobody | Sign in with a name and password. Every failure gives the same answer, so that the endpoint cannot be used to find out which accounts exist. Refused on a network-bound server without `--allow-insecure-login`; see {doc}`../deploy/reverse-proxy`. |
 | `POST` | `/api/v1/auth/logout` | nobody | Sign out. Succeeds whether or not anyone was signed in. |
 | `POST` | `/api/v1/auth/invite` | nobody | Set a password with a one-time invite token, and sign in. Ends every other session of that account. |
-
-## Accounts and access
-
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/users` | `admin` | Every account, without password hashes or tokens. |
-| `POST` | `/api/v1/users` | `admin` | Create an account. The response contains its invite path, which is shown only this once. |
-| `POST` | `/api/v1/users/bulk/invites` | `admin` | Create several invite-only accounts at once. |
-| `POST` | `/api/v1/users/bulk/passwords` | `admin` | Create several accounts with generated passwords. |
-| `PUT` | `/api/v1/users/{name}` | `admin` | Change an account's role, download scope, or both. Takes effect on that person's next request. |
-| `DELETE` | `/api/v1/users/{name}` | `admin` | Remove an account. Their interpretations are kept; their preferences are not. |
-| `POST` | `/api/v1/users/{name}/invite` | `admin` | Issue a new invite link, replacing any outstanding one. The account keeps working until the new link is used. |
-| `PUT` | `/api/v1/access` | `admin` | The project-wide access policy, such as whether reading the catalog requires a login. |
 
 ## Preferences and project settings
 
@@ -95,8 +88,8 @@ These endpoints never require a login, since they are how one happens.
 |---|---|---|---|
 | `GET` | `/api/v1/preferences` | anyone | The caller's own display preferences. |
 | `PUT` | `/api/v1/preferences` | signed in | Change the caller's own display preferences, such as render profile and horizontal scale. Any role may. |
-| `GET` | `/api/v1/project/settings` | anyone | The project's defaults. On a server without a project, answers `project: false`. |
-| `PUT` | `/api/v1/project/settings` | `operator` | Change the project's defaults. Changing the upload size limit needs `admin`. |
+| `GET` | `/api/v1/settings` | anyone | The project's defaults. On a server without a project, answers `project: false`. |
+| `PUT` | `/api/v1/settings` | `operator` | Change the project's defaults. Changing the upload size limit needs `admin`. |
 
 ## Radargrams
 
@@ -202,3 +195,58 @@ They share these query parameters:
 | `GET` | `/api/v1/datasets/{radargram_id}/derived/level2` | download `results` | Derived layers as points. Query: `include_unlisted`. |
 | `GET` | `/api/v1/groups/{group}/level2` | download `derived` | Every interpreted radargram in a group, merged. Query: `user` (default: the caller), `every_user` (`admin` only), `derived`, `include_unlisted`. |
 | `GET` | `/api/v1/catalog/level2` | download `derived` | Every interpreted radargram being served, merged. Same query as the group export. |
+
+(site-server)=
+## Site server
+
+`ridal server start <site>` serves many projects from one root. A project's
+pages live under `/p/{key}/…` and its API under `/api/v1/projects/{key}/…`;
+the tables above describe that project-relative shape. This section lists the
+endpoints that belong to the *site* rather than to any one project. Under
+`ridal gui`, which has no site to manage, only `/api/v1/site`,
+`/api/v1/site/preferences` and `/api/v1/auth/me` answer; the rest are `404`.
+
+A project the caller may not see answers `404` exactly as one that does not
+exist, to someone signed in. Someone not signed in, on a site with
+accounts, is asked to sign in instead (`401`, or the login page), for a
+project that exists and one that does not alike.
+
+A **server administrator** is the `server_admin` flag on an account, which
+is separate from a project role. A **project administrator** is a member
+with the `admin` role in that project. A server administrator acts as a
+project administrator in every project.
+
+A server started `--read-only` refuses every change below with `403`
+`read_only`, and an archived project refuses changes to its members, access
+policy and invitations with `403` `archived`.
+
+| Method | Path | Needs | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/site` | anyone | The site's name, whether it has accounts, and who the caller is. |
+| `GET` | `/api/v1/site/preferences` | signed in | The caller's own site-wide settings, currently the theme. |
+| `PUT` | `/api/v1/site/preferences` | signed in | Change them. Any role may. |
+| `GET` | `/api/v1/site/audit` | server administrator | The site's account, membership and project history, most recent first. |
+| `GET` | `/api/v1/site/memberships` | server administrator | Every account and the projects it belongs to. |
+| `GET` | `/api/v1/accounts` | server administrator | Every account, without hashes or invite tokens. |
+| `POST` | `/api/v1/accounts` | server administrator | Create an account and mint its invite, optionally naming a project, role and download. It cannot create a server administrator. |
+| `POST` | `/api/v1/accounts/bulk/invites` | server administrator | Create several invite-only accounts at once. |
+| `POST` | `/api/v1/accounts/bulk/passwords` | server administrator | Create several accounts with generated passwords. |
+| `PUT` | `/api/v1/accounts/{name}` | server administrator | Change the server-administrator flag. Refused if it would leave the site with none, or while the account has an invite outstanding. |
+| `DELETE` | `/api/v1/accounts/{name}` | server administrator | Remove an account and its membership in every project. Picks are left in place. |
+| `POST` | `/api/v1/accounts/{name}/invite` | server administrator | Issue a new invite link, for a reset or a lost one. |
+| `GET` | `/api/v1/projects` | anyone | The projects the caller is a member of; every project for a server administrator. Public projects are not listed. |
+| `POST` | `/api/v1/projects` | server administrator | Create a project at a key. |
+| `GET` | `/api/v1/projects/{key}` | member, server administrator, or anyone for a public project | One project. |
+| `PATCH` | `/api/v1/projects/{key}` | server administrator | Rename its display name; the key does not change. |
+| `DELETE` | `/api/v1/projects/{key}` | server administrator | Delete an archived project and everything it owns. `409` `not_archived` otherwise. |
+| `POST` | `/api/v1/projects/{key}/archive` | server administrator | Make the project read-only. |
+| `POST` | `/api/v1/projects/{key}/unarchive` | server administrator | Reverse an archive. |
+| `GET` | `/api/v1/projects/{key}/members` | project administrator | The membership list and access policy. |
+| `POST` | `/api/v1/projects/{key}/members` | project administrator | Add or update an existing account's membership. |
+| `POST` | `/api/v1/projects/{key}/members/invite` | project administrator | Create an account and invite it into this project only. `409` `name_in_use` for a name any project has a membership for. |
+| `POST` | `/api/v1/projects/{key}/members/bulk/invites` | project administrator | Bulk-create accounts, each granted this project only. |
+| `POST` | `/api/v1/projects/{key}/members/bulk/passwords` | project administrator | Bulk-create accounts with generated passwords, each granted this project only. |
+| `PUT` | `/api/v1/projects/{key}/members/{name}` | project administrator | Change a member's role or download scope. |
+| `DELETE` | `/api/v1/projects/{key}/members/{name}` | project administrator | Remove the membership. The account itself remains. |
+| `PUT` | `/api/v1/projects/{key}/access` | project administrator | The project's read and anonymous-download policy. |
+| `GET` | `/api/v1/projects/{key}/audit` | project administrator | This project's slice of the site history. |

@@ -4,16 +4,17 @@
   {#- One card definition, used by both the grouped and ungrouped sections,
       so the two cannot drift apart. `profile` is a macro argument, not a
       closed-over template variable -- minijinja macros do not reliably
-      see the enclosing template's context. -#}
-  {% macro entry_card(e, profile) %}
+      see the enclosing template's context. `page_base` and `api_base` are
+      passed for the same reason. -#}
+  {% macro entry_card(e, profile, page_base, api_base) %}
   <li class="card" id="card-{{ e.radargram_id }}">
-    <a class="card-link" href="/view/{{ e.radargram_id }}?profile={{ profile }}">
+    <a class="card-link" href="{{ page_base|safe }}/view/{{ e.radargram_id }}?profile={{ profile }}">
       <span class="card-thumb">
         {#- loading="lazy" is load-bearing, not decoration: #121 names it as
             the mechanism by which "the browser and server render-worker
             limit naturally bound initial work". Without it a 100-entry
             catalog would ask the server to render 100 overviews at once. -#}
-        <img src="/api/v1/datasets/{{ e.radargram_id }}/views/standard/overview?profile={{ profile }}"
+        <img src="{{ api_base|safe }}/datasets/{{ e.radargram_id }}/views/standard/overview?profile={{ profile }}"
              alt="" loading="lazy" decoding="async" fetchpriority="low">
       </span>
     </a>
@@ -22,7 +23,7 @@
         the menu is a button and a button inside a link is neither reliably
         clickable nor announced correctly. -#}
     <div class="card-heading">
-      <a class="card-title" href="/view/{{ e.radargram_id }}?profile={{ profile }}">
+      <a class="card-title" href="{{ page_base|safe }}/view/{{ e.radargram_id }}?profile={{ profile }}">
         {{- e.effective_label -}}
       </a>
       {#- One menu per card, because what it acts on is this radargram: a
@@ -123,7 +124,7 @@
   {%- set merged_points = project and current_user and can_download_derived -%}
   {% if merged_points or can_download_all %}
   <details class="site-menu download-menu" id="download-menu-{{ id }}"
-           data-download-base="{{ base }}" data-download-label="{{ label }}">
+           data-download-base="{{ base|safe }}" data-download-label="{{ label }}">
     <summary>{{ summary }}</summary>
     <ul>
       {% if merged_points %}
@@ -164,7 +165,7 @@
         {% endfor %}
       </select>
     </label>
-    {{ download_menu("catalog", "/api/v1/catalog", "all radargrams",
+    {{ download_menu("catalog", api_base ~ "/catalog", "all radargrams",
                      "Download all", project) }}
     {#- A plain button rather than a menu: one action, and hiding a single
         item behind a disclosure is a click for nothing. -#}
@@ -193,7 +194,7 @@
       <div class="group-actions">
         {{ download_menu(
              "group-" ~ loop.index,
-             "/api/v1/groups/" ~ group.id,
+             api_base ~ "/groups/" ~ group.id,
              group.label,
              "Download",
              project) }}
@@ -215,7 +216,7 @@
     </div>
     <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
     <ul class="card-grid">
-      {% for e in group.entries %}{{ entry_card(e, active_profile) }}{% endfor %}
+      {% for e in group.entries %}{{ entry_card(e, active_profile, page_base, api_base) }}{% endfor %}
     </ul>
     {#- Collapsed rather than filtered away: whoever can unlist a radargram
         is the one who needs to find it again. `unlisted_entries` is only
@@ -232,7 +233,7 @@
         still open one.
       </p>
       <ul class="card-grid">
-        {% for e in group.unlisted_entries %}{{ entry_card(e, active_profile) }}{% endfor %}
+        {% for e in group.unlisted_entries %}{{ entry_card(e, active_profile, page_base, api_base) }}{% endfor %}
       </ul>
     </details>
     {% endif %}
