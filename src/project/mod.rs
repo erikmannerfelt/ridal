@@ -84,6 +84,7 @@
 
 pub mod audit;
 pub mod basemaps;
+pub mod catalog_summary;
 pub mod derived;
 pub mod interpretations;
 pub mod layers;
@@ -141,6 +142,9 @@ const DATA_GITIGNORE: &str = "\
 
 # Derived data. Safe to delete at any time; Ridal rebuilds it.
 cache/
+# A project's catalog size, refreshed whenever the catalog is scanned; the
+# site landing reads it rather than opening every project.
+catalog-summary.json
 # Uploads part-way through being staged.
 .staging/
 # Secrets. A signing key or a password hash in a shared repository is a
@@ -817,6 +821,16 @@ impl Project {
             })?;
         }
         write_data_gitignore(&data_dir)?;
+        // A new project has an empty catalog. Recording that lets its card
+        // say "0 radargrams" before anyone has opened it, rather than "—".
+        catalog_summary::write(
+            &DocumentStore::new(data_dir.clone()),
+            &catalog_summary::Summary::default(),
+        )
+        .map_err(|e| ProjectError::Io {
+            path: data_dir.clone(),
+            message: e.to_string(),
+        })?;
 
         let radargram_root = format!("{DEFAULT_DATA_DIR}/{DEFAULT_RADARGRAM_DIR}");
         let config = ProjectConfig {

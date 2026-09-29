@@ -198,6 +198,21 @@ pub struct AppState {
     pub render_permits: Arc<Semaphore>,
 }
 
+/// Record a project's catalog size after a scan, for the site landing
+/// (#214). Best effort: a failure costs the landing one count, not the
+/// project its catalog.
+fn record_catalog_summary(project: Option<&crate::project::Project>, catalog: &Catalog) {
+    let Some(project) = project else {
+        return;
+    };
+    let summary = crate::project::catalog_summary::Summary {
+        radargrams: catalog.entries.len(),
+    };
+    if let Err(e) = crate::project::catalog_summary::write(project.documents(), &summary) {
+        eprintln!("Warning: could not record the catalog summary: {e}");
+    }
+}
+
 impl AppState {
     /// Discover the catalog under `root` and eagerly open a
     /// [`RenderService`] for every entry. Eager rather than lazy: the
@@ -318,6 +333,7 @@ impl AppState {
         }
 
         let catalog = Catalog::discover_roots(&roots, &overrides);
+        record_catalog_summary(project.as_ref(), &catalog);
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
@@ -488,6 +504,7 @@ impl AppState {
             .map(|p| crate::project::overrides::read_lenient(p.documents()))
             .unwrap_or_default();
         let catalog = Catalog::discover_roots(&self.roots, &overrides);
+        record_catalog_summary(self.project.as_ref(), &catalog);
 
         let existing = self.catalog();
         let mut radargrams = HashMap::new();

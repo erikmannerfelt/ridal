@@ -260,6 +260,9 @@ async fn a_server_admin_sees_every_project() {
     assert_eq!(projects.len(), 2);
     // The listing carries how many people belong, for the card's text.
     assert_eq!(projects[0]["member_count"], 0);
+    // A freshly created project starts with an empty catalog, recorded by
+    // `Project::init`, so the card says 0 rather than "not scanned".
+    assert_eq!(projects[0]["radargram_count"], 0);
 }
 
 #[tokio::test]
@@ -1460,4 +1463,35 @@ async fn server_admin_is_granted_only_after_activation() {
     .await;
     assert_eq!(revoked.status, StatusCode::OK, "{}", revoked.text);
     assert_eq!(revoked.body["server_admin"], false);
+}
+
+#[tokio::test]
+async fn a_project_card_reports_its_catalog_size() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    // Simulate a scan having recorded a size, the way opening a project
+    // would.
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    crate::project::catalog_summary::write(
+        project.documents(),
+        &crate::project::catalog_summary::Summary { radargrams: 42 },
+    )
+    .unwrap();
+
+    let cookie = sign_in(&app, "anna").await;
+    let listing = send(&app, get("/api/v1/projects", Some(&cookie))).await;
+    assert_eq!(listing.status, StatusCode::OK, "{}", listing.text);
+    assert_eq!(listing.body["projects"][0]["radargram_count"], 42);
+
+    let landing = send(&app, get("/", Some(&cookie))).await;
+    assert!(
+        landing.text.contains("42 radargrams"),
+        "the card shows the catalog size: {}",
+        landing.text
+    );
 }

@@ -34,6 +34,10 @@
           {% if project.archived %}<span class="project-badge">Archived</span>{% endif %}
           <span class="project-members">{{ project.member_count }}
             {{- " member" if project.member_count == 1 else " members" }}</span>
+          {#- The catalog size, from the summary a scan leaves behind. A
+              project copied in and never opened has no summary yet, so it
+              says so rather than claiming zero. -#}
+          <span class="project-radargrams">{% if project.radargram_count is none %}&mdash; radargrams<span class="visually-hidden"> (not scanned yet)</span>{% else %}{{ project.radargram_count }}{{ " radargram" if project.radargram_count == 1 else " radargrams" }}{% endif %}</span>
           {% if project.member %}<span class="project-role">{{ project.role }}</span>{% endif %}
           {% if server_admin %}
             {#- The management controls are the card's own Edit menu, the

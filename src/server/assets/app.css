@@ -1001,9 +1001,11 @@ dialog th {
   font-size: var(--text-sm);
 }
 
-/* How many people belong to the project. A count only: the names are on the
- * project's own settings page, for whoever administers it. */
-.project-members {
+/* How many people belong to the project, and how many radargrams its
+ * catalog holds. Counts only: the names are on the project's own settings
+ * page, and the radargrams on its catalog. */
+.project-members,
+.project-radargrams {
   color: var(--color-text-muted);
   font-size: var(--text-sm);
 }

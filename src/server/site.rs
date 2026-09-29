@@ -585,6 +585,10 @@ fn project_entry(
         None if caller.server_admin => (Role::Admin, DownloadScope::All),
         None => (Role::Viewer, members.anonymous_download),
     };
+    // The catalog size, from the summary a scan leaves behind (#214). A
+    // project that has never been scanned has none, and the card says so.
+    let radargram_count = crate::project::catalog_summary::read(project.documents())
+        .map(|summary| summary.radargrams);
     Some(serde_json::json!({
         "key": key.as_str(),
         "name": project
@@ -595,6 +599,7 @@ fn project_entry(
         "archived": site.site.is_archived(key),
         "member": member.is_some() || caller.server_admin,
         "member_count": members.members.len(),
+        "radargram_count": radargram_count,
         "role": role.as_str(),
         "download": download.as_str(),
         "require_auth_to_read": members.require_auth_to_read,
