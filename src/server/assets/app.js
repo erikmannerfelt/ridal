@@ -243,6 +243,7 @@ const RIDAL = Object.freeze({
       return table;
     }
     for (const entry of entries) {
+      const row = document.createElement("tr");
       const detail = [];
       if (entry.role) detail.push(`${entry.role} · ${entry.download || ""}`);
       if (entry.note) detail.push(entry.note);
