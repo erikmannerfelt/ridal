@@ -1274,3 +1274,58 @@ async fn the_site_audit_requires_a_server_admin() {
     let response = send(&app, get("/api/v1/site/audit", Some(&cookie))).await;
     assert_eq!(response.status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn the_memberships_overview_groups_accounts_by_project() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    members::update(project.documents(), |set| {
+        set.members.push(members::Member::new(
+            id("bo"),
+            Role::Picker,
+            DownloadScope::Picks,
+        ));
+        Ok(())
+    })
+    .unwrap();
+
+    let cookie = sign_in(&app, "anna").await;
+    let page = send(&app, get("/api/v1/site/memberships", Some(&cookie))).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    let accounts = page.body["accounts"].as_array().unwrap();
+    let bo = accounts
+        .iter()
+        .find(|account| account["name"] == "bo")
+        .expect("bo is listed");
+    assert_eq!(bo["memberships"][0]["project"], "glac");
+    assert_eq!(bo["memberships"][0]["role"], "picker");
+    assert_eq!(bo["memberships"][0]["download"], "picks");
+    // An account with no memberships still appears, with an empty list.
+    let anna = accounts
+        .iter()
+        .find(|account| account["name"] == "anna")
+        .unwrap();
+    assert!(anna["memberships"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_memberships_overview_requires_a_server_admin() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", false, &hash)],
+        &[],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let response = send(&app, get("/api/v1/site/memberships", Some(&cookie))).await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+}

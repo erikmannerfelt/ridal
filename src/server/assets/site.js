@@ -569,5 +569,50 @@
     });
   }
 
+  /* ---- Memberships overview ----------------------------------------- */
+
+  /* Which projects each account belongs to, for a server administrator.
+   * Read-only, and loaded when the disclosure is opened. */
+  function membershipsOverview(accounts) {
+    const list = document.createElement("ul");
+    list.className = "membership-list";
+    for (const account of accounts) {
+      const item = document.createElement("li");
+      const name = document.createElement("strong");
+      name.textContent = account.name;
+      item.appendChild(name);
+      const memberships = account.memberships || [];
+      const text =
+        memberships.length === 0
+          ? " — no project memberships"
+          : ` — ${memberships
+              .map((m) => `${m.project_name} (${m.role} · ${m.download})`)
+              .join("; ")}`;
+      item.appendChild(document.createTextNode(text));
+      list.appendChild(item);
+    }
+    return list;
+  }
+
+  const memberships = byId("memberships");
+  if (memberships) {
+    let loaded = false;
+    memberships.addEventListener("toggle", async () => {
+      if (!memberships.open || loaded) return;
+      loaded = true;
+      const box = byId("memberships-overview");
+      try {
+        const body = await RIDAL.fetchJson(
+          RIDAL.siteApiPath("site", "memberships"),
+        );
+        box.replaceChildren(membershipsOverview(body.accounts || []));
+      } catch (error) {
+        loaded = false;
+        box.replaceChildren();
+        showError(`Could not load memberships: ${error.message}`);
+      }
+    });
+  }
+
   loadAccounts();
 })();

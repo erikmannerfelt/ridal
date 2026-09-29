@@ -65,6 +65,17 @@
         <tbody></tbody>
       </table>
 
+      {#- A read-only overview of who belongs where. Loaded when opened, so
+          the accounts table stays quick for anyone who does not look. -#}
+      <details id="memberships" class="bulk-users">
+        <summary>Memberships</summary>
+        <p class="hint">
+          Every account and the projects it belongs to. Editable from each
+          project's own settings page.
+        </p>
+        <div id="memberships-overview"></div>
+      </details>
+
       {#- The one moment an invite token exists: only its hash is stored,
           so this is shown once and cannot be shown again. -#}
       <div id="invite-result" class="warning" hidden>

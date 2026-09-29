@@ -1015,6 +1015,18 @@ dialog th {
   gap: var(--space-2);
 }
 
+/* The read-only memberships overview on the site settings page: one line per
+ * account, so it reads as a directory rather than a document. */
+.membership-list {
+  margin: var(--space-3) 0;
+  padding-left: var(--space-5);
+  max-width: 60rem;
+}
+
+.membership-list li {
+  margin-bottom: var(--space-1);
+}
+
 .hint {
   color: var(--color-text-muted);
   font-size: var(--text-sm);

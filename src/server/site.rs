@@ -314,6 +314,7 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         .route("/api/v1/health", get(super::routes::health))
         .route("/api/v1/site", get(site_info))
         .route("/api/v1/site/audit", get(site_audit_log))
+        .route("/api/v1/site/memberships", get(site_memberships))
         .route(
             "/api/v1/site/preferences",
             get(get_site_preferences).put(put_site_preferences),
@@ -1662,6 +1663,68 @@ async fn list_accounts(
         "min_password_len": accounts::MIN_PASSWORD_LEN,
         "account_file": ACCOUNTS_FILE,
     })))
+}
+
+/// `GET /api/v1/site/memberships` -- every account and the projects it
+/// belongs to, for a read-only overview on the site settings page.
+async fn site_memberships(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_server_admin("see memberships")?;
+    let accounts = accounts::read(site.site.store())
+        .map_err(account_error)?
+        .map(|(set, _)| set)
+        .unwrap_or_default();
+    let keys = site.site.list().map_err(site_error)?;
+
+    // Seeded from the accounts so one with no memberships still appears.
+    let mut by_account: std::collections::HashMap<String, Vec<serde_json::Value>> = accounts
+        .users
+        .iter()
+        .map(|account| (account.name.as_str().to_string(), Vec::new()))
+        .collect();
+    for key in &keys {
+        // A project that no longer opens is skipped rather than failing the
+        // overview; this is a convenience page, not an authority.
+        let Ok(project) = site.site.project(key) else {
+            continue;
+        };
+        let name = project
+            .config()
+            .project
+            .name
+            .clone()
+            .unwrap_or_else(|| key.as_str().to_string());
+        let set = members::read(project.documents())
+            .map_err(member_error)?
+            .map(|(set, _)| set)
+            .unwrap_or_default();
+        for member in &set.members {
+            // A membership may name an account that no longer exists.
+            if let Some(list) = by_account.get_mut(member.name.as_str()) {
+                list.push(serde_json::json!({
+                    "project": key.as_str(),
+                    "project_name": name,
+                    "role": member.role.as_str(),
+                    "download": member.download.as_str(),
+                }));
+            }
+        }
+    }
+
+    let overview: Vec<serde_json::Value> = accounts
+        .users
+        .iter()
+        .map(|account| {
+            let memberships = by_account.remove(account.name.as_str()).unwrap_or_default();
+            serde_json::json!({
+                "name": account.name.as_str(),
+                "memberships": memberships,
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({ "accounts": overview })))
 }
 
 #[derive(serde::Deserialize)]
