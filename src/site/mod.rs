@@ -361,20 +361,26 @@ impl Site {
         Ok(project)
     }
 
-    /// Create a project at `key` with an optional display name.
+    /// Create a project at `key` with an optional display name, recording
+    /// the account that created it (`None` from the command line).
     pub fn create_project(
         &self,
         key: &ProjectKey,
         name: Option<&str>,
+        created_by: Option<&UserId>,
     ) -> Result<Project, SiteError> {
         let path = self.project_path(key);
         if path.exists() {
             return Err(SiteError::KeyInUse(key.to_string()));
         }
-        let project = Project::init(&path, name).map_err(|e| SiteError::Io {
+        let io = |e: ProjectError| SiteError::Io {
             path: path.clone(),
             message: e.to_string(),
-        })?;
+        };
+        let project = Project::init(&path, name).map_err(io)?;
+        project
+            .set_creator(created_by, &chrono::Utc::now().to_rfc3339())
+            .map_err(io)?;
         Ok(project)
     }
 
@@ -634,7 +640,8 @@ mod tests {
     fn create_list_and_open_a_project() {
         let (_dir, site) = site();
         let glac = key("glac-2026");
-        site.create_project(&glac, Some("Glaciology 2026")).unwrap();
+        site.create_project(&glac, Some("Glaciology 2026"), None)
+            .unwrap();
         assert_eq!(site.list().unwrap(), vec![glac.clone()]);
         let project = site.project(&glac).unwrap();
         assert_eq!(
@@ -643,7 +650,7 @@ mod tests {
         );
         // A second project at the same key is refused.
         assert!(matches!(
-            site.create_project(&glac, None).unwrap_err(),
+            site.create_project(&glac, None, None).unwrap_err(),
             SiteError::KeyInUse(_)
         ));
         // And an unknown key is not found.
@@ -657,7 +664,7 @@ mod tests {
     fn archive_is_recorded_and_reversible() {
         let (_dir, site) = site();
         let glac = key("glac-2026");
-        site.create_project(&glac, None).unwrap();
+        site.create_project(&glac, None, None).unwrap();
         assert!(!site.is_archived(&glac));
         site.archive(&glac).unwrap();
         assert!(site.is_archived(&glac));
@@ -676,7 +683,7 @@ mod tests {
     fn only_an_archived_project_may_be_deleted() {
         let (dir, site) = site();
         let glac = key("glac-2026");
-        site.create_project(&glac, None).unwrap();
+        site.create_project(&glac, None, None).unwrap();
         assert!(matches!(
             site.delete_project(&glac).unwrap_err(),
             SiteError::NotArchived(_)
@@ -688,7 +695,7 @@ mod tests {
     fn delete_removes_the_project_and_its_archive_entry() {
         let (dir, site) = site();
         let glac = key("glac-2026");
-        site.create_project(&glac, None).unwrap();
+        site.create_project(&glac, None, None).unwrap();
         site.archive(&glac).unwrap();
         site.delete_project(&glac).unwrap();
         assert!(!dir.path().join(PROJECTS_DIR).join("glac-2026").exists());
@@ -704,7 +711,7 @@ mod tests {
     fn a_project_that_still_holds_accounts_is_refused() {
         let (_dir, site) = site();
         let glac = key("glac-2026");
-        let project = site.create_project(&glac, None).unwrap();
+        let project = site.create_project(&glac, None, None).unwrap();
         project
             .documents()
             .write(
@@ -725,7 +732,7 @@ mod tests {
     fn a_memberships_file_is_accepted() {
         let (_dir, site) = site();
         let glac = key("glac-2026");
-        let project = site.create_project(&glac, None).unwrap();
+        let project = site.create_project(&glac, None, None).unwrap();
         project
             .documents()
             .write(

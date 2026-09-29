@@ -2533,7 +2533,7 @@ fn site_project_add_command(args: &SiteProjectAddArgs) -> Result<(), String> {
     let site = open_site(&args.path)?;
     let key = crate::identity::ProjectKey::new(args.key.clone())?;
     let project = site
-        .create_project(&key, args.name.as_deref())
+        .create_project(&key, args.name.as_deref(), None)
         .map_err(|e| e.to_string())?;
     crate::site::audit::record(
         site.store(),

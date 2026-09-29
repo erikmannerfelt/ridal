@@ -272,6 +272,20 @@ pub struct ProjectSection {
     /// anyone can read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_dir: Option<String>,
+
+    /// The site account that created this project, when one did (#214).
+    /// Unset for a project made with `ridal project init` or
+    /// `ridal site project add`, which no account runs.
+    ///
+    /// Recorded so a later "may delete their own project" is a check
+    /// against this rather than a guess, and kept in the project rather than
+    /// the site so it moves with the directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<crate::identity::UserId>,
+
+    /// When the project was created inside a site, as RFC 3339 (#214).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -840,6 +854,9 @@ impl Project {
                 // Left unset so a project that never moved it follows the
                 // default, exactly as the cache does.
                 data_dir: None,
+                // Set by `Site::create_project`, which knows who asked.
+                created_by: None,
+                created: None,
             },
             radargrams: RadargramsSection {
                 roots: vec![radargram_root.clone()],
@@ -1105,6 +1122,24 @@ impl Project {
     pub fn set_name(&self, name: Option<&str>) -> Result<(), ProjectError> {
         self.edit_marker(|document| {
             set_or_clear(document, "project", "name", name.map(toml_edit::value));
+            Ok(())
+        })
+    }
+
+    /// Record who created this project inside a site, and when (#214).
+    pub fn set_creator(
+        &self,
+        by: Option<&crate::identity::UserId>,
+        at: &str,
+    ) -> Result<(), ProjectError> {
+        self.edit_marker(|document| {
+            set_or_clear(
+                document,
+                "project",
+                "created_by",
+                by.map(|user| toml_edit::value(user.as_str())),
+            );
+            set_or_clear(document, "project", "created", Some(toml_edit::value(at)));
             Ok(())
         })
     }

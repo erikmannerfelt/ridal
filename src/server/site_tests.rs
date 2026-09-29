@@ -68,7 +68,7 @@ fn site_with(
         .unwrap();
     }
     for name in projects {
-        site.create_project(&key(name), Some(name)).unwrap();
+        site.create_project(&key(name), Some(name), None).unwrap();
     }
     let state = SiteState::new(site, access, RenderServiceConfig::default());
     (dir, build_site_router(state))
@@ -295,7 +295,8 @@ async fn a_non_member_neither_lists_nor_reaches_a_private_project() {
 async fn an_invite_into_a_project_adds_the_membership_on_redemption() {
     let dir = tempfile::tempdir().unwrap();
     let site = Site::init(dir.path(), Some("Test site")).unwrap();
-    site.create_project(&key("glac"), Some("glac")).unwrap();
+    site.create_project(&key("glac"), Some("glac"), None)
+        .unwrap();
     let (token, pending) = invite::mint_for_project(
         chrono::Utc::now().timestamp(),
         key("glac"),
@@ -1835,4 +1836,28 @@ async fn a_project_admin_cannot_hand_out_a_name_another_project_knows() {
     .await;
     assert_eq!(batch.status, StatusCode::CREATED, "{}", batch.text);
     assert_eq!(batch.body["users"][0]["name"], "cy-02");
+}
+
+#[tokio::test]
+async fn a_project_records_the_account_that_created_it() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &[],
+        AccessOptions::default(),
+    );
+    let anna = sign_in(&app, "anna").await;
+    let created = send(
+        &app,
+        post_json("/api/v1/projects", &json!({ "key": "glac" }), Some(&anna)),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+
+    let site = Site::open(dir.path()).unwrap();
+    let config = site.project(&key("glac")).unwrap().config();
+    assert_eq!(config.project.created_by, Some(id("anna")));
+    assert!(config.project.created.is_some());
+    let info = send(&app, get("/api/v1/projects/glac", Some(&anna))).await;
+    assert_eq!(info.body["created_by"], "anna");
 }

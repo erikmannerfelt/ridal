@@ -691,6 +691,7 @@ fn project_entry(
             .name
             .unwrap_or_else(|| key.as_str().to_string()),
         "archived": site.site.is_archived(key),
+        "created_by": project.config().project.created_by.map(|user| user.as_str().to_string()),
         "member": member.is_some() || caller.server_admin,
         "member_count": members.members.len(),
         "radargram_count": radargram_count,
@@ -1199,7 +1200,7 @@ async fn create_project(
         ProjectKey::new(&body.key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
     let project = site
         .site
-        .create_project(&key, body.name.as_deref())
+        .create_project(&key, body.name.as_deref(), caller.user.as_ref())
         .map_err(site_error)?;
     audit(
         &site,

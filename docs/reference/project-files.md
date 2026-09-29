@@ -150,6 +150,14 @@ name_field = "Stake"
 `data_dir`
 : Where Ridal keeps its data. Default: `ridal_data`.
 
+`created_by`
+: The site account that created the project from the browser. Written by
+  Ridal; absent for a project created from the command line.
+
+`created`
+: When the project was created inside a site, as an RFC 3339 timestamp.
+  Written by Ridal.
+
 ### `[radargrams]`
 
 `roots`
