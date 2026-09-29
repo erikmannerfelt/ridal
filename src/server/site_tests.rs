@@ -983,3 +983,135 @@ async fn only_a_project_admin_may_invite_a_member() {
     .await;
     assert_eq!(response.status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn a_project_admin_creates_a_bulk_batch_for_their_project() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    members::update(project.documents(), |set| {
+        set.members.push(members::Member::new(
+            id("bo"),
+            Role::Admin,
+            DownloadScope::All,
+        ));
+        Ok(())
+    })
+    .unwrap();
+
+    let cookie = sign_in(&app, "bo").await;
+    let created = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/bulk/invites",
+            &json!({
+                "prefix": "student",
+                "count": 2,
+                "role": "picker",
+                "download": "picks",
+            }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    let users = created.body["users"].as_array().unwrap();
+    assert_eq!(users.len(), 2);
+    assert_eq!(users[0]["name"], "student-01");
+
+    // The batch created accounts without server administration; the
+    // membership arrives with the invitation's redemption.
+    let site = Site::open(_dir.path()).unwrap();
+    let (accounts, _) = accounts::read(site.store()).unwrap().unwrap();
+    assert!(!accounts.get(&id("student-01")).unwrap().server_admin);
+
+    let token = users[0]["invite_path"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let redeemed = send(
+        &app,
+        post_json(
+            "/api/v1/auth/invite",
+            &json!({ "token": token, "password": password() }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text);
+
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    let (members, _) = members::read(project.documents()).unwrap().unwrap();
+    let member = members.get(&id("student-01")).expect("a membership");
+    assert_eq!(member.role, Role::Picker);
+    assert_eq!(member.download, DownloadScope::Picks);
+}
+
+#[tokio::test]
+async fn a_project_admin_bulk_batch_still_refuses_admin_passwords() {
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    members::update(project.documents(), |set| {
+        set.members.push(members::Member::new(
+            id("bo"),
+            Role::Admin,
+            DownloadScope::All,
+        ));
+        Ok(())
+    })
+    .unwrap();
+
+    let cookie = sign_in(&app, "bo").await;
+    let admin = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/bulk/passwords",
+            &json!({
+                "prefix": "boss",
+                "count": 1,
+                "role": "admin",
+                "acknowledge_risk": true,
+            }),
+            Some(&cookie),
+        ),
+    )
+    .await;
+    assert_eq!(admin.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        admin.body["error"]["code"],
+        "admin_bulk_passwords_forbidden"
+    );
+
+    // A plain member cannot create a batch at all.
+    let outsider = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members/bulk/invites",
+            &json!({ "prefix": "x", "count": 1, "role": "picker" }),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(outsider.status, StatusCode::UNAUTHORIZED);
+}

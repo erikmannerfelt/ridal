@@ -507,6 +507,55 @@
             administrator can issue another from site settings.
           </p>
         </div>
+
+        {#- Bulk warnings sit beside the control they are about, rather than
+            at the top of the page where they read as unrelated to "Add
+            several people". -#}
+        <div id="bulk-warning" class="warning" role="status" aria-live="polite" hidden></div>
+
+        <details class="bulk-users" id="bulk-users">
+          <summary>Add several people</summary>
+          <p class="hint">
+            Invite mode creates separate one-time links, so each person sets
+            their own password. Use password mode only for a small workshop:
+            the generated passwords must be printed or handed out by you.
+            Every account is added to this project only.
+          </p>
+          <form id="bulk-member-form" class="add-layer" novalidate>
+            <div class="add-layer-fields">
+              <label class="checkbox bulk-random">
+                <input type="checkbox" id="bulk-random-names">
+                Use random usernames instead of the prefix
+              </label>
+              <label>Prefix
+                <input type="text" name="prefix" value="student" required
+                       pattern="[a-z0-9_\-]+" autocomplete="off"
+                       autocapitalize="none" spellcheck="false">
+              </label>
+              <label>Count
+                <input type="number" name="count" value="10" min="1" max="100" required>
+              </label>
+              <label>Role
+                <select name="role"></select>
+              </label>
+              <label>Downloads
+                <select name="download"></select>
+              </label>
+            </div>
+            <div class="bulk-actions">
+              <button type="submit">Create invite links</button>
+              <button type="button" id="bulk-passwords" class="danger">
+                Create with generated passwords
+              </button>
+            </div>
+            <label class="settings-field checkbox bulk-risk">
+              <input type="checkbox" id="bulk-risk">
+              I understand that generated passwords are shared secrets and are
+              less safe than invite links.
+            </label>
+          </form>
+          <div id="bulk-result" class="bulk-result" hidden></div>
+        </details>
       </section>
     {% endif %}
 

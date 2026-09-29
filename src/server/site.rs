@@ -326,6 +326,16 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         // the project in its path. Account lifecycle stays at the site
         // level, for a server administrator.
         .route("/api/v1/projects/{key}/members/invite", post(invite_member))
+        // A project administrator's bulk creation, likewise scoped to the
+        // project in the path.
+        .route(
+            "/api/v1/projects/{key}/members/bulk/invites",
+            post(create_project_bulk_invites),
+        )
+        .route(
+            "/api/v1/projects/{key}/members/bulk/passwords",
+            post(create_project_bulk_passwords),
+        )
         .route("/api/v1/projects/{key}/access", put(put_project_access))
         .route("/api/v1/accounts", get(list_accounts).post(create_account))
         .route(
@@ -1706,15 +1716,14 @@ fn bulk_account_names(
     }
 }
 
-/// `POST /api/v1/accounts/bulk/invites` -- a batch of one-time invite links.
-async fn create_bulk_invites(
-    State(site): State<Arc<SiteState>>,
-    caller: SiteCaller,
-    Json(body): Json<BulkAccountsBody>,
-) -> Result<impl IntoResponse, ApiError> {
-    caller.require_server_admin("create accounts")?;
+/// A batch of one-time invite links, shared by the site route (any project,
+/// or none) and the project route (this project only).
+async fn bulk_invites(
+    site: Arc<SiteState>,
+    project: Option<ProjectKey>,
+    body: BulkAccountsBody,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
-    let project = resolve_optional_project(&site, body.project.as_deref())?;
     let set = accounts::read(site.site.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
@@ -1759,14 +1768,37 @@ async fn create_bulk_invites(
     ))
 }
 
-/// `POST /api/v1/accounts/bulk/passwords` -- accounts with generated
-/// passwords, for a workshop where handing out links is impractical.
-async fn create_bulk_passwords(
+/// `POST /api/v1/accounts/bulk/invites` -- a batch of one-time invite links.
+async fn create_bulk_invites(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
-    Json(body): Json<BulkPasswordsBody>,
+    Json(body): Json<BulkAccountsBody>,
 ) -> Result<impl IntoResponse, ApiError> {
     caller.require_server_admin("create accounts")?;
+    let project = resolve_optional_project(&site, body.project.as_deref())?;
+    bulk_invites(site, project, body).await
+}
+
+/// `POST /api/v1/projects/{key}/members/bulk/invites` -- a project
+/// administrator's batch, scoped to their project.
+async fn create_project_bulk_invites(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Path(key): Path<String>,
+    Json(body): Json<BulkAccountsBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    require_project_admin(&site, &key, &caller, "create accounts")?;
+    bulk_invites(site, Some(key), body).await
+}
+
+/// A batch of accounts with generated passwords, shared by the site route
+/// and the project route.
+async fn bulk_passwords(
+    site: Arc<SiteState>,
+    project: Option<ProjectKey>,
+    body: BulkPasswordsBody,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     if !body.acknowledge_risk {
         return Err(ApiError::bad_request(
             "risk_acknowledgement_required",
@@ -1782,7 +1814,6 @@ async fn create_bulk_passwords(
              not shared passwords.",
         )
     })?;
-    let project = resolve_optional_project(&site, body.project.as_deref())?;
     let set = accounts::read(site.site.store())
         .map_err(account_error)?
         .map(|(set, _)| set)
@@ -1839,13 +1870,41 @@ async fn create_bulk_passwords(
         .map_err(member_error)?;
     }
 
-    Ok(Json(serde_json::json!({
-        "users": generated.iter().map(|(name, password)| serde_json::json!({
-            "name": name.as_str(),
-            "password": password,
-        })).collect::<Vec<_>>(),
-        "advisory": advisory,
-    })))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "users": generated.iter().map(|(name, password)| serde_json::json!({
+                "name": name.as_str(),
+                "password": password,
+            })).collect::<Vec<_>>(),
+            "advisory": advisory,
+        })),
+    ))
+}
+
+/// `POST /api/v1/accounts/bulk/passwords` -- accounts with generated
+/// passwords, for a workshop where handing out links is impractical.
+async fn create_bulk_passwords(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Json(body): Json<BulkPasswordsBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_server_admin("create accounts")?;
+    let project = resolve_optional_project(&site, body.project.as_deref())?;
+    bulk_passwords(site, project, body).await
+}
+
+/// `POST /api/v1/projects/{key}/members/bulk/passwords` -- a project
+/// administrator's batch, scoped to their project.
+async fn create_project_bulk_passwords(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Path(key): Path<String>,
+    Json(body): Json<BulkPasswordsBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let key = ProjectKey::new(&key).map_err(|e| ApiError::bad_request("invalid_project_key", e))?;
+    require_project_admin(&site, &key, &caller, "create accounts")?;
+    bulk_passwords(site, Some(key), body).await
 }
 
 #[cfg(test)]

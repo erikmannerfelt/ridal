@@ -833,6 +833,7 @@
 
   const membersSection = byId("members-section");
   const membersForm = byId("add-member");
+  const bulkForm = byId("bulk-member-form");
   const accessForm = byId("access-form");
   let members = [];
   let roles = [];
@@ -859,6 +860,10 @@
       fillNames(membersForm.elements.role, roles, "picker");
       // `all` to match what the API does when the field is omitted.
       fillNames(membersForm.elements.download, downloadScopes, "all");
+    }
+    if (bulkForm) {
+      fillNames(bulkForm.elements.role, roles, "picker");
+      fillNames(bulkForm.elements.download, downloadScopes, "all");
     }
     fillNames(
       byId("anonymous-download"),
@@ -1020,6 +1025,154 @@
         }
       });
     }
+  }
+
+  /* Bulk creation, scoped to this project: the same panel the site's own
+   * accounts page has, but each account it makes belongs here and nowhere
+   * else. */
+  function downloadCsv(filename, rows) {
+    const csv = rows
+      .map((row) =>
+        row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(","),
+      )
+      .join("\n");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
+  function renderBulkResult(result, mode) {
+    const box = byId("bulk-result");
+    box.replaceChildren();
+    const heading = document.createElement("h3");
+    heading.textContent =
+      mode === "passwords" ? "Generated passwords" : "Invite links";
+    box.appendChild(heading);
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent =
+      mode === "passwords"
+        ? `${result.advisory} These passwords are shown once and are not stored.`
+        : "Each link works once. Send each person only their own link.";
+    box.appendChild(note);
+
+    const table = document.createElement("table");
+    table.className = "layers-table bulk-table";
+    const header = document.createElement("tr");
+    for (const label of mode === "passwords"
+      ? ["Name", "Password"]
+      : ["Name", "Invite link"]) {
+      const cell = document.createElement("th");
+      cell.textContent = label;
+      header.appendChild(cell);
+    }
+    table.appendChild(header);
+    const rows = [["name", mode === "passwords" ? "password" : "invite link"]];
+    for (const user of result.users || []) {
+      const row = document.createElement("tr");
+      const name = document.createElement("td");
+      name.textContent = user.name;
+      const value = document.createElement("td");
+      const text =
+        mode === "passwords"
+          ? user.password
+          : window.location.origin + user.invite_path;
+      value.textContent = text;
+      row.append(name, value);
+      table.appendChild(row);
+      rows.push([user.name, text]);
+    }
+    box.appendChild(table);
+    const actions = document.createElement("div");
+    actions.className = "bulk-actions";
+    const print = document.createElement("button");
+    print.type = "button";
+    print.textContent = "Print";
+    print.addEventListener("click", () => window.print());
+    const csv = document.createElement("button");
+    csv.type = "button";
+    csv.textContent = "Download CSV";
+    csv.addEventListener("click", () => downloadCsv(`ridal-${mode}.csv`, rows));
+    actions.append(print, csv);
+    box.appendChild(actions);
+    box.hidden = false;
+  }
+
+  if (bulkForm) {
+    const bulkWarning = byId("bulk-warning");
+    const showBulkWarning = (message) => {
+      bulkWarning.textContent = message;
+      bulkWarning.hidden = false;
+    };
+    const clearBulkWarning = () => {
+      bulkWarning.hidden = true;
+      bulkWarning.textContent = "";
+    };
+
+    const randomNames = byId("bulk-random-names");
+    const prefixInput = bulkForm.elements.prefix;
+    const syncPrefixState = () => {
+      prefixInput.disabled = randomNames.checked;
+    };
+    randomNames.addEventListener("change", () => {
+      syncPrefixState();
+      clearBulkWarning();
+    });
+    syncPrefixState();
+
+    const bulkBody = () => ({
+      prefix: randomNames.checked ? "" : prefixInput.value.trim(),
+      count: Number(bulkForm.elements.count.value),
+      random_names: randomNames.checked,
+      role: bulkForm.elements.role.value,
+      download: bulkForm.elements.download.value,
+    });
+
+    bulkForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearBulkWarning();
+      try {
+        const result = await send(
+          "POST",
+          RIDAL.apiPath("members", "bulk", "invites"),
+          bulkBody(),
+        );
+        renderBulkResult(result, "invites");
+        await loadMembers();
+      } catch (error) {
+        showBulkWarning(error.message);
+      }
+    });
+
+    byId("bulk-risk").addEventListener("change", clearBulkWarning);
+
+    byId("bulk-passwords").addEventListener("click", async () => {
+      if (bulkForm.elements.role.value === "admin") {
+        showBulkWarning("Administrator accounts must use one-time invite links.");
+        return;
+      }
+      if (!byId("bulk-risk").checked) {
+        showBulkWarning(
+          "Generated passwords are shared secrets and less safe than invite " +
+            "links. Check the acknowledgement above, then press the button again.",
+        );
+        return;
+      }
+      clearBulkWarning();
+      try {
+        const result = await send(
+          "POST",
+          RIDAL.apiPath("members", "bulk", "passwords"),
+          { ...bulkBody(), acknowledge_risk: true },
+        );
+        renderBulkResult(result, "passwords");
+        await loadMembers();
+      } catch (error) {
+        showBulkWarning(error.message);
+      }
+    });
   }
 
   if (accessForm) {
