@@ -471,6 +471,20 @@ async fn a_plain_member_gets_members_but_not_site_admin_controls() {
     );
     assert!(settings.text.contains(r#"id="members-table""#));
     assert!(settings.text.contains(r#"id="access-form""#));
+    // The site theme is offered here too, and the project form no longer
+    // carries a theme of its own.
+    assert!(
+        settings.text.contains(r#"id="my-site-settings-section""#),
+        "{}",
+        settings.text
+    );
+    assert!(settings.text.contains(r#"id="site-theme""#));
+    assert!(
+        !settings.text.contains(r#"id="my-theme""#),
+        "the site's theme replaced the project's: {}",
+        settings.text
+    );
+    assert!(settings.text.contains("My project settings"));
 }
 
 #[tokio::test]

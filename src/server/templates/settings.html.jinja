@@ -29,11 +29,39 @@
   <div id="settings-error" class="warning" role="status" aria-live="polite" hidden></div>
 
   {% if project %}
+    {#- Personal settings that belong to the whole site (#214), shown here
+        as well as on the site's own settings page: one value, reachable
+        from wherever a person happens to be. -#}
+    {% if site_managed and signed_in %}
+      <section class="settings-section" id="my-site-settings-section">
+        <h2>My site settings</h2>
+        <p class="hint">
+          Yours alone, and the same on every project of this site.
+        </p>
+        <form id="my-site-settings-form" class="settings-form" novalidate>
+          <label class="settings-field">
+            <span class="settings-label">Theme</span>
+            <select id="site-theme">
+              <option value="" {% if not active_theme %}selected{% endif %}>Follow this device</option>
+              <option value="light" {% if active_theme == "light" %}selected{% endif %}>Light</option>
+              <option value="dark" {% if active_theme == "dark" %}selected{% endif %}>Dark</option>
+            </select>
+            <span class="hint">
+              &ldquo;Follow this device&rdquo; uses whatever your system asks
+              for, including when it changes during the day.
+            </span>
+          </label>
+          <button type="submit">Save site settings</button>
+          <span id="site-settings-status" class="pick-status"></span>
+        </form>
+      </section>
+    {% endif %}
+
     {#- Section one: preferences. Everyone who has an account gets these,
         because choosing how you like to look at something is the floor of
         what having an account means rather than a permission. -#}
-    <section class="settings-section">
-      <h2>My settings</h2>
+    <section class="settings-section" id="my-project-settings-section">
+      <h2>My project settings</h2>
       {% if signed_in %}
         <p class="hint">
           Yours alone. They override the project defaults below for you, and
@@ -59,17 +87,21 @@
           </label>
           {#- #141. "Follow this device" is the absence of a choice rather
               than a third theme, which is what lets a laptop that switches
-              at dusk keep switching. -#}
-          <label class="settings-field">
-            <span class="settings-label">Theme</span>
-            <select id="my-theme">
-              <option value="">Loading&hellip;</option>
-            </select>
-            <span class="hint">
-              &ldquo;Follow this device&rdquo; uses whatever your system asks
-              for, including when it changes during the day.
-            </span>
-          </label>
+              at dusk keep switching. A site's theme is site-wide (#214) and
+              lives in "My site settings" above, so this field is only for a
+              lone project, which has no site to hold it. -#}
+          {% if not site_managed %}
+            <label class="settings-field">
+              <span class="settings-label">Theme</span>
+              <select id="my-theme">
+                <option value="">Loading&hellip;</option>
+              </select>
+              <span class="hint">
+                &ldquo;Follow this device&rdquo; uses whatever your system asks
+                for, including when it changes during the day.
+              </span>
+            </label>
+          {% endif %}
           {#- #143. A starting state, not a lock: the viewer has its own
               toggle, and picking brings the lines back by itself. -#}
           <label class="settings-field checkbox">
@@ -405,7 +437,8 @@
         <p class="hint">
           Who belongs to this project, and what each may do here. A member is
           an account on the site; create accounts, reset passwords and
-          appoint server administrators from the <a href="/">site home</a>.
+          appoint server administrators from
+          <a href="{{ site_settings_href }}">site settings</a>.
         </p>
         {#- Said before the table rather than discovered after it. The
             role and download controls are selects that apply on change,

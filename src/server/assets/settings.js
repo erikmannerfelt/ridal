@@ -280,39 +280,75 @@
     if (canEditAccess) await loadMembers();
   }
 
-  if (myForm) {
-    myForm.addEventListener("submit", async (event) => {
+  /* The theme is a site-wide, personal setting (#214), so it has its own
+   * form and its own endpoint. "My project settings" carries the rest. A
+   * lone project (`ridal gui`) has no site, so its theme stays in the
+   * project form and this one is absent. */
+  const siteSettingsForm = byId("my-site-settings-form");
+  if (siteSettingsForm) {
+    siteSettingsForm.addEventListener("submit", async (event) => {
       event.preventDefault();
       clearError();
-      setStatus("my-settings-status", "Saving…");
+      setStatus("site-settings-status", "Saving…");
+      const theme = byId("site-theme").value || null;
       try {
-        const saved = await send("PUT", RIDAL.apiPath("preferences"), {
-          render_profile: byId("my-profile").value || null,
-          x_scale: Number(byId("my-xscale").value) || null,
-          theme: byId("my-theme").value || null,
-          show_picks: byId("my-show-picks").checked,
-          level2_spacing: byId("my-spacing").value || null,
-          level2_format: byId("my-format").value || null,
-          basemap: byId("my-basemap").value || null,
-        });
-        byId("my-profile").value = saved.render_profile || "";
-        // Read back as sent, including an explicit 1x -- and as "Project
-        // default" when it was cleared.
-        byId("my-xscale").value = saved.x_scale ? String(saved.x_scale) : "";
-        byId("my-theme").value = saved.theme || "";
-        byId("my-show-picks").checked = saved.show_picks !== false;
-        byId("my-spacing").value = saved.level2_spacing || "";
-        byId("my-format").value = saved.level2_format || "";
-        // Applied to the page being looked at, not only stored: a theme
-        // that took effect on the next page load would read as a setting
-        // that did not work. The server writes the same attribute into
-        // every page it renders from here on.
+        const saved = await send(
+          "PUT",
+          RIDAL.siteApiPath("site", "preferences"),
+          { theme },
+        );
         if (saved.theme) {
           document.documentElement.dataset.theme = saved.theme;
         } else {
           delete document.documentElement.dataset.theme;
         }
+        setStatus("site-settings-status", "Saved");
+      } catch (error) {
+        showError(error.message);
+        setStatus("site-settings-status", "");
+      }
+    });
+  }
+
+  if (myForm) {
+    const themeField = byId("my-theme");
+    myForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearError();
+      setStatus("my-settings-status", "Saving…");
+      // The theme is set in "My site settings"; a form without the field must
+      // not mention it, so a save here leaves the site theme alone.
+      const body = {
+        render_profile: byId("my-profile").value || null,
+        x_scale: Number(byId("my-xscale").value) || null,
+        show_picks: byId("my-show-picks").checked,
+        level2_spacing: byId("my-spacing").value || null,
+        level2_format: byId("my-format").value || null,
+        basemap: byId("my-basemap").value || null,
+      };
+      if (themeField) body.theme = themeField.value || null;
+      try {
+        const saved = await send("PUT", RIDAL.apiPath("preferences"), body);
+        byId("my-profile").value = saved.render_profile || "";
+        // Read back as sent, including an explicit 1x -- and as "Project
+        // default" when it was cleared.
+        byId("my-xscale").value = saved.x_scale ? String(saved.x_scale) : "";
+        byId("my-show-picks").checked = saved.show_picks !== false;
+        byId("my-spacing").value = saved.level2_spacing || "";
+        byId("my-format").value = saved.level2_format || "";
         byId("my-basemap").value = saved.basemap || "";
+        if (themeField) {
+          themeField.value = saved.theme || "";
+          // Applied to the page being looked at, not only stored: a theme
+          // that took effect on the next page load would read as a setting
+          // that did not work. The server writes the same attribute into
+          // every page it renders from here on.
+          if (saved.theme) {
+            document.documentElement.dataset.theme = saved.theme;
+          } else {
+            delete document.documentElement.dataset.theme;
+          }
+        }
         setStatus("my-settings-status", "Saved");
       } catch (error) {
         showError(error.message);

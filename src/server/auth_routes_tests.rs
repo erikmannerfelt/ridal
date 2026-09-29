@@ -3452,6 +3452,9 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     let admin = sign_in(&app, "admin").await;
     let page = get(&app, "/settings", Some(&admin)).await;
     assert!(page.text.contains(r#"id="storage-max""#), "{}", page.text);
+    // A lone project has no site settings, so its theme stays in the
+    // project's own personal settings (#214).
+    assert!(page.text.contains(r#"id="my-theme""#), "{}", page.text);
 
     let saved = put(
         &app,
