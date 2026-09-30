@@ -1331,6 +1331,156 @@ impl GPR {
         );
     }
 
+    /// Remove narrowband interference measured below `start_ns` (travel
+    /// time) from every sample. See [`filters::tones`].
+    ///
+    /// Never fails on the data: a noise window too short to measure leaves
+    /// the data unchanged and the log says why.
+    pub fn remove_tones(
+        &mut self,
+        start_ns: f32,
+        max_tones: usize,
+        traces: usize,
+        prominence_db: f32,
+    ) {
+        let start_time = SystemTime::now();
+        let step_ns = self.vertical_resolution_ns();
+        let first_sample = self
+            .twtt_ns()
+            .iter()
+            .position(|&t| t >= start_ns)
+            .unwrap_or(self.height());
+        let settings = filters::tones::Settings {
+            first_sample,
+            max_tones,
+            traces,
+            prominence_db,
+        };
+        // The tone is a sinusoid in the recorded samples. Resampling them
+        // onto a depth grid bends it, and the fit then removes less.
+        let resampled =
+            if self.antenna_separation_effective == 0. && self.metadata.antenna_separation > 0. {
+                " Warning: the traces were resampled by correct_antenna_separation, which \
+             distorts the tones; run remove_tones before it."
+            } else {
+                ""
+            };
+        match filters::tones::remove_tones(&mut self.data, step_ns, &settings) {
+            Ok(report) => {
+                let strongest = match (report.strongest_mhz, report.strongest_amplitude) {
+                    (Some((lo, hi)), Some(amplitude)) => format!(
+                        "; the strongest tone in each trace was at {lo:.1}-{hi:.1} MHz with a \
+                         median amplitude of {amplitude:.3}"
+                    ),
+                    _ => String::new(),
+                };
+                self.log_event(
+                    "remove_tones",
+                    &format!(
+                        "Fitted {:.2} tones per trace on average (at most {max_tones}, {} of {} \
+                         traces had any) over the {} samples from {start_ns} ns, and subtracted \
+                         them from the whole trace{strongest}.{resampled}",
+                        report.mean_tones,
+                        report.traces_with_tones,
+                        self.width(),
+                        report.window_samples,
+                    ),
+                    start_time,
+                );
+            }
+            Err(reason) => self.log_event(
+                "remove_tones",
+                &format!("Warning: {reason} (from {start_ns} ns); removed nothing.{resampled}"),
+                start_time,
+            ),
+        }
+    }
+
+    /// Even out slow changes in trace amplitude along the profile, with the
+    /// gain measured in a shallow window and below `deep_ns` (travel times).
+    /// See [`filters::balance`].
+    ///
+    /// Never fails on the data: windows the record does not hold, or spans
+    /// in seconds without a usable trace interval, leave the data unchanged
+    /// and the log says why.
+    pub fn balance_traces(
+        &mut self,
+        deep_ns: f32,
+        shallow_start_ns: f32,
+        shallow_end_ns: f32,
+        traces: filters::balance::Span,
+        reference: filters::balance::Span,
+    ) {
+        let start_time = SystemTime::now();
+        let seconds_per_trace = self.metadata.time_interval;
+        let (traces_n, reference_n) = match (
+            traces.traces(seconds_per_trace),
+            reference.traces(seconds_per_trace),
+        ) {
+            // The windows are centred, so an even count is one trace longer.
+            (Ok(t), Ok(r)) => (2 * (t / 2) + 1, 2 * (r / 2) + 1),
+            (Err(reason), _) | (_, Err(reason)) => {
+                self.log_event(
+                    "balance_traces",
+                    &format!("Warning: {reason}; changed nothing"),
+                    start_time,
+                );
+                return;
+            }
+        };
+        // Both units, when the trace interval makes the seconds meaningful.
+        let span = |n: usize| {
+            if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
+                format!("{n} traces ({:.1} s)", n as f32 * seconds_per_trace)
+            } else {
+                format!("{n} traces")
+            }
+        };
+        // A window as long as the profile is cut to it at every trace.
+        let against = if reference_n >= self.width() {
+            format!("the median of all {} traces", self.width())
+        } else {
+            format!("the running median of {}", span(reference_n))
+        };
+
+        let twtt = self.twtt_ns();
+        let sample_at = |ns: f32| twtt.iter().position(|&t| t >= ns).unwrap_or(self.height());
+        let settings = filters::balance::Settings {
+            shallow: (sample_at(shallow_start_ns), sample_at(shallow_end_ns)),
+            deep_start: sample_at(deep_ns),
+            traces: traces_n,
+            reference: reference_n,
+        };
+        let windows = format!(
+            "{shallow_start_ns}-{shallow_end_ns} ns and from {deep_ns} ns, averaged over {} \
+             against {against}",
+            span(traces_n)
+        );
+        match filters::balance::balance_traces(&mut self.data, &settings) {
+            Ok(report) => {
+                let range = |(lo, median, hi): (f32, f32, f32)| {
+                    format!("{lo:.2}-{hi:.2} (median {median:.2})")
+                };
+                self.log_event(
+                    "balance_traces",
+                    &format!(
+                        "Scaled the traces by a gain measured at {windows}: amplitude factors of \
+                         {} in the shallow window and {} in the deep one, interpolated in \
+                         between",
+                        range(report.shallow_factor),
+                        range(report.deep_factor),
+                    ),
+                    start_time,
+                );
+            }
+            Err(reason) => self.log_event(
+                "balance_traces",
+                &format!("Warning: {reason} (windows at {windows}); changed nothing"),
+                start_time,
+            ),
+        }
+    }
+
     /// Measure the display gain that levels the amplitude envelope below the
     /// direct wave, and apply it (#266).
     ///

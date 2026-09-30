@@ -127,6 +127,43 @@ Remove what the traces share at the same sample, such as antenna ringing and hor
 | `traces` | `all` | `all`, or an odd number of traces for a running background |
 | `method` | `median` | `median` or `mean` |
 
+## remove_tones
+Remove narrowband interference ("tones") that is measured below the deepest reflection and subtracted from the whole trace.
+
+A continuous interferer can appear in every trace as a sinusoid of constant amplitude from top to bottom, whose frequency drifts slowly along the profile and whose phase jumps from trace to trace. It draws stacks of hyperbola-like stripes where neighbouring traces happen to agree in phase, and averaging traces turns it into a slow, regular rise and fall of power along the profile.
+
+`start` is the travel time in ns below which the record is taken to be only noise. There, each trace's spectrum is averaged over `traces` neighbouring traces, and up to `max_tones` peaks that stand `prominence` dB above the median of the spectrum within 50 MHz of them (wider for a short noise window) are taken as tones. Their amplitudes and phases are then fitted in each trace on its own, and only those sinusoids are subtracted, from every sample. Anything above `start` that is not at a picked frequency is left as it was.
+
+The tones are sinusoids in the samples as recorded, so run this first: before `average_traces`, which blurs a tone whose phase jumps between traces, and before `correct_antenna_separation`, which resamples the traces. If the record is too short below `start`, nothing is removed and the log says so. Examples: `remove_tones(150)`, `remove_tones(150, max_tones=2)`.
+
+So far this has only been tested on Malå ProEx 800 MHz data. Check the result before relying on it for other instruments or antennas.
+
+| argument | default | description |
+|---|---|---|
+| `start` | *required* | Travel time in ns below which the record is only noise |
+| `max_tones` | `5` | Most tones to remove from each trace. At least 1 |
+| `traces` | `201` | How many traces the spectra are averaged over to find the tones |
+| `prominence` | `6` | How far a tone must stand above the surrounding spectrum, in dB |
+
+## balance_traces
+Even out slow rises and falls of amplitude along the profile, such as bright vertical bands ("godrays"), without evening out real bright or dark zones.
+
+The gain is measured in two windows: a shallow one from `shallow_start` to `shallow_end`, where the layering should look the same along the profile, and from `deep` to the bottom, where the record should be only noise. In each, a trace's power averaged over `traces` neighbouring traces is compared with its running median over `reference` traces, and the trace is scaled towards that median. Between the two windows the gain changes smoothly with depth, and it is constant above and below them. Nothing between the windows is measured, so a reflector there keeps its brightness. All times are travel times in ns.
+
+Changes shorter than `traces` are too short to be measured, and changes longer than `reference` are kept. Both are seconds of recording, with an `s` (`10s`), or a number of traces (`51`). Seconds use the trace interval in the file header, which `average_traces` keeps up to date and GPS timestamps do not affect; give traces if that interval is missing or wrong, or after `equidistant_traces`, after which a trace is a distance and not a time. On a profile shorter than `reference`, the reference is the median of the whole profile.
+
+Amplitudes are no longer comparable along the profile afterwards, only within each stretch of it. If a window is outside the record, or seconds cannot be converted to traces, nothing is changed and the log says so. Examples: `balance_traces(150)`, `balance_traces(150, shallow_start=5, shallow_end=30)`, `balance_traces(150, traces=51, reference=2001)`.
+
+So far this has only been tested on Malå ProEx 800 MHz data. Check the result before relying on it for other instruments or antennas.
+
+| argument | default | description |
+|---|---|---|
+| `deep` | *required* | Travel time in ns below which the record is only noise |
+| `shallow_start` | `10` | Start of the shallow window, in ns |
+| `shallow_end` | `40` | End of the shallow window, in ns |
+| `traces` | `10s` | How much of the profile the power is averaged over before it is compared: seconds (`10s`) or traces (`51`) |
+| `reference` | `400s` | How much of the profile the reference (running median) spans: seconds (`400s`) or traces (`2001`) |
+
 ## auto_gain
 Measure the gain that levels the amplitude below the direct wave, and apply it with `gain`.
 

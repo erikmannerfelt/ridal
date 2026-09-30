@@ -2,11 +2,13 @@ use crate::tools;
 use ndarray::Array2;
 use num::{Float, FromPrimitive};
 
+pub mod balance;
 pub mod bandpass;
 pub mod coordinates;
 pub mod gain;
 pub mod rolling;
 pub mod siglog;
+pub mod tones;
 pub mod zero_corr;
 #[cfg(test)]
 mod zero_corr_asset_tests;
