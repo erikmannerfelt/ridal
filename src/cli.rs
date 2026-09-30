@@ -379,7 +379,8 @@ pub struct GuiArgs {
     /// here, or this directory if there is none.
     pub path: Option<PathBuf>,
 
-    /// In-memory cache budget for encoded chunk/overview images, in MB.
+    /// In-memory cache budget for encoded chunk/overview images, in MB,
+    /// for the whole server: shared by every radargram and project.
     #[arg(long)]
     pub cache_memory_mb: Option<usize>,
 
@@ -448,7 +449,8 @@ pub struct ServerStartArgs {
     #[arg(long)]
     pub allow_insecure_login: bool,
 
-    /// In-memory cache budget for encoded chunk/overview images, in MB.
+    /// In-memory cache budget for encoded chunk/overview images, in MB,
+    /// for the whole server: shared by every radargram and project.
     #[arg(long)]
     pub cache_memory_mb: Option<usize>,
 
@@ -522,6 +524,12 @@ pub struct ProcessArgs {
     /// trace.
     #[arg(long)]
     pub render_width: Option<usize>,
+
+    /// Render the topographically corrected view for --render, as
+    /// `ridal render --topo` does. Fails when the radargram has no usable
+    /// elevation and depth axes.
+    #[arg(long)]
+    pub render_topo: bool,
 
     /// Don't export an nc file
     #[arg(long)]
@@ -629,6 +637,12 @@ pub struct BatchProcessArgs {
     /// trace.
     #[arg(long)]
     pub render_width: Option<usize>,
+
+    /// Render the topographically corrected view for --render, as
+    /// `ridal render --topo` does. Fails when the radargram has no usable
+    /// elevation and depth axes.
+    #[arg(long)]
+    pub render_topo: bool,
 
     /// Don't export nc files
     #[arg(long)]
@@ -820,7 +834,9 @@ fn render_service_config(
     }
     let default = crate::server::render_service::RenderServiceConfig::default();
     Ok(crate::server::render_service::RenderServiceConfig {
-        cache_memory_mb: cache_memory_mb.unwrap_or(default.cache_memory_mb),
+        cache: crate::server::render_service::RenderCache::from_mb(
+            cache_memory_mb.unwrap_or(crate::server::render_service::DEFAULT_CACHE_MEMORY_MB),
+        ),
         n_workers: n_workers.unwrap_or(default.n_workers),
         ..default
     })
@@ -898,6 +914,7 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
         render_path: args.render.clone(),
         render_profile: args.render_profile.clone(),
         render_width: args.render_width,
+        render_topo: args.render_topo,
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
         user_metadata,
@@ -942,6 +959,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         render_dir,
         render_profile: args.render_profile.clone(),
         render_width: args.render_width,
+        render_topo: args.render_topo,
         merge: args.merge.clone(),
         override_antenna_mhz: args.override_antenna_mhz,
         override_antenna_separation: args.override_antenna_separation,
@@ -1075,34 +1093,7 @@ fn render_command(args: RenderArgs) -> Result<(), String> {
     };
 
     let (width, height) = if args.topo {
-        // The CLI's own copy of what `render_service.rs` does server-side:
-        // read and validate the axes, resolve the geometry through the
-        // same function the server uses, then wrap the source. Absent or
-        // malformed axes fail here with the reason from
-        // `topo::resolve_topo_geometry`, never a silent standard render.
-        let reader = crate::source::SourceReader::open(&args.input)?;
-        let (source_height, n_traces) = crate::source::AmplitudeSource::shape(&reader);
-        let elevation = reader.read_axis_f64("elevation").ok();
-        let depth = reader
-            .read_axis_f64("depth")
-            .ok()
-            .map(|values| values.into_iter().map(|v| v as f32).collect::<Vec<f32>>());
-        let geometry = crate::render::topo::resolve_topo_geometry(
-            elevation.as_deref(),
-            depth.as_deref(),
-            n_traces,
-            source_height,
-            crate::render::topo::ElevationRange::NONE,
-        )
-        .map_err(|e| e.message)?;
-        let source = crate::render::topo::TopoSource::new(&reader, &geometry);
-        // Drawn through the shear, but with contrast estimated from the
-        // standard reader -- the same split the server makes, so a
-        // corrected render from the command line and from the browser
-        // agree about contrast.
-        crate::render::oneshot::render_to_file_with_stats_source(
-            &source, &reader, &output, &request,
-        )?
+        crate::render::oneshot::render_topo_path_to_file(&args.input, &output, &request)?
     } else {
         crate::render::oneshot::render_path_to_file(&args.input, &output, &request)?
     };

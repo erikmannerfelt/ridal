@@ -80,6 +80,10 @@ Render profile for --render: a built-in name, or a path to a TOML file. Distinct
 Output width in pixels for --render. Defaults to one pixel per trace
 ```
 
+```{option} --render-topo
+Render the topographically corrected view for --render, as `ridal render --topo` does. Fails when the radargram has no usable elevation and depth axes
+```
+
 ```{option} --no-export
 Don't export an nc file
 ```
@@ -187,6 +191,10 @@ Render profile for --render: a built-in name, or a path to a TOML file. Distinct
 
 ```{option} --render-width <RENDER_WIDTH>
 Output width in pixels for --render. Defaults to one pixel per trace
+```
+
+```{option} --render-topo
+Render the topographically corrected view for --render, as `ridal render --topo` does. Fails when the radargram has no usable elevation and depth axes
 ```
 
 ```{option} --no-export
@@ -912,7 +920,7 @@ A single processed .nc file, or a directory to scan recursively. Omitted, Ridal 
 **Options**
 
 ```{option} --cache-memory-mb <CACHE_MEMORY_MB>
-In-memory cache budget for encoded chunk/overview images, in MB
+In-memory cache budget for encoded chunk/overview images, in MB, for the whole server: shared by every radargram and project
 ```
 
 ```{option} --n-workers <N_WORKERS>
@@ -986,7 +994,7 @@ Ridal does not terminate TLS, so a password sent to a non-loopback address trave
 ```
 
 ```{option} --cache-memory-mb <CACHE_MEMORY_MB>
-In-memory cache budget for encoded chunk/overview images, in MB
+In-memory cache budget for encoded chunk/overview images, in MB, for the whole server: shared by every radargram and project
 ```
 
 ```{option} --n-workers <N_WORKERS>

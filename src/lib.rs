@@ -263,6 +263,11 @@ pub mod ridal {
     /// render_width : int, optional
     ///     Output width in pixels for `render`. Defaults to one pixel per
     ///     trace; a width beyond the trace count is clamped, not upsampled to.
+    /// render_topo : bool, default False
+    ///     Render the topographically corrected view for `render`, as
+    ///     `ridal.render(..., topo=True)` does. Processing fails with a
+    ///     `RuntimeError` when the radargram has no usable elevation and depth
+    ///     axes.
     /// render : path-like, optional
     ///     Output path for a rendered figure. Not allowed when
     ///     `return_dataset=True`.
@@ -351,6 +356,7 @@ pub mod ridal {
         render=None,
         render_profile=None,
         render_width=None,
+        render_topo=false,
         no_export=false,
         override_antenna_mhz=None,
         override_antenna_separation=None,
@@ -378,6 +384,7 @@ pub mod ridal {
         render: Option<Py<PyAny>>,
         render_profile: Option<String>,
         render_width: Option<usize>,
+        render_topo: bool,
         no_export: bool,
         override_antenna_mhz: Option<f32>,
         override_antenna_separation: Option<f32>,
@@ -492,6 +499,7 @@ pub mod ridal {
                 render_path: None,
                 render_profile: None,
                 render_width: None,
+                render_topo: false,
                 override_antenna_mhz,
                 override_antenna_separation,
                 user_metadata,
@@ -530,6 +538,7 @@ pub mod ridal {
             render_path,
             render_profile,
             render_width,
+            render_topo,
             override_antenna_mhz,
             override_antenna_separation,
             user_metadata,
@@ -645,6 +654,7 @@ pub mod ridal {
             None,
             None,
             false,
+            false,
             override_antenna_mhz,
             override_antenna_separation,
             metadata,
@@ -706,6 +716,9 @@ pub mod ridal {
     /// render_width : int, optional
     ///     Output width in pixels for `render`. Defaults to one pixel per
     ///     trace; a width beyond the trace count is clamped, not upsampled to.
+    /// render_topo : bool, default False
+    ///     Render the topographically corrected view for `render`, as in
+    ///     `process()`.
     /// no_export : bool, default False
     ///     Run processing without writing the main dataset outputs. Side outputs
     ///     such as rendered figures or exported tracks may still be produced.
@@ -778,6 +791,7 @@ pub mod ridal {
     render=None,
     render_profile=None,
     render_width=None,
+    render_topo=false,
         no_export=false,
         merge=None,
         override_antenna_mhz=None,
@@ -802,6 +816,7 @@ pub mod ridal {
         render: Option<Py<PyAny>>,
         render_profile: Option<String>,
         render_width: Option<usize>,
+        render_topo: bool,
         no_export: bool,
         merge: Option<String>,
         override_antenna_mhz: Option<f32>,
@@ -913,6 +928,7 @@ pub mod ridal {
             render_dir,
             render_profile,
             render_width,
+            render_topo,
             merge,
             override_antenna_mhz,
             override_antenna_separation,
@@ -954,6 +970,11 @@ pub mod ridal {
     ///     beyond the trace count is clamped rather than upsampled to.
     /// quality : int, optional
     ///     JPEG quality, 1-100. Ignored when the output is PNG.
+    /// topo : bool, default False
+    ///     Render the topographically corrected view, as `ridal render --topo`
+    ///     does, rather than the standard one. Needs the file's `elevation`
+    ///     and `depth` axes; without usable ones this raises rather than
+    ///     falling back to a standard render.
     ///
     /// Returns
     /// -------
@@ -963,16 +984,17 @@ pub mod ridal {
     /// Raises
     /// ------
     /// RuntimeError
-    ///     If the input cannot be read, the profile cannot be resolved, or the
-    ///     image cannot be written.
+    ///     If the input cannot be read, the profile cannot be resolved, the
+    ///     image cannot be written, or `topo=True` and the file cannot be
+    ///     topographically corrected.
     ///
     /// Notes
     /// -----
     /// To render while processing raw data instead, pass `render=` to
-    /// `process()` or `batch_process()`; those accept the same `render_profile`
-    /// and `render_width` and go through this same pipeline.
+    /// `process()` or `batch_process()`; those accept the same `render_profile`,
+    /// `render_width` and `render_topo` and go through this same pipeline.
     #[pyfunction]
-    #[pyo3(signature = (input, output=None, *, profile=None, width=None, quality=None))]
+    #[pyo3(signature = (input, output=None, *, profile=None, width=None, quality=None, topo=false))]
     fn render(
         py: Python<'_>,
         input: Py<PyAny>,
@@ -980,6 +1002,7 @@ pub mod ridal {
         profile: Option<String>,
         width: Option<usize>,
         quality: Option<u8>,
+        topo: bool,
     ) -> PyResult<Py<PyAny>> {
         use pyo3::exceptions::PyRuntimeError;
 
@@ -997,8 +1020,12 @@ pub mod ridal {
             width,
             quality,
         };
-        let (w, h) = crate::render::oneshot::render_path_to_file(&input, &output, &request)
-            .map_err(PyRuntimeError::new_err)?;
+        let rendered = if topo {
+            crate::render::oneshot::render_topo_path_to_file(&input, &output, &request)
+        } else {
+            crate::render::oneshot::render_path_to_file(&input, &output, &request)
+        };
+        let (w, h) = rendered.map_err(PyRuntimeError::new_err)?;
 
         let out = pyo3::types::PyDict::new(py);
         out.set_item("path", output.display().to_string())?;

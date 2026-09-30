@@ -1463,6 +1463,11 @@ pub async fn viewer_page(
             n_rows => grid.n_rows,
             viewer_width => raster.width,
             viewer_height => raster.height,
+            // The image route's own limits (#137), so the download dialog
+            // offers only widths the route will accept instead of keeping
+            // a copy of the numbers in JavaScript.
+            max_image_width => MAX_IMAGE_WIDTH,
+            max_image_pixels => MAX_IMAGE_PIXELS,
             x_scales => x_scale_options(),
             active_x_scale => resolve_x_scale(&state, &caller, query.xscale),
             spacings => spacing_options(),
@@ -1545,7 +1550,7 @@ pub async fn dataset_track(
 /// Not a memory limit on its own -- `MAX_IMAGE_PIXELS` is that -- but a
 /// guard on the one dimension people reach for. JPEG cannot exceed 65535 in
 /// either direction at all, and is rejected separately with that reason.
-const MAX_IMAGE_WIDTH: usize = 32768;
+pub(super) const MAX_IMAGE_WIDTH: usize = 32768;
 
 /// Total pixels a single render may produce.
 ///
@@ -1554,7 +1559,7 @@ const MAX_IMAGE_WIDTH: usize = 32768;
 /// grayscale buffer plus whatever the encoder holds. 120 MP is roughly
 /// 120 MB of buffer, which is a lot to ask for and still a long way from
 /// falling over.
-const MAX_IMAGE_PIXELS: usize = 120_000_000;
+pub(super) const MAX_IMAGE_PIXELS: usize = 120_000_000;
 
 /// JPEG stores its dimensions in 16 bits.
 const MAX_JPEG_DIMENSION: usize = 65_535;

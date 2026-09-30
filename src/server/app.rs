@@ -326,7 +326,7 @@ impl AppState {
 
         let state = Self {
             roots,
-            render_config: *config,
+            render_config: config.clone(),
             lifecycle: tokio::sync::Mutex::new(()),
             snapshot: RwLock::new(Arc::new(CatalogSnapshot {
                 catalog,
@@ -581,7 +581,7 @@ impl AppState {
 
     /// How this project's render services are configured.
     pub fn render_config(&self) -> RenderServiceConfig {
-        self.render_config
+        self.render_config.clone()
     }
 
     /// The catalog and its services as they are right now.
