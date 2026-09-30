@@ -344,13 +344,22 @@ pub enum Step {
     /// measured, so a reflector there keeps its brightness. All times are
     /// travel times in ns.
     ///
-    /// Changes over fewer than `traces` traces are too short to be
-    /// measured, and changes over more than `reference` traces are kept.
+    /// Changes shorter than `traces` are too short to be measured, and
+    /// changes longer than `reference` are kept. Both are seconds of
+    /// recording, with an `s` (`10s`), or a number of traces (`51`).
+    /// Seconds use the trace interval in the file header, which
+    /// `average_traces` keeps up to date and GPS timestamps do not affect;
+    /// give traces if that interval is missing or wrong, or after
+    /// `equidistant_traces`, after which a trace is a distance and not a
+    /// time. On a profile shorter than `reference`, the reference is the
+    /// median of the whole profile.
+    ///
     /// Amplitudes are no longer comparable along the profile afterwards,
     /// only within each stretch of it. If a window is outside the record,
-    /// nothing is changed and the log says so. Examples:
-    /// `balance_traces(150)`, `balance_traces(150, shallow_start=5,
-    /// shallow_end=30)`.
+    /// or seconds cannot be converted to traces, nothing is changed and the
+    /// log says so. Examples: `balance_traces(150)`,
+    /// `balance_traces(150, shallow_start=5, shallow_end=30)`,
+    /// `balance_traces(150, traces=51, reference=2001)`.
     ///
     /// So far this has only been tested on Malå ProEx 800 MHz data. Check
     /// the result before relying on it for other instruments or antennas.
@@ -365,14 +374,14 @@ pub enum Step {
         /// End of the shallow window, in ns.
         #[arg(long, default_value_t = 40., value_parser = finite)]
         shallow_end: f32,
-        /// How many traces the power is averaged over before it is compared.
-        #[arg(long, default_value_t = 51,
-              value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
-        traces: usize,
-        /// How many traces the reference (running median) spans.
-        #[arg(long, default_value_t = 2001,
-              value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(3..))]
-        reference: usize,
+        /// How much of the profile the power is averaged over before it is
+        /// compared: seconds (`10s`) or traces (`51`).
+        #[arg(long, default_value = "10s")]
+        traces: crate::filters::balance::Span,
+        /// How much of the profile the reference (running median) spans:
+        /// seconds (`400s`) or traces (`2001`).
+        #[arg(long, default_value = "400s")]
+        reference: crate::filters::balance::Span,
     },
     /// Measure the gain that levels the amplitude below the direct wave, and
     /// apply it with `gain`.

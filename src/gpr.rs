@@ -1400,28 +1400,61 @@ impl GPR {
     /// gain measured in a shallow window and below `deep_ns` (travel times).
     /// See [`filters::balance`].
     ///
-    /// Never fails on the data: windows the record does not hold leave the
-    /// data unchanged and the log says why.
+    /// Never fails on the data: windows the record does not hold, or spans
+    /// in seconds without a usable trace interval, leave the data unchanged
+    /// and the log says why.
     pub fn balance_traces(
         &mut self,
         deep_ns: f32,
         shallow_start_ns: f32,
         shallow_end_ns: f32,
-        traces: usize,
-        reference: usize,
+        traces: filters::balance::Span,
+        reference: filters::balance::Span,
     ) {
         let start_time = SystemTime::now();
+        let seconds_per_trace = self.metadata.time_interval;
+        let (traces_n, reference_n) = match (
+            traces.traces(seconds_per_trace),
+            reference.traces(seconds_per_trace),
+        ) {
+            // The windows are centred, so an even count is one trace longer.
+            (Ok(t), Ok(r)) => (2 * (t / 2) + 1, 2 * (r / 2) + 1),
+            (Err(reason), _) | (_, Err(reason)) => {
+                self.log_event(
+                    "balance_traces",
+                    &format!("Warning: {reason}; changed nothing"),
+                    start_time,
+                );
+                return;
+            }
+        };
+        // Both units, when the trace interval makes the seconds meaningful.
+        let span = |n: usize| {
+            if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
+                format!("{n} traces ({:.1} s)", n as f32 * seconds_per_trace)
+            } else {
+                format!("{n} traces")
+            }
+        };
+        // A window as long as the profile is cut to it at every trace.
+        let against = if reference_n >= self.width() {
+            format!("the median of all {} traces", self.width())
+        } else {
+            format!("the running median of {}", span(reference_n))
+        };
+
         let twtt = self.twtt_ns();
         let sample_at = |ns: f32| twtt.iter().position(|&t| t >= ns).unwrap_or(self.height());
         let settings = filters::balance::Settings {
             shallow: (sample_at(shallow_start_ns), sample_at(shallow_end_ns)),
             deep_start: sample_at(deep_ns),
-            traces,
-            reference,
+            traces: traces_n,
+            reference: reference_n,
         };
         let windows = format!(
-            "{shallow_start_ns}-{shallow_end_ns} ns and from {deep_ns} ns, averaged over \
-             {traces} traces against the running median of {reference}"
+            "{shallow_start_ns}-{shallow_end_ns} ns and from {deep_ns} ns, averaged over {} \
+             against {against}",
+            span(traces_n)
         );
         match filters::balance::balance_traces(&mut self.data, &settings) {
             Ok(report) => {

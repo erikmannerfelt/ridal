@@ -20,10 +20,67 @@
 //! intact. A gain measured at every depth evens those out too, which was
 //! tried and rejected.
 
+use std::fmt;
+use std::str::FromStr;
+
 use ndarray::{Array2, Axis};
 use rayon::prelude::*;
 
 use super::rolling::{self, Statistic};
+
+/// A stretch of the profile: a number of traces, or seconds of recording.
+///
+/// Seconds follow the trace interval in the file header (multiplied by
+/// `average_traces`), so they mean the same with or without averaging and
+/// do not depend on the GPS timestamps. Traces are for when that interval
+/// is missing or wrong, or no longer holds, as after `equidistant_traces`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Span {
+    Traces(usize),
+    Seconds(f32),
+}
+
+impl fmt::Display for Span {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Span::Traces(n) => write!(f, "{n}"),
+            Span::Seconds(s) => write!(f, "{s}s"),
+        }
+    }
+}
+
+impl FromStr for Span {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let expected = || "expected a number of traces such as `51` or seconds such as `10s`";
+        match s.strip_suffix('s') {
+            Some(seconds) => match seconds.parse::<f32>() {
+                Ok(v) if v > 0. && v.is_finite() => Ok(Span::Seconds(v)),
+                _ => Err(expected().into()),
+            },
+            None => match s.parse::<usize>() {
+                Ok(n) if n >= 1 => Ok(Span::Traces(n)),
+                _ => Err(expected().into()),
+            },
+        }
+    }
+}
+
+impl Span {
+    /// The span in traces, with `seconds_per_trace` the trace interval.
+    pub fn traces(self, seconds_per_trace: f32) -> Result<usize, String> {
+        match self {
+            Span::Traces(n) => Ok(n),
+            Span::Seconds(_) if !(seconds_per_trace > 0. && seconds_per_trace.is_finite()) => {
+                Err(format!(
+                    "{self} cannot be converted to traces: the trace interval is \
+                     {seconds_per_trace} s; give it in traces instead, e.g. `51`"
+                ))
+            }
+            Span::Seconds(s) => Ok(((s / seconds_per_trace).round() as usize).max(1)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Settings {
@@ -210,6 +267,23 @@ mod tests {
             .fold(0_f32, f32::max);
         assert!(worst < 0.2, "{worst}");
         assert!(report.shallow_factor.1 > 0.95 && report.shallow_factor.1 < 1.05);
+    }
+
+    #[test]
+    fn a_span_is_traces_or_seconds() {
+        assert_eq!("51".parse(), Ok(Span::Traces(51)));
+        assert_eq!("10s".parse(), Ok(Span::Seconds(10.)));
+        assert_eq!("2.5s".parse(), Ok(Span::Seconds(2.5)));
+        for bad in ["0", "0s", "-1s", "s", "ten", "1.5", "infs"] {
+            assert!(bad.parse::<Span>().is_err(), "{bad}");
+        }
+        assert_eq!(Span::Seconds(10.).to_string(), "10s");
+        // 0.2 s per trace, as after `average_traces(2)` at 0.1 s.
+        assert_eq!(Span::Seconds(10.).traces(0.2), Ok(50));
+        assert_eq!(Span::Seconds(0.01).traces(0.2), Ok(1));
+        assert_eq!(Span::Traces(51).traces(f32::NAN), Ok(51));
+        let err = Span::Seconds(10.).traces(0.).unwrap_err();
+        assert!(err.contains("give it in traces"), "{err}");
     }
 
     #[test]
