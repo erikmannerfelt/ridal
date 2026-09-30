@@ -1396,6 +1396,58 @@ impl GPR {
         }
     }
 
+    /// Even out slow changes in trace amplitude along the profile, with the
+    /// gain measured in a shallow window and below `deep_ns` (travel times).
+    /// See [`filters::balance`].
+    ///
+    /// Never fails on the data: windows the record does not hold leave the
+    /// data unchanged and the log says why.
+    pub fn balance_traces(
+        &mut self,
+        deep_ns: f32,
+        shallow_start_ns: f32,
+        shallow_end_ns: f32,
+        traces: usize,
+        reference: usize,
+    ) {
+        let start_time = SystemTime::now();
+        let twtt = self.twtt_ns();
+        let sample_at = |ns: f32| twtt.iter().position(|&t| t >= ns).unwrap_or(self.height());
+        let settings = filters::balance::Settings {
+            shallow: (sample_at(shallow_start_ns), sample_at(shallow_end_ns)),
+            deep_start: sample_at(deep_ns),
+            traces,
+            reference,
+        };
+        let windows = format!(
+            "{shallow_start_ns}-{shallow_end_ns} ns and from {deep_ns} ns, averaged over \
+             {traces} traces against the running median of {reference}"
+        );
+        match filters::balance::balance_traces(&mut self.data, &settings) {
+            Ok(report) => {
+                let range = |(lo, median, hi): (f32, f32, f32)| {
+                    format!("{lo:.2}-{hi:.2} (median {median:.2})")
+                };
+                self.log_event(
+                    "balance_traces",
+                    &format!(
+                        "Scaled the traces by a gain measured at {windows}: amplitude factors of \
+                         {} in the shallow window and {} in the deep one, interpolated in \
+                         between",
+                        range(report.shallow_factor),
+                        range(report.deep_factor),
+                    ),
+                    start_time,
+                );
+            }
+            Err(reason) => self.log_event(
+                "balance_traces",
+                &format!("Warning: {reason} (windows at {windows}); changed nothing"),
+                start_time,
+            ),
+        }
+    }
+
     /// Measure the display gain that levels the amplitude envelope below the
     /// direct wave, and apply it (#266).
     ///

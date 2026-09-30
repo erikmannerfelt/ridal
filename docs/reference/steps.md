@@ -161,6 +161,24 @@ So far this has only been tested on Malå ProEx 800 MHz data. Check the result b
 - `prominence` (default `6`): How far a tone must stand above the surrounding spectrum, in dB
 ```
 
+```{step} balance_traces(deep, shallow_start=10, shallow_end=40, traces=51, reference=2001)
+Even out slow rises and falls of amplitude along the profile, such as bright vertical bands ("godrays"), without evening out real bright or dark zones.
+
+The gain is measured in two windows: a shallow one from `shallow_start` to `shallow_end`, where the layering should look the same along the profile, and from `deep` to the bottom, where the record should be only noise. In each, a trace's power averaged over `traces` neighbouring traces is compared with its running median over `reference` traces, and the trace is scaled towards that median. Between the two windows the gain changes smoothly with depth, and it is constant above and below them. Nothing between the windows is measured, so a reflector there keeps its brightness. All times are travel times in ns.
+
+Changes over fewer than `traces` traces are too short to be measured, and changes over more than `reference` traces are kept. Amplitudes are no longer comparable along the profile afterwards, only within each stretch of it. If a window is outside the record, nothing is changed and the log says so. Examples: `balance_traces(150)`, `balance_traces(150, shallow_start=5, shallow_end=30)`.
+
+So far this has only been tested on Malå ProEx 800 MHz data. Check the result before relying on it for other instruments or antennas.
+
+**Arguments**
+
+- `deep` (required): Travel time in ns below which the record is only noise
+- `shallow_start` (default `10`): Start of the shallow window, in ns
+- `shallow_end` (default `40`): End of the shallow window, in ns
+- `traces` (default `51`): How many traces the power is averaged over before it is compared
+- `reference` (default `2001`): How many traces the reference (running median) spans
+```
+
 ```{step} auto_gain(n_bins=100)
 Measure the gain that levels the amplitude below the direct wave, and apply it with `gain`.
 

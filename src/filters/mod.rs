@@ -2,6 +2,7 @@ use crate::tools;
 use ndarray::Array2;
 use num::{Float, FromPrimitive};
 
+pub mod balance;
 pub mod bandpass;
 pub mod coordinates;
 pub mod gain;

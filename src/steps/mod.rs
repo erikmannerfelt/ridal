@@ -329,6 +329,51 @@ pub enum Step {
         #[arg(long, default_value_t = 6., value_parser = finite_positive)]
         prominence: f32,
     },
+    /// Even out slow rises and falls of amplitude along the profile, such as
+    /// bright vertical bands ("godrays"), without evening out real bright or
+    /// dark zones.
+    ///
+    /// The gain is measured in two windows: a shallow one from
+    /// `shallow_start` to `shallow_end`, where the layering should look the
+    /// same along the profile, and from `deep` to the bottom, where the
+    /// record should be only noise. In each, a trace's power averaged over
+    /// `traces` neighbouring traces is compared with its running median over
+    /// `reference` traces, and the trace is scaled towards that median.
+    /// Between the two windows the gain changes smoothly with depth, and it
+    /// is constant above and below them. Nothing between the windows is
+    /// measured, so a reflector there keeps its brightness. All times are
+    /// travel times in ns.
+    ///
+    /// Changes over fewer than `traces` traces are too short to be
+    /// measured, and changes over more than `reference` traces are kept.
+    /// Amplitudes are no longer comparable along the profile afterwards,
+    /// only within each stretch of it. If a window is outside the record,
+    /// nothing is changed and the log says so. Examples:
+    /// `balance_traces(150)`, `balance_traces(150, shallow_start=5,
+    /// shallow_end=30)`.
+    ///
+    /// So far this has only been tested on Malå ProEx 800 MHz data. Check
+    /// the result before relying on it for other instruments or antennas.
+    #[command(rename_all = "snake_case")]
+    BalanceTraces {
+        /// Travel time in ns below which the record is only noise.
+        #[arg(long, value_parser = finite)]
+        deep: f32,
+        /// Start of the shallow window, in ns.
+        #[arg(long, default_value_t = 10., value_parser = finite)]
+        shallow_start: f32,
+        /// End of the shallow window, in ns.
+        #[arg(long, default_value_t = 40., value_parser = finite)]
+        shallow_end: f32,
+        /// How many traces the power is averaged over before it is compared.
+        #[arg(long, default_value_t = 51,
+              value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        traces: usize,
+        /// How many traces the reference (running median) spans.
+        #[arg(long, default_value_t = 2001,
+              value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(3..))]
+        reference: usize,
+    },
     /// Measure the gain that levels the amplitude below the direct wave, and
     /// apply it with `gain`.
     ///
@@ -846,6 +891,19 @@ impl Step {
                  use another method, e.g. `zero_corr(coppens, trace)`"
                     .into(),
             ),
+            Step::BalanceTraces {
+                deep,
+                shallow_start,
+                shallow_end,
+                ..
+            } if shallow_end <= shallow_start => Err(format!(
+                "the shallow window ends ({shallow_end} ns) before it starts ({shallow_start} ns)"
+            )),
+            Step::BalanceTraces {
+                deep, shallow_end, ..
+            } if deep < shallow_end => Err(format!(
+                "`deep` ({deep} ns) is inside the shallow window, which ends at {shallow_end} ns"
+            )),
             _ => Ok(()),
         }
     }
@@ -944,6 +1002,13 @@ impl Step {
                 traces,
                 prominence,
             } => gpr.remove_tones(*start, *max_tones, *traces, *prominence),
+            Step::BalanceTraces {
+                deep,
+                shallow_start,
+                shallow_end,
+                traces,
+                reference,
+            } => gpr.balance_traces(*deep, *shallow_start, *shallow_end, *traces, *reference),
             Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins),
             Step::Gain { factor } => gpr.gain(*factor),
             Step::KirchhoffMigration2d => gpr.kirchhoff_migration2d(),
