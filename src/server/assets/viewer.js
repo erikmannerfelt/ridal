@@ -1438,34 +1438,69 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
   const qualitySelect = document.getElementById('image-quality');
   const estimate = document.getElementById('image-estimate');
 
-  /* Offered widths, smallest first, ending at one pixel per trace.
+  /* Offered widths, smallest first, ending at the widest the image route
+   * will accept for the view on screen.
    *
-   * Full resolution is the default and the last entry. The viewer renders
-   * 1:1, so "what the viewer shows" and "full resolution" are now the same
-   * option; there used to be a separate entry for the viewer's capped
-   * raster, which no longer exists.
+   * That is one pixel per trace when the route allows it, and it is the
+   * default: the viewer renders 1:1, so anything less would hand back less
+   * than what is on screen. A radargram too wide for `maxImageWidth`, or
+   * too large for `maxImagePixels` at full width, gets the largest width
+   * that fits instead, labelled as such, so the default can never be a
+   * request the server refuses (#137). The limits come from the route via
+   * the page config, not from constants here, so the two cannot drift.
    *
    * Width is *not* a speed dial. Rendering reads the whole source array
    * whichever width is asked for, so the time barely moves with it: on a
    * release build, a 12187x3678 radargram from a 145 MB file took 1.9 s at
    * 900 px and 2.4 s at full resolution, and 6 ms once cached. The choice
    * here is about file size and detail, which is what the estimate says. */
+  function imageHeight(width) {
+    // `G.rasterHeight`, not the source height: the corrected view's
+    // download is the taller, sheared raster. Rounded as the server's
+    // `OverviewSpec::new` rounds it, so the pixel limit is checked on the
+    // same number the route checks.
+    return Math.max(1, Math.round((G.rasterHeight * width) / SOURCE_WIDTH));
+  }
+
+  function largestImageWidth() {
+    let width = Math.min(SOURCE_WIDTH, CFG.maxImageWidth);
+    // Solve width * height <= limit for the aspect ratio, then step down
+    // over the rounding of the height.
+    const byPixels = Math.floor(Math.sqrt((CFG.maxImagePixels * SOURCE_WIDTH) / G.rasterHeight));
+    width = Math.max(1, Math.min(width, byPixels + 1));
+    while (width > 1 && width * imageHeight(width) > CFG.maxImagePixels) width -= 1;
+    return width;
+  }
+
   function widthOptions() {
+    const largest = largestImageWidth();
     const presets = [1000, 2000, 4000, 8000, 16000]
-      .filter((w) => w > 0 && w < SOURCE_WIDTH)
+      .filter((w) => w > 0 && w < largest)
       .sort((a, b) => a - b);
+    const last =
+      largest === SOURCE_WIDTH
+        ? `${SOURCE_WIDTH} px - full resolution`
+        : `${largest} px - largest available (full resolution, ${SOURCE_WIDTH} px, is above the size limit)`;
     return [
       ...presets.map((w) => new Option(`${w} px`, String(w))),
-      new Option(`${SOURCE_WIDTH} px - full resolution`, String(SOURCE_WIDTH)),
+      new Option(last, String(largest)),
     ];
+  }
+
+  /* Rebuilt whenever the dialog opens, because the largest width depends
+   * on the view's height and the corrected view can have been toggled
+   * since. A choice that is still offered is kept; otherwise the dialog
+   * falls back to the largest width. */
+  function refreshWidthOptions() {
+    const previous = widthSelect.value;
+    widthSelect.replaceChildren(...widthOptions());
+    const kept = Array.from(widthSelect.options).findIndex((o) => o.value === previous);
+    widthSelect.selectedIndex = kept >= 0 ? kept : widthSelect.options.length - 1;
   }
 
   function describeChoice() {
     const width = Number(widthSelect.value) || SOURCE_WIDTH;
-    // `G.rasterHeight`, not the source height: the corrected view's
-    // download is the taller, sheared raster, and the estimate should
-    // match what `G.view` above will actually ask the server for.
-    const height = Math.max(1, Math.round((G.rasterHeight * width) / SOURCE_WIDTH));
+    const height = imageHeight(width);
     const megapixels = (width * height) / 1e6;
     // Deliberately about size rather than time. An earlier version warned
     // that large widths were slow, from timings taken on a debug build --
@@ -1478,10 +1513,7 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
         : 'PNG is lossless; at this size the file may be tens of megabytes.');
   }
 
-  widthSelect.replaceChildren(...widthOptions());
-  // Full resolution: the viewer no longer downscales, so defaulting to
-  // anything less would hand back less than what is on screen.
-  widthSelect.selectedIndex = widthSelect.options.length - 1;
+  refreshWidthOptions();
   describeChoice();
 
   widthSelect.addEventListener('change', describeChoice);
@@ -1492,9 +1524,10 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
 
   bind('dl-image', () => {
     menu.open = false;
-    // Re-estimated on open, not only on width/format change: the
-    // corrected view can have been toggled since the dialog last
-    // recomputed, which changes the height half of the estimate.
+    // Re-offered and re-estimated on open, not only on width/format
+    // change: the corrected view can have been toggled since the dialog
+    // last recomputed, which changes the height and so the largest width.
+    refreshWidthOptions();
     describeChoice();
     imageDialog.showModal();
   });

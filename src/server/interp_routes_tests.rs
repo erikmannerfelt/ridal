@@ -1398,6 +1398,22 @@ async fn the_image_refuses_sizes_it_cannot_produce() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_viewer_offers_the_image_limits_the_route_enforces() {
+    // The download dialog builds its widths from these (#137). A copy of
+    // the numbers in JavaScript could drift from the route, and the
+    // dialog's default would again be a width the route refuses.
+    let (_dir, app) = project_app(true);
+    let (status, _, bytes) = raw(&app, &format!("/view/{RADARGRAM}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let html = String::from_utf8_lossy(&bytes);
+    let width = format!("maxImageWidth: {},", super::routes::MAX_IMAGE_WIDTH);
+    let pixels = format!("maxImagePixels: {},", super::routes::MAX_IMAGE_PIXELS);
+    assert!(html.contains(&width), "{width} missing");
+    assert!(html.contains(&pixels), "{pixels} missing");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn dataset_downloads_work_without_a_project() {
     // A radargram, its track and an image belong to the catalog, not to an
     // interpretation, so a bare directory still serves them.

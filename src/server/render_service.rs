@@ -16,7 +16,8 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::render::colormap;
 use crate::render::grid::{Chunk, OverviewSpec, CHUNK_SIZE};
@@ -120,7 +121,19 @@ pub enum RenderObjectDescriptor {
 pub struct RenderObjectKey(String);
 
 impl RenderObjectKey {
-    pub fn compute(variant: &RenderVariantId, descriptor: &RenderObjectDescriptor) -> Self {
+    /// `scope` is the [`RenderService`] the object belongs to (#288).
+    ///
+    /// The cache is shared by every radargram of every project on a
+    /// server, and the revision in `variant` is only a fingerprint of a
+    /// radargram id and a processing time that a file declares about
+    /// itself. Two projects can hold files that declare the same pair and
+    /// hold different data, so without the scope one project could be
+    /// served -- or could fill the cache with -- the other's images.
+    pub fn compute(
+        scope: u64,
+        variant: &RenderVariantId,
+        descriptor: &RenderObjectDescriptor,
+    ) -> Self {
         let desc = match descriptor {
             RenderObjectDescriptor::Chunk { x, y, size } => format!("chunk:{x}:{y}:{size}"),
             RenderObjectDescriptor::Overview { width, height } => {
@@ -128,6 +141,7 @@ impl RenderObjectKey {
             }
         };
         Self(blake3_hex32(&[
+            &scope.to_le_bytes(),
             variant.as_str().as_bytes(),
             desc.as_bytes(),
         ]))
@@ -194,13 +208,87 @@ impl ByteBoundedCache {
     }
 }
 
+/// The encoded-image cache of a whole server: one byte budget shared by
+/// every [`RenderService`] built from the same [`RenderServiceConfig`]
+/// (#288).
+///
+/// `--cache-memory-mb` used to size one cache per radargram, so the real
+/// bound was that many megabytes times the number of radargrams on the
+/// server. Sharing one cache makes the flag the bound it reads as, and
+/// lets eviction work across radargrams: a busy one can use the space an
+/// idle one no longer needs.
+///
+/// Cloning shares the cache. The lock is held only to look up or insert,
+/// never while rendering, so radargrams contend on a hash lookup rather
+/// than on each other's renders.
+#[derive(Clone)]
+pub struct RenderCache(Arc<Mutex<ByteBoundedCache>>);
+
+impl RenderCache {
+    pub fn new(max_bytes: usize) -> Self {
+        Self(Arc::new(Mutex::new(ByteBoundedCache::new(max_bytes))))
+    }
+
+    pub fn from_mb(megabytes: usize) -> Self {
+        Self::new(megabytes.saturating_mul(1024 * 1024))
+    }
+
+    /// The cache, even if a panic poisoned its lock. It holds only
+    /// finished, immutable encodings, so a panic elsewhere cannot have left
+    /// a half-written image in it, and losing the cache for the rest of the
+    /// server's life would be worse than using it.
+    fn lock(&self) -> std::sync::MutexGuard<'_, ByteBoundedCache> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn get(&self, key: &RenderObjectKey) -> Option<Vec<u8>> {
+        self.lock().get(key)
+    }
+
+    pub fn insert(&self, key: RenderObjectKey, value: Vec<u8>) {
+        self.lock().insert(key, value);
+    }
+
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    pub fn current_bytes(&self) -> usize {
+        self.lock().current_bytes()
+    }
+
+    pub fn max_bytes(&self) -> usize {
+        self.lock().max_bytes
+    }
+}
+
+impl std::fmt::Debug for RenderCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cache = self.lock();
+        f.debug_struct("RenderCache")
+            .field("current_bytes", &cache.current_bytes)
+            .field("max_bytes", &cache.max_bytes)
+            .finish()
+    }
+}
+
+/// The in-memory encoded-image budget when `--cache-memory-mb` is not given.
+pub const DEFAULT_CACHE_MEMORY_MB: usize = 256;
+
 /// Configuration the CLI (`ridal gui` / `ridal server start`) parses its
 /// `--cache-memory-mb` / `--n-workers` flags into. Defined here, alongside
 /// the service it configures, rather than in `cli.rs`, since the CLI only
 /// needs to parse and pass these through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy`: it carries the server's [`RenderCache`], and every clone
+/// shares it. That is what makes the budget server-wide -- a site hands the
+/// same config to every project it opens.
+#[derive(Debug, Clone)]
 pub struct RenderServiceConfig {
-    pub cache_memory_mb: usize,
+    /// Every render service's encoded images, under one byte budget.
+    pub cache: RenderCache,
     /// Reserved for `source.rs`'s deferred HDF5-chunk-aligned read cache;
     /// unused until that lands, and **not currently exposed as a CLI flag
     /// at all** -- always its `Default` value. Do not describe this as an
@@ -213,7 +301,7 @@ pub struct RenderServiceConfig {
 impl Default for RenderServiceConfig {
     fn default() -> Self {
         Self {
-            cache_memory_mb: 256,
+            cache: RenderCache::from_mb(DEFAULT_CACHE_MEMORY_MB),
             source_cache_mb: 256,
             n_workers: std::thread::available_parallelism()
                 .map(|n| n.get())
@@ -237,7 +325,14 @@ impl Default for RenderServiceConfig {
 pub struct RenderService {
     reader: SourceReader,
     revision_id: RevisionId,
-    cache: ByteBoundedCache,
+    /// Shared with every other service built from the same config.
+    cache: RenderCache,
+    /// This service's part of the shared cache; see
+    /// [`RenderObjectKey::compute`]. A replaced service (a re-processed or
+    /// re-added radargram) gets a new scope, so its predecessor's images
+    /// become unreachable and age out under the budget instead of being
+    /// served.
+    scope: u64,
     /// Per profile: the profile to render with (an adaptive siglog
     /// strength pinned to this revision's noise floor, see
     /// [`crate::render::stats::pin_profile`]) and its amplitude limits.
@@ -255,6 +350,9 @@ pub struct RenderService {
     topo_geometry: Option<(ElevationRange, Arc<TopoGeometry>)>,
 }
 
+/// Hands each [`RenderService`] its own cache scope.
+static NEXT_SCOPE: AtomicU64 = AtomicU64::new(0);
+
 impl RenderService {
     pub fn new(
         reader: SourceReader,
@@ -264,16 +362,19 @@ impl RenderService {
         Self {
             reader,
             revision_id,
-            cache: ByteBoundedCache::new(config.cache_memory_mb * 1024 * 1024),
+            cache: config.cache.clone(),
+            scope: NEXT_SCOPE.fetch_add(1, Ordering::Relaxed),
             limits_cache: HashMap::new(),
             topo_geometry: None,
         }
     }
 
+    /// Entries in the shared cache, every service's included.
     pub fn cache_len(&self) -> usize {
         self.cache.len()
     }
 
+    /// Bytes in the shared cache, every service's included.
     pub fn cache_bytes(&self) -> usize {
         self.cache.current_bytes()
     }
@@ -393,6 +494,7 @@ impl RenderService {
     ) -> Result<Vec<u8>, String> {
         let variant = RenderVariantId::compute(&self.revision_id, view, profile, range);
         let key = RenderObjectKey::compute(
+            self.scope,
             &variant,
             &RenderObjectDescriptor::Chunk {
                 x: chunk.x,
@@ -427,6 +529,7 @@ impl RenderService {
     ) -> Result<Vec<u8>, String> {
         let variant = RenderVariantId::compute(&self.revision_id, view, profile, range);
         let key = RenderObjectKey::compute(
+            self.scope,
             &variant,
             &RenderObjectDescriptor::Overview {
                 width: spec.width,
@@ -565,6 +668,87 @@ mod tests {
                 "'{name}' renders differently on the command line than in the browser"
             );
         }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn the_corrected_view_is_the_same_picture_everywhere() {
+        // #289: `ridal render --topo`, `ridal.render(topo=True)` (both
+        // `render_topo_path_to_file`), `process --render-topo` (the array
+        // in memory, with the axes it exports) and the browser's corrected
+        // download must agree, as the standard view already does.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        let (height, width) = (60usize, 400usize);
+        let data: Vec<f32> = (0..height * width)
+            .map(|i| ((i * 7919) % 1000) as f32 - 500.0)
+            .collect();
+        let elevation: Vec<f64> = (0..width)
+            .map(|i| 100.0 + (i as f64 * 0.05).sin() * 2.0)
+            .collect();
+        let depth: Vec<f32> = (0..height).map(|i| i as f32 * 0.1).collect();
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_dimension("y", height).unwrap();
+            file.add_dimension("x", width).unwrap();
+            let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+            var.put_values(&data, ..).unwrap();
+            let mut var = file.add_variable::<f64>("elevation", &["x"]).unwrap();
+            var.put_values(&elevation, ..).unwrap();
+            let mut var = file.add_variable::<f32>("depth", &["y"]).unwrap();
+            var.put_values(&depth, ..).unwrap();
+        }
+        let profile = RenderProfile {
+            format: crate::render::profile::ImageFormat::Png,
+            ..RenderProfile::default_profile()
+        };
+        let request = crate::render::oneshot::RenderRequest {
+            profile: &profile,
+            width: None,
+            quality: None,
+        };
+
+        let from_file = dir.path().join("file.png");
+        let (w, h) =
+            crate::render::oneshot::render_topo_path_to_file(&path, &from_file, &request).unwrap();
+        assert!(h > height, "the corrected raster is the taller one");
+
+        let array = ndarray::Array2::from_shape_vec((height, width), data).unwrap();
+        let from_memory = dir.path().join("memory.png");
+        crate::render::oneshot::render_topo_to_file(
+            &crate::source::ArraySource::new(array.view()),
+            Some(&elevation),
+            Some(&depth),
+            &from_memory,
+            &request,
+        )
+        .unwrap();
+
+        let mut service = RenderService::new(
+            SourceReader::open(&path).unwrap(),
+            test_revision_id(),
+            &RenderServiceConfig::default(),
+        );
+        let from_server = service
+            .get_or_render_overview(
+                &OverviewSpec {
+                    width: w,
+                    height: h,
+                },
+                DatasetView::Topographic,
+                &profile,
+                ElevationRange::NONE,
+            )
+            .unwrap();
+
+        let from_file = std::fs::read(&from_file).unwrap();
+        assert_eq!(
+            from_file,
+            std::fs::read(&from_memory).unwrap(),
+            "file vs memory"
+        );
+        assert_eq!(from_file, from_server, "command line vs browser");
     }
 
     use super::*;
@@ -784,6 +968,7 @@ mod tests {
             ElevationRange::NONE,
         );
         let chunk_key = RenderObjectKey::compute(
+            0,
             &variant,
             &RenderObjectDescriptor::Chunk {
                 x: 0,
@@ -792,6 +977,7 @@ mod tests {
             },
         );
         let other_chunk_key = RenderObjectKey::compute(
+            0,
             &variant,
             &RenderObjectDescriptor::Chunk {
                 x: 1,
@@ -800,14 +986,28 @@ mod tests {
             },
         );
         let overview_key = RenderObjectKey::compute(
+            0,
             &variant,
             &RenderObjectDescriptor::Overview {
                 width: 512,
                 height: 400,
             },
         );
+        let other_service_key = RenderObjectKey::compute(
+            1,
+            &variant,
+            &RenderObjectDescriptor::Chunk {
+                x: 0,
+                y: 0,
+                size: 256,
+            },
+        );
         assert_ne!(chunk_key, other_chunk_key);
         assert_ne!(chunk_key, overview_key);
+        assert_ne!(
+            chunk_key, other_service_key,
+            "two services must not share an entry in the server-wide cache"
+        );
     }
 
     #[test]
@@ -882,6 +1082,75 @@ mod tests {
             "second call must be a cache hit, not a new entry"
         );
         assert_eq!(first, second);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn services_from_one_config_share_one_budget() {
+        // `--cache-memory-mb` bounds the server, not each radargram (#288).
+        // Budget for about one chunk, then render a chunk in each of
+        // several services: however many there are, the cache stays near
+        // one chunk's worth instead of one per service.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_test_nc(&path, 300, 300);
+        let profile = RenderProfile::default_profile();
+        let chunk = ViewerRaster::new(300, 300).grid().chunk(0, 0).unwrap();
+
+        let probe = RenderServiceConfig::default();
+        let mut service = RenderService::new(
+            SourceReader::open(&path).unwrap(),
+            test_revision_id(),
+            &probe,
+        );
+        service
+            .get_or_render_chunk(
+                &chunk,
+                DatasetView::Standard,
+                &profile,
+                ElevationRange::NONE,
+            )
+            .unwrap();
+        let one_chunk = probe.cache.current_bytes();
+        assert!(one_chunk > 0);
+
+        let config = RenderServiceConfig {
+            cache: RenderCache::new(one_chunk + one_chunk / 2),
+            ..RenderServiceConfig::default()
+        };
+        let mut services: Vec<RenderService> = (0..4)
+            .map(|_| {
+                RenderService::new(
+                    SourceReader::open(&path).unwrap(),
+                    test_revision_id(),
+                    &config,
+                )
+            })
+            .collect();
+        for service in &mut services {
+            service
+                .get_or_render_chunk(
+                    &chunk,
+                    DatasetView::Standard,
+                    &profile,
+                    ElevationRange::NONE,
+                )
+                .unwrap();
+        }
+        assert!(
+            config.cache.current_bytes() <= config.cache.max_bytes(),
+            "{} bytes held against a {}-byte budget",
+            config.cache.current_bytes(),
+            config.cache.max_bytes()
+        );
+        assert_eq!(
+            config.cache.len(),
+            1,
+            "the older services' chunks were evicted"
+        );
+        // Every service reports the one shared cache.
+        assert!(services.iter().all(|s| s.cache_len() == 1));
     }
 
     #[test]

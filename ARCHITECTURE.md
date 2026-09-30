@@ -365,6 +365,16 @@ normalize → colormap → encode.** Everything lives under
   return. Cache keys fold in `RevisionId` plus every profile field that
   affects pixels, so a reprocessed file or a changed profile can never
   return a stale image.
+- **One image cache per server** (#288). Every `RenderService` built from
+  one `RenderServiceConfig` shares its `RenderCache`, so
+  `--cache-memory-mb` bounds the whole process, across every radargram
+  and every project of a site, and eviction works across radargrams. Its
+  lock is held only for a lookup or an insert, never during a render.
+  Each service also folds a process-unique *scope* into its keys: a
+  revision id is only a fingerprint of what a file says about itself, and
+  two projects on one site must not be able to reach each other's images
+  through a matching id and processing time. A replaced service gets a
+  new scope, so its predecessor's images age out rather than being served.
 
 ## Concurrency and resource bounds
 

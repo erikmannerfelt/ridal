@@ -550,21 +550,23 @@
         // anything, every corrective move is itself a move onto an overlap.
         // So an edit to a line that already overlaps is allowed to remain
         // overlapping; a clean line is still refused a move that creates one.
-        const wasOverlapping =
-          featureIndex !== undefined &&
-          featureIndex !== null &&
-          firstOverlap(label, coordinates, featureIndex) !== null;
+        // The draft is checked as it is when a vertex is added to it (#290);
+        // a stored line leaves itself out of the comparison.
+        const isDraft = kind === "draft";
+        const isStored = featureIndex !== undefined && featureIndex !== null;
+        const overlapOf = () =>
+          isDraft
+            ? draftOverlap(label, coordinates)
+            : isStored
+              ? firstOverlap(label, coordinates, featureIndex)
+              : null;
+        const wasOverlapping = overlapOf() !== null;
 
         // Preserve any third element GeoJSON allows, rather than truncating
         // a position this viewer did not author.
         coordinates[index] = [newTrace, newSample, ...before.slice(2)];
 
-        const overlap =
-          wasOverlapping ||
-          featureIndex === undefined ||
-          featureIndex === null
-            ? null
-            : firstOverlap(label, coordinates, featureIndex);
+        const overlap = wasOverlapping ? null : overlapOf();
         if (!allowsOverhangs(label) && overhangIndices(coordinates).length > 0) {
           coordinates[index] = before;
           showError(
@@ -1235,6 +1237,48 @@
       return { ...overlap, otherLabel: lines[other].label };
     }
 
+    /** The first stored line a lone vertex at `trace` on `label` sits inside,
+     * or null, in the shape `firstOverlap` returns (#290).
+     *
+     * A single vertex spans no traces, so `overlappingSpans` never flags it,
+     * and a line's first vertex used to be accepted wherever it landed. Yet
+     * one more than the tolerance inside another line's span, every line
+     * that starts there overlaps it, whichever way it goes. Near an end it
+     * is still allowed: a line can start at a junction and head outward. */
+    function firstCovering(label, trace) {
+      for (const feature of features) {
+        const otherLabel = (feature.properties && feature.properties.label) || null;
+        if (otherLabel === (label || null)) {
+          if (!participatesInOverlap(otherLabel)) continue;
+        } else if (!(label && otherLabel && exclusiveLayers(label, otherLabel))) {
+          continue;
+        }
+        const traces = feature.geometry.coordinates
+          .map((coordinate) => coordinate[0])
+          .filter((t) => typeof t === "number");
+        if (!traces.length) continue;
+        const min = Math.min(...traces);
+        const max = Math.max(...traces);
+        if (trace > min + OVERLAP_TOLERANCE_TRACES && trace < max - OVERLAP_TOLERANCE_TRACES) {
+          return {
+            fromTrace: min,
+            toTrace: max,
+            exclusive: otherLabel !== (label || null),
+            otherLabel,
+          };
+        }
+      }
+      return null;
+    }
+
+    /** The first overlap the draft `coordinates` would create on `label`, or
+     * null: `firstCovering` for its first vertex, `firstOverlap` after. */
+    function draftOverlap(label, coordinates) {
+      if (!coordinates.length) return null;
+      if (coordinates.length === 1) return firstCovering(label, coordinates[0][0]);
+      return firstOverlap(label, coordinates);
+    }
+
     /** Who already covers the traces `overlap` names, as the end of a
      * sentence: "where <this> ...". `label` is the layer being drawn, and
      * `overlap` is what `firstOverlap` returned for it. */
@@ -1565,6 +1609,26 @@
             "depths at one position. Carry on in the direction you started, " +
             "finish this line and begin another, or allow overhangs on this " +
             "layer.",
+        );
+        return;
+      }
+      // Refused here, at the vertex that causes it, rather than only when
+      // the line is finished or saved (#290). A draft that already overlaps
+      // -- its layer was changed mid-line -- is left alone, as an edit to an
+      // overlapping stored line is: Finish still refuses it, with the reason.
+      const overlap = draftOverlap(layerSelect.value, draft)
+        ? null
+        : draftOverlap(layerSelect.value, candidate);
+      if (overlap) {
+        showError(
+          (candidate.length === 1
+            ? `A line starting at trace ${trace.toFixed(1)} would overlap the ` +
+              `line from trace ${overlap.fromTrace.toFixed(1)} to ` +
+              `${overlap.toTrace.toFixed(1)}, `
+            : `That point would put this line over traces ` +
+              `${overlap.fromTrace.toFixed(1)} to ${overlap.toTrace.toFixed(1)}, `) +
+            `where ${takenBy(layerSelect.value, overlap)}. ${ruleFor(overlap)} ` +
+            "Nothing was added.",
         );
         return;
       }

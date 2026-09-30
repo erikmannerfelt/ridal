@@ -898,12 +898,12 @@ impl GPR {
     /// from the exported `data` variable.
     ///
     /// One array wins instead, and it is `data`, so every way of drawing a
-    /// radargram agrees. Topographic correction is a secondary product
-    /// here; rendering it is a render *profile* and an explicit flag on
-    /// `ridal render`, not a thing `--render` should silently switch to
-    /// because an earlier step happened to run. Until that exists, a
-    /// corrected section cannot be written to a JPG or PNG -- a known and
-    /// accepted gap rather than an oversight.
+    /// radargram agrees. The corrected view is an explicit request, `topo`
+    /// (`--render-topo`, `render_topo=True`), not a thing `--render`
+    /// silently switches to because an earlier step happened to run -- and
+    /// it too is drawn from `data`, sheared by the elevation and depth axes
+    /// this radargram exports, exactly as `ridal render --topo` and the
+    /// browser's corrected view draw it (#289).
     ///
     /// This replaced a separate implementation (`io::render_jpg`) that
     /// stretched between the 1st and 99th percentile of every tenth sample
@@ -916,6 +916,7 @@ impl GPR {
         filepath: &Path,
         profile: &crate::render::profile::RenderProfile,
         width: Option<usize>,
+        topo: bool,
     ) -> Result<(), Box<dyn Error>> {
         let source = crate::source::ArraySource::new(self.data.view());
         let request = crate::render::oneshot::RenderRequest {
@@ -923,7 +924,24 @@ impl GPR {
             width,
             quality: None,
         };
-        crate::render::oneshot::render_to_file(&source, filepath, &request)?;
+        if topo {
+            let elevation: Vec<f64> = self
+                .location
+                .cor_points
+                .iter()
+                .map(|p| p.altitude)
+                .collect();
+            let depth = self.depths().to_vec();
+            crate::render::oneshot::render_topo_to_file(
+                &source,
+                Some(&elevation),
+                Some(&depth),
+                filepath,
+                &request,
+            )?;
+        } else {
+            crate::render::oneshot::render_to_file(&source, filepath, &request)?;
+        }
         Ok(())
     }
 
@@ -2163,6 +2181,8 @@ pub struct RunParams {
     pub render_profile: Option<String>,
     /// Output width for `render_path`. `None` means one pixel per trace.
     pub render_width: Option<usize>,
+    /// Render the topographically corrected view to `render_path` (#289).
+    pub render_topo: bool,
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
     pub user_metadata: user_metadata::UserMetadata,
@@ -2188,6 +2208,8 @@ pub struct BatchRunParams {
     pub render_profile: Option<String>,
     /// Output width for `render_dir`, as in [`RunParams::render_width`].
     pub render_width: Option<usize>,
+    /// As in [`RunParams::render_topo`].
+    pub render_topo: bool,
     pub merge: Option<String>,
     pub override_antenna_mhz: Option<f32>,
     pub override_antenna_separation: Option<f32>,
@@ -2655,8 +2677,13 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn std::error::Error
                 render_filepath, profile.name
             );
         }
-        gpr.render(&render_filepath, &profile, params.render_width)
-            .map_err(|e| format!("Error writing image: {:?}", e))?;
+        gpr.render(
+            &render_filepath,
+            &profile,
+            params.render_width,
+            params.render_topo,
+        )
+        .map_err(|e| format!("Error writing image: {:?}", e))?;
     }
 
     if let Some(potential_track_path) = &params.track_path {
@@ -2755,6 +2782,7 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             render_path,
             render_profile: params.render_profile.clone(),
             render_width: params.render_width,
+            render_topo: params.render_topo,
             override_antenna_mhz: params.override_antenna_mhz,
             override_antenna_separation: params.override_antenna_separation,
             user_metadata: params.user_metadata.clone(),

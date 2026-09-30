@@ -54,6 +54,7 @@ fn processed_geometry(directory: &std::path::Path) -> RadargramGeometry {
         render_path: None,
         render_profile: None,
         render_width: None,
+        render_topo: false,
         override_antenna_mhz: None,
         override_antenna_separation: None,
         user_metadata: Default::default(),

@@ -38,8 +38,10 @@ this" is never a mode you arrive at by accident.
   project a site serves.
 
 `--cache-memory-mb`
-: In-memory budget for encoded radargram images. Ridal evicts least-recently
-  used images to stay inside it.
+: In-memory budget for encoded radargram images. Like `--n-workers`, it is
+  **shared by the whole site**: one budget for every radargram of every
+  project, not one each. Ridal evicts least-recently used images to stay
+  inside it.
 
 `--open-browser`
 : Open the landing page after starting. Off by default here, because a

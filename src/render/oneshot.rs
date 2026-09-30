@@ -20,7 +20,7 @@ use std::path::Path;
 use crate::render::grid::OverviewSpec;
 use crate::render::profile::{AmplitudeLimits, ImageFormat, RenderProfile};
 use crate::render::stats::SAMPLE_SEED;
-use crate::render::{colormap, renderer::Renderer, stats};
+use crate::render::{colormap, renderer::Renderer, stats, topo};
 use crate::source::{AmplitudeSource, SourceReader};
 
 /// What to draw and how, resolved from CLI arguments.
@@ -91,13 +91,73 @@ pub fn render_to_file(
     render_to_file_with_stats_source(source, source, output, request)
 }
 
+/// Render a processed `.nc`'s topographically corrected view to `output`
+/// (#168), returning the image's dimensions.
+///
+/// The `--topo` path of `ridal render`, and `topo=True` in `ridal.render`
+/// (#289). Reads the file's `elevation` and `depth` axes and hands them to
+/// [`render_topo_to_file`]; a file without usable axes fails with the
+/// reason, never a silent standard render.
+pub fn render_topo_path_to_file(
+    input: &Path,
+    output: &Path,
+    request: &RenderRequest,
+) -> Result<(usize, usize), String> {
+    let reader = SourceReader::open(input)?;
+    // A missing variable is `None`, which is a different message from
+    // one of the wrong length, so read errors are not surfaced as such.
+    let elevation = reader.read_axis_f64("elevation").ok();
+    let depth = reader
+        .read_axis_f64("depth")
+        .ok()
+        .map(|values| values.into_iter().map(|v| v as f32).collect::<Vec<f32>>());
+    render_topo_to_file(
+        &reader,
+        elevation.as_deref(),
+        depth.as_deref(),
+        output,
+        request,
+    )
+}
+
+/// Render `source`'s topographically corrected view to `output`, given
+/// its per-trace `elevation` and per-sample `depth` axes.
+///
+/// What `render_service.rs` does server-side, for one image: resolve the
+/// geometry through the same [`topo::resolve_topo_geometry`] and draw
+/// through [`topo::TopoSource`]. Absent or malformed axes fail with that
+/// function's reason. Separate from [`render_topo_path_to_file`] so
+/// `process --render-topo` can draw the array it has in memory, from the
+/// same axes it exports.
+pub fn render_topo_to_file(
+    source: &impl AmplitudeSource,
+    elevation: Option<&[f64]>,
+    depth: Option<&[f32]>,
+    output: &Path,
+    request: &RenderRequest,
+) -> Result<(usize, usize), String> {
+    let (source_height, n_traces) = source.shape();
+    let geometry = topo::resolve_topo_geometry(
+        elevation,
+        depth,
+        n_traces,
+        source_height,
+        topo::ElevationRange::NONE,
+    )
+    .map_err(|e| e.message)?;
+    // Drawn through the shear, but with contrast estimated from the
+    // standard source -- the same split the server makes.
+    let sheared = topo::TopoSource::new(source, &geometry);
+    render_to_file_with_stats_source(&sheared, source, output, request)
+}
+
 /// [`render_to_file`], with the percentile estimate taken from a
 /// *different* source than the one being drawn.
 ///
-/// The one caller that needs them apart is `ridal render --topo`
-/// (`cli.rs`): the topographic view is a vertical shear of the same
-/// amplitudes, so relocating them cannot change their distribution, but
-/// sampling *through* the shear would read its NaN wedges into the
+/// The one caller that needs them apart is [`render_topo_to_file`]: the
+/// topographic view is a vertical shear of the same amplitudes, so
+/// relocating them cannot change their distribution, but sampling
+/// *through* the shear would read its NaN wedges into the
 /// percentile estimate and shift the contrast. The server already keeps
 /// these apart for exactly this reason (`RenderService::resolve_limits`);
 /// having the CLI sample through the decorator meant `ridal render --topo`
@@ -278,6 +338,66 @@ mod tests {
                 profile.name
             );
         }
+    }
+
+    #[test]
+    fn the_topographic_view_is_the_taller_sheared_image() {
+        // #289: the corrected view from an array and its axes, the path
+        // `process --render-topo` takes. A surface that falls 2 m across the
+        // line at 0.1 m per sample shifts the last trace 20 samples down,
+        // so the raster is that much taller than the source.
+        let dir = tempfile::tempdir().unwrap();
+        let (width, height) = (120, 40);
+        let data = synthetic(width, height);
+        let source = crate::source::ArraySource::new(data.view());
+        let elevation: Vec<f64> = (0..width)
+            .map(|i| 100.0 - 2.0 * i as f64 / (width - 1) as f64)
+            .collect();
+        let depth: Vec<f32> = (0..height).map(|i| i as f32 * 0.1).collect();
+        let out = dir.path().join("topo.png");
+
+        let (w, h) = render_topo_to_file(
+            &source,
+            Some(&elevation),
+            Some(&depth),
+            &out,
+            &RenderRequest {
+                profile: &profile(),
+                width: None,
+                quality: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(w, width);
+        assert_eq!(h, height + 20);
+        assert_eq!(image::image_dimensions(&out).unwrap(), (w as u32, h as u32));
+    }
+
+    #[test]
+    fn the_topographic_view_without_axes_says_why() {
+        // Never a silent standard render: whoever asked for the corrected
+        // view would otherwise get an image that looks right and is not.
+        let dir = tempfile::tempdir().unwrap();
+        let data = synthetic(120, 40);
+        let source = crate::source::ArraySource::new(data.view());
+        let depth: Vec<f32> = (0..40).map(|i| i as f32 * 0.1).collect();
+        let out = dir.path().join("topo.png");
+
+        let err = render_topo_to_file(
+            &source,
+            None,
+            Some(&depth),
+            &out,
+            &RenderRequest {
+                profile: &profile(),
+                width: None,
+                quality: None,
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("'elevation'"), "{err}");
+        assert!(!out.exists(), "no image is written");
     }
 
     #[test]
