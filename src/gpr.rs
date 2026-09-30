@@ -3263,6 +3263,30 @@ pub mod tests {
     }
 
     #[test]
+    fn render_topo_draws_the_corrected_view_from_memory() {
+        // #289: `process --render-topo` shears the array in memory by the
+        // elevation and depth it exports. The test track climbs a metre per
+        // trace, so the corrected raster is taller than the standard one.
+        let gpr = make_test_gpr(Some(50), Some(40));
+        let dir = tempfile::tempdir().unwrap();
+        let profile = crate::render::profile::RenderProfile::default_profile();
+        let standard = dir.path().join("standard.png");
+        let topo = dir.path().join("topo.png");
+
+        gpr.render(&standard, &profile, None, false).unwrap();
+        gpr.render(&topo, &profile, None, true).unwrap();
+
+        let (standard_w, standard_h) = image::image_dimensions(&standard).unwrap();
+        let (topo_w, topo_h) = image::image_dimensions(&topo).unwrap();
+        assert_eq!((standard_w, standard_h), (50, 40));
+        assert_eq!(topo_w, standard_w);
+        assert!(
+            topo_h > standard_h,
+            "{topo_h} is not taller than {standard_h}"
+        );
+    }
+
+    #[test]
     fn auto_gain_applies_no_gain_when_amplitude_grows() {
         let mut gpr = make_test_gpr(Some(5), Some(200));
         gpr.data = ndarray::Array2::from_shape_fn((200, 5), |(i, j)| {
