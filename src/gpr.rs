@@ -1331,6 +1331,71 @@ impl GPR {
         );
     }
 
+    /// Remove narrowband interference measured below `start_ns` (travel
+    /// time) from every sample. See [`filters::tones`].
+    ///
+    /// Never fails on the data: a noise window too short to measure leaves
+    /// the data unchanged and the log says why.
+    pub fn remove_tones(
+        &mut self,
+        start_ns: f32,
+        max_tones: usize,
+        traces: usize,
+        prominence_db: f32,
+    ) {
+        let start_time = SystemTime::now();
+        let step_ns = self.vertical_resolution_ns();
+        let first_sample = self
+            .twtt_ns()
+            .iter()
+            .position(|&t| t >= start_ns)
+            .unwrap_or(self.height());
+        let settings = filters::tones::Settings {
+            first_sample,
+            max_tones,
+            traces,
+            prominence_db,
+        };
+        // The tone is a sinusoid in the recorded samples. Resampling them
+        // onto a depth grid bends it, and the fit then removes less.
+        let resampled =
+            if self.antenna_separation_effective == 0. && self.metadata.antenna_separation > 0. {
+                " Warning: the traces were resampled by correct_antenna_separation, which \
+             distorts the tones; run remove_tones before it."
+            } else {
+                ""
+            };
+        match filters::tones::remove_tones(&mut self.data, step_ns, &settings) {
+            Ok(report) => {
+                let strongest = match (report.strongest_mhz, report.strongest_amplitude) {
+                    (Some((lo, hi)), Some(amplitude)) => format!(
+                        "; the strongest tone in each trace was at {lo:.1}-{hi:.1} MHz with a \
+                         median amplitude of {amplitude:.3}"
+                    ),
+                    _ => String::new(),
+                };
+                self.log_event(
+                    "remove_tones",
+                    &format!(
+                        "Fitted {:.2} tones per trace on average (at most {max_tones}, {} of {} \
+                         traces had any) over the {} samples from {start_ns} ns, and subtracted \
+                         them from the whole trace{strongest}.{resampled}",
+                        report.mean_tones,
+                        report.traces_with_tones,
+                        self.width(),
+                        report.window_samples,
+                    ),
+                    start_time,
+                );
+            }
+            Err(reason) => self.log_event(
+                "remove_tones",
+                &format!("Warning: {reason} (from {start_ns} ns); removed nothing.{resampled}"),
+                start_time,
+            ),
+        }
+    }
+
     /// Measure the display gain that levels the amplitude envelope below the
     /// direct wave, and apply it (#266).
     ///

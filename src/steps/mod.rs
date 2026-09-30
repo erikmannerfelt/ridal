@@ -284,6 +284,51 @@ pub enum Step {
         #[arg(long, default_value = "median")]
         method: rolling::Statistic,
     },
+    /// Remove narrowband interference ("tones") that is measured below the
+    /// deepest reflection and subtracted from the whole trace.
+    ///
+    /// A continuous interferer can appear in every trace as a sinusoid of
+    /// constant amplitude from top to bottom, whose frequency drifts slowly
+    /// along the profile and whose phase jumps from trace to trace. It
+    /// draws stacks of hyperbola-like stripes where neighbouring traces
+    /// happen to agree in phase, and averaging traces turns it into a slow,
+    /// regular rise and fall of power along the profile.
+    ///
+    /// `start` is the travel time in ns below which the record is taken to
+    /// be only noise. There, each trace's spectrum is averaged over
+    /// `traces` neighbouring traces, and up to `max_tones` peaks that stand
+    /// `prominence` dB above the median of the spectrum within 50 MHz of
+    /// them (wider for a short noise window) are taken as tones. Their amplitudes and phases are then fitted
+    /// in each trace on its own, and only those sinusoids are subtracted,
+    /// from every sample. Anything above `start` that is not at a picked
+    /// frequency is left as it was.
+    ///
+    /// The tones are sinusoids in the samples as recorded, so run this
+    /// first: before `average_traces`, which blurs a tone whose phase jumps
+    /// between traces, and before `correct_antenna_separation`, which
+    /// resamples the traces. If the record is too short below `start`,
+    /// nothing is removed and the log says so. Examples:
+    /// `remove_tones(150)`, `remove_tones(150, max_tones=2)`.
+    ///
+    /// So far this has only been tested on Malå ProEx 800 MHz data. Check
+    /// the result before relying on it for other instruments or antennas.
+    #[command(rename_all = "snake_case")]
+    RemoveTones {
+        /// Travel time in ns below which the record is only noise.
+        #[arg(long, value_parser = finite)]
+        start: f32,
+        /// Most tones to remove from each trace. At least 1.
+        #[arg(long, default_value_t = 5,
+              value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        max_tones: usize,
+        /// How many traces the spectra are averaged over to find the tones.
+        #[arg(long, default_value_t = 201,
+              value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..))]
+        traces: usize,
+        /// How far a tone must stand above the surrounding spectrum, in dB.
+        #[arg(long, default_value_t = 6., value_parser = finite_positive)]
+        prominence: f32,
+    },
     /// Measure the gain that levels the amplitude below the direct wave, and
     /// apply it with `gain`.
     ///
@@ -465,6 +510,15 @@ fn finite_nonzero(s: &str) -> Result<f32, String> {
         Err("must be finite".into())
     } else {
         Ok(value)
+    }
+}
+
+fn finite(s: &str) -> Result<f32, String> {
+    let value: f32 = s.parse().map_err(|_| "expected a number".to_string())?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err("must be finite".into())
     }
 }
 
@@ -884,6 +938,12 @@ impl Step {
             } => gpr.shift_coordinates(*along_track, *altitude, *cross_track)?,
             Step::Dewow { window, method } => gpr.dewow(*window, *method)?,
             Step::BackgroundRemoval { traces, method } => gpr.background_removal(*traces, *method),
+            Step::RemoveTones {
+                start,
+                max_tones,
+                traces,
+                prominence,
+            } => gpr.remove_tones(*start, *max_tones, *traces, *prominence),
             Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins),
             Step::Gain { factor } => gpr.gain(*factor),
             Step::KirchhoffMigration2d => gpr.kirchhoff_migration2d(),

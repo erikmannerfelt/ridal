@@ -142,6 +142,25 @@ Remove what the traces share at the same sample, such as antenna ringing and hor
 - `method` (default `median`): `median` or `mean`
 ```
 
+```{step} remove_tones(start, max_tones=5, traces=201, prominence=6)
+Remove narrowband interference ("tones") that is measured below the deepest reflection and subtracted from the whole trace.
+
+A continuous interferer can appear in every trace as a sinusoid of constant amplitude from top to bottom, whose frequency drifts slowly along the profile and whose phase jumps from trace to trace. It draws stacks of hyperbola-like stripes where neighbouring traces happen to agree in phase, and averaging traces turns it into a slow, regular rise and fall of power along the profile.
+
+`start` is the travel time in ns below which the record is taken to be only noise. There, each trace's spectrum is averaged over `traces` neighbouring traces, and up to `max_tones` peaks that stand `prominence` dB above the median of the spectrum within 50 MHz of them (wider for a short noise window) are taken as tones. Their amplitudes and phases are then fitted in each trace on its own, and only those sinusoids are subtracted, from every sample. Anything above `start` that is not at a picked frequency is left as it was.
+
+The tones are sinusoids in the samples as recorded, so run this first: before `average_traces`, which blurs a tone whose phase jumps between traces, and before `correct_antenna_separation`, which resamples the traces. If the record is too short below `start`, nothing is removed and the log says so. Examples: `remove_tones(150)`, `remove_tones(150, max_tones=2)`.
+
+So far this has only been tested on Malå ProEx 800 MHz data. Check the result before relying on it for other instruments or antennas.
+
+**Arguments**
+
+- `start` (required): Travel time in ns below which the record is only noise
+- `max_tones` (default `5`): Most tones to remove from each trace. At least 1
+- `traces` (default `201`): How many traces the spectra are averaged over to find the tones
+- `prominence` (default `6`): How far a tone must stand above the surrounding spectrum, in dB
+```
+
 ```{step} auto_gain(n_bins=100)
 Measure the gain that levels the amplitude below the direct wave, and apply it with `gain`.
 
