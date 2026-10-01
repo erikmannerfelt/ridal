@@ -2282,11 +2282,13 @@ button.danger:disabled {
   position: relative;
 }
 
-.download-menu {
+.download-menu,
+.display-menu {
   position: static;
 }
 
-.download-menu > ul {
+.download-menu > ul,
+.display-menu > ul {
   left: 0;
   right: auto;
   max-width: 100%;
@@ -2298,13 +2300,46 @@ button.danger:disabled {
  * reader to have to notice which one they are looking at. */
 .card-menu > summary,
 .group-menu > summary,
-.download-menu > summary {
+.download-menu > summary,
+.display-menu > summary {
   font-size: var(--text-sm);
   padding: var(--space-1) var(--space-2);
 }
 
 .download-menu > summary::before {
   content: "\2193"; /* downwards arrow, in place of the header's bars */
+}
+
+.display-menu > summary::before {
+  content: "\25D0"; /* circle with left half black: a contrast symbol */
+}
+
+/* A panel of sliders rather than a list of actions, so the rows are laid
+ * out as a small form: label, slider, value. The Reset button keeps the
+ * look of a menu item from `.site-menu > ul button`. */
+.display-menu > ul > li > label {
+  display: grid;
+  grid-template-columns: 6rem 1fr 3rem;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.display-menu output {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.display-menu > ul {
+  min-width: min(20rem, 100%);
+}
+
+.display-menu .hint {
+  padding: var(--space-1) var(--space-3);
+  max-width: 20rem;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
 }
 
 #image-dialog {

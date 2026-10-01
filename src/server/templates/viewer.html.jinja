@@ -21,10 +21,31 @@
     <label>Render profile:
       <select id="profile-select">
         {% for p in profiles %}
-        <option value="{{ p }}" {% if p == active_profile %}selected{% endif %}>{{ p }}</option>
+        <option value="{{ p }}"{% if p == active_profile %} selected{% endif %}{% if p in colormap_profiles %} data-colormap{% endif %}>{{ p }}</option>
         {% endfor %}
       </select>
     </label>
+    {#- Contrast and brightness of the image as drawn, done by the browser
+        on the tiles it already has. No request reaches the server, so a
+        room full of people dragging it costs nothing there; the price is
+        that it cannot bring back what the render profile already clipped.
+        A server-side dial that can is #297. Hidden until viewer.js wires
+        it, so a page without JavaScript does not offer a dead control. -#}
+    <details class="site-menu display-menu" id="display-menu" hidden>
+      <summary>Display</summary>
+      <ul>
+        <li><label>Contrast
+          <input type="range" id="display-contrast" min="-2" max="2" step="0.05" value="0">
+          <output id="display-contrast-value" for="display-contrast">1.00</output>
+        </label></li>
+        <li><label>Brightness
+          <input type="range" id="display-brightness" min="-2" max="2" step="0.05" value="0">
+          <output id="display-brightness-value" for="display-brightness">1.00</output>
+        </label></li>
+        <li><button type="button" id="display-reset">Reset</button></li>
+        <li class="hint" id="display-note">Only changes what is drawn here: downloads use the render profile as it is.</li>
+      </ul>
+    </details>
     {#- Options come from the server so the project's default always has an
         entry to select; a hardcoded list here could drift from the one the
         settings page validates against. -#}
