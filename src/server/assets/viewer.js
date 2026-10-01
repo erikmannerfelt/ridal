@@ -1642,11 +1642,13 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     const b = 2 ** Number(brightness.value);
     contrastValue.textContent = c.toFixed(2);
     brightnessValue.textContent = b.toFixed(2);
-    const neutral = c === 1 && b === 1;
-    pane.style.filter = neutral || isColormapped() ? '' : `contrast(${c}) brightness(${b})`;
-    // Marks the summary while an adjustment is in effect, so a radargram
-    // that looks off is not mistaken for a bad render.
-    menu.querySelector('summary').textContent = neutral ? 'Display' : 'Display (adjusted)';
+    const adjusted = !(c === 1 && b === 1) && !isColormapped();
+    pane.style.filter = adjusted ? `contrast(${c}) brightness(${b})` : '';
+    // The summary names the profile, and says so while an adjustment is in
+    // effect, so a radargram that looks off is not mistaken for a bad
+    // render.
+    menu.querySelector('summary').textContent =
+      `Display: ${select.value}${adjusted ? ' (adjusted)' : ''}`;
   }
 
   function remember() {
@@ -1698,7 +1700,9 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
   });
   select.addEventListener('change', restore);
 
-  menu.hidden = false;
+  menu.querySelectorAll('.display-adjust').forEach((row) => {
+    row.hidden = false;
+  });
   restore();
 })();
 

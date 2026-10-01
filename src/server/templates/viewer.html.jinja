@@ -18,44 +18,53 @@
   </table>
 
   <div class="controls">
-    <label>Render profile:
-      <select id="profile-select">
-        {% for p in profiles %}
-        <option value="{{ p }}"{% if p == active_profile %} selected{% endif %}{% if p in colormap_profiles %} data-colormap{% endif %}>{{ p }}</option>
-        {% endfor %}
-      </select>
-    </label>
-    {#- Contrast and brightness of the image as drawn, done by the browser
-        on the tiles it already has. No request reaches the server, so a
-        room full of people dragging it costs nothing there; the price is
-        that it cannot bring back what the render profile already clipped.
-        A server-side dial that can is #297. Hidden until viewer.js wires
-        it, so a page without JavaScript does not offer a dead control. -#}
-    <details class="site-menu display-menu" id="display-menu" hidden>
-      <summary>Display</summary>
+    {#- Everything about how the radargram is drawn, without changing where
+        anything is: the render profile, the horizontal scale, and the
+        contrast and brightness sliders that depend on the profile (they
+        are remembered per profile and switched off for colormapped ones),
+        which is why they share a menu with it. Topographic correction stays
+        in the row: it moves the picks, so it is more than a display
+        setting. The summary names the profile, so the most-used of these
+        is readable without opening the menu.
+
+        The sliders are the browser's work on the tiles it already has. No
+        request reaches the server, so a room full of people dragging them
+        costs nothing there; the price is that they cannot bring back what
+        the render profile already clipped. A server-side dial that can is
+        #297. Their rows are hidden until viewer.js wires them, so a page
+        without JavaScript does not offer dead controls. -#}
+    <details class="site-menu display-menu" id="display-menu">
+      <summary>Display: {{ active_profile }}</summary>
       <ul>
-        <li><label>Contrast
+        <li><label>Render profile
+          <select id="profile-select">
+            {% for p in profiles %}
+            <option value="{{ p }}"{% if p == active_profile %} selected{% endif %}{% if p in colormap_profiles %} data-colormap{% endif %}>{{ p }}</option>
+            {% endfor %}
+          </select>
+        </label></li>
+        {#- Options come from the server so the project's default always
+            has an entry to select; a hardcoded list here could drift from
+            the one the settings page validates against. -#}
+        <li><label>Horizontal scale
+          <select id="xscale-select">
+            {% for s in x_scales %}
+            <option value="{{ s.text }}" {% if s.value == active_x_scale %}selected{% endif %}>{{ s.label }}</option>
+            {% endfor %}
+          </select>
+        </label></li>
+        <li class="display-adjust" hidden><label>Contrast
           <input type="range" id="display-contrast" min="-2" max="2" step="0.05" value="0">
           <output id="display-contrast-value" for="display-contrast">1.00</output>
         </label></li>
-        <li><label>Brightness
+        <li class="display-adjust" hidden><label>Brightness
           <input type="range" id="display-brightness" min="-2" max="2" step="0.05" value="0">
           <output id="display-brightness-value" for="display-brightness">1.00</output>
         </label></li>
-        <li><button type="button" id="display-reset">Reset</button></li>
-        <li class="hint" id="display-note">Only changes what is drawn here: downloads use the render profile as it is.</li>
+        <li class="display-adjust" hidden><button type="button" id="display-reset">Reset contrast and brightness</button></li>
+        <li class="display-adjust hint" id="display-note" hidden>Contrast and brightness only change what is drawn here: downloads use the render profile as it is.</li>
       </ul>
     </details>
-    {#- Options come from the server so the project's default always has an
-        entry to select; a hardcoded list here could drift from the one the
-        settings page validates against. -#}
-    <label>Horizontal scale:
-      <select id="xscale-select">
-        {% for s in x_scales %}
-        <option value="{{ s.text }}" {% if s.value == active_x_scale %}selected{% endif %}>{{ s.label }}</option>
-        {% endfor %}
-      </select>
-    </label>
     {#- Disabled until the on-load availability check resolves, with the
         reason it cannot be offered (if any) as its title -- #168's rule
         that unavailability must never be silent. -#}
