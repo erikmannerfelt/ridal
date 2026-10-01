@@ -2292,19 +2292,70 @@ button.danger:disabled {
   max-width: 100%;
 }
 
+/* The Display menu is the first item in the row, so its left edge is the
+ * row's and hanging the panel from the button is on screen too. It has to
+ * be: anchored to the row, the panel opened below the *whole* row, which on
+ * a phone wraps to four lines and left it far from the button. With the
+ * button as the containing block, `100%` is the button's width, so the
+ * panel's width comes from the viewport less the page gutters instead. */
+.display-menu {
+  position: relative;
+}
+
+.display-menu > ul {
+  left: 0;
+  right: auto;
+  width: min(22rem, calc(100vw - 2 * var(--space-4)));
+  max-width: none;
+}
+
 /* The compact variants: a card's Edit menu and the download menus. Smaller
  * than the header's because they sit inside content rather than in a bar of
  * their own, and identical to each other because there is no reason for a
  * reader to have to notice which one they are looking at. */
 .card-menu > summary,
 .group-menu > summary,
-.download-menu > summary {
+.download-menu > summary,
+.display-menu > summary {
   font-size: var(--text-sm);
   padding: var(--space-1) var(--space-2);
 }
 
 .download-menu > summary::before {
   content: "\2193"; /* downwards arrow, in place of the header's bars */
+}
+
+.display-menu > summary::before {
+  content: "\25D0"; /* circle with left half black: a contrast symbol */
+}
+
+/* A panel of settings rather than a list of actions, so the rows are laid
+ * out as a small form: label, control, and a value for the sliders. A
+ * select has no value beside it and takes both columns. The Reset button
+ * keeps the look of a menu item from `.site-menu > ul button`. */
+.display-menu > ul > li > label {
+  display: grid;
+  grid-template-columns: 8rem 1fr 3rem;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.display-menu label > select {
+  grid-column: 2 / 4;
+}
+
+.display-menu output {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.display-menu .hint {
+  padding: var(--space-1) var(--space-3);
+  max-width: 22rem;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
 }
 
 #image-dialog {

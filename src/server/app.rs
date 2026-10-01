@@ -1301,6 +1301,17 @@ mod tests {
             assert_eq!(status, StatusCode::OK);
             let html = String::from_utf8(body.to_vec()).unwrap();
             assert!(html.contains("route-test-a"));
+            // The display adjustment switches itself off on exactly the
+            // colormapped profiles, by this attribute.
+            assert!(html.contains(r#"<option value="seismic" data-colormap>"#));
+            assert!(html.contains(r#"<option value="default" selected>"#));
+            assert_eq!(
+                html.matches("data-colormap").count(),
+                crate::render::profile::RenderProfile::built_in_profiles()
+                    .iter()
+                    .filter(|p| p.colormap.is_some())
+                    .count()
+            );
 
             let (status, _) = get(&app, "/view/does-not-exist").await;
             assert_eq!(status, StatusCode::NOT_FOUND);

@@ -1400,9 +1400,15 @@ pub async fn viewer_page(
     let raster = ViewerRaster::new(width, height);
     let grid = ChunkGrid::new(raster);
 
-    let profiles: Vec<String> = RenderProfile::built_in_profiles()
-        .into_iter()
-        .map(|p| p.name)
+    let built_in = RenderProfile::built_in_profiles();
+    let profiles: Vec<String> = built_in.iter().map(|p| p.name.clone()).collect();
+    // The display adjustment works on the rendered bytes, which for a
+    // colormapped profile are a hue as well as a level, so the viewer
+    // switches it off for these rather than shift their colours.
+    let colormap_profiles: Vec<String> = built_in
+        .iter()
+        .filter(|p| p.colormap.is_some())
+        .map(|p| p.name.clone())
         .collect();
 
     // What the picker writes into `coordinates.axes` when it saves (#146),
@@ -1457,6 +1463,7 @@ pub async fn viewer_page(
             // who cannot save anything -- the toolbar says so instead.
             user => caller.user.as_ref().map(|u| u.as_str()).unwrap_or(""),
             profiles => profiles,
+            colormap_profiles => colormap_profiles,
             active_profile => active_profile,
             chunk_size => crate::render::grid::CHUNK_SIZE,
             n_cols => grid.n_cols,

@@ -289,6 +289,7 @@ function addChunksInView(profile, scale) {
     chunksAdded.add(key);
     const layer = L.imageOverlay(chunkImage(x, y, profile), chunkBounds(x, y, scale), {
       opacity: radargramVisible ? 1 : 0,
+      pane: 'radargram-image',
     }).addTo(map);
     chunkLayers.push(layer);
   }
@@ -322,6 +323,10 @@ window.RIDAL_XSCALE = xScale;
  * fills at 401, all panel and pick lines at 402. Markers (handles, overhang
  * markers) stay in `markerPane` at 600, above both. */
 map.createPane("radargram-fills").style.zIndex = 401;
+/* The chunks get a pane of their own too, at `overlayPane`'s 400, so the
+ * display adjustment below can filter the radargram as one element without
+ * touching anything drawn over it. */
+map.createPane("radargram-image").style.zIndex = 400;
 map.createPane("radargram-lines").style.zIndex = 402;
 /* Open on the start of the radargram at full depth, not on the whole thing.
  *
@@ -1577,6 +1582,128 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     toggle.textContent = radargramVisible ? 'Hide radargram' : 'Show radargram';
     toggle.setAttribute('aria-pressed', String(radargramVisible));
   });
+})();
+
+/* --- Display contrast and brightness -------------------------------------
+ *
+ * A CSS filter on the radargram pane: contrast about mid-grey, then
+ * brightness as a gain about black, which is the one a `positive` profile
+ * wants since its black is the part that means something. Both act on the
+ * tiles the browser already holds, so a slider never asks the server for a
+ * render; the cost is that detail the profile clipped stays clipped.
+ *
+ * The sliders are log2 of the factor, so 0.5x and 2x sit equally far from
+ * the neutral middle. Values are remembered per profile in this browser
+ * only: a `positive` and a `default` view of the same data want different
+ * adjustments, and nothing about it belongs to the project or the account.
+ *
+ * Off for colormapped profiles. The filter works per channel, so on
+ * `seismic` it would change the hues that encode sign, not just the level.
+ */
+(function setupDisplayAdjustment() {
+  const menu = document.getElementById('display-menu');
+  if (!menu) return;
+  const pane = map.getPane('radargram-image');
+  const select = document.getElementById('profile-select');
+  const contrast = document.getElementById('display-contrast');
+  const brightness = document.getElementById('display-brightness');
+  const contrastValue = document.getElementById('display-contrast-value');
+  const brightnessValue = document.getElementById('display-brightness-value');
+  const note = document.getElementById('display-note');
+  const reset = document.getElementById('display-reset');
+  const STORAGE_KEY = 'ridal.display.v1';
+  const DEFAULT_NOTE = note.textContent;
+
+  // Storage can be absent or throw (private windows, blocked site data),
+  // and the adjustment is a convenience: it then simply is not remembered.
+  function loadAll() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  function saveAll(all) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+    } catch (_) {
+      // Not remembered; see loadAll.
+    }
+  }
+
+  function isColormapped() {
+    const option = select.options[select.selectedIndex];
+    return Boolean(option && option.hasAttribute('data-colormap'));
+  }
+
+  function apply() {
+    const c = 2 ** Number(contrast.value);
+    const b = 2 ** Number(brightness.value);
+    contrastValue.textContent = c.toFixed(2);
+    brightnessValue.textContent = b.toFixed(2);
+    const adjusted = !(c === 1 && b === 1) && !isColormapped();
+    pane.style.filter = adjusted ? `contrast(${c}) brightness(${b})` : '';
+    // The summary names the profile, and says so while an adjustment is in
+    // effect, so a radargram that looks off is not mistaken for a bad
+    // render.
+    menu.querySelector('summary').textContent =
+      `Display: ${select.value}${adjusted ? ' (adjusted)' : ''}`;
+  }
+
+  function remember() {
+    const all = loadAll();
+    const c = Number(contrast.value);
+    const b = Number(brightness.value);
+    if (c === 0 && b === 0) {
+      delete all[select.value];
+    } else {
+      all[select.value] = { contrast: c, brightness: b };
+    }
+    saveAll(all);
+  }
+
+  // A stored value is clamped into the slider's range rather than trusted:
+  // the range may change, and a hand-edited entry should not break the page.
+  function restore() {
+    const saved = loadAll()[select.value] || {};
+    const clamp = (input, v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return '0';
+      return String(Math.min(Number(input.max), Math.max(Number(input.min), n)));
+    };
+    contrast.value = clamp(contrast, saved.contrast);
+    brightness.value = clamp(brightness, saved.brightness);
+    const off = isColormapped();
+    contrast.disabled = off;
+    brightness.disabled = off;
+    reset.disabled = off;
+    note.textContent = off ? 'Not available for colormapped profiles, where it would change the colours.' : DEFAULT_NOTE;
+    apply();
+  }
+
+  for (const input of [contrast, brightness]) {
+    input.addEventListener('input', apply);
+    input.addEventListener('change', remember);
+    // Double-click a slider to put just that one back.
+    input.addEventListener('dblclick', () => {
+      input.value = '0';
+      apply();
+      remember();
+    });
+  }
+  reset.addEventListener('click', () => {
+    contrast.value = '0';
+    brightness.value = '0';
+    apply();
+    remember();
+  });
+  select.addEventListener('change', restore);
+
+  menu.querySelectorAll('.display-adjust').forEach((row) => {
+    row.hidden = false;
+  });
+  restore();
 })();
 
 /* --- Topographic correction (#168) ---------------------------------------
