@@ -40,6 +40,12 @@ const RESAMPLER_VERSION: u32 = 1;
 /// 2: overviews average colours rather than amplitudes (#300).
 const RENDERER_VERSION: u32 = 2;
 
+/// Widest overview kept on disk (#180). The index and map thumbnails are
+/// 512 px; the image-download route renders through the same call at any
+/// width up to full resolution, and every such download persisted would be
+/// a multi-megabyte file nobody is likely to ask for twice.
+const MAX_PERSISTED_OVERVIEW_WIDTH: usize = 1024;
+
 fn blake3_hex32(parts: &[&[u8]]) -> String {
     let mut hasher = blake3::Hasher::new();
     for p in parts {
@@ -564,7 +570,12 @@ impl RenderService {
         if let Some(bytes) = self.cache.get(&key) {
             return Ok(bytes);
         }
-        if let Some((disk, stamp)) = &self.overview_disk {
+        let disk = self
+            .overview_disk
+            .as_ref()
+            .filter(|_| spec.width <= MAX_PERSISTED_OVERVIEW_WIDTH)
+            .cloned();
+        if let Some((disk, stamp)) = &disk {
             let stored = disk.get(
                 &self.revision_id,
                 &variant,
@@ -589,7 +600,7 @@ impl RenderService {
                 Renderer::new(&source).render_overview(spec, &pinned, limits)?
             }
         };
-        let bytes = match &self.overview_disk {
+        let bytes = match &disk {
             Some((disk, stamp)) => disk.put(
                 &self.revision_id,
                 &variant,
@@ -1141,6 +1152,35 @@ mod tests {
         file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
             .unwrap();
         assert_eq!(overview(&mut fresh_service()), rendered);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_download_sized_overview_is_not_kept_on_disk() {
+        // The image-download route renders through the same call at any
+        // width; only thumbnail-sized overviews are worth a file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        let width = MAX_PERSISTED_OVERVIEW_WIDTH + 100;
+        write_test_nc(&path, 10, width);
+        let cache_dir = dir.path().join("cache");
+        let config = RenderServiceConfig::default();
+        let mut service = RenderService::new(
+            SourceReader::open(&path).unwrap(),
+            test_revision_id(),
+            &config,
+        )
+        .with_overview_disk_cache(OverviewDiskCache::new(&cache_dir), &path);
+        service
+            .get_or_render_overview(
+                &OverviewSpec::new(width, 10, width),
+                DatasetView::Standard,
+                &RenderProfile::default_profile(),
+                ElevationRange::NONE,
+            )
+            .unwrap();
+        assert!(!cache_dir.join("overviews").exists());
     }
 
     fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
