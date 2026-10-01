@@ -204,15 +204,31 @@ normalize → colormap → encode.** Everything lives under
   dropped peak memory on the largest file in the test corpus from
   268 MB to 159 MB with render time unchanged.
 
-  A band's read is wider than the band itself, and `overview_rows_per_band`
-  has to reserve for **both** of the things that widen it or the budget is
-  a number rather than a bound: `resample::halo`, which is what a Lanczos
-  kernel reaches beyond the band on each side (`3 × scale`, so ~144 rows at
-  a typical 24× overview), and `AmplitudeSource::vertical_read_overhead`,
-  which is the shear span for a topographically corrected source and zero
-  for every other. Reserving only the second let the two Lanczos profiles
-  read past the budget.
-- **Resampling** (`resample.rs`) offers four methods, each required to
+  An overview is **coloured before it is shrunk** (#300): every source
+  sample goes through the source transform, the stretch and the colormap at
+  full resolution, and the colours are area-averaged into the ~512 px
+  output. That is what a browser does when it scales a full-resolution
+  render, and what a person compares an overview against. Resampling
+  amplitude first, as overviews once did, is wrong at overview footprints
+  (10–25 samples a side) because the display mapping is not linear:
+  signed traces cancel towards zero before the colormap sees them, so
+  `seismic` came out white, `siglog-positive` (through `LanczosRectified`)
+  twice as bright as at full resolution, and `abslog`/`positive` lost their
+  contrast. Measured against a downscale of the full-resolution render on
+  the three in-repo Malå files, the mean error fell from 15–48 to 2–6 grey
+  levels for those profiles and did not grow for the others.
+
+  Each source row adds its weighted colours to the output rows it
+  overlaps, NaN samples adding nothing (a footprint with no valid sample
+  is padded), so an overview is bit-identical whatever the band height and
+  needs no halo. `overview_rows_per_band` reserves
+  `AmplitudeSource::vertical_read_overhead` — the shear span of a
+  topographically corrected source, zero for every other — out of the
+  budget before sizing a band.
+- **Resampling** (`resample.rs`) is amplitude resampling for **chunks
+  and nothing else**; overviews average colours (above). Chunks are
+  rendered 1:1, where every method is an identity, so a profile's method
+  matters only to a chunk that downsamples. It offers four methods, each required to
   degrade gracefully to the exact raw sample at a true 1:1 footprint —
   the same behaviour a naive box filter has, and a real bug (see below)
   when a method fails to have it:
@@ -270,11 +286,13 @@ normalize → colormap → encode.** Everything lives under
   overview — while "run `siglog`, then render with `positive`" looks
   right, because it rectifies.
 
-  Compressing *before* the reducer is what keeps an overview meaningful;
-  a post-resample log would compute `siglog(mean(A))`, and a downsampled
+  Compressing *before* any reducer is what keeps a downsampled image
+  meaningful; a post-resample log would compute `siglog(mean(A))`, and a
   footprint of oscillating signed data averages toward zero, which the
   log then truncates to a flat image. The same split is why limits are
-  sampled in the source-transform domain (`stats.rs`).
+  sampled in the source-transform domain (`stats.rs`). An overview no
+  longer reduces amplitude at all, so for overviews the reducer coupling
+  above is moot.
 
   There is deliberately no `siglog-abslog`: `abslog` is already a log
   transform, so its siglog view would be a log of a log rather than a
@@ -339,9 +357,10 @@ normalize → colormap → encode.** Everything lives under
   Purple at overview zoom is **not** a bug: the ramp contains no purple,
   but adjacent samples land on opposite sides of the white midpoint and
   anything that averages pixels (browser scaling, JPEG 4:2:0 chroma
-  subsampling, the eye) blends red and blue. `Mean` averages amplitude
-  before colormapping, so ± values average toward zero and correctly
-  stay white.
+  subsampling, the eye) blends red and blue. Overviews average colours,
+  so they show that purple too, as the full-resolution image does when
+  scaled; averaging amplitude instead sent ± values to zero and painted
+  reflective ice white (#300).
 
   `positive`'s asymmetry is why `RenderProfile`'s display transform is
   an enum rather than a boolean: it needs a different domain for
@@ -365,6 +384,19 @@ normalize → colormap → encode.** Everything lives under
   return. Cache keys fold in `RevisionId` plus every profile field that
   affects pixels, so a reprocessed file or a changed profile can never
   return a stale image.
+- **Overviews are also kept on disk** (#180), in
+  `cache/overviews/<revision>/` of the project (`server/overview_cache.rs`),
+  between the memory cache and a render. A hit reads one small file and
+  touches neither the NetCDF nor the amplitude limits, so a restart no
+  longer means a full read of every radargram the index shows. The file
+  name hashes the render variant, the size, and the source file's length
+  and mtime: `RevisionId` deliberately ignores the filesystem (#117), which
+  is right for a memory cache and wrong for one that outlives the process
+  and could otherwise serve a file rewritten in place its old image.
+  Writes are temp-plus-rename; a failed write is reported once and the
+  render is still served. Revision directories the catalog no longer has
+  are removed at every discovery. A bare directory without a project has
+  nowhere to keep them and stays memory-only. Chunks are not persisted.
 - **One image cache per server** (#288). Every `RenderService` built from
   one `RenderServiceConfig` shares its `RenderCache`, so
   `--cache-memory-mb` bounds the whole process, across every radargram

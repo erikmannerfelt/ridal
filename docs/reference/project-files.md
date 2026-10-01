@@ -27,6 +27,7 @@ my_survey/
     catalog-summary.json          how many radargrams the catalog holds
     radargrams/                   radargrams uploaded through the browser
     cache/                        derived data; safe to delete
+      overviews/<revision>/       whole-radargram thumbnails, kept across restarts
 ```
 
 Several of these only appear once they are needed. `users.json` is written
@@ -42,6 +43,10 @@ control if the project is in a git repository. The `.gitignore` that
 
 `cache/` is **derived**. Deleting it is always safe; Ridal rebuilds it. It
 contains a `CACHEDIR.TAG`, so backup tools that honour the convention skip it.
+It holds the overview images the server has made, one small file per
+radargram, render profile and size, so that the index and map do not reread
+every radargram after a restart. Overviews of a radargram that has since been
+reprocessed or removed are deleted when the server next scans the catalog.
 `catalog-summary.json` is derived too: it is the catalog's size, rewritten
 whenever the catalog is scanned, and read by the site landing page so that it
 does not have to open every project.
