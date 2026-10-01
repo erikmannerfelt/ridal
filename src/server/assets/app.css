@@ -2282,16 +2282,31 @@ button.danger:disabled {
   position: relative;
 }
 
-.download-menu,
-.display-menu {
+.download-menu {
   position: static;
 }
 
-.download-menu > ul,
-.display-menu > ul {
+.download-menu > ul {
   left: 0;
   right: auto;
   max-width: 100%;
+}
+
+/* The Display menu is the first item in the row, so its left edge is the
+ * row's and hanging the panel from the button is on screen too. It has to
+ * be: anchored to the row, the panel opened below the *whole* row, which on
+ * a phone wraps to four lines and left it far from the button. With the
+ * button as the containing block, `100%` is the button's width, so the
+ * panel's width comes from the viewport less the page gutters instead. */
+.display-menu {
+  position: relative;
+}
+
+.display-menu > ul {
+  left: 0;
+  right: auto;
+  width: min(22rem, calc(100vw - 2 * var(--space-4)));
+  max-width: none;
 }
 
 /* The compact variants: a card's Edit menu and the download menus. Smaller
@@ -2334,10 +2349,6 @@ button.danger:disabled {
 .display-menu output {
   font-variant-numeric: tabular-nums;
   text-align: right;
-}
-
-.display-menu > ul {
-  min-width: min(22rem, 100%);
 }
 
 .display-menu .hint {
