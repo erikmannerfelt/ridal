@@ -797,6 +797,75 @@ const RENDER_PERMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// `Retry-After` value on the `render_busy` 503, in seconds.
 const RENDER_BUSY_RETRY_AFTER_SECS: u64 = 5;
 
+/// How long an overview waits for a build permit (#301) before a 503.
+///
+/// Longer than [`RENDER_PERMIT_TIMEOUT`] on purpose. Builds are few at a
+/// time by design, so a cold catalog queues: dozens of thumbnails at a
+/// quarter of `--n-workers`, each a full read of a radargram. Index
+/// thumbnails are plain `<img>` elements that do not retry, so a 503 is a
+/// broken picture, and waiting is what the queue is for.
+const OVERVIEW_BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// An overview for `spec`: from cache if it is there, otherwise built under
+/// an overview build permit as well as a render permit.
+///
+/// The cache is asked first, on its own, so that the common case -- an
+/// overview already in memory or on disk -- waits behind neither permit;
+/// a build permit is only taken for a real build (#301). The service
+/// re-checks the cache once the permits are held, so concurrent requests
+/// for one overview still build it once.
+async fn get_or_build_overview(
+    state: Arc<AppState>,
+    radargram: Arc<super::app::OpenRadargram>,
+    spec: OverviewSpec,
+    view: DatasetView,
+    profile: crate::render::profile::RenderProfile,
+    range: crate::render::topo::ElevationRange,
+) -> Result<Vec<u8>, ApiError> {
+    let readers = state.render_config().open_readers;
+    let lookup = Arc::clone(&radargram);
+    let lookup_profile = profile.clone();
+    let cached = tokio::task::spawn_blocking(move || {
+        with_locked_service(&readers, &lookup, |service| {
+            Ok(service.cached_overview(&spec, view, &lookup_profile, range))
+        })
+    })
+    .await
+    .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))??;
+    if let Some(bytes) = cached {
+        return Ok(bytes);
+    }
+
+    let build = tokio::time::timeout(
+        OVERVIEW_BUILD_TIMEOUT,
+        state.render_config().overview_builds.acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::service_unavailable(
+            "render_busy",
+            "The server is building as many overviews as it allows at once. \
+             Retry shortly, or start it with a higher --n-workers.",
+        )
+        .with_header(
+            header::RETRY_AFTER,
+            RENDER_BUSY_RETRY_AFTER_SECS.to_string(),
+        )
+    })?
+    .map_err(|_| ApiError::internal("render_permits_closed", "Render permits were closed"))?;
+
+    with_render_service(state, radargram, move |service| {
+        // Moved in so it is held for the build itself: a client that
+        // disconnects mid-build drops the request, not the blocking task,
+        // and the permit must outlive the request to keep counting it.
+        let _build = build;
+        service
+            .get_or_render_overview(&spec, view, &profile, range)
+            .map_err(|e| ApiError::internal("render_failed", e))
+    })
+    .await
+}
+
 /// Run one piece of work against a radargram's [`RenderService`] on a
 /// blocking thread, under a permit from `AppState::render_permits`.
 ///
@@ -865,12 +934,6 @@ where
         // Held until the render finishes, then released for the next
         // waiter.
         let _permit = permit;
-        let mut service = radargram.service.lock().map_err(|_| {
-            ApiError::internal(
-                "render_service_poisoned",
-                "Render service lock was poisoned",
-            )
-        })?;
         // `render` builds its own `ApiError` (a 404 for a well-formed but
         // out-of-grid chunk, a 400 naming why the corrected view is
         // unavailable, a 500 for anything else) rather than this function
@@ -878,10 +941,36 @@ where
         // corrected view's raster height happens inside this closure too,
         // under the same lock, since it needs the render service's
         // memoized geometry.
-        render(&mut service)
+        with_locked_service(&state.render_config().open_readers, &radargram, render)
     })
     .await
     .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))?
+}
+
+/// Run `f` on `radargram`'s render service under its lock, then tell the
+/// server's reader pool it was used (#306) -- after the lock is released,
+/// since the pool may close other services' readers and must never hold
+/// one lock while waiting on another.
+///
+/// Every route that locks a service goes through here, so any of them that
+/// opens the file is counted against the cap and none leaves a handle open
+/// that the pool does not know about.
+fn with_locked_service<R>(
+    readers: &crate::server::render_service::ReaderPool,
+    radargram: &super::app::OpenRadargram,
+    f: impl FnOnce(&mut crate::server::render_service::RenderService) -> Result<R, ApiError>,
+) -> Result<R, ApiError> {
+    let result = {
+        let mut service = radargram.service.lock().map_err(|_| {
+            ApiError::internal(
+                "render_service_poisoned",
+                "Render service lock was poisoned",
+            )
+        })?;
+        f(&mut service)
+    };
+    readers.touch(&radargram.service);
+    result
 }
 
 /// Turn a topographic-view refusal into an API error, keeping the two
@@ -929,6 +1018,7 @@ fn topo_unavailable_error(e: crate::render::topo::TopoUnavailable) -> ApiError {
 /// already-resolved corrected view compete for render slots over work
 /// that produces no image. `Standard` needs no lock at all.
 async fn resolve_view_height(
+    readers: crate::server::render_service::ReaderPool,
     radargram: Arc<super::app::OpenRadargram>,
     dataset_view: DatasetView,
     source_height: usize,
@@ -938,21 +1028,17 @@ async fn resolve_view_height(
         return Ok(source_height);
     }
     tokio::task::spawn_blocking(move || {
-        let mut service = radargram.service.lock().map_err(|_| {
-            ApiError::internal(
-                "render_service_poisoned",
-                "Render service lock was poisoned",
-            )
-        })?;
         // Named as unavailability, not a server fault: an absent or
         // malformed axis is an ordinary, expected outcome for a file that
         // predates the `elevation`/`depth` axes this view needs, and the
         // frontend surfaces the reason directly (the checkbox's disabled
         // `title`, or this route's own error envelope for `ridal render
         // --topo`'s HTTP-facing sibling).
-        service
-            .topo_raster_height(elevation_range)
-            .map_err(topo_unavailable_error)
+        with_locked_service(&readers, &radargram, |service| {
+            service
+                .topo_raster_height(elevation_range)
+                .map_err(topo_unavailable_error)
+        })
     })
     .await
     .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))?
@@ -982,6 +1068,7 @@ pub async fn overview_image(
     let (source_height, width) = radargram.shape;
     let elevation_range = entry.elevation_range();
     let height = resolve_view_height(
+        state.render_config().open_readers,
         Arc::clone(&radargram),
         dataset_view,
         source_height,
@@ -989,13 +1076,15 @@ pub async fn overview_image(
     )
     .await?;
     let spec = OverviewSpec::new(width, height, 512);
-    let render_profile = profile.clone();
 
-    let bytes = with_render_service(state.clone(), radargram, move |service| {
-        service
-            .get_or_render_overview(&spec, dataset_view, &render_profile, elevation_range)
-            .map_err(|e| ApiError::internal("render_failed", e))
-    })
+    let bytes = get_or_build_overview(
+        state.clone(),
+        radargram,
+        spec,
+        dataset_view,
+        profile.clone(),
+        elevation_range,
+    )
     .await?;
     Ok(image_response(bytes, &profile))
 }
@@ -1039,6 +1128,7 @@ pub async fn chunk_image(
     let (source_height, width) = radargram.shape;
     let elevation_range = entry.elevation_range();
     let height = resolve_view_height(
+        state.render_config().open_readers,
         Arc::clone(&radargram),
         dataset_view,
         source_height,
@@ -1634,6 +1724,7 @@ pub async fn dataset_image(
     let elevation_range = entry.elevation_range();
     let radargram_id_owned = entry.radargram_id.to_string();
     let height = resolve_view_height(
+        state.render_config().open_readers,
         Arc::clone(&radargram),
         dataset_view,
         source_height,
@@ -1713,13 +1804,14 @@ pub async fn dataset_image(
         "{radargram_id_owned}-{}-{}x{}.{extension}",
         profile.name, spec.width, spec.height
     );
-    let render_profile = profile.clone();
-
-    let bytes = with_render_service(state.clone(), radargram, move |service| {
-        service
-            .get_or_render_overview(&spec, dataset_view, &render_profile, elevation_range)
-            .map_err(|e| ApiError::internal("render_failed", e))
-    })
+    let bytes = get_or_build_overview(
+        state.clone(),
+        radargram,
+        spec,
+        dataset_view,
+        profile.clone(),
+        elevation_range,
+    )
     .await?;
 
     Ok((
@@ -2511,16 +2603,13 @@ pub async fn dataset_topo_geometry(
         )
     })?;
 
+    let readers = state.render_config().open_readers;
     let geometry = tokio::task::spawn_blocking(move || {
-        let mut service = radargram.service.lock().map_err(|_| {
-            ApiError::internal(
-                "render_service_poisoned",
-                "Render service lock was poisoned",
-            )
-        })?;
-        service
-            .topo_geometry(elevation_range)
-            .map_err(topo_unavailable_error)
+        with_locked_service(&readers, &radargram, |service| {
+            service
+                .topo_geometry(elevation_range)
+                .map_err(topo_unavailable_error)
+        })
     })
     .await
     .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))??;

@@ -224,6 +224,37 @@ async fn shutdown_signal() {
     println!("Shutting down.");
 }
 
+/// Cap glibc at [`MALLOC_ARENAS`] arenas for this process (#306). Called
+/// first thing by both server entry points, before the runtime starts any
+/// thread.
+///
+/// glibc gives each thread that allocates its own arena, up to eight per
+/// core, and returns little of an arena's freed memory to the operating
+/// system. Rendering runs on tokio's blocking pool, which grows to however
+/// many renders are in flight, so a burst of cold overview builds left a
+/// server permanently holding ~1 GB of freed memory across ~60 arenas:
+/// measured on 120 radargrams requested at once, it ended at 0.8-1.9 GB
+/// with no file open. With four arenas it peaked at 0.34 GB and ended at
+/// 33 MB, for a cold pass about 10% slower. Nothing else here is
+/// allocation-bound enough to feel the contention.
+///
+/// `MALLOC_ARENA_MAX` in the environment still wins, for anyone tuning a
+/// deployment. A no-op on other allocators, which manage this themselves.
+fn limit_malloc_arenas() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: a plain integer setting, made before any other thread
+        // exists.
+        unsafe {
+            libc::mallopt(libc::M_ARENA_MAX, MALLOC_ARENAS);
+        }
+    }
+}
+
+/// glibc arenas a server may use; see [`limit_malloc_arenas`].
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+const MALLOC_ARENAS: libc::c_int = 4;
+
 /// `ridal gui`: local convenience mode. Binds loopback only and selects an
 /// available port. The URL is always printed; a browser is opened only when
 /// `--open-browser` was passed, and a failure to open it is a warning, never
@@ -234,6 +265,7 @@ pub fn run_gui(
     open_browser: bool,
     config: RenderServiceConfig,
 ) -> Result<(), String> {
+    limit_malloc_arenas();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to start async runtime: {e}"))?;
     runtime.block_on(serve_gui(root, read_only, open_browser, config))
@@ -252,6 +284,7 @@ pub fn run_server_start(
     allow_insecure_login: bool,
     config: RenderServiceConfig,
 ) -> Result<(), String> {
+    limit_malloc_arenas();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to start async runtime: {e}"))?;
     runtime.block_on(serve_site(

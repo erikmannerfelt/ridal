@@ -16,7 +16,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -306,17 +306,150 @@ pub struct RenderServiceConfig {
     /// one is a hard CLI error, not a silent no-op.
     pub source_cache_mb: usize,
     pub n_workers: usize,
+    /// Bounds how many overviews are *built* at once, server-wide (#301);
+    /// see [`overview_build_permits`]. Shared by every clone, like `cache`.
+    pub overview_builds: Arc<tokio::sync::Semaphore>,
+    /// The radargrams with an open NetCDF handle, and how many may have one
+    /// at a time (#306). Shared by every clone, like `cache`.
+    pub open_readers: ReaderPool,
+}
+
+impl RenderServiceConfig {
+    /// `n_workers`, and the two server-wide bounds sized from it. Use this
+    /// rather than setting the field, which would leave them sized for the
+    /// old value.
+    pub fn with_n_workers(self, n_workers: usize) -> Self {
+        Self {
+            n_workers,
+            overview_builds: Arc::new(tokio::sync::Semaphore::new(overview_build_permits(
+                n_workers,
+            ))),
+            open_readers: ReaderPool::new(max_open_readers(n_workers)),
+            ..self
+        }
+    }
+}
+
+/// Concurrent overview *builds* for `n_workers`: a quarter of them, at
+/// least one (#301).
+///
+/// A build reads the whole radargram through a 64 MB band, plus whatever
+/// HDF5 caches for the file, where a chunk reads one storage chunk. Under
+/// the `--n-workers` permits alone, a card grid opened on a cold cache
+/// could have every worker building an overview at once -- the memory ramp
+/// in #301 -- and leave none for the viewer's chunks. Cache hits, which are
+/// almost every overview request once the disk cache is warm, take no
+/// build permit at all.
+pub fn overview_build_permits(n_workers: usize) -> usize {
+    (n_workers / 4).max(1)
+}
+
+/// How many radargrams may hold an open NetCDF handle at once (#306):
+/// twice the render concurrency, at least 16, so the radargrams being
+/// rendered and the ones just viewed stay open while a catalog of hundreds
+/// does not hold hundreds of handles and their HDF5 caches.
+pub fn max_open_readers(n_workers: usize) -> usize {
+    (2 * n_workers).max(16)
 }
 
 impl Default for RenderServiceConfig {
     fn default() -> Self {
+        let n_workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         Self {
             cache: RenderCache::from_mb(DEFAULT_CACHE_MEMORY_MB),
             source_cache_mb: 256,
-            n_workers: std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4),
+            n_workers,
+            overview_builds: Arc::new(tokio::sync::Semaphore::new(1)),
+            open_readers: ReaderPool::new(1),
         }
+        .with_n_workers(n_workers)
+    }
+}
+
+/// The server-wide set of render services holding an open NetCDF handle,
+/// least recently used first (#306).
+///
+/// Every radargram used to keep its file open from startup for as long as
+/// the server ran, so a catalog of hundreds held hundreds of HDF5 handles
+/// and their per-file caches whether or not anyone looked at them. A
+/// service now opens its file on first use, and [`Self::touch`] closes the
+/// least recently used ones beyond the cap. Closing is only ever tried with
+/// `try_lock`: a service that is busy is in use, so it is skipped rather
+/// than waited for, which also means the pool can never deadlock against a
+/// render.
+#[derive(Debug, Clone)]
+pub struct ReaderPool(Arc<Mutex<ReaderPoolInner>>);
+
+#[derive(Debug)]
+struct ReaderPoolInner {
+    cap: usize,
+    open: std::collections::VecDeque<std::sync::Weak<Mutex<RenderService>>>,
+}
+
+impl ReaderPool {
+    pub fn new(cap: usize) -> Self {
+        Self(Arc::new(Mutex::new(ReaderPoolInner {
+            cap: cap.max(1),
+            open: std::collections::VecDeque::new(),
+        })))
+    }
+
+    /// Record that `service` was just used, then close readers of the
+    /// least recently used others until at most `cap` remain open.
+    ///
+    /// Call it *after* releasing `service`'s own lock. A service whose
+    /// reader is not open (a request answered from cache) is not recorded,
+    /// so cache hits neither take a slot nor push an open one out.
+    pub fn touch(&self, service: &Arc<Mutex<RenderService>>) {
+        let open_now = service
+            .try_lock()
+            .map(|s| s.has_open_reader())
+            .unwrap_or(true);
+        let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        inner
+            .open
+            .retain(|w| w.strong_count() > 0 && !std::ptr::eq(w.as_ptr(), Arc::as_ptr(service)));
+        if open_now {
+            inner.open.push_back(Arc::downgrade(service));
+        }
+        // Each entry is examined at most once: a busy one goes to the back
+        // as the most recently used, and the loop then stops rather than
+        // spinning on a pool whose every member is mid-render.
+        let mut budget = inner.open.len();
+        while inner.open.len() > inner.cap && budget > 0 {
+            budget -= 1;
+            let Some(victim) = inner.open.pop_front() else {
+                break;
+            };
+            let Some(strong) = victim.upgrade() else {
+                continue;
+            };
+            if Arc::ptr_eq(&strong, service) {
+                inner.open.push_back(victim);
+                continue;
+            }
+            let closed = match strong.try_lock() {
+                Ok(mut idle) => {
+                    idle.close_reader();
+                    true
+                }
+                Err(_) => false,
+            };
+            if !closed {
+                inner.open.push_back(victim);
+            }
+        }
+    }
+
+    /// How many services are recorded as holding an open reader.
+    pub fn len(&self) -> usize {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).open.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -333,7 +466,14 @@ impl Default for RenderServiceConfig {
 /// layer's job (M6), where concurrent callers first exist; nothing here
 /// should be read as already implementing that.
 pub struct RenderService {
-    reader: SourceReader,
+    /// Opened on first use rather than at construction when the service
+    /// knows its `source_path`, and closed again by [`ReaderPool`] when it
+    /// has been idle longest (#306). See [`open_reader`].
+    reader: Option<SourceReader>,
+    /// Where to (re)open `reader` from. `None` for a service handed an
+    /// already-open reader by [`Self::new`], which therefore never closes
+    /// it.
+    source_path: Option<PathBuf>,
     revision_id: RevisionId,
     /// Shared with every other service built from the same config.
     cache: RenderCache,
@@ -365,6 +505,51 @@ pub struct RenderService {
     overview_disk: Option<(OverviewDiskCache, FileStamp)>,
 }
 
+/// Hand memory the allocator is holding but nobody is using back to the
+/// operating system, after an overview build (#306).
+///
+/// A build allocates and frees tens of megabytes -- the source band, the
+/// HDF5 chunk cache -- on whichever blocking thread ran it. glibc keeps
+/// freed memory in that thread's arena rather than returning it, so a burst
+/// of cold builds across many threads ratchets the process up and it never
+/// comes back down: 120 radargrams requested at once left the server at
+/// ~1.9 GB with no file open and nothing but small images cached.
+/// `malloc_trim` returns those free pages. Other allocators return memory
+/// on their own terms, so this is glibc-only and a no-op elsewhere.
+fn release_freed_memory() {
+    {
+        let _guard = netcdf_sys::libnetcdf_lock.lock();
+        // SAFETY: takes no arguments; under the lock every netcdf/HDF5
+        // call in the process goes through.
+        unsafe {
+            hdf5_sys::h5::H5garbage_collect();
+        }
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: no arguments that can be invalid; it only releases free
+    // memory and is safe to call from any thread.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+/// `slot`'s reader, opening it from `path` first if it is closed.
+///
+/// A free function over the one field rather than a method, so that a
+/// caller can hold the reader alongside borrows of the service's other
+/// fields (its limits and geometry caches).
+fn open_reader<'a>(
+    slot: &'a mut Option<SourceReader>,
+    path: Option<&Path>,
+) -> Result<&'a SourceReader, String> {
+    if slot.is_none() {
+        let path = path.ok_or("this render service's reader was closed and cannot be reopened")?;
+        *slot = Some(SourceReader::open(path)?);
+    }
+    slot.as_ref()
+        .ok_or_else(|| "the reader was opened and is missing".to_string())
+}
+
 /// Hands each [`RenderService`] its own cache scope.
 static NEXT_SCOPE: AtomicU64 = AtomicU64::new(0);
 
@@ -375,13 +560,57 @@ impl RenderService {
         config: &RenderServiceConfig,
     ) -> Self {
         Self {
-            reader,
+            reader: Some(reader),
+            source_path: None,
             revision_id,
             cache: config.cache.clone(),
             scope: NEXT_SCOPE.fetch_add(1, Ordering::Relaxed),
             limits_cache: HashMap::new(),
             topo_geometry: None,
             overview_disk: None,
+        }
+    }
+
+    /// A service for the file at `path` that opens it only when a render
+    /// needs it (#306), and its `(height, width)`.
+    ///
+    /// The file is opened once here and closed again, so that a broken
+    /// file is still a clear warning at startup rather than a surprise on
+    /// first view, and the catalog has the shape it lays the radargram out
+    /// with.
+    pub fn open_lazily(
+        path: &Path,
+        revision_id: RevisionId,
+        config: &RenderServiceConfig,
+    ) -> Result<(Self, (usize, usize)), String> {
+        let shape = crate::source::AmplitudeSource::shape(&SourceReader::open(path)?);
+        Ok((Self::new_closed(path, revision_id, config), shape))
+    }
+
+    fn new_closed(path: &Path, revision_id: RevisionId, config: &RenderServiceConfig) -> Self {
+        Self {
+            reader: None,
+            source_path: Some(path.to_path_buf()),
+            revision_id,
+            cache: config.cache.clone(),
+            scope: NEXT_SCOPE.fetch_add(1, Ordering::Relaxed),
+            limits_cache: HashMap::new(),
+            topo_geometry: None,
+            overview_disk: None,
+        }
+    }
+
+    /// Whether this service holds an open NetCDF handle right now.
+    pub fn has_open_reader(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    /// Close the NetCDF handle, if this service can reopen it. Amplitude
+    /// limits, topographic geometry and cached images are all kept, so a
+    /// closed service costs one reopen on its next render, nothing more.
+    pub fn close_reader(&mut self) {
+        if self.source_path.is_some() {
+            self.reader = None;
         }
     }
 
@@ -441,14 +670,12 @@ impl RenderService {
         if let Some(resolved) = self.limits_cache.get(&key) {
             return Ok(resolved.clone());
         }
-        let pinned = crate::render::stats::pin_profile(
-            &self.reader,
-            profile,
-            crate::render::stats::SAMPLE_SEED,
-        )?;
+        let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
+        let pinned =
+            crate::render::stats::pin_profile(reader, profile, crate::render::stats::SAMPLE_SEED)?;
         let sampled = match pinned.limits {
             AmplitudeLimits::Percentile { low, high } => Some(sampled_amplitude_limits(
-                &self.reader,
+                reader,
                 pinned.source_transform,
                 pinned.siglog_minval_log10,
                 pinned.transform,
@@ -477,13 +704,19 @@ impl RenderService {
                 return Ok(Arc::clone(geometry));
             }
         }
-        let elevation = self.reader.read_axis_f64("elevation").ok();
-        let depth = self
-            .reader
+        let reader =
+            open_reader(&mut self.reader, self.source_path.as_deref()).map_err(|message| {
+                TopoUnavailable {
+                    cause: topo::TopoUnavailableCause::File,
+                    message,
+                }
+            })?;
+        let elevation = reader.read_axis_f64("elevation").ok();
+        let depth = reader
             .read_axis_f64("depth")
             .ok()
             .map(|values| values.into_iter().map(|v| v as f32).collect::<Vec<f32>>());
-        let (source_height, n_traces) = crate::source::AmplitudeSource::shape(&self.reader);
+        let (source_height, n_traces) = crate::source::AmplitudeSource::shape(reader);
         let geometry = Arc::new(topo::resolve_topo_geometry(
             elevation.as_deref(),
             depth.as_deref(),
@@ -539,16 +772,47 @@ impl RenderService {
         let (pinned, limits) = self.resolve_limits(profile)?;
         let bytes = match view {
             DatasetView::Standard => {
-                Renderer::new(&self.reader).render_chunk(chunk, &pinned, limits)?
+                let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
+                Renderer::new(reader).render_chunk(chunk, &pinned, limits)?
             }
             DatasetView::Topographic => {
                 let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
-                let source = TopoSource::new(&self.reader, &geometry);
+                let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
+                let source = TopoSource::new(reader, &geometry);
                 Renderer::new(&source).render_chunk(chunk, &pinned, limits)?
             }
         };
         self.cache.insert(key, bytes.clone());
         Ok(bytes)
+    }
+
+    /// The overview from memory or disk, without rendering; `None` when it
+    /// would have to be built.
+    ///
+    /// What lets the overview route take a build permit (#301) only for a
+    /// real build: a request this answers never waits behind one.
+    pub fn cached_overview(
+        &mut self,
+        spec: &OverviewSpec,
+        view: DatasetView,
+        profile: &RenderProfile,
+        range: ElevationRange,
+    ) -> Option<Vec<u8>> {
+        let (variant, key, disk) = self.overview_keys(spec, view, profile, range);
+        if let Some(bytes) = self.cache.get(&key) {
+            return Some(bytes);
+        }
+        let (disk, stamp) = disk?;
+        let bytes = disk.get(
+            &self.revision_id,
+            &variant,
+            stamp,
+            spec.width,
+            spec.height,
+            profile.format,
+        )?;
+        self.cache.insert(key, bytes.clone());
+        Some(bytes)
     }
 
     pub fn get_or_render_overview(
@@ -558,45 +822,20 @@ impl RenderService {
         profile: &RenderProfile,
         range: ElevationRange,
     ) -> Result<Vec<u8>, String> {
-        let variant = RenderVariantId::compute(&self.revision_id, view, profile, range);
-        let key = RenderObjectKey::compute(
-            self.scope,
-            &variant,
-            &RenderObjectDescriptor::Overview {
-                width: spec.width,
-                height: spec.height,
-            },
-        );
-        if let Some(bytes) = self.cache.get(&key) {
+        if let Some(bytes) = self.cached_overview(spec, view, profile, range) {
             return Ok(bytes);
         }
-        let disk = self
-            .overview_disk
-            .as_ref()
-            .filter(|_| spec.width <= MAX_PERSISTED_OVERVIEW_WIDTH)
-            .cloned();
-        if let Some((disk, stamp)) = &disk {
-            let stored = disk.get(
-                &self.revision_id,
-                &variant,
-                *stamp,
-                spec.width,
-                spec.height,
-                profile.format,
-            );
-            if let Some(bytes) = stored {
-                self.cache.insert(key, bytes.clone());
-                return Ok(bytes);
-            }
-        }
+        let (variant, key, disk) = self.overview_keys(spec, view, profile, range);
         let (pinned, limits) = self.resolve_limits(profile)?;
         let bytes = match view {
             DatasetView::Standard => {
-                Renderer::new(&self.reader).render_overview(spec, &pinned, limits)?
+                let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
+                Renderer::new(reader).render_overview(spec, &pinned, limits)?
             }
             DatasetView::Topographic => {
                 let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
-                let source = TopoSource::new(&self.reader, &geometry);
+                let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
+                let source = TopoSource::new(reader, &geometry);
                 Renderer::new(&source).render_overview(spec, &pinned, limits)?
             }
         };
@@ -613,7 +852,47 @@ impl RenderService {
             None => bytes,
         };
         self.cache.insert(key, bytes.clone());
+        // A build has just read the whole file through netcdf-c's chunk
+        // cache, which stays allocated for as long as the file is open and
+        // helps no later request: chunks read one storage chunk each, and
+        // the next overview of this radargram comes from the image cache.
+        // Closing frees it now instead of when the reader pool gets round to
+        // it -- on 120 radargrams requested at once, the difference between
+        // ending at ~1.3 GB and ~0.5 GB.
+        self.close_reader();
+        release_freed_memory();
         Ok(bytes)
+    }
+
+    /// An overview's variant, its memory-cache key, and the disk store to
+    /// use for it -- none for one wider than
+    /// [`MAX_PERSISTED_OVERVIEW_WIDTH`].
+    fn overview_keys(
+        &self,
+        spec: &OverviewSpec,
+        view: DatasetView,
+        profile: &RenderProfile,
+        range: ElevationRange,
+    ) -> (
+        RenderVariantId,
+        RenderObjectKey,
+        Option<(OverviewDiskCache, FileStamp)>,
+    ) {
+        let variant = RenderVariantId::compute(&self.revision_id, view, profile, range);
+        let key = RenderObjectKey::compute(
+            self.scope,
+            &variant,
+            &RenderObjectDescriptor::Overview {
+                width: spec.width,
+                height: spec.height,
+            },
+        );
+        let disk = self
+            .overview_disk
+            .as_ref()
+            .filter(|_| spec.width <= MAX_PERSISTED_OVERVIEW_WIDTH)
+            .cloned();
+        (variant, key, disk)
     }
 
     /// One source trace: the `data[:, trace]` column, as stored.
@@ -628,13 +907,14 @@ impl RenderService {
     /// `Ok(None)` for an index outside the radargram rather than a clamped
     /// column, so the route can answer 404 instead of silently serving an
     /// edge trace.
-    pub fn read_trace(&self, trace: usize) -> Result<Option<Vec<f32>>, String> {
+    pub fn read_trace(&mut self, trace: usize) -> Result<Option<Vec<f32>>, String> {
         use crate::source::AmplitudeSource;
-        let (n_samples, n_traces) = self.reader.shape();
+        let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
+        let (n_samples, n_traces) = reader.shape();
         if trace >= n_traces {
             return Ok(None);
         }
-        let column = self.reader.read_window(0, n_samples, trace, trace + 1)?;
+        let column = reader.read_window(0, n_samples, trace, trace + 1)?;
         Ok(Some(column.iter().copied().collect()))
     }
 }
@@ -867,7 +1147,7 @@ mod tests {
         let (height, width) = (20usize, 300usize);
         write_test_nc(&path, height, width);
         let reader = SourceReader::open(&path).unwrap();
-        let service = RenderService::new(
+        let mut service = RenderService::new(
             reader,
             RevisionId::fingerprint_v1(
                 &RadargramId::new("trace-test").unwrap(),
@@ -1181,6 +1461,59 @@ mod tests {
             )
             .unwrap();
         assert!(!cache_dir.join("overviews").exists());
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_lazy_service_opens_on_demand_and_reopens_after_closing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_test_nc(&path, 300, 300);
+        let config = RenderServiceConfig::default();
+        let (mut service, shape) =
+            RenderService::open_lazily(&path, test_revision_id(), &config).unwrap();
+        assert_eq!(shape, (300, 300));
+        assert!(!service.has_open_reader());
+
+        let grid = ViewerRaster::new(300, 300).grid();
+        let render = |service: &mut RenderService, x| {
+            service
+                .get_or_render_chunk(
+                    &grid.chunk(x, 0).unwrap(),
+                    DatasetView::Standard,
+                    &RenderProfile::default_profile(),
+                    ElevationRange::NONE,
+                )
+                .unwrap()
+        };
+        render(&mut service, 0);
+        assert!(service.has_open_reader());
+        service.close_reader();
+        assert!(!service.has_open_reader());
+        render(&mut service, 1);
+        assert!(service.has_open_reader());
+
+        // A service handed an open reader has nowhere to reopen it from,
+        // so it never closes.
+        let mut fixed = RenderService::new(
+            SourceReader::open(&path).unwrap(),
+            test_revision_id(),
+            &config,
+        );
+        fixed.close_reader();
+        assert!(fixed.has_open_reader());
+    }
+
+    #[test]
+    fn the_build_and_reader_bounds_follow_n_workers() {
+        assert_eq!(overview_build_permits(1), 1);
+        assert_eq!(overview_build_permits(7), 1);
+        assert_eq!(overview_build_permits(16), 4);
+        assert_eq!(max_open_readers(1), 16);
+        assert_eq!(max_open_readers(32), 64);
+        let config = RenderServiceConfig::default().with_n_workers(16);
+        assert_eq!(config.overview_builds.available_permits(), 4);
     }
 
     fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

@@ -418,6 +418,47 @@ normalize → colormap → encode.** Everything lives under
   completes into the cache rather than being wasted work.
 - Permit acquisition times out (30 s) into a `503` with a `Retry-After`
   header rather than queueing without limit.
+- **Overview builds have their own, smaller bound** (#301):
+  `max(1, n_workers / 4)` permits, shared site-wide through
+  `RenderServiceConfig::overview_builds`. A build reads the whole
+  radargram, where a chunk reads one storage chunk, so under the render
+  permits alone a cold card grid could put every worker on a full-file
+  read and leave none for the viewer. The overview route asks the memory
+  and disk caches first (`RenderService::cached_overview`) and takes a
+  build permit only on a miss, so a warm catalog never queues behind a
+  build. The build wait is 120 s rather than 30, because index
+  thumbnails are plain `<img>` elements that do not retry a 503.
+- **Files are opened on demand** (#306). A `RenderService` built by
+  `open_lazily` opens its NetCDF on first use; `ReaderPool`
+  (`RenderServiceConfig::open_readers`, `max(16, 2 × n_workers)`) records
+  each use after the service's lock is released and closes the least
+  recently used readers beyond the cap, with `try_lock` only, so a busy
+  service is skipped rather than waited for and the pool cannot deadlock
+  against a render. Every route that locks a service goes through
+  `with_locked_service`, which is what keeps the count honest. Closing
+  keeps amplitude limits, topographic geometry and cached images; a
+  closed service costs one reopen.
+- **What actually held the memory** (#306), measured with 120 radargrams
+  requested at once on a 32-core machine. `main` peaked at 2.6 GB and
+  stayed there; with the changes below it peaks at ~0.33 GB and settles
+  at ~70 MB. Three things, none of them the image cache:
+  - *netcdf-c's chunk cache*, 64 MiB per variable by default, filled by an
+    overview build or a limits sample and only freed when the file closes.
+    Every always-open radargram kept its share. `source::limit_chunk_cache`
+    lowers the default to 16 MiB (4 MiB made a cold pass 40% slower: the
+    limits sample re-reads a chunk column per run of traces), and
+    `get_or_render_overview` closes the file straight after a build, which
+    left nothing useful in the cache.
+  - *glibc's per-thread arenas.* Renders run on tokio's blocking pool, and
+    glibc gives each of its threads an arena it rarely returns memory from;
+    a burst of builds ratcheted the process up by ~1 GB of freed memory.
+    `launch::limit_malloc_arenas` caps arenas at four (unless
+    `MALLOC_ARENA_MAX` is set), for a cold pass ~10% slower.
+  - *Free lists.* After a build, `release_freed_memory` runs HDF5's
+    `H5garbage_collect` and glibc's `malloc_trim`, which return what HDF5's
+    free lists and the arenas hold. Before the arena cap, `malloc_trim`
+    took a burst's leftover from 1.9 to 1.0 GB and `H5garbage_collect`
+    from there to 0.8 GB; neither is enough without the cap.
 - Each radargram's `RenderService` sits behind a `Mutex` held for the
   whole read-and-render, so two chunks of the *same* radargram never
   render concurrently — deliberately not split further, since the
