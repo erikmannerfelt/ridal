@@ -35,7 +35,10 @@ this" is never a mode you arrive at by accident.
 `--n-workers`
 : How many CPU-heavy renders run at once. The budget is **shared by the
   whole site**, not per project, so it caps concurrent rendering across every
-  project a site serves.
+  project a site serves. Building an overview reads a whole radargram, so at
+  most a quarter of these (at least one) build overviews at a time; overviews
+  already built are served without waiting. It also sets how many radargram
+  files stay open between requests: twice this, at least 16.
 
 `--cache-memory-mb`
 : In-memory budget for encoded radargram images. Like `--n-workers`, it is

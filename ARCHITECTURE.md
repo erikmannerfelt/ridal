@@ -418,6 +418,26 @@ normalize → colormap → encode.** Everything lives under
   completes into the cache rather than being wasted work.
 - Permit acquisition times out (30 s) into a `503` with a `Retry-After`
   header rather than queueing without limit.
+- **Overview builds have their own, smaller bound** (#301):
+  `max(1, n_workers / 4)` permits, shared site-wide through
+  `RenderServiceConfig::overview_builds`. A build reads the whole
+  radargram, where a chunk reads one storage chunk, so under the render
+  permits alone a cold card grid could put every worker on a full-file
+  read and leave none for the viewer. The overview route asks the memory
+  and disk caches first (`RenderService::cached_overview`) and takes a
+  build permit only on a miss, so a warm catalog never queues behind a
+  build. The build wait is 120 s rather than 30, because index
+  thumbnails are plain `<img>` elements that do not retry a 503.
+- **Files are opened on demand** (#306). A `RenderService` built by
+  `open_lazily` opens its NetCDF on first use; `ReaderPool`
+  (`RenderServiceConfig::open_readers`, `max(16, 2 × n_workers)`) records
+  each use after the service's lock is released and closes the least
+  recently used readers beyond the cap, with `try_lock` only, so a busy
+  service is skipped rather than waited for and the pool cannot deadlock
+  against a render. Every route that locks a service goes through
+  `with_locked_service`, which is what keeps the count honest. Closing
+  keeps amplitude limits, topographic geometry and cached images; a
+  closed service costs one reopen.
 - Each radargram's `RenderService` sits behind a `Mutex` held for the
   whole read-and-render, so two chunks of the *same* radargram never
   render concurrently — deliberately not split further, since the

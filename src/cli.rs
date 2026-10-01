@@ -833,13 +833,14 @@ fn render_service_config(
         return Err("--n-workers must be at least 1".to_string());
     }
     let default = crate::server::render_service::RenderServiceConfig::default();
+    let n_workers = n_workers.unwrap_or(default.n_workers);
     Ok(crate::server::render_service::RenderServiceConfig {
         cache: crate::server::render_service::RenderCache::from_mb(
             cache_memory_mb.unwrap_or(crate::server::render_service::DEFAULT_CACHE_MEMORY_MB),
         ),
-        n_workers: n_workers.unwrap_or(default.n_workers),
         ..default
-    })
+    }
+    .with_n_workers(n_workers))
 }
 
 #[cfg(feature = "server")]

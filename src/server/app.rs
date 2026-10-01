@@ -17,13 +17,14 @@ use crate::identity::{ProjectKey, RadargramId};
 use crate::project::store::DocumentStore;
 use crate::server::overview_cache::OverviewDiskCache;
 use crate::server::render_service::{RenderService, RenderServiceConfig};
-use crate::source::{AmplitudeSource, SourceReader};
 
 /// One open radargram: its render service plus the metadata needed to
 /// answer dataset-detail and viewer-page requests without re-inspecting
 /// the file.
 pub struct OpenRadargram {
-    pub service: Mutex<RenderService>,
+    /// Shared so the server-wide [`crate::server::render_service::ReaderPool`]
+    /// can hold a weak reference to it and close its file when idle.
+    pub service: Arc<Mutex<RenderService>>,
     pub shape: (usize, usize),
 }
 
@@ -206,11 +207,12 @@ fn with_overview_disk_cache(
 }
 
 impl AppState {
-    /// Discover the catalog under `root` and eagerly open a
-    /// [`RenderService`] for every entry. Eager rather than lazy: the
-    /// issue's target catalog size is ~100 files (#122/#123), and eager
-    /// construction means a broken file surfaces as a clear startup
-    /// warning rather than a request-time surprise.
+    /// Discover the catalog under `root` and build a [`RenderService`] for
+    /// every entry. Each file is opened once here, so a broken file still
+    /// surfaces as a clear startup warning rather than a request-time
+    /// surprise, and then closed: services open their file on first use
+    /// and the server-wide reader pool closes idle ones (#306), so a
+    /// catalog of hundreds does not hold hundreds of HDF5 handles.
     ///
     /// `root` is canonicalized once here, the single point every later
     /// filesystem operation on it (`Catalog::discover`, every
@@ -343,27 +345,23 @@ impl AppState {
                     continue;
                 }
             };
-            let reader = match SourceReader::open(&absolute_path) {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!(
-                        "Warning: could not open {} for rendering: {e}",
-                        entry.relative_path
-                    );
-                    continue;
-                }
-            };
-            let shape = reader.shape();
             let revision_id: RevisionId = entry.revision_id.clone();
-            let service = with_overview_disk_cache(
-                RenderService::new(reader, revision_id, config),
-                overview_disk.as_ref(),
-                &absolute_path,
-            );
+            let (service, shape) =
+                match RenderService::open_lazily(&absolute_path, revision_id, config) {
+                    Ok(opened) => opened,
+                    Err(e) => {
+                        eprintln!(
+                            "Warning: could not open {} for rendering: {e}",
+                            entry.relative_path
+                        );
+                        continue;
+                    }
+                };
+            let service = with_overview_disk_cache(service, overview_disk.as_ref(), &absolute_path);
             radargrams.insert(
                 entry.radargram_id.as_str().to_string(),
                 Arc::new(OpenRadargram {
-                    service: Mutex::new(service),
+                    service: Arc::new(Mutex::new(service)),
                     shape,
                 }),
             );
@@ -464,7 +462,7 @@ impl AppState {
     /// deleted.
     ///
     /// Windows refuses to unlink a file that is still open, and a served
-    /// radargram's `RenderService` holds a NetCDF handle on it — so
+    /// radargram's `RenderService` may hold a NetCDF handle on it — so
     /// removing a perfectly ordinary radargram would fail there and
     /// nowhere else. Unix would have allowed the unlink and quietly kept
     /// the handle alive, which is not better, only quieter.
@@ -523,7 +521,9 @@ impl AppState {
             let Ok(path) = Self::resolve_absolute_path(root, entry) else {
                 continue;
             };
-            let Ok(reader) = SourceReader::open(&path) else {
+            let Ok((service, shape)) =
+                RenderService::open_lazily(&path, entry.revision_id.clone(), config)
+            else {
                 // Skipped rather than fatal, exactly as at startup: one
                 // unreadable file must not cost the whole catalog.
                 eprintln!(
@@ -532,16 +532,11 @@ impl AppState {
                 );
                 continue;
             };
-            let shape = reader.shape();
-            let service = with_overview_disk_cache(
-                RenderService::new(reader, entry.revision_id.clone(), config),
-                overview_disk.as_ref(),
-                &path,
-            );
+            let service = with_overview_disk_cache(service, overview_disk.as_ref(), &path);
             radargrams.insert(
                 key,
                 Arc::new(OpenRadargram {
-                    service: Mutex::new(service),
+                    service: Arc::new(Mutex::new(service)),
                     shape,
                 }),
             );
@@ -1184,10 +1179,7 @@ mod tests {
     /// `test_app`, but keeping the state so a test can inspect the render
     /// cache afterwards, and with a caller-chosen `n_workers`.
     fn test_app_with_state(dir: &StdPath, n_workers: usize) -> (Router, Arc<AppState>) {
-        let config = RenderServiceConfig {
-            n_workers,
-            ..RenderServiceConfig::default()
-        };
+        let config = RenderServiceConfig::default().with_n_workers(n_workers);
         let state = std::sync::Arc::new(
             AppState::build_with_project(dir, &config, None, AccessOptions::default()).unwrap(),
         );
@@ -1881,6 +1873,90 @@ mod tests {
                 1,
                 "the same chunk was rendered and cached more than once"
             );
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn only_an_overview_build_waits_for_a_build_permit() {
+        // #301: builds are bounded separately from renders, and a cached
+        // overview must not queue behind them. With the one build permit
+        // held elsewhere, a cached overview is still answered, and an
+        // uncached one waits until the permit comes back.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc(&dir.path().join("a.nc"), "builds");
+            let (app, state) = test_app_with_state(dir.path(), 4);
+            assert_eq!(crate::server::render_service::overview_build_permits(4), 1);
+            let cached = "/api/v1/datasets/builds/views/standard/overview";
+            let uncached = "/api/v1/datasets/builds/views/standard/overview?profile=seismic";
+            assert_eq!(get(&app, cached).await.0, StatusCode::OK);
+
+            let held = state
+                .render_config()
+                .overview_builds
+                .acquire_owned()
+                .await
+                .unwrap();
+            let hit = tokio::time::timeout(std::time::Duration::from_secs(10), get(&app, cached))
+                .await
+                .expect("a cached overview waited for a build permit");
+            assert_eq!(hit.0, StatusCode::OK);
+
+            let app2 = app.clone();
+            let build = tokio::spawn(async move { get(&app2, uncached).await });
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            assert!(!build.is_finished(), "a build ran without a build permit");
+            drop(held);
+            assert_eq!(build.await.unwrap().0, StatusCode::OK);
+        });
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn radargrams_open_their_files_on_demand_and_only_up_to_the_cap() {
+        // #306: no file is held open from startup, and the reader pool
+        // closes the least recently used beyond its cap. A closed one
+        // reopens on its next render.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            for id in ["r-a", "r-b", "r-c"] {
+                write_test_nc(&dir.path().join(format!("{id}.nc")), id);
+            }
+            let config = RenderServiceConfig {
+                open_readers: crate::server::render_service::ReaderPool::new(2),
+                ..RenderServiceConfig::default().with_n_workers(1)
+            };
+            let state = Arc::new(
+                AppState::build_with_project(dir.path(), &config, None, AccessOptions::default())
+                    .unwrap(),
+            );
+            let app = build_router(state.clone());
+            let open = |id: &str| {
+                let radargram = state.catalog().radargram(id).unwrap();
+                let service = radargram.service.lock().unwrap();
+                service.has_open_reader()
+            };
+            for id in ["r-a", "r-b", "r-c"] {
+                assert!(!open(id), "{id} was opened at startup");
+            }
+
+            for id in ["r-a", "r-b", "r-c"] {
+                let uri = format!("/api/v1/datasets/{id}/views/standard/chunks/default/0/0");
+                assert_eq!(get(&app, &uri).await.0, StatusCode::OK);
+            }
+            assert_eq!(state.render_config().open_readers.len(), 2);
+            assert!(!open("r-a"), "the least recently used was not closed");
+            assert!(open("r-b") && open("r-c"));
+
+            let uri = "/api/v1/datasets/r-a/views/standard/chunks/default/1/0";
+            assert_eq!(get(&app, uri).await.0, StatusCode::OK);
+            assert!(open("r-a"), "a closed radargram did not reopen");
+            assert!(!open("r-b"));
         });
     }
 
