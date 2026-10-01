@@ -151,8 +151,55 @@ pub struct SourceReader {
     shape: (usize, usize),
 }
 
+/// netcdf-c's chunk cache per variable, for every file opened after
+/// [`limit_chunk_cache`]: 16 MiB, sixty-four of Ridal's 256x256 `f32`
+/// storage chunks.
+///
+/// Measured on 120 radargrams requested at once: 4 MiB made the cold pass
+/// 40% slower than the default (the amplitude-limit sample reads a whole
+/// chunk column per run of traces, and nearby runs share one), while 16 MiB
+/// was within 7% of it.
+const CHUNK_CACHE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Lower netcdf-c's default chunk cache, once per process, before the first
+/// [`SourceReader`] opens a file (#306).
+///
+/// The bundled netcdf-c defaults to **64 MiB per variable**, and the cache
+/// fills as chunks are read and is only freed when the file closes. An
+/// overview build or an amplitude-limit sample reads most of a file, so
+/// every radargram the server had touched kept up to 64 MiB resident: with
+/// 120 radargrams open, the server stayed at 2 GB after the requests that
+/// caused it were long gone. Beyond one pass, the cache buys nothing back
+/// for this access pattern: a viewer chunk reads exactly one storage chunk,
+/// whose image is then cached, and an overview band reads each chunk once.
+/// See also `RenderService::get_or_render_overview`, which closes the file
+/// after a build.
+///
+/// Process-wide, because the `netcdf` crate exposes neither the file's nor
+/// the variable's id to set it per variable. Only processes that read
+/// radargrams through `SourceReader` -- the server and `ridal render` --
+/// call this; `ridal process` keeps the default.
+fn limit_chunk_cache() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _guard = netcdf_sys::libnetcdf_lock.lock();
+        let (mut size, mut nelems, mut preemption) = (0usize, 0usize, 0f32);
+        // SAFETY: plain out-parameters and a process-wide setting, both
+        // under the lock the `netcdf` crate itself takes for every call.
+        unsafe {
+            if netcdf_sys::nc_get_chunk_cache(&mut size, &mut nelems, &mut preemption)
+                == netcdf_sys::NC_NOERR
+                && size > CHUNK_CACHE_BYTES
+            {
+                netcdf_sys::nc_set_chunk_cache(CHUNK_CACHE_BYTES, nelems, preemption);
+            }
+        }
+    });
+}
+
 impl SourceReader {
     pub fn open(path: &Path) -> Result<Self, String> {
+        limit_chunk_cache();
         let file =
             netcdf::open(path).map_err(|e| format!("Failed to open {path:?} as NetCDF: {e}"))?;
         let var = file

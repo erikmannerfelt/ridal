@@ -103,6 +103,16 @@ toml_edit = "0.22"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
+# Only for `nc_set_chunk_cache` (see `source::limit_chunk_cache`), which the
+# `netcdf` crate does not wrap. Already in the tree through `netcdf`, at the
+# same version.
+netcdf-sys = "0.9"
+# Only for `malloc_trim` and `H5garbage_collect` after an overview build
+# (see `server::render_service::release_freed_memory`). Both already in the
+# tree, at these versions, through `netcdf`.
+libc = "0.2"
+hdf5-sys = { package = "hdf5-metno-sys", version = "0.11" }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 netcdf = { version = "0.12", features = ["ndarray"] }
 

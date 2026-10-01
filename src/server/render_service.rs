@@ -505,6 +505,34 @@ pub struct RenderService {
     overview_disk: Option<(OverviewDiskCache, FileStamp)>,
 }
 
+/// Hand memory the allocator is holding but nobody is using back to the
+/// operating system, after an overview build (#306).
+///
+/// A build allocates and frees tens of megabytes -- the source band, the
+/// HDF5 chunk cache -- on whichever blocking thread ran it. glibc keeps
+/// freed memory in that thread's arena rather than returning it, so a burst
+/// of cold builds across many threads ratchets the process up and it never
+/// comes back down: 120 radargrams requested at once left the server at
+/// ~1.9 GB with no file open and nothing but small images cached.
+/// `malloc_trim` returns those free pages. Other allocators return memory
+/// on their own terms, so this is glibc-only and a no-op elsewhere.
+fn release_freed_memory() {
+    {
+        let _guard = netcdf_sys::libnetcdf_lock.lock();
+        // SAFETY: takes no arguments; under the lock every netcdf/HDF5
+        // call in the process goes through.
+        unsafe {
+            hdf5_sys::h5::H5garbage_collect();
+        }
+    }
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: no arguments that can be invalid; it only releases free
+    // memory and is safe to call from any thread.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 /// `slot`'s reader, opening it from `path` first if it is closed.
 ///
 /// A free function over the one field rather than a method, so that a
@@ -824,6 +852,15 @@ impl RenderService {
             None => bytes,
         };
         self.cache.insert(key, bytes.clone());
+        // A build has just read the whole file through netcdf-c's chunk
+        // cache, which stays allocated for as long as the file is open and
+        // helps no later request: chunks read one storage chunk each, and
+        // the next overview of this radargram comes from the image cache.
+        // Closing frees it now instead of when the reader pool gets round to
+        // it -- on 120 radargrams requested at once, the difference between
+        // ending at ~1.3 GB and ~0.5 GB.
+        self.close_reader();
+        release_freed_memory();
         Ok(bytes)
     }
 
