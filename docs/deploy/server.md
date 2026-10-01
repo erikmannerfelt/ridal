@@ -41,7 +41,10 @@ this" is never a mode you arrive at by accident.
 : In-memory budget for encoded radargram images. Like `--n-workers`, it is
   **shared by the whole site**: one budget for every radargram of every
   project, not one each. Ridal evicts least-recently used images to stay
-  inside it.
+  inside it. Overviews, the whole-radargram thumbnails on the index and
+  maps, are also kept in each project's cache directory (see
+  [project files](../reference/project-files)), so after a restart they are
+  read from disk instead of being rebuilt from every radargram.
 
 `--open-browser`
 : Open the landing page after starting. Off by default here, because a
