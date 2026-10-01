@@ -3,7 +3,9 @@
 //!
 //! Render order, per #118: source amplitudes -> dataset view (standard
 //! only in v1) -> float-domain resampling -> normalization -> colormap ->
-//! image encoding. Amplitude limits are resolved once per call and passed
+//! image encoding. Overviews swap the last steps round -- normalization
+//! and colormap at full resolution, then a colour-domain downsample (see
+//! [`Renderer::render_overview`]). Amplitude limits are resolved once per call and passed
 //! in rather than recomputed per chunk -- the caller (the render service,
 //! M5) is responsible for computing them once per revision+profile and
 //! reusing them, which is what keeps adjacent chunks' normalization
@@ -87,134 +89,145 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
 
     /// Render a full-radargram overview to encoded image bytes.
     ///
-    /// Reads the source in horizontal bands rather than all at once. A
-    /// single whole-array read is proportional to the *entire* radargram
-    /// regardless of how small the overview is: the 3678x12187 file in
-    /// the test corpus is ~180 MB of `f32` per call, per profile, and
-    /// several concurrent index thumbnails multiply that. Banding caps
-    /// the read at [`OVERVIEW_READ_BUDGET_BYTES`] while producing the
-    /// same picture.
+    /// Every source sample is taken to its display colour first, at full
+    /// resolution, and the *colours* are then area-averaged down to the
+    /// overview size (#300). This is what a browser does when it shrinks a
+    /// full-resolution render, and it is the reverse of how chunks work:
+    /// a chunk resamples amplitude and colours the result.
     ///
-    /// For the box-footprint methods that is because each output row
-    /// draws only on its own contiguous source-row footprint, so no row
-    /// straddles a band boundary. Lanczos does not have that property --
-    /// its kernel reaches well past the footprint -- so a band reads a
-    /// halo of extra source rows on each side and resamples only the
-    /// middle. Without one, every internal boundary is a false edge the
-    /// kernel truncates against, and the seams are visible.
+    /// The order matters for an overview because its footprints are large
+    /// (often 10-25 source samples per pixel in each direction) and the
+    /// display mapping is not linear. Averaging signed, oscillating
+    /// amplitude cancels it towards zero before the colormap sees it, so
+    /// `seismic` came out nearly white and `siglog-positive` nearly twice
+    /// as bright as the radargram looks at full resolution, while
+    /// `abslog` and `positive` lost their contrast. Averaging colours keeps
+    /// what each sample looks like. Measured against a downscale of the
+    /// full-resolution render, the error fell 3-8x for those profiles and
+    /// did not grow for the linear grey ones.
+    ///
+    /// `profile.resampling` therefore has no effect here; it applies to
+    /// chunks only.
+    ///
+    /// Reads the source in horizontal bands, as an overview's input is
+    /// the whole radargram: the 3678x12187 file in the test corpus is
+    /// ~180 MB of `f32`, per call, per profile. Each source row adds its
+    /// weighted colours to the output rows it overlaps, so the result does
+    /// not depend on where band boundaries fall -- bit for bit -- and no
+    /// band needs a halo.
     pub fn render_overview(
         &self,
         spec: &OverviewSpec,
         profile: &RenderProfile,
         limits: (f32, f32),
     ) -> Result<Vec<u8>, String> {
-        let band = self.overview_rows_per_band(spec, profile);
+        let band = self.overview_rows_per_band();
         self.render_overview_banded(spec, profile, limits, band)
     }
 
-    /// Output rows per read, derived from [`OVERVIEW_READ_BUDGET_BYTES`]:
-    /// how many output rows' worth of source fits in the budget. At least
-    /// one, so a radargram whose single source row already exceeds the
-    /// budget still renders (one row at a time) rather than dividing to
-    /// zero and looping forever.
+    /// Source rows per read, derived from [`OVERVIEW_READ_BUDGET_BYTES`].
+    /// At least one, so a radargram whose single source row already
+    /// exceeds the budget still renders (one row at a time) rather than
+    /// dividing to zero and looping forever.
     ///
     /// `vertical_read_overhead` (zero for every source but
     /// [`crate::render::topo::TopoSource`]) is reserved out of the budget
-    /// before dividing it into bands: a topographically sheared source
-    /// additionally spans the shift range across a band's columns, so a
-    /// band sized only from `OVERVIEW_READ_BUDGET_BYTES` would overshoot
-    /// the budget by roughly that span -- a 2-3x overshoot measured on a
-    /// long profile with a few hundred metres of relief. Reserving it here
-    /// shrinks the band instead, so the read `read_window` actually
-    /// performs (which already accounts for the shear correctly,
-    /// independent of this) stays within budget.
-    fn overview_rows_per_band(&self, spec: &OverviewSpec, profile: &RenderProfile) -> usize {
-        let (src_h, src_w) = self.reader.shape();
-        let source_rows_per_output_row = src_h as f64 / spec.height.max(1) as f64;
-        // Both of the things `render_overview_banded` adds to a band's own
-        // rows before reading. `vertical_read_overhead` is the shear span
-        // (zero for every source but `TopoSource`); `halo` is what a
-        // Lanczos kernel reaches beyond the band on each side, which is
-        // `3 * scale` and therefore the larger of the two on a typical
-        // ~24x overview downsample. Reserving only the first left the
-        // Lanczos profiles reading past the budget this function exists to
-        // enforce.
-        let overhead = self.reader.vertical_read_overhead(0, src_w)
-            + 2 * super::resample::halo(profile.resampling, source_rows_per_output_row);
+    /// first: a topographically sheared source additionally spans the
+    /// shift range across a band's columns, so a band sized only from the
+    /// budget would overshoot it by roughly that span -- a 2-3x overshoot
+    /// measured on a long profile with a few hundred metres of relief.
+    fn overview_rows_per_band(&self) -> usize {
+        let (_, src_w) = self.reader.shape();
+        let overhead = self.reader.vertical_read_overhead(0, src_w);
         let bytes_per_source_row = src_w.max(1) * std::mem::size_of::<f32>();
-        let max_source_rows = (OVERVIEW_READ_BUDGET_BYTES / bytes_per_source_row.max(1))
+        (OVERVIEW_READ_BUDGET_BYTES / bytes_per_source_row)
             .saturating_sub(overhead)
-            .max(1);
-        if source_rows_per_output_row <= 1.0 {
-            // No vertical downsampling, so one output row is at most one
-            // source row and the band is bounded by the budget directly
-            // rather than by the ratio. Still capped: a full-resolution
-            // render of a tall radargram through a shear would otherwise
-            // read the whole array in one go regardless of the budget.
-            return spec.height.max(1).min(max_source_rows);
-        }
-        ((max_source_rows as f64 / source_rows_per_output_row).floor() as usize).max(1)
+            .max(1)
     }
 
     /// The banded implementation behind [`Renderer::render_overview`],
-    /// with the band height injected so tests can force many small bands
-    /// and compare against the single-band (whole-array) path.
+    /// with the band height (in source rows) injected so tests can force
+    /// many small bands and compare against a single whole-array band.
     fn render_overview_banded(
         &self,
         spec: &OverviewSpec,
         profile: &RenderProfile,
         limits: (f32, f32),
-        out_rows_per_band: usize,
+        source_rows_per_band: usize,
     ) -> Result<Vec<u8>, String> {
         let (src_h, src_w) = self.reader.shape();
-        let out_height = spec.height.max(1);
-        let source_rows_per_output_row = src_h as f64 / out_height as f64;
+        let (out_h, out_w) = (spec.height.max(1), spec.width.max(1));
+        let lut = profile.colormap.as_ref().map(|cmap| cmap.lut());
+        let channels = if lut.is_some() { 3 } else { 1 };
 
-        let mut resampled = Array2::from_elem((out_height, spec.width), f32::NAN);
-        let halo = super::resample::halo(profile.resampling, source_rows_per_output_row);
-        let band = out_rows_per_band.max(1);
-        let mut oy0 = 0usize;
-        while oy0 < out_height {
-            let oy1 = (oy0 + band).min(out_height);
-            // Absolute source-row span of this band's output rows. The
-            // same arithmetic the resampler would do internally for these
-            // rows given the whole array, so the picture does not depend
-            // on where the band boundaries fall.
-            let window = SourceWindow {
-                row0: oy0 as f64 * source_rows_per_output_row,
-                row1: oy1 as f64 * source_rows_per_output_row,
-                col0: 0.0,
-                col1: src_w as f64,
-            };
-            // Read wider than the band, resample only the band. The
-            // halo is what the kernel needs either side to see the same
-            // neighbourhood it would in a whole-array render; at the
-            // true top and bottom of the radargram it is clamped away,
-            // which is correct -- those edges are real.
-            let read_row0 = (window.row0.floor() as usize).saturating_sub(halo);
-            let read_row1 = ((window.row1.ceil() as usize) + halo).min(src_h);
-            let mut source = self.reader.read_window(read_row0, read_row1, 0, src_w)?;
+        let col_taps = footprint_taps(src_w, out_w);
+        let row_taps = footprint_taps(src_h, out_h);
+        // Weighted colour sums and the weight of the *valid* samples that
+        // went into them. A NaN sample (no data, or a topographic wedge)
+        // adds nothing, so a partly empty footprint is the mean of what it
+        // does have, and only an entirely empty one is padded.
+        let mut sums = vec![0.0_f32; out_h * out_w * channels];
+        let mut weights = vec![0.0_f32; out_h * out_w];
+
+        let mut colours: Vec<Option<[u8; 3]>> = Vec::with_capacity(src_w);
+
+        let band = source_rows_per_band.max(1);
+        let mut row0 = 0usize;
+        while row0 < src_h {
+            let row1 = (row0 + band).min(src_h);
+            let mut source = self.reader.read_window(row0, row1, 0, src_w)?;
             apply_source_transform(&mut source, profile);
-            let local = SourceWindow {
-                row0: window.row0 - read_row0 as f64,
-                row1: window.row1 - read_row0 as f64,
-                col0: 0.0,
-                col1: src_w as f64,
-            };
-            let band_out = resample(
-                source.view(),
-                &local,
-                spec.width,
-                oy1 - oy0,
-                profile.resampling,
-            );
-            resampled
-                .slice_mut(ndarray::s![oy0..oy1, ..])
-                .assign(&band_out);
-            oy0 = oy1;
+            for (local_row, row) in source.outer_iter().enumerate() {
+                // Coloured once per source row, however many output rows
+                // it is split between.
+                colours.clear();
+                colours.extend(row.iter().map(|&raw| {
+                    colormap::normalized_pixel(raw, profile, limits).map(|byte| match &lut {
+                        Some(lut) => lut[byte as usize],
+                        None => [byte; 3],
+                    })
+                }));
+                for &(oy, wy) in &row_taps[row0 + local_row] {
+                    for (col, colour) in colours.iter().enumerate() {
+                        let Some(colour) = colour else {
+                            continue;
+                        };
+                        for &(ox, wx) in &col_taps[col] {
+                            let w = wy * wx;
+                            let pixel = oy * out_w + ox;
+                            weights[pixel] += w;
+                            for (c, &value) in colour[..channels].iter().enumerate() {
+                                sums[pixel * channels + c] += w * value as f32;
+                            }
+                        }
+                    }
+                }
+            }
+            row0 = row1;
         }
 
-        render_and_encode(&resampled, profile, limits)
+        let channel = |pixel: usize, c: usize, pad: u8| -> u8 {
+            if weights[pixel] > 0.0 {
+                (sums[pixel * channels + c] / weights[pixel])
+                    .round()
+                    .clamp(0.0, 255.0) as u8
+            } else {
+                pad
+            }
+        };
+        if lut.is_some() {
+            let image = image::RgbImage::from_fn(out_w as u32, out_h as u32, |x, y| {
+                let pixel = y as usize * out_w + x as usize;
+                image::Rgb([0, 1, 2].map(|c| channel(pixel, c, PAD_COLOR[c])))
+            });
+            colormap::encode_rgb(&image, profile.format)
+        } else {
+            let image = image::GrayImage::from_fn(out_w as u32, out_h as u32, |x, y| {
+                let pixel = y as usize * out_w + x as usize;
+                image::Luma([channel(pixel, 0, PAD_VALUE)])
+            });
+            colormap::encode(&image, profile.format)
+        }
     }
 
     /// Read exactly the (integer-rounded) source region a window touches,
@@ -273,6 +286,32 @@ fn render_and_encode(
             colormap::encode_rgb(&image, profile.format)
         }
     }
+}
+
+/// For each of `source_len` source samples along one axis, the output
+/// samples (of `out_len`) its unit interval overlaps and by how much, in
+/// source units.
+///
+/// Output sample `o` covers `[o * step, (o + 1) * step)` of the source,
+/// with `step = source_len / out_len`, so a source sample straddling a
+/// footprint boundary is split between the two in proportion. Weights are
+/// summed per output pixel and divided out at the end, so they need not be
+/// normalised here.
+fn footprint_taps(source_len: usize, out_len: usize) -> Vec<Vec<(usize, f32)>> {
+    let step = source_len as f64 / out_len.max(1) as f64;
+    (0..source_len)
+        .map(|s| {
+            let (a, b) = (s as f64, s as f64 + 1.0);
+            let first = ((a / step).floor() as usize).min(out_len - 1);
+            let last = ((b / step).ceil() as usize).min(out_len);
+            (first..last)
+                .filter_map(|o| {
+                    let overlap = b.min((o + 1) as f64 * step) - a.max(o as f64 * step);
+                    (overlap > 1e-9).then_some((o, overlap as f32))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Apply a profile's [`SourceTransform`] to a freshly read source window or
@@ -457,87 +496,53 @@ mod tests {
         assert!(decoded.width() > decoded.height()); // wide source stays wide
     }
 
-    #[test]
-    #[test_retry::retry]
-    #[serial_test::serial(netcdf)]
-    fn banded_overview_is_identical_to_whole_array_at_an_integer_scale() {
-        // Banding must change how much source is held in memory at once
-        // and nothing else. At an integer downsample ratio every band
-        // boundary lands on an exact source row, so the two paths agree
-        // bit for bit and the comparison can be byte-exact.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.nc");
-        write_asymmetric_nc(&path, 200, 800); // 200 rows -> 50 out rows = 4x
-        let reader = SourceReader::open(&path).unwrap();
-        let renderer = Renderer::new(&reader);
+    fn write_nc_values(path: &std::path::Path, height: usize, width: usize, data: &[f32]) {
+        let mut file = netcdf::create(path).unwrap();
+        file.add_dimension("y", height).unwrap();
+        file.add_dimension("x", width).unwrap();
+        let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
+        var.put_values(data, ..).unwrap();
+    }
 
-        let spec = OverviewSpec::new(800, 200, 200);
-        assert_eq!(spec.height, 50, "expected an exact 4x row ratio");
-        let profile = RenderProfile {
+    fn png(profile: RenderProfile) -> RenderProfile {
+        RenderProfile {
             format: super::super::profile::ImageFormat::Png,
-            ..RenderProfile::default_profile()
-        };
-        let limits = (0.0, (200 * 800) as f32);
-
-        let whole = renderer
-            .render_overview_banded(&spec, &profile, limits, usize::MAX)
-            .unwrap();
-        for band in [1usize, 2, 7, 49] {
-            let banded = renderer
-                .render_overview_banded(&spec, &profile, limits, band)
-                .unwrap();
-            assert_eq!(banded, whole, "band height {band} changed the output");
+            ..profile
         }
     }
 
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
-    fn banding_is_invisible_for_every_resampling_method() {
-        // The test above covers `Mean`, which is safe to band because each
-        // output row reads only its own source rows. Lanczos is not: its
-        // kernel reaches `3 * scale` rows either side, and the resampler
-        // truncates taps at the edge of the array it is handed. Bands were
-        // read to their own extent, so every internal boundary looked like
-        // the top of the radargram and left a seam -- in the server's
-        // `positive` and `abslog` overviews as well as in `ridal render`.
-        //
-        // Parameterised over the methods rather than pinned to the two
-        // profiles that use Lanczos today, so a profile switching method
-        // later cannot quietly reintroduce it.
+    fn banding_never_changes_the_overview() {
+        // Banding must change how much source is held in memory at once
+        // and nothing else. Every source row adds the same weighted
+        // colours to the same output pixels in the same order whichever
+        // band it arrives in, so this holds bit for bit, at fractional
+        // scales too, for grey and colormapped profiles alike.
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("t.nc");
-        write_asymmetric_nc(&path, 200, 800);
-        let reader = SourceReader::open(&path).unwrap();
-        let renderer = Renderer::new(&reader);
+        for (height, width, max_width) in [(200, 800, 200), (197, 613, 100)] {
+            let path = dir.path().join(format!("t{height}.nc"));
+            write_asymmetric_nc(&path, height, width);
+            let reader = SourceReader::open(&path).unwrap();
+            let renderer = Renderer::new(&reader);
+            let spec = OverviewSpec::new(width, height, max_width);
+            let limits = (0.0, (height * width) as f32);
 
-        let spec = OverviewSpec::new(800, 200, 200);
-        assert_eq!(spec.height, 50, "expected an exact 4x row ratio");
-        let limits = (0.0, (200 * 800) as f32);
-
-        for method in [
-            super::super::profile::ResamplingMethod::Mean,
-            super::super::profile::ResamplingMethod::Peak,
-            super::super::profile::ResamplingMethod::Lanczos,
-            super::super::profile::ResamplingMethod::LanczosRectified,
-        ] {
-            let profile = RenderProfile {
-                format: super::super::profile::ImageFormat::Png,
-                resampling: method,
-                ..RenderProfile::default_profile()
-            };
-            let whole = renderer
-                .render_overview_banded(&spec, &profile, limits, usize::MAX)
-                .unwrap();
-            for band in [1usize, 2, 7, 49] {
-                let banded = renderer
-                    .render_overview_banded(&spec, &profile, limits, band)
+            for name in ["default", "seismic"] {
+                let profile = png(RenderProfile::by_name(name).unwrap());
+                let whole = renderer
+                    .render_overview_banded(&spec, &profile, limits, usize::MAX)
                     .unwrap();
-                assert_eq!(
-                    banded, whole,
-                    "{method:?} at band height {band} differs from the \
-                     whole-array render"
-                );
+                for band in [1usize, 2, 7, 49] {
+                    let banded = renderer
+                        .render_overview_banded(&spec, &profile, limits, band)
+                        .unwrap();
+                    assert_eq!(
+                        banded, whole,
+                        "{name} {height}x{width}: band height {band} changed the output"
+                    );
+                }
             }
         }
     }
@@ -545,49 +550,110 @@ mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
-    fn banded_overview_matches_whole_array_at_a_fractional_scale() {
-        // A non-integer ratio puts band boundaries between source rows.
-        // Re-basing each band's window on its own floored origin costs a
-        // little floating-point precision versus computing the same
-        // footprint from the whole array, so this asserts near-identity
-        // (within one grey level) rather than bit-exactness -- enough to
-        // catch a real off-by-one or misplaced band, which would shift
-        // content by whole rows, not by one level.
+    fn the_overview_ignores_the_resampling_method() {
+        // Overviews average colours (#300); the amplitude resampler is a
+        // chunk setting. Pinned so that a profile choosing a method for
+        // its chunks cannot quietly change its overview.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.nc");
-        write_asymmetric_nc(&path, 197, 613);
+        write_asymmetric_nc(&path, 200, 800);
         let reader = SourceReader::open(&path).unwrap();
         let renderer = Renderer::new(&reader);
+        let spec = OverviewSpec::new(800, 200, 200);
+        let limits = (0.0, (200 * 800) as f32);
 
-        let spec = OverviewSpec::new(613, 197, 100);
-        let profile = RenderProfile {
-            format: super::super::profile::ImageFormat::Png,
-            ..RenderProfile::default_profile()
+        let render = |method| {
+            let profile = RenderProfile {
+                resampling: method,
+                ..png(RenderProfile::default_profile())
+            };
+            renderer.render_overview(&spec, &profile, limits).unwrap()
         };
-        let limits = (0.0, (197 * 613) as f32);
+        let mean = render(super::super::profile::ResamplingMethod::Mean);
+        for method in [
+            super::super::profile::ResamplingMethod::Peak,
+            super::super::profile::ResamplingMethod::Lanczos,
+            super::super::profile::ResamplingMethod::LanczosRectified,
+        ] {
+            assert_eq!(render(method), mean, "{method:?} changed the overview");
+        }
+    }
 
-        let whole = image::load_from_memory(
-            &renderer
-                .render_overview_banded(&spec, &profile, limits, usize::MAX)
-                .unwrap(),
-        )
-        .unwrap()
-        .to_luma8();
-        let banded = image::load_from_memory(
-            &renderer
-                .render_overview_banded(&spec, &profile, limits, 3)
-                .unwrap(),
-        )
-        .unwrap()
-        .to_luma8();
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn the_overview_averages_colours_not_amplitudes() {
+        // The #300 failure in miniature: traces alternating +1/-1 under
+        // `seismic`. Averaging amplitude gives 0, which `seismic` paints
+        // white, the colour of no reflection at all. A full-resolution
+        // render is solid red and blue stripes, and shrunk, those read as
+        // their mix -- which is what the overview must show.
+        let (height, width) = (4, 8);
+        let data: Vec<f32> = (0..height * width)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_nc_values(&path, height, width, &data);
+        let reader = SourceReader::open(&path).unwrap();
 
-        assert_eq!(whole.dimensions(), banded.dimensions());
-        for (a, b) in whole.pixels().zip(banded.pixels()) {
-            let diff = a.0[0].abs_diff(b.0[0]);
-            assert!(
-                diff <= 1,
-                "pixel differs by {diff}, not a rounding artifact"
-            );
+        let profile = png(RenderProfile::by_name("seismic").unwrap());
+        let lut = profile.colormap.as_ref().unwrap().lut();
+        let spec = OverviewSpec::new(width, height, width / 2);
+        let bytes = Renderer::new(&reader)
+            .render_overview(&spec, &profile, (-1.0, 1.0))
+            .unwrap();
+        let image = image::load_from_memory(&bytes).unwrap().to_rgb8();
+
+        let mix = [0, 1, 2].map(|c| ((lut[255][c] as f32 + lut[0][c] as f32) / 2.0).round() as u8);
+        assert_ne!(mix, lut[128], "the fixture must tell the two apart");
+        for pixel in image.pixels() {
+            assert_eq!(pixel.0, mix);
+        }
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn an_overview_pixel_averages_only_its_valid_samples() {
+        // A footprint half NaN (a topographic wedge, a gap) is the mean of
+        // the samples it has; one with none is the no-data grey. Averaging
+        // the pad grey in instead would draw a grey fringe along every
+        // wedge edge.
+        let (height, width) = (2, 4);
+        #[rustfmt::skip]
+        let data = [
+            0.0, f32::NAN, f32::NAN, f32::NAN,
+            0.0, f32::NAN, f32::NAN, f32::NAN,
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_nc_values(&path, height, width, &data);
+        let reader = SourceReader::open(&path).unwrap();
+
+        let profile = png(RenderProfile::default_profile());
+        let spec = OverviewSpec::new(width, height, 2);
+        assert_eq!((spec.width, spec.height), (2, 1));
+        let bytes = Renderer::new(&reader)
+            .render_overview(&spec, &profile, (0.0, 1.0))
+            .unwrap();
+        let image = image::load_from_memory(&bytes).unwrap().to_luma8();
+        assert_eq!(image.get_pixel(0, 0).0[0], 0, "half-valid footprint");
+        assert_eq!(image.get_pixel(1, 0).0[0], PAD_VALUE, "empty footprint");
+    }
+
+    #[test]
+    fn footprint_taps_split_straddling_samples_by_overlap() {
+        // 5 source samples onto 2 outputs: a step of 2.5, so sample 2
+        // straddles the boundary and is shared equally.
+        let taps = footprint_taps(5, 2);
+        assert_eq!(taps[0], vec![(0, 1.0)]);
+        assert_eq!(taps[2], vec![(0, 0.5), (1, 0.5)]);
+        assert_eq!(taps[4], vec![(1, 1.0)]);
+        // Every source sample is fully accounted for.
+        for t in &taps {
+            let total: f32 = t.iter().map(|(_, w)| w).sum();
+            assert!((total - 1.0).abs() < 1e-6);
         }
     }
 
@@ -603,9 +669,7 @@ mod tests {
         write_asymmetric_nc(&path, 40, 500);
         let reader = SourceReader::open(&path).unwrap();
         let renderer = Renderer::new(&reader);
-
-        let spec = OverviewSpec::new(500, 40, 100);
-        assert!(renderer.overview_rows_per_band(&spec, &RenderProfile::default_profile()) >= 1);
+        assert!(renderer.overview_rows_per_band() >= 1);
     }
 
     #[test]
@@ -616,8 +680,8 @@ mod tests {
         // and a huge one) blows up the per-band read if band sizing does
         // not account for it -- the overshoot #168 measured on a real
         // survey. `vertical_read_overhead` must shrink the band enough
-        // that the band's *actual* inner read (rows_per_band *
-        // source_rows_per_output_row + overhead) stays within budget.
+        // that the band's *actual* read (rows_per_band + overhead) stays
+        // within budget.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.nc");
         let height = 200;
@@ -640,14 +704,11 @@ mod tests {
         let source = super::super::topo::TopoSource::new(&reader, &geometry);
         let renderer = Renderer::new(&source);
 
-        let spec = OverviewSpec::new(width, geometry.raster_height, 100);
-        let profile = RenderProfile::default_profile();
-        let band = renderer.overview_rows_per_band(&spec, &profile);
+        let band = renderer.overview_rows_per_band();
         assert!(band >= 1);
 
         let overhead = source.vertical_read_overhead(0, width);
-        let source_rows_per_output_row = geometry.raster_height as f64 / spec.height.max(1) as f64;
-        let estimated_read_rows = (band as f64 * source_rows_per_output_row) as usize + overhead;
+        let estimated_read_rows = band + overhead;
         let bytes_per_source_row = width * std::mem::size_of::<f32>();
         assert!(
             estimated_read_rows * bytes_per_source_row <= OVERVIEW_READ_BUDGET_BYTES,

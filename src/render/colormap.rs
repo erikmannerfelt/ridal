@@ -378,7 +378,11 @@ fn normalize_to_u8(v: f32, min: f32, max: f32, contrast: f32, black_level: f32) 
 /// stretch that both render paths share, `None` where there was no valid
 /// source data. The paths differ only in what they make of the byte and
 /// of that `None`.
-fn normalized_pixel(raw: f32, profile: &RenderProfile, limits: (f32, f32)) -> Option<u8> {
+pub(crate) fn normalized_pixel(
+    raw: f32,
+    profile: &RenderProfile,
+    limits: (f32, f32),
+) -> Option<u8> {
     normalize_to_u8(
         to_display_domain(raw, profile.transform),
         limits.0,

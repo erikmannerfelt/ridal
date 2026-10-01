@@ -4,7 +4,7 @@
 //! catalog (M3) and render-service (M4/M5) components -- no new NetCDF,
 //! catalog, or rendering logic belongs in this module.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -15,6 +15,7 @@ use tokio::sync::Semaphore;
 use super::catalog::{Catalog, CatalogRoot, RevisionId};
 use crate::identity::{ProjectKey, RadargramId};
 use crate::project::store::DocumentStore;
+use crate::server::overview_cache::OverviewDiskCache;
 use crate::server::render_service::{RenderService, RenderServiceConfig};
 use crate::source::{AmplitudeSource, SourceReader};
 
@@ -165,6 +166,45 @@ fn record_catalog_summary(project: Option<&crate::project::Project>, catalog: &C
     }
 }
 
+/// The project's on-disk overview store (#180), after clearing out the
+/// revisions `catalog` no longer has. `None` without a project: a bare
+/// directory has nowhere of its own to keep a cache, so its overviews stay
+/// in memory as before.
+fn overview_disk_cache(
+    project: Option<&crate::project::Project>,
+    catalog: &Catalog,
+) -> Option<OverviewDiskCache> {
+    let project = project?;
+    // Creates and tags the directory, so a project made before the cache
+    // existed is marked as derived data before anything lands in it.
+    let cache_dir = match project.ensure_cache_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("Warning: overviews will not be kept on disk: {e}");
+            return None;
+        }
+    };
+    let cache = OverviewDiskCache::new(&cache_dir);
+    let live: HashSet<String> = catalog
+        .entries
+        .iter()
+        .map(|entry| entry.revision_id.to_string())
+        .collect();
+    cache.harvest(&live);
+    Some(cache)
+}
+
+fn with_overview_disk_cache(
+    service: RenderService,
+    cache: Option<&OverviewDiskCache>,
+    source_path: &StdPath,
+) -> RenderService {
+    match cache {
+        Some(cache) => service.with_overview_disk_cache(cache.clone(), source_path),
+        None => service,
+    }
+}
+
 impl AppState {
     /// Discover the catalog under `root` and eagerly open a
     /// [`RenderService`] for every entry. Eager rather than lazy: the
@@ -286,6 +326,7 @@ impl AppState {
 
         let catalog = Catalog::discover_roots(&roots, &overrides);
         record_catalog_summary(project.as_ref(), &catalog);
+        let overview_disk = overview_disk_cache(project.as_ref(), &catalog);
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
@@ -314,7 +355,11 @@ impl AppState {
             };
             let shape = reader.shape();
             let revision_id: RevisionId = entry.revision_id.clone();
-            let service = RenderService::new(reader, revision_id, config);
+            let service = with_overview_disk_cache(
+                RenderService::new(reader, revision_id, config),
+                overview_disk.as_ref(),
+                &absolute_path,
+            );
             radargrams.insert(
                 entry.radargram_id.as_str().to_string(),
                 Arc::new(OpenRadargram {
@@ -457,6 +502,7 @@ impl AppState {
             .unwrap_or_default();
         let catalog = Catalog::discover_roots(&self.roots, &overrides);
         record_catalog_summary(self.project.as_ref(), &catalog);
+        let overview_disk = overview_disk_cache(self.project.as_ref(), &catalog);
 
         let existing = self.catalog();
         let mut radargrams = HashMap::new();
@@ -487,7 +533,11 @@ impl AppState {
                 continue;
             };
             let shape = reader.shape();
-            let service = RenderService::new(reader, entry.revision_id.clone(), config);
+            let service = with_overview_disk_cache(
+                RenderService::new(reader, entry.revision_id.clone(), config),
+                overview_disk.as_ref(),
+                &path,
+            );
             radargrams.insert(
                 key,
                 Arc::new(OpenRadargram {

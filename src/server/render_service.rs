@@ -16,6 +16,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -26,6 +27,7 @@ use crate::render::renderer::Renderer;
 use crate::render::stats::sampled_amplitude_limits;
 use crate::render::topo::{self, ElevationRange, TopoGeometry, TopoSource, TopoUnavailable};
 use crate::server::catalog::RevisionId;
+use crate::server::overview_cache::{FileStamp, OverviewDiskCache};
 use crate::source::SourceReader;
 
 /// Bumped whenever a change to the resampling implementation would change
@@ -34,7 +36,15 @@ use crate::source::SourceReader;
 const RESAMPLER_VERSION: u32 = 1;
 /// Bumped whenever a change to the renderer/encoder pipeline would change
 /// rendered pixels or bytes for existing content.
-const RENDERER_VERSION: u32 = 1;
+///
+/// 2: overviews average colours rather than amplitudes (#300).
+const RENDERER_VERSION: u32 = 2;
+
+/// Widest overview kept on disk (#180). The index and map thumbnails are
+/// 512 px; the image-download route renders through the same call at any
+/// width up to full resolution, and every such download persisted would be
+/// a multi-megabyte file nobody is likely to ask for twice.
+const MAX_PERSISTED_OVERVIEW_WIDTH: usize = 1024;
 
 fn blake3_hex32(parts: &[&[u8]]) -> String {
     let mut hasher = blake3::Hasher::new();
@@ -348,6 +358,11 @@ pub struct RenderService {
     /// override changes what range `routes.rs` asks for, and a changed
     /// range simply misses this cache.
     topo_geometry: Option<(ElevationRange, Arc<TopoGeometry>)>,
+    /// The project's on-disk overview store and the stamp of the file this
+    /// service reads, or `None` when there is no project to keep one in
+    /// (a bare directory) or the file could not be stat'ed. See
+    /// [`Self::with_overview_disk_cache`].
+    overview_disk: Option<(OverviewDiskCache, FileStamp)>,
 }
 
 /// Hands each [`RenderService`] its own cache scope.
@@ -366,7 +381,23 @@ impl RenderService {
             scope: NEXT_SCOPE.fetch_add(1, Ordering::Relaxed),
             limits_cache: HashMap::new(),
             topo_geometry: None,
+            overview_disk: None,
         }
+    }
+
+    /// Keep this service's overviews on disk as well as in memory (#180),
+    /// so they survive a restart and a hit needs no read of the source.
+    ///
+    /// `source_path` is the file `reader` was opened from, stamped now: a
+    /// file rewritten under a running server is picked up by rediscovery,
+    /// which builds a new service and so a new stamp.
+    pub fn with_overview_disk_cache(
+        mut self,
+        cache: OverviewDiskCache,
+        source_path: &Path,
+    ) -> Self {
+        self.overview_disk = FileStamp::of(source_path).map(|stamp| (cache, stamp));
+        self
     }
 
     /// Entries in the shared cache, every service's included.
@@ -539,6 +570,25 @@ impl RenderService {
         if let Some(bytes) = self.cache.get(&key) {
             return Ok(bytes);
         }
+        let disk = self
+            .overview_disk
+            .as_ref()
+            .filter(|_| spec.width <= MAX_PERSISTED_OVERVIEW_WIDTH)
+            .cloned();
+        if let Some((disk, stamp)) = &disk {
+            let stored = disk.get(
+                &self.revision_id,
+                &variant,
+                *stamp,
+                spec.width,
+                spec.height,
+                profile.format,
+            );
+            if let Some(bytes) = stored {
+                self.cache.insert(key, bytes.clone());
+                return Ok(bytes);
+            }
+        }
         let (pinned, limits) = self.resolve_limits(profile)?;
         let bytes = match view {
             DatasetView::Standard => {
@@ -549,6 +599,18 @@ impl RenderService {
                 let source = TopoSource::new(&self.reader, &geometry);
                 Renderer::new(&source).render_overview(spec, &pinned, limits)?
             }
+        };
+        let bytes = match &disk {
+            Some((disk, stamp)) => disk.put(
+                &self.revision_id,
+                &variant,
+                *stamp,
+                spec.width,
+                spec.height,
+                profile.format,
+                bytes,
+            ),
+            None => bytes,
         };
         self.cache.insert(key, bytes.clone());
         Ok(bytes)
@@ -1038,6 +1100,100 @@ mod tests {
         // evicted despite 50 items existing.
         assert_eq!(cache.len(), 50);
         assert_eq!(cache.current_bytes(), 250);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn an_overview_on_disk_outlives_the_service_and_not_the_file() {
+        // A fresh service with its own empty memory cache is what a
+        // restart looks like. It must answer from disk -- proven by
+        // planting different bytes there -- until the file it reads
+        // changes, at which point the planted bytes must not be served.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_test_nc(&path, 120, 300);
+        let cache_dir = dir.path().join("cache");
+        let disk = OverviewDiskCache::new(&cache_dir);
+        let spec = OverviewSpec::new(300, 120, 100);
+        let profile = RenderProfile::default_profile();
+
+        let fresh_service = || {
+            let config = RenderServiceConfig::default();
+            RenderService::new(
+                SourceReader::open(&path).unwrap(),
+                test_revision_id(),
+                &config,
+            )
+            .with_overview_disk_cache(disk.clone(), &path)
+        };
+        let overview = |service: &mut RenderService| {
+            service
+                .get_or_render_overview(
+                    &spec,
+                    DatasetView::Standard,
+                    &profile,
+                    ElevationRange::NONE,
+                )
+                .unwrap()
+        };
+
+        let rendered = overview(&mut fresh_service());
+        let stored: Vec<_> = walk_files(&cache_dir.join("overviews"));
+        assert_eq!(stored.len(), 1, "{stored:?}");
+        assert_eq!(std::fs::read(&stored[0]).unwrap(), rendered);
+
+        std::fs::write(&stored[0], b"planted").unwrap();
+        assert_eq!(overview(&mut fresh_service()), b"planted");
+
+        // Rewritten in place: same revision id, different file.
+        write_test_nc(&path, 120, 300);
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(overview(&mut fresh_service()), rendered);
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn a_download_sized_overview_is_not_kept_on_disk() {
+        // The image-download route renders through the same call at any
+        // width; only thumbnail-sized overviews are worth a file.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        let width = MAX_PERSISTED_OVERVIEW_WIDTH + 100;
+        write_test_nc(&path, 10, width);
+        let cache_dir = dir.path().join("cache");
+        let config = RenderServiceConfig::default();
+        let mut service = RenderService::new(
+            SourceReader::open(&path).unwrap(),
+            test_revision_id(),
+            &config,
+        )
+        .with_overview_disk_cache(OverviewDiskCache::new(&cache_dir), &path);
+        service
+            .get_or_render_overview(
+                &OverviewSpec::new(width, 10, width),
+                DatasetView::Standard,
+                &RenderProfile::default_profile(),
+                ElevationRange::NONE,
+            )
+            .unwrap();
+        assert!(!cache_dir.join("overviews").exists());
+    }
+
+    fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(walk_files(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
     }
 
     #[test]
