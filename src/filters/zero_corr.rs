@@ -120,6 +120,10 @@ const MIN_NOISE_SAMPLES: usize = 4;
 /// Traces on each side that a per-trace pick is compared with.
 const OUTLIER_HALF_WINDOW: usize = 25;
 
+/// How large, relative to the direct wave's rise of the Coppens energy
+/// ratio, an earlier rise attached to it must be to count as its start.
+const LEADING_LOBE_RISE: f64 = 1. / 3.;
+
 /// Where the direct wave sits. Shared by every picker except `legacy`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Window {
@@ -592,7 +596,13 @@ fn pick_trace(
             // Stabilises the ratio in the noise, where both energies are
             // small; proportional to the noise energy of one window.
             let beta = (w as f32 * std * std).max(f32::MIN_POSITIVE);
-            let rise = coppens_onset(centred.slice(ndarray::s![..segment_end]), w, beta)?;
+            let rise = coppens_onset(
+                centred.slice(ndarray::s![..segment_end]),
+                w,
+                beta,
+                start,
+                3. * std,
+            )?;
             // An isolated blip also makes the ratio jump; move on to where
             // the signal stays out of the noise.
             sustained_from(centred.view(), rise, peak, 3. * std, run).or(Some(rise))
@@ -655,10 +665,29 @@ fn aic_onset(x: ArrayView1<f32>) -> Option<usize> {
         .map(|(k, _)| k)
 }
 
-/// The steepest rise of the edge-preserving-smoothed energy ratio
-/// `E1 / (E2 + beta)`, with `E1` the energy of the last `w` samples and
-/// `E2` the energy since the start.
-fn coppens_onset(x: ArrayView1<f32>, w: usize, beta: f32) -> Option<usize> {
+/// Where the edge-preserving-smoothed energy ratio `E1 / (E2 + beta)`
+/// rises into the direct wave, with `E1` the energy of the last `w`
+/// samples and `E2` the energy since the start.
+///
+/// The ratio rises in steps, each a run of consecutive increases placed at
+/// its steepest sample. The largest is the direct wave. An earlier step is
+/// where the wave starts instead when it is at least [`LEADING_LOBE_RISE`]
+/// of the largest, and the signal from it to the largest stays beyond
+/// `threshold` for two thirds of the samples. On a quiet record a weak
+/// leading lobe lifts the ratio about as much as the wave does, and the
+/// steepest rise then took the lobe on some traces and the wave on others.
+/// A noise bump after a short quiet stretch can lift it as much too, but
+/// falls back into the noise before the wave.
+///
+/// Only steps from `from` on count: the start of the noise window. Before
+/// it `E2` is so small that one sample makes the ratio leap.
+fn coppens_onset(
+    x: ArrayView1<f32>,
+    w: usize,
+    beta: f32,
+    from: usize,
+    threshold: f32,
+) -> Option<usize> {
     let n = x.len();
     if n < w + 2 {
         return None;
@@ -676,10 +705,46 @@ fn coppens_onset(x: ArrayView1<f32>, w: usize, beta: f32) -> Option<usize> {
         })
         .collect();
     let smooth = edge_preserving_smooth(&ratio, w);
-    (1..n)
-        .map(|i| (i, smooth[i] - smooth[i - 1]))
-        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
-        .map(|(i, _)| i)
+
+    struct Step {
+        at: usize,
+        steepest: f64,
+        size: f64,
+    }
+    let mut steps: Vec<Step> = Vec::new();
+    let mut rising = false;
+    for i in from.max(1)..n {
+        let rise = smooth[i] - smooth[i - 1];
+        if rise <= 0. {
+            rising = false;
+            continue;
+        }
+        if !rising {
+            steps.push(Step {
+                at: i,
+                steepest: rise,
+                size: 0.,
+            });
+            rising = true;
+        }
+        let step = steps.last_mut()?;
+        step.size += rise;
+        if rise > step.steepest {
+            step.at = i;
+            step.steepest = rise;
+        }
+    }
+    let wave = steps
+        .iter()
+        .max_by(|a, b| a.size.total_cmp(&b.size).then(b.at.cmp(&a.at)))?;
+    let beyond = |i: usize| x[i].abs() > threshold;
+    let attached =
+        |at: usize| 3 * (at..wave.at).filter(|&i| beyond(i)).count() >= 2 * (wave.at - at);
+    let lobe = steps
+        .iter()
+        .take_while(|s| s.at < wave.at)
+        .find(|s| s.size >= LEADING_LOBE_RISE * wave.size && attached(s.at));
+    Some(lobe.unwrap_or(wave).at)
 }
 
 /// For each sample, the mean of the least variable `w`-long window that
@@ -1351,6 +1416,70 @@ mod tests {
                 assert!((39..=42).contains(&p), "{method}: onset picked at {p}");
             }
         }
+    }
+
+    /// A quiet record whose direct wave starts with a weak, growing lobe:
+    /// the 12 samples before the wave at 60 of the mean trace of a
+    /// pulseEKKO 200 MHz recording, scaled to this noise. It reaches
+    /// ~18 noise standard deviations, 1/200 of the wave.
+    fn precursor_radargram(traces: usize) -> Array2<f32> {
+        const LOBE: [f32; 12] = [
+            0.42, 1.0, 1.04, 0.6, -0.28, -1.52, -2.28, -2.2, -0.69, 1.35, 3.9, 5.25,
+        ];
+        let mut data = noisy_radargram(&vec![60; traces], 0.001);
+        for mut column in data.columns_mut() {
+            for (i, v) in LOBE.iter().enumerate() {
+                column[48 + i] += v;
+            }
+        }
+        data
+    }
+
+    #[test]
+    fn a_weak_lobe_ahead_of_the_direct_wave_is_where_it_starts() {
+        // On a quiet record the lobe lifts the energy ratio about as much
+        // as the wave itself, so the steepest rise was the lobe on some
+        // traces and the wave on others, and a running median of the two
+        // jumped between them.
+        let data = precursor_radargram(60);
+        let picks = |scope: Scope| {
+            pick(
+                &data,
+                &settings(Method::Coppens, scope, 5., Reference::Onset, Margin::Auto),
+                1.,
+            )
+            .unwrap()
+            .unwrap()
+            .time_zero
+        };
+        // Within the lobe, which is out of the noise from 49; the wave
+        // starts at 60. Which of the lobe's rises a trace takes still
+        // varies a little, and the running median settles it.
+        let trace = picks(Scope::Trace);
+        assert!(trace.iter().all(|p| (49..=55).contains(p)), "{trace:?}");
+        let smooth = picks(Scope::Smooth);
+        assert!(smooth.iter().all(|&p| p == smooth[0]), "{smooth:?}");
+    }
+
+    #[test]
+    fn a_spike_at_the_start_of_the_record_is_not_the_rise() {
+        // A record that starts nearly silent: with almost no energy
+        // recorded yet, one small sample lifts the ratio more than the
+        // wave does. Searching from the start found such a spike on a
+        // quarter of the pulseEKKO traces.
+        let mut data = precursor_radargram(1);
+        data.slice_mut(ndarray::s![..7, 0]).fill(0.);
+        data[[7, 0]] = -1.;
+        let trace = data.column(0);
+        let std = trace.slice(ndarray::s![10..40]).std(1.);
+        let rise = coppens_onset(
+            trace.slice(ndarray::s![..80]),
+            6,
+            6. * std * std,
+            40,
+            3. * std,
+        );
+        assert!(matches!(rise, Some(49..=55)), "{rise:?}");
     }
 
     #[test]
