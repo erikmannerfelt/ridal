@@ -2555,27 +2555,29 @@ button.danger:disabled {
   padding: var(--space-1) var(--space-2);
 }
 
-/* A group's heading and its download menu on one line. The menu is what
- * ties the downloads to *this* group rather than the page. */
+/* A group's name with its controls on the line beneath it (#320). They
+ * were pushed to opposite ends of one row (margin-left: auto), which on a
+ * wide screen left the name and the buttons that act on it far apart. A
+ * column stacks them so the buttons read as belonging to the heading, and
+ * the buttons wrap among themselves on a narrow screen. */
 .group-heading {
   display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-  /* The h2 below has its margins zeroed so it aligns with the menu button,
-   * which also removed the gap that normally separates a heading from what
-   * it labels -- leaving the button sitting on the map. Put it back on the
-   * row instead, where wrapping cannot lose it. */
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  /* The h2 below has its margins zeroed, which also removed the gap that
+   * normally separates a heading from what it labels -- leaving the
+   * controls sitting on the map. Put it back here, where wrapping cannot
+   * lose it. */
   margin-bottom: var(--space-2);
 }
 
-/* Pushed to the right edge, so a group reads the same way a card does:
- * what it is on the left, what can be done to it on the right. */
+/* Immediately below and left-aligned with the name above. */
 .group-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  margin-left: auto;
 }
 
 .group-menu,

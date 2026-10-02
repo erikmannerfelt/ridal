@@ -228,13 +228,12 @@
   {% endif %}
   {% for group in groups %}
   <section class="group" id="group-{{ group.id }}">
-    {#- The heading and its downloads on one line: the menu acts on this
-        group, and putting it anywhere else would leave that ambiguous once
-        a page has several. -#}
+    {#- The name, then its controls on the line beneath it (#320). They were
+        pushed to opposite ends of the row, which on a wide screen left the
+        name and the buttons that act on it far apart. Stacked, the buttons
+        belong visibly to the heading above them and still wrap on a phone. -#}
     <div class="group-heading">
       <h2>{{ group.label }}</h2>
-      {#- Controls to the right of the name, the same way a card puts its
-          menu opposite its title. -#}
       <div class="group-actions">
         {#- Hides this group's cards, not its map (#314): a catalog with
             hundreds of radargrams is long because of the cards, and the
