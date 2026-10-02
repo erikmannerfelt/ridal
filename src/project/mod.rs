@@ -255,6 +255,19 @@ pub struct ProjectSection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
+    /// Short, plain-text project description (#285). Shown on the site's
+    /// project list and anywhere else a one-line summary is wanted, so it
+    /// is kept free of markup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Longer project description (#285). Shown at the top of the radargram
+    /// catalog, written in Markdown and rendered server-side with raw HTML
+    /// escaped -- it is admin-authored prose read by every member, so it is
+    /// trusted as *markup*, not as HTML.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description_long: Option<String>,
+
     /// Which layout this project is written in (#187). Unset means the
     /// layout that predates the key, which Ridal recognises and refuses
     /// rather than misreads -- see [`Project::open`].
@@ -848,6 +861,9 @@ impl Project {
         let config = ProjectConfig {
             project: ProjectSection {
                 name: name.map(str::to_string),
+                // Written only when an administrator sets one (#285).
+                description: None,
+                description_long: None,
                 format_version: Some(FORMAT_VERSION),
                 // Left unset so a project that never moved it follows the
                 // default, exactly as the cache does.
@@ -885,6 +901,8 @@ impl Project {
         // written a `[[basemaps]]` example whose `id` was a point spacing and
         // whose `url` was a basemap id. A name cannot slip by one.
         let data_dir_example = toml_string(DEFAULT_DATA_DIR);
+        let description_example = toml_string("Mass-balance survey, 2025 season");
+        let description_long_example = toml_string("Read the [field guide](https://example.org).");
         let radargram_roots = toml_string(&radargram_root);
         let cache_example = toml_string("/var/cache/ridal");
         let profile_example = toml_string("default");
@@ -915,6 +933,11 @@ impl Project {
              # tell whether it knows where everything is.\n\
              format_version = {FORMAT_VERSION}\n\
              {name_line}\
+             # A short, plain-text description for the project list, and a longer\n\
+             # Markdown description for the top of the radargram catalog. Both are\n\
+             # edited from Project settings in the browser.\n\
+             # description = {description_example}\n\
+             # description_long = {description_long_example}\n\
              # Where Ridal keeps its own data. Relative to this file unless absolute.\n\
              # data_dir = {data_dir_example}\n\
              \n\
@@ -1120,6 +1143,49 @@ impl Project {
     pub fn set_name(&self, name: Option<&str>) -> Result<(), ProjectError> {
         self.edit_marker(|document| {
             set_or_clear(document, "project", "name", name.map(toml_edit::value));
+            Ok(())
+        })
+    }
+
+    /// The short, plain-text description shown on a project list (#285).
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn description(&self) -> Option<String> {
+        self.read_config().project.description.clone()
+    }
+
+    /// The Markdown description shown at the top of the catalog (#285).
+    ///
+    /// Returned as the Markdown source; rendering to HTML happens at the
+    /// server boundary, which is the only place that knows how to escape it.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn description_long(&self) -> Option<String> {
+        self.read_config().project.description_long.clone()
+    }
+
+    /// Set or clear the project's descriptions (#285).
+    ///
+    /// Both together, so the settings page's one save is one write, the same
+    /// rule [`Project::set_defaults`] follows. An empty string clears the
+    /// key rather than storing a blank line in `ridal.toml`.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn set_description(
+        &self,
+        short: Option<&str>,
+        long: Option<&str>,
+    ) -> Result<(), ProjectError> {
+        self.edit_marker(|document| {
+            set_or_clear(
+                document,
+                "project",
+                "description",
+                short.filter(|text| !text.is_empty()).map(toml_edit::value),
+            );
+            set_or_clear(
+                document,
+                "project",
+                "description_long",
+                long.filter(|text| !text.is_empty()).map(toml_edit::value),
+            );
             Ok(())
         })
     }
@@ -1697,6 +1763,35 @@ mod tests {
         std::fs::write(radargrams.join("deep/b.nc"), vec![0u8; 2000]).unwrap();
 
         assert_eq!(project.size_bytes(), before + 3000);
+    }
+
+    #[test]
+    fn the_descriptions_round_trip_through_ridal_toml() {
+        // #285. Both descriptions live in `[project]` so a hand-edited file
+        // and a saved setting agree, and clearing removes the key.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        assert_eq!(project.description(), None);
+        assert_eq!(project.description_long(), None);
+
+        project
+            .set_description(Some("2025 season"), Some("Read the **guide**."))
+            .unwrap();
+        let reopened = Project::open(dir.path()).unwrap();
+        assert_eq!(reopened.description().as_deref(), Some("2025 season"));
+        assert_eq!(
+            reopened.description_long().as_deref(),
+            Some("Read the **guide**.")
+        );
+
+        // An empty string clears rather than storing a blank line. The
+        // commented example in the generated file is prose and stays.
+        reopened.set_description(Some(""), None).unwrap();
+        let cleared = Project::open(dir.path()).unwrap();
+        assert_eq!(cleared.description(), None);
+        assert_eq!(cleared.description_long(), None);
+        let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
+        assert!(text.contains("# description ="), "{text}");
     }
 
     #[test]

@@ -111,6 +111,8 @@ holds `ridal.toml`.
 ```toml
 [project]
 name = "Drønbreen 2025"
+description = "Mass-balance survey, 2025 season"
+description_long = "Read the [field guide](https://example.org)."
 format_version = 1
 
 [radargrams]
@@ -149,6 +151,16 @@ name_field = "Stake"
 
 `name`
 : A display name for the project.
+
+`description`
+: A short, plain-text description shown on the site's project list and
+  anywhere else a one-line summary is wanted. Set from Project settings in
+  the browser.
+
+`description_long`
+: A longer description shown at the top of the radargram catalog, written
+  in Markdown. Raw HTML in it is escaped, so it is rendered as text rather
+  than trusted. Set from Project settings in the browser.
 
 `format_version`
 : The layout the project is written in. Written by `ridal project init`;
