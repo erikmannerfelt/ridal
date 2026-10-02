@@ -177,6 +177,13 @@ struct DatasetSummary {
     processing_datetime_display: String,
     revision_id: String,
     shape: (usize, usize),
+    /// The track's total length in metres (#319), summed over its segments.
+    ///
+    /// `None` when the file has no readable track, which is not the same as
+    /// a zero length: a radargram whose coordinates are missing cannot say
+    /// how far it went, and the card leaves the row out rather than showing
+    /// a misleading `0 m`.
+    track_length_m: Option<f64>,
     /// Whether this radargram sits in the project rather than an external
     /// root (#147).
     ///
@@ -668,8 +675,26 @@ fn summarize(
         processing_datetime_display: format_datetime_for_display(&entry.processing_datetime),
         revision_id: entry.revision_id.to_string(),
         shape: entry.shape,
+        track_length_m: track_length_m(state, entry),
         unlisted: entry.unlisted,
     }
+}
+
+/// The total track length of `entry`, in metres (#319).
+///
+/// Reads the file's coordinate arrays to build the same trace-indexed track
+/// the maps use, so the number agrees with the track a user can download.
+/// `None` when the path will not resolve or the file has no usable track:
+/// the card then shows no length rather than `0 m`, which would be a claim
+/// about the survey rather than about the data.
+///
+/// A per-card file read, following #319's "read on demand" choice. The
+/// catalog listing caches pick counts for the same reason and may want to
+/// cache this too if a large catalog feels it.
+fn track_length_m(state: &AppState, entry: &super::catalog::CatalogEntry) -> Option<f64> {
+    let path = state.absolute_path(entry).ok()?;
+    let track = super::track::read_track_from_netcdf(&path).ok()?;
+    Some(track.segments.iter().map(|s| s.length_m).sum())
 }
 
 /// Which catalog entries a caller sees in a listing.

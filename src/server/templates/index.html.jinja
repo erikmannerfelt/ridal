@@ -100,6 +100,19 @@
       <summary>More info</summary>
       <dl class="card-meta">
         <dt>Size</dt><dd>{{ e.shape[1] }} traces &times; {{ e.shape[0] }} samples</dd>
+        {% if e.track_length_m is not none %}
+        {#- Metres below a kilometre, so the number agrees with the cursor
+            readout in the viewer; kilometres above, where metres would be a
+            five-digit figure. -#}
+        <dt>Track length</dt>
+        <dd>
+          {%- if e.track_length_m >= 1000 -%}
+            {{ "%.2f"|format(e.track_length_m / 1000) }} km
+          {%- else -%}
+            {{ "%.1f"|format(e.track_length_m) }} m
+          {%- endif -%}
+        </dd>
+        {% endif %}
         <dt>Path</dt><dd class="path">{{ e.relative_path }}</dd>
         <dt>Processed</dt><dd>{{ e.processing_datetime_display }}</dd>
       </dl>
