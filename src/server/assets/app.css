@@ -1169,6 +1169,14 @@ dialog th {
  * but a visible header would just be noise above two buttons. */
 .visually-hidden {
   position: absolute;
+  /* Pinned rather than left at its static position (#295). Unpinned, the
+   * actions label at the right edge of a horizontally scrolling table is
+   * positioned against the initial containing block, escapes the
+   * `.table-scroll` clip, and widens the document -- which on a phone makes
+   * the browser shrink to fit and centre dialogs off screen. It is 1px and
+   * clipped either way, and screen readers use DOM order, not position. */
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   overflow: hidden;
