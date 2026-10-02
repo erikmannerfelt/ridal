@@ -48,7 +48,8 @@
 //! [`Preferences::show_picks`] is the standing exception: it is a checkbox
 //! rather than a dropdown, a third "project default" state would need a
 //! control that does not exist yet, and there is no project layer under it
-//! to defer to.
+//! to defer to. [`Preferences::open_zoomed_out`] is the same kind of
+//! setting and follows it.
 
 #![cfg_attr(
     not(feature = "server"),
@@ -131,6 +132,28 @@ pub struct Preferences {
     /// a retired render profile does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basemap: Option<String>,
+    /// Whether the catalog opens with each group's radargrams listed, or
+    /// with them hidden behind the group's "Show all" button (#314).
+    ///
+    /// `None` falls through to the project's `[catalog]` default and then to
+    /// shown. A dropdown with "Project default" rather than a checkbox, so
+    /// unlike [`Preferences::show_picks`] both answers are kept as sent: a
+    /// person in a project that hides them can still say "show them to me".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_group_radargrams: Option<bool>,
+    /// Whether the viewer opens on the whole radargram rather than on its
+    /// start at full depth (#315).
+    ///
+    /// Per person and deliberately without a project layer: opening zoomed
+    /// in is what keeps a class of students opening radargrams at once from
+    /// asking the server to render every chunk of every one. Opening zoomed
+    /// out is a choice someone makes for themselves knowing that, not one
+    /// a project makes for everyone.
+    ///
+    /// A checkbox, so it follows [`Preferences::show_picks`]'s exception:
+    /// only `true` is stored, and unticking it stores absence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_zoomed_out: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -237,6 +260,8 @@ mod tests {
         assert!(preferences.theme.is_none());
         assert!(preferences.show_picks.is_none());
         assert!(preferences.basemap.is_none());
+        assert!(preferences.show_group_radargrams.is_none());
+        assert!(preferences.open_zoomed_out.is_none());
     }
 
     #[test]
@@ -253,6 +278,8 @@ mod tests {
                 level2_spacing: Some("10".to_string()),
                 level2_format: Some("csv".to_string()),
                 basemap: Some("osm".to_string()),
+                show_group_radargrams: Some(false),
+                open_zoomed_out: Some(true),
             },
             &Expectation::Absent,
         )
@@ -266,6 +293,8 @@ mod tests {
         assert_eq!(erik.level2_spacing.as_deref(), Some("10"));
         assert_eq!(erik.level2_format.as_deref(), Some("csv"));
         assert_eq!(erik.basemap.as_deref(), Some("osm"));
+        assert_eq!(erik.show_group_radargrams, Some(false));
+        assert_eq!(erik.open_zoomed_out, Some(true));
         // The point of the whole module: two people can disagree.
         assert_eq!(
             read(&store, &user("student")).unwrap(),
@@ -289,6 +318,8 @@ mod tests {
                 level2_spacing: None,
                 level2_format: None,
                 basemap: None,
+                show_group_radargrams: None,
+                open_zoomed_out: None,
             },
             &Expectation::Absent,
         )
@@ -299,7 +330,14 @@ mod tests {
         assert!(!text.contains("x_scale"), "{text}");
         // The same rule for every optional one: unset stays out of the file,
         // so a later project default still reaches this person.
-        for absent in ["theme", "show_picks", "level2_spacing", "level2_format"] {
+        for absent in [
+            "theme",
+            "show_picks",
+            "level2_spacing",
+            "level2_format",
+            "show_group_radargrams",
+            "open_zoomed_out",
+        ] {
             assert!(!text.contains(absent), "{absent} should be absent:\n{text}");
         }
         assert!(!text.contains("basemap"), "{text}");
@@ -335,6 +373,8 @@ mod tests {
                 level2_spacing: None,
                 level2_format: None,
                 basemap: None,
+                show_group_radargrams: None,
+                open_zoomed_out: None,
             },
             &Expectation::Absent,
         )

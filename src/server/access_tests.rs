@@ -1862,6 +1862,130 @@ async fn hiding_the_interpretations_is_remembered_per_person() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn opening_zoomed_out_is_a_personal_choice() {
+    // #315. Zoomed in stays the answer for everyone who has not chosen,
+    // since that is what bounds the render load of a busy class.
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = app_with(vec![
+        activated("erik", Role::Picker, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let viewer_uri = format!("/view/{RADARGRAM}");
+
+    let page = get(&app, &viewer_uri, Some(&erik)).await;
+    assert!(page.text.contains("openZoomedOut: false"), "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"open_zoomed_out": true}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["open_zoomed_out"], true);
+    let page = get(&app, &viewer_uri, Some(&erik)).await;
+    assert!(page.text.contains("openZoomedOut: true"), "{}", page.text);
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(page.text.contains("openZoomedOut: false"), "{}", page.text);
+
+    // Unticking it stores nothing, like the picks checkbox.
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"open_zoomed_out": false}),
+        Some(&erik),
+    )
+    .await;
+    let stored = std::fs::read_to_string(data(dir.path()).join("preferences/erik.json")).unwrap();
+    assert!(!stored.contains("open_zoomed_out"), "{stored}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn hiding_group_radargrams_cascades_from_the_project_to_the_person() {
+    // #314. Shown by default; a project may open on the headings instead,
+    // and a person may disagree with it either way.
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, app) = app_with(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    // The button arrives saying what pressing it will do.
+    let shown = |text: &str| text.contains(">Hide all</button>") && !text.contains(">Show all<");
+    let hidden = |text: &str| text.contains(">Show all</button>") && !text.contains(">Hide all<");
+
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(shown(&page.text), "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/settings",
+        &json!({"default_show_group_radargrams": false}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["default_show_group_radargrams"], false);
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(hidden(&page.text), "{}", page.text);
+    assert!(
+        page.text.contains("aria-expanded=\"false\""),
+        "{}",
+        page.text
+    );
+
+    // One person's own wins over it, for them alone -- and "shown" is kept
+    // as sent, since in this project it is not the same as deferring.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_group_radargrams": true}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["show_group_radargrams"], true);
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(shown(&page.text), "{}", page.text);
+    let page = get(&app, "/", Some(&erik)).await;
+    assert!(hidden(&page.text), "{}", page.text);
+
+    // Back to the project default by sending null.
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_group_radargrams": null}),
+        Some(&student),
+    )
+    .await;
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(hidden(&page.text), "{}", page.text);
+
+    // At the project layer, shown is the neutral answer and stores nothing.
+    put(
+        &app,
+        "/api/v1/settings",
+        &json!({"default_show_group_radargrams": true}),
+        Some(&erik),
+    )
+    .await;
+    let marker = std::fs::read_to_string(project_root(dir.path()).join("ridal.toml")).unwrap();
+    let live = marker
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .any(|l| l.contains("show_group_radargrams"));
+    assert!(!live, "{marker}");
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(shown(&page.text), "{}", page.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn the_download_defaults_cascade_from_the_project_to_the_person() {
     // #166, through the same cascade as every other setting: the project
     // says what a survey exports, a person may disagree, and the dialog

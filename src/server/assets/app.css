@@ -2531,7 +2531,8 @@ button.danger:disabled {
   margin-left: auto;
 }
 
-.group-menu {
+.group-menu,
+.group-toggle {
   flex: none;
 }
 

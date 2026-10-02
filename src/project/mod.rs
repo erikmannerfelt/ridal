@@ -237,6 +237,8 @@ pub struct ProjectConfig {
     pub render: RenderSection,
     #[serde(default)]
     pub export: ExportSection,
+    #[serde(default)]
+    pub catalog: CatalogSection,
     /// Which basemap the GUI's maps draw on (#177). An array of tables --
     /// `[[basemaps]]` -- rather than a section, since a project offers a
     /// list and lets each reader pick from it.
@@ -371,6 +373,21 @@ pub struct ExportSection {
     pub default_format: Option<String>,
 }
 
+/// How the radargram catalog opens (#314).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CatalogSection {
+    /// Whether each group's radargrams are listed when the catalog opens,
+    /// or hidden behind the group's "Show all" button. Unset means shown.
+    ///
+    /// A project default as well as a personal one: a survey with hundreds
+    /// of radargrams is a property of the project, and whoever set it up is
+    /// best placed to say the catalog should open on the group headings.
+    /// Each person can still override it, and each group's button changes
+    /// it for that page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_group_radargrams: Option<bool>,
+}
+
 /// The `[render]` defaults a project can carry, as one value.
 ///
 /// `None` on a field clears that key rather than leaving it alone: the
@@ -391,6 +408,15 @@ pub struct RenderDefaults {
 pub struct ExportDefaults {
     pub spacing: Option<String>,
     pub format: Option<String>,
+}
+
+/// The `[catalog]` defaults a project can carry, as one value (#314).
+///
+/// `None` on a field clears that key, on the same terms as
+/// [`RenderDefaults`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CatalogDefaults {
+    pub show_group_radargrams: Option<bool>,
 }
 
 /// Write `key` under `[table]`, creating the table, or remove it when the
@@ -881,6 +907,7 @@ impl Project {
             cache: CacheSection::default(),
             render: RenderSection::default(),
             export: ExportSection::default(),
+            catalog: CatalogSection::default(),
             // No basemaps of its own: a new project draws on the built-in
             // one, and adding to that is a deliberate act.
             basemaps: Vec::new(),
@@ -988,6 +1015,13 @@ impl Project {
              # dialog itself.\n\
              [export]\n\
              \n\
+             # How the radargram catalog opens. `show_group_radargrams = false`\n\
+             # opens it with each group's radargrams hidden behind its \"Show\n\
+             # all\" button, which helps once a project has hundreds of them.\n\
+             # Set it from Project settings in the browser. Left unset, they are\n\
+             # shown; a person can override it in their own settings.\n\
+             [catalog]\n\
+             \n\
              # Vector overlays every map can draw, off until switched on in\n\
              # its layer control. `name_field` and `description_field` name\n\
              # the feature properties the popup shows; the description is\n\
@@ -1069,11 +1103,11 @@ impl Project {
     /// Set (or clear) every project default the settings page edits, in the
     /// file and in memory.
     ///
-    /// All four keys in one call, and therefore in one version-conditional
+    /// Every key in one call, and therefore in one version-conditional
     /// write. Two calls would be two edits: a failure between them leaves
     /// the file holding half of what the form submitted, and two saves
     /// arriving together can interleave their halves. The form sends all
-    /// four every time, so there is no caller that wants one half alone.
+    /// of them every time, so there is no caller that wants one part alone.
     ///
     /// Reached through the settings page, so a CLI-only build never calls
     /// it -- same situation as the write half of the stores beside this.
@@ -1084,6 +1118,7 @@ impl Project {
         &self,
         render: &RenderDefaults,
         export: &ExportDefaults,
+        catalog: &CatalogDefaults,
     ) -> Result<(), ProjectError> {
         self.edit_marker(|document| {
             set_or_clear(
@@ -1109,6 +1144,12 @@ impl Project {
                 "export",
                 "default_format",
                 export.format.as_deref().map(toml_edit::value),
+            );
+            set_or_clear(
+                document,
+                "catalog",
+                "show_group_radargrams",
+                catalog.show_group_radargrams.map(toml_edit::value),
             );
             Ok(())
         })
@@ -1206,6 +1247,13 @@ impl Project {
             set_or_clear(document, "project", "created", Some(toml_edit::value(at)));
             Ok(())
         })
+    }
+
+    /// Whether the catalog should open with each group's radargrams listed
+    /// (#314). `None` means shown.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn default_show_group_radargrams(&self) -> Option<bool> {
+        self.read_config().catalog.show_group_radargrams
     }
 
     /// The point spacing the download dialogs should open on (#166).
@@ -1946,6 +1994,7 @@ mod tests {
                     xscale: None,
                 },
                 &ExportDefaults::default(),
+                &CatalogDefaults::default(),
             )
             .unwrap();
     }
@@ -2207,6 +2256,7 @@ mod tests {
                     xscale: Some(2.0),
                 },
                 &ExportDefaults::default(),
+                &CatalogDefaults::default(),
             )
             .unwrap();
 
@@ -2283,6 +2333,7 @@ mod tests {
                     xscale: None,
                 },
                 &ExportDefaults::default(),
+                &CatalogDefaults::default(),
             )
             .unwrap();
         assert_eq!(reopened.default_profile().as_deref(), Some("positive"));
@@ -2303,6 +2354,7 @@ mod tests {
                     xscale: Some(2.0),
                 },
                 &ExportDefaults::default(),
+                &CatalogDefaults::default(),
             )
             .unwrap();
 
@@ -2326,6 +2378,7 @@ mod tests {
                     xscale: Some(4.0),
                 },
                 &ExportDefaults::default(),
+                &CatalogDefaults::default(),
             )
             .unwrap();
         // Back to 1x, which is stored as absence, while the profile stays.
@@ -2336,6 +2389,7 @@ mod tests {
                     xscale: None,
                 },
                 &ExportDefaults::default(),
+                &CatalogDefaults::default(),
             )
             .unwrap();
 

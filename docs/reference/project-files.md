@@ -130,6 +130,9 @@ default_xscale = 2.0
 default_spacing = "10"
 default_format = "geojson"
 
+[catalog]
+show_group_radargrams = false
+
 [map]
 default_basemap = "local-orthophoto"
 built_in_basemap = true
@@ -215,6 +218,14 @@ name_field = "Stake"
 `default_format`
 : The format export dialogs start with: `geojson` (WGS84), `geojson-native`
   (the radargram's own CRS) or `csv`. Default: `geojson`.
+
+### `[catalog]`
+
+`show_group_radargrams`
+: Whether each group in the radargram catalog lists its radargrams when the
+  page opens. `false` opens the catalog on the group headings and maps, with
+  each group's **Show all** button listing its radargrams. A person can
+  override it in their own settings. Default: `true`.
 
 ### `[map]`
 

@@ -98,6 +98,33 @@
               them.
             </span>
           </label>
+          {#- #315. Only a personal choice: zoomed in is what keeps many
+              people opening radargrams at once from rendering every chunk
+              of every one. -#}
+          <label class="settings-field checkbox">
+            <input type="checkbox" id="my-open-zoomed-out">
+            Open radargrams zoomed out
+            <span class="hint">
+              Shows the whole radargram at once instead of its start at full
+              depth. Quicker to get an overview, but the server has to render
+              all of it before anything is sharp, so leave it off on a busy
+              server.
+            </span>
+          </label>
+          {#- #314. Each group's own button changes it for that page. -#}
+          <label class="settings-field">
+            <span class="settings-label">Radargrams in the catalog</span>
+            <select id="my-show-group-radargrams">
+              <option value="">Project default</option>
+              <option value="true">Shown</option>
+              <option value="false">Hidden</option>
+            </select>
+            <span class="hint">
+              Whether each group lists its radargrams when the catalog opens.
+              Hidden is easier to find your way around with many; each
+              group&rsquo;s &ldquo;Show all&rdquo; button still lists them.
+            </span>
+          </label>
           {#- #166. The two download dialogs open on these. -#}
           <label class="settings-field">
             <span class="settings-label">Layer point spacing</span>
@@ -214,6 +241,21 @@
           <select id="default-format" {% if not can_edit_project %}disabled{% endif %}>
             <option value="">Loading&hellip;</option>
           </select>
+        </label>
+        {#- #314 at the project layer. Shown is the built-in answer, so it
+            is stored as absence. -#}
+        <label class="settings-field">
+          <span class="settings-label">Radargrams in the catalog</span>
+          <select id="default-show-group-radargrams" {% if not can_edit_project %}disabled{% endif %}>
+            <option value="">Shown</option>
+            <option value="false">Hidden</option>
+          </select>
+          <span class="hint">
+            Whether each group lists its radargrams when the catalog opens.
+            Hiding them makes a project with hundreds of radargrams open on
+            its group headings and maps; each group&rsquo;s &ldquo;Show
+            all&rdquo; button lists them.
+          </span>
         </label>
         {% if can_edit_project %}
           <button type="submit">Save project defaults</button>
