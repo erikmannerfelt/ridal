@@ -102,7 +102,8 @@ pub enum Step {
     ///
     /// `method` decides how each trace's direct wave is found, and so what
     /// the traces are aligned on. `coppens` takes the steepest rise of the
-    /// smoothed energy ratio. `first_break` takes the first sample more than
+    /// smoothed energy ratio, or the rise of a weaker leading lobe that runs
+    /// into it out of the noise. `first_break` takes the first sample more than
     /// `sigma` noise standard deviations out of the noise, and mostly agrees
     /// with `coppens`. `aic` splits the record where it best divides into
     /// noise and signal, which puts it at the start of a gradual rise, often
