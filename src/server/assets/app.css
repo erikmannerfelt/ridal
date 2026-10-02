@@ -2450,11 +2450,22 @@ button.danger:disabled {
  * keeps the look of a menu item from `.site-menu > ul button`. */
 .display-menu > ul > li > label {
   display: grid;
-  grid-template-columns: 8rem 1fr 3rem;
+  grid-template-columns: 8rem minmax(0, 1fr) 3rem;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
+}
+
+/* A range input's default width (~129px in Chromium, plus margins) is wider
+ * than the slider column, and a plain `1fr` column will not shrink below
+ * its content, so the value column was pushed past the panel's edge. The
+ * `minmax(0, 1fr)` above lets the column shrink; this makes the slider
+ * fill it rather than keep its own width. */
+.display-menu input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
 }
 
 .display-menu label > select {
@@ -2471,6 +2482,18 @@ button.danger:disabled {
   max-width: 22rem;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
+}
+
+/* A checkbox and its text, not a label/control/value row. */
+.display-menu > ul > li.display-smoothing > label {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* Set by the viewer's smoothing toggle (#305), and only while every sample
+ * covers at least one device pixel, so it never drops samples. */
+.leaflet-pane.no-smoothing img {
+  image-rendering: pixelated;
 }
 
 #image-dialog {

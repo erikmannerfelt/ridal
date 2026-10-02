@@ -1706,6 +1706,58 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
   restore();
 })();
 
+/* --- Display smoothing (#305) ----------------------------------------------
+ *
+ * The browser smooths each chunk on its own when it enlarges it, and cannot
+ * blend across the edge into the next chunk: the last half sample is held
+ * flat and then steps. Zoomed in, that reads as a seam at every chunk
+ * boundary although the data there is continuous. Turning smoothing off
+ * draws each sample as a block, so a chunk edge is just another sample
+ * edge, which answers whether a seam is in the data.
+ *
+ * Only while every sample covers at least one device pixel on both axes.
+ * Shrinking without smoothing keeps one sample in N and drops the rest,
+ * which would hide data rather than show it. The horizontal factor includes
+ * the x-scale, and both include the device pixel ratio, since a high-DPI
+ * screen enlarges a 1:1 view too.
+ *
+ * Remembered in this browser only, for every profile: unlike contrast it
+ * does not touch colours, so it applies to colormapped profiles as well.
+ */
+(function setupDisplaySmoothing() {
+  const toggle = document.getElementById('display-smoothing');
+  if (!toggle) return;
+  const pane = map.getPane('radargram-image');
+  const STORAGE_KEY = 'ridal.display.smoothing.v1';
+
+  try {
+    toggle.checked = localStorage.getItem(STORAGE_KEY) !== 'off';
+  } catch (_) {
+    // Storage absent or blocked: the default (smoothing on) stands.
+  }
+
+  function apply() {
+    const vertical = 2 ** map.getZoom() * (window.devicePixelRatio || 1);
+    const enlarged = Math.min(vertical, vertical * xScale) >= 1;
+    pane.classList.toggle('no-smoothing', !toggle.checked && enlarged);
+  }
+
+  toggle.addEventListener('change', () => {
+    try {
+      if (toggle.checked) localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY, 'off');
+    } catch (_) {
+      // Not remembered; see above.
+    }
+    apply();
+  });
+  map.on('zoomend', apply);
+  document.getElementById('xscale-select').addEventListener('change', apply);
+
+  toggle.closest('li').hidden = false;
+  apply();
+})();
+
 /* --- Topographic correction (#168) ---------------------------------------
  *
  * A render-time-only vertical shear of the existing `data` array -- see
