@@ -73,13 +73,6 @@ async fn serve_gui(
     serve(router, IpAddr::from([127, 0, 0, 1]), 0, &home, open_browser).await
 }
 
-/// Say so when a project still holds accounts from before sites (#214).
-///
-/// `ridal gui` has no accounts, so they are simply not used: its one person
-/// is the local user whatever the file says. Worth a line, because someone
-/// who remembers signing in to this project will otherwise wonder where the
-/// sign-in went. A site refuses such a project outright
-/// ([`Site::project`]), since there the accounts would matter.
 /// Remove upload temporaries a crash left in a project, saying what went
 /// (#302). A tidy start; a failure is a warning rather than refusal to
 /// serve, since the catalog already skips these files.
@@ -97,6 +90,13 @@ fn sweep_upload_temps(project: &crate::project::Project) {
     }
 }
 
+/// Say so when a project still holds accounts from before sites (#214).
+///
+/// `ridal gui` has no accounts, so they are simply not used: its one person
+/// is the local user whatever the file says. Worth a line, because someone
+/// who remembers signing in to this project will otherwise wonder where the
+/// sign-in went. A site refuses such a project outright
+/// ([`Site::project`]), since there the accounts would matter.
 fn warn_about_project_accounts(project: &crate::project::Project) {
     let Ok(Some(document)) = project
         .documents()

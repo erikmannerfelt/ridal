@@ -52,6 +52,12 @@ pub struct CatalogEntry {
     /// states about itself.
     pub elevation_min: Option<f64>,
     pub elevation_max: Option<f64>,
+    /// The track's total length in metres, summed over its segments (#319).
+    ///
+    /// Read once here rather than per card on every page load, which would
+    /// open every file in the catalog twice per request. `None` when the
+    /// file has no readable track, which is not a length of zero.
+    pub track_length_m: Option<f64>,
     /// What the file said, before the project's overrides (#145).
     ///
     /// Kept beside the resolved values so the Edit properties dialog can
@@ -462,6 +468,9 @@ impl Catalog {
                 unlisted: false,
                 elevation_min: None,
                 elevation_max: None,
+                track_length_m: super::track::read_track_from_netcdf(&candidate.path)
+                    .ok()
+                    .map(|track| track.segments.iter().map(|s| s.length_m).sum()),
                 root: candidate.root,
                 from_file: FileMetadata {
                     display_name: display_name.clone(),
@@ -1818,6 +1827,7 @@ mod tests {
             unlisted: false,
             elevation_min: None,
             elevation_max: None,
+            track_length_m: None,
             from_file: FileMetadata::default(),
         };
         assert_eq!(entry.effective_label(), "Kroppbreen line 1");
