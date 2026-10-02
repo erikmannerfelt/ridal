@@ -17,6 +17,82 @@ pub fn parse_step_list(steps: &str) -> Result<Vec<String>, String> {
     crate::steps::split_step_list(steps)
 }
 
+/// Start an external tool (`projinfo`, `cs2cs`, the GDAL utilities)
+/// without handing it the process's open NetCDF files.
+///
+/// Every subprocess Ridal starts goes through this (#129). HDF5 opens files
+/// without close-on-exec and locks them with `flock`, and that lock belongs
+/// to the open file description, which a child shares. A tool started from
+/// any thread while another thread has a NetCDF file open would hold that
+/// file's lock until it exits, and opening the same file in a conflicting
+/// mode meanwhile -- reading back what was just written, or writing what
+/// was just read -- fails with `NC_EHDFERR` (-101).
+///
+/// Two parts, because either alone leaves a gap:
+///
+/// - The child marks every descriptor above stderr close-on-exec, so the
+///   tool itself holds nothing. That alone still leaves the child holding
+///   them from `fork` until `exec`, about one reopen in a hundred under
+///   load.
+/// - The spawn happens under the lock the `netcdf` crate takes for every
+///   call, so no file is closed or opened in that window. `spawn` returns
+///   only once `exec` has succeeded, which is when the window ends.
+///
+/// CI also sets `HDF5_USE_FILE_LOCKING=FALSE` (#154), which hides the
+/// failure rather than preventing it, and only there.
+pub fn spawn_tool(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: the closure runs between fork and exec, where only
+        // async-signal-safe calls are allowed. It makes nothing but the
+        // `close_range` and `fcntl` system calls, and allocates nothing.
+        unsafe {
+            command.pre_exec(close_inherited_descriptors_on_exec);
+        }
+    }
+    let _guard = netcdf_sys::libnetcdf_lock.lock();
+    command.spawn()
+}
+
+/// Mark every descriptor above stderr close-on-exec, in a forked child.
+///
+/// Close-on-exec rather than closed: std's own error pipe to the parent is
+/// among them and must stay open until `exec` succeeds.
+#[cfg(unix)]
+fn close_inherited_descriptors_on_exec() -> std::io::Result<()> {
+    // One call on Linux 5.11 and later. An older kernel refuses it, which
+    // falls through to the loop below.
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: a plain system call on integers.
+        let marked = unsafe {
+            libc::close_range(
+                3,
+                libc::c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC as libc::c_int,
+            )
+        };
+        if marked == 0 {
+            return Ok(());
+        }
+    }
+    // SAFETY: plain system calls on integers. A descriptor that is not open
+    // fails with EBADF, which is the answer wanted for it.
+    let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    let limit = if limit > 0 {
+        limit as libc::c_int
+    } else {
+        1024
+    };
+    for fd in 3..limit {
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
+    Ok(())
+}
+
 /// Read a text file and return all lines as a vec
 ///
 /// # Arguments
@@ -473,6 +549,54 @@ impl std::convert::From<Resampler<f32>> for Resampler<f64> {
 #[cfg(test)]
 mod tests {
     use ndarray::Array1;
+
+    /// The files a running process has open, by `/proc`.
+    #[cfg(target_os = "linux")]
+    fn open_files_of(pid: u32) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .unwrap()
+            .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
+            .collect()
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(netcdf)]
+    fn a_tool_does_not_inherit_an_open_netcdf_file() {
+        // #129: a child holding an HDF5 descriptor holds its lock, and the
+        // file cannot be reopened until the child exits. Checked by what
+        // the child has open rather than by provoking -101, because CI turns
+        // HDF5's locking off (#154) and the failure could not show there.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("open.nc");
+        let file = netcdf::create(&path).unwrap();
+
+        let holds_the_file = |mut child: std::process::Child| {
+            let held = open_files_of(child.id()).contains(&path);
+            child.kill().unwrap();
+            child.wait().unwrap();
+            held
+        };
+        // The control: without the helper the child does inherit it. If
+        // this starts failing, HDF5 has begun opening files close-on-exec
+        // and `spawn_tool` no longer has anything to do.
+        assert!(
+            holds_the_file(
+                std::process::Command::new("sleep")
+                    .arg("30")
+                    .spawn()
+                    .unwrap()
+            ),
+            "a plain Command was expected to inherit HDF5's descriptor"
+        );
+        assert!(
+            !holds_the_file(
+                super::spawn_tool(std::process::Command::new("sleep").arg("30")).unwrap()
+            ),
+            "a tool started through spawn_tool inherited an open NetCDF file"
+        );
+        drop(file);
+    }
 
     #[test]
     fn test_read_step_list() {

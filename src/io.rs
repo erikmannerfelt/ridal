@@ -1229,10 +1229,10 @@ mod tests {
 
     use super::{gssi_antenna_mhz, load_cor, load_dzt, load_gssi_dzg, load_gssi_dzt, load_rad};
 
-    /// The NetCDF tests depend on HDF5 file locking being off (#129), which
-    /// the workflow arranges with an environment variable -- a mechanism
-    /// nothing in the code points at, and therefore one that would quietly
-    /// stop being true.
+    /// CI turns HDF5 file locking off (#129) as a second guard behind
+    /// `tools::spawn_tool`, which is the fix on Unix. The workflow arranges
+    /// it with an environment variable -- a mechanism nothing in the code
+    /// points at, and therefore one that would quietly stop being true.
     ///
     /// Asserted rather than assumed. The first attempt at this fix put the
     /// variable in `.cargo/config.toml`, which is gitignored for the local
@@ -1240,9 +1240,8 @@ mod tests {
     /// never saw it. This test is what said so, immediately, instead of the
     /// flake simply continuing.
     ///
-    /// Only under CI, because that is where the setting lives and where the
-    /// flake happens. A developer who wants the same protection can export
-    /// it or add it to their own `.cargo/config.toml`.
+    /// Only under CI, because that is where the setting lives. A developer
+    /// on Linux or macOS does not need it.
     #[test]
     fn hdf5_file_locking_is_disabled_for_the_test_run() {
         if std::env::var("CI").is_err() {
