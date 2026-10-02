@@ -49,11 +49,13 @@ pub enum Step {
     ///
     /// Indices are zero-based and the end is exclusive; `-1` means "to the
     /// end". Clip to the first 500 samples: `subset(0 -1 0 500)`. Clip to the
-    /// first 300 traces: `subset(0 300)`.
+    /// first 300 traces: `subset(0 300)`. At least one argument is required;
+    /// the rest keep their defaults, so `subset(max_sample=1000)` crops the
+    /// height on its own.
     #[command(rename_all = "snake_case")]
     Subset {
         /// First trace to keep.
-        #[arg(long)]
+        #[arg(long, default_value_t = 0)]
         min_trace: u32,
         /// Trace to stop before, or -1 for the last one.
         #[arg(long, default_value = "-1")]
@@ -782,6 +784,7 @@ pub fn resolve(raw: &RawStep) -> Result<ParsedStep, StepError> {
         .subcommand_matches(&raw.name)
         .ok_or_else(|| at_step(format!("clap lost the step `{}`", raw.name)))?;
     step.validate().map_err(at_step)?;
+    step.validate_sources(sub_matches).map_err(at_step)?;
     let unused = step.unused_args();
     for (name, setting) in &unused {
         let name = *name;
@@ -914,6 +917,32 @@ impl Step {
             } if deep < shallow_end => Err(format!(
                 "`deep` ({deep} ns) is inside the shallow window, which ends at {shallow_end} ns"
             )),
+            _ => Ok(()),
+        }
+    }
+
+    /// Rejections that depend on *which* arguments were written, not only on
+    /// their values.
+    ///
+    /// `ArgMatches` separates a value the caller wrote from one clap filled
+    /// in from a default. That is the difference `subset` needs: every
+    /// argument has a default, but a bare `subset` is meaningless, so at
+    /// least one has to have been written out.
+    fn validate_sources(&self, matches: &clap::ArgMatches) -> Result<(), String> {
+        match self {
+            Step::Subset { .. } => {
+                const ARGUMENTS: [&str; 4] = ["min_trace", "max_trace", "min_sample", "max_sample"];
+                let given = ARGUMENTS.iter().any(|name| {
+                    matches.value_source(name) == Some(clap::parser::ValueSource::CommandLine)
+                });
+                if given {
+                    Ok(())
+                } else {
+                    Err("`subset` needs at least one of `min_trace`, `max_trace`, \
+                         `min_sample` and `max_sample`"
+                        .into())
+                }
+            }
             _ => Ok(()),
         }
     }
@@ -1262,6 +1291,28 @@ mod tests {
     }
 
     #[test]
+    fn subset_needs_one_argument_but_not_min_trace() {
+        // #298: cropping the height is a natural subset on its own, and the
+        // old required `min_trace` was only there to keep `subset()` from
+        // being called bare.
+        assert_eq!(
+            one("subset(max_sample=1000)").unwrap().step,
+            Step::Subset {
+                min_trace: 0,
+                max_trace: End(None),
+                min_sample: 0,
+                max_sample: End(Some(1000)),
+            }
+        );
+        let err = one("subset").unwrap_err();
+        assert!(
+            err.message.contains("needs at least one"),
+            "{}",
+            err.message
+        );
+    }
+
+    #[test]
     fn a_background_window_is_all_traces_or_an_odd_count() {
         let traces = |s: &str| match one(s).unwrap().step {
             Step::BackgroundRemoval { traces, .. } => traces,
@@ -1311,7 +1362,7 @@ mod tests {
             ("dewow(abc)", vec!["invalid value `abc` for `window`"]),
             ("dewow(5 median 6)", vec!["at most 2 argument"]),
             ("dewow(window=5, window=6)", vec!["more than once"]),
-            ("subset", vec!["requires the argument `min_trace`"]),
+            ("subset", vec!["needs at least one of `min_trace`"]),
             ("subset(0 -2)", vec!["for `max_trace`", "-1 for the end"]),
             (
                 "bandpass(q=1, 0.2)",

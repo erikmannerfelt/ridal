@@ -7,14 +7,14 @@ Every processing step, generated from Ridal itself. `ridal steps --describe-all`
 
 A step is written as its name, optionally followed by its arguments in parentheses. Arguments can be given in order, separated by spaces, or by name: `bandpass(0.1 0.9)` and `bandpass(low=0.1, high=0.9)` are the same step. Arguments that are left out take the defaults shown.
 
-```{step} subset(min_trace, max_trace=-1, min_sample=0, max_sample=-1)
+```{step} subset(min_trace=0, max_trace=-1, min_sample=0, max_sample=-1)
 Subset the data in x (traces) and/or y (samples).
 
-Indices are zero-based and the end is exclusive; `-1` means "to the end". Clip to the first 500 samples: `subset(0 -1 0 500)`. Clip to the first 300 traces: `subset(0 300)`.
+Indices are zero-based and the end is exclusive; `-1` means "to the end". Clip to the first 500 samples: `subset(0 -1 0 500)`. Clip to the first 300 traces: `subset(0 300)`. At least one argument is required; the rest keep their defaults, so `subset(max_sample=1000)` crops the height on its own.
 
 **Arguments**
 
-- `min_trace` (required): First trace to keep
+- `min_trace` (default `0`): First trace to keep
 - `max_trace` (default `-1`): Trace to stop before, or -1 for the last one
 - `min_sample` (default `0`): First sample to keep
 - `max_sample` (default `-1`): Sample to stop before, or -1 for the last one
