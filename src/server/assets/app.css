@@ -1150,6 +1150,14 @@ dialog th {
   white-space: nowrap;
 }
 
+/* A table wider than the screen pans sideways instead of stretching the
+ * page (#295). The scroll lives on a wrapper so the table keeps its table
+ * layout -- a long description or expression is what usually overflows. */
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
 .layers-table {
   border-collapse: collapse;
   width: 100%;
@@ -2871,8 +2879,11 @@ button.danger:disabled {
 
 /* The shared derived-item editor (app.js). The range fields are disabled as a
  * group until the checkbox is on, so the control reads as one choice. */
+/* `min(...)`: the id selector would otherwise beat `dialog`'s own
+ * `max-width: 90vw`, and the dialog would be 42rem wide -- wider than a
+ * phone -- on a narrow screen (#295). */
 #derived-editor {
-  max-width: 42rem;
+  max-width: min(42rem, 90vw);
 }
 
 #derived-range-fields {

@@ -43,6 +43,7 @@
 
   <div id="layers-error" class="warning" hidden></div>
 
+  <div class="table-scroll">
   <table id="layers-table" class="layers-table">
     <thead>
       <tr>
@@ -58,8 +59,9 @@
         <th scope="col"><span class="visually-hidden">Actions</span></th>
       </tr>
     </thead>
-    <tbody></tbody>
+    <tbody>    </tbody>
   </table>
+  </div>
 
   <p id="layers-empty" class="empty" hidden>No layers defined yet.</p>
 
@@ -138,6 +140,7 @@
     </p>
     <div id="derived-error" class="warning" hidden></div>
     <div id="derived-actions"></div>
+    <div class="table-scroll">
     <table id="derived-table" class="layers-table">
       <thead>
         <tr>
@@ -156,6 +159,7 @@
       </thead>
       <tbody></tbody>
     </table>
+    </div>
     <p id="derived-empty" class="empty" hidden>No derived items defined yet.</p>
   </section>
 {% endblock %}
