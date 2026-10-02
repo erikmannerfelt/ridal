@@ -125,6 +125,14 @@ const RIDAL = Object.freeze({
   siteApiBase: document.body.dataset.siteApiBase || "/api/v1",
   pageBase: document.body.dataset.pageBase || "",
 
+  /* Where the documentation lives, written on the body by the server
+   * (#293). The dialog is built in JS, so it cannot interpolate the
+   * template global; it reads this instead. The literal is the fallback
+   * for a page rendered by an older template, and must match the global
+   * in `templates.rs`. */
+  docsBase:
+    document.body.dataset.docsBase || "https://ridal.readthedocs.io/en/stable/",
+
   /* The basemaps this page may draw on, as the server resolved them (#177):
    * the project's own, with Ridal's built-in ESRI World Imagery first unless
    * the project switched it off. Every optional value arrives resolved, so
@@ -1161,8 +1169,8 @@ const RIDAL = Object.freeze({
    * outcome than one that is slightly awkward in both places.
    *
    * The one thing that cannot be shared is the live preview, which needs a
-   * radargram: the caller passes `preview`, and when it is absent the dialog
-   * says there is nothing to preview against rather than looking broken.
+   * radargram: the caller passes `preview`, and when it is absent the hint
+   * simply describes what the item is rather than promising a preview.
    *
    * `open({ item, items, unusable, canRelease, preview, onSaved, onClose })`
    * where `item` is an existing item or `null`, `items` is every item the
@@ -1212,7 +1220,7 @@ const RIDAL = Object.freeze({
       // Static markup only; every value that comes from a document is set
       // through `.value`/`.textContent` below, never interpolated here.
       dialog.innerHTML = `
-        <h2 id="derived-editor-title">New derived expression</h2>
+        <h2 id="derived-editor-title">New derived item</h2>
         <p class="hint" id="derived-editor-hint"></p>
         <div class="add-layer-fields">
           <label>Name <input id="derived-name" type="text" autocomplete="off"></label>
@@ -1233,6 +1241,9 @@ const RIDAL = Object.freeze({
           <span class="tok-reduce">Highlighted functions</span> combine every
           contributor into one number; the rest work on each contributor
           separately.
+          <a class="docs-help" href="${RIDAL.docsBase}reference/expressions.html"
+             target="_blank" rel="noopener"
+             title="The derived item expression reference">?</a>
         </p>
         <p class="editor-status" id="derived-status" role="status" aria-live="polite"></p>
         <p class="editor-warning" id="derived-unusable" hidden></p>
@@ -1484,10 +1495,10 @@ const RIDAL = Object.freeze({
 
       fields.title.textContent = item
         ? `Edit '${item.name || item.id}'`
-        : "New derived expression";
+        : "New derived item";
       fields.hint.textContent = newOptions.preview
-        ? "A Rhai expression over the layer ids and derived items. The line is previewed on the radargram as you type, without saving."
-        : "A Rhai expression over the layer ids and derived items. There is no radargram on this page, so there is no live preview; the expression is checked when you save.";
+        ? "An expression over this project's layers and derived items, such as median(bed). It is previewed on the radargram as you type, without saving."
+        : "An expression over this project's layers and derived items, such as median(bed). The result is a new item you can name, style, list and export.";
       fields.name.value = item ? item.name : "";
       fields.id.value = item ? item.id : "";
       // Ids are immutable (#206): shown but not editable when editing.

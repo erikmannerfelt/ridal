@@ -95,3 +95,53 @@ changes that affect existing data, scripts or servers.
 
 The first release with the browser GUI, interpretation, accounts and
 `ridal render`.
+
+### Browser GUI
+
+- A web server and browser GUI for processed radargrams (#125).
+  {doc}`../guide/gui` opens the catalog, grouped by survey with a track map,
+  and the viewer with its cursor readout and render-profile menu.
+- Catalog metadata can be overridden without reprocessing — display name,
+  group and **Unlisted** (#155) — and external radargram roots can be served
+  read-only with the project on top (#158).
+- Radargrams can be added and removed from the browser (#161), replaced with
+  a new revision (#165), and picks drawn on an earlier revision are shown on
+  the current one (#163, #164).
+- A topographically corrected view, in the viewer and as a download (#168,
+  #169).
+- More basemaps than ESRI World Imagery, and a basic overlay manager (#177,
+  #185).
+- Display settings: theme, pick visibility, download defaults and the
+  project's default horizontal scale (#141, #143, #166, #176).
+
+### Interpretation
+
+- Pick layers in the browser and export a level 2 point product (#132), with
+  the layer vocabulary defined in the project. See
+  {doc}`../guide/interpretation`.
+- `ridal project init`, `info` and `migrate`, with `ridal.toml` at the root
+  and everything Ridal owns in `ridal_data/` (#187, #188), described in
+  {doc}`../reference/project-files`.
+- Time zero, effective antenna separation and the `twtt` anchor are recorded
+  in the file and carried into exports (#149, #157).
+- Files from older Ridal versions are recognised and refused with a clear
+  reprocess message instead of being silently ignored (#189).
+
+### Accounts
+
+- A multi-user server: authentication, per-user interpretations and
+  project-wide permissions (#139), described in {doc}`../deploy/accounts`.
+
+### CLI
+
+- `ridal render` renders a processed radargram to an image from the command
+  line, through the same pipeline as the GUI (#138), described in
+  {doc}`../guide/rendering`.
+
+### Fixes
+
+- `GPRLocation::distances` and `velocities` gained the missing square root
+  (#127).
+- HDF5 no longer locks a file against the process that just wrote it (#154),
+  and the macOS build works against HDF5 2.x (#128).
+- The catalog and its render services sit behind one lock (#150).

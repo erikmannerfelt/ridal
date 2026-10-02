@@ -177,6 +177,13 @@ struct DatasetSummary {
     processing_datetime_display: String,
     revision_id: String,
     shape: (usize, usize),
+    /// The track's total length in metres (#319), summed over its segments.
+    ///
+    /// `None` when the file has no readable track, which is not the same as
+    /// a zero length: a radargram whose coordinates are missing cannot say
+    /// how far it went, and the card leaves the row out rather than showing
+    /// a misleading `0 m`.
+    track_length_m: Option<f64>,
     /// Whether this radargram sits in the project rather than an external
     /// root (#147).
     ///
@@ -668,6 +675,7 @@ fn summarize(
         processing_datetime_display: format_datetime_for_display(&entry.processing_datetime),
         revision_id: entry.revision_id.to_string(),
         shape: entry.shape,
+        track_length_m: entry.track_length_m,
         unlisted: entry.unlisted,
     }
 }

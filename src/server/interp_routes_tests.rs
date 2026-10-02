@@ -1791,6 +1791,9 @@ async fn the_catalog_shows_the_description_and_a_group_jump_list() {
     let (status, html) = page(&app, "/").await;
     assert_eq!(status, StatusCode::OK);
     assert!(!html.contains(r#"class="catalog-description""#), "{html}");
+    // #318: no hard-coded "Radargram catalog" heading. The project's own
+    // description, when it has one, introduces the page instead.
+    assert!(!html.contains("<h1>Radargram catalog</h1>"), "{html}");
 
     // Give it a description and a group to compare against. The group has to
     // be on disk before the project is reopened, and the config is read once.

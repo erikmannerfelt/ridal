@@ -52,6 +52,12 @@ pub struct CatalogEntry {
     /// states about itself.
     pub elevation_min: Option<f64>,
     pub elevation_max: Option<f64>,
+    /// The track's total length in metres, summed over its segments (#319).
+    ///
+    /// Read once here rather than per card on every page load, which would
+    /// open every file in the catalog twice per request. `None` when the
+    /// file has no readable track, which is not a length of zero.
+    pub track_length_m: Option<f64>,
     /// What the file said, before the project's overrides (#145).
     ///
     /// Kept beside the resolved values so the Edit properties dialog can
@@ -283,6 +289,16 @@ fn discover_candidates(root: &CatalogRoot, index: usize) -> Vec<Candidate> {
         if entry.path().extension().and_then(|e| e.to_str()) != Some("nc") {
             continue;
         }
+        // An in-progress upload streams to `upload-<id>.tmp.nc` in this
+        // directory before being renamed into place (#302). Discovery can
+        // run while that file exists, and a process killed mid-transfer
+        // leaves one behind, so either way it must not be inspected and
+        // announced as a broken radargram. The startup sweep removes stale
+        // ones; this keeps a live one invisible even before that.
+        let file_name = entry.file_name().to_string_lossy();
+        if file_name.starts_with("upload-") && file_name.ends_with(".tmp.nc") {
+            continue;
+        }
 
         let relative = entry
             .path()
@@ -452,6 +468,9 @@ impl Catalog {
                 unlisted: false,
                 elevation_min: None,
                 elevation_max: None,
+                track_length_m: super::track::read_track_from_netcdf(&candidate.path)
+                    .ok()
+                    .map(|track| track.segments.iter().map(|s| s.length_m).sum()),
                 root: candidate.root,
                 from_file: FileMetadata {
                     display_name: display_name.clone(),
@@ -959,6 +978,28 @@ mod tests {
         assert_eq!(catalog.entries.len(), 1);
         assert_eq!(catalog.entries[0].radargram_id.as_str(), "single-file-test");
         assert!(catalog.warnings.is_empty());
+    }
+
+    #[test]
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
+    fn an_upload_temporary_is_not_a_radargram() {
+        // #302: a crash leaves `upload-<id>.tmp.nc` in the radargram
+        // directory. It has the `.nc` extension, so without a rule it was
+        // inspected, failed, and warned about on the catalog.
+        let dir = tempfile::tempdir().unwrap();
+        process_to(
+            ASSET_2022,
+            &dir.path().join("ours.nc"),
+            Some("upload-temp-test"),
+            None,
+        );
+        std::fs::write(dir.path().join("upload-deadbeef.tmp.nc"), b"partial upload").unwrap();
+
+        let catalog = Catalog::discover(dir.path());
+        assert_eq!(catalog.entries.len(), 1);
+        assert_eq!(catalog.entries[0].radargram_id.as_str(), "upload-temp-test");
+        assert!(catalog.warnings.is_empty(), "{:?}", catalog.warnings);
     }
 
     #[test]
@@ -1786,6 +1827,7 @@ mod tests {
             unlisted: false,
             elevation_min: None,
             elevation_max: None,
+            track_length_m: None,
             from_file: FileMetadata::default(),
         };
         assert_eq!(entry.effective_label(), "Kroppbreen line 1");

@@ -17,6 +17,11 @@ pub fn environment() -> Environment<'static> {
     env.add_global("api_base", "/api/v1");
     env.add_global("site_api_base", "/api/v1");
     env.add_global("page_base", "");
+    // The documentation the GUI links to (#293). One place to change it,
+    // and a page render may override it the way it can the bases above.
+    // `stable` rather than `latest`: a server serves a release, and its
+    // help should describe the release it is.
+    env.add_global("docs_base", "https://ridal.readthedocs.io/en/stable/");
     env.add_template("base.html.jinja", include_str!("templates/base.html.jinja"))
         .expect("base template must parse");
     env.add_template(
@@ -275,6 +280,17 @@ mod tests {
         assert!(out.contains(r#"href="/p/glac/layers""#), "{out}");
         assert!(out.contains(r#"href="/p/glac/settings""#), "{out}");
         assert!(!out.contains(r#"href="/layers""#), "{out}");
+        // #293: the documentation link is external and always present,
+        // whatever the page's project scope.
+        assert!(
+            out.contains(r#"data-docs-base="https://ridal.readthedocs.io/en/stable/""#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"href="https://ridal.readthedocs.io/en/stable/""#),
+            "{out}"
+        );
+        assert!(out.contains(">Documentation</a>"), "{out}");
     }
 
     #[test]

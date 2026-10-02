@@ -6,11 +6,11 @@ Below is the documentation for all steps in ridal
 ## subset
 Subset the data in x (traces) and/or y (samples).
 
-Indices are zero-based and the end is exclusive; `-1` means "to the end". Clip to the first 500 samples: `subset(0 -1 0 500)`. Clip to the first 300 traces: `subset(0 300)`.
+Indices are zero-based and the end is exclusive; `-1` means "to the end". Clip to the first 500 samples: `subset(0 -1 0 500)`. Clip to the first 300 traces: `subset(0 300)`. At least one argument is required; the rest keep their defaults, so `subset(max_sample=1000)` crops the height on its own.
 
 | argument | default | description |
 |---|---|---|
-| `min_trace` | *required* | First trace to keep |
+| `min_trace` | `0` | First trace to keep |
 | `max_trace` | `-1` | Trace to stop before, or -1 for the last one |
 | `min_sample` | `0` | First sample to keep |
 | `max_sample` | `-1` | Sample to stop before, or -1 for the last one |

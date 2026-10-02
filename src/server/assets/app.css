@@ -1026,6 +1026,32 @@ dialog th {
   max-width: 60ch;
 }
 
+/* A small "?" beside a heading or control that opens the relevant page of
+ * the documentation (#293). Muted until hovered so it reads as help rather
+ * than as a primary action. */
+.docs-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-left: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  vertical-align: middle;
+}
+
+.docs-help:hover,
+.docs-help:focus {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
 /* The landing page's project list (#214). A card per project rather than a
  * table: the row holds a link, a badge and, for a server administrator,
  * management controls that a comparison layout would not fit. */
@@ -1143,11 +1169,27 @@ dialog th {
  * but a visible header would just be noise above two buttons. */
 .visually-hidden {
   position: absolute;
+  /* Pinned rather than left at its static position (#295). Unpinned, the
+   * actions label at the right edge of a horizontally scrolling table is
+   * positioned against the initial containing block, escapes the
+   * `.table-scroll` clip, and widens the document -- which on a phone makes
+   * the browser shrink to fit and centre dialogs off screen. It is 1px and
+   * clipped either way, and screen readers use DOM order, not position. */
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   overflow: hidden;
   clip-path: inset(50%);
   white-space: nowrap;
+}
+
+/* A table wider than the screen pans sideways instead of stretching the
+ * page (#295). The scroll lives on a wrapper so the table keeps its table
+ * layout -- a long description or expression is what usually overflows. */
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
 }
 
 .layers-table {
@@ -2513,27 +2555,29 @@ button.danger:disabled {
   padding: var(--space-1) var(--space-2);
 }
 
-/* A group's heading and its download menu on one line. The menu is what
- * ties the downloads to *this* group rather than the page. */
+/* A group's name with its controls on the line beneath it (#320). They
+ * were pushed to opposite ends of one row (margin-left: auto), which on a
+ * wide screen left the name and the buttons that act on it far apart. A
+ * column stacks them so the buttons read as belonging to the heading, and
+ * the buttons wrap among themselves on a narrow screen. */
 .group-heading {
   display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  flex-wrap: wrap;
-  /* The h2 below has its margins zeroed so it aligns with the menu button,
-   * which also removed the gap that normally separates a heading from what
-   * it labels -- leaving the button sitting on the map. Put it back on the
-   * row instead, where wrapping cannot lose it. */
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  /* The h2 below has its margins zeroed, which also removed the gap that
+   * normally separates a heading from what it labels -- leaving the
+   * controls sitting on the map. Put it back here, where wrapping cannot
+   * lose it. */
   margin-bottom: var(--space-2);
 }
 
-/* Pushed to the right edge, so a group reads the same way a card does:
- * what it is on the left, what can be done to it on the right. */
+/* Immediately below and left-aligned with the name above. */
 .group-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
-  margin-left: auto;
 }
 
 .group-menu,
@@ -2871,8 +2915,11 @@ button.danger:disabled {
 
 /* The shared derived-item editor (app.js). The range fields are disabled as a
  * group until the checkbox is on, so the control reads as one choice. */
+/* `min(...)`: the id selector would otherwise beat `dialog`'s own
+ * `max-width: 90vw`, and the dialog would be 42rem wide -- wider than a
+ * phone -- on a narrow screen (#295). */
 #derived-editor {
-  max-width: 42rem;
+  max-width: min(42rem, 90vw);
 }
 
 #derived-range-fields {

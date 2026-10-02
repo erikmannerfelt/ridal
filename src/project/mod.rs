@@ -1470,6 +1470,47 @@ impl Project {
             })
     }
 
+    /// Remove upload temporaries a crash left in the writable radargram
+    /// directory (#302).
+    ///
+    /// An upload streams to `upload-<id>.tmp.nc` and is renamed into place;
+    /// the request-scoped guard removes it on every refusal, but a process
+    /// killed mid-transfer leaves the partial file where the catalog would
+    /// otherwise discover it as a broken radargram. Called before requests
+    /// are accepted, when nothing can be in flight.
+    ///
+    /// The directory is resolved the way an upload resolves it, and a
+    /// destination that escapes the project is left alone: deleting is
+    /// writing, and Ridal does not write outside the project (#147).
+    ///
+    /// Returns how many files were removed.
+    pub fn sweep_upload_temps(&self) -> std::io::Result<usize> {
+        let root = self.root.canonicalize()?;
+        let destination = root.join(self.relative_upload_dir());
+        // No directory means nothing has ever been uploaded, and there is
+        // nothing stale in it.
+        let Ok(destination) = destination.canonicalize() else {
+            return Ok(0);
+        };
+        if !destination.starts_with(&root) {
+            return Ok(0);
+        }
+
+        let mut removed = 0;
+        for entry in std::fs::read_dir(&destination)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("upload-")
+                && name.ends_with(".tmp.nc")
+                && std::fs::remove_file(entry.path()).is_ok()
+            {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     /// How large this project may grow, in bytes.
     pub fn max_bytes(&self) -> u64 {
         self.read_config()
@@ -1716,6 +1757,27 @@ mod tests {
         // project indexes but does not own, and Ridal never writes outside
         // the project (#147).
         assert_eq!(project.relative_upload_dir(), PathBuf::from("lines"));
+    }
+
+    #[test]
+    fn the_upload_sweep_removes_only_stale_temporaries() {
+        // #302: a crash mid-upload leaves `upload-<id>.tmp.nc`; a tidy start
+        // clears it without touching real radargrams or anyone else's
+        // temporarily named file.
+        let dir = tempfile::tempdir().unwrap();
+        let project = Project::init(dir.path(), None).unwrap();
+        let uploads = dir.path().join(project.relative_upload_dir());
+        std::fs::create_dir_all(&uploads).unwrap();
+        std::fs::write(uploads.join("upload-deadbeef.tmp.nc"), b"partial").unwrap();
+        std::fs::write(uploads.join("ours.nc"), b"real").unwrap();
+        std::fs::write(uploads.join("notes.tmp.nc"), b"x").unwrap();
+
+        assert_eq!(project.sweep_upload_temps().unwrap(), 1);
+        assert!(!uploads.join("upload-deadbeef.tmp.nc").exists());
+        assert!(uploads.join("ours.nc").exists());
+        assert!(uploads.join("notes.tmp.nc").exists());
+        // Idempotent: nothing is left to remove.
+        assert_eq!(project.sweep_upload_temps().unwrap(), 0);
     }
 
     #[test]

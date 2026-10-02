@@ -1689,6 +1689,41 @@ mod tests {
     #[test]
     #[test_retry::retry]
     #[serial_test::serial(netcdf)]
+    fn a_card_shows_the_track_length_when_the_file_has_one() {
+        // #319. The fixture's eastings step by 1 m over 50 traces, so the
+        // one track segment is 49 m long.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            write_test_nc_with_track(&dir.path().join("a.nc"), "with-track", None);
+            write_test_nc(&dir.path().join("b.nc"), "no-track");
+            let app = test_app(dir.path());
+
+            let (status, body) = get(&app, "/api/v1/datasets").await;
+            assert_eq!(status, StatusCode::OK);
+            let json: Value = serde_json::from_slice(&body).unwrap();
+            let entries = json["entries"].as_array().unwrap();
+            let by_id = |id: &str| {
+                entries
+                    .iter()
+                    .find(|e| e["radargram_id"] == id)
+                    .unwrap_or_else(|| panic!("no entry {id}"))
+            };
+            assert_eq!(by_id("with-track")["track_length_m"], 49.0);
+            // No coordinates, so no claim about length rather than a 0.
+            assert!(by_id("no-track")["track_length_m"].is_null());
+
+            // And the card says it, in metres below a kilometre.
+            let (status, body) = get(&app, "/").await;
+            assert_eq!(status, StatusCode::OK);
+            let html = String::from_utf8(body.to_vec()).unwrap();
+            assert!(html.contains("<dt>Track length</dt>"), "{html}");
+            assert!(html.contains("49.0 m"), "{html}");
+        });
+    }
+
+    #[test_retry::retry]
+    #[serial_test::serial(netcdf)]
     fn index_page_gives_ungrouped_entries_a_map_like_any_group() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {

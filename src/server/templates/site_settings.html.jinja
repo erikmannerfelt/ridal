@@ -46,13 +46,15 @@
         role in each project. Creating one is an identity act, so it lives
         here rather than on any project's settings page. -#}
     <section class="settings-section" id="accounts-section">
-      <h2>Accounts</h2>
+      <h2>Accounts<a class="docs-help" href="{{ docs_base|safe }}deploy/accounts.html"
+            target="_blank" rel="noopener" title="Accounts and permissions">?</a></h2>
       <p class="hint">
         Everyone signs in with one of these, then sees the projects they are
         a member of. An account that is not a server administrator still
         needs a role in a project before it can open it.
       </p>
 
+      <div class="table-scroll">
       <table id="accounts-table" class="layers-table">
         <thead>
           <tr>
@@ -64,6 +66,7 @@
         </thead>
         <tbody></tbody>
       </table>
+      </div>
 
       {#- A read-only overview of who belongs where. Loaded when opened, so
           the accounts table stays quick for anyone who does not look. -#}
