@@ -191,8 +191,8 @@
       always shown even when it's the only section on the page. -#}
   {#- A jump list above the first group (#309): a survey can run to dozens
       of groups, and finding one by scrolling is the problem this solves.
-      Rendered only when there is a choice to make. The sticky positioning
-      and the offset that keeps a heading clear of it are in app.css. -#}
+      Rendered only when there is a choice to make. Deliberately not
+      sticky; app.css says why. -#}
   {% if groups | length > 1 %}
   <nav class="group-list" aria-label="Groups">
     <ul>
