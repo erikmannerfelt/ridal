@@ -176,9 +176,11 @@ jobs:
       if: runner.os == 'Linux'
       run: cargo build --no-default-features -F cli,server --verbose
 
+    # `--bin ridal` on every platform: lib.rs and main.rs declare the same
+    # modules, so a plain `cargo test` builds and runs every test twice.
     - name: Test (Linux)
       if: runner.os == 'Linux'
-      run: cargo test --no-default-features -F cli,server -- --nocapture
+      run: cargo test --no-default-features -F cli,server --bin ridal -- --nocapture
 
     - name: Test (Windows)
       if: runner.os == 'Windows'
@@ -186,11 +188,11 @@ jobs:
       env:
         CMAKE: C:\Program Files\CMake\bin\cmake.exe
       run: |
-        CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" "%USERPROFILE%\.cargo\bin\cargo.exe" test  --no-default-features -F cli -- --nocapture
+        CALL "${{ steps.osgeo4w.outputs.root }}\OSGeo4W.bat" "%USERPROFILE%\.cargo\bin\cargo.exe" test --no-default-features -F cli --bin ridal -- --nocapture
 
     - name: Test (MacOS)
       if: runner.os == 'macOS'
-      run: cargo test --no-default-features -F cli -- --nocapture
+      run: cargo test --no-default-features -F cli --bin ridal -- --nocapture
 
     - name: Dry-run cargo publish
       if: runner.os == 'Linux' && !startsWith(github.ref, 'refs/tags/')
