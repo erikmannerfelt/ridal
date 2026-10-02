@@ -63,11 +63,6 @@
 
   --radius-sm: 3px;
   --radius-md: 6px;
-  /* The stacked height of the sticky group list on the index page (#309).
-   * Also the scroll offset a group heading is brought to, so the jump list
-   * does not land on top of the heading it was asked for. A single row that
-   * scrolls sideways keeps this a constant on every screen size. */
-  --group-list-height: 2.9rem;
   --table-cell-pad: 2px var(--space-3) 2px 0;
   --map-height-group: 320px;
   /* `vh` is the fallback; the `@supports` block below prefers `svh`. See
@@ -204,14 +199,6 @@
 }
 
 /* ---------- base ---------- */
-
-/* A jump to a group heading lands below the sticky group list rather than
- * under it (#309). `scroll-padding-top` applies wherever the browser scrolls
- * to a fragment, so this is one declaration rather than a margin on every
- * section. */
-html {
-  scroll-padding-top: var(--group-list-height);
-}
 
 body {
   margin: 0;
@@ -393,26 +380,23 @@ code {
   margin-bottom: 0;
 }
 
-/* The jump list above the first group (#309). Sticky so it stays reachable
- * while scrolling a long catalog; one row that scrolls sideways rather than
- * wrapping, which keeps its height -- and so the scroll offset in `html`
- * above -- constant. */
+/* The jump list above the first group (#309). In the page rather than
+ * stuck to the top of the window: it started as a sticky row that scrolled
+ * sideways, which hid most of a list of many tens of groups off the edge
+ * and kept a banner over the catalog the whole way down. Wrapping shows
+ * every group at once, and the browser's Back returns to it after a jump. */
 .group-list {
-  position: sticky;
-  top: 0;
-  z-index: 40;
   margin-bottom: var(--space-4);
-  background: var(--color-bg);
   border-bottom: 1px solid var(--color-border);
 }
 
 .group-list ul {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-2);
   list-style: none;
   margin: 0;
   padding: var(--space-2) 0;
-  overflow-x: auto;
 }
 
 .group-list a {
