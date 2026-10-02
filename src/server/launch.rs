@@ -26,6 +26,9 @@ async fn serve_gui(
     let project = crate::project::Project::discover(root).map_err(|e| e.to_string())?;
     if let Some(project) = project.as_ref() {
         warn_about_project_accounts(project);
+        if !read_only {
+            sweep_upload_temps(project);
+        }
     }
 
     let state = AppState::build_with_project(
@@ -77,6 +80,23 @@ async fn serve_gui(
 /// who remembers signing in to this project will otherwise wonder where the
 /// sign-in went. A site refuses such a project outright
 /// ([`Site::project`]), since there the accounts would matter.
+/// Remove upload temporaries a crash left in a project, saying what went
+/// (#302). A tidy start; a failure is a warning rather than refusal to
+/// serve, since the catalog already skips these files.
+fn sweep_upload_temps(project: &crate::project::Project) {
+    match project.sweep_upload_temps() {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "Removed {n} stale upload temporary file(s) from {}",
+            project.root().display()
+        ),
+        Err(e) => eprintln!(
+            "Warning: could not sweep stale uploads from {}: {e}",
+            project.root().display()
+        ),
+    }
+}
+
 fn warn_about_project_accounts(project: &crate::project::Project) {
     let Ok(Some(document)) = project
         .documents()
@@ -160,7 +180,16 @@ async fn serve_site(
 
     let site_name = site.name();
     let site_root = site.root().to_path_buf();
-    let project_count = site.list().map_err(|e| e.to_string())?.len();
+    let projects = site.list().map_err(|e| e.to_string())?;
+    let project_count = projects.len();
+    if !read_only {
+        for key in &projects {
+            let Ok(project) = site.project(key) else {
+                continue;
+            };
+            sweep_upload_temps(&project);
+        }
+    }
     let state = SiteState::new(
         site,
         AccessOptions {
