@@ -336,12 +336,21 @@ map.createPane("radargram-lines").style.zIndex = 402;
  * immediately and leaves the rest of the length to load as they pan into
  * it. A radargram short enough to fit whole still does -- the min() below
  * means nothing changes for those.
+ *
+ * Someone who has ticked "Open radargrams zoomed out" in their settings
+ * (#315) gets the whole length instead. A personal choice only, because
+ * that is exactly the every-chunk-at-once load the default avoids.
  */
 function fitToScale(scale) {
+  const fullWidth = G.rasterWidth * scale;
+  if (CFG.openZoomedOut) {
+    map.fitBounds([[-G.rasterHeight, 0], [0, fullWidth]]);
+    return;
+  }
   const size = map.getSize();
   // Viewer px that span the container once the full sample range fits it.
-  const widthAtFullHeight = size.y > 0 ? (G.rasterHeight * size.x) / size.y : G.rasterWidth * scale;
-  const width = Math.min(G.rasterWidth * scale, widthAtFullHeight);
+  const widthAtFullHeight = size.y > 0 ? (G.rasterHeight * size.x) / size.y : fullWidth;
+  const width = Math.min(fullWidth, widthAtFullHeight);
   map.fitBounds([[-G.rasterHeight, 0], [0, width]]);
 }
 fitToScale(xScale);

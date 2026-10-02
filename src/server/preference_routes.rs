@@ -48,6 +48,8 @@ pub async fn get_preferences(
         "level2_spacing": preferences.level2_spacing,
         "level2_format": preferences.level2_format,
         "basemap": preferences.basemap,
+        "show_group_radargrams": preferences.show_group_radargrams,
+        "open_zoomed_out": preferences.open_zoomed_out,
     })))
 }
 
@@ -91,6 +93,13 @@ pub struct PreferencesBody {
     level2_spacing: Option<Option<String>>,
     #[serde(default, deserialize_with = "present")]
     level2_format: Option<Option<String>>,
+    /// Whether the catalog opens with each group's radargrams listed
+    /// (#314). `null` defers to the project.
+    #[serde(default, deserialize_with = "present")]
+    show_group_radargrams: Option<Option<bool>>,
+    /// Whether the viewer opens on the whole radargram (#315).
+    #[serde(default, deserialize_with = "present")]
+    open_zoomed_out: Option<Option<bool>>,
 }
 
 /// Tell an absent key from one sent as `null`.
@@ -215,6 +224,17 @@ pub async fn put_preferences(
         // so shown -- the built-in answer -- is stored as absence.
         stored.show_picks = sent.filter(|shown| !*shown);
     }
+    if let Some(sent) = body.open_zoomed_out {
+        // A checkbox too, with no project layer under it: zoomed in is the
+        // built-in answer and is stored as absence.
+        stored.open_zoomed_out = sent.filter(|zoomed_out| *zoomed_out);
+    }
+    if let Some(sent) = body.show_group_radargrams {
+        // A dropdown with "Project default", so kept as sent, shown
+        // included: in a project that hides them, "show them to me" has to
+        // be sayable.
+        stored.show_group_radargrams = sent;
+    }
 
     if let Some(sent) = body.basemap {
         // Same rule again: a basemap id the project does not offer would
@@ -246,6 +266,8 @@ pub async fn put_preferences(
         "level2_spacing": stored.level2_spacing,
         "level2_format": stored.level2_format,
         "basemap": stored.basemap,
+        "show_group_radargrams": stored.show_group_radargrams,
+        "open_zoomed_out": stored.open_zoomed_out,
     })))
 }
 

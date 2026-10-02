@@ -471,6 +471,31 @@ fn resolve_show_picks(state: &AppState, caller: &Caller) -> bool {
     my_preferences(state, caller).show_picks.unwrap_or(true)
 }
 
+/// Whether the catalog should open with each group's radargrams listed
+/// (#314), rather than hidden behind the group's "Show all" button.
+fn resolve_show_group_radargrams(state: &AppState, caller: &Caller) -> bool {
+    cascade(
+        None,
+        my_preferences(state, caller).show_group_radargrams,
+        state
+            .project
+            .as_ref()
+            .and_then(|p| p.default_show_group_radargrams()),
+        true,
+    )
+}
+
+/// Whether the viewer should open on the whole radargram (#315).
+///
+/// No project layer: opening zoomed in is what bounds the render load when
+/// many people open radargrams at once, so zooming out is left to each
+/// person who knows what it costs.
+fn resolve_open_zoomed_out(state: &AppState, caller: &Caller) -> bool {
+    my_preferences(state, caller)
+        .open_zoomed_out
+        .unwrap_or(false)
+}
+
 /// The basemaps this catalog offers, in the order the layer control lists
 /// them (#177).
 ///
@@ -1470,6 +1495,10 @@ pub async fn index_page(
             formats => format_options(),
             active_spacing => export_defaults.0,
             active_format => export_defaults.1,
+            // Whether each group's cards are listed when the page opens
+            // (#314). Each group's button changes it from there without
+            // saving.
+            show_group_radargrams => resolve_show_group_radargrams(&state, &caller),
             ..map_page_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
@@ -1585,6 +1614,8 @@ pub async fn viewer_page(
             // Whether the picks are drawn when the viewer opens (#143). The
             // toggle in the toolbar changes it from there without saving.
             show_picks => resolve_show_picks(&state, &caller),
+            // Whether the viewer opens on the whole radargram (#315).
+            open_zoomed_out => resolve_open_zoomed_out(&state, &caller),
             ..map_page_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;

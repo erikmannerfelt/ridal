@@ -1978,6 +1978,27 @@ button.danger:disabled {
   border-color: var(--color-accent);
 }
 
+/* A group's "Hide all" / "Show all" (#314) sits between its Download and
+ * Edit menus, so it wears their summary's look -- minus the three bars,
+ * since pressing it opens no menu. A plain button otherwise gets the
+ * browser's default, which made it the odd one out in the row. */
+.group-toggle {
+  cursor: pointer;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: inherit;
+}
+
+.group-toggle:hover {
+  border-color: var(--color-accent);
+}
+
 /* Above Leaflet's control corners, which sit at 1000 and would otherwise
  * win on DOM order alone -- the map comes after this row in the document,
  * so its zoom buttons painted straight through the open panel. Below
@@ -2531,7 +2552,8 @@ button.danger:disabled {
   margin-left: auto;
 }
 
-.group-menu {
+.group-menu,
+.group-toggle {
   flex: none;
 }
 

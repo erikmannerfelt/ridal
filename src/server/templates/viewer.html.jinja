@@ -441,6 +441,9 @@
     {#- Whether the picks are drawn when this page opens (#143), resolved
         from this person's settings. -#}
     showPicks: {% if show_picks %}true{% else %}false{% endif %},
+    {#- Whether the viewer opens on the whole radargram rather than on its
+        start (#315), from this person's settings. -#}
+    openZoomedOut: {% if open_zoomed_out %}true{% else %}false{% endif %},
   };
 </script>
 <script src="/static/viewer.js"></script>

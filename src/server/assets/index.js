@@ -27,6 +27,19 @@ document.getElementById('index-profile-select').addEventListener('change', (even
   location.search = params.toString();
 });
 
+// Each group's "Hide all" / "Show all" (#314). Which way the page opens
+// is a setting the server already applied; this changes it for this page
+// only, the same way the viewer's "Show picks" does. Unhiding is also what
+// lets the hidden cards' lazy thumbnails start loading.
+document.querySelectorAll('.group-toggle').forEach((button) => {
+  const target = document.getElementById(button.getAttribute('aria-controls'));
+  button.addEventListener('click', () => {
+    target.hidden = !target.hidden;
+    button.setAttribute('aria-expanded', String(!target.hidden));
+    button.textContent = target.hidden ? 'Show all' : 'Hide all';
+  });
+});
+
 // One map per group (#121), each showing every member's track. The
 // catalog's target scale (~100 files, #122/#123) keeps this cheap
 // enough to load eagerly rather than needing an IntersectionObserver

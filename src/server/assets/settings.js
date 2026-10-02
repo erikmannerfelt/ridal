@@ -155,6 +155,17 @@
     select.value = selected || "";
   }
 
+  /* A yes/no setting shown as a dropdown, so that "Project default" can be
+   * a third entry (#314): `true`/`false` as the option values, and "" for
+   * unset. */
+  function boolChoice(value) {
+    return value === true || value === false ? String(value) : "";
+  }
+
+  function parseBoolChoice(value) {
+    return value === "" ? null : value === "true";
+  }
+
   /* Fill a <select> with the basemaps that can be chosen. Named by `name`
    * but valued by `id`, which is what a preference and the project default
    * both store -- a rename must not silently repoint either. */
@@ -234,6 +245,11 @@
     // existed -- so only an explicit `false` unticks it.
     const showPicks = byId("my-show-picks");
     if (showPicks) showPicks.checked = settings.my_show_picks !== false;
+    // Only `true` is ever stored; absent means zoomed in.
+    const zoomedOut = byId("my-open-zoomed-out");
+    if (zoomedOut) zoomedOut.checked = settings.my_open_zoomed_out === true;
+    const myGroups = byId("my-show-group-radargrams");
+    if (myGroups) myGroups.value = boolChoice(settings.my_show_group_radargrams);
     fillOptions(byId("my-spacing"), spacings, settings.my_spacing, "Project default");
     fillOptions(byId("my-format"), formats, settings.my_format, "Project default");
 
@@ -245,11 +261,16 @@
     fillScales(byId("default-xscale"), settings.default_xscale);
     fillOptions(byId("default-spacing"), spacings, settings.default_spacing, "Ridal default");
     fillOptions(byId("default-format"), formats, settings.default_format, "Ridal default");
+    const defaultGroups = byId("default-show-group-radargrams");
+    if (defaultGroups) {
+      defaultGroups.value = boolChoice(settings.default_show_group_radargrams);
+    }
     for (const id of [
       "default-profile",
       "default-xscale",
       "default-spacing",
       "default-format",
+      "default-show-group-radargrams",
     ]) {
       const select = byId(id);
       if (select) select.disabled = !canEditProject;
@@ -325,6 +346,8 @@
         render_profile: byId("my-profile").value || null,
         x_scale: Number(byId("my-xscale").value) || null,
         show_picks: byId("my-show-picks").checked,
+        open_zoomed_out: byId("my-open-zoomed-out").checked,
+        show_group_radargrams: parseBoolChoice(byId("my-show-group-radargrams").value),
         level2_spacing: byId("my-spacing").value || null,
         level2_format: byId("my-format").value || null,
         basemap: byId("my-basemap").value || null,
@@ -336,6 +359,8 @@
         // default" when it was cleared.
         byId("my-xscale").value = saved.x_scale ? String(saved.x_scale) : "";
         byId("my-show-picks").checked = saved.show_picks !== false;
+        byId("my-open-zoomed-out").checked = saved.open_zoomed_out === true;
+        byId("my-show-group-radargrams").value = boolChoice(saved.show_group_radargrams);
         byId("my-spacing").value = saved.level2_spacing || "";
         byId("my-format").value = saved.level2_format || "";
         byId("my-basemap").value = saved.basemap || "";
@@ -359,6 +384,9 @@
           default_xscale: Number(byId("default-xscale").value) || null,
           default_spacing: byId("default-spacing").value || null,
           default_format: byId("default-format").value || null,
+          default_show_group_radargrams: parseBoolChoice(
+            byId("default-show-group-radargrams").value,
+          ),
         });
         byId("default-profile").value = saved.default_profile || "";
         byId("default-xscale").value = String(saved.default_xscale || 1);
@@ -367,6 +395,9 @@
         // value that was sent.
         byId("default-spacing").value = saved.default_spacing || "";
         byId("default-format").value = saved.default_format || "";
+        byId("default-show-group-radargrams").value = boolChoice(
+          saved.default_show_group_radargrams,
+        );
         // Naming the file is the point: the change lands somewhere the user
         // can go and look at, which is not obvious from a dropdown.
         setStatus("settings-status", "Saved to ridal.toml");

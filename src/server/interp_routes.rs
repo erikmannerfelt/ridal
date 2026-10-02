@@ -1075,6 +1075,9 @@ pub async fn get_settings(
         "formats": crate::server::routes::format_options(),
         "default_spacing": project.and_then(|p| p.default_spacing()),
         "default_format": project.and_then(|p| p.default_format()),
+        "default_show_group_radargrams": project.and_then(|p| p.default_show_group_radargrams()),
+        "my_show_group_radargrams": mine.show_group_radargrams,
+        "my_open_zoomed_out": mine.open_zoomed_out,
         // Two lists, deliberately. `basemaps` is what may be *chosen* --
         // the project's entries plus the built-in, with unusable ones
         // dropped -- and fills the two dropdowns. `project_basemaps` is
@@ -1136,6 +1139,10 @@ pub struct SettingsUpdate {
     default_spacing: Option<Option<String>>,
     #[serde(default, deserialize_with = "present")]
     default_format: Option<Option<String>>,
+    /// Whether the catalog opens with each group's radargrams listed
+    /// (#314). `null` clears it, restoring shown; absent leaves it alone.
+    #[serde(default, deserialize_with = "present")]
+    default_show_group_radargrams: Option<Option<bool>>,
     /// The project's vector overlays (#177). Absent leaves them alone; an
     /// empty array removes them all.
     #[serde(default)]
@@ -1202,6 +1209,7 @@ pub async fn put_settings(
         || update.default_xscale.is_some()
         || update.default_spacing.is_some()
         || update.default_format.is_some()
+        || update.default_show_group_radargrams.is_some()
     {
         // Validated here rather than in `Project`: which profiles exist is a
         // server concept, and a CLI-only build has no way to check it. Storing
@@ -1284,6 +1292,13 @@ pub async fn put_settings(
             }
         };
 
+        // Shown is the neutral answer, so choosing it stores nothing -- the
+        // rule 1x and automatic spacing follow above.
+        let show_group_radargrams = match update.default_show_group_radargrams {
+            None => project.default_show_group_radargrams(),
+            Some(sent) => sent.filter(|shown| !*shown),
+        };
+
         // One write, not two. Everything this half submits lands together
         // or not at all: two conditional writes could leave the file
         // holding a save that then failed, and two arriving at once could
@@ -1292,6 +1307,9 @@ pub async fn put_settings(
             .set_defaults(
                 &crate::project::RenderDefaults { profile, xscale },
                 &crate::project::ExportDefaults { spacing, format },
+                &crate::project::CatalogDefaults {
+                    show_group_radargrams,
+                },
             )
             .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
     }
@@ -1411,6 +1429,7 @@ pub async fn put_settings(
         "default_xscale": project.default_xscale(),
         "default_spacing": project.default_spacing(),
         "default_format": project.default_format(),
+        "default_show_group_radargrams": project.default_show_group_radargrams(),
         "project_basemaps": project.basemaps(),
         "default_basemap": map.default_basemap,
         "built_in_basemap": map.offers_built_in(),

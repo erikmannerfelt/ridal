@@ -223,6 +223,19 @@
       {#- Controls to the right of the name, the same way a card puts its
           menu opposite its title. -#}
       <div class="group-actions">
+        {#- Hides this group's cards, not its map (#314): a catalog with
+            hundreds of radargrams is long because of the cards, and the
+            map is what tells the groups apart once they are hidden. Which
+            way the page opens is a setting, project-wide and per person;
+            the button changes it for this page without saving. A hidden
+            card's thumbnail is never requested, so hiding also spares the
+            server those overviews. -#}
+        {% if group.entries or group.unlisted_entries %}
+        <button type="button" class="group-toggle"
+                aria-controls="group-radargrams-{{ loop.index }}"
+                aria-expanded="{% if show_group_radargrams %}true{% else %}false{% endif %}"
+        >{% if show_group_radargrams %}Hide all{% else %}Show all{% endif %}</button>
+        {% endif %}
         {{ download_menu(
              "group-" ~ loop.index,
              api_base ~ "/groups/" ~ group.id,
@@ -246,6 +259,8 @@
       </div>
     </div>
     <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
+    <div class="group-radargrams" id="group-radargrams-{{ loop.index }}"
+         {%- if not show_group_radargrams %} hidden{% endif %}>
     <ul class="card-grid">
       {% for e in group.entries %}{{ entry_card(e, active_profile, page_base, api_base) }}{% endfor %}
     </ul>
@@ -268,6 +283,7 @@
       </ul>
     </details>
     {% endif %}
+    </div>
   </section>
   {% endfor %}
 
