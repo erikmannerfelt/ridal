@@ -1437,6 +1437,16 @@ pub async fn index_page(
     }
 
     let export_defaults = resolve_export_defaults(&state, &caller);
+    // The project's own description, rendered once here (#285). Raw HTML in
+    // it is escaped by the renderer, which is what lets the template mark
+    // the result safe. The long one wins; the short one is the fallback for
+    // a project that set only one.
+    let description_html = state
+        .project
+        .as_ref()
+        .and_then(|project| project.description_long().or_else(|| project.description()))
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| super::markdown::render(&text));
     let env = templates::environment();
     let tmpl = env
         .get_template("index.html.jinja")
@@ -1446,6 +1456,7 @@ pub async fn index_page(
             entries => entries,
             warnings => warnings,
             groups => groups,
+            description_html => description_html,
             profiles => profiles,
             active_profile => active_profile,
             project => state.project.is_some(),

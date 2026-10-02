@@ -89,7 +89,7 @@ never require a login, since they are how one happens.
 | `GET` | `/api/v1/preferences` | anyone | The caller's own display preferences. |
 | `PUT` | `/api/v1/preferences` | signed in | Change the caller's own display preferences, such as render profile and horizontal scale. Any role may. |
 | `GET` | `/api/v1/settings` | anyone | The project's defaults. On a server without a project, answers `project: false`. |
-| `PUT` | `/api/v1/settings` | `operator` | Change the project's defaults. Changing the upload size limit needs `admin`. |
+| `PUT` | `/api/v1/settings` | `operator` | Change the project's defaults. Changing the upload size limit or the project description needs `admin`. |
 
 ## Radargrams
 

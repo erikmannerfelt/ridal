@@ -2619,6 +2619,79 @@ async fn an_unlisted_radargram_is_absent_from_a_pickers_listing_and_present_for_
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_group_jump_list_counts_unlisted_members_only_for_an_admin() {
+    // #309 + #285. The unlisted count is a badge only whoever can already
+    // see those entries gets; for anyone else the jump list simply omits
+    // them, so it cannot announce that an unlisted radargram exists.
+    use crate::project::overrides::{self, RadargramOverride};
+
+    let hash = accounts::hash_password(password()).unwrap();
+    let dir = new_site();
+    // Two groups, so the jump list is rendered at all, one member each.
+    for (id, group) in [("line-01", "Drønbreen"), ("line-02", "Kroppbreen")] {
+        super::interp_routes_tests::write_test_nc_with_axes(
+            &radargrams(dir.path()).join(format!("{id}.nc")),
+            id,
+            Some(group),
+        );
+    }
+    write_people(
+        dir.path(),
+        &UserSet {
+            users: vec![
+                activated("student", Role::Picker, DownloadScope::All, &hash),
+                activated("erik", Role::Admin, DownloadScope::All, &hash),
+            ],
+            ..UserSet::default()
+        },
+    );
+    let project = open_project(dir.path());
+    overrides::update(project.documents(), |o| {
+        o.radargrams.insert(
+            crate::identity::RadargramId::new("line-02").unwrap(),
+            RadargramOverride {
+                unlisted: true,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    let app = site_router(dir.path(), AccessOptions::default());
+
+    let student = sign_in(&app, "student").await;
+    let page = get(&app, "/", Some(&student)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    // The picker sees one group (the other's only member is unlisted), so
+    // there is no jump list and certainly no unlisted badge.
+    assert!(
+        !page.text.contains(r#"class="group-list""#),
+        "{}",
+        page.text
+    );
+    assert!(!page.text.contains("group-list-unlisted"), "{}", page.text);
+
+    let erik = sign_in(&app, "erik").await;
+    let page = get(&app, "/", Some(&erik)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    // Both groups, and the unlisted one counted only for the admin who can
+    // already see it: Drønbreen's one listed member, Kroppbreen's none.
+    assert_eq!(
+        page.text.matches(r#"class="group-list-count">"#).count(),
+        2,
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text
+            .contains(r#"class="group-list-unlisted">(1 unlisted)"#),
+        "{}",
+        page.text
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_operator_can_rename_a_radargram_without_restarting_the_server() {
     let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
@@ -3488,6 +3561,97 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     assert_eq!(
         cleared.body["max_bytes"],
         json!(crate::project::DEFAULT_MAX_PROJECT_BYTES)
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn only_an_admin_may_change_the_project_description() {
+    // #285: the descriptions are read by every member -- the short one on a
+    // site's project list and the long one at the top of the catalog -- so
+    // an operator sees them but may not change them.
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("op", Role::Operator, DownloadScope::All, &hash),
+        activated("admin", Role::Admin, DownloadScope::All, &hash),
+    ]);
+
+    let op = sign_in(&app, "op").await;
+    let settings = get(&app, "/api/v1/settings", Some(&op)).await;
+    assert_eq!(settings.status, StatusCode::OK);
+    assert_eq!(settings.body["can_administer"], false);
+    assert!(settings.body["description"].is_null(), "{}", settings.text);
+
+    // The page shows the section to the operator but hides the form.
+    let page = get(&app, "/settings", Some(&op)).await;
+    assert!(
+        page.text.contains(r#"id="description-section""#),
+        "{}",
+        page.text
+    );
+    assert!(
+        !page.text.contains(r#"id="description-form""#),
+        "{}",
+        page.text
+    );
+
+    let refused = put(
+        &app,
+        "/api/v1/settings",
+        &json!({"description": "nope"}),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["error"]["code"], "insufficient_role");
+
+    let admin = sign_in(&app, "admin").await;
+    let page = get(&app, "/settings", Some(&admin)).await;
+    assert!(
+        page.text.contains(r#"id="description-form""#),
+        "{}",
+        page.text
+    );
+
+    let saved = put(
+        &app,
+        "/api/v1/settings",
+        &json!({
+            "description": "2025 season",
+            "description_long": "Read the [guide](https://example.org).",
+        }),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["description"], "2025 season");
+    // Returned as stored: rendering to HTML happens where it is shown.
+    assert_eq!(
+        saved.body["description_long"],
+        "Read the [guide](https://example.org)."
+    );
+
+    // And on disk, so it survives a restart.
+    let marker = std::fs::read_to_string(project_root(_dir.path()).join("ridal.toml")).unwrap();
+    assert!(
+        marker.contains(r#"description = "2025 season""#),
+        "{marker}"
+    );
+
+    // Clearing one leaves the other alone, the same per-field rule the rest
+    // of the settings API follows.
+    let cleared = put(
+        &app,
+        "/api/v1/settings",
+        &json!({"description": null}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert!(cleared.body["description"].is_null(), "{}", cleared.text);
+    assert_eq!(
+        cleared.body["description_long"],
+        "Read the [guide](https://example.org)."
     );
 }
 

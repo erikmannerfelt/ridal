@@ -70,6 +70,7 @@ pub mod interp_routes;
 mod interp_routes_tests;
 pub mod launch;
 pub mod lifecycle_routes;
+pub mod markdown;
 pub mod overrides_routes;
 pub mod overview_cache;
 pub mod preference_routes;

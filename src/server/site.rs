@@ -832,6 +832,14 @@ fn project_entry(
     // project that has never been scanned has none, and the card says so.
     let radargram_count = crate::project::catalog_summary::read(project.documents())
         .map(|summary| summary.radargrams);
+    // The project's own words (#285). The short one is a card line; the long
+    // one is Markdown, rendered here with raw HTML escaped so the template
+    // can mark it safe, and shown behind a disclosure.
+    let description = project.description();
+    let description_long_html = project
+        .description_long()
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| super::markdown::render(&text));
     Some(serde_json::json!({
         "key": key.as_str(),
         "name": project
@@ -839,6 +847,8 @@ fn project_entry(
             .project
             .name
             .unwrap_or_else(|| key.as_str().to_string()),
+        "description": description,
+        "description_long_html": description_long_html,
         "archived": site.site().ok()?.is_archived(key),
         "created_by": project.config().project.created_by.map(|user| user.as_str().to_string()),
         "member": member.is_some() || caller.server_admin,

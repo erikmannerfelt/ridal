@@ -74,6 +74,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 # to hold in memory once per concurrent request.
 tokio-util = { version = "0.7", features = ["io"], optional = true }
 minijinja = { version = "2", optional = true }
+# Markdown for the project description (#285). Rendered server-side with raw
+# HTML escaped and dangerous URL schemes stripped: the description is
+# admin-authored prose read by every member, so it is trusted as *markup*,
+# never as HTML.
+pulldown-cmark = { version = "0.13", optional = true }
 # Revision and render identities. Not optional: `RevisionId` is shared by
 # the server's cache invalidation and `ridal interp`'s level 2 provenance,
 # which must agree on the same string for the same file.
@@ -143,6 +148,7 @@ server = [
     "tokio",
     "tokio-util",
     "minijinja",
+    "pulldown-cmark",
     "walkdir",
     "lru",
     "webbrowser",

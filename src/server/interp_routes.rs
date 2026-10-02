@@ -1040,6 +1040,12 @@ pub async fn get_settings(
         // Members and the access policy exist only in a site: a project on
         // its own has no accounts for them to be about.
         "can_edit_access": state.site.is_some() && caller.may(Role::Admin),
+        // Whether the caller may change what only an administrator may: the
+        // size cap and the descriptions (#173, #285). Distinct from
+        // `can_edit_access`, which also asks whether there is a site to
+        // administer; this is the narrower question the server's own
+        // `require(Role::Admin, ...)` gates answer.
+        "can_administer": caller.may(Role::Admin),
         // Current usage and the effective cap, in bytes (#173). An admin may
         // change the cap; everyone at operator or above may see it.
         "size_bytes": size_bytes,
@@ -1050,6 +1056,11 @@ pub async fn get_settings(
         "download": caller.download.as_str(),
         "authentication_configured": caller.authentication_configured,
         "name": project.and_then(|p| p.config().project.name.clone()),
+        // The descriptions are the project's own (#285). Returned as stored:
+        // the short one is plain text, the long one is Markdown source, and
+        // rendering it happens where it is shown rather than here.
+        "description": project.and_then(|p| p.description()),
+        "description_long": project.and_then(|p| p.description_long()),
         "root": project.map(|p| p.root().display().to_string()),
         "default_profile": project.and_then(|p| p.default_profile()),
         "profiles": profiles,
@@ -1135,7 +1146,22 @@ pub struct SettingsUpdate {
     /// an operator, who may read the cap but not lower or raise it.
     #[serde(default, deserialize_with = "present")]
     max_bytes: Option<Option<u64>>,
+    /// The project's short and long descriptions (#285). `null` clears them,
+    /// an empty string is treated as clearing too; absent leaves them alone.
+    /// Changing them needs `Role::Admin`, checked in `put_settings`: the
+    /// description is read by every member and is the project's public face.
+    #[serde(default, deserialize_with = "present")]
+    description: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present")]
+    description_long: Option<Option<String>>,
 }
+
+/// The most a description may be, in bytes.
+///
+/// Generous for prose, small enough that the hand-edited `ridal.toml` stays a
+/// configuration file rather than a document store. Checked where a value
+/// arrives over HTTP; a hand-edited file is its author's business.
+const MAX_DESCRIPTION_BYTES: usize = 64 * 1024;
 
 /// Tell an absent key from one sent as `null`.
 ///
@@ -1344,6 +1370,41 @@ pub async fn put_settings(
             .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
     }
 
+    // The descriptions are also an administrator's decision (#285), for the
+    // same reason as the cap: they are shown to every member, and the long
+    // one is rendered into each member's page.
+    if update.description.is_some() || update.description_long.is_some() {
+        caller.require(Role::Admin, "change the project description")?;
+        // Absent keeps the stored value; sent replaces it, an empty string
+        // clearing it. Each side is resolved on its own, so a save touching
+        // only the short one does not wipe the long one.
+        let short = match update.description {
+            None => project.description(),
+            Some(value) => value.filter(|text| !text.is_empty()),
+        };
+        let long = match update.description_long {
+            None => project.description_long(),
+            Some(value) => value.filter(|text| !text.is_empty()),
+        };
+        for (field, text) in [("description", &short), ("description_long", &long)] {
+            if text
+                .as_ref()
+                .is_some_and(|text| text.len() > MAX_DESCRIPTION_BYTES)
+            {
+                return Err(ApiError::bad_request(
+                    "description_too_long",
+                    format!(
+                        "The {field} is longer than {MAX_DESCRIPTION_BYTES} bytes. Keep \
+                         it to a summary and link to the rest."
+                    ),
+                ));
+            }
+        }
+        project
+            .set_description(short.as_deref(), long.as_deref())
+            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+    }
+
     let map = project.map_section();
     Ok(Json(serde_json::json!({
         "default_profile": project.default_profile(),
@@ -1356,6 +1417,8 @@ pub async fn put_settings(
         "overlays": project.overlays(),
         "size_bytes": project.size_bytes(),
         "max_bytes": project.max_bytes(),
+        "description": project.description(),
+        "description_long": project.description_long(),
     })))
 }
 

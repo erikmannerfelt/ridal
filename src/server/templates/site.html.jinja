@@ -32,6 +32,19 @@
         <li class="project-card" data-project-key="{{ project.key }}">
           <a class="project-name" href="/p/{{ project.key }}/">{{ project.name }}</a>
           {% if project.archived %}<span class="project-badge">Archived</span>{% endif %}
+          {#- The short description, a card line like the ones below (#285). -#}
+          {% if project.description %}
+          <p class="project-description">{{ project.description }}</p>
+          {% endif %}
+          {% if project.description_long_html %}
+          {#- The long one, collapsed behind a disclosure so a list of
+              projects stays scannable. Marked safe because the server
+              rendered it from Markdown with raw HTML escaped. -#}
+          <details class="project-about">
+            <summary>About</summary>
+            <div class="project-about-body">{{ project.description_long_html|safe }}</div>
+          </details>
+          {% endif %}
           <span class="project-members">{{ project.member_count }}
             {{- " member" if project.member_count == 1 else " members" }}</span>
           {#- The catalog size, from the summary a scan leaves behind. A
