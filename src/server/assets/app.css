@@ -1081,6 +1081,41 @@ dialog th {
   font-size: var(--text-sm);
 }
 
+/* The short description, and the collapsed long one under it (#285). Both
+ * take a full row of the wrapping card, so the one-line summary sits below
+ * the name rather than competing with the counts beside it. */
+.project-description {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.project-about {
+  flex-basis: 100%;
+}
+
+.project-about > summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.project-about-body {
+  max-width: 70ch;
+  margin-top: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.project-about-body > :first-child {
+  margin-top: 0;
+}
+
+.project-about-body > :last-child {
+  margin-bottom: 0;
+}
+
 /* How many people belong to the project, and how many radargrams its
  * catalog holds. Counts only: the names are on the project's own settings
  * page, and the radargrams on its catalog. */

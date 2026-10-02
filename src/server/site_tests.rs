@@ -1510,6 +1510,56 @@ async fn a_project_card_reports_its_catalog_size() {
     );
 }
 
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_project_card_shows_its_description() {
+    // #285. The short text is a card line; the long one is Markdown shown
+    // behind a disclosure, with raw HTML escaped rather than run.
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let site = Site::open(_dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    project
+        .set_description(
+            Some("2025 season"),
+            Some("Read the [guide](https://example.org). <script>alert(1)</script>"),
+        )
+        .unwrap();
+
+    let cookie = sign_in(&app, "anna").await;
+    let listing = send(&app, get("/api/v1/projects", Some(&cookie))).await;
+    assert_eq!(listing.status, StatusCode::OK, "{}", listing.text);
+    assert_eq!(listing.body["projects"][0]["description"], "2025 season");
+
+    let landing = send(&app, get("/", Some(&cookie))).await;
+    assert!(
+        landing.text.contains("2025 season"),
+        "the card shows the short description: {}",
+        landing.text
+    );
+    assert!(
+        landing.text.contains(r#"class="project-about""#),
+        "{}",
+        landing.text
+    );
+    // Markdown rendered, raw HTML escaped.
+    assert!(
+        landing.text.contains(r#"<a href="https://example.org">guide</a>"#),
+        "{}",
+        landing.text
+    );
+    assert!(
+        !landing.text.contains("<script>alert(1)</script>"),
+        "{}",
+        landing.text
+    );
+    assert!(landing.text.contains("&lt;script&gt;"), "{}", landing.text);
+}
+
 fn delete(uri: &str, cookie: Option<&str>) -> Request<Body> {
     let mut builder = Request::builder().method("DELETE").uri(uri);
     if let Some(cookie) = cookie {
