@@ -2358,6 +2358,18 @@ button.danger:disabled {
   color: var(--color-text-muted);
 }
 
+/* A checkbox and its text, not a label/control/value row. */
+.display-menu > ul > li.display-smoothing > label {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* Set by the viewer's smoothing toggle (#305), and only while every sample
+ * covers at least one device pixel, so it never drops samples. */
+.leaflet-pane.no-smoothing img {
+  image-rendering: pixelated;
+}
+
 #image-dialog {
   max-width: 34rem;
   border: 1px solid var(--color-border);
