@@ -3493,6 +3493,91 @@ async fn only_an_admin_may_change_the_project_size_limit() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn only_an_admin_may_change_the_project_description() {
+    // #285: the descriptions are read by every member -- the short one on a
+    // site's project list and the long one at the top of the catalog -- so
+    // an operator sees them but may not change them.
+    let hash = accounts::hash_password(password()).unwrap();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("op", Role::Operator, DownloadScope::All, &hash),
+        activated("admin", Role::Admin, DownloadScope::All, &hash),
+    ]);
+
+    let op = sign_in(&app, "op").await;
+    let settings = get(&app, "/api/v1/settings", Some(&op)).await;
+    assert_eq!(settings.status, StatusCode::OK);
+    assert_eq!(settings.body["can_administer"], false);
+    assert!(settings.body["description"].is_null(), "{}", settings.text);
+
+    // The page shows the section to the operator but hides the form.
+    let page = get(&app, "/settings", Some(&op)).await;
+    assert!(page.text.contains(r#"id="description-section""#), "{}", page.text);
+    assert!(
+        !page.text.contains(r#"id="description-form""#),
+        "{}",
+        page.text
+    );
+
+    let refused = put(
+        &app,
+        "/api/v1/settings",
+        &json!({"description": "nope"}),
+        Some(&op),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.body["error"]["code"], "insufficient_role");
+
+    let admin = sign_in(&app, "admin").await;
+    let page = get(&app, "/settings", Some(&admin)).await;
+    assert!(
+        page.text.contains(r#"id="description-form""#),
+        "{}",
+        page.text
+    );
+
+    let saved = put(
+        &app,
+        "/api/v1/settings",
+        &json!({
+            "description": "2025 season",
+            "description_long": "Read the [guide](https://example.org).",
+        }),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["description"], "2025 season");
+    // Returned as stored: rendering to HTML happens where it is shown.
+    assert_eq!(
+        saved.body["description_long"],
+        "Read the [guide](https://example.org)."
+    );
+
+    // And on disk, so it survives a restart.
+    let marker =
+        std::fs::read_to_string(project_root(_dir.path()).join("ridal.toml")).unwrap();
+    assert!(marker.contains(r#"description = "2025 season""#), "{marker}");
+
+    // Clearing one leaves the other alone, the same per-field rule the rest
+    // of the settings API follows.
+    let cleared = put(
+        &app,
+        "/api/v1/settings",
+        &json!({"description": null}),
+        Some(&admin),
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text);
+    assert!(cleared.body["description"].is_null(), "{}", cleared.text);
+    assert_eq!(
+        cleared.body["description_long"],
+        "Read the [guide](https://example.org)."
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_uploaded_radargram_appears_without_a_restart() {
     let hash = accounts::hash_password(password()).unwrap();
     let (dir, _archive, app) = lifecycle_app(vec![activated(

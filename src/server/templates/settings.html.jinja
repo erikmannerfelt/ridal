@@ -261,6 +261,40 @@
       </section>
     {% endif %}
 
+    {#- The project's own description (#285). Administrator-only, like the
+        size limit: the short one is shown on a site's project list and the
+        long one at the top of the catalog, so it is the project's public
+        face rather than a per-person preference. -#}
+    {% if can_edit_project %}
+      <section class="settings-section" id="description-section">
+        <h2>Description</h2>
+        {% if can_administer %}
+          <form id="description-form" class="settings-form" novalidate>
+            <label class="settings-field">
+              <span class="settings-label">Short description</span>
+              <input id="description-short" type="text" autocomplete="off">
+              <span class="hint">
+                One line for the project list, kept as plain text.
+              </span>
+            </label>
+            <label class="settings-field">
+              <span class="settings-label">Long description</span>
+              <textarea id="description-long" rows="6"></textarea>
+              <span class="hint">
+                Shown at the top of the radargram catalog. Markdown is
+                supported for links, emphasis, lists and headings; raw HTML
+                is shown as text rather than run.
+              </span>
+            </label>
+            <button type="submit">Save description</button>
+            <span id="description-status" class="pick-status"></span>
+          </form>
+        {% else %}
+          <p class="hint">An administrator can change the description.</p>
+        {% endif %}
+      </section>
+    {% endif %}
+
     {#- Section two and a half: the basemaps every map draws on (#177). Its
         own section rather than two more fields in the one above, because it
         is a list rather than a value, and because the thing it configures is

@@ -31,6 +31,9 @@
 
   let canEditProject = false;
   let canEditAccess = false;
+  /* May change what only an administrator may: the size cap and the
+   * descriptions (#173, #285). */
+  let canAdminister = false;
   let xscales = [];
   let profiles = [];
   /* Offered by the server so a stored value always has an option to select,
@@ -194,6 +197,7 @@
     }
     canEditProject = Boolean(settings.can_edit_project);
     canEditAccess = Boolean(settings.can_edit_access);
+    canAdminister = Boolean(settings.can_administer);
     profiles = settings.profiles || [];
     xscales = settings.xscales || [];
     // The *offered* list always refreshes: both dropdowns are built from
@@ -268,6 +272,14 @@
           : String(Math.round((settings.max_bytes / GIB) * 100) / 100);
     }
     setStatus("storage-status", "");
+
+    // Description (#285). Only present for an administrator, which is also
+    // when the section is rendered.
+    const descriptionShort = byId("description-short");
+    if (descriptionShort) descriptionShort.value = settings.description || "";
+    const descriptionLong = byId("description-long");
+    if (descriptionLong) descriptionLong.value = settings.description_long || "";
+    setStatus("description-status", "");
 
     if (canEditAccess) await loadMembers();
   }
@@ -398,6 +410,33 @@
       } catch (error) {
         showError(error.message);
         setStatus("storage-status", "");
+      }
+    });
+  }
+
+  /* The project description (#285). Its own form so a save sends only the
+   * two description keys and cannot disturb the forms around it. The server
+   * checks `admin` separately; this merely hides the control from an
+   * operator who could not use it. */
+  const descriptionForm = byId("description-form");
+  if (descriptionForm) {
+    descriptionForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!canAdminister) return;
+      clearError();
+      setStatus("description-status", "Saving\u2026");
+      try {
+        const saved = await send("PUT", RIDAL.apiPath("settings"), {
+          description: byId("description-short").value,
+          description_long: byId("description-long").value,
+        });
+        // An emptied box is stored as absent, so it reads back empty.
+        byId("description-short").value = saved.description || "";
+        byId("description-long").value = saved.description_long || "";
+        setStatus("description-status", "Saved to ridal.toml");
+      } catch (error) {
+        showError(error.message);
+        setStatus("description-status", "");
       }
     });
   }
