@@ -1548,7 +1548,9 @@ async fn a_project_card_shows_its_description() {
     );
     // Markdown rendered, raw HTML escaped.
     assert!(
-        landing.text.contains(r#"<a href="https://example.org">guide</a>"#),
+        landing
+            .text
+            .contains(r#"<a href="https://example.org">guide</a>"#),
         "{}",
         landing.text
     );

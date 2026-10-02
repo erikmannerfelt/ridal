@@ -106,7 +106,8 @@ mod tests {
 
     #[test]
     fn markdown_structure_is_rendered() {
-        let html = render("# Heading\n\n- one\n- two\n\n**bold** and [a link](https://example.org)");
+        let html =
+            render("# Heading\n\n- one\n- two\n\n**bold** and [a link](https://example.org)");
         assert!(html.contains("<h1>Heading</h1>"), "{html}");
         assert!(html.contains("<li>one</li>"), "{html}");
         assert!(html.contains("<strong>bold</strong>"), "{html}");

@@ -2664,7 +2664,11 @@ async fn the_group_jump_list_counts_unlisted_members_only_for_an_admin() {
     assert_eq!(page.status, StatusCode::OK, "{}", page.text);
     // The picker sees one group (the other's only member is unlisted), so
     // there is no jump list and certainly no unlisted badge.
-    assert!(!page.text.contains(r#"class="group-list""#), "{}", page.text);
+    assert!(
+        !page.text.contains(r#"class="group-list""#),
+        "{}",
+        page.text
+    );
     assert!(!page.text.contains("group-list-unlisted"), "{}", page.text);
 
     let erik = sign_in(&app, "erik").await;
@@ -2679,7 +2683,8 @@ async fn the_group_jump_list_counts_unlisted_members_only_for_an_admin() {
         page.text
     );
     assert!(
-        page.text.contains(r#"class="group-list-unlisted">(1 unlisted)"#),
+        page.text
+            .contains(r#"class="group-list-unlisted">(1 unlisted)"#),
         "{}",
         page.text
     );
@@ -3579,7 +3584,11 @@ async fn only_an_admin_may_change_the_project_description() {
 
     // The page shows the section to the operator but hides the form.
     let page = get(&app, "/settings", Some(&op)).await;
-    assert!(page.text.contains(r#"id="description-section""#), "{}", page.text);
+    assert!(
+        page.text.contains(r#"id="description-section""#),
+        "{}",
+        page.text
+    );
     assert!(
         !page.text.contains(r#"id="description-form""#),
         "{}",
@@ -3623,9 +3632,11 @@ async fn only_an_admin_may_change_the_project_description() {
     );
 
     // And on disk, so it survives a restart.
-    let marker =
-        std::fs::read_to_string(project_root(_dir.path()).join("ridal.toml")).unwrap();
-    assert!(marker.contains(r#"description = "2025 season""#), "{marker}");
+    let marker = std::fs::read_to_string(project_root(_dir.path()).join("ridal.toml")).unwrap();
+    assert!(
+        marker.contains(r#"description = "2025 season""#),
+        "{marker}"
+    );
 
     // Clearing one leaves the other alone, the same per-field rule the rest
     // of the settings API follows.

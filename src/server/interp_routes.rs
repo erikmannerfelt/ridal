@@ -1387,7 +1387,10 @@ pub async fn put_settings(
             Some(value) => value.filter(|text| !text.is_empty()),
         };
         for (field, text) in [("description", &short), ("description_long", &long)] {
-            if text.as_ref().is_some_and(|text| text.len() > MAX_DESCRIPTION_BYTES) {
+            if text
+                .as_ref()
+                .is_some_and(|text| text.len() > MAX_DESCRIPTION_BYTES)
+            {
                 return Err(ApiError::bad_request(
                     "description_too_long",
                     format!(

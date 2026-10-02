@@ -1819,7 +1819,10 @@ async fn the_catalog_shows_the_description_and_a_group_jump_list() {
     // members. "Ungrouped" is absent here because every entry is in a group.
     assert!(html.contains(r#"class="group-list""#), "{html}");
     assert!(html.contains(r##"href="#group-dronbreen""##), "{html}");
-    assert!(html.contains(r##"href="#group-kroppbreen-2022""##), "{html}");
+    assert!(
+        html.contains(r##"href="#group-kroppbreen-2022""##),
+        "{html}"
+    );
     assert!(html.contains(r#"id="group-dronbreen""#), "{html}");
     assert!(html.contains(r#"id="group-kroppbreen-2022""#), "{html}");
 }
