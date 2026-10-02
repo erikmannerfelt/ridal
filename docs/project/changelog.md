@@ -3,6 +3,66 @@
 What changed in each release. {doc}`upgrading` says what to do about the
 changes that affect existing data, scripts or servers.
 
+## 0.7.1
+
+### Processing
+
+- `zero_corr(coppens)`, the default method, picks a weak leading lobe of
+  the direct wave consistently and no longer searches before the noise
+  window (#310). On quiet records whose picks used to jump between the lobe
+  and the wave, time zero moves by a few samples and `smooth` is no longer
+  blocky.
+- {step}`subset` needs only one argument, so `subset(max_sample=1000)`
+  crops the height on its own (#298).
+
+### Viewer
+
+- A **Display** menu with contrast and brightness sliders, which holds the
+  render profile and horizontal scale (#303). The sliders adjust only what
+  the browser shows: no new render, and downloads are unaffected.
+- **Smooth when zoomed in** can be switched off, which removes the seam
+  that appeared at chunk edges at high zoom (#305, #313).
+- **Open radargrams zoomed out**, a personal setting (#315).
+
+### Catalog
+
+- A project description: a short one on the site's project list and a
+  long one, in Markdown, at the top of the catalog (#285).
+- A list of groups at the top of the catalog to jump between them (#309).
+- **Hide all** / **Show all** for a group's radargrams, with a personal and
+  a project default (#314). Each group's controls sit beneath its name
+  (#320).
+- More info shows each radargram's track length (#319).
+- The fixed "Radargram catalog" heading is gone (#318).
+
+### GUI
+
+- A **Documentation** link in the menu, and `?` links to the relevant page
+  beside layers, exclusivity groups, derived items, the viewer and accounts
+  (#293).
+- "New derived item" replaces "New derived expression", with a hint that
+  says what an item is (#294).
+- Wide tables scroll sideways on a narrow screen instead of widening the
+  page, and the derived item editor fits a phone (#295).
+
+### Server
+
+- Overviews are coloured before they are shrunk, so they look like the
+  radargram does at full resolution (#300). `seismic` overviews were nearly
+  white before, and `siglog-positive` ones too bright.
+- Overviews are kept on disk under `ridal_data/cache/overviews/`, so a
+  restart does not rebuild them (#180).
+- Overview builds have their own limit, radargram files are opened when
+  needed rather than all kept open, and freed memory is returned (#301,
+  #306). A server with 120 radargrams went from 2.5 GB to under 100 MB at
+  rest.
+- Upload temporaries left by a crash are skipped by the catalog and
+  removed at startup (#302).
+
+### Documentation
+
+- The 0.6.0 changelog covers what that release added (#311).
+
 ## 0.7.0
 
 ### Breaking changes
