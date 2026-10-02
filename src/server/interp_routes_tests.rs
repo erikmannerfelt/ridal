@@ -1776,6 +1776,56 @@ async fn an_unknown_default_profile_is_refused() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_catalog_shows_the_description_and_a_group_jump_list() {
+    // #309 + #285. The jump list is there when there is a choice of groups,
+    // and every group heading is an anchor it can reach.
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    let radargrams = radargrams(dir.path());
+    write_test_nc_with_axes(&radargrams.join("a.nc"), "dron-a", Some("Drønbreen"));
+    write_test_nc_with_axes(&radargrams.join("b.nc"), "kropp-b", Some("Kroppbreen"));
+    let app = app_for(dir.path(), true);
+
+    // No description: the block is not rendered, so a small catalog stays
+    // uncluttered.
+    let (status, html) = page(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!html.contains(r#"class="catalog-description""#), "{html}");
+
+    // Give it a description and a group to compare against. The group has to
+    // be on disk before the project is reopened, and the config is read once.
+    std::fs::write(
+        dir.path().join("ridal.toml"),
+        std::fs::read_to_string(dir.path().join("ridal.toml"))
+            .unwrap()
+            .replace(
+                "[radargrams]",
+                "description_long = \"Welcome to **Drønbreen** <script>alert(1)</script>\"\n\n[radargrams]",
+            ),
+    )
+    .unwrap();
+    write_test_nc_with_axes(&radargrams.join("c.nc"), "kropp-c", Some("Kroppbreen 2022"));
+    let app = app_for(dir.path(), true);
+
+    let (status, html) = page(&app, "/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains(r#"class="catalog-description""#), "{html}");
+    // Rendered, and raw HTML in it escaped rather than emitted.
+    assert!(html.contains("<strong>Drønbreen</strong>"), "{html}");
+    assert!(!html.contains("<script>alert(1)</script>"), "{html}");
+    assert!(html.contains("&lt;script&gt;alert(1)"), "{html}");
+
+    // The jump list, with a link per group and a count of its listed
+    // members. "Ungrouped" is absent here because every entry is in a group.
+    assert!(html.contains(r#"class="group-list""#), "{html}");
+    assert!(html.contains(r##"href="#group-dronbreen""##), "{html}");
+    assert!(html.contains(r##"href="#group-kroppbreen-2022""##), "{html}");
+    assert!(html.contains(r#"id="group-dronbreen""#), "{html}");
+    assert!(html.contains(r#"id="group-kroppbreen-2022""#), "{html}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn the_default_profile_can_be_cleared() {
     let (_dir, app) = project_app(true);
     let settings = "/api/v1/settings";

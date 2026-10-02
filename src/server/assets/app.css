@@ -63,6 +63,11 @@
 
   --radius-sm: 3px;
   --radius-md: 6px;
+  /* The stacked height of the sticky group list on the index page (#309).
+   * Also the scroll offset a group heading is brought to, so the jump list
+   * does not land on top of the heading it was asked for. A single row that
+   * scrolls sideways keeps this a constant on every screen size. */
+  --group-list-height: 2.9rem;
   --table-cell-pad: 2px var(--space-3) 2px 0;
   --map-height-group: 320px;
   /* `vh` is the fallback; the `@supports` block below prefers `svh`. See
@@ -199,6 +204,14 @@
 }
 
 /* ---------- base ---------- */
+
+/* A jump to a group heading lands below the sticky group list rather than
+ * under it (#309). `scroll-padding-top` applies wherever the browser scrolls
+ * to a fragment, so this is one declaration rather than a margin on every
+ * section. */
+html {
+  scroll-padding-top: var(--group-list-height);
+}
 
 body {
   margin: 0;
@@ -361,6 +374,73 @@ code {
 }
 
 /* ---------- index: groups and cards ---------- */
+
+/* The project's own Markdown description at the top of the catalog (#285).
+ * Narrower than the card grid so a paragraph of prose stays readable rather
+ * than stretching the width of a wide screen. `overflow-wrap` so a pasted
+ * URL cannot push the page sideways. */
+.catalog-description {
+  max-width: 55rem;
+  margin-bottom: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+.catalog-description > :first-child {
+  margin-top: 0;
+}
+
+.catalog-description > :last-child {
+  margin-bottom: 0;
+}
+
+/* The jump list above the first group (#309). Sticky so it stays reachable
+ * while scrolling a long catalog; one row that scrolls sideways rather than
+ * wrapping, which keeps its height -- and so the scroll offset in `html`
+ * above -- constant. */
+.group-list {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  margin-bottom: var(--space-4);
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.group-list ul {
+  display: flex;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: var(--space-2) 0;
+  overflow-x: auto;
+}
+
+.group-list a {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  white-space: nowrap;
+  text-decoration: none;
+  color: var(--color-text);
+}
+
+.group-list a:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.group-list-count {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.group-list-unlisted {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
 
 section.group {
   margin-bottom: var(--space-6);

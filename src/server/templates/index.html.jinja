@@ -141,6 +141,13 @@
 
   <h1>Radargram catalog</h1>
 
+  {% if description_html %}
+  {#- The project's own words, rendered from Markdown server-side (#285).
+      Marked safe because `markdown::render` escaped any raw HTML in it;
+      that escaping, not this filter, is what makes it safe. -#}
+  <div class="catalog-description">{{ description_html|safe }}</div>
+  {% endif %}
+
   {#- Where a failed download explains itself. Empty until something goes
       wrong, and above the group sections so the explanation is visible
       wherever on the page the menu that failed was. -#}
@@ -182,8 +189,32 @@
   {#- "Ungrouped" is just another entry in `groups` (see routes.rs's
       index_page), not a special case: same map, same heading treatment,
       always shown even when it's the only section on the page. -#}
+  {#- A jump list above the first group (#309): a survey can run to dozens
+      of groups, and finding one by scrolling is the problem this solves.
+      Rendered only when there is a choice to make. The sticky positioning
+      and the offset that keeps a heading clear of it are in app.css. -#}
+  {% if groups | length > 1 %}
+  <nav class="group-list" aria-label="Groups">
+    <ul>
+      {% for group in groups %}
+      <li>
+        <a href="#group-{{ group.id }}">
+          <span class="group-list-label">{{ group.label }}</span>
+          {#- Listed radargrams for everyone; the unlisted count only for
+              someone who can already see those entries, so the badge cannot
+              announce that a radargram exists. -#}
+          <span class="group-list-count">{{ group.entries | length }}</span>
+          {% if can_administer and group.unlisted_entries %}
+          <span class="group-list-unlisted">({{ group.unlisted_entries | length }} unlisted)</span>
+          {% endif %}
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </nav>
+  {% endif %}
   {% for group in groups %}
-  <section class="group">
+  <section class="group" id="group-{{ group.id }}">
     {#- The heading and its downloads on one line: the menu acts on this
         group, and putting it anywhere else would leave that ambiguous once
         a page has several. -#}

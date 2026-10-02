@@ -2619,6 +2619,74 @@ async fn an_unlisted_radargram_is_absent_from_a_pickers_listing_and_present_for_
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn the_group_jump_list_counts_unlisted_members_only_for_an_admin() {
+    // #309 + #285. The unlisted count is a badge only whoever can already
+    // see those entries gets; for anyone else the jump list simply omits
+    // them, so it cannot announce that an unlisted radargram exists.
+    use crate::project::overrides::{self, RadargramOverride};
+
+    let hash = accounts::hash_password(password()).unwrap();
+    let dir = new_site();
+    // Two groups, so the jump list is rendered at all, one member each.
+    for (id, group) in [("line-01", "Drønbreen"), ("line-02", "Kroppbreen")] {
+        super::interp_routes_tests::write_test_nc_with_axes(
+            &radargrams(dir.path()).join(format!("{id}.nc")),
+            id,
+            Some(group),
+        );
+    }
+    write_people(
+        dir.path(),
+        &UserSet {
+            users: vec![
+                activated("student", Role::Picker, DownloadScope::All, &hash),
+                activated("erik", Role::Admin, DownloadScope::All, &hash),
+            ],
+            ..UserSet::default()
+        },
+    );
+    let project = open_project(dir.path());
+    overrides::update(project.documents(), |o| {
+        o.radargrams.insert(
+            crate::identity::RadargramId::new("line-02").unwrap(),
+            RadargramOverride {
+                unlisted: true,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    let app = site_router(dir.path(), AccessOptions::default());
+
+    let student = sign_in(&app, "student").await;
+    let page = get(&app, "/", Some(&student)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    // The picker sees one group (the other's only member is unlisted), so
+    // there is no jump list and certainly no unlisted badge.
+    assert!(!page.text.contains(r#"class="group-list""#), "{}", page.text);
+    assert!(!page.text.contains("group-list-unlisted"), "{}", page.text);
+
+    let erik = sign_in(&app, "erik").await;
+    let page = get(&app, "/", Some(&erik)).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    // Both groups, and the unlisted one counted only for the admin who can
+    // already see it: Drønbreen's one listed member, Kroppbreen's none.
+    assert_eq!(
+        page.text.matches(r#"class="group-list-count">"#).count(),
+        2,
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text.contains(r#"class="group-list-unlisted">(1 unlisted)"#),
+        "{}",
+        page.text
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_operator_can_rename_a_radargram_without_restarting_the_server() {
     let hash = accounts::hash_password(password()).unwrap();
     let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
