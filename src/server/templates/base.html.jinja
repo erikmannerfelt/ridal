@@ -37,7 +37,7 @@
     under a reverse-proxy subpath, without editing every caller. `|safe`
     because these are server-chosen bases, never user input, and escaping
     their slashes would fill every URL with `&#x2f;`. -#}
-<body data-api-base="{{ api_base|safe }}" data-site-api-base="{{ site_api_base|safe }}" data-page-base="{{ page_base|safe }}"{% if basemaps_json %} data-basemaps="{{ basemaps_json }}" data-basemap="{{ active_basemap }}" data-overlays="{{ overlays_json }}"{% endif %}>
+<body data-api-base="{{ api_base|safe }}" data-site-api-base="{{ site_api_base|safe }}" data-page-base="{{ page_base|safe }}" data-docs-base="{{ docs_base|safe }}"{% if basemaps_json %} data-basemaps="{{ basemaps_json }}" data-basemap="{{ active_basemap }}" data-overlays="{{ overlays_json }}"{% endif %}>
   <header>
     {#- Same reasoning as the menu links below: the logo is another way home,
         and it should not be the one that quietly resets the profile. -#}
@@ -101,6 +101,13 @@
               <li class="site-menu-separated"><a href="/login">Sign in</a></li>
             {% endif %}
           {% endif %}
+          {#- Last, and always present: the documentation is not a page of
+              this server, so it does not move with the menu's signed-in and
+              site/project branches (#293). Opens in a new tab so a
+              half-written pick is not navigated away from. -#}
+          <li class="site-menu-separated">
+            <a href="{{ docs_base|safe }}" target="_blank" rel="noopener">Documentation</a>
+          </li>
         </ul>
       </details>
     </nav>

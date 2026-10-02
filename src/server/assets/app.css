@@ -1026,6 +1026,32 @@ dialog th {
   max-width: 60ch;
 }
 
+/* A small "?" beside a heading or control that opens the relevant page of
+ * the documentation (#293). Muted until hovered so it reads as help rather
+ * than as a primary action. */
+.docs-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-left: var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  color: var(--color-text-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  vertical-align: middle;
+}
+
+.docs-help:hover,
+.docs-help:focus {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
 /* The landing page's project list (#214). A card per project rather than a
  * table: the row holds a link, a badge and, for a server administrator,
  * management controls that a comparison layout would not fit. */

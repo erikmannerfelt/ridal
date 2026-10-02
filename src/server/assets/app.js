@@ -125,6 +125,14 @@ const RIDAL = Object.freeze({
   siteApiBase: document.body.dataset.siteApiBase || "/api/v1",
   pageBase: document.body.dataset.pageBase || "",
 
+  /* Where the documentation lives, written on the body by the server
+   * (#293). The dialog is built in JS, so it cannot interpolate the
+   * template global; it reads this instead. The literal is the fallback
+   * for a page rendered by an older template, and must match the global
+   * in `templates.rs`. */
+  docsBase:
+    document.body.dataset.docsBase || "https://ridal.readthedocs.io/en/stable/",
+
   /* The basemaps this page may draw on, as the server resolved them (#177):
    * the project's own, with Ridal's built-in ESRI World Imagery first unless
    * the project switched it off. Every optional value arrives resolved, so
@@ -1233,6 +1241,9 @@ const RIDAL = Object.freeze({
           <span class="tok-reduce">Highlighted functions</span> combine every
           contributor into one number; the rest work on each contributor
           separately.
+          <a class="docs-help" href="${RIDAL.docsBase}reference/expressions.html"
+             target="_blank" rel="noopener"
+             title="The derived item expression reference">?</a>
         </p>
         <p class="editor-status" id="derived-status" role="status" aria-live="polite"></p>
         <p class="editor-warning" id="derived-unusable" hidden></p>
