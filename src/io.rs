@@ -1668,7 +1668,6 @@ mod tests {
 
         assert!(nc_path.is_file());
 
-        std::thread::sleep(std::time::Duration::from_millis(200));
         let out = netcdf::open(&nc_path)
             .map_err(|e| format!("Error reading NetCDF: {e:?}"))
             .unwrap();

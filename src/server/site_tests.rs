@@ -33,6 +33,12 @@ fn password() -> &'static str {
     })
 }
 
+/// The hash of [`password`], computed once per run rather than per test.
+fn password_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| accounts::hash_password(password()).expect("hashing the shared password"))
+}
+
 fn id(name: &str) -> UserId {
     UserId::new(name).unwrap()
 }
@@ -169,7 +175,7 @@ async fn sign_in(app: &Router, name: &str) -> String {
 
 #[tokio::test]
 async fn the_landing_redirects_an_anonymous_visitor_to_login() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &[],
@@ -182,7 +188,7 @@ async fn the_landing_redirects_an_anonymous_visitor_to_login() {
 
 #[tokio::test]
 async fn signing_in_returns_a_session_and_me_reports_it() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &[],
@@ -197,7 +203,7 @@ async fn signing_in_returns_a_session_and_me_reports_it() {
 
 #[tokio::test]
 async fn a_wrong_password_is_refused() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &[],
@@ -247,7 +253,7 @@ async fn the_old_project_account_routes_are_refused_through_the_prefix() {
 
 #[tokio::test]
 async fn a_server_admin_sees_every_project() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac", "share"],
@@ -267,7 +273,7 @@ async fn a_server_admin_sees_every_project() {
 
 #[tokio::test]
 async fn a_non_member_neither_lists_nor_reaches_a_private_project() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", false, &hash)],
         &["glac"],
@@ -340,7 +346,7 @@ async fn an_invite_into_a_project_adds_the_membership_on_redemption() {
 
 #[tokio::test]
 async fn creating_an_account_requires_a_server_admin() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", false, &hash)],
         &[],
@@ -361,7 +367,7 @@ async fn creating_an_account_requires_a_server_admin() {
 
 #[tokio::test]
 async fn a_server_admin_creates_an_account_and_its_invite() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &[],
@@ -387,7 +393,7 @@ async fn a_server_admin_creates_an_account_and_its_invite() {
 
 #[tokio::test]
 async fn a_server_admin_gets_the_project_controls_on_the_landing() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -476,7 +482,7 @@ async fn a_server_admin_gets_the_project_controls_on_the_landing() {
 
 #[tokio::test]
 async fn a_plain_member_gets_members_but_not_site_admin_controls() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -538,7 +544,7 @@ async fn a_plain_member_gets_members_but_not_site_admin_controls() {
 
 #[tokio::test]
 async fn a_project_admin_adds_and_lists_a_member() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -575,7 +581,7 @@ async fn a_project_admin_adds_and_lists_a_member() {
 
 #[tokio::test]
 async fn site_settings_require_a_login() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &[],
@@ -588,7 +594,7 @@ async fn site_settings_require_a_login() {
 
 #[tokio::test]
 async fn a_site_theme_is_personal_and_reaches_every_project() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -644,7 +650,7 @@ async fn a_site_theme_is_personal_and_reaches_every_project() {
 
 #[tokio::test]
 async fn the_site_menu_offers_site_links_not_project_ones() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -672,7 +678,7 @@ async fn the_site_menu_offers_site_links_not_project_ones() {
 
 #[tokio::test]
 async fn creating_an_account_with_a_project_grants_it_on_redemption() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -724,7 +730,7 @@ async fn creating_an_account_with_a_project_grants_it_on_redemption() {
 
 #[tokio::test]
 async fn bulk_invites_create_accounts_and_grant_the_project() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -781,7 +787,7 @@ async fn bulk_invites_create_accounts_and_grant_the_project() {
 
 #[tokio::test]
 async fn bulk_passwords_need_acknowledgement_and_refuse_admins() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -858,7 +864,7 @@ async fn bulk_passwords_need_acknowledgement_and_refuse_admins() {
 
 #[tokio::test]
 async fn a_bulk_batch_requires_a_server_admin() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", false, &hash)],
         &[],
@@ -892,7 +898,7 @@ async fn a_site_project_links_back_to_the_site_root() {
 
 #[tokio::test]
 async fn a_project_admin_creates_an_account_for_their_project() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -986,7 +992,7 @@ async fn a_project_admin_creates_an_account_for_their_project() {
 
 #[tokio::test]
 async fn adding_an_unknown_member_refuses_with_a_pointer_to_invite() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -1016,7 +1022,7 @@ async fn adding_an_unknown_member_refuses_with_a_pointer_to_invite() {
 
 #[tokio::test]
 async fn only_a_project_admin_may_invite_a_member() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1052,7 +1058,7 @@ async fn only_a_project_admin_may_invite_a_member() {
 
 #[tokio::test]
 async fn a_project_admin_creates_a_bulk_batch_for_their_project() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1127,7 +1133,7 @@ async fn a_project_admin_creates_a_bulk_batch_for_their_project() {
 
 #[tokio::test]
 async fn a_project_admin_bulk_batch_still_refuses_admin_passwords() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1184,7 +1190,7 @@ async fn a_project_admin_bulk_batch_still_refuses_admin_passwords() {
 
 #[tokio::test]
 async fn the_site_audit_records_account_and_project_changes() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -1249,7 +1255,7 @@ async fn the_site_audit_records_account_and_project_changes() {
 
 #[tokio::test]
 async fn a_project_admin_sees_only_their_projects_history() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1319,7 +1325,7 @@ async fn a_project_admin_sees_only_their_projects_history() {
 
 #[tokio::test]
 async fn the_site_audit_requires_a_server_admin() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", false, &hash)],
         &[],
@@ -1332,7 +1338,7 @@ async fn the_site_audit_requires_a_server_admin() {
 
 #[tokio::test]
 async fn the_memberships_overview_groups_accounts_by_project() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1374,7 +1380,7 @@ async fn the_memberships_overview_groups_accounts_by_project() {
 
 #[tokio::test]
 async fn the_memberships_overview_requires_a_server_admin() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", false, &hash)],
         &[],
@@ -1387,7 +1393,7 @@ async fn the_memberships_overview_requires_a_server_admin() {
 
 #[tokio::test]
 async fn creating_a_server_admin_over_http_is_refused() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &[],
@@ -1409,7 +1415,7 @@ async fn creating_a_server_admin_over_http_is_refused() {
 
 #[tokio::test]
 async fn server_admin_is_granted_only_after_activation() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &[],
@@ -1481,7 +1487,7 @@ async fn server_admin_is_granted_only_after_activation() {
 
 #[tokio::test]
 async fn a_project_card_reports_its_catalog_size() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -1515,7 +1521,7 @@ async fn a_project_card_reports_its_catalog_size() {
 async fn a_project_card_shows_its_description() {
     // #285. The short text is a card line; the long one is Markdown shown
     // behind a disclosure, with raw HTML escaped rather than run.
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -1586,7 +1592,7 @@ fn set_members(dir: &std::path::Path, project: &str, private: bool, list: &[(&st
 
 #[tokio::test]
 async fn a_read_only_site_refuses_site_administration() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1651,7 +1657,7 @@ async fn a_read_only_site_refuses_site_administration() {
 
 #[tokio::test]
 async fn an_archived_project_refuses_membership_and_access_changes() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1698,7 +1704,7 @@ async fn an_archived_project_refuses_membership_and_access_changes() {
 
 #[tokio::test]
 async fn a_project_is_deleted_only_after_it_is_archived() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -1722,7 +1728,7 @@ async fn a_project_is_deleted_only_after_it_is_archived() {
 
 #[tokio::test]
 async fn a_public_project_is_reachable_but_never_listed_to_a_non_member() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1774,7 +1780,7 @@ async fn a_site_without_accounts_lists_nothing() {
 
 #[tokio::test]
 async fn project_administration_of_a_private_project_is_a_404_to_a_non_member() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![activated("bo", false, &hash)],
         &["glac"],
@@ -1792,7 +1798,7 @@ async fn project_administration_of_a_private_project_is_a_404_to_a_non_member() 
 
 #[tokio::test]
 async fn a_project_that_cannot_open_does_not_name_server_paths() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &["glac"],
@@ -1813,7 +1819,7 @@ async fn a_project_that_cannot_open_does_not_name_server_paths() {
 
 #[tokio::test]
 async fn removing_an_account_removes_its_memberships() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
@@ -1848,7 +1854,7 @@ async fn removing_an_account_removes_its_memberships() {
 
 #[tokio::test]
 async fn a_project_admin_cannot_hand_out_a_name_another_project_knows() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![activated("bo", false, &hash)],
         &["glac", "other"],
@@ -1892,7 +1898,7 @@ async fn a_project_admin_cannot_hand_out_a_name_another_project_knows() {
 
 #[tokio::test]
 async fn a_project_records_the_account_that_created_it() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = site_with(
         vec![activated("anna", true, &hash)],
         &[],
@@ -1916,7 +1922,7 @@ async fn a_project_records_the_account_that_created_it() {
 
 #[tokio::test]
 async fn the_rest_of_the_site_api_answers_as_documented() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = site_with(
         vec![
             activated("anna", true, &hash),
