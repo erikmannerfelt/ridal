@@ -47,7 +47,7 @@ have one shape wherever they are served — see [Sites](#sites-214) below.
    project's `AppState` is built lazily on its first request.
 2. **Discovery** (`src/server/catalog.rs`) walks the directory (or
    accepts a single file), recognising processed output via
-   `io::inspect_ridal_netcdf` — a metadata-only recogniser that lives
+   `io::inspect_ridal_netcdf` (`src/io/ridal.rs`) — a metadata-only recogniser that lives
    *outside* `src/server/` and outside the `server` feature entirely, so
    CLI-only code (`process`, `batch`) can use it too. Duplicate
    radargram IDs resolve deterministically (newest `processing_datetime`
