@@ -35,13 +35,14 @@ fn run_gdallocationinfo(
         args.push("bilinear");
     }
 
-    let mut child = std::process::Command::new("gdallocationinfo")
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| spawn_error("gdallocationinfo", &e))?;
+    let mut child = crate::tools::spawn_tool(
+        std::process::Command::new("gdallocationinfo")
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    )
+    .map_err(|e| spawn_error("gdallocationinfo", &e))?;
 
     {
         let mut stdin = child
@@ -197,12 +198,13 @@ mod tests {
     }
 
     pub fn get_gdal_version() -> Result<String, String> {
-        let child = std::process::Command::new("gdalinfo")
-            .arg("--version")
-            .stderr(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| super::spawn_error("gdalinfo", &e))?;
+        let child = crate::tools::spawn_tool(
+            std::process::Command::new("gdalinfo")
+                .arg("--version")
+                .stderr(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped()),
+        )
+        .map_err(|e| super::spawn_error("gdalinfo", &e))?;
 
         let output = child
             .wait_with_output()
@@ -230,7 +232,7 @@ mod tests {
 
     pub fn supports_interpolation() -> Result<bool, String> {
         use std::io::Write;
-        use std::process::{Command, Stdio};
+        use std::process::Stdio;
 
         // Use the same DEM your tests use; you can generalize if needed
         let dem_path = crate::dem::tests::get_dem_path();
@@ -239,13 +241,14 @@ mod tests {
             .ok_or("Empty DEM path given in supports_interpolation")?;
 
         // Single arbitrary coordinate; if the flag is supported, we should get XML with <Value>/<Alert>.
-        let mut child = Command::new("gdallocationinfo")
-            .args(["-xml", "-b", "1", "-wgs84", "-r", "bilinear", dem_str])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Error spawning gdallocationinfo: {e}"))?;
+        let mut child = crate::tools::spawn_tool(
+            std::process::Command::new("gdallocationinfo")
+                .args(["-xml", "-b", "1", "-wgs84", "-r", "bilinear", dem_str])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .map_err(|e| format!("Error spawning gdallocationinfo: {e}"))?;
 
         {
             let mut stdin = child

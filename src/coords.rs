@@ -195,17 +195,18 @@ fn parse_crs_utm(text: &str) -> Result<UtmCrs, String> {
 }
 
 fn proj_parse_crs(text: &str) -> Result<String, String> {
-    let child = std::process::Command::new("projinfo")
-        .arg(text)
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            if e.to_string().contains("No such file or directory") {
-                format!("PROJ (projinfo) cannot be found / is not installed: {e}")
-            } else {
-                format!("Call error when spawning process: {e}")
-            }
-        })?;
+    let child = crate::tools::spawn_tool(
+        std::process::Command::new("projinfo")
+            .arg(text)
+            .stdout(std::process::Stdio::piped()),
+    )
+    .map_err(|e| {
+        if e.to_string().contains("No such file or directory") {
+            format!("PROJ (projinfo) cannot be found / is not installed: {e}")
+        } else {
+            format!("Call error when spawning process: {e}")
+        }
+    })?;
 
     let result = child
         .wait_with_output()
@@ -260,12 +261,13 @@ fn proj_convert_crs(
     for i in 0..x.len() {
         values.push(format!("{} {}", x[i], y[i]));
     }
-    let mut child = std::process::Command::new("cs2cs")
-        .args(proj_conv_str)
-        .stdout(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Call error when spawning process: {e}"))?;
+    let mut child = crate::tools::spawn_tool(
+        std::process::Command::new("cs2cs")
+            .args(proj_conv_str)
+            .stdout(std::process::Stdio::piped())
+            .stdin(std::process::Stdio::piped()),
+    )
+    .map_err(|e| format!("Call error when spawning process: {e}"))?;
 
     child
         .stdin
@@ -448,19 +450,20 @@ fn utm_grid_mapping_attrs(utm: &UtmCrs) -> BTreeMap<String, crate::export::Expor
 }
 
 fn projinfo_to_wkt(definition: &str) -> Result<String, String> {
-    let output = std::process::Command::new("projinfo")
-        .args(["-o", "WKT2:2019", "--single-line", definition])
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            if e.to_string().contains("No such file or directory") {
-                format!("PROJ (projinfo) cannot be found / is not installed: {e}")
-            } else {
-                format!("Call error when spawning projinfo: {e}")
-            }
-        })?
-        .wait_with_output()
-        .map_err(|e| format!("Call process error: {e}"))?;
+    let output = crate::tools::spawn_tool(
+        std::process::Command::new("projinfo")
+            .args(["-o", "WKT2:2019", "--single-line", definition])
+            .stdout(std::process::Stdio::piped()),
+    )
+    .map_err(|e| {
+        if e.to_string().contains("No such file or directory") {
+            format!("PROJ (projinfo) cannot be found / is not installed: {e}")
+        } else {
+            format!("Call error when spawning projinfo: {e}")
+        }
+    })?
+    .wait_with_output()
+    .map_err(|e| format!("Call process error: {e}"))?;
 
     let text = String::from_utf8_lossy(&output.stdout);
 
