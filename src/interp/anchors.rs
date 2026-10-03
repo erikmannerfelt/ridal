@@ -653,6 +653,22 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_file_that_cannot_be_read_is_served_without_anchor_axes() {
+        // Picks on it still display; they just cannot be carried, which is
+        // the same answer as for a radargram that declares nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.nc");
+        std::fs::write(&path, b"not a netcdf file").unwrap();
+        let id = crate::identity::RadargramId::new("broken").unwrap();
+        let revision = crate::identity::RevisionId::fingerprint_v1(&id, "2020-01-01T00:00:00Z");
+        assert_eq!(
+            axes_for_revision_checked(&path, &id, &revision, None),
+            Axes::default()
+        );
+    }
+
+    #[test]
     fn a_steadily_driven_profile_needs_two_tiepoints() {
         // Evenly spaced times are exactly linear, so everything between the
         // ends is redundant. This is the ordinary case, and it is what
