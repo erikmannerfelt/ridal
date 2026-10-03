@@ -899,6 +899,41 @@ async fn get_or_build_overview(
     .await
 }
 
+/// Take one of `AppState::render_permits` for CPU-heavy work, in async
+/// context before anything is spawned.
+///
+/// Shared by rendering and by merged level 2 exports (#136): both are
+/// CPU-bound work that must leave the async executor, and both are bounded by
+/// `--n-workers` so a burst cannot start hundreds of them. Acquiring here
+/// rather than inside the blocking task is what makes a client disconnect
+/// matter -- a request that goes away while queued drops this future and never
+/// starts the work.
+pub(crate) async fn acquire_render_permit(
+    state: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+    tokio::time::timeout(
+        RENDER_PERMIT_TIMEOUT,
+        state.render_permits.clone().acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        // A 503 without Retry-After leaves a client guessing. The hint is
+        // deliberately short relative to the timeout that produced it: by
+        // the time this fires, a permit is likely to free up sooner than
+        // the full wait the caller just endured.
+        ApiError::service_unavailable(
+            "render_busy",
+            "The server is at its concurrency limit for CPU-heavy work. Retry \
+             shortly, or start it with a higher --n-workers.",
+        )
+        .with_header(
+            header::RETRY_AFTER,
+            RENDER_BUSY_RETRY_AFTER_SECS.to_string(),
+        )
+    })?
+    .map_err(|_| ApiError::internal("render_permits_closed", "Render permits were closed"))
+}
+
 /// Run one piece of work against a radargram's [`RenderService`] on a
 /// blocking thread, under a permit from `AppState::render_permits`.
 ///
@@ -941,27 +976,7 @@ where
         + 'static,
     R: Send + 'static,
 {
-    let permit = tokio::time::timeout(
-        RENDER_PERMIT_TIMEOUT,
-        state.render_permits.clone().acquire_owned(),
-    )
-    .await
-    .map_err(|_| {
-        // A 503 without Retry-After leaves a client guessing. The hint is
-        // deliberately short relative to the timeout that produced it: by
-        // the time this fires, a permit is likely to free up sooner than
-        // the full wait the caller just endured.
-        ApiError::service_unavailable(
-            "render_busy",
-            "The server is at its render concurrency limit. Retry shortly, \
-             or start it with a higher --n-workers.",
-        )
-        .with_header(
-            header::RETRY_AFTER,
-            RENDER_BUSY_RETRY_AFTER_SECS.to_string(),
-        )
-    })?
-    .map_err(|_| ApiError::internal("render_permits_closed", "Render permits were closed"))?;
+    let permit = acquire_render_permit(&state).await?;
 
     tokio::task::spawn_blocking(move || {
         // Held until the render finishes, then released for the next
