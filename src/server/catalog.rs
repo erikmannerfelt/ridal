@@ -866,7 +866,6 @@ fn resolve_group_names(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpr::{self, RunParams};
 
     #[test]
     fn groups_are_listed_by_name_ignoring_case_not_by_id() {
@@ -890,71 +889,62 @@ mod tests {
         );
     }
 
+    /// Write a small, valid Ridal NetCDF with the given identity.
+    ///
+    /// Catalog discovery reads only metadata -- id, group, processing
+    /// datetime, shape -- and never the amplitudes. Processing a real Mala
+    /// asset here bought nothing but ten megabytes and a full filter chain
+    /// per call, so these tests export a dummy instead. The identity
+    /// precedence they exercise is resolved by the same
+    /// `identity::resolve_*` functions `gpr::run` uses.
+    fn write_processed_nc(
+        output: &std::path::Path,
+        radargram_id: Option<&str>,
+        group: Option<&str>,
+        group_id: Option<&str>,
+    ) {
+        let output_stem = output
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("output path has a file stem");
+        let (id, _) = crate::identity::resolve_radargram_id(radargram_id, None, output_stem)
+            .expect("a valid radargram id");
+        let (group_name, group_id) =
+            match crate::identity::resolve_group(group, group_id, None, None)
+                .expect("a valid group")
+            {
+                Some((name, id)) => (Some(name), Some(id)),
+                None => (None, None),
+            };
+        let mut gpr = crate::gpr::tests::make_dummy_gpr(8, 50, Some(1.0));
+        gpr.identity = crate::gpr::RidalIdentity {
+            radargram_id: Some(id),
+            display_name: None,
+            group_name,
+            group_id,
+        };
+        gpr.export(output).expect("exporting the dummy radargram");
+    }
+
     fn process_to(
-        input: &str,
+        _input: &str,
         output: &std::path::Path,
         radargram_id: Option<&str>,
         group: Option<&str>,
     ) {
-        let params = RunParams {
-            filepaths: vec![std::path::PathBuf::from(input)],
-            output_path: Some(output.to_path_buf()),
-            dem_path: None,
-            cor_path: None,
-            medium_velocity: 0.168,
-            crs: None,
-            quiet: true,
-            track_path: None,
-            steps: vec!["subset(0 -1 0 50)".to_string()],
-            no_export: false,
-            render_path: None,
-            render_profile: None,
-            render_width: None,
-            render_topo: false,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            user_metadata: Default::default(),
-            radargram_id: radargram_id.map(str::to_string),
-            display_name: None,
-            group: group.map(str::to_string),
-            group_id: None,
-        };
-        gpr::run(params).unwrap();
+        write_processed_nc(output, radargram_id, group, None);
     }
 
     /// Like `process_to`, but with an explicit group id override, for
     /// exercising that precedence tier specifically.
     fn process_to_with_group_id(
-        input: &str,
+        _input: &str,
         output: &std::path::Path,
         radargram_id: Option<&str>,
         group: &str,
         group_id: &str,
     ) {
-        let params = RunParams {
-            filepaths: vec![std::path::PathBuf::from(input)],
-            output_path: Some(output.to_path_buf()),
-            dem_path: None,
-            cor_path: None,
-            medium_velocity: 0.168,
-            crs: None,
-            quiet: true,
-            track_path: None,
-            steps: vec!["subset(0 -1 0 50)".to_string()],
-            no_export: false,
-            render_path: None,
-            render_profile: None,
-            render_width: None,
-            render_topo: false,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            user_metadata: Default::default(),
-            radargram_id: radargram_id.map(str::to_string),
-            display_name: None,
-            group: Some(group.to_string()),
-            group_id: Some(group_id.to_string()),
-        };
-        gpr::run(params).unwrap();
+        write_processed_nc(output, radargram_id, Some(group), Some(group_id));
     }
 
     const ASSET_2022: &str = concat!(

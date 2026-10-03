@@ -951,7 +951,11 @@ mod tests {
         // written to catch.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.nc");
-        write_trace_varying_nc(&path, 400, 4096);
+        // Few rows: the seed the equivalence is about is chosen from the
+        // trace runs, so the loud columns below carry it, and every row
+        // beyond a handful is resampling work this test does not read. The
+        // width stays 4096 so the runs keep their 32-trace stride.
+        write_trace_varying_nc(&path, 64, 4096);
 
         for name in [
             "default",
@@ -981,7 +985,7 @@ mod tests {
                 ),
                 &RenderServiceConfig::default(),
             );
-            let spec = OverviewSpec::new(4096, 400, 300);
+            let spec = OverviewSpec::new(4096, 64, 300);
             let from_server = service
                 .get_or_render_overview(
                     &spec,
@@ -1180,7 +1184,7 @@ mod tests {
         // matters would pass unnoticed.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sensitive.nc");
-        write_trace_varying_nc(&path, 400, 4096);
+        write_trace_varying_nc(&path, 64, 4096);
         let reader = SourceReader::open(&path).unwrap();
 
         let limits = |seed| {
