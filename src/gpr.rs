@@ -3807,7 +3807,7 @@ pub mod tests {
         gpr.zero_corr_legacy(1.);
         gpr.export(&path).unwrap();
 
-        let declared = crate::interp::source::read_axis_declarations(&path);
+        let declared = crate::interp::source::read_axis_declarations(&path).unwrap();
         assert!(
             declared.dt_ns > 0.0,
             "a sample interval from the axis itself"

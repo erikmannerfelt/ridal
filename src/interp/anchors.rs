@@ -480,7 +480,16 @@ pub fn axes_for_revision_checked(
     revision_id: &crate::identity::RevisionId,
     baseline: Option<&str>,
 ) -> Axes {
-    let declared = crate::interp::source::read_axis_declarations(path);
+    let declared = match crate::interp::source::read_axis_declarations(path) {
+        Ok(declared) => declared,
+        Err(e) => {
+            eprintln!(
+                "Warning: {radargram_id} could not be read ({e}); serving it without \
+                 anchor axes."
+            );
+            return Axes::default();
+        }
+    };
     let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
         &crate::identity::RevisionId::fingerprint_v1(radargram_id, when) == revision_id
     });

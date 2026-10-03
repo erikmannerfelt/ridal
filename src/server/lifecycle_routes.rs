@@ -277,20 +277,31 @@ pub async fn upload_dataset(
     let revision_id =
         crate::identity::RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime)
             .to_string();
-    let baseline = crate::interp::anchors::snapshot_values(
-        &crate::interp::source::read_axis_declarations(&installed),
-    )
-    .map(|values| {
-        revisions::AxisSnapshot {
-            radargram_id: meta.radargram_id.to_string(),
-            revision_id: revision_id.clone(),
-            y_anchor: values.y_anchor,
-            y_values: values.y_values,
-            x_values: values.x_values,
-            y_alternate: values.y_alternate,
-        }
-        .checksum()
-    });
+    // The upload is installed either way. A file that cannot be read back
+    // gets no checksum, as one without axes does, but says so: a checksum
+    // missing for that reason is one later checks silently go without.
+    let declared = crate::interp::source::read_axis_declarations(&installed)
+        .inspect_err(|e| {
+            eprintln!(
+                "Warning: '{}' could not be read back to record its axis checksum: {e}",
+                meta.radargram_id
+            )
+        })
+        .ok();
+    let baseline = declared
+        .as_ref()
+        .and_then(crate::interp::anchors::snapshot_values)
+        .map(|values| {
+            revisions::AxisSnapshot {
+                radargram_id: meta.radargram_id.to_string(),
+                revision_id: revision_id.clone(),
+                y_anchor: values.y_anchor,
+                y_values: values.y_values,
+                x_values: values.x_values,
+                y_alternate: values.y_alternate,
+            }
+            .checksum()
+        });
     if let Err(e) = ledger::update(project.documents(), |l| {
         ledger::note_current_again(
             l,
@@ -658,7 +669,9 @@ fn snapshot_axes(
     path: &std::path::Path,
     revision: &str,
 ) -> Result<(), String> {
-    let declared = crate::interp::source::read_axis_declarations(path);
+    let declared = crate::interp::source::read_axis_declarations(path).map_err(|e| {
+        format!("'{id}' could not be read, so whether it declares axes is unknown: {e}")
+    })?;
 
     // The axes have to belong to the revision they are about to be filed
     // under. `revision` came from the catalog snapshot and these values
@@ -666,19 +679,13 @@ fn snapshot_axes(
     // place since discovery, storing them would pair one revision's
     // mapping with another's id -- which is the exact cross-revision
     // mistake snapshots exist to prevent, committed by the snapshot.
-    //
-    // The reader is lenient by design, so a file that cannot be opened at
-    // all returns defaults and would otherwise look like a radargram that
-    // simply declares nothing. Requiring the datetime to match tells those
-    // two apart: no datetime means the file did not read.
     let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
         crate::identity::RevisionId::fingerprint_v1(id, when).as_str() == revision
     });
     if !same_revision {
         return Err(format!(
             "'{id}' on disk is not the revision the catalog has ({revision}); it was \
-             changed or became unreadable since it was discovered, so its axes cannot \
-             be kept under that id"
+             changed since it was discovered, so its axes cannot be kept under that id"
         ));
     }
 

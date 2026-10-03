@@ -4896,6 +4896,55 @@ async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn a_replace_stops_when_the_current_file_cannot_be_read() {
+    // Unreadable used to read as "declares no axes", so with nobody's
+    // picks on it the replace went ahead with a note that the radargram
+    // did not describe its axes -- a claim about a file nobody had read.
+    // Whether it declares axes is unknown, and the replace stops instead.
+    let hash = accounts::hash_password(password()).unwrap();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        staged_bytes("ours"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(staged.status, StatusCode::OK, "{}", staged.text);
+    let token = staged.body["token"].as_str().unwrap().to_string();
+
+    // Between staging and committing, the current file stops being
+    // readable.
+    let current = radargrams(dir.path()).join("ours.nc");
+    std::fs::write(&current, b"not a netcdf file").unwrap();
+
+    let refused = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        refused.text
+    );
+    assert_eq!(refused.body["error"]["code"], "axes_unreadable");
+    // Nothing was installed over it.
+    assert_eq!(std::fs::read(&current).unwrap(), b"not a netcdf file");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn an_uncorrected_revision_can_be_replaced() {
     // Reported: going from a zero-corrected revision to an uncorrected one
     // worked, and going back did not. Replacing the uncorrected one was
