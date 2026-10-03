@@ -118,17 +118,20 @@ pub struct AxisDeclarations {
 
 /// Read the axis declarations, or as much of them as the file carries.
 ///
-/// Lenient throughout, unlike [`read_geometry`]: this describes what a
+/// Lenient about content, unlike [`read_geometry`]: this describes what a
 /// radargram can offer, and a radargram that can offer nothing is a fact to
 /// record rather than an error to raise. Its picks are still perfectly good
 /// picks — they simply cannot be carried across a reprocess, which is the
 /// state every interpretation was in before #146.
-pub fn read_axis_declarations(path: &Path) -> AxisDeclarations {
-    let Ok(file) = netcdf::open(path) else {
-        return AxisDeclarations::default();
-    };
+///
+/// Not lenient about the file itself. One that cannot be opened is an
+/// error, not a radargram that declares nothing: answering with defaults
+/// made a transient failure (#129) look like a file without axes, and every
+/// caller had to tell the two apart again, or did not.
+pub fn read_axis_declarations(path: &Path) -> Result<AxisDeclarations, String> {
+    let file = netcdf::open(path).map_err(|e| format!("could not open {path:?}: {e}"))?;
     let twtt = read_f64_variable(&file, "twtt").unwrap_or_default();
-    AxisDeclarations {
+    Ok(AxisDeclarations {
         time: read_f64_variable(&file, "time").unwrap_or_default(),
         processing_datetime: read_str_attr(&file, "ridal_processing_datetime"),
         twtt_anchor: file
@@ -143,7 +146,7 @@ pub fn read_axis_declarations(path: &Path) -> AxisDeclarations {
             _ => 0.0,
         },
         n_samples: twtt.len(),
-    }
+    })
 }
 
 /// Read a numeric variable, widening to `f64`.
@@ -162,5 +165,38 @@ fn read_str_attr(file: &netcdf::File, name: &str) -> Option<String> {
     match file.attribute(name)?.value().ok()? {
         netcdf::AttributeValue::Str(value) => Some(value),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_file_that_cannot_be_opened_is_an_error_not_an_empty_declaration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.nc");
+        std::fs::write(&path, b"not a netcdf file").unwrap();
+        assert!(super::read_axis_declarations(&path).is_err());
+        assert!(super::read_axis_declarations(&dir.path().join("absent.nc")).is_err());
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_readable_file_without_axes_still_declares_nothing() {
+        // The leniency that stays: a file that opens but carries no axis
+        // variables is a radargram that cannot offer a mapping, not an
+        // error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bare.nc");
+        netcdf::create(&path)
+            .unwrap()
+            .add_dimension("x", 3)
+            .unwrap();
+        let declared = super::read_axis_declarations(&path).unwrap();
+        assert!(declared.time.is_empty());
+        assert_eq!(declared.twtt_anchor, None);
+        assert_eq!(declared.dt_ns, 0.0);
+        assert_eq!(declared.n_samples, 0);
+        assert_eq!(declared.processing_datetime, None);
     }
 }

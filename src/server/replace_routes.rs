@@ -293,8 +293,22 @@ fn consequences(
     to_path: &std::path::Path,
     to_revision: &RevisionId,
 ) -> Result<ConsequenceReport, ApiError> {
-    let from_declared = crate::interp::source::read_axis_declarations(from_path);
-    let to_declared = crate::interp::source::read_axis_declarations(to_path);
+    // Unreadable is not "declares no axes": answering as if it were would
+    // tell the operator the replace is safe, or that the file needs
+    // reprocessing, when neither is known.
+    let unreadable = |which: &str, e: String| {
+        ApiError::internal(
+            "axes_unreadable",
+            format!(
+                "The {which} file of '{radargram}' could not be read to describe its \
+                 axes ({e}). Nothing was changed; try again."
+            ),
+        )
+    };
+    let from_declared = crate::interp::source::read_axis_declarations(from_path)
+        .map_err(|e| unreadable("current", e))?;
+    let to_declared = crate::interp::source::read_axis_declarations(to_path)
+        .map_err(|e| unreadable("uploaded", e))?;
 
     // The mapping of the revision that is about to go. Computed here so the
     // report can say whether the replace is even permissible: if the
@@ -675,7 +689,19 @@ pub async fn commit_replacement(
     // Fatal, unlike the audit log. A radargram that genuinely declares no
     // axes has no mapping to lose and proceeds; one that declares them and
     // cannot have them written does not.
-    let from_declared = crate::interp::source::read_axis_declarations(&from_path);
+    //
+    // A file that cannot be read is neither: whether it declares axes is
+    // unknown, so the replace stops rather than taking the branch below
+    // for a radargram without them.
+    let from_declared = crate::interp::source::read_axis_declarations(&from_path).map_err(|e| {
+        ApiError::internal(
+            "axes_unreadable",
+            format!(
+                "The current file of '{radargram}' could not be read to keep its axes \
+                 ({e}). Nothing was changed; try again."
+            ),
+        )
+    })?;
     if let Some(values) = crate::interp::anchors::snapshot_values(&from_declared) {
         let snapshot = revisions::AxisSnapshot {
             radargram_id: radargram.to_string(),

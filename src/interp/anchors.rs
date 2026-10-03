@@ -480,7 +480,16 @@ pub fn axes_for_revision_checked(
     revision_id: &crate::identity::RevisionId,
     baseline: Option<&str>,
 ) -> Axes {
-    let declared = crate::interp::source::read_axis_declarations(path);
+    let declared = match crate::interp::source::read_axis_declarations(path) {
+        Ok(declared) => declared,
+        Err(e) => {
+            eprintln!(
+                "Warning: {radargram_id} could not be read ({e}); serving it without \
+                 anchor axes."
+            );
+            return Axes::default();
+        }
+    };
     let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
         &crate::identity::RevisionId::fingerprint_v1(radargram_id, when) == revision_id
     });
@@ -642,6 +651,22 @@ pub fn snapshot_values(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_file_that_cannot_be_read_is_served_without_anchor_axes() {
+        // Picks on it still display; they just cannot be carried, which is
+        // the same answer as for a radargram that declares nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.nc");
+        std::fs::write(&path, b"not a netcdf file").unwrap();
+        let id = crate::identity::RadargramId::new("broken").unwrap();
+        let revision = crate::identity::RevisionId::fingerprint_v1(&id, "2020-01-01T00:00:00Z");
+        assert_eq!(
+            axes_for_revision_checked(&path, &id, &revision, None),
+            Axes::default()
+        );
+    }
 
     #[test]
     fn a_steadily_driven_profile_needs_two_tiepoints() {
