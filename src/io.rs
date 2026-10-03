@@ -1650,7 +1650,6 @@ mod tests {
     // tests below, which introduced enough concurrent netcdf::create/open calls
     // to make the same underlying race reproduce on every run instead of
     // occasionally. Keeping the retry as a second line of defense.
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_save_netcdf() {
         let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
@@ -1740,7 +1739,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_supported() {
         let dir = tempfile::tempdir().unwrap();
@@ -1767,7 +1765,6 @@ mod tests {
     // flag (xarray with `h5netcdf`, `h5dump`) will garble it. Ridal must
     // neither transliterate nor reject it.
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_unicode_display_and_group_names_survive_the_netcdf_round_trip() {
         let dir = tempfile::tempdir().unwrap();
@@ -1797,7 +1794,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_unrelated_file_is_not_ridal() {
         let dir = tempfile::tempdir().unwrap();
@@ -1816,7 +1812,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_recognizes_unprefixed_legacy_attrs_as_legacy() {
         // Unprefixed processing_datetime/program_version, with no
@@ -1851,7 +1846,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_missing_radargram_id_is_not_ridal() {
         let dir = tempfile::tempdir().unwrap();
@@ -1876,7 +1870,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_malformed_id_is_not_ridal() {
         let dir = tempfile::tempdir().unwrap();
@@ -1911,7 +1904,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_unreadable_file_is_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -1923,7 +1915,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn test_inspect_ridal_netcdf_nonexistent_file_is_an_error() {
         let result = super::inspect_ridal_netcdf(std::path::Path::new("/no/such/file.nc"));

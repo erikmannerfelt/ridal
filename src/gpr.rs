@@ -3722,7 +3722,6 @@ pub mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn both_offsets_reach_the_file_shaped_by_whether_the_traces_agree() {
         // Written and read back as real NetCDF, because both shapes are new
@@ -3794,7 +3793,6 @@ pub mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_processed_radargram_can_describe_its_own_anchor_axes() {
         // The whole point of #144 read back by #146: an exported radargram
@@ -3843,7 +3841,6 @@ pub mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_level_2_export_reads_back_what_the_radargram_declared() {
         // The writer and the reader, across a real file. Level 2 puts these

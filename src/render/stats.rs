@@ -166,7 +166,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn percentile_limits_bracket_uniform_data() {
         let dir = tempfile::tempdir().unwrap();
@@ -201,7 +200,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn different_seeds_still_agree_closely_on_uniform_data() {
         let dir = tempfile::tempdir().unwrap();
@@ -244,7 +242,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn same_seed_is_fully_deterministic() {
         let dir = tempfile::tempdir().unwrap();
@@ -278,7 +275,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn abslog_transform_changes_the_estimated_limits() {
         let dir = tempfile::tempdir().unwrap();
@@ -421,7 +417,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn positive_transform_estimates_limits_from_absolute_value() {
         let dir = tempfile::tempdir().unwrap();
@@ -450,7 +445,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn skip_first_samples_excludes_the_direct_wave_band() {
         let dir = tempfile::tempdir().unwrap();

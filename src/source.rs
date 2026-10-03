@@ -318,7 +318,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn read_window_returns_exact_requested_region() {
         let dir = tempfile::tempdir().unwrap();
@@ -336,7 +335,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn read_window_clamps_to_array_extent() {
         let dir = tempfile::tempdir().unwrap();
@@ -349,7 +347,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn read_window_entirely_outside_extent_is_empty_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -362,7 +359,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn sample_trace_runs_reads_complete_columns() {
         let dir = tempfile::tempdir().unwrap();
@@ -377,7 +373,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn sample_trace_runs_is_deterministic_given_same_offset() {
         let dir = tempfile::tempdir().unwrap();
@@ -391,7 +386,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn sample_trace_runs_skip_rows_drops_the_top_rows() {
         let dir = tempfile::tempdir().unwrap();
