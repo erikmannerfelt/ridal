@@ -1887,6 +1887,16 @@ button.danger:disabled {
   max-width: min(44rem, calc(100vw - 2rem));
 }
 
+/* Text and a dismiss button side by side (#352): the toast used to stay
+ * until some later action happened to clear it, in the way of the
+ * radargram. `:not([hidden])` because a `display` here would otherwise
+ * override the attribute that hides it. */
+#pick-error:not([hidden]) {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
 /* The invisible companion that makes a line tappable -- picked reflectors
  * on the radargram, and radargram tracks on the geographic maps.
  *

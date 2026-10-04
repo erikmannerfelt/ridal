@@ -69,8 +69,80 @@ network address with accounts, it also refuses password sign-ins unless
 
 ## Keeping it running
 
-Ridal is a foreground process; stopping it stops the server. On a machine
+Ridal is a foreground process; stopping it stops the server. On Ctrl+C or
+SIGTERM it finishes the requests in flight before it exits. On a machine
 that should always answer, run it under a service manager such as `systemd`,
 with the site directory as its only argument, and let that manager restart
 it. Sessions survive a restart: the signing key is the site's
 `session.key`, so a restart does not sign everyone out.
+
+### As a systemd service
+
+Most Linux servers run services with systemd. The unit below runs Ridal as
+its own unprivileged user, restarts it if it stops, and lets it write
+nowhere but the site directory. It assumes the site is at `/srv/ridal` and
+the `ridal` command at `/usr/local/bin/ridal`; change both to match. A
+`ridal` installed with `cargo install` lives in that user's
+`~/.cargo/bin`, which the unit cannot read: copy it somewhere such as
+`/usr/local/bin` first.
+
+Create a user that owns the site and cannot log in:
+
+```console
+$ sudo useradd --system --home-dir /srv/ridal --shell /usr/sbin/nologin ridal
+$ sudo chown -R ridal:ridal /srv/ridal
+```
+
+Save this as `/etc/systemd/system/ridal.service`:
+
+```ini
+[Unit]
+Description=Ridal server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ridal
+Group=ridal
+ExecStart=/usr/local/bin/ridal server start /srv/ridal
+Restart=on-failure
+RestartSec=5
+
+# Ridal writes only under the site directory.
+ReadWritePaths=/srv/ridal
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Then start it, and have it start again at boot:
+
+```console
+$ sudo systemctl daemon-reload
+$ sudo systemctl enable --now ridal
+$ systemctl status ridal
+$ journalctl -u ridal -f
+```
+
+What Ridal prints when it starts, and any warnings after, go to the journal,
+which the last command follows.
+
+Options go on the `ExecStart` line, as on the command line: for example
+`--n-workers 4 --cache-memory-mb 2048`. Leave `--host` out when a reverse
+proxy on the same machine is in front, as {doc}`reverse-proxy` recommends.
+
+Run the `ridal site` commands that change the site, such as adding accounts,
+as the same user, so that the files they write stay readable to the
+service:
+
+```console
+$ sudo -u ridal ridal site account add jane --path /srv/ridal
+```
+
+`ridal` needs PROJ (`projinfo` and `cs2cs`) and, for DEM corrections, GDAL
+on the service's `PATH`. Installed from the system's packages, they are in
+`/usr/bin`, which systemd includes.

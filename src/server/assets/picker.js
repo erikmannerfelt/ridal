@@ -298,6 +298,7 @@
     const saveButton = document.getElementById("pick-save");
     const statusEl = document.getElementById("pick-status");
     const errorBox = document.getElementById("pick-error");
+    const errorText = document.getElementById("pick-error-text");
     const selectionBox = document.getElementById("pick-selection");
     const selectedLayer = document.getElementById("pick-selected-layer");
     const deleteButton = document.getElementById("pick-delete");
@@ -346,6 +347,8 @@
     let duplicateMarkers = [];
     let overlapBands = [];
     let overlapMarkers = [];
+    /** Every reason a violation marker on screen gives. */
+    let violationReasons = new Set();
     let nextId = 1;
     /** Whether the stored lines are drawn at all (#143).
      *
@@ -359,8 +362,14 @@
      * progress forces this back on -- see `revealPicks`. */
     let picksVisible = CFG.showPicks !== false;
 
+    /** The reason the toast is explaining, when it was opened from a
+     * violation marker; null otherwise. `redrawMarkers` closes the toast once
+     * no marker gives that reason any more, so fixing an overlap also clears
+     * its explanation (#352). */
+    let toastViolation = null;
     const showError = (message) => {
-      RIDAL.setMessage(errorBox, message);
+      toastViolation = null;
+      RIDAL.setMessage(errorText, message);
       errorBox.classList.remove("toast-info");
       errorBox.hidden = false;
     };
@@ -370,15 +379,20 @@
      * layout, so an explanation can appear exactly when it is relevant and
      * vanish when it is not, without moving anything. */
     const showInfo = (message) => {
-      errorBox.textContent = message;
+      toastViolation = null;
+      errorText.textContent = message;
       errorBox.classList.add("toast-info");
       errorBox.hidden = false;
     };
     const clearError = () => {
+      toastViolation = null;
       errorBox.hidden = true;
-      errorBox.textContent = "";
+      errorText.textContent = "";
       errorBox.classList.remove("toast-info");
     };
+    document
+      .getElementById("pick-error-dismiss")
+      .addEventListener("click", clearError);
 
     // --- Coordinate conversion ----------------------------------------------
     //
@@ -1188,7 +1202,9 @@
       marker.on("click", (event) => {
         L.DomEvent.stopPropagation(event);
         showInfo(reason);
+        toastViolation = reason;
       });
+      violationReasons.add(reason);
       return marker;
     }
 
@@ -1316,6 +1332,7 @@
       overlapBands = [];
       overlapMarkers.forEach((marker) => map.removeLayer(marker));
       overlapMarkers = [];
+      violationReasons = new Set();
 
       const lines = markerLines();
 
@@ -1416,6 +1433,10 @@
                   "covers a trace.",
           ),
         );
+      }
+
+      if (toastViolation !== null && !violationReasons.has(toastViolation)) {
+        clearError();
       }
     }
 

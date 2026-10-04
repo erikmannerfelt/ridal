@@ -59,6 +59,11 @@ recorded close together in time:
 ridal batch-process "data/*.rd3" --merge "10 min" --default -o output/
 ```
 
+Files are only joined when they agree on what the merged file states once
+for all its traces: the CRS, antenna frequency, time window, antenna
+separation and medium velocity. A file that differs in any of them starts a
+new output instead.
+
 ## Rendering an image
 
 `-r` renders the processed profile as a JPEG beside the output. A file that is

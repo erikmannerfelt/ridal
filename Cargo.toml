@@ -133,7 +133,6 @@ netcdf = { version = "0.12", features = ["ndarray", "static"] }
 
 [dev-dependencies]
 tempfile = "3.5.0"
-temp-env = "0.3.6"
 serial_test = "3.2.0"
 # A paused clock lets the permit-timeout tests reach a 30 s timeout instantly.
 tokio = { version = "1", features = ["test-util"] }

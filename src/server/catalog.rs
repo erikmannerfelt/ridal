@@ -926,42 +926,12 @@ mod tests {
         gpr.export(output).expect("exporting the dummy radargram");
     }
 
-    fn process_to(
-        _input: &str,
-        output: &std::path::Path,
-        radargram_id: Option<&str>,
-        group: Option<&str>,
-    ) {
-        write_processed_nc(output, radargram_id, group, None);
-    }
-
-    /// Like `process_to`, but with an explicit group id override, for
-    /// exercising that precedence tier specifically.
-    fn process_to_with_group_id(
-        _input: &str,
-        output: &std::path::Path,
-        radargram_id: Option<&str>,
-        group: &str,
-        group_id: &str,
-    ) {
-        write_processed_nc(output, radargram_id, Some(group), Some(group_id));
-    }
-
-    const ASSET_2022: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/assets/mala/dronbreen-20220329-DAT_0237_A1.rad"
-    );
-    const ASSET_2025: &str = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/assets/mala/dronbreen-20250327-DAT_0066_A1.rad"
-    );
-
     #[test]
     #[serial_test::serial(netcdf)]
     fn single_file_is_a_one_entry_catalog() {
         let dir = tempfile::tempdir().unwrap();
         let nc_path = dir.path().join("one.nc");
-        process_to(ASSET_2022, &nc_path, Some("single-file-test"), None);
+        write_processed_nc(&nc_path, Some("single-file-test"), None, None);
 
         let catalog = Catalog::discover(&nc_path);
         assert_eq!(catalog.entries.len(), 1);
@@ -976,10 +946,10 @@ mod tests {
         // directory. It has the `.nc` extension, so without a rule it was
         // inspected, failed, and warned about on the catalog.
         let dir = tempfile::tempdir().unwrap();
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("ours.nc"),
             Some("upload-temp-test"),
+            None,
             None,
         );
         std::fs::write(dir.path().join("upload-deadbeef.tmp.nc"), b"partial upload").unwrap();
@@ -997,16 +967,16 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("a/nested")).unwrap();
         std::fs::create_dir_all(dir.path().join("b")).unwrap();
 
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("b/second.nc"),
             Some("dir-b-second"),
             None,
+            None,
         );
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("a/nested/first.nc"),
             Some("dir-a-nested-first"),
+            None,
             None,
         );
 
@@ -1025,16 +995,16 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("x")).unwrap();
         std::fs::create_dir_all(dir.path().join("y")).unwrap();
 
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("x/processed.nc"),
             Some("recurring-x"),
             None,
+            None,
         );
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("y/processed.nc"),
             Some("recurring-y"),
+            None,
             None,
         );
 
@@ -1056,7 +1026,7 @@ mod tests {
         let older = dir.path().join("older.nc");
         let newer = dir.path().join("newer.nc");
 
-        process_to(ASSET_2022, &older, Some("dup-id"), None);
+        write_processed_nc(&older, Some("dup-id"), None, None);
         // A distinct processing_datetime is guaranteed because export.rs
         // stamps chrono::Local::now() -- but to make the "newest wins" rule
         // unambiguous rather than racing the clock, force older's datetime
@@ -1066,7 +1036,7 @@ mod tests {
             f.add_attribute("ridal_processing_datetime", "2000-01-01T00:00:00Z")
                 .unwrap();
         }
-        process_to(ASSET_2022, &newer, Some("dup-id"), None);
+        write_processed_nc(&newer, Some("dup-id"), None, None);
 
         let catalog = Catalog::discover(dir.path());
         assert_eq!(catalog.entries.len(), 1);
@@ -1083,8 +1053,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let a = dir.path().join("a.nc");
         let z = dir.path().join("z.nc");
-        process_to(ASSET_2022, &a, Some("dup-tie"), None);
-        process_to(ASSET_2022, &z, Some("dup-tie"), None);
+        write_processed_nc(&a, Some("dup-tie"), None, None);
+        write_processed_nc(&z, Some("dup-tie"), None, None);
 
         // Force identical processing_datetime so the path-order tiebreak is
         // what's actually being exercised, not real clock timing.
@@ -1105,12 +1075,7 @@ mod tests {
     fn one_unreadable_candidate_does_not_abort_discovery() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("garbage.nc"), b"not a netcdf file").unwrap();
-        process_to(
-            ASSET_2022,
-            &dir.path().join("good.nc"),
-            Some("good-one"),
-            None,
-        );
+        write_processed_nc(&dir.path().join("good.nc"), Some("good-one"), None, None);
 
         let catalog = Catalog::discover(dir.path());
         assert_eq!(catalog.entries.len(), 1);
@@ -1140,12 +1105,7 @@ mod tests {
         // (#167).
         let dir = tempfile::tempdir().unwrap();
         write_legacy_nc(&dir.path().join("old.nc"), "ridal version 0.5.1 by test");
-        process_to(
-            ASSET_2022,
-            &dir.path().join("good.nc"),
-            Some("good-one"),
-            None,
-        );
+        write_processed_nc(&dir.path().join("good.nc"), Some("good-one"), None, None);
 
         let catalog = Catalog::discover(dir.path());
         assert_eq!(catalog.entries.len(), 1);
@@ -1218,7 +1178,7 @@ mod tests {
     fn an_override_renames_a_radargram_without_touching_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("a.nc");
-        process_to(ASSET_2022, &path, Some("line-01"), Some("Old group"));
+        write_processed_nc(&path, Some("line-01"), Some("Old group"), None);
 
         let mut overrides = CatalogOverrides::default();
         overrides
@@ -1244,11 +1204,11 @@ mod tests {
     #[serial_test::serial(netcdf)]
     fn a_radargram_moved_between_groups_does_not_bring_its_old_name() {
         let dir = tempfile::tempdir().unwrap();
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("a.nc"),
             Some("line-01"),
             Some("Kroppbreen 2022"),
+            None,
         );
 
         let mut overrides = CatalogOverrides::default();
@@ -1295,19 +1255,17 @@ mod tests {
         // is nothing left to warn about, and repeating the warning would
         // send an operator to fix what they have already fixed.
         let dir = tempfile::tempdir().unwrap();
-        process_to_with_group_id(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("a.nc"),
             Some("line-01"),
-            "Kroppbreen 2022",
-            "kroppbreen",
+            Some("Kroppbreen 2022"),
+            Some("kroppbreen"),
         );
-        process_to_with_group_id(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("b.nc"),
             Some("line-02"),
-            "Kroppbreen twentytwentytwo",
-            "kroppbreen",
+            Some("Kroppbreen twentytwentytwo"),
+            Some("kroppbreen"),
         );
 
         let plain = Catalog::discover(dir.path());
@@ -1333,7 +1291,7 @@ mod tests {
     #[serial_test::serial(netcdf)]
     fn a_group_override_for_a_group_nothing_is_in_conjures_no_heading() {
         let dir = tempfile::tempdir().unwrap();
-        process_to(ASSET_2022, &dir.path().join("a.nc"), Some("line-01"), None);
+        write_processed_nc(&dir.path().join("a.nc"), Some("line-01"), None, None);
 
         let mut overrides = CatalogOverrides::default();
         overrides.groups.insert(
@@ -1356,7 +1314,7 @@ mod tests {
         // Overrides outlive the radargrams they name -- a file gets moved
         // out of the catalog root and the document still mentions it.
         let dir = tempfile::tempdir().unwrap();
-        process_to(ASSET_2022, &dir.path().join("a.nc"), Some("line-01"), None);
+        write_processed_nc(&dir.path().join("a.nc"), Some("line-01"), None, None);
 
         let mut overrides = CatalogOverrides::default();
         overrides
@@ -1373,7 +1331,7 @@ mod tests {
     #[serial_test::serial(netcdf)]
     fn unlisted_is_carried_onto_the_entry() {
         let dir = tempfile::tempdir().unwrap();
-        process_to(ASSET_2022, &dir.path().join("a.nc"), Some("line-01"), None);
+        write_processed_nc(&dir.path().join("a.nc"), Some("line-01"), None, None);
 
         let mut overrides = CatalogOverrides::default();
         overrides.radargrams.insert(
@@ -1418,16 +1376,11 @@ mod tests {
         // be another directory in the pile.
         let project = tempfile::tempdir().unwrap();
         let archive = tempfile::tempdir().unwrap();
-        process_to(
-            ASSET_2022,
-            &project.path().join("ours.nc"),
-            Some("shared"),
-            None,
-        );
-        process_to(
-            ASSET_2022,
+        write_processed_nc(&project.path().join("ours.nc"), Some("shared"), None, None);
+        write_processed_nc(
             &archive.path().join("theirs.nc"),
             Some("shared"),
+            None,
             None,
         );
 
@@ -1457,13 +1410,8 @@ mod tests {
         // there is no deliberate decision behind it to respect.
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
-        process_to(ASSET_2022, &first.path().join("a.nc"), Some("shared"), None);
-        process_to(
-            ASSET_2022,
-            &second.path().join("b.nc"),
-            Some("shared"),
-            None,
-        );
+        write_processed_nc(&first.path().join("a.nc"), Some("shared"), None, None);
+        write_processed_nc(&second.path().join("b.nc"), Some("shared"), None, None);
 
         let roots = [read_only(first.path()), read_only(second.path())];
         let catalog = Catalog::discover_roots(&roots, &CatalogOverrides::default());
@@ -1481,18 +1429,8 @@ mod tests {
         // Ridal never writes below the project, so the only thing it can
         // change is whether it serves the file.
         let archive = tempfile::tempdir().unwrap();
-        process_to(
-            ASSET_2022,
-            &archive.path().join("a.nc"),
-            Some("line-01"),
-            None,
-        );
-        process_to(
-            ASSET_2022,
-            &archive.path().join("b.nc"),
-            Some("line-02"),
-            None,
-        );
+        write_processed_nc(&archive.path().join("a.nc"), Some("line-01"), None, None);
+        write_processed_nc(&archive.path().join("b.nc"), Some("line-02"), None, None);
         let roots = [read_only(archive.path())];
 
         let mut overrides = CatalogOverrides::default();
@@ -1539,7 +1477,7 @@ mod tests {
             (first.path(), "a.nc"),
             (second.path(), "b.nc"),
         ] {
-            process_to(ASSET_2022, &dir.join(name), Some("shared"), None);
+            write_processed_nc(&dir.join(name), Some("shared"), None, None);
         }
 
         let roots = [
@@ -1577,12 +1515,7 @@ mod tests {
         // to look again -- and the recorded revision was otherwise inert,
         // stored on the way in and never compared to anything.
         let archive = tempfile::tempdir().unwrap();
-        process_to(
-            ASSET_2022,
-            &archive.path().join("a.nc"),
-            Some("line-01"),
-            None,
-        );
+        write_processed_nc(&archive.path().join("a.nc"), Some("line-01"), None, None);
 
         let mut overrides = CatalogOverrides::default();
         overrides.ignored.insert(
@@ -1640,12 +1573,7 @@ mod tests {
         // start serving something somebody chose not to serve -- so it is
         // kept, and made visible instead of accumulating silently.
         let archive = tempfile::tempdir().unwrap();
-        process_to(
-            ASSET_2022,
-            &archive.path().join("a.nc"),
-            Some("line-01"),
-            None,
-        );
+        write_processed_nc(&archive.path().join("a.nc"), Some("line-01"), None, None);
 
         let mut overrides = CatalogOverrides::default();
         overrides.ignored.insert(
@@ -1675,12 +1603,11 @@ mod tests {
         // it in the group keeps its own name unless every member is
         // assigned the resolved one.
         let dir = tempfile::tempdir().unwrap();
-        process_to_with_group_id(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("a.nc"),
             Some("line-01"),
-            "Kroppbreen",
-            "kroppbreen",
+            Some("Kroppbreen"),
+            Some("kroppbreen"),
         );
 
         let plain = Catalog::discover(dir.path());
@@ -1722,19 +1649,17 @@ mod tests {
         // disagree, the cheap path is quietly serving something a restart
         // would not.
         let dir = tempfile::tempdir().unwrap();
-        process_to_with_group_id(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("a.nc"),
             Some("line-01"),
-            "Kroppbreen 2022",
-            "kroppbreen",
+            Some("Kroppbreen 2022"),
+            Some("kroppbreen"),
         );
-        process_to_with_group_id(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("b.nc"),
             Some("line-02"),
-            "Kroppbreen 2022",
-            "kroppbreen",
+            Some("Kroppbreen 2022"),
+            Some("kroppbreen"),
         );
 
         let mut overrides = CatalogOverrides::default();
@@ -1824,11 +1749,11 @@ mod tests {
     fn group_falls_back_to_parent_directory() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("dronbreen/2022")).unwrap();
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("dronbreen/2022/a.nc"),
             Some("group-fallback-test"),
             None, // no explicit --group-name
+            None,
         );
 
         let catalog = Catalog::discover(dir.path());
@@ -1855,16 +1780,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let radargrams = dir.path().join("radargrams");
         std::fs::create_dir_all(radargrams.join("dronbreen/2022")).unwrap();
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &radargrams.join("flat.nc"),
             Some("flat-in-the-project"),
             None,
+            None,
         );
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &radargrams.join("dronbreen/2022/nested.nc"),
             Some("nested-in-the-project"),
+            None,
             None,
         );
 
@@ -1904,11 +1829,11 @@ mod tests {
     fn explicit_group_wins_over_directory_fallback() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("some/deep/path")).unwrap();
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &dir.path().join("some/deep/path/a.nc"),
             Some("explicit-group-test"),
             Some("real-group"),
+            None,
         );
 
         let catalog = Catalog::discover(dir.path());
@@ -1927,11 +1852,11 @@ mod tests {
     fn unicode_group_name_derives_an_ascii_id() {
         let dir = tempfile::tempdir().unwrap();
         let nc_path = dir.path().join("a.nc");
-        process_to(
-            ASSET_2022,
+        write_processed_nc(
             &nc_path,
             Some("unicode-group-test"),
             Some("Drønbreen"),
+            None,
         );
 
         let catalog = Catalog::discover(dir.path());
@@ -1957,12 +1882,11 @@ mod tests {
     fn explicit_group_id_overrides_derivation_from_name() {
         let dir = tempfile::tempdir().unwrap();
         let nc_path = dir.path().join("a.nc");
-        process_to_with_group_id(
-            ASSET_2022,
+        write_processed_nc(
             &nc_path,
             Some("explicit-id-test"),
-            "Drønbreen",
-            "db",
+            Some("Drønbreen"),
+            Some("db"),
         );
 
         let catalog = Catalog::discover(dir.path());
@@ -1982,19 +1906,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let older = dir.path().join("older.nc");
         let newer = dir.path().join("newer.nc");
-        process_to_with_group_id(
-            ASSET_2022,
+        write_processed_nc(
             &older,
             Some("older-member"),
-            "Old Name",
-            "shared-id",
+            Some("Old Name"),
+            Some("shared-id"),
         );
-        process_to_with_group_id(
-            ASSET_2022,
+        write_processed_nc(
             &newer,
             Some("newer-member"),
-            "New Name",
-            "shared-id",
+            Some("New Name"),
+            Some("shared-id"),
         );
         // Force a deterministic ordering, matching the duplicate-id test's
         // own approach: real clock timing is not what's being exercised.

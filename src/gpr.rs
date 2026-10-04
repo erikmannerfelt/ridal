@@ -155,6 +155,11 @@ pub enum LocationCorrection {
     Dem(PathBuf),
 }
 
+/// How many fixes at an end of a track set the rate its times are
+/// extrapolated at (#350). Fixes are timed to the second, so the two
+/// nearest alone could be off by half.
+const EDGE_RATE_FIXES: usize = 10;
+
 #[derive(Debug, Clone)]
 pub struct GPRLocation {
     pub cor_points: Vec<CorPoint>,
@@ -284,15 +289,45 @@ impl GPRLocation {
         dist
     }
 
-    fn range_fill(&self, start_trace: u32, end_trace: u32) -> GPRLocation {
+    /// One point per trace from `start_trace` to `end_trace` (exclusive).
+    ///
+    /// Positions before the first fix and after the last are held, since
+    /// nothing says where the radar went. Times are not (#350): the radar
+    /// kept recording at its trace interval, and a held time makes the
+    /// trace-time axis stop at the last fix, which drops every carried pick
+    /// that reaches past it. They are extrapolated at
+    /// [`Self::seconds_per_trace_beyond`] instead, or held if there is no
+    /// usable rate.
+    ///
+    /// # Arguments
+    /// - `header_seconds_per_trace`: the header's trace interval (s).
+    fn range_fill(
+        &self,
+        start_trace: u32,
+        end_trace: u32,
+        header_seconds_per_trace: f32,
+    ) -> GPRLocation {
         let mut new_points: Vec<CorPoint> = Vec::new();
+        let first = self.cor_points[0];
+        let last = self.cor_points[self.cor_points.len() - 1];
+        let rate_before = self.seconds_per_trace_beyond(false, header_seconds_per_trace);
+        let rate_after = self.seconds_per_trace_beyond(true, header_seconds_per_trace);
 
         for i in start_trace..end_trace {
             let txyz = self.time_and_coord_at_trace(i);
+            let time_seconds = match (rate_before, rate_after) {
+                (Some(rate), _) if i < first.trace_n => {
+                    first.time_seconds - (first.trace_n - i) as f64 * rate
+                }
+                (_, Some(rate)) if i > last.trace_n => {
+                    last.time_seconds + (i - last.trace_n) as f64 * rate
+                }
+                _ => txyz.0,
+            };
 
             new_points.push(CorPoint {
                 trace_n: i,
-                time_seconds: txyz.0,
+                time_seconds,
                 easting: txyz.1,
                 northing: txyz.2,
                 altitude: txyz.3,
@@ -303,6 +338,37 @@ impl GPRLocation {
             cor_points: new_points,
             correction: self.correction.clone(),
             crs: self.crs.clone(),
+        }
+    }
+
+    /// The seconds per trace to extrapolate time with past the first fix
+    /// (`after_last = false`) or the last (`after_last = true`), or `None`
+    /// to hold the time instead.
+    ///
+    /// The header's interval is exact for a time-triggered radargram. For a
+    /// distance-triggered one it means nothing (Malå still writes a value),
+    /// so it is only trusted when it agrees within a factor of two with the
+    /// rate the fixes nearest that end imply. Without a header interval the
+    /// fixes' rate is used on its own. Fixes are timed to the second, so the
+    /// rate is taken over up to [`EDGE_RATE_FIXES`] of them rather than
+    /// between the last two.
+    fn seconds_per_trace_beyond(&self, after_last: bool, header: f32) -> Option<f64> {
+        let n = self.cor_points.len().min(EDGE_RATE_FIXES);
+        let (near, far) = if after_last {
+            let points = &self.cor_points[self.cor_points.len() - n..];
+            (points[n - 1], points[0])
+        } else {
+            (self.cor_points[0], self.cor_points[n - 1])
+        };
+        let traces = near.trace_n.abs_diff(far.trace_n) as f64;
+        let from_fixes = Some((near.time_seconds - far.time_seconds).abs() / traces)
+            .filter(|rate| rate.is_finite() && *rate > 0.);
+        let header = Some(header as f64).filter(|rate| rate.is_finite() && *rate > 0.);
+
+        match (header, from_fixes) {
+            (Some(header), Some(fixes)) if (0.5..=2.).contains(&(header / fixes)) => Some(header),
+            (Some(header), None) => Some(header),
+            (_, fixes) => fixes,
         }
     }
 
@@ -864,7 +930,7 @@ impl GPR {
         let n_traces = data.shape()[1];
         let location_data = match data.shape()[1] == location.cor_points.len() {
             true => location,
-            false => location.range_fill(0, data.shape()[1] as u32),
+            false => location.range_fill(0, data.shape()[1] as u32, metadata.time_interval),
         };
         let antenna_separation_effective = metadata.antenna_separation;
 
@@ -2272,6 +2338,12 @@ impl GPR {
         })
     }
 
+    /// Append `other`'s traces to these.
+    ///
+    /// Refused, naming both values, when anything the merged file would
+    /// state once for all its traces differs: the CRS, antenna frequency,
+    /// time window, antenna separation (nominal and effective) or medium
+    /// velocity.
     pub fn merge(&mut self, other: &GPR) -> Result<(), String> {
         let start_time = SystemTime::now();
         if self.location.crs != other.location.crs {
@@ -2288,6 +2360,28 @@ impl GPR {
             Err(format!(
                 "Time windows are different: {} vs {}",
                 self.metadata.time_window, other.metadata.time_window
+            ))
+        // The checks below do not stop the arrays concatenating; they stop
+        // the result declaring one value for the whole file that is true of
+        // only part of it (#151). Per-trace offsets (`crop_ns`,
+        // `time_zero_ns`) concatenate and need no check.
+        } else if self.metadata.antenna_separation != other.metadata.antenna_separation {
+            Err(format!(
+                "Antenna separations are different: {} m vs {} m",
+                self.metadata.antenna_separation, other.metadata.antenna_separation
+            ))
+        } else if self.antenna_separation_effective != other.antenna_separation_effective {
+            // Unlike the others this is recoverable, so say how.
+            Err(format!(
+                "Effective antenna separations are different: {} m vs {} m. One radargram \
+                 has had correct_antenna_separation applied and the other has not; apply it \
+                 to both before merging",
+                self.antenna_separation_effective, other.antenna_separation_effective
+            ))
+        } else if self.metadata.medium_velocity != other.metadata.medium_velocity {
+            Err(format!(
+                "Medium velocities are different: {} m/ns vs {} m/ns",
+                self.metadata.medium_velocity, other.metadata.medium_velocity
             ))
         } else {
             self.location
@@ -3427,7 +3521,7 @@ pub mod tests {
             gpr_location.time_and_coord_at_trace(gpr_location.cor_points.last().unwrap().trace_n)
         );
 
-        gpr_location = gpr_location.range_fill(0, 10);
+        gpr_location = gpr_location.range_fill(0, 10, 1.);
 
         // Check that the velocities are consistent along the track
         // The first and second velocities will still be a bit weird
@@ -3442,6 +3536,131 @@ pub mod tests {
         let distances = gpr_location.distances();
         assert_eq!(distances[0], 0.);
         assert_eq!(distances[9], 9.);
+    }
+
+    /// Fixes at traces 10, 20, ..., 50, one second apart (0.1 s per trace),
+    /// filled out to traces 0..60 (#350).
+    fn filled_with_header_interval(header: f32) -> GPRLocation {
+        let cor_points = (1..=5_u32)
+            .map(|i| CorPoint {
+                trace_n: 10 * i,
+                time_seconds: 100. + i as f64,
+                easting: i as f64,
+                northing: 0.,
+                altitude: 0.,
+            })
+            .collect();
+        GPRLocation {
+            cor_points,
+            correction: LocationCorrection::None,
+            crs: "EPSG:32633".to_string(),
+        }
+        .range_fill(0, 60, header)
+    }
+
+    #[test]
+    fn times_are_extrapolated_past_the_fixes_but_positions_are_held() {
+        let filled = filled_with_header_interval(0.1);
+        let times: Vec<f64> = filled.cor_points.iter().map(|p| p.time_seconds).collect();
+        assert!(times.windows(2).all(|w| w[1] > w[0]), "{times:?}");
+        assert!((times[0] - 100.).abs() < 1e-6, "{}", times[0]);
+        assert!((times[59] - 105.9).abs() < 1e-6, "{}", times[59]);
+        // Where the radar was outside the fixes is unknown, so it stays put.
+        assert_eq!(filled.cor_points[0].easting, 1.);
+        assert_eq!(filled.cor_points[59].easting, 5.);
+        // Inside the fixes nothing changes. (The tolerance is for the header's
+        // interval, which is an f32.)
+        assert!((filled.cor_points[25].time_seconds - 102.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_header_interval_the_fixes_contradict_is_not_used() {
+        // A distance-triggered radargram's header interval means nothing:
+        // the fixes say 0.1 s per trace, so 5 s is ignored for them.
+        let filled = filled_with_header_interval(5.);
+        assert!((filled.cor_points[59].time_seconds - 105.9).abs() < 1e-6);
+        // And with no header interval at all, the fixes set the rate.
+        let filled = filled_with_header_interval(0.);
+        assert!((filled.cor_points[59].time_seconds - 105.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_single_fix_without_a_header_interval_holds_its_time() {
+        let location = GPRLocation {
+            cor_points: vec![CorPoint {
+                trace_n: 3,
+                time_seconds: 7.,
+                easting: 0.,
+                northing: 0.,
+                altitude: 0.,
+            }],
+            correction: LocationCorrection::None,
+            crs: "EPSG:32633".to_string(),
+        };
+        let held = location.range_fill(0, 6, 0.);
+        assert!(held.cor_points.iter().all(|p| p.time_seconds == 7.));
+        let extrapolated = location.range_fill(0, 6, 0.5);
+        assert_eq!(extrapolated.cor_points[0].time_seconds, 5.5);
+        assert_eq!(extrapolated.cor_points[5].time_seconds, 8.);
+    }
+
+    /// The radargram #350 was found on: its `.cor` ends five traces before
+    /// the data does, and those traces all had the last fix's time.
+    #[test]
+    fn dronbreen_traces_after_the_last_fix_keep_advancing() {
+        let rad = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/mala/dronbreen-20250327-DAT_0066_A1.rad");
+        let meta = crate::io::load_rad(&rad, 0.168, None, None).unwrap();
+        let location = meta.find_cor(Some(&"EPSG:32633".to_string())).unwrap();
+        let gpr = super::GPR::from_meta_and_loc(location, meta).unwrap();
+        let times: Vec<f64> = gpr
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.time_seconds)
+            .collect();
+        assert_eq!(times.len(), 3548);
+        let tail = &times[3540..];
+        assert!(tail.windows(2).all(|w| w[1] > w[0]), "{tail:?}");
+        // The anchor now reaches the last trace, so a pick there survives a
+        // carry.
+        let axis = crate::interp::anchors::trace_time_axis(&times).unwrap();
+        let last = axis.points.unwrap().last().unwrap().trace;
+        assert_eq!(last, 3547., "the trace_time anchor ends at trace {last}");
+    }
+
+    #[test]
+    fn merge_refuses_what_the_merged_file_could_not_state_once() {
+        let base = || make_dummy_gpr(20, 10, Some(1.));
+
+        let mut other = base();
+        other.metadata.antenna_separation = 4.;
+        let message = base().merge(&other).unwrap_err();
+        assert!(
+            message.contains("Antenna separations are different"),
+            "{message}"
+        );
+
+        // Corrected on one side only: recoverable, and the message says how.
+        let mut other = base();
+        other.antenna_separation_effective = 0.;
+        let message = base().merge(&other).unwrap_err();
+        assert!(message.contains("correct_antenna_separation"), "{message}");
+
+        let mut other = base();
+        other.metadata.medium_velocity = 0.1;
+        let message = base().merge(&other).unwrap_err();
+        assert!(
+            message.contains("Medium velocities are different"),
+            "{message}"
+        );
+
+        // Differently cropped inputs are fine: the offsets are per trace.
+        let mut other = base();
+        other.crop_ns = vec![3.; other.width()];
+        let mut merged = base();
+        merged.merge(&other).unwrap();
+        assert_eq!(merged.crop_ns.len(), 40);
     }
 
     /// `distances` and `velocities` must take the square root of the summed
