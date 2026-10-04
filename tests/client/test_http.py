@@ -207,7 +207,7 @@ def test_level2_asks_for_the_callers_own_picks_by_default(tmp_path: Path) -> Non
         client.download_level2("line-01", tmp_path, derived=True, format="csv")
     assert seen[1] == (
         "https://ridal.test/api/v1/projects/default/datasets/line-01/interpretations/"
-        "anna/level2?format=geojson&spacing=5.0&crs=native"
+        "anna/level2?spacing=5.0&crs=native&format=geojson"
     )
     assert seen[2].endswith("/datasets/line-01/derived/level2?format=csv")
 
@@ -235,3 +235,43 @@ def test_the_catalog_becomes_a_table() -> None:
     assert frame.loc["line-01", "traces"] == 551
     assert list(catalog.by_id()) == ["line-01"]
     json.dumps(DATASET)  # The fixture itself stays plain JSON.
+
+
+def test_geojson_becomes_a_geodataframe_in_its_own_crs() -> None:
+    pytest.importorskip("geopandas")
+    point = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [400030.0, 8700000.0]},
+        "properties": {"layer": "bed", "depth_m": 120.5},
+    }
+
+    def handler(request: Any) -> Any:
+        if request.url.path.endswith("track.geojson"):
+            return httpx.Response(
+                200, json={"type": "FeatureCollection", "features": [point]}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "type": "FeatureCollection",
+                "ridal": {"product_level": 2, "output_crs": "EPSG:32633"},
+                "features": [point],
+            },
+        )
+
+    with fake(handler) as client:
+        track = client.track("line-01")
+        points = client.level2("line-01", user="anna", crs="native")
+    assert track.crs == "EPSG:4326"
+    frame = points.to_geopandas()
+    assert frame.crs.to_epsg() == 32633, "the CRS the points were asked in"
+    assert frame.loc[0, "depth_m"] == 120.5
+    assert frame.geometry[0].x == 400030.0
+
+
+def test_anything_but_a_feature_collection_is_not_understood() -> None:
+    with (
+        fake(lambda request: httpx.Response(200, json={"type": "Feature"})) as client,
+        pytest.raises(errors.ProtocolError),
+    ):
+        client.track("line-01")

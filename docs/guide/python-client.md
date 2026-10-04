@@ -60,7 +60,16 @@ client.download_radargram("line-07", "downloads/")
 client.download_level2("line-07", "downloads/", format="csv", spacing=5.0)
 client.download_level2("line-07", "downloads/", derived=True)
 client.download_derived("line-07", "downloads/")
-track = client.track("line-07")  # GeoJSON
+```
+
+Tracks and level 2 points also come back in memory, as GeoJSON that turns
+into a `geopandas.GeoDataFrame` in the CRS it was asked for (it needs
+geopandas: `pip install "ridal[geo]"`):
+
+```python
+tracks = client.tracks().to_geopandas()  # Every track, in WGS84.
+bed = client.level2("line-07", crs="native").to_geopandas()
+bed.plot(column="depth_m")
 ```
 
 Pass `progress=ridal.client.tqdm_progress()` for a progress bar (it needs

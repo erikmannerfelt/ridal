@@ -213,9 +213,42 @@ class Client:
             progress=progress,
         )
 
-    def track(self, radargram_id: str) -> dict[str, Any]:
-        """The radargram's track as GeoJSON, in WGS84, one feature per segment."""
-        return self._http.json("GET", self._dataset_path(radargram_id, "track.geojson"))
+    def track(self, radargram_id: str) -> models.FeatureCollection:
+        """A radargram's track in WGS84, one feature per continuous segment.
+
+        ``.to_geopandas()`` turns it into a ``GeoDataFrame``. Needs the
+        ``all`` download scope.
+        """
+        return models.FeatureCollection.from_json(
+            self._http.json("GET", self._dataset_path(radargram_id, "track.geojson"))
+        )
+
+    def tracks(self) -> models.FeatureCollection:
+        """Every track in the project, in WGS84. Needs the ``all`` download
+        scope."""
+        return models.FeatureCollection.from_json(
+            self._http.json("GET", self._project_path("catalog", "track.geojson"))
+        )
+
+    def level2(
+        self,
+        radargram_id: str,
+        *,
+        user: str | None = None,
+        derived: bool = False,
+        spacing: Spacing | None = None,
+        crs: str | None = None,
+    ) -> models.FeatureCollection:
+        """Level 2 points as GeoJSON in memory; :meth:`download_level2`
+        writes them to a file instead, and takes the same parameters.
+
+        ``.to_geopandas()`` turns the answer into a ``GeoDataFrame`` in the
+        CRS the points were asked for.
+        """
+        path, params = self._level2_request(radargram_id, user, derived, spacing, crs)
+        return models.FeatureCollection.from_json(
+            self._http.json("GET", path, params={**params, "format": "geojson"})
+        )
 
     def download_level2(
         self,
@@ -255,23 +288,35 @@ class Client:
         -------
         pathlib.Path
         """
-        params: dict[str, str] = {"format": format}
+        path, params = self._level2_request(radargram_id, user, derived, spacing, crs)
+        return self._http.download(
+            path,
+            Path(destination),
+            params={**params, "format": format},
+            label=f"{radargram_id}.{'csv' if format == 'csv' else 'geojson'}",
+            progress=progress,
+        )
+
+    def _level2_request(
+        self,
+        radargram_id: str,
+        user: str | None,
+        derived: bool,
+        spacing: Spacing | None,
+        crs: str | None,
+    ) -> tuple[str, dict[str, str]]:
+        """The path and query of a level 2 export, without its format."""
+        params: dict[str, str] = {}
         if spacing is not None:
             params["spacing"] = str(spacing)
         if crs is not None:
             params["crs"] = crs
         if derived:
-            path = self._dataset_path(radargram_id, "derived", "level2")
-        else:
-            who = user if user is not None else self._caller_name()
-            path = self._dataset_path(radargram_id, "interpretations", who, "level2")
-        return self._http.download(
-            path,
-            Path(destination),
-            params=params,
-            label=f"{radargram_id}.{'csv' if format == 'csv' else 'geojson'}",
-            progress=progress,
-        )
+            return self._dataset_path(radargram_id, "derived", "level2"), params
+        who = user if user is not None else self._caller_name()
+        return self._dataset_path(
+            radargram_id, "interpretations", who, "level2"
+        ), params
 
     def download_derived(
         self,

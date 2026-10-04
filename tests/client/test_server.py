@@ -61,7 +61,8 @@ def test_downloads_are_the_files_the_server_holds(
             client.dataset("no-such-line")
     assert written.read_bytes() == radargram.read_bytes()
     assert events and events[-1].done == radargram.stat().st_size
-    assert track["type"] == "FeatureCollection"
+    assert track.crs == "EPSG:4326"
+    assert track.data["features"], "the fixture has a track"
 
 
 def test_a_token_reaches_its_projects_on_a_site(site: Site) -> None:

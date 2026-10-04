@@ -343,6 +343,51 @@ class Interpretation:
     changed the document since."""
 
 
+@dataclass(frozen=True)
+class FeatureCollection:
+    """GeoJSON from the server: tracks, or level 2 points.
+
+    Attributes
+    ----------
+    data : dict
+        The GeoJSON as the server sent it.
+    crs : str
+        The CRS of its geometry: ``EPSG:4326`` (WGS84) unless a level 2
+        export was asked for in another, which the server records in the
+        file's ``ridal.output_crs``.
+    """
+
+    data: dict[str, Any]
+    crs: str
+
+    @classmethod
+    def from_json(cls, data: Any) -> "FeatureCollection":
+        def build(d: Mapping[str, Any]) -> "FeatureCollection":
+            if d["type"] != "FeatureCollection":
+                raise ValueError(f"expected a FeatureCollection, got {d['type']!r}")
+            provenance = d.get("ridal") or {}
+            return cls(data=dict(d), crs=provenance.get("output_crs") or "EPSG:4326")
+
+        return _parse("GeoJSON", data, build)
+
+    def to_geopandas(self) -> Any:
+        """The features as a ``geopandas.GeoDataFrame``, one row each, with
+        their properties as columns and the CRS set.
+
+        Raises
+        ------
+        ImportError
+            If geopandas is not installed (``pip install ridal[geo]``).
+        """
+        try:
+            import geopandas as gpd
+        except ImportError as error:
+            raise ImportError(
+                "FeatureCollection.to_geopandas() needs geopandas: pip install ridal[geo]"
+            ) from error
+        return gpd.GeoDataFrame.from_features(self.data["features"], crs=self.crs)
+
+
 # -- Changing things ----------------------------------------------------------
 
 

@@ -90,6 +90,14 @@ def test_picks_are_saved_carried_across_a_replace_and_promoted(
         with pytest.raises(errors.PreconditionFailed):
             client.save_interpretation(radargram_id, stored.document, etag=stored.etag)
 
+        # The picks come back as level 2 points with coordinates.
+        points = client.level2(radargram_id)
+        assert points.data["features"], "a picked line has points"
+        if _has_geopandas():
+            frame = points.to_geopandas()
+            assert frame.crs.to_epsg() == 4326
+            assert set(frame["layer"]) == {"bed"}
+
         # Replacing a picked radargram is risky, and the server says why.
         second = revision(tmp_path, "second.nc")
         planned = client.plan([second])
@@ -163,3 +171,11 @@ def test_project_documents_round_trip_with_their_version(empty_gui: Server) -> N
 
         derived = client.derived()
         client.save_derived(derived.data, etag=derived.etag)
+
+
+def _has_geopandas() -> bool:
+    try:
+        import geopandas  # noqa: F401
+    except ImportError:
+        return False
+    return True

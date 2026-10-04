@@ -13,8 +13,9 @@ dependencies = ["numpy"]
 full = ["xarray"]
 # The HTTP client, `ridal.client`.
 client = ["httpx>=0.27"]
-# `ridal.client.Catalog.to_pandas()`.
-geo = ["pandas"]
+# `Catalog.to_pandas()` and `FeatureCollection.to_geopandas()` in
+# `ridal.client`.
+geo = ["pandas", "geopandas"]
 
 [tool.pytest.ini_options]
 testpaths = ["test_ridal_interface.py", "tests"]

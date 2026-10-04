@@ -117,7 +117,7 @@ jobs:
 
     - name: Install the wheel with the client
       run: |
-        pip install pytest pandas
+        pip install pytest pandas geopandas
         whl=$(ls wheels/*.whl)
         pip install "${whl}[client]"
 

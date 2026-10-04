@@ -104,6 +104,8 @@ What the server answers. Each mirrors a schema in
    :members: by_id, to_pandas
 .. autoclass:: ridal.client.Dataset
 .. autoclass:: ridal.client.Axes
+.. autoclass:: ridal.client.FeatureCollection
+   :members: to_geopandas
 .. autoclass:: ridal.client.InterpretationList
 .. autoclass:: ridal.client.Interpretation
 .. autoclass:: ridal.client.Document
