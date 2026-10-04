@@ -14,6 +14,141 @@
   "paths": {},
   "components": {
     "schemas": {
+      "CarryReport": {
+        "type": "object",
+        "description": "\nEvery field is sent, `null` when it does not apply, so a client reads one\nshape whatever happened.",
+        "required": [
+          "severity",
+          "from_revision",
+          "to_revision",
+          "x_anchor",
+          "y_anchor",
+          "kept",
+          "dropped",
+          "moved",
+          "refusal",
+          "headline"
+        ],
+        "properties": {
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "from_revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The revision the document says it was drawn on, where it says."
+          },
+          "to_revision": {
+            "type": "string"
+          },
+          "x_anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which anchor axis each side was carried through, when it was."
+          },
+          "y_anchor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kept": {
+            "type": "integer",
+            "description": "How many features were placed on the new revision.",
+            "minimum": 0
+          },
+          "dropped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Dropped"
+            }
+          },
+          "moved": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Displacement",
+                "description": "How far the placed features moved. `null` when nothing was carried,\nor when any feature was dropped."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it could not be carried. Set exactly when the severity is\n`refused`."
+          },
+          "headline": {
+            "type": "string",
+            "description": "One sentence for the banner, written for whoever is looking at the\nradargram rather than for a log."
+          }
+        }
+      },
+      "ConsequenceReport": {
+        "type": "object",
+        "description": "Everything a replace would do, before it does any of it.",
+        "required": [
+          "radargram_id",
+          "from_revision",
+          "to_revision",
+          "revision_id_collision",
+          "shape",
+          "outgoing_axes_kept",
+          "documents",
+          "worst",
+          "headline"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "from_revision": {
+            "type": "string"
+          },
+          "to_revision": {
+            "type": "string"
+          },
+          "revision_id_collision": {
+            "type": "boolean",
+            "description": "`true` when the incoming file fingerprints to the revision id the\noutgoing one already has.\n\n`RevisionId` is `hash(radargram_id + processing_datetime)` and says\nnothing about contents, so a file edited in another tool can carry\nthe same datetime and produce the same id. Every cache and\nstaleness check would then believe nothing changed. Ridal cannot\nproduce this itself, which is exactly why it has to be reported\nrather than assumed away."
+          },
+          "shape": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShapeChange",
+                "description": "`null` when either revision has no `time` axis to count traces by."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outgoing_axes_kept": {
+            "type": "boolean",
+            "description": "Whether the outgoing revision's mapping could be kept. Without it\nno document drawn on it can ever be shown again (SPEC §8.1 forbids\nfalling back to the raw index), so a replace that cannot snapshot\nis refused at commit."
+          },
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DocumentConsequence"
+            }
+          },
+          "worst": {
+            "$ref": "#/components/schemas/Severity",
+            "description": "The worst tier across every document, or `current` when there are\nnone. What the dialog leads with."
+          },
+          "headline": {
+            "type": "string"
+          }
+        }
+      },
       "DatasetAxes": {
         "type": "object",
         "description": "`GET /api/v1/datasets/{radargram_id}/axes`: a radargram's axes, read from\nthe file's variables of the same names. An axis the file lacks is `null`.",
@@ -205,6 +340,54 @@
           }
         }
       },
+      "Displacement": {
+        "type": "object",
+        "description": "How far the carried coordinates moved, in index units.\n\nTraces and samples rather than metres or nanoseconds, because that is\nwhat the viewer draws in and what \"did this pick move\" means on screen.\nThe median says whether the revisions broadly agree; the worst says\nwhether any single vertex went somewhere else, which an average would\nhide behind a thousand that did not.",
+        "required": [
+          "median_traces",
+          "worst_traces",
+          "median_samples",
+          "worst_samples"
+        ],
+        "properties": {
+          "median_traces": {
+            "type": "number",
+            "format": "double"
+          },
+          "worst_traces": {
+            "type": "number",
+            "format": "double"
+          },
+          "median_samples": {
+            "type": "number",
+            "format": "double"
+          },
+          "worst_samples": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "DocumentConsequence": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/CarryReport",
+            "description": "The carry that *would* be shown after the replace. Not applied —\nnothing is written to the document either now or at commit."
+          },
+          {
+            "type": "object",
+            "required": [
+              "user"
+            ],
+            "properties": {
+              "user": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "What replacing this radargram would do to one interpretation."
+      },
       "DownloadScope": {
         "type": "string",
         "description": "What someone may download from a project, least first. Each scope includes the ones before it: `none` allows nothing, `results` the consensus results, `picks` adds every contributor's raw picks, `derived` adds level 2 points and rendered images, and `all` adds the radargram files and tracks.",
@@ -215,6 +398,34 @@
           "derived",
           "all"
         ]
+      },
+      "Dropped": {
+        "type": "object",
+        "description": "A feature that could not be placed on the new revision.",
+        "required": [
+          "index",
+          "id",
+          "label"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Its position in the document's `features`.",
+            "minimum": 0
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "ErrorBody": {
         "type": "object",
@@ -334,6 +545,71 @@
           }
         }
       },
+      "PreflightBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`:\neverything the report reads from an incoming file, without the file.\n\nA field of its own rather than [`AxisDeclarations`] itself, so the API\ndoes not change when that internal type does.",
+        "required": [
+          "radargram_id",
+          "processing_datetime",
+          "time",
+          "twtt_anchor",
+          "twtt_crop",
+          "twtt_time_zero",
+          "dt_ns",
+          "n_samples"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string",
+            "description": "The file's radargram id. It must be the radargram in the path."
+          },
+          "processing_datetime": {
+            "type": "string",
+            "description": "The file's `ridal_processing_datetime` attribute, verbatim. With the\nradargram id it gives the revision id."
+          },
+          "time": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The file's `time` variable: acquisition time per trace, in seconds\nsince the Unix epoch."
+          },
+          "twtt_anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `anchor_name` attribute of the file's `twtt` variable, or `null`\nwhen it has none."
+          },
+          "twtt_crop": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The file's `twtt_crop` variable: one value, one per trace, or empty\nwhen the file has none."
+          },
+          "twtt_time_zero": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The file's `twtt_time_zero` variable, in the same way."
+          },
+          "dt_ns": {
+            "type": "number",
+            "format": "double",
+            "description": "The spacing of the file's `twtt` variable in nanoseconds (its second\nvalue minus its first), or 0 when it has fewer than two."
+          },
+          "n_samples": {
+            "type": "integer",
+            "description": "The length of the file's `twtt` variable.",
+            "minimum": 0
+          }
+        }
+      },
       "ProjectEntry": {
         "type": "object",
         "description": "One project as the caller sees it: an entry of `GET /api/v1/projects`,\nand the whole of `GET /api/v1/projects/{key}`.",
@@ -430,6 +706,26 @@
           }
         }
       },
+      "Replaced": {
+        "type": "object",
+        "description": "`POST /api/v1/datasets/{radargram_id}/replace/{token}`: the replace is done.",
+        "required": [
+          "radargram_id",
+          "from_revision",
+          "to_revision"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "from_revision": {
+            "type": "string"
+          },
+          "to_revision": {
+            "type": "string"
+          }
+        }
+      },
       "Role": {
         "type": "string",
         "description": "What someone may do in a project, weakest first. Each role includes the ones before it: a `picker` writes their own picks, an `operator` also curates and replaces radargrams, and an `admin` also manages members and access.",
@@ -439,6 +735,49 @@
           "operator",
           "admin"
         ]
+      },
+      "Severity": {
+        "type": "string",
+        "description": "How much the carried view can be trusted, worst first when reported.",
+        "enum": [
+          "current",
+          "carried",
+          "approximate",
+          "partial",
+          "refused"
+        ]
+      },
+      "ShapeChange": {
+        "type": "object",
+        "description": "How the two revisions' grids compare.",
+        "required": [
+          "from_traces",
+          "from_samples",
+          "to_traces",
+          "to_samples",
+          "changed"
+        ],
+        "properties": {
+          "from_traces": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "from_samples": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "to_traces": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "to_samples": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "changed": {
+            "type": "boolean"
+          }
+        }
       },
       "SignedIn": {
         "type": "object",
@@ -466,6 +805,30 @@
           "signed_out": {
             "type": "boolean",
             "description": "Always `true`. Signing out clears the cookie whether or not there\nwas a session."
+          }
+        }
+      },
+      "Staged": {
+        "type": "object",
+        "description": "`POST /api/v1/datasets/{radargram_id}/replace`: the file is staged, and\nthis is what committing it would do.",
+        "required": [
+          "token",
+          "bytes",
+          "report"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Commits or discards the staged file, in\n`/api/v1/datasets/{radargram_id}/replace/{token}`. Swept after 6 hours."
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The size of the staged file.",
+            "minimum": 0
+          },
+          "report": {
+            "$ref": "#/components/schemas/ConsequenceReport"
           }
         }
       }

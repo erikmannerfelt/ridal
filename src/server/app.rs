@@ -993,6 +993,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             axum::routing::post(super::replace_routes::stage_replacement),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/replace/preflight",
+            axum::routing::post(super::replace_routes::preflight_replacement),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/replace/{token}",
             axum::routing::post(super::replace_routes::commit_replacement)
                 .delete(super::replace_routes::discard_replacement),
