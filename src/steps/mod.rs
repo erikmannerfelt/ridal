@@ -111,7 +111,7 @@ pub enum Step {
     ///
     /// Run it early, before the filters. A running `background_removal`
     /// takes out standstills as long as its window before this step can see
-    /// them, and after `dewow` it missed one and added one on 800 MHz data.
+    /// them, and after `dewow` it missed one of eight on 800 MHz data.
     /// Run it before `equidistant_traces` too, which it can replace when the
     /// positions are poor. Standstills that together make up more than half
     /// the profile are not found. Examples:

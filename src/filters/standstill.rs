@@ -27,11 +27,11 @@
 //! The semblance is turned into a score that means the same on any radar:
 //! `-ln(1 - S)`, as a robust z against the profile's own median and spread.
 //! A standstill is a stretch scoring above [`EXTEND_Z`] that reaches the
-//! threshold somewhere. Its edges are then refined: every trace near it is
-//! correlated with the stretch's median trace, and the stretch grows while
-//! that correlation is closer to the stretch's own level than to the moving
-//! traces' level. The semblance window blurs the edges by half its length,
-//! and this is what puts them back.
+//! threshold somewhere. The semblance window blurs its edges by up to half
+//! its length either way, so they are then put back: every trace near it is
+//! correlated with the median trace of the stretch's middle half, and the
+//! standstill grows out from that middle half while the correlation is
+//! closer to the standstill's own level than to the moving traces'.
 //!
 //! The score is measured against the profile's median, so a standstill is
 //! something that differs from what most of the profile does. Standstills
@@ -188,7 +188,7 @@ pub fn detect(data: ArrayView2<f32>, settings: &Settings) -> Result<Detection, S
     let scores = robust_z(&semblance(&prepared))
         .ok_or("the coherence does not vary along the profile, so nothing stands out")?;
 
-    let mut standstills: Vec<Standstill> = runs_above(&scores, EXTEND_Z)
+    let detected: Vec<Standstill> = runs_above(&scores, EXTEND_Z)
         .into_iter()
         .filter_map(|(start, end)| {
             let peak = scores[start..end]
@@ -197,14 +197,20 @@ pub fn detect(data: ArrayView2<f32>, settings: &Settings) -> Result<Detection, S
                 .fold(f32::NEG_INFINITY, f32::max);
             (peak >= settings.strength).then_some(Standstill { start, end, peak })
         })
-        .map(|standstill| refine(&prepared, standstill))
         .collect();
-    standstills = merge(standstills);
+    let mut standstills = merge(detected.iter().map(|&s| refine(&prepared, s)).collect());
     standstills.retain(|s| s.len() >= settings.min_traces);
 
+    // "Elsewhere" is the moving profile. The traces refining trimmed off a
+    // detection score high only because the window reached into the
+    // standstill, so a kept standstill's detection is left out too.
     let mut inside = vec![false; width];
+    let overlaps = |a: &Standstill, b: &Standstill| a.start < b.end && b.start < a.end;
     for s in &standstills {
         inside[s.start..s.end].iter_mut().for_each(|v| *v = true);
+        for d in detected.iter().filter(|d| overlaps(d, s)) {
+            inside[d.start..d.end].iter_mut().for_each(|v| *v = true);
+        }
     }
     let highest_elsewhere = scores
         .iter()
@@ -305,24 +311,33 @@ fn runs_above(values: &[f32], threshold: f32) -> Vec<(usize, usize)> {
     runs
 }
 
-/// Grow a standstill to where its traces stop resembling its median trace.
+/// Put a standstill's edges where its traces stop resembling its median
+/// trace.
 ///
-/// Every trace within `3 * WINDOW` of it is correlated with its median
-/// trace. The cut is halfway between the median correlation inside it and
-/// the median correlation of the traces further than `WINDOW` from either
-/// edge, and the standstill grows outwards while a trace is above the cut.
-/// It never shrinks: the detection already lies inside the standstill.
+/// The detection is only roughly in place: where the semblance window
+/// straddles an edge it is partly coherent, so the stretch above
+/// [`EXTEND_Z`] can run up to half a window past an edge, or stop short of
+/// one. Its middle half, though, is inside the standstill. Every trace
+/// within `3 * WINDOW` of the stretch is correlated with the median trace
+/// of that middle half, and the correlation is smoothed over five traces so
+/// that one noisy trace does not end a standstill. The cut is halfway
+/// between the median correlation of the middle half and that of the traces
+/// further than `WINDOW` from the detection, and the standstill grows out
+/// from its middle half while the correlation is above the cut. Its edges
+/// can therefore end up inside the detection as well as outside it.
 fn refine(data: &Array2<f32>, standstill: Standstill) -> Standstill {
     let width = data.ncols();
     let reach = 3 * WINDOW;
     let (start, end) = (standstill.start, standstill.end);
     let lo = start.saturating_sub(reach);
     let hi = (end + reach).min(width);
+    let quarter = (end - start) / 4;
+    let (core_start, core_end) = (start + quarter, end - quarter);
 
     let median_trace: Vec<f64> = data
         .rows()
         .into_iter()
-        .map(|row| median(row.slice(s![start..end]).to_vec()) as f64)
+        .map(|row| median(row.slice(s![core_start..core_end]).to_vec()) as f64)
         .collect();
     let norm = median_trace.iter().map(|v| v * v).sum::<f64>().sqrt();
     if norm == 0. {
@@ -348,9 +363,10 @@ fn refine(data: &Array2<f32>, standstill: Standstill) -> Standstill {
             }
         })
         .collect();
+    let correlation = rolling::rolling(&correlation, 2, Statistic::Median);
     let at = |j: usize| correlation[j - lo];
 
-    let inside = median((start..end).map(at).collect());
+    let inside = median((core_start..core_end).map(at).collect());
     let outside: Vec<f32> = (lo..hi)
         .filter(|&j| j + WINDOW < start || j >= end + WINDOW)
         .map(at)
@@ -362,11 +378,11 @@ fn refine(data: &Array2<f32>, standstill: Standstill) -> Standstill {
     };
     let cut = 0.5 * (inside + outside);
 
-    let mut new_start = start;
+    let mut new_start = core_start;
     while new_start > lo && at(new_start - 1) > cut {
         new_start -= 1;
     }
-    let mut new_end = end;
+    let mut new_end = core_end;
     while new_end < hi && at(new_end) > cut {
         new_end += 1;
     }

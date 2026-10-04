@@ -40,7 +40,7 @@ A time-triggered radar keeps recording when it stops, and in a standstill each t
 
 The log lists every standstill with its traces, duration and strength, and the highest strength elsewhere, so the threshold can be judged against both. Each median trace keeps the time and position of the middle of its stretch, or of the first or last trace for a standstill at the start or end of the profile, so that interpretations made before this step still carry over.
 
-Run it early, before the filters. A running `background_removal` takes out standstills as long as its window before this step can see them, and after `dewow` it missed one and added one on 800 MHz data. Run it before `equidistant_traces` too, which it can replace when the positions are poor. Standstills that together make up more than half the profile are not found. Examples: `remove_standstills`, `remove_standstills(6)`, `remove_standstills(min_duration=20)`.
+Run it early, before the filters. A running `background_removal` takes out standstills as long as its window before this step can see them, and after `dewow` it missed one of eight on 800 MHz data. Run it before `equidistant_traces` too, which it can replace when the positions are poor. Standstills that together make up more than half the profile are not found. Examples: `remove_standstills`, `remove_standstills(6)`, `remove_standstills(min_duration=20)`.
 
 So far this has only been tested on Malå data (25 and 800 MHz). Check the result before relying on it for other instruments.
 
