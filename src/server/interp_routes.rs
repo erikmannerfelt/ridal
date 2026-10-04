@@ -1462,7 +1462,7 @@ pub async fn group_level2(
     caller: Caller,
     axum::extract::Query(query): axum::extract::Query<Level2Query>,
 ) -> Result<impl IntoResponse, ApiError> {
-    merged_level2(&state, &caller, &MergeScope::Group(group), query)
+    merged_level2_offloaded(state, caller, MergeScope::Group(group), query).await
 }
 
 /// `GET /api/v1/catalog/level2` -- every interpreted radargram the server
@@ -1472,7 +1472,38 @@ pub async fn catalog_level2(
     caller: Caller,
     axum::extract::Query(query): axum::extract::Query<Level2Query>,
 ) -> Result<impl IntoResponse, ApiError> {
-    merged_level2(&state, &caller, &MergeScope::Catalog, query)
+    merged_level2_offloaded(state, caller, MergeScope::Catalog, query).await
+}
+
+/// Run [`merged_level2`] off the async executor, under a render permit.
+///
+/// The merge opens a NetCDF per member and resamples every layer: synchronous,
+/// CPU-bound work that, run directly on a Tokio worker, stalls unrelated
+/// requests for its whole duration -- a catalog-wide export can freeze the
+/// viewer somebody else is panning (#136). It follows the render path rather
+/// than inventing a second mechanism: one `--n-workers` permit, acquired in
+/// async context so a queued request that is dropped never starts, then the
+/// work on a blocking thread.
+async fn merged_level2_offloaded(
+    state: Arc<AppState>,
+    caller: Caller,
+    scope: MergeScope,
+    query: Level2Query,
+) -> Result<(HeaderMap, String), ApiError> {
+    let permit = super::routes::acquire_render_permit(&state).await?;
+    tokio::task::spawn_blocking(move || {
+        // Held until the whole export finishes, then released for the next
+        // waiter.
+        let _permit = permit;
+        merged_level2(&state, &caller, &scope, query)
+    })
+    .await
+    .map_err(|e| {
+        ApiError::internal(
+            "level2_task_failed",
+            format!("Level 2 export task failed: {e}"),
+        )
+    })?
 }
 
 fn merged_level2(
