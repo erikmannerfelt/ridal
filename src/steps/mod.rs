@@ -89,6 +89,48 @@ pub enum Step {
         #[arg(long, default_value_t = crate::gpr::DEFAULT_EMPTY_TRACE_STRENGTH)]
         strength: f32,
     },
+    /// Replace each stretch recorded while the radar stood still with its
+    /// median trace.
+    ///
+    /// A time-triggered radar keeps recording when it stops, and in a
+    /// standstill each trace repeats the one before it. This is found from
+    /// the radar data alone, without the positions, by how coherent
+    /// neighbouring traces are below the direct wave. Each stretch is
+    /// scored as a robust z against the rest of the profile, and a stretch
+    /// is a standstill when it reaches `strength` and lasts at least
+    /// `min_duration`, given in seconds of recording (`2s`) or traces
+    /// (`10`). Seconds use the trace interval in the file header, which
+    /// `average_traces` keeps up to date.
+    ///
+    /// The log lists every standstill with its traces, duration and
+    /// strength, and the highest strength elsewhere, so the threshold can
+    /// be judged against both. Each median trace keeps the time and
+    /// position of the middle of its stretch, or of the first or last trace
+    /// for a standstill at the start or end of the profile, so that
+    /// interpretations made before this step still carry over.
+    ///
+    /// Run it early, before the filters. A running `background_removal`
+    /// takes out standstills as long as its window before this step can see
+    /// them, and after `dewow` it missed one and added one on 800 MHz data.
+    /// Run it before `equidistant_traces` too, which it can replace when the
+    /// positions are poor. Standstills that together make up more than half
+    /// the profile are not found. Examples:
+    /// `remove_standstills`, `remove_standstills(6)`,
+    /// `remove_standstills(min_duration=20)`.
+    ///
+    /// So far this has only been tested on Malå data (25 and 800 MHz).
+    /// Check the result before relying on it for other instruments.
+    #[command(rename_all = "snake_case")]
+    RemoveStandstills {
+        /// How far a standstill must stand out from the rest of the profile,
+        /// as a robust z. Lower finds more.
+        #[arg(long, default_value_t = crate::filters::standstill::DEFAULT_STRENGTH,
+              value_parser = finite_positive)]
+        strength: f32,
+        /// The shortest standstill: seconds (`2s`) or traces (`10`).
+        #[arg(long, default_value = "2s")]
+        min_duration: crate::filters::balance::Span,
+    },
     /// Average traces in a given window.
     ///
     /// The coordinate information is picked from the middle averaged trace.
@@ -1005,6 +1047,10 @@ impl Step {
                 gpr.remove_traces(&indices, true)?;
             }
             Step::RemoveEmptyTraces { strength } => gpr.remove_empty_traces(*strength)?,
+            Step::RemoveStandstills {
+                strength,
+                min_duration,
+            } => gpr.remove_standstills(*strength, *min_duration),
             Step::AverageTraces { window } => gpr.average_traces(*window)?,
             Step::ZeroCorr {
                 method,

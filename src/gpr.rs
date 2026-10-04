@@ -2015,6 +2015,150 @@ impl GPR {
         Ok(())
     }
 
+    /// Replace each stretch recorded while the radar stood still with its
+    /// median trace. See [`filters::standstill`].
+    ///
+    /// Never fails on the data: too little to measure, or a duration in
+    /// seconds without a usable trace interval, leaves the data unchanged
+    /// and the log says why.
+    pub fn remove_standstills(&mut self, strength: f32, min_duration: filters::balance::Span) {
+        let start_time = SystemTime::now();
+        let seconds_per_trace = self.metadata.time_interval;
+        let min_traces = match min_duration.traces(seconds_per_trace) {
+            Ok(n) => n,
+            Err(reason) => {
+                self.log_event(
+                    "remove_standstills",
+                    &format!("Warning: {reason}; changed nothing"),
+                    start_time,
+                );
+                return;
+            }
+        };
+
+        // One period of the antenna's nominal frequency, in samples, puts the
+        // first sample used below the direct wave.
+        let step_ns = self.vertical_resolution_ns();
+        let antenna_mhz = self.metadata.antenna_mhz;
+        let period = (antenna_mhz > 0. && antenna_mhz.is_finite() && step_ns > 0.)
+            .then(|| ((1000. / antenna_mhz) / step_ns).round() as usize);
+        let no_frequency = if period.is_none() {
+            format!(
+                " Warning: the antenna frequency is {antenna_mhz} MHz, so the direct wave was \
+                 taken to end where the mean trace falls below a tenth of its peak."
+            )
+        } else {
+            String::new()
+        };
+        let settings = filters::standstill::Settings {
+            strength,
+            min_traces,
+            first_sample: filters::standstill::below_direct_wave(self.data.view(), period),
+        };
+
+        let detection = match filters::standstill::detect(self.data.view(), &settings) {
+            Ok(detection) => detection,
+            Err(reason) => {
+                self.log_event(
+                    "remove_standstills",
+                    &format!("Warning: {reason}; changed nothing.{no_frequency}"),
+                    start_time,
+                );
+                return;
+            }
+        };
+
+        let width = self.width();
+        let seconds = |n: usize| {
+            if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
+                format!(", {:.1} s", n as f32 * seconds_per_trace)
+            } else {
+                String::new()
+            }
+        };
+        let elsewhere = detection.highest_elsewhere.map_or(String::new(), |z| {
+            format!(" The highest strength elsewhere was {z:.1}.")
+        });
+        let threshold = format!(
+            "strength threshold {strength}, at least {min_traces} traces{}",
+            seconds(min_traces)
+        );
+        if detection.standstills.is_empty() {
+            self.log_event(
+                "remove_standstills",
+                &format!("Found no standstills ({threshold}).{elsewhere}{no_frequency}"),
+                start_time,
+            );
+            return;
+        }
+
+        // Each output trace stands for one input trace (its time, position
+        // and offsets) and, inside a standstill, for the whole stretch.
+        let mut representatives = Vec::with_capacity(width);
+        let mut medians = Vec::with_capacity(detection.standstills.len());
+        let mut next = 0;
+        for standstill in &detection.standstills {
+            representatives.extend(next..standstill.start);
+            medians.push((representatives.len(), *standstill));
+            representatives.push(standstill.representative(width));
+            next = standstill.end;
+        }
+        representatives.extend(next..width);
+
+        let replace = |data: &Array2<f32>| {
+            let mut out = data.select(Axis(1), &representatives);
+            for (column, standstill) in &medians {
+                let stretch = data.slice(ndarray::s![.., standstill.start..standstill.end]);
+                for (out_value, row) in out.column_mut(*column).iter_mut().zip(stretch.rows()) {
+                    let mut values = row.to_vec();
+                    let middle = values.len() / 2;
+                    *out_value = *values.select_nth_unstable_by(middle, f32::total_cmp).1;
+                }
+            }
+            out
+        };
+        self.data = replace(&self.data);
+        if let Some(topo_data) = &self.topo_data {
+            self.topo_data = Some(replace(topo_data));
+        }
+        self.location.cor_points = representatives
+            .iter()
+            .map(|&i| self.location.cor_points[i])
+            .collect();
+        self.crop_ns = representatives.iter().map(|&i| self.crop_ns[i]).collect();
+        self.time_zero_ns = representatives
+            .iter()
+            .map(|&i| self.time_zero_ns[i])
+            .collect();
+        self.metadata.last_trace = self.width() as u32;
+
+        let listed: Vec<String> = detection
+            .standstills
+            .iter()
+            .map(|s| {
+                format!(
+                    "traces {}-{} ({} traces{}, strength {:.1})",
+                    s.start,
+                    s.end - 1,
+                    s.len(),
+                    seconds(s.len()),
+                    s.peak
+                )
+            })
+            .collect();
+        self.log_event(
+            "remove_standstills",
+            &format!(
+                "Replaced {} standstill(s) with their median trace ({threshold}): {}. Reduced \
+                 trace number from {width} to {}.{elsewhere}{no_frequency}",
+                detection.standstills.len(),
+                listed.join("; "),
+                self.width()
+            ),
+            start_time,
+        );
+    }
+
     pub fn height(&self) -> usize {
         self.data.shape()[0]
     }
@@ -4360,5 +4504,152 @@ pub mod tests {
         params.crs = Some("EPSG:32633".to_string());
         let error = super::inspect(params).unwrap_err();
         assert!(error.to_string().contains("crs only apply"), "{error}");
+    }
+
+    /// A radargram with the synthetic standstills of
+    /// `filters::standstill::tests`, on a grid where one antenna period is
+    /// ten samples.
+    fn make_gpr_with_standstills(stops: &[(usize, usize)]) -> super::GPR {
+        use crate::filters::standstill::tests::{radargram, HEIGHT, WIDTH};
+        let mut gpr = make_dummy_gpr(WIDTH, HEIGHT, None);
+        gpr.data = radargram(stops);
+        // 500 MHz is a 2 ns period: ten samples at 0.2 ns.
+        gpr.metadata.time_window = HEIGHT as f32 * 0.2;
+        gpr
+    }
+
+    #[test]
+    fn remove_standstills_replaces_each_with_its_median_trace_and_logs_it() {
+        let stops = [(0, 80), (500, 620), (1900, 2000)];
+        let mut gpr = make_gpr_with_standstills(&stops);
+        let before: Vec<f64> = gpr
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.time_seconds)
+            .collect();
+        gpr.process("remove_standstills").unwrap();
+
+        // About 79 + 119 + 99 traces fewer, give or take the edges.
+        let removed = before.len() - gpr.width();
+        assert!((280..=310).contains(&removed), "removed {removed}");
+        let log = gpr.log.last().unwrap();
+        assert!(log.contains("Replaced 3 standstill(s)"), "{log}");
+        assert!(log.contains("strength threshold 8"), "{log}");
+        assert!(log.contains("highest strength elsewhere"), "{log}");
+
+        // Times stay strictly increasing, and the ends of the profile keep
+        // their times: what keeps interpretations carryable.
+        let after: Vec<f64> = gpr
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.time_seconds)
+            .collect();
+        assert!(after.windows(2).all(|w| w[1] > w[0]));
+        assert_eq!(after.first(), before.first());
+        assert_eq!(after.last(), before.last());
+    }
+
+    #[test]
+    fn remove_standstills_with_nothing_to_find_changes_nothing() {
+        let mut gpr = make_gpr_with_standstills(&[]);
+        let data = gpr.data.clone();
+        gpr.process("remove_standstills").unwrap();
+        assert_eq!(gpr.data, data);
+        assert!(gpr.log.last().unwrap().contains("Found no standstills"));
+    }
+
+    #[test]
+    fn remove_standstills_without_a_trace_interval_warns_for_seconds_only() {
+        let mut gpr = make_gpr_with_standstills(&[(500, 620)]);
+        gpr.metadata.time_interval = 0.;
+        let width = gpr.width();
+        gpr.process("remove_standstills").unwrap();
+        assert_eq!(gpr.width(), width);
+        assert!(gpr.log.last().unwrap().contains("Warning"));
+        // In traces it needs no interval.
+        gpr.process("remove_standstills(min_duration=10)").unwrap();
+        assert!(gpr.width() < width);
+    }
+
+    /// Interpretations drawn before `remove_standstills` carry onto its
+    /// output through the `trace_time` anchor, with the real gprinterp
+    /// re-anchoring, including lines that start in an opening standstill or
+    /// end in a closing one (#327).
+    #[test]
+    fn interpretations_carry_across_remove_standstills() {
+        let stops = [(0, 80), (500, 620), (1900, 2000)];
+        let mut gpr = make_gpr_with_standstills(&stops);
+        let times = |gpr: &super::GPR| -> Vec<f64> {
+            gpr.location
+                .cor_points
+                .iter()
+                .map(|p| p.time_seconds)
+                .collect()
+        };
+        let before = times(&gpr);
+        gpr.process("remove_standstills").unwrap();
+        let after = times(&gpr);
+
+        let anchor = |times: &[f64]| -> gprinterp::AnchorAxis {
+            let axis = crate::interp::anchors::trace_time_axis(times).unwrap();
+            serde_json::from_value(serde_json::to_value(axis).unwrap()).unwrap()
+        };
+        let twtt: gprinterp::AnchorAxis = serde_json::from_value(serde_json::json!(
+            {"name": "twtt", "unit": "ns", "type": "regular", "t0": 0.0, "dt": 0.2}
+        ))
+        .unwrap();
+        let lines = [
+            (
+                "starts in the opening standstill",
+                vec![[5., 100.], [300., 110.]],
+            ),
+            (
+                "crosses the middle one",
+                vec![[400., 50.], [560., 55.], [700., 60.]],
+            ),
+            ("lies inside the middle one", vec![[520., 70.], [600., 72.]]),
+            (
+                "ends in the closing standstill",
+                vec![[1700., 40.], [1990., 45.]],
+            ),
+        ];
+        let features: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|(label, coordinates)| {
+                serde_json::json!({
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": coordinates},
+                    "properties": {"label": label},
+                })
+            })
+            .collect();
+        let document: gprinterp::Document = serde_json::from_value(serde_json::json!({
+            "key": "test-radargram",
+            "coordinates": {"space": "index2d", "axes": {
+                "x": {"primary": {"name": "trace", "unit": "index"}, "anchor": [anchor(&before)]},
+                "y": {"primary": {"name": "sample", "unit": "index"}, "anchor": [twtt.clone()]},
+            }},
+            "features": features,
+        }))
+        .unwrap();
+        let target = gprinterp::RevisionAxes {
+            x: vec![anchor(&after)],
+            y: vec![twtt],
+        };
+        let carried = gprinterp::reanchor(&document, &target).unwrap();
+        assert!(carried.dropped.is_empty(), "{:?}", carried.dropped);
+        for feature in &carried.document.features {
+            let gprinterp::Geometry::LineString(points) = &feature.geometry else {
+                panic!("not a line");
+            };
+            let x: Vec<f64> = points.iter().map(|p| p.0[0]).collect();
+            assert!(x.windows(2).all(|w| w[1] >= w[0]), "doubles back: {x:?}");
+            assert!(
+                x.iter().all(|&v| v >= 0. && v <= (gpr.width() - 1) as f64),
+                "{x:?}"
+            );
+        }
     }
 }
