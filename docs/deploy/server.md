@@ -69,7 +69,8 @@ network address with accounts, it also refuses password sign-ins unless
 
 ## Keeping it running
 
-Ridal is a foreground process; stopping it stops the server. On a machine
+Ridal is a foreground process; stopping it stops the server. On Ctrl+C or
+SIGTERM it finishes the requests in flight before it exits. On a machine
 that should always answer, run it under a service manager such as `systemd`,
 with the site directory as its only argument, and let that manager restart
 it. Sessions survive a restart: the signing key is the site's
@@ -104,8 +105,6 @@ Wants=network-online.target
 User=ridal
 Group=ridal
 ExecStart=/usr/local/bin/ridal server start /srv/ridal
-# Ridal shuts down cleanly on Ctrl+C, which is SIGINT.
-KillSignal=SIGINT
 Restart=on-failure
 RestartSec=5
 

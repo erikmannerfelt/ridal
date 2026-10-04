@@ -256,8 +256,33 @@ async fn serve(
         .map_err(|e| format!("Server error: {e}"))
 }
 
+/// Ctrl+C, or SIGTERM on Unix: what systemd, Docker and `kill` send to
+/// stop a service (#304). Either lets requests in flight finish.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            // Without the handler, SIGTERM keeps its default and ends the
+            // process; Ctrl+C still shuts down cleanly.
+            Err(e) => {
+                eprintln!("Warning: cannot listen for SIGTERM: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
+    }
     println!("Shutting down.");
 }
 
