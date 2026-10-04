@@ -11,9 +11,23 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 full = ["xarray"]
+# The HTTP client, `ridal.client`.
+client = ["httpx>=0.27"]
+# `Catalog.to_pandas()` and friends.
+geo = ["pandas", "geopandas"]
+
+[tool.pytest.ini_options]
+testpaths = ["test_ridal_interface.py", "tests"]
 
 [tool.maturin]
-module-name = "ridal"
+# The native extension is `ridal._ridal`, inside the Python package in
+# `python/ridal/`, which re-exports it and adds the pure-Python HTTP client.
+module-name = "ridal._ridal"
+python-source = "python"
 bindings = "pyo3"
 features = ["python"]
 default-features = false
+
+[tool.pyrefly]
+project-includes = ["python", "tests"]
+search-path = ["python"]

@@ -4905,7 +4905,8 @@ async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
 }
 
 /// A new revision of `id` on disk, and the preflight body for it, read by
-/// the same function `ridal._preflight_body` calls for the Python client.
+/// the same function `ridal._ridal._preflight_body` calls for the Python
+/// client.
 fn preflight_fixture(dir: &StdPath, id: &str) -> (std::path::PathBuf, Value) {
     let source = dir.join("new.nc");
     super::interp_routes_tests::write_test_nc_with_axes_at(
