@@ -622,13 +622,6 @@ mod tests {
                     "subset(min_trace=0, max_trace=50, min_sample=0, max_sample=-1)".to_string(),
                 ]),
             ),
-            (
-                "processing_log",
-                netcdf::AttributeValue::Str(
-                    "merge (duration: 0.00s):\tMerged \"other_filepath.rd3\"\nsubset (duration: 0.00s):\tSubset data from [10, 200] to (0:10, 0:50)"
-                        .to_string(),
-                ),
-            ),
             ("total_distance", netcdf::AttributeValue::Double(49.)),
             (
                 "original_filepaths",
@@ -664,6 +657,28 @@ mod tests {
             .get_into(data.view_mut(), ..)
             .unwrap();
         assert_eq!((data - gpr.data).mapv(|v| v.abs()).sum(), 0.);
+
+        // Each log line carries its step's wall-clock duration, so a loaded
+        // machine can turn "0.00s" into "0.01s". Compare the log with the
+        // durations blanked out; the rest of it is deterministic.
+        let processing_log = match out.attribute("processing_log").unwrap().value().unwrap() {
+            netcdf::AttributeValue::Str(log) => log,
+            other => panic!("processing_log is not a string: {other:?}"),
+        };
+        let without_durations = processing_log
+            .lines()
+            .map(|line| match (line.find("(duration: "), line.find("s):")) {
+                (Some(start), Some(end)) if start < end => {
+                    format!("{}(duration: _){}", &line[..start], &line[end + 2..])
+                }
+                _ => line.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            without_durations,
+            "merge (duration: _):\tMerged \"other_filepath.rd3\"\nsubset (duration: _):\tSubset data from [10, 200] to (0:10, 0:50)"
+        );
 
         for (key, expected) in expected_attrs {
             assert_eq!(
