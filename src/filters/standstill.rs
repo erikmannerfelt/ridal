@@ -476,6 +476,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_overall_amplitude_does_not_matter() {
+        // Radars record on very different scales (GSSI's integers against
+        // Malå's millivolts). Every stage is a ratio, a correlation or
+        // relative to the profile itself, so a factor changes nothing.
+        let data = radargram(&[(0, 80), (500, 620), (1900, 2000)]);
+        let at = |factor: f32| {
+            let scaled = data.mapv(|v| v * factor);
+            let first_sample = below_direct_wave(scaled.view(), Some(10));
+            let found = detect(
+                scaled.view(),
+                &Settings {
+                    first_sample,
+                    ..settings()
+                },
+            )
+            .unwrap();
+            (
+                first_sample,
+                found
+                    .standstills
+                    .iter()
+                    .map(|s| (s.start, s.end))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let reference = at(1.);
+        assert_eq!(reference.1.len(), 3);
+        for factor in [1e-6, 1e-3, 1e3, 1e6] {
+            assert_eq!(at(factor), reference, "factor {factor}");
+        }
+    }
+
+    #[test]
     fn a_moving_profile_has_no_standstills() {
         let found = detect(radargram(&[]).view(), &settings()).unwrap();
         assert!(found.standstills.is_empty(), "{:?}", found.standstills);

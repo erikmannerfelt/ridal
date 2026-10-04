@@ -98,8 +98,8 @@ pub enum Step {
     /// neighbouring traces are below the direct wave. Each stretch is
     /// scored as a robust z against the rest of the profile, and a stretch
     /// is a standstill when it reaches `strength` and lasts at least
-    /// `min_duration`, given in seconds of recording (`2s`) or traces
-    /// (`10`). Seconds use the trace interval in the file header, which
+    /// `min_duration`, given in seconds of recording (`3s`) or traces
+    /// (`15`). Seconds use the trace interval in the file header, which
     /// `average_traces` keeps up to date.
     ///
     /// The log lists every standstill with its traces, duration and
@@ -127,8 +127,8 @@ pub enum Step {
         #[arg(long, default_value_t = crate::filters::standstill::DEFAULT_STRENGTH,
               value_parser = finite_positive)]
         strength: f32,
-        /// The shortest standstill: seconds (`2s`) or traces (`10`).
-        #[arg(long, default_value = "2s")]
+        /// The shortest standstill: seconds (`3s`) or traces (`15`).
+        #[arg(long, default_value = "3s")]
         min_duration: crate::filters::balance::Span,
     },
     /// Average traces in a given window.
