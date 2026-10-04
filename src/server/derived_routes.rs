@@ -585,7 +585,29 @@ pub async fn preview_derived(
         // it next to the kind so `median(bed)` reading "over 7 contributors"
         // is visibly a different quantity from a per-contributor line.
         "contributors": reduced.users.len(),
+        "unknown_users": unknown_users(&caller, &body.expression, &reduced.users),
     })))
+}
+
+/// The usernames an expression names that have no picks on this radargram.
+///
+/// `only` and `without` match nothing for a name nobody has, without an
+/// error (#326), so a typo would otherwise pass unnoticed. Only a caller who
+/// sees everyone's picks is told: anyone else sees only their own, so every
+/// other name would be listed, which says nothing about whether it is a
+/// typo.
+fn unknown_users(caller: &Caller, expression: &str, users: &[String]) -> Vec<String> {
+    if !may_see_cross_user(caller) {
+        return Vec::new();
+    }
+    let engine = crate::interp::derive::build_engine();
+    let Ok(ast) = crate::interp::derive::compile(&engine, expression) else {
+        return Vec::new();
+    };
+    crate::interp::derive::named_users(&ast)
+        .into_iter()
+        .filter(|name| !users.contains(name))
+        .collect()
 }
 
 /// `GET /api/v1/datasets/{id}/derived/{item}` -- one item's values.

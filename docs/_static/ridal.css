@@ -37,4 +37,5 @@ html body .highlight .n-Ridal.n-Ridal-Builtin { color: var(--expr-builtin); font
 html body .highlight .n-Ridal.n-Ridal-Keyword { color: var(--expr-keyword); font-weight: 600; }
 html body .highlight .n-Ridal.n-Ridal-Layer { color: var(--expr-layer); }
 html body .highlight .m.m-Ridal { color: var(--expr-number); }
+html body .highlight .s.s-Ridal { color: var(--expr-number); }
 html body .highlight .o.o-Ridal { color: var(--color-foreground-muted); }

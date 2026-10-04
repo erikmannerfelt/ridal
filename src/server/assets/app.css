@@ -2825,7 +2825,8 @@ button.danger:disabled {
   color: #2f7d32;
 }
 
-.tok-number {
+.tok-number,
+.tok-string {
   color: #b06000;
 }
 

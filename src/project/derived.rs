@@ -555,6 +555,7 @@ impl DerivedSet {
             .collect();
         let (ast, kind) = self.compile_item(engine, item, layer_ids, &item_kinds)?;
 
+        let users: std::sync::Arc<[String]> = reduced.users.clone().into();
         let mut values = Vec::with_capacity(reduced.n_positions());
         for position in 0..reduced.n_positions() {
             let mut bound: BTreeMap<String, UserArray> = BTreeMap::new();
@@ -563,7 +564,7 @@ impl DerivedSet {
                     .iter()
                     .map(|sample| derive::sample_to_unit(*sample, item.unit, geometry))
                     .collect();
-                bound.insert(layer_id.clone(), UserArray(array));
+                bound.insert(layer_id.clone(), UserArray::new(array, users.clone()));
             }
             let mut deps: BTreeMap<String, f64> = BTreeMap::new();
             for (dep_id, dep) in &evaluated.results {
