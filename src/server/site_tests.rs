@@ -2545,3 +2545,100 @@ async fn removing_an_account_takes_its_tokens() {
     .await;
     assert_eq!(after.status, StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+async fn a_damaged_token_file_fails_closed() {
+    let (dir, app, cookie) = token_site().await;
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([{"project": "glac", "role": "viewer", "download": "all"}]),
+    )
+    .await;
+    std::fs::write(dir.path().join("tokens.json"), "{ not json").unwrap();
+
+    // No token can be checked, so none is accepted -- and the public view
+    // is not offered instead.
+    let refused = send(
+        &app,
+        bearer(get("/api/v1/projects/glac/datasets", None), &token),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{}", refused.text);
+    // Listing says what is wrong rather than showing an empty list.
+    let listed = send(&app, get("/api/v1/tokens", Some(&cookie))).await;
+    assert_eq!(
+        listed.status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "{}",
+        listed.text
+    );
+    assert_eq!(listed.body["error"]["code"], "malformed_tokens");
+    // And deleting a project stops rather than leave a grant behind.
+    let site = Site::open(dir.path()).unwrap();
+    site.archive(&key("other")).unwrap();
+    let error = site.delete_project(&key("other")).unwrap_err();
+    assert!(error.to_string().contains("tokens.json"), "{error}");
+    assert!(dir.path().join("projects/other").is_dir());
+}
+
+#[tokio::test]
+async fn deleting_a_project_takes_it_out_of_every_token() {
+    let (dir, app, cookie) = token_site().await;
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([
+            {"project": "glac", "role": "viewer", "download": "all"},
+            {"project": "ice", "role": "viewer", "download": "results"},
+        ]),
+    )
+    .await;
+    let site = Site::open(dir.path()).unwrap();
+    site.archive(&key("ice")).unwrap();
+    site.delete_project(&key("ice")).unwrap();
+    let me = send(&app, bearer(get("/api/v1/auth/me", None), &token)).await;
+    let grants = me.body["token"]["grants"].as_array().unwrap();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0]["project"], "glac");
+}
+
+#[tokio::test]
+async fn a_site_without_accounts_has_nobody_to_make_a_token_for() {
+    let (_dir, app) = site_with(Vec::new(), &["glac"], AccessOptions::default());
+    let refused = send(
+        &app,
+        post_json(
+            "/api/v1/tokens",
+            &json!({"name": "x", "grants": [{"project": "glac", "role": "viewer", "download": "all"}]}),
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "no_accounts");
+    // And signed out, on a site that has accounts, it asks for a sign-in.
+    let (_dir, app, _cookie) = token_site().await;
+    let anonymous = send(&app, get("/api/v1/tokens", None)).await;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn ridal_gui_ignores_a_token() {
+    // There are no accounts for it to stand for, and the local user can
+    // already do everything, so a client with a token set still works.
+    let dir = tempfile::tempdir().unwrap();
+    crate::project::Project::init(dir.path(), None).unwrap();
+    let app = super::access_tests::gui_router(dir.path(), AccessOptions::default());
+    let response = send(
+        &app,
+        bearer(
+            get("/api/v1/projects/default/datasets", None),
+            "ridal_nonsense",
+        ),
+    )
+    .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    let me = send(&app, bearer(get("/api/v1/auth/me", None), "ridal_nonsense")).await;
+    assert_eq!(me.body["token"], Value::Null);
+}

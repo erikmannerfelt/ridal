@@ -1466,6 +1466,129 @@ mod tests {
             .0
     }
 
+    /// Run `ridal site token …` against the site at `dir`.
+    fn site_token(dir: &std::path::Path, argv: &[&str]) -> Result<(), String> {
+        let mut full = vec!["ridal", "site", "token"];
+        full.extend_from_slice(argv);
+        // `list` takes the site as a positional path, the others as --path.
+        if argv.first() == Some(&"list") {
+            full.push(dir.to_str().unwrap());
+        } else {
+            full.extend_from_slice(&["--path", dir.to_str().unwrap()]);
+        }
+        super::run(Args::try_parse_from(full).unwrap())
+    }
+
+    fn site_tokens(dir: &std::path::Path) -> crate::site::tokens::TokenSet {
+        let site = crate::site::Site::open(dir).unwrap();
+        crate::site::tokens::read(site.store()).unwrap().0
+    }
+
+    #[test]
+    fn tokens_are_added_listed_and_revoked_from_the_command_line() {
+        use crate::project::roles::{DownloadScope, Role};
+        let dir = site_dir();
+        site_token(
+            dir.path(),
+            &[
+                "add",
+                "anna",
+                "--name",
+                "ci",
+                "--grant",
+                "glac:operator",
+                "--expires",
+                "30d",
+            ],
+        )
+        .unwrap();
+        let set = site_tokens(dir.path());
+        assert_eq!(set.tokens.len(), 1);
+        let token = &set.tokens[0];
+        assert_eq!(token.name, "ci");
+        assert_eq!(token.grants[0].role, Role::Operator);
+        // No download scope given: a server administrator's is everything.
+        assert_eq!(token.grants[0].download, DownloadScope::All);
+        assert_eq!(token.expires, Some(token.created + 30 * 86_400));
+
+        site_token(dir.path(), &["list"]).unwrap();
+        site_token(dir.path(), &["list", "--account", "anna"]).unwrap();
+        let id = token.id.clone();
+        site_token(dir.path(), &["revoke", &id]).unwrap();
+        assert!(site_tokens(dir.path()).tokens.is_empty());
+        site_token(dir.path(), &["list"]).unwrap();
+        assert!(
+            site_token(dir.path(), &["revoke", &id]).is_err(),
+            "gone already"
+        );
+
+        // Both are in the site history, from the command line.
+        let site = crate::site::Site::open(dir.path()).unwrap();
+        let history = std::fs::read_to_string(site.store().root().join("audit.jsonl")).unwrap();
+        assert!(history.contains("token_created") && history.contains("token_revoked"));
+        assert!(history.contains("\"cli\""), "{history}");
+    }
+
+    #[test]
+    fn a_command_line_grant_is_checked_like_any_other() {
+        use crate::project::roles::{DownloadScope, Role};
+        let dir = site_dir();
+        // bob is a viewer in glac who may download results only.
+        let site = crate::site::Site::open(dir.path()).unwrap();
+        let bob = crate::identity::UserId::new("bob").unwrap();
+        crate::site::accounts::update(site.store(), |set| {
+            set.users
+                .push(crate::site::accounts::Account::new(bob.clone(), false));
+            Ok(())
+        })
+        .unwrap();
+        let project = site
+            .project(&crate::identity::ProjectKey::new("glac").unwrap())
+            .unwrap();
+        crate::project::members::update(project.documents(), |set| {
+            set.upsert(&bob, Role::Viewer, DownloadScope::Results);
+            Ok(())
+        })
+        .unwrap();
+
+        let add = |extra: &[&str]| {
+            let mut argv = vec!["add", "bob", "--name", "x"];
+            argv.extend_from_slice(extra);
+            site_token(dir.path(), &argv)
+        };
+        for (grant, why) in [
+            ("glac", "no role"),
+            ("glac:viewer:results:more", "too many parts"),
+            ("glac:boss", "no such role"),
+            ("glac:viewer:everything", "no such scope"),
+            ("Glac:viewer", "not a key"),
+            ("glac:operator", "above the role"),
+            ("glac:viewer:all", "above the download scope"),
+            ("elsewhere:viewer", "not a member"),
+        ] {
+            assert!(add(&["--grant", grant]).is_err(), "{why}");
+        }
+        assert!(add(&["--grant", "glac:viewer", "--expires", "soon"]).is_err());
+        assert!(site_token(
+            dir.path(),
+            &["add", "nobody", "--name", "x", "--grant", "glac:viewer"]
+        )
+        .is_err());
+        assert!(
+            site_tokens(dir.path()).tokens.is_empty(),
+            "nothing was half-made"
+        );
+
+        // Without a scope, the membership's: not 'all', which would be refused.
+        add(&["--grant", "glac:viewer"]).unwrap();
+        let set = site_tokens(dir.path());
+        assert_eq!(set.tokens[0].grants[0].download, DownloadScope::Results);
+        assert_eq!(
+            set.tokens[0].expires,
+            Some(set.tokens[0].created + 90 * 86_400)
+        );
+    }
+
     #[test]
     fn bulk_invites_from_the_command_line_carry_the_project() {
         let dir = site_dir();
