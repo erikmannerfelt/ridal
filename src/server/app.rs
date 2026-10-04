@@ -1210,7 +1210,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn full_route_suite_against_a_real_catalog() {
         // A single #[test] (not #[tokio::test]) driving a manually built
@@ -1377,7 +1376,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn topo_view_routes_render_and_expose_geometry() {
         // #168, end to end through HTTP: geometry, overview and chunk
@@ -1522,7 +1520,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn index_page_renders_lazy_overview_thumbnails() {
         // #121 requires an ~512px overview per catalog entry, and names
@@ -1567,7 +1564,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn index_page_render_profile_switcher_propagates_to_links() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1600,7 +1596,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn track_attributes_and_group_routes() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1687,7 +1682,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_card_shows_the_track_length_when_the_file_has_one() {
         // #319. The fixture's eastings step by 1 m over 50 traces, so the
@@ -1722,7 +1716,7 @@ mod tests {
         });
     }
 
-    #[test_retry::retry]
+    #[test]
     #[serial_test::serial(netcdf)]
     fn index_page_gives_ungrouped_entries_a_map_like_any_group() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1753,7 +1747,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn index_page_shows_ungrouped_heading_even_when_it_is_the_only_section() {
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1773,7 +1766,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_replaced_catalog_is_what_later_requests_see() {
         // The point of the whole change: the catalog a request works
@@ -1812,7 +1804,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn one_snapshot_answers_for_both_the_entry_and_its_render_service() {
         // Two locks taken in a fixed order prevent deadlock, not tearing.
@@ -1847,7 +1838,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_snapshot_taken_before_a_swap_stays_usable_after_it() {
         // What `Arc<Catalog>` buys over cloning the entries out: a handler
@@ -1868,7 +1858,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn concurrent_requests_for_one_chunk_render_it_only_once() {
         // #119 requires that concurrent requests generate an item only
@@ -1912,7 +1901,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn only_an_overview_build_waits_for_a_build_permit() {
         // #301: builds are bounded separately from renders, and a cached
@@ -1950,7 +1938,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn radargrams_open_their_files_on_demand_and_only_up_to_the_cap() {
         // #306: no file is held open from startup, and the reader pool
@@ -1996,7 +1983,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_single_render_worker_still_serves_every_request() {
         // The permit semaphore is sized from --n-workers; at 1 it fully
@@ -2027,7 +2013,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn one_unreadable_file_does_not_break_the_whole_catalog_at_startup() {
         let rt = tokio::runtime::Runtime::new().unwrap();

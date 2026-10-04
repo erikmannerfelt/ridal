@@ -131,10 +131,17 @@ tempfile = "3.5.0"
 temp-env = "0.3.6"
 serial_test = "3.2.0"
 approx = "0.5.0"
-test_retry = "0.1.0"
 # Drives the axum Router in-process via ServiceExt::oneshot, so route tests need
 # no HTTP client. Browser-facing tests bind a real port and use Chromium instead.
 tower = { version = "0.5", features = ["util"] }
+
+# Argon2id is the deliberate cost behind a password hash, and its pure-Rust
+# implementation is ~30x slower unoptimized. That turns the test suite into a
+# password-benchmark: hundreds of hash/verify calls dominate it. Optimising
+# just this dependency in the dev/test profile keeps the production parameters
+# (and the tests that assert on their timing) exactly as they were.
+[profile.dev.package.argon2]
+opt-level = 3
 
 [features]
 default = ["cli", "python", "server"]

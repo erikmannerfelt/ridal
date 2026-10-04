@@ -798,7 +798,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn read_track_from_netcdf_matches_in_memory_extraction() {
         let dir = tempfile::tempdir().unwrap();
@@ -849,7 +848,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn read_track_from_netcdf_reports_missing_variable_clearly() {
         let dir = tempfile::tempdir().unwrap();

@@ -922,7 +922,6 @@ impl RenderService {
 #[cfg(test)]
 mod tests {
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn the_command_line_and_the_browser_draw_the_same_picture() {
         // The claim `ridal render` is built on, as an executable
@@ -951,7 +950,11 @@ mod tests {
         // written to catch.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.nc");
-        write_trace_varying_nc(&path, 400, 4096);
+        // Few rows: the seed the equivalence is about is chosen from the
+        // trace runs, so the loud columns below carry it, and every row
+        // beyond a handful is resampling work this test does not read. The
+        // width stays 4096 so the runs keep their 32-trace stride.
+        write_trace_varying_nc(&path, 64, 4096);
 
         for name in [
             "default",
@@ -981,7 +984,7 @@ mod tests {
                 ),
                 &RenderServiceConfig::default(),
             );
-            let spec = OverviewSpec::new(4096, 400, 300);
+            let spec = OverviewSpec::new(4096, 64, 300);
             let from_server = service
                 .get_or_render_overview(
                     &spec,
@@ -1013,7 +1016,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn the_corrected_view_is_the_same_picture_everywhere() {
         // #289: `ridal render --topo`, `ridal.render(topo=True)` (both
@@ -1139,7 +1141,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn read_trace_returns_the_stored_column_and_rejects_out_of_range() {
         let dir = tempfile::tempdir().unwrap();
@@ -1171,7 +1172,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn seed_changes_the_limits_on_this_fixture() {
         // Guards the test below from going quietly vacuous. If the
@@ -1180,7 +1180,7 @@ mod tests {
         // matters would pass unnoticed.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sensitive.nc");
-        write_trace_varying_nc(&path, 400, 4096);
+        write_trace_varying_nc(&path, 64, 4096);
         let reader = SourceReader::open(&path).unwrap();
 
         let limits = |seed| {
@@ -1383,7 +1383,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn an_overview_on_disk_outlives_the_service_and_not_the_file() {
         // A fresh service with its own empty memory cache is what a
@@ -1435,7 +1434,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_download_sized_overview_is_not_kept_on_disk() {
         // The image-download route renders through the same call at any
@@ -1464,7 +1462,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_lazy_service_opens_on_demand_and_reopens_after_closing() {
         let dir = tempfile::tempdir().unwrap();
@@ -1530,7 +1527,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn service_caches_chunk_renders_across_calls() {
         let dir = tempfile::tempdir().unwrap();
@@ -1574,7 +1570,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn services_from_one_config_share_one_budget() {
         // `--cache-memory-mb` bounds the server, not each radargram (#288).
@@ -1643,7 +1638,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn service_reuses_sampled_limits_across_chunks_in_one_variant() {
         let dir = tempfile::tempdir().unwrap();
@@ -1681,7 +1675,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn service_gives_distinct_cache_entries_per_profile() {
         let dir = tempfile::tempdir().unwrap();

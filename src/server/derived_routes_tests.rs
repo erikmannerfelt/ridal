@@ -22,15 +22,14 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use super::access_tests::{
-    activated, data, id, new_site, open_project, password, scoped, site_router, write_people, User,
-    UserSet,
+    activated, data, id, new_site, open_project, password, password_hash, scoped, site_router,
+    write_people, User, UserSet,
 };
 use super::app::AccessOptions;
 use crate::identity::RadargramId;
 use crate::project::interpretations;
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::Expectation;
-use crate::site::accounts;
 
 const RADARGRAM: &str = "line-01";
 
@@ -266,7 +265,7 @@ fn depth(sample: f64) -> f64 {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_operator_sees_the_consensus_where_a_picker_sees_their_own() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::Derived, &hash),
@@ -314,7 +313,7 @@ async fn an_operator_sees_the_consensus_where_a_picker_sees_their_own() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_picker_cannot_save_a_project_wide_item() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated(
             "alice",
@@ -339,7 +338,7 @@ async fn a_picker_cannot_save_a_project_wide_item() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_cycle_is_a_400_not_a_500() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -368,7 +367,7 @@ async fn a_cycle_is_a_400_not_a_500() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn derived_results_need_the_derived_download_scope() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::Derived, &hash),
@@ -414,7 +413,7 @@ async fn derived_results_need_the_derived_download_scope() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn releasing_an_item_is_what_lets_a_picker_see_the_consensus() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::Derived, &hash),
@@ -463,7 +462,7 @@ async fn releasing_an_item_is_what_lets_a_picker_see_the_consensus() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_operator_cannot_release_a_cross_user_result() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("op", Role::Operator, DownloadScope::Derived, &hash),
@@ -515,7 +514,7 @@ async fn an_operator_cannot_release_a_cross_user_result() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_mixed_download_keeps_each_item_to_its_own_pick_set() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::Derived, &hash),
@@ -580,7 +579,7 @@ async fn a_mixed_download_keeps_each_item_to_its_own_pick_set() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_results_scope_releases_a_consensus_without_the_picks_behind_it() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::Results, &hash),
@@ -644,7 +643,7 @@ async fn the_contributor_route_respects_visibility() {
     // the obvious route (#212) takes no Caller and cannot decide what a caller
     // may see. This route must return the caller's own document always, and
     // everyone's only to someone who may see cross-user results.
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::Derived, &hash),
@@ -701,7 +700,7 @@ async fn post(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> R
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_picker_cannot_ask_the_preview_route_for_a_cross_user_evaluation() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::Results, &hash),
@@ -770,7 +769,7 @@ async fn a_picker_cannot_ask_the_preview_route_for_a_cross_user_evaluation() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_preview_reports_how_many_contributors_it_combined() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::Results, &hash),
@@ -813,7 +812,7 @@ async fn the_preview_reports_how_many_contributors_it_combined() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_contributor_overlay_needs_the_picks_download_scope() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             // An operator who may see everyone by role, but whose project
@@ -869,7 +868,7 @@ async fn the_contributor_overlay_needs_the_picks_download_scope() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn saving_preserves_items_the_caller_cannot_see() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::All, &hash),
@@ -934,7 +933,7 @@ async fn saving_preserves_items_the_caller_cannot_see() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_id_taken_by_an_invisible_item_is_refused() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("alice", Role::Picker, DownloadScope::All, &hash),
@@ -990,7 +989,7 @@ async fn an_id_taken_by_an_invisible_item_is_refused() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn deleting_an_item_another_depends_on_is_refused() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1049,7 +1048,7 @@ async fn deleting_an_item_another_depends_on_is_refused() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn one_unreadable_filename_does_not_hide_the_readable_ones() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1113,7 +1112,7 @@ async fn one_unreadable_filename_does_not_hide_the_readable_ones() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn derived_points_are_wide_and_skip_unlisted_layers_by_default() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1168,7 +1167,7 @@ async fn derived_points_are_wide_and_skip_unlisted_layers_by_default() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_invalid_expression_is_refused_at_save() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1208,7 +1207,7 @@ async fn an_invalid_expression_is_refused_at_save() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_broken_stored_item_does_not_take_the_others_with_it() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1307,7 +1306,7 @@ async fn a_broken_stored_item_does_not_take_the_others_with_it() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_property_that_shadows_a_base_field_is_refused_at_save() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1342,7 +1341,7 @@ async fn a_property_that_shadows_a_base_field_is_refused_at_save() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_stored_collision_is_refused_at_export() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1392,7 +1391,7 @@ async fn a_stored_collision_is_refused_at_export() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn derived_and_picked_points_share_the_arc_grid() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1450,7 +1449,7 @@ async fn derived_and_picked_points_share_the_arc_grid() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn every_user_points_need_the_admin_role() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![
             activated("admin", Role::Admin, DownloadScope::All, &hash),
@@ -1494,7 +1493,7 @@ async fn every_user_points_need_the_admin_role() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn catalog_picked_and_derived_downloads_are_named_apart() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1549,7 +1548,7 @@ async fn catalog_picked_and_derived_downloads_are_named_apart() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_merged_derived_download_needs_no_user() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],
@@ -1583,7 +1582,7 @@ async fn the_merged_derived_download_needs_no_user() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_catalog_counts_contributors_and_lines() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (dir, app) = app_with_picks(
         vec![
             activated("op", Role::Operator, DownloadScope::All, &hash),
@@ -1625,7 +1624,7 @@ async fn the_catalog_counts_contributors_and_lines() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_catalog_count_is_singular_for_one() {
-    let hash = accounts::hash_password(password()).unwrap();
+    let hash = password_hash();
     let (_dir, app) = app_with_picks(
         vec![activated("op", Role::Operator, DownloadScope::All, &hash)],
         &[("op", 2.0)],

@@ -349,7 +349,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn render_chunk_produces_a_correctly_sized_image() {
         let dir = tempfile::tempdir().unwrap();
@@ -379,7 +378,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn edge_chunk_renders_at_its_valid_extent() {
         let dir = tempfile::tempdir().unwrap();
@@ -407,7 +405,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn edge_chunk_is_not_stretched_across_a_full_chunk_box() {
         // Regression: render_chunk used to resample an edge chunk's source
@@ -475,7 +472,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn overview_preserves_aspect_and_orientation() {
         let dir = tempfile::tempdir().unwrap();
@@ -512,7 +508,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn banding_never_changes_the_overview() {
         // Banding must change how much source is held in memory at once
@@ -548,7 +543,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn the_overview_ignores_the_resampling_method() {
         // Overviews average colours (#300); the amplitude resampler is a
@@ -580,7 +574,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn the_overview_averages_colours_not_amplitudes() {
         // The #300 failure in miniature: traces alternating +1/-1 under
@@ -613,7 +606,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn an_overview_pixel_averages_only_its_valid_samples() {
         // A footprint half NaN (a topographic wedge, a gap) is the mean of
@@ -658,7 +650,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn overview_band_height_is_at_least_one_row() {
         // A source row wider than the whole byte budget must still
@@ -673,7 +664,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_high_relief_topo_source_shrinks_the_band_to_stay_in_budget() {
         // A pathological shift vector (traces alternating between no shift
@@ -717,7 +707,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn adjacent_chunks_at_scale_one_use_consistent_limits_no_visible_seam() {
         // Regression guard for #119's seam warning: if two adjacent chunks

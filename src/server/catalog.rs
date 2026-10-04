@@ -866,7 +866,6 @@ fn resolve_group_names(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpr::{self, RunParams};
 
     #[test]
     fn groups_are_listed_by_name_ignoring_case_not_by_id() {
@@ -890,71 +889,62 @@ mod tests {
         );
     }
 
+    /// Write a small, valid Ridal NetCDF with the given identity.
+    ///
+    /// Catalog discovery reads only metadata -- id, group, processing
+    /// datetime, shape -- and never the amplitudes. Processing a real Mala
+    /// asset here bought nothing but ten megabytes and a full filter chain
+    /// per call, so these tests export a dummy instead. The identity
+    /// precedence they exercise is resolved by the same
+    /// `identity::resolve_*` functions `gpr::run` uses.
+    fn write_processed_nc(
+        output: &std::path::Path,
+        radargram_id: Option<&str>,
+        group: Option<&str>,
+        group_id: Option<&str>,
+    ) {
+        let output_stem = output
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("output path has a file stem");
+        let (id, _) = crate::identity::resolve_radargram_id(radargram_id, None, output_stem)
+            .expect("a valid radargram id");
+        let (group_name, group_id) =
+            match crate::identity::resolve_group(group, group_id, None, None)
+                .expect("a valid group")
+            {
+                Some((name, id)) => (Some(name), Some(id)),
+                None => (None, None),
+            };
+        let mut gpr = crate::gpr::tests::make_dummy_gpr(8, 50, Some(1.0));
+        gpr.identity = crate::gpr::RidalIdentity {
+            radargram_id: Some(id),
+            display_name: None,
+            group_name,
+            group_id,
+        };
+        gpr.export(output).expect("exporting the dummy radargram");
+    }
+
     fn process_to(
-        input: &str,
+        _input: &str,
         output: &std::path::Path,
         radargram_id: Option<&str>,
         group: Option<&str>,
     ) {
-        let params = RunParams {
-            filepaths: vec![std::path::PathBuf::from(input)],
-            output_path: Some(output.to_path_buf()),
-            dem_path: None,
-            cor_path: None,
-            medium_velocity: 0.168,
-            crs: None,
-            quiet: true,
-            track_path: None,
-            steps: vec!["subset(0 -1 0 50)".to_string()],
-            no_export: false,
-            render_path: None,
-            render_profile: None,
-            render_width: None,
-            render_topo: false,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            user_metadata: Default::default(),
-            radargram_id: radargram_id.map(str::to_string),
-            display_name: None,
-            group: group.map(str::to_string),
-            group_id: None,
-        };
-        gpr::run(params).unwrap();
+        write_processed_nc(output, radargram_id, group, None);
     }
 
     /// Like `process_to`, but with an explicit group id override, for
     /// exercising that precedence tier specifically.
     fn process_to_with_group_id(
-        input: &str,
+        _input: &str,
         output: &std::path::Path,
         radargram_id: Option<&str>,
         group: &str,
         group_id: &str,
     ) {
-        let params = RunParams {
-            filepaths: vec![std::path::PathBuf::from(input)],
-            output_path: Some(output.to_path_buf()),
-            dem_path: None,
-            cor_path: None,
-            medium_velocity: 0.168,
-            crs: None,
-            quiet: true,
-            track_path: None,
-            steps: vec!["subset(0 -1 0 50)".to_string()],
-            no_export: false,
-            render_path: None,
-            render_profile: None,
-            render_width: None,
-            render_topo: false,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            user_metadata: Default::default(),
-            radargram_id: radargram_id.map(str::to_string),
-            display_name: None,
-            group: Some(group.to_string()),
-            group_id: Some(group_id.to_string()),
-        };
-        gpr::run(params).unwrap();
+        write_processed_nc(output, radargram_id, Some(group), Some(group_id));
     }
 
     const ASSET_2022: &str = concat!(
@@ -967,7 +957,6 @@ mod tests {
     );
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn single_file_is_a_one_entry_catalog() {
         let dir = tempfile::tempdir().unwrap();
@@ -981,7 +970,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn an_upload_temporary_is_not_a_radargram() {
         // #302: a crash leaves `upload-<id>.tmp.nc` in the radargram
@@ -1003,7 +991,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn directory_is_scanned_recursively_with_deterministic_order() {
         let dir = tempfile::tempdir().unwrap();
@@ -1032,7 +1019,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn nested_radargrams_with_recurring_filenames_remain_separate() {
         let dir = tempfile::tempdir().unwrap();
@@ -1064,7 +1050,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn duplicate_radargram_ids_resolve_to_the_newest() {
         let dir = tempfile::tempdir().unwrap();
@@ -1093,7 +1078,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn duplicate_ids_equal_datetime_breaks_tie_by_path() {
         let dir = tempfile::tempdir().unwrap();
@@ -1117,7 +1101,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn one_unreadable_candidate_does_not_abort_discovery() {
         let dir = tempfile::tempdir().unwrap();
@@ -1150,7 +1133,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_legacy_ridal_file_is_warned_about_not_silently_skipped() {
         // Unlike a genuinely unrelated file (#122/#123), an old ridal file
@@ -1182,7 +1164,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn unrelated_and_invalid_files_are_silently_ignored_not_warned() {
         let dir = tempfile::tempdir().unwrap();
@@ -1233,7 +1214,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn an_override_renames_a_radargram_without_touching_the_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -1261,7 +1241,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_radargram_moved_between_groups_does_not_bring_its_old_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -1309,7 +1288,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn naming_a_group_settles_a_disagreement_instead_of_re_reporting_it() {
         // Two files in one group that disagree about its name. Without an
@@ -1352,7 +1330,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_group_override_for_a_group_nothing_is_in_conjures_no_heading() {
         let dir = tempfile::tempdir().unwrap();
@@ -1374,7 +1351,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn an_override_for_a_radargram_that_is_not_there_changes_nothing() {
         // Overrides outlive the radargrams they name -- a file gets moved
@@ -1394,7 +1370,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn unlisted_is_carried_onto_the_entry() {
         let dir = tempfile::tempdir().unwrap();
@@ -1434,7 +1409,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn the_project_wins_over_an_external_root_however_new_the_external_file_is() {
         // The rule the overlay rests on, and a real change from the
@@ -1476,7 +1450,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn two_external_roots_holding_one_id_is_still_a_duplicate() {
         // The overlay rule is about layers, not about silencing duplicates.
@@ -1502,7 +1475,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn an_ignored_radargram_is_not_served_and_comes_back_when_the_decision_is_lifted() {
         // Ignoring is how a radargram in a read-only archive is "removed":
@@ -1553,7 +1525,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn two_external_copies_still_warn_even_when_the_project_wins() {
         // The overlay branch answers "which one is served". It must not
@@ -1598,7 +1569,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn an_ignored_radargram_whose_file_changed_says_so_without_un_ignoring_it() {
         // The decision is on the id, so a replaced file stays ignored. But
@@ -1663,7 +1633,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn an_ignore_with_nothing_to_act_on_is_listed_rather_than_forgotten() {
         // An external root can be unmounted for a week and come back.
@@ -1697,7 +1666,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn renaming_a_group_renames_it_on_every_member_that_was_already_in_it() {
         // The case an earlier version got wrong, and the one my own group
@@ -1748,7 +1716,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn re_resolving_gives_what_rediscovery_would_have() {
         // The property that lets a label edit skip the disk. If these ever
@@ -1853,7 +1820,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn group_falls_back_to_parent_directory() {
         let dir = tempfile::tempdir().unwrap();
@@ -1878,7 +1844,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn a_projects_own_radargram_directory_is_not_a_group() {
         // Serving a project root puts every file in `radargrams/` one level
@@ -1935,7 +1900,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn explicit_group_wins_over_directory_fallback() {
         let dir = tempfile::tempdir().unwrap();
@@ -1959,7 +1923,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn unicode_group_name_derives_an_ascii_id() {
         let dir = tempfile::tempdir().unwrap();
@@ -1990,7 +1953,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn explicit_group_id_overrides_derivation_from_name() {
         let dir = tempfile::tempdir().unwrap();
@@ -2015,7 +1977,6 @@ mod tests {
     }
 
     #[test]
-    #[test_retry::retry]
     #[serial_test::serial(netcdf)]
     fn disagreeing_group_names_pick_the_newest_and_warn() {
         let dir = tempfile::tempdir().unwrap();
