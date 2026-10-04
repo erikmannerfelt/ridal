@@ -1,6 +1,7 @@
 //! Changing which revision sits behind a radargram id (#148, F3).
 //!
 //! ```text
+//! POST   /api/v1/datasets/{id}/replace/preflight    report, from the file's axes alone
 //! POST   /api/v1/datasets/{id}/replace              stage a new revision, report
 //! POST   /api/v1/datasets/{id}/replace/{token}      commit it
 //! DELETE /api/v1/datasets/{id}/replace/{token}      discard it
@@ -37,6 +38,19 @@
 //! discards it. The alternative — commit and then report — tells the
 //! operator what happened rather than what is about to, which for an
 //! operation that deletes the old file is the wrong order.
+//!
+//! # A preflight, for many files at once (#331)
+//!
+//! A bulk replace from the Python client (#328) would otherwise upload every
+//! radargram with picks just to learn which are safe, each staged file
+//! counting against the project's size cap until it is swept. The report
+//! reads only the incoming file's [`AxisDeclarations`], a few kilobytes, so
+//! the preflight takes those instead of the file and answers with the same
+//! report through the same [`consequences`]. It is advice, not a
+//! reservation: committing still needs the staged file, so what is
+//! installed is what the server read, and the radargram or its picks may
+//! change in between. Nor does it check that the file is a current Ridal
+//! file; staging does that.
 
 use std::sync::Arc;
 
@@ -50,6 +64,7 @@ use super::auth::Caller;
 use super::routes::ApiError;
 use crate::identity::{RadargramId, RevisionId};
 use crate::interp::carry::{CarryReport, Severity};
+use crate::interp::source::AxisDeclarations;
 use crate::io::RidalNetcdfKind;
 use crate::project::revisions::{self, ledger};
 use crate::project::roles::Role;
@@ -89,8 +104,53 @@ pub struct ReplaceQuery {
     filename: Option<String>,
 }
 
+/// The body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`:
+/// everything the report reads from an incoming file, without the file.
+///
+/// A field of its own rather than [`AxisDeclarations`] itself, so the API
+/// does not change when that internal type does.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct PreflightBody {
+    /// The file's radargram id. It must be the radargram in the path.
+    radargram_id: String,
+    /// The file's `ridal_processing_datetime` attribute, verbatim. With the
+    /// radargram id it gives the revision id.
+    processing_datetime: String,
+    /// The file's `time` variable: acquisition time per trace, in seconds
+    /// since the Unix epoch.
+    time: Vec<f64>,
+    /// The `anchor_name` attribute of the file's `twtt` variable, or `null`
+    /// when it has none.
+    #[schema(required = true)]
+    twtt_anchor: Option<String>,
+    /// The file's `twtt_crop` variable: one value, one per trace, or empty
+    /// when the file has none.
+    twtt_crop: Vec<f64>,
+    /// The file's `twtt_time_zero` variable, in the same way.
+    twtt_time_zero: Vec<f64>,
+    /// The spacing of the file's `twtt` variable in nanoseconds (its second
+    /// value minus its first), or 0 when it has fewer than two.
+    dt_ns: f64,
+    /// The length of the file's `twtt` variable.
+    n_samples: usize,
+}
+
+impl PreflightBody {
+    fn into_declarations(self) -> AxisDeclarations {
+        AxisDeclarations {
+            time: self.time,
+            twtt_anchor: self.twtt_anchor,
+            twtt_crop: self.twtt_crop,
+            twtt_time_zero: self.twtt_time_zero,
+            dt_ns: self.dt_ns,
+            processing_datetime: Some(self.processing_datetime),
+            n_samples: self.n_samples,
+        }
+    }
+}
+
 /// What replacing this radargram would do to one interpretation.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct DocumentConsequence {
     pub user: String,
     /// The carry that *would* be shown after the replace. Not applied —
@@ -100,7 +160,7 @@ pub struct DocumentConsequence {
 }
 
 /// How the two revisions' grids compare.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ShapeChange {
     pub from_traces: usize,
     pub from_samples: usize,
@@ -110,7 +170,7 @@ pub struct ShapeChange {
 }
 
 /// Everything a replace would do, before it does any of it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ConsequenceReport {
     pub radargram_id: String,
     pub from_revision: String,
@@ -125,7 +185,8 @@ pub struct ConsequenceReport {
     /// produce this itself, which is exactly why it has to be reported
     /// rather than assumed away.
     pub revision_id_collision: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `null` when either revision has no `time` axis to count traces by.
+    #[schema(required = true)]
     pub shape: Option<ShapeChange>,
     /// Whether the outgoing revision's mapping could be kept. Without it
     /// no document drawn on it can ever be shown again (SPEC §8.1 forbids
@@ -139,14 +200,20 @@ pub struct ConsequenceReport {
     pub headline: String,
 }
 
-#[derive(Debug, Serialize)]
+/// `POST /api/v1/datasets/{radargram_id}/replace`: the file is staged, and
+/// this is what committing it would do.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Staged {
+    /// Commits or discards the staged file, in
+    /// `/api/v1/datasets/{radargram_id}/replace/{token}`. Swept after 6 hours.
     token: String,
+    /// The size of the staged file.
     bytes: u64,
     report: ConsequenceReport,
 }
 
-#[derive(Debug, Serialize)]
+/// `POST /api/v1/datasets/{radargram_id}/replace/{token}`: the replace is done.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Replaced {
     radargram_id: String,
     from_revision: String,
@@ -284,19 +351,17 @@ fn staged_path(dir: &std::path::Path, token: &str) -> Result<std::path::PathBuf,
     Ok(path)
 }
 
-/// Build the report without changing anything.
-fn consequences(
-    project: &Project,
+/// Read a file's axis declarations for a report.
+///
+/// Unreadable is not "declares no axes": answering as if it were would tell
+/// the operator the replace is safe, or that the file needs reprocessing,
+/// when neither is known.
+fn declarations_of(
+    path: &std::path::Path,
+    which: &str,
     radargram: &RadargramId,
-    from_revision: &RevisionId,
-    from_path: &std::path::Path,
-    to_path: &std::path::Path,
-    to_revision: &RevisionId,
-) -> Result<ConsequenceReport, ApiError> {
-    // Unreadable is not "declares no axes": answering as if it were would
-    // tell the operator the replace is safe, or that the file needs
-    // reprocessing, when neither is known.
-    let unreadable = |which: &str, e: String| {
+) -> Result<AxisDeclarations, ApiError> {
+    crate::interp::source::read_axis_declarations(path).map_err(|e| {
         ApiError::internal(
             "axes_unreadable",
             format!(
@@ -304,11 +369,23 @@ fn consequences(
                  axes ({e}). Nothing was changed; try again."
             ),
         )
-    };
-    let from_declared = crate::interp::source::read_axis_declarations(from_path)
-        .map_err(|e| unreadable("current", e))?;
-    let to_declared = crate::interp::source::read_axis_declarations(to_path)
-        .map_err(|e| unreadable("uploaded", e))?;
+    })
+}
+
+/// Build the report without changing anything.
+///
+/// The one place a report is made, for staging and for the preflight alike,
+/// so the two cannot give different answers about the same file. It reads
+/// nothing of the incoming file but `to_declared`.
+fn consequences(
+    project: &Project,
+    radargram: &RadargramId,
+    from_revision: &RevisionId,
+    from_path: &std::path::Path,
+    to_declared: &AxisDeclarations,
+    to_revision: &RevisionId,
+) -> Result<ConsequenceReport, ApiError> {
+    let from_declared = declarations_of(from_path, "current", radargram)?;
 
     // The mapping of the revision that is about to go. Computed here so the
     // report can say whether the replace is even permissible: if the
@@ -316,7 +393,7 @@ fn consequences(
     // becomes unshowable the moment the file is deleted.
     let outgoing_axes_kept = crate::interp::anchors::snapshot_values(&from_declared).is_some();
 
-    let to_axes = crate::interp::anchors::axes_from_declarations(&to_declared);
+    let to_axes = crate::interp::anchors::axes_from_declarations(to_declared);
 
     let shape = (!from_declared.time.is_empty() && !to_declared.time.is_empty()).then(|| {
         let (from_traces, to_traces) = (from_declared.time.len(), to_declared.time.len());
@@ -441,6 +518,79 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
+/// The path of a radargram that may be replaced, or why it may not.
+fn replaceable_path(
+    state: &AppState,
+    entry: &super::catalog::CatalogEntry,
+) -> Result<std::path::PathBuf, ApiError> {
+    if !state.is_writable(entry) {
+        return Err(ApiError::conflict(
+            "not_in_project",
+            format!(
+                "'{}' lives outside the project, which Ridal never writes to. \
+                 Replace it where it is, or add a copy to the project first.",
+                entry.radargram_id
+            ),
+        ));
+    }
+    state
+        .absolute_path(entry)
+        .map_err(|e| ApiError::internal("path_resolve_failed", e))
+}
+
+/// A replacement has to be a replacement *of this radargram*. Without this,
+/// replacing `line-01` with a file whose id is `line-02` installs it at
+/// `line-01.nc`, and the catalog then disagrees with the file about what it
+/// is.
+fn same_radargram(incoming: &str, radargram: &RadargramId) -> Result<(), ApiError> {
+    if incoming == radargram.as_str() {
+        return Ok(());
+    }
+    Err(ApiError::conflict(
+        "wrong_radargram",
+        format!(
+            "That file is '{incoming}', not '{radargram}'. Replacing a radargram needs a \
+             new revision of the same one — process it with \
+             `--radargram-id {radargram}` if it really is this line."
+        ),
+    ))
+}
+
+/// `POST /api/v1/datasets/{id}/replace/preflight` — the report staging the
+/// file would give, from its axis declarations alone (#331).
+///
+/// Nothing is uploaded, staged, written or logged.
+pub async fn preflight_replacement(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(radargram_id): Path<String>,
+    Json(body): Json<PreflightBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = project_for(&state, &caller, "check a replacement")?;
+    // Held for the same reason staging holds it: a commit landing midway
+    // would have the report read one revision's file under another's id.
+    let _lifecycle = state.lifecycle_lock().await;
+
+    let catalog = state.catalog();
+    let entry = super::routes::lookup_dataset(&catalog, &radargram_id)?;
+    let radargram = entry.radargram_id.clone();
+    let from_revision = entry.revision_id.clone();
+    let from_path = replaceable_path(&state, entry)?;
+    drop(catalog);
+
+    same_radargram(&body.radargram_id, &radargram)?;
+    let to_revision = RevisionId::fingerprint_v1(&radargram, &body.processing_datetime);
+    let report = consequences(
+        project,
+        &radargram,
+        &from_revision,
+        &from_path,
+        &body.into_declarations(),
+        &to_revision,
+    )?;
+    Ok(Json(report))
+}
+
 /// `POST /api/v1/datasets/{id}/replace` — stage a new revision and report.
 ///
 /// Nothing is installed. The upload lands in `staging/`, is validated, and
@@ -461,18 +611,7 @@ pub async fn stage_replacement(
     let entry = super::routes::lookup_dataset(&catalog, &radargram_id)?;
     let radargram = entry.radargram_id.clone();
     let from_revision = entry.revision_id.clone();
-    if !state.is_writable(entry) {
-        return Err(ApiError::conflict(
-            "not_in_project",
-            format!(
-                "'{radargram}' lives outside the project, which Ridal never writes to. \
-                 Replace it where it is, or add a copy to the project first."
-            ),
-        ));
-    }
-    let from_path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let from_path = replaceable_path(&state, entry)?;
     drop(catalog);
 
     let dir = staging_dir(project)?;
@@ -529,29 +668,16 @@ pub async fn stage_replacement(
         }
     };
 
-    // A replacement has to be a replacement *of this radargram*. Without
-    // this, replacing `line-01` with a file whose id is `line-02` installs
-    // it at `line-01.nc`, and the catalog then disagrees with the file
-    // about what it is.
-    if meta.radargram_id != radargram {
-        return Err(ApiError::conflict(
-            "wrong_radargram",
-            format!(
-                "That file is '{}', not '{radargram}'. Replacing a radargram needs a \
-                 new revision of the same one — process it with \
-                 `--radargram-id {radargram}` if it really is this line.",
-                meta.radargram_id
-            ),
-        ));
-    }
+    same_radargram(meta.radargram_id.as_str(), &radargram)?;
 
     let to_revision = RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime);
+    let to_declared = declarations_of(&staged, "uploaded", &radargram)?;
     let report = consequences(
         project,
         &radargram,
         &from_revision,
         &from_path,
-        &staged,
+        &to_declared,
         &to_revision,
     )?;
 

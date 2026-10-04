@@ -110,6 +110,7 @@ never require a login, since they are how one happens.
 | `GET` | `/api/v1/datasets/{radargram_id}/revisions` | `viewer` | Every revision this radargram id has had. |
 | `GET` | `/api/v1/datasets/{radargram_id}/properties` | `operator` | The project's overrides of this radargram's metadata, and what each field would be without them. |
 | `PUT` | `/api/v1/datasets/{radargram_id}/properties` | `operator` | Change those overrides. |
+| `POST` | `/api/v1/datasets/{radargram_id}/replace/preflight` | `operator` | Report what replacing a radargram would do, as staging would, from the new file's axis declarations (the `PreflightBody` schema in {download}`openapi.json`) instead of the file. Nothing is uploaded or staged. |
 | `POST` | `/api/v1/datasets/{radargram_id}/replace` | `operator` | Upload a new revision of a radargram and report what replacing it would do to its interpretations. Nothing is installed yet. Query: `filename`. |
 | `POST` | `/api/v1/datasets/{radargram_id}/replace/{token}` | `operator` | Install a staged replacement. |
 | `DELETE` | `/api/v1/datasets/{radargram_id}/replace/{token}` | `operator` | Discard a staged replacement. |

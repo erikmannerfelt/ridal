@@ -1,8 +1,8 @@
 //! The OpenAPI description of the HTTP API (#330), committed as
 //! `docs/reference/openapi.json`.
 //!
-//! So far it holds schemas only, for the responses the Python client (#328)
-//! reads; `paths` is empty until the routes are annotated. Each schema is
+//! So far it holds schemas only, for the bodies the Python client (#328)
+//! reads and sends; `paths` is empty until the routes are annotated. Each schema is
 //! derived from the type the handler serializes, so the file cannot describe
 //! a field the server does not send.
 //!
@@ -16,7 +16,8 @@ use axum::http::header;
 use axum::response::IntoResponse;
 use utoipa::OpenApi;
 
-use super::{interp_routes, routes, site};
+use super::{interp_routes, replace_routes, routes, site};
+use crate::interp::carry::{CarryReport, Displacement, Dropped, Severity};
 use crate::project::roles::{DownloadScope, Role};
 
 #[derive(OpenApi)]
@@ -39,6 +40,16 @@ use crate::project::roles::{DownloadScope, Role};
         routes::DatasetSummary,
         routes::DatasetAxes,
         interp_routes::InterpretationList,
+        replace_routes::PreflightBody,
+        replace_routes::Staged,
+        replace_routes::Replaced,
+        replace_routes::ConsequenceReport,
+        replace_routes::DocumentConsequence,
+        replace_routes::ShapeChange,
+        CarryReport,
+        Dropped,
+        Displacement,
+        Severity,
         site::Me,
         site::LoginBody,
         site::SignedIn,

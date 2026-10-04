@@ -48,6 +48,7 @@ use crate::interp::anchors::Axes;
 
 /// How much the carried view can be trusted, worst first when reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     /// Drawn on this revision. Nothing was carried and nothing can be
@@ -113,11 +114,13 @@ const SAME_PLACE: f64 = 0.5;
 
 /// A feature that could not be placed on the new revision.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Dropped {
+    /// Its position in the document's `features`.
     pub index: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub label: Option<String>,
 }
 
@@ -129,6 +132,7 @@ pub struct Dropped {
 /// whether any single vertex went somewhere else, which an average would
 /// hide behind a thousand that did not.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Displacement {
     pub median_traces: f64,
     pub worst_traces: f64,
@@ -136,26 +140,32 @@ pub struct Displacement {
     pub worst_samples: f64,
 }
 
-/// What carrying this document onto this revision did.
+///
+/// Every field is sent, `null` when it does not apply, so a client reads one
+/// shape whatever happened.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct CarryReport {
     pub severity: Severity,
     /// The revision the document says it was drawn on, where it says.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub from_revision: Option<String>,
     pub to_revision: String,
     /// Which anchor axis each side was carried through, when it was.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub x_anchor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub y_anchor: Option<String>,
+    /// How many features were placed on the new revision.
     pub kept: usize,
     pub dropped: Vec<Dropped>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// How far the placed features moved. `null` when nothing was carried,
+    /// or when any feature was dropped.
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub moved: Option<Displacement>,
     /// Why it could not be carried. Set exactly when the severity is
-    /// [`Severity::Refused`].
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `refused`.
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub refusal: Option<String>,
     /// One sentence for the banner, written for whoever is looking at the
     /// radargram rather than for a log.

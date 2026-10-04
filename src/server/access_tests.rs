@@ -4904,6 +4904,126 @@ async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
     assert!(radargrams(dir.path()).join("ours.nc").exists());
 }
 
+/// A new revision of `id` on disk, and the preflight body for it, read the
+/// way the Python client will read a local file (#11).
+fn preflight_fixture(dir: &StdPath, id: &str) -> (std::path::PathBuf, Value) {
+    let source = dir.join("new.nc");
+    super::interp_routes_tests::write_test_nc_with_axes_at(
+        &source,
+        id,
+        None,
+        "2026-06-01T00:00:00Z",
+    );
+    let declared = crate::interp::source::read_axis_declarations(&source).unwrap();
+    let body = json!({
+        "radargram_id": id,
+        "processing_datetime": declared.processing_datetime.unwrap(),
+        "time": declared.time,
+        "twtt_anchor": declared.twtt_anchor,
+        "twtt_crop": declared.twtt_crop,
+        "twtt_time_zero": declared.twtt_time_zero,
+        "dt_ns": declared.dt_ns,
+        "n_samples": declared.n_samples,
+    });
+    (source, body)
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_preflight_reports_what_staging_the_same_file_would() {
+    // The point of #331: a bulk replace learns which files are safe without
+    // uploading them. That is only worth having if the answer is the one
+    // staging would give, so the two are compared whole.
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    // Picks, so the report has a carry to measure and not just a headline.
+    let current = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    let revision = current.body["revision_id"].as_str().unwrap().to_string();
+    let saved = put(
+        &app,
+        "/api/v1/datasets/ours/interpretations/erik",
+        &json!({
+            "key": "ours",
+            "source": {"radargram_id": "ours", "revision_id": revision},
+            "features": [{
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [[5.0, 2.0], [30.0, 3.0]]},
+                "properties": {"id": "f-0001", "label": "bed"}
+            }]
+        }),
+        Some(&erik),
+    )
+    .await;
+    assert!(saved.status.is_success(), "{}", saved.text);
+
+    let local = tempfile::tempdir().unwrap();
+    let (source, body) = preflight_fixture(local.path(), "ours");
+    let preflight = post(
+        &app,
+        "/api/v1/datasets/ours/replace/preflight",
+        &body,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(preflight.status, StatusCode::OK, "{}", preflight.text);
+    assert_eq!(staged_count(dir.path()), 0, "a preflight stages nothing");
+    assert_eq!(preflight.body["documents"][0]["user"], "erik");
+
+    let staged = post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        std::fs::read(&source).unwrap(),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(staged.status, StatusCode::OK, "{}", staged.text);
+    assert_eq!(staged.body["report"], preflight.body);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_preflight_is_refused_as_staging_would_be() {
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+    ]);
+    let student = sign_in(&app, "student").await;
+    let erik = sign_in(&app, "erik").await;
+    let local = tempfile::tempdir().unwrap();
+    let (_source, body) = preflight_fixture(local.path(), "ours");
+
+    // Replacing is for an operator, and so is asking what it would do.
+    let refused = post(
+        &app,
+        "/api/v1/datasets/ours/replace/preflight",
+        &body,
+        Some(&student),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    // A file for another radargram is not a revision of this one.
+    let mut other = body.clone();
+    other["radargram_id"] = json!("theirs");
+    let refused = post(
+        &app,
+        "/api/v1/datasets/ours/replace/preflight",
+        &other,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "wrong_radargram");
+}
+
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_replace_cannot_be_previewed_when_the_current_file_cannot_be_read() {
