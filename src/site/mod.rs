@@ -9,6 +9,7 @@
 //!   ridal-site.toml      marker, name, format version, archived keys
 //!   accounts.json        server-wide accounts (0600)
 //!   session.key          site-wide cookie signing key (0600)
+//!   tokens.json          API tokens, stored as hashes (0600)
 //!   projects/
 //!     glac-2026/         ordinary project: ridal.toml + ridal_data/
 //!     share-anna/
@@ -43,6 +44,7 @@ use crate::project::{Project, ProjectError};
 
 pub mod accounts;
 pub mod audit;
+pub mod tokens;
 
 /// The site's marker and settings file, at its root.
 pub const SITE_MARKER: &str = "ridal-site.toml";
@@ -106,6 +108,8 @@ pub enum SiteError {
     NotArchived(String),
     /// A change to the site's accounts was refused or failed.
     Account(accounts::AccountError),
+    /// A change to the site's API tokens failed.
+    Token(tokens::TokenError),
 }
 
 impl fmt::Display for SiteError {
@@ -158,6 +162,7 @@ impl fmt::Display for SiteError {
                  the second step, for a project that is already read-only."
             ),
             SiteError::Account(e) => write!(f, "{e}"),
+            SiteError::Token(e) => write!(f, "{e}"),
         }
     }
 }
@@ -444,6 +449,9 @@ impl Site {
                 message: "refusing to delete a path outside projects/".to_string(),
             });
         }
+        // Before the directory goes: a grant left behind would reach a
+        // later project created at the same key.
+        tokens::remove_project(self.store(), key).map_err(SiteError::Token)?;
         std::fs::remove_dir_all(&path).map_err(|e| SiteError::Io {
             path,
             message: e.to_string(),
@@ -549,6 +557,9 @@ impl Site {
         refuse(&set).map_err(SiteError::Account)?;
 
         let removed_from = self.remove_memberships(name)?;
+        // Before the account goes, for the same reason as the memberships: a
+        // token left behind would act for the next account of this name.
+        tokens::remove_account(self.store(), name).map_err(SiteError::Token)?;
         accounts::update(self.store(), |set| {
             refuse(set)?;
             set.users.retain(|account| &account.name != name);

@@ -211,6 +211,23 @@ pub enum RoleCap {
     /// The project is archived: read-only, interpretations still
     /// exportable (#214).
     Archived,
+    /// The request came with an API token whose grant here is below the
+    /// account's membership (#194).
+    Token,
+}
+
+/// The API token a request came with (#194), as it applies in one project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenLimit {
+    /// The token's name, for the audit log and for refusals.
+    pub name: String,
+    /// The grant's ceiling here.
+    pub role: Role,
+    pub download: DownloadScope,
+    /// What the account itself has here, so a refusal can say whether the
+    /// token or the account is the reason.
+    pub account_role: Role,
+    pub account_download: DownloadScope,
 }
 
 /// Who is asking, and what they may do.
@@ -237,6 +254,9 @@ pub struct Caller {
     /// Set when [`Self::role`] is capped below what the membership grants,
     /// so a refusal can explain which of the two reasons it was.
     pub cap: Option<RoleCap>,
+    /// The API token the request came with, if it did (#194). [`Self::role`]
+    /// and [`Self::download`] already include its ceiling.
+    pub token: Option<TokenLimit>,
     /// Whether the site has any accounts at all. Decides whether an
     /// anonymous caller is offered a login or told there is nothing to log
     /// in to.
@@ -261,6 +281,16 @@ impl Caller {
     /// What to show as the caller's name.
     pub fn display_name(&self) -> &str {
         self.user.as_ref().map_or("anonymous", |u| u.as_str())
+    }
+
+    /// Who did something, for an audit log: the account, and the token when
+    /// a script acted for it (#194). Never used as an identity, which is
+    /// what [`Self::display_name`] and [`Self::user`] are for.
+    pub fn audit_name(&self) -> String {
+        match &self.token {
+            Some(token) => format!("{} via token {}", self.display_name(), token.name),
+            None => self.display_name().to_string(),
+        }
     }
 
     pub fn may(&self, needed: Role) -> bool {
@@ -307,11 +337,24 @@ impl Caller {
                      project is read-only; its interpretations can still be exported."
                 ),
             )),
+            Some(RoleCap::Token)
+                if self
+                    .token
+                    .as_ref()
+                    .is_some_and(|token| token.account_role >= needed) =>
+            {
+                Err(token_limit(
+                    self,
+                    &format!("act as '{needed}', which {action} needs"),
+                ))
+            }
             None if !self.is_authenticated() => Err(ApiError::unauthorized(
                 "authentication_required",
                 format!("Sign in to {action}."),
             )),
-            None => Err(ApiError::forbidden(
+            // A token below its account's role, where the account could not
+            // do this either: the account is the reason worth naming.
+            None | Some(RoleCap::Token) => Err(ApiError::forbidden(
                 "insufficient_role",
                 format!(
                     "You are '{}' ({}), and {action} needs the '{needed}' role or above.",
@@ -326,6 +369,13 @@ impl Caller {
     pub fn require_download(&self, needed: DownloadScope, what: &str) -> Result<(), ApiError> {
         if self.may_download(needed) {
             return Ok(());
+        }
+        if self
+            .token
+            .as_ref()
+            .is_some_and(|token| token.account_download >= needed)
+        {
+            return Err(token_limit(self, &format!("download {what}")));
         }
         if !self.is_authenticated() && self.authentication_configured {
             return Err(ApiError::unauthorized(
@@ -343,6 +393,23 @@ impl Caller {
             ),
         ))
     }
+}
+
+/// A refusal whose reason is the token's ceiling, not the account (#194).
+fn token_limit(caller: &Caller, what: &str) -> ApiError {
+    let (name, role, download) = caller
+        .token
+        .as_ref()
+        .map(|token| (token.name.as_str(), token.role, token.download))
+        .unwrap_or(("?", caller.role, caller.download));
+    ApiError::forbidden(
+        "token_limit",
+        format!(
+            "The token '{name}' is limited to '{role}' with the '{download}' download \
+             scope in this project, so it cannot {what}. Its account can; a token \
+             with a higher ceiling here would too."
+        ),
+    )
 }
 
 /// The one person using `ridal gui`, or a project router built on its own
@@ -363,6 +430,7 @@ pub fn local_caller(has_project: bool, read_only: bool) -> Caller {
             role: Role::Viewer,
             download: DownloadScope::All,
             cap: Some(RoleCap::NotAProject),
+            token: None,
             authentication_configured: false,
             requires_login_to_read: false,
         };
@@ -379,18 +447,24 @@ pub fn local_caller(has_project: bool, read_only: bool) -> Caller {
         role,
         download: DownloadScope::All,
         cap,
+        token: None,
         authentication_configured: false,
         requires_login_to_read: false,
     }
 }
 
-/// Who a site account is, as the site resolved it from the session cookie.
+/// Who a site account is, as the site resolved it from the session cookie
+/// or an API token.
 pub struct SiteIdentity<'a> {
     /// The signed-in account, or `None` for an anonymous caller.
     pub user: Option<&'a UserId>,
     pub server_admin: bool,
     /// Whether the site has an account file at all.
     pub accounts_configured: bool,
+    /// The token's name and its grant in this project, when the request
+    /// came with one (#194). The site has already refused a token with no
+    /// grant here.
+    pub token: Option<(&'a str, &'a crate::site::tokens::Grant)>,
 }
 
 /// What a site account may do in one project (#214).
@@ -425,6 +499,24 @@ pub fn project_caller(
     };
     let visible = identity.server_admin || member.is_some() || !members.require_auth_to_read;
 
+    // A token never has more than its account, and never more than its
+    // grant: the lower of the two, read per request.
+    let token = identity.token.map(|(name, grant)| TokenLimit {
+        name: name.to_string(),
+        role: grant.role,
+        download: grant.download,
+        account_role: granted,
+        account_download: download,
+    });
+    let (granted, download, token_cap) = match &token {
+        Some(token) => (
+            granted.min(token.role),
+            download.min(token.download),
+            (token.role < token.account_role).then_some(RoleCap::Token),
+        ),
+        None => (granted, download, None),
+    };
+
     // The cap is recorded whenever it applies, not only when it actually
     // lowers the role, so a refusal names the reason rather than suggesting
     // a sign-in that cannot help.
@@ -433,7 +525,7 @@ pub fn project_caller(
     } else if archived {
         (granted.min(Role::Viewer), Some(RoleCap::Archived))
     } else {
-        (granted, None)
+        (granted, token_cap)
     };
 
     Caller {
@@ -443,6 +535,7 @@ pub fn project_caller(
         role,
         download,
         cap,
+        token,
         requires_login_to_read: members.require_auth_to_read,
         authentication_configured: identity.accounts_configured,
     }
@@ -779,6 +872,7 @@ mod tests {
                 user: Some(name),
                 server_admin,
                 accounts_configured: true,
+                token: None,
             }
         }
         let (anna, bo, cy) = (&user("anna"), &user("bo"), &user("cy"));
@@ -818,6 +912,7 @@ mod tests {
             role: Role::Viewer,
             download: DownloadScope::All,
             cap: None,
+            token: None,
             authentication_configured: true,
             requires_login_to_read: false,
         };
@@ -872,6 +967,7 @@ mod tests {
             role: Role::Viewer,
             download: DownloadScope::None,
             cap: None,
+            token: None,
             authentication_configured: true,
             requires_login_to_read: false,
         };
@@ -897,5 +993,44 @@ mod tests {
             "{}",
             error.message()
         );
+    }
+
+    #[test]
+    fn a_token_refusal_names_the_token_only_when_it_is_the_reason() {
+        let token = TokenLimit {
+            name: "ci".to_string(),
+            role: Role::Viewer,
+            download: DownloadScope::Results,
+            account_role: Role::Picker,
+            account_download: DownloadScope::Picks,
+        };
+        let caller = Caller {
+            user: Some(user("anna")),
+            server_admin: false,
+            visible: true,
+            role: Role::Viewer,
+            download: DownloadScope::Results,
+            cap: Some(RoleCap::Token),
+            token: Some(token),
+            authentication_configured: true,
+            requires_login_to_read: false,
+        };
+        assert_eq!(caller.audit_name(), "anna via token ci");
+
+        // The account could: the token is the reason.
+        let error = caller.require(Role::Picker, "save picks").unwrap_err();
+        assert!(error.message().contains("'ci'"), "{}", error.message());
+        let error = caller
+            .require_download(DownloadScope::Picks, "picks")
+            .unwrap_err();
+        assert!(error.message().contains("'ci'"), "{}", error.message());
+
+        // The account could not either: the account is the reason.
+        let error = caller.require(Role::Operator, "edit layers").unwrap_err();
+        assert!(!error.message().contains("'ci'"), "{}", error.message());
+        let error = caller
+            .require_download(DownloadScope::All, "the radargram")
+            .unwrap_err();
+        assert!(!error.message().contains("'ci'"), "{}", error.message());
     }
 }

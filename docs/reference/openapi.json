@@ -149,6 +149,34 @@
           }
         }
       },
+      "CreateTokenBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/tokens`.",
+        "required": [
+          "name",
+          "grants"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "A label, such as `laptop` or `ci`."
+          },
+          "expires": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`30d`, `12w`, `2y` or `never`. Defaults to 90 days."
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Grant"
+            },
+            "description": "The projects the token may act in. Each grant's role and download\nscope may not exceed the account's membership there."
+          }
+        }
+      },
       "DatasetAxes": {
         "type": "object",
         "description": "`GET /api/v1/datasets/{radargram_id}/axes`: a radargram's axes, read from\nthe file's variables of the same names. An axis the file lacks is `null`.",
@@ -457,6 +485,28 @@
           }
         }
       },
+      "Grant": {
+        "type": "object",
+        "description": "What a token may do in one project, at most.",
+        "required": [
+          "project",
+          "role",
+          "download"
+        ],
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The highest role the token acts with here. The account's membership\nstill applies, so the token never has more than the account."
+          },
+          "download": {
+            "$ref": "#/components/schemas/DownloadScope",
+            "description": "The widest download scope the token has here, under the same rule."
+          }
+        }
+      },
       "Health": {
         "type": "object",
         "description": "`GET /api/v1/health`.",
@@ -523,7 +573,8 @@
           "user",
           "authenticated",
           "server_admin",
-          "authentication_configured"
+          "authentication_configured",
+          "token"
         ],
         "properties": {
           "user": {
@@ -531,17 +582,46 @@
               "string",
               "null"
             ],
-            "description": "The signed-in account, or `null` for an anonymous caller."
+            "description": "The signed-in account, or `null` for an anonymous caller. With an API\ntoken, the token's account."
           },
           "authenticated": {
             "type": "boolean"
           },
           "server_admin": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether the caller administers the site. Always `false` with an API\ntoken, which never carries server administration."
           },
           "authentication_configured": {
             "type": "boolean",
             "description": "Whether the site has accounts at all. Without them there is nothing\nto sign in to, and every caller is anonymous."
+          },
+          "token": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TokenSummary",
+                "description": "The API token the request came with, or `null` for a session."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "NewToken": {
+        "type": "object",
+        "description": "`POST /api/v1/tokens`: the token, shown this once, and its record.",
+        "required": [
+          "token",
+          "info"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The whole token, `ridal_<id>_<secret>`. It is not stored and cannot\nbe shown again; send it as `Authorization: Bearer <token>`."
+          },
+          "info": {
+            "$ref": "#/components/schemas/TokenInfo"
           }
         }
       },
@@ -829,6 +909,99 @@
           },
           "report": {
             "$ref": "#/components/schemas/ConsequenceReport"
+          }
+        }
+      },
+      "TokenInfo": {
+        "type": "object",
+        "description": "A stored API token, without its secret or its hash.",
+        "required": [
+          "id",
+          "name",
+          "account",
+          "grants",
+          "created",
+          "expires"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "account": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account the token acts as."
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Grant"
+            },
+            "description": "The projects the token may act in, and its ceiling in each."
+          },
+          "created": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "expires": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339, or `null` for a token that never expires."
+          }
+        }
+      },
+      "TokenList": {
+        "type": "object",
+        "description": "`GET /api/v1/tokens`.",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TokenInfo"
+            }
+          }
+        }
+      },
+      "TokenSummary": {
+        "type": "object",
+        "description": "An API token as its holder may see it: never its secret (#194).",
+        "required": [
+          "id",
+          "name",
+          "grants",
+          "expires"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Names the token in lists and the audit log, and revokes it."
+          },
+          "name": {
+            "type": "string"
+          },
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Grant"
+            },
+            "description": "The projects the token may act in, and its ceiling in each. In each,\nthe account's own membership also applies."
+          },
+          "expires": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339, or `null` for a token that never expires."
           }
         }
       }

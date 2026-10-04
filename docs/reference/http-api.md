@@ -42,6 +42,20 @@ Signing in
   sent with every request. Accounts belong to a site; `ridal gui` has none,
   and every request acts as the single local user, an `operator`.
 
+API tokens
+: A script sends `Authorization: Bearer <token>` instead of a cookie; see
+  {ref}`api-tokens`. A token acts as its account in the projects it is
+  granted, with at most the role and download scope of its grant there, and
+  the account's own membership still applies. It is refused with `403`
+  `token_not_granted` in any other project, whether or not that project
+  exists, and with `403` `token_not_allowed` on every site route except
+  `GET /api/v1/auth/me`, `GET /api/v1/projects` and
+  `GET /api/v1/projects/{key}`. A token that is malformed, revoked or
+  expired gets `401` (`invalid_token`, `token_expired`), never anonymous
+  access, and a token is used even when a session cookie is sent too. A
+  refusal because of the grant rather than the account is `403`
+  `token_limit`. Under `ridal gui` a token is ignored.
+
 Permissions
 : Each project membership has a **role**: `viewer` < `picker` < `operator`
   < `admin`, where each includes the ones before it. It also has a
@@ -80,7 +94,7 @@ never require a login, since they are how one happens.
 
 | Method | Path | Needs | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/auth/me` | nobody | Who the site thinks is calling: their name, whether they are signed in, whether they are a server administrator, and whether the site has accounts at all. |
+| `GET` | `/api/v1/auth/me` | nobody | Who the site thinks is calling: their name, whether they are signed in, whether they are a server administrator, and whether the site has accounts at all. With an API token, also the token's id, name, grants and expiry. |
 | `POST` | `/api/v1/auth/login` | nobody | Sign in with a name and password. Every failure gives the same answer, so that the endpoint cannot be used to find out which accounts exist. Refused on a network-bound server without `--allow-insecure-login`; see {doc}`../deploy/reverse-proxy`. |
 | `POST` | `/api/v1/auth/logout` | nobody | Sign out. Succeeds whether or not anyone was signed in. |
 | `POST` | `/api/v1/auth/invite` | nobody | Set a password with a one-time invite token, and sign in. Ends every other session of that account. |
@@ -238,7 +252,10 @@ policy and invitations with `403` `archived`.
 | `PUT` | `/api/v1/accounts/{name}` | server administrator | Change the server-administrator flag. Refused if it would leave the site with none, or while the account has an invite outstanding. |
 | `DELETE` | `/api/v1/accounts/{name}` | server administrator | Remove an account and its membership in every project. Picks are left in place. |
 | `POST` | `/api/v1/accounts/{name}/invite` | server administrator | Issue a new invite link, for a reset or a lost one. |
-| `GET` | `/api/v1/projects` | anyone | The projects the caller is a member of; every project for a server administrator. Public projects are not listed. |
+| `GET` | `/api/v1/tokens` | signed in | The caller's API tokens, without their secrets. `?all=true` lists every account's, for a server administrator. |
+| `POST` | `/api/v1/tokens` | signed in | Create an API token: a `name`, an `expires` (`30d`, `12w`, `2y` or `never`; default 90 days) and `grants`, each a `project`, `role` and `download` no higher than the caller's membership there. The token is in the response once and cannot be shown again. Needs a session, never a token. |
+| `DELETE` | `/api/v1/tokens/{id}` | signed in | Revoke one of the caller's tokens, or any token for a server administrator. Someone else's token is `404`, as if it did not exist. |
+| `GET` | `/api/v1/projects` | anyone | The projects the caller is a member of; every project for a server administrator. Public projects are not listed. With an API token, only its granted projects, with the role and download scope the token has there. |
 | `POST` | `/api/v1/projects` | server administrator | Create a project at a key. |
 | `GET` | `/api/v1/projects/{key}` | member, server administrator, or anyone for a public project | One project. |
 | `PATCH` | `/api/v1/projects/{key}` | server administrator | Rename its display name; the key does not change. |

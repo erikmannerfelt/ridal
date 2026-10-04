@@ -2077,3 +2077,471 @@ async fn the_openapi_description_is_served_without_a_login() {
     .replace("\r\n", "\n");
     assert_eq!(response.text, committed);
 }
+
+// ---------------------------------------------------------------------------
+// API tokens (#194)
+// ---------------------------------------------------------------------------
+
+/// `request` with `Authorization: Bearer <token>`.
+fn bearer(mut request: Request<Body>, token: &str) -> Request<Body> {
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {token}").parse().unwrap(),
+    );
+    request
+}
+
+/// Give `name` a membership in `project`, on disk.
+fn join(dir: &std::path::Path, project: &str, name: &str, role: Role, download: DownloadScope) {
+    let site = Site::open(dir).unwrap();
+    let project = site.project(&key(project)).unwrap();
+    members::update(project.documents(), |set| {
+        set.upsert(&id(name), role, download);
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// Create a token through the API, with a session, and return its text.
+async fn create_token(app: &Router, cookie: &str, grants: Value) -> String {
+    let created = send(
+        app,
+        post_json(
+            "/api/v1/tokens",
+            &json!({"name": "script", "grants": grants}),
+            Some(cookie),
+        ),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    created.body["token"].as_str().unwrap().to_string()
+}
+
+/// A site where anna is an operator in `glac` and a viewer in `ice`, and
+/// `other` is a project she is not in.
+async fn token_site() -> (tempfile::TempDir, Router, String) {
+    let hash = password_hash();
+    let (dir, app) = site_with(
+        vec![
+            activated("anna", false, &hash),
+            activated("bo", false, &hash),
+            activated("cy", true, &hash),
+        ],
+        &["glac", "ice", "other"],
+        AccessOptions::default(),
+    );
+    join(
+        dir.path(),
+        "glac",
+        "anna",
+        Role::Operator,
+        DownloadScope::All,
+    );
+    join(
+        dir.path(),
+        "ice",
+        "anna",
+        Role::Viewer,
+        DownloadScope::Results,
+    );
+    let cookie = sign_in(&app, "anna").await;
+    (dir, app, cookie)
+}
+
+#[tokio::test]
+async fn a_token_acts_in_its_granted_projects_up_to_each_ceiling() {
+    let (_dir, app, cookie) = token_site().await;
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([
+            {"project": "glac", "role": "viewer", "download": "all"},
+            {"project": "ice", "role": "viewer", "download": "results"},
+        ]),
+    )
+    .await;
+
+    // Reads where it is granted.
+    let read = send(
+        &app,
+        bearer(get("/api/v1/projects/glac/datasets", None), &token),
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+
+    // Not above its ceiling, though the account is an operator there, and
+    // the refusal names the token rather than the account.
+    let write = send(
+        &app,
+        bearer(
+            put_json("/api/v1/projects/glac/layers", &json!([]), None),
+            &token,
+        ),
+    )
+    .await;
+    assert_eq!(write.status, StatusCode::FORBIDDEN, "{}", write.text);
+    assert_eq!(write.body["error"]["code"], "token_limit");
+    // The account itself can.
+    let by_session = send(
+        &app,
+        put_json("/api/v1/projects/glac/layers", &json!([]), Some(&cookie)),
+    )
+    .await;
+    assert!(by_session.status.is_success(), "{}", by_session.text);
+
+    // Not at all where it has no grant, and in the same words whether or
+    // not the project exists.
+    let elsewhere = send(
+        &app,
+        bearer(get("/api/v1/projects/other/datasets", None), &token),
+    )
+    .await;
+    let nowhere = send(
+        &app,
+        bearer(get("/api/v1/projects/nope/datasets", None), &token),
+    )
+    .await;
+    assert_eq!(
+        elsewhere.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        elsewhere.text
+    );
+    assert_eq!(elsewhere.body["error"]["code"], "token_not_granted");
+    assert_eq!(
+        (elsewhere.status, elsewhere.text),
+        (nowhere.status, nowhere.text)
+    );
+
+    // It can say what it is, and list what it reaches, with what it has.
+    let me = send(&app, bearer(get("/api/v1/auth/me", None), &token)).await;
+    assert_eq!(me.body["user"], "anna");
+    assert_eq!(me.body["token"]["name"], "script");
+    assert_eq!(me.body["token"]["grants"].as_array().unwrap().len(), 2);
+    let projects = send(&app, bearer(get("/api/v1/projects", None), &token)).await;
+    let listed: Vec<(&str, &str)> = projects.body["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (p["key"].as_str().unwrap(), p["role"].as_str().unwrap()))
+        .collect();
+    assert_eq!(listed, [("glac", "viewer"), ("ice", "viewer")]);
+    let info = send(&app, bearer(get("/api/v1/projects/other", None), &token)).await;
+    assert_eq!(info.status, StatusCode::NOT_FOUND, "{}", info.text);
+}
+
+#[tokio::test]
+async fn a_token_never_has_more_than_its_account_has_now() {
+    let (dir, app, cookie) = token_site().await;
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([{"project": "glac", "role": "operator", "download": "all"}]),
+    )
+    .await;
+    let layers = || {
+        bearer(
+            put_json("/api/v1/projects/glac/layers", &json!([]), None),
+            &token,
+        )
+    };
+    assert!(send(&app, layers()).await.status.is_success());
+
+    // A demotion applies to the token on its next request, and the refusal
+    // names the account, which is the reason.
+    join(dir.path(), "glac", "anna", Role::Viewer, DownloadScope::All);
+    let demoted = send(&app, layers()).await;
+    assert_eq!(demoted.status, StatusCode::FORBIDDEN, "{}", demoted.text);
+    assert_eq!(demoted.body["error"]["code"], "insufficient_role");
+
+    // Without a membership it is refused outright -- not given what the
+    // public may see, though this project is readable without a login.
+    let site = Site::open(dir.path()).unwrap();
+    let project = site.project(&key("glac")).unwrap();
+    members::update(project.documents(), |set| {
+        set.members.retain(|member| member.name != id("anna"));
+        Ok(())
+    })
+    .unwrap();
+    let gone = send(
+        &app,
+        bearer(get("/api/v1/projects/glac/datasets", None), &token),
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::FORBIDDEN, "{}", gone.text);
+    assert_eq!(gone.body["error"]["code"], "token_membership_gone");
+    let public = send(&app, get("/api/v1/projects/glac/datasets", None)).await;
+    assert_eq!(public.status, StatusCode::OK, "the public may read it");
+}
+
+#[tokio::test]
+async fn a_token_is_refused_above_or_outside_the_membership() {
+    let (_dir, app, cookie) = token_site().await;
+    let attempt = |grants: Value, expires: Value| {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        async move {
+            send(
+                &app,
+                post_json(
+                    "/api/v1/tokens",
+                    &json!({"name": "x", "grants": grants, "expires": expires}),
+                    Some(&cookie),
+                ),
+            )
+            .await
+        }
+    };
+    let grant = |project: &str, role: &str, download: &str| json!({"project": project, "role": role, "download": download});
+
+    for (grants, why) in [
+        (json!([grant("glac", "admin", "all")]), "above the role"),
+        (
+            json!([grant("ice", "viewer", "all")]),
+            "above the download scope",
+        ),
+        (
+            json!([
+                grant("glac", "viewer", "all"),
+                grant("glac", "viewer", "all")
+            ]),
+            "twice",
+        ),
+        (json!([]), "no project"),
+    ] {
+        let refused = attempt(grants, Value::Null).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::BAD_REQUEST,
+            "{why}: {}",
+            refused.text
+        );
+    }
+    // Not a member, and no such project: the same answer, so tokens cannot
+    // be used to find projects.
+    let other = attempt(json!([grant("other", "viewer", "none")]), Value::Null).await;
+    let nope = attempt(json!([grant("nope", "viewer", "none")]), Value::Null).await;
+    assert_eq!(other.status, StatusCode::BAD_REQUEST);
+    assert_eq!(other.text, nope.text.replace("nope", "other"));
+
+    let bad_lifetime = attempt(json!([grant("glac", "viewer", "all")]), json!("5h")).await;
+    assert_eq!(
+        bad_lifetime.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        bad_lifetime.text
+    );
+    let forever = attempt(json!([grant("glac", "viewer", "all")]), json!("never")).await;
+    assert_eq!(forever.status, StatusCode::CREATED, "{}", forever.text);
+    assert_eq!(forever.body["info"]["expires"], Value::Null);
+}
+
+#[tokio::test]
+async fn a_bad_token_is_refused_and_never_treated_as_anonymous() {
+    let (dir, app, cookie) = token_site().await;
+    let datasets = |token: &str| bearer(get("/api/v1/projects/glac/datasets", None), token);
+
+    // The project is readable without a login, and still: a 401.
+    for presented in ["nonsense", "ridal_0123456789abcdef_", &"x".repeat(80)] {
+        let refused = send(&app, datasets(presented)).await;
+        assert_eq!(refused.status, StatusCode::UNAUTHORIZED, "{presented}");
+        assert_eq!(refused.body["error"]["code"], "invalid_token");
+    }
+
+    // An expired one says so.
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([{"project": "glac", "role": "viewer", "download": "all"}]),
+    )
+    .await;
+    let site = Site::open(dir.path()).unwrap();
+    crate::site::tokens::update(site.store(), |set| {
+        set.tokens[0].expires = Some(1);
+        Ok(())
+    })
+    .unwrap();
+    let expired = send(&app, datasets(&token)).await;
+    assert_eq!(expired.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(expired.body["error"]["code"], "token_expired");
+
+    // And a token wins over a cookie, so a script never silently falls
+    // back to whoever is signed in.
+    let mut both = datasets(&token);
+    both.headers_mut()
+        .insert(header::COOKIE, cookie.parse().unwrap());
+    assert_eq!(send(&app, both).await.status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_token_cannot_manage_accounts_tokens_or_settings() {
+    let (dir, app, cookie) = token_site().await;
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([{"project": "glac", "role": "operator", "download": "all"}]),
+    )
+    .await;
+    let new_token = json!({"name": "more", "grants": [{"project": "glac", "role": "viewer", "download": "all"}]});
+    for request in [
+        post_json("/api/v1/tokens", &new_token, None),
+        get("/api/v1/tokens", None),
+        delete("/api/v1/tokens/0123456789abcdef", None),
+        get("/api/v1/accounts", None),
+        get("/api/v1/site/preferences", None),
+        put_json("/api/v1/site/preferences", &json!({"theme": "dark"}), None),
+        get("/api/v1/projects/glac/members", None),
+        get("/api/v1/site/audit", None),
+    ] {
+        let path = request.uri().to_string();
+        let refused = send(&app, bearer(request, &token)).await;
+        assert_eq!(
+            refused.status,
+            StatusCode::FORBIDDEN,
+            "{path}: {}",
+            refused.text
+        );
+        assert_eq!(refused.body["error"]["code"], "token_not_allowed", "{path}");
+    }
+
+    // A server administrator's token administers the projects it is granted,
+    // member or not, and the site not at all.
+    join(
+        dir.path(),
+        "glac",
+        "anna",
+        Role::Operator,
+        DownloadScope::All,
+    );
+    let cy = sign_in(&app, "cy").await;
+    let admin_token = create_token(
+        &app,
+        &cy,
+        json!([{"project": "glac", "role": "admin", "download": "all"}]),
+    )
+    .await;
+    let layers = send(
+        &app,
+        bearer(
+            put_json("/api/v1/projects/glac/layers", &json!([]), None),
+            &admin_token,
+        ),
+    )
+    .await;
+    assert!(layers.status.is_success(), "{}", layers.text);
+    let me = send(&app, bearer(get("/api/v1/auth/me", None), &admin_token)).await;
+    assert_eq!(me.body["server_admin"], false);
+    let accounts = send(&app, bearer(get("/api/v1/accounts", None), &admin_token)).await;
+    assert_eq!(accounts.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn tokens_are_listed_and_revoked_by_their_owner_or_a_server_admin() {
+    let (_dir, app, cookie) = token_site().await;
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([{"project": "glac", "role": "viewer", "download": "all"}]),
+    )
+    .await;
+    let mine = send(&app, get("/api/v1/tokens", Some(&cookie))).await;
+    assert_eq!(mine.body["tokens"].as_array().unwrap().len(), 1);
+    let token_id = mine.body["tokens"][0]["id"].as_str().unwrap().to_string();
+    // Never the secret, never the hash.
+    assert!(!mine.text.contains(token.rsplit('_').next().unwrap()));
+    assert!(!mine.text.contains("token_hash"), "{}", mine.text);
+
+    // Someone else neither sees it nor can revoke it, nor list everyone's.
+    let bo = sign_in(&app, "bo").await;
+    let theirs = send(&app, get("/api/v1/tokens", Some(&bo))).await;
+    assert!(theirs.body["tokens"].as_array().unwrap().is_empty());
+    let all = send(&app, get("/api/v1/tokens?all=true", Some(&bo))).await;
+    assert_eq!(all.status, StatusCode::FORBIDDEN);
+    let stolen = send(
+        &app,
+        delete(&format!("/api/v1/tokens/{token_id}"), Some(&bo)),
+    )
+    .await;
+    assert_eq!(stolen.status, StatusCode::NOT_FOUND);
+
+    // A server administrator sees every token.
+    let cy = sign_in(&app, "cy").await;
+    let every = send(&app, get("/api/v1/tokens?all=true", Some(&cy))).await;
+    assert_eq!(every.body["tokens"][0]["account"], "anna");
+
+    // Revoked, it stops working at once.
+    let revoked = send(
+        &app,
+        delete(&format!("/api/v1/tokens/{token_id}"), Some(&cookie)),
+    )
+    .await;
+    assert_eq!(revoked.status, StatusCode::NO_CONTENT, "{}", revoked.text);
+    let after = send(
+        &app,
+        bearer(get("/api/v1/projects/glac/datasets", None), &token),
+    )
+    .await;
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+
+    // Both changes are in the site audit, with the token's name and id.
+    let audit = send(&app, get("/api/v1/site/audit", Some(&cy))).await;
+    assert!(audit.text.contains("token_created"), "{}", audit.text);
+    assert!(audit.text.contains("token_revoked"), "{}", audit.text);
+    assert!(audit.text.contains(&token_id), "{}", audit.text);
+}
+
+#[tokio::test]
+async fn a_token_is_refused_over_plain_http_on_a_network_address() {
+    let hash = password_hash();
+    let (dir, app) = site_with(
+        vec![activated("anna", false, &hash)],
+        &["glac"],
+        AccessOptions {
+            allow_password_login: false,
+            ..AccessOptions::default()
+        },
+    );
+    join(dir.path(), "glac", "anna", Role::Viewer, DownloadScope::All);
+    let site = Site::open(dir.path()).unwrap();
+    let grant = crate::site::tokens::Grant {
+        project: key("glac"),
+        role: Role::Viewer,
+        download: DownloadScope::All,
+    };
+    let (text, token) = crate::site::tokens::mint(0, id("anna"), "x", vec![grant], None).unwrap();
+    crate::site::tokens::update(site.store(), |set| {
+        set.tokens.push(token.clone());
+        Ok(())
+    })
+    .unwrap();
+    let refused = send(
+        &app,
+        bearer(get("/api/v1/projects/glac/datasets", None), &text),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "insecure_transport");
+}
+
+#[tokio::test]
+async fn removing_an_account_takes_its_tokens() {
+    let (dir, app, cookie) = token_site().await;
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([{"project": "glac", "role": "viewer", "download": "all"}]),
+    )
+    .await;
+    Site::open(dir.path())
+        .unwrap()
+        .remove_account(&id("anna"))
+        .unwrap();
+    let (set, _) = crate::site::tokens::read(Site::open(dir.path()).unwrap().store()).unwrap();
+    assert!(set.tokens.is_empty());
+    let after = send(
+        &app,
+        bearer(get("/api/v1/projects/glac/datasets", None), &token),
+    )
+    .await;
+    assert_eq!(after.status, StatusCode::UNAUTHORIZED);
+}

@@ -204,6 +204,50 @@ by its owner only. A project's `ridal_data/users.json` holds only memberships
 and the access policy — no passwords. Deleting the site's `session.key`
 signs everyone out.
 
+(api-tokens)=
+## API tokens
+
+A script authenticates with an **API token** instead of a password. A token
+belongs to an account and lists the projects it may act in, each with a
+**ceiling**: a role and a download scope. In each of those projects the token
+has the lower of its ceiling and the account's own membership, so a viewer
+token for one project and an operator token for another are one token, and
+an operator never needs an administrator's token for operator work. A token
+never has more than its account has *now*: demoting the account, or removing
+it from a project, applies to the token on its next request.
+
+A token cannot:
+
+- reach a project it is not granted;
+- manage accounts, memberships or the site's settings;
+- create or revoke tokens, including itself;
+- act as a server administrator, even when its account is one. A server
+  administrator's token is an administrator only in the projects it is
+  granted.
+
+A token that is wrong, revoked or expired is refused outright rather than
+treated as someone who is not signed in. Like a password, a token is refused
+by a server reachable over the network without HTTPS
+(see {doc}`reverse-proxy`).
+
+For now, tokens are made on the server with the command line, or through the
+HTTP API from a signed-in session:
+
+```bash
+ridal site token add anna --name laptop --grant dronbreen:operator --grant austfonna:viewer:results
+ridal site token list
+ridal site token revoke 3f9a2c1d0b8e7a65
+```
+
+`--grant` takes `PROJECT:ROLE` or `PROJECT:ROLE:DOWNLOAD`; without a
+download scope, the membership's applies. A grant above the account's
+membership is refused. A token lasts 90 days unless `--expires` says
+otherwise (`30d`, `12w`, `2y` or `never`). It is printed once and stored only
+as a hash, in the site's `tokens.json`. Send it as
+`Authorization: Bearer <token>`. Removing an account removes its tokens, and
+deleting a project removes it from every token. Creating and revoking a token
+are recorded in the site history.
+
 ## Publishing a finished site
 
 `ridal server start --read-only` makes everyone a `viewer`, whatever their

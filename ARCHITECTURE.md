@@ -111,6 +111,20 @@ is state, not only layout:
   in, for a key that exists and one that does not alike, so neither answer
   confirms a project. Under `ridal gui` the caller is the local default
   user, an `operator` (`auth::local_caller`).
+- **API tokens (#194)** live in the site's `tokens.json` (`src/site/tokens.rs`),
+  as `blake3` hashes, each an account plus a list of grants — a project, a
+  role ceiling and a download ceiling. `Authorization: Bearer` is resolved
+  by the same middleware, into a `SiteCaller` carrying a `SiteToken`; a bad
+  token is a `401` there and never an anonymous caller. Two choices keep
+  the rest small. The `SiteCaller` *extractor* refuses a token, so every
+  site route, including one added later, needs a session unless it asks
+  for `TokenOrSession` (only `auth/me`, the project list and project info
+  do). And for a project request the fallback refuses an ungranted key
+  before anything else, refuses a token whose account has left the project,
+  and hands `project_caller` the grant, which lowers the role and scope to
+  `min(membership, ceiling)` and records `RoleCap::Token` so a refusal
+  names the token. `Caller::audit_name` is what project audit entries use,
+  so a script's change reads as `anna via token ci`.
 - **Routing** is one flat `build_site_router`: site routes under
   `/api/v1/…`, project pages under `/p/{key}/…`, project API under
   `/api/v1/projects/{key}/…`. A fallback rewrites a project-prefixed path to

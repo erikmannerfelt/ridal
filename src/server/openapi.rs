@@ -20,6 +20,7 @@ use super::{interp_routes, replace_routes, routes, site};
 use crate::interp::carry::{CarryReport, Displacement, Dropped, Severity};
 use crate::interp::source::RevisionDeclarations;
 use crate::project::roles::{DownloadScope, Role};
+use crate::site::tokens;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -57,6 +58,12 @@ use crate::project::roles::{DownloadScope, Role};
         site::SignedOut,
         site::ProjectList,
         site::ProjectEntry,
+        site::TokenSummary,
+        site::TokenInfo,
+        site::TokenList,
+        site::NewToken,
+        site::CreateTokenBody,
+        tokens::Grant,
         Role,
         DownloadScope,
     ))
@@ -81,16 +88,24 @@ fn spec_json() -> String {
 mod tests {
     use utoipa::OpenApi;
 
-    /// Every field is sent, including one that is `null`, so all are required.
+    /// Request bodies, whose optional fields really are optional: a client
+    /// may leave them out and gets the default.
+    const REQUEST_BODIES: [&str; 3] = ["LoginBody", "RevisionDeclarations", "CreateTokenBody"];
+
+    /// Every field of a response is sent, including one that is `null`, so
+    /// all are required.
     ///
     /// utoipa leaves an `Option` field out of `required` unless it is marked
     /// `#[schema(required = true)]`, which would tell a client the key may
-    /// be missing. None of these types skips a field when serializing.
+    /// be missing. None of the response types skips a field when serializing.
     #[test]
-    fn every_field_is_required() {
+    fn every_response_field_is_required() {
         let spec = serde_json::to_value(super::ApiDoc::openapi()).unwrap();
         let mut optional = Vec::new();
         for (name, schema) in spec["components"]["schemas"].as_object().unwrap() {
+            if REQUEST_BODIES.contains(&name.as_str()) {
+                continue;
+            }
             let required: Vec<&str> = schema["required"]
                 .as_array()
                 .map(|r| r.iter().filter_map(|v| v.as_str()).collect())

@@ -573,7 +573,7 @@ pub async fn promote_interpretation(
         project.documents(),
         audit::Entry {
             at,
-            user: caller.display_name().to_string(),
+            user: caller.audit_name(),
             action: audit::Action::Adopted,
             radargram_id: radargram.to_string(),
             revision_id: Some(revision.to_string()),

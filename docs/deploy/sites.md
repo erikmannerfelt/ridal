@@ -36,6 +36,7 @@ empty project directory, and you can copy an existing project into
   ridal-site.toml      the site: its name and which projects are archived
   accounts.json        everyone who can sign in (readable by its owner only)
   session.key          signs login cookies (readable by its owner only)
+  tokens.json          API tokens, as hashes (readable by its owner only)
   audit.jsonl          who changed accounts, memberships and projects
   preferences/
     <name>.json        one person's site-wide settings, such as the theme
@@ -44,11 +45,11 @@ empty project directory, and you can copy an existing project into
     share-anna/
 ```
 
-The site owns **identity**: accounts, the session key and the site ledger.
-Each project owns its **data** and its own memberships, exactly as it would
-standing alone. A project directory never contains a password, so it stays
-portable: copy it to another site, or open it with `ridal gui`, which ignores
-its memberships and leaves them as they are.
+The site owns **identity**: accounts, API tokens, the session key and the
+site ledger. Each project owns its **data** and its own memberships, exactly
+as it would standing alone. A project directory never contains a password,
+so it stays portable: copy it to another site, or open it with `ridal gui`,
+which ignores its memberships and leaves them as they are.
 
 ## The browser
 

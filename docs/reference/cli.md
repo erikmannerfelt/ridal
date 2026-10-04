@@ -900,6 +900,114 @@ A path inside the site. The site is found by searching upwards
 Default: `.`.
 ```
 
+### `ridal site token`
+
+```{program} ridal site token
+```
+
+Manage API tokens, which scripts use instead of a password
+
+```console
+$ ridal site token <COMMAND>
+```
+
+#### `ridal site token add`
+
+```{program} ridal site token add
+```
+
+Create a token for an account and print it. It is shown only once
+
+```console
+$ ridal site token add [OPTIONS] --name <NAME> --grant <GRANTS> <ACCOUNT>
+```
+
+**Arguments**
+
+```{option} <ACCOUNT>
+The account the token acts as
+
+Required.
+```
+
+**Options**
+
+```{option} --name <NAME>
+A label for the token, such as `laptop` or `ci`
+
+Required.
+```
+
+```{option} --grant <GRANTS>
+A project the token may act in, as PROJECT:ROLE or PROJECT:ROLE:DOWNLOAD, such as `glac:operator` or `ice:viewer:results`. Repeat it for more projects. The role and download scope are ceilings: the token never has more than the account's membership. Without a download scope, the membership's applies
+
+Required.
+```
+
+```{option} --expires <EXPIRES>
+How long the token lives: days, weeks or years (`30d`, `12w`, `2y`), or `never`
+
+Default: `90d`.
+```
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+#### `ridal site token list`
+
+```{program} ridal site token list
+```
+
+List tokens, without their secrets
+
+```console
+$ ridal site token list [OPTIONS] [PATH]
+```
+
+**Arguments**
+
+```{option} <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
+**Options**
+
+```{option} --account <ACCOUNT>
+Only this account's tokens
+```
+
+#### `ridal site token revoke`
+
+```{program} ridal site token revoke
+```
+
+Revoke a token by its id
+
+```console
+$ ridal site token revoke [OPTIONS] <ID>
+```
+
+**Arguments**
+
+```{option} <ID>
+The token's id, as `list` shows it
+
+Required.
+```
+
+**Options**
+
+```{option} --path <PATH>
+A path inside the site. The site is found by searching upwards
+
+Default: `.`.
+```
+
 ## `ridal gui`
 
 ```{program} ridal gui

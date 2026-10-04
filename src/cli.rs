@@ -135,6 +135,73 @@ pub enum SiteCommand {
     Account(SiteAccountArgs),
     /// Manage the site's projects
     Project(SiteProjectArgs),
+    /// Manage API tokens, which scripts use instead of a password
+    Token(SiteTokenArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteTokenArgs {
+    #[command(subcommand)]
+    pub command: SiteTokenCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SiteTokenCommand {
+    /// Create a token for an account and print it. It is shown only once.
+    Add(SiteTokenAddArgs),
+    /// List tokens, without their secrets
+    List(SiteTokenListArgs),
+    /// Revoke a token by its id
+    Revoke(SiteTokenRevokeArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteTokenAddArgs {
+    /// The account the token acts as.
+    pub account: String,
+
+    /// A label for the token, such as `laptop` or `ci`.
+    #[arg(long)]
+    pub name: String,
+
+    /// A project the token may act in, as PROJECT:ROLE or
+    /// PROJECT:ROLE:DOWNLOAD, such as `glac:operator` or
+    /// `ice:viewer:results`. Repeat it for more projects. The role and
+    /// download scope are ceilings: the token never has more than the
+    /// account's membership. Without a download scope, the membership's
+    /// applies.
+    #[arg(long = "grant", required = true)]
+    pub grants: Vec<String>,
+
+    /// How long the token lives: days, weeks or years (`30d`, `12w`, `2y`),
+    /// or `never`.
+    #[arg(long, default_value = crate::site::tokens::DEFAULT_LIFETIME)]
+    pub expires: String,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteTokenListArgs {
+    /// Only this account's tokens.
+    #[arg(long)]
+    pub account: Option<String>,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, clap::Args)]
+pub struct SiteTokenRevokeArgs {
+    /// The token's id, as `list` shows it.
+    pub id: String,
+
+    /// A path inside the site. The site is found by searching upwards.
+    #[arg(long, default_value = ".")]
+    pub path: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -2058,7 +2125,144 @@ fn site_command(args: SiteArgs) -> Result<(), String> {
             SiteProjectCommand::Unarchive(args) => site_project_archive_command(&args, false),
             SiteProjectCommand::Delete(args) => site_project_delete_command(&args),
         },
+        SiteCommand::Token(args) => match args.command {
+            SiteTokenCommand::Add(args) => site_token_add_command(&args),
+            SiteTokenCommand::List(args) => site_token_list_command(&args),
+            SiteTokenCommand::Revoke(args) => site_token_revoke_command(&args),
+        },
     }
+}
+
+/// `PROJECT:ROLE[:DOWNLOAD]`, with the membership's scope when none is given.
+fn parse_token_grant(
+    site: &crate::site::Site,
+    account: &crate::site::accounts::Account,
+    text: &str,
+) -> Result<crate::site::tokens::Grant, String> {
+    use crate::project::roles::{DownloadScope, Role};
+    let mut parts = text.split(':');
+    let (Some(key), Some(role)) = (parts.next(), parts.next()) else {
+        return Err(format!(
+            "'{text}' is not a grant. Write it as PROJECT:ROLE or PROJECT:ROLE:DOWNLOAD, \
+             such as glac:operator."
+        ));
+    };
+    let project = crate::identity::ProjectKey::new(key)?;
+    let role = Role::parse(role)?;
+    let download = match parts.next() {
+        Some(scope) => DownloadScope::parse(scope)?,
+        None => crate::site::tokens::widest_download(site, account, &project)
+            .unwrap_or(DownloadScope::None),
+    };
+    if parts.next().is_some() {
+        return Err(format!("'{text}' has too many parts for a grant."));
+    }
+    Ok(crate::site::tokens::Grant {
+        project,
+        role,
+        download,
+    })
+}
+
+fn site_token_add_command(args: &SiteTokenAddArgs) -> Result<(), String> {
+    use crate::site::tokens;
+    let site = open_site(&args.path)?;
+    let name = crate::identity::UserId::new(args.account.clone())?;
+    let accounts = crate::site::accounts::read(site.store())
+        .map_err(|e| e.to_string())?
+        .map(|(set, _)| set)
+        .unwrap_or_default();
+    let account = accounts
+        .get(&name)
+        .ok_or_else(|| format!("No account named '{name}'."))?;
+    let grants = args
+        .grants
+        .iter()
+        .map(|text| parse_token_grant(&site, account, text))
+        .collect::<Result<Vec<_>, _>>()?;
+    tokens::check_grants(&site, account, &grants).map_err(|e| e.to_string())?;
+    let lifetime = tokens::parse_lifetime(&args.expires).map_err(|e| e.to_string())?;
+    let now = chrono::Utc::now().timestamp();
+    let (text, token) =
+        tokens::mint(now, name.clone(), &args.name, grants, lifetime).map_err(|e| e.to_string())?;
+    tokens::update(site.store(), |set| {
+        set.tokens.push(token.clone());
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::TokenCreated,
+            name.as_str(),
+        )
+        .note(token.describe()),
+    );
+    println!("Created {}", token.describe());
+    println!();
+    println!("{text}");
+    println!();
+    println!("This is the only time it is shown. Send it as `Authorization: Bearer <token>`.");
+    Ok(())
+}
+
+fn site_token_list_command(args: &SiteTokenListArgs) -> Result<(), String> {
+    let site = open_site(&args.path)?;
+    let only = args
+        .account
+        .clone()
+        .map(crate::identity::UserId::new)
+        .transpose()?;
+    let (set, _) = crate::site::tokens::read(site.store()).map_err(|e| e.to_string())?;
+    let listed: Vec<_> = set
+        .tokens
+        .iter()
+        .filter(|token| only.is_none() || token.account == only)
+        .collect();
+    if listed.is_empty() {
+        println!("No tokens.");
+        return Ok(());
+    }
+    for token in listed {
+        let holder = token
+            .account
+            .as_ref()
+            .map_or("(no account)", |name| name.as_str());
+        let expires = match token.expires {
+            Some(at) => chrono::DateTime::from_timestamp(at, 0)
+                .map(|at| format!("expires {}", at.format("%Y-%m-%d")))
+                .unwrap_or_default(),
+            None => "NEVER EXPIRES".to_string(),
+        };
+        println!("{holder}: {} [{expires}]", token.describe());
+    }
+    Ok(())
+}
+
+fn site_token_revoke_command(args: &SiteTokenRevokeArgs) -> Result<(), String> {
+    use crate::site::tokens;
+    let site = open_site(&args.path)?;
+    let revoked = tokens::update(site.store(), |set| {
+        let index = set
+            .tokens
+            .iter()
+            .position(|token| token.id == args.id)
+            .ok_or_else(|| tokens::TokenError::NotFound(args.id.clone()))?;
+        Ok(set.tokens.remove(index))
+    })
+    .map_err(|e| e.to_string())?;
+    crate::site::audit::record(
+        site.store(),
+        crate::site::audit::Entry::new(
+            "cli",
+            crate::site::audit::Action::TokenRevoked,
+            revoked.account.as_ref().map_or("", |name| name.as_str()),
+        )
+        .note(revoked.describe()),
+    );
+    println!("Revoked {}", revoked.describe());
+    Ok(())
 }
 
 /// Open the site containing `path`, or say how to make one.
