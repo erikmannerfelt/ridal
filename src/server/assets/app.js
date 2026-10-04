@@ -35,6 +35,7 @@ const IDENTIFIER_REDUCERS = [
 const IDENTIFIER_BUILTINS = [
   ...IDENTIFIER_REDUCERS,
   "concatenate", "shallowest", "deepest", "clamp", "where", "abs", "is_nan",
+  "only", "without",
 ];
 
 /** Turn a human display name into a valid, non-colliding identifier.
@@ -1359,12 +1360,16 @@ const RIDAL = Object.freeze({
     }
 
     function highlight(expression) {
-      const token = /([A-Za-z_][A-Za-z0-9_]*)|(\d+(?:\.\d+)?)|([+\-*/<>=!]+)|([()[\]{},])|(\s+)|(.)/g;
+      // A string is a username for only()/without() (#326). Unterminated
+      // while it is being typed, so the closing quote is optional.
+      const token = /("[^"]*"?)|([A-Za-z_][A-Za-z0-9_]*)|(\d+(?:\.\d+)?)|([+\-*/<>=!]+)|([()[\]{},])|(\s+)|(.)/g;
       let out = "";
       let match;
       while ((match = token.exec(expression)) !== null) {
-        const [text, identifier, number, operator] = match;
-        if (identifier) {
+        const [text, string, identifier, number, operator] = match;
+        if (string) {
+          out += `<span class="tok-string">${RIDAL.escapeHtml(string)}</span>`;
+        } else if (identifier) {
           const kind = REDUCERS.includes(identifier)
             ? "tok-reduce"
             : BUILTINS.includes(identifier)
@@ -1440,7 +1445,14 @@ const RIDAL = Object.freeze({
               body.contributors === 1 ? "contributor" : "contributors"
             }`
           : "";
-      fields.status.textContent = `${kindLabel} · ${body.unit || "no unit"}${contributors}`;
+      // A name in only()/without() that matches nobody is not an error, so
+      // a typo is pointed out here instead (#326). The server sends these
+      // only to a caller who sees everyone's picks.
+      const unknown = Array.isArray(body.unknown_users) ? body.unknown_users : [];
+      const unknownNote = unknown.length
+        ? ` · no picks here from ${unknown.map((name) => `"${name}"`).join(", ")}`
+        : "";
+      fields.status.textContent = `${kindLabel} · ${body.unit || "no unit"}${contributors}${unknownNote}`;
     }
 
     function buildSuggestions() {

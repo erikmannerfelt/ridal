@@ -802,6 +802,47 @@ async fn the_preview_reports_how_many_contributors_it_combined() {
     assert_eq!(op.body["contributors"], json!(2));
 }
 
+/// `only` and `without` match no one for a name with no picks, without an
+/// error (#326), so the preview names such a name for whoever can tell a
+/// typo from someone they cannot see: an operator, never a picker.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_preview_names_usernames_with_no_picks_only_to_an_operator() {
+    let hash = password_hash();
+    let (_dir, app) = app_with_picks(
+        vec![
+            activated("alice", Role::Picker, DownloadScope::Results, &hash),
+            activated("bob", Role::Picker, DownloadScope::Results, &hash),
+            activated("op", Role::Operator, DownloadScope::All, &hash),
+        ],
+        &[("alice", 2.0), ("bob", 4.0)],
+    );
+    let expression = "median(only(bed, [\"alice\", \"bbo\"]))";
+
+    let preview = |session: String| {
+        let app = app.clone();
+        async move {
+            post(
+                &app,
+                &format!("/api/v1/datasets/{RADARGRAM}/derived/preview"),
+                &json!({"expression": expression, "unit": "meters"}),
+                Some(&session),
+            )
+            .await
+        }
+    };
+
+    let op = preview(sign_in(&app, "op").await).await;
+    assert_eq!(op.status, StatusCode::OK, "{}", op.text);
+    assert_eq!(op.body["unknown_users"], json!(["bbo"]));
+
+    // Alice sees only her own picks, so "bbo" and "bob" would look alike.
+    let alice = preview(sign_in(&app, "alice").await).await;
+    assert_eq!(alice.status, StatusCode::OK, "{}", alice.text);
+    assert_eq!(alice.body["unknown_users"], json!([]));
+    assert_eq!(alice.body["contributors"], json!(1));
+}
+
 /// Another contributor's picks are raw picks whatever route they leave by.
 ///
 /// `get_interpretation_raw` serves the same bytes behind `DownloadScope::Picks`;

@@ -225,6 +225,8 @@ const EXPRESSION_BUILTINS: &[&str] = &[
     "deepest",
     "clamp",
     "where",
+    "only",
+    "without",
     // Rhai's standard library supplies these two on both engines, so a layer
     // named `abs` or `is_nan` would read as the function rather than as a
     // variable (#241 follow-up).

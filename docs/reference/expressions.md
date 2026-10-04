@@ -55,6 +55,7 @@ inferred from the expression:
 | {expr}`a * b`, {expr}`a / b` | attribute |
 | {expr}`a * 2`, {expr}`2 * a`, {expr}`a / 2` and so on, with a plain number | the same as `a` |
 | {expr}`shallowest(a, b)`, {expr}`deepest(a, b)`, {expr}`clamp(a, lo, hi)`, {expr}`abs(a)` | the same as `a` |
+| {expr}`only(x, names)`, {expr}`without(x, names)` | the same as `x` |
 | {expr}`where(cond, a, b)` | the same as `a` (or `b`, if `a` is a plain number) |
 
 So {expr}`median(bed)` is a derived layer, {expr}`median(bed) - median(surface)` is a
@@ -141,6 +142,40 @@ skip {expr}`NaN`, and give {expr}`NaN` if nothing is left.
 {expr}`abs(a)`
 : The absolute value, contributor by contributor for a layer.
 
+### Choosing contributors
+
+{expr}`only(x, names)`
+: Only the named contributors' values of `x`.
+
+{expr}`without(x, names)`
+: Everyone's values of `x` except the named contributors'.
+
+`names` is one username in double quotes, {expr}`"anna"`, or a list of them
+in square brackets, {expr}`["anna", "bo"]`. A list can be named once with
+`let` and used several times. The usernames are those of the accounts the
+picks belong to. `x` must still hold one value per contributor, so choose
+before reducing: {expr}`median(without(bed, "anna"))`, not
+`without(median(bed), "anna")`.
+
+A contributor who is left out gets {expr}`NaN` rather than disappearing, so the
+result still lines up with other layers in element-wise arithmetic, and the
+reductions skip them. Each value keeps its contributor's name through
+{expr}`concatenate`, so {expr}`only(concatenate(bed, bed_no_temperate), "anna")`
+is all of anna's values in both layers.
+
+A name that matches no one is not an error; it just matches no one, so
+{expr}`count(only(bed, "anna"))` is {expr}`0` if anna has no picks. When the
+caller sees everyone's picks, the editor's preview names any such username,
+which catches a misspelt one. A picker sees only their own picks, so for them
+{expr}`only(bed, "their_own_name")` is their own {expr}`bed` and any other name
+matches no one, unless the item's result over everyone's picks has been
+released.
+
+```ridal-expr
+let field = ["anna", "bo"];
+median(only(bed, field)) - median(without(bed, field))
+```
+
 ### Conditions
 
 Comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`) between a layer and a number,
@@ -185,6 +220,8 @@ a limited nesting depth.
 | {expr}`std(bed)` | `meters` | How much the contributors disagree about the bed. |
 | {expr}`count(bed)` | `dimensionless` | How many people picked the bed here. |
 | {expr}`median(concatenate(bed, bed_no_temperate))` | `meters` | A consensus over two layers that describe the same reflector in different conditions. |
+| {expr}`median(without(bed, "anna"))` | `meters` | A consensus that leaves out one person's picks, for example to show them as a reference beside it. |
+| {expr}`median(only(bed, ["anna", "bo"])) - median(only(bed, ["cy", "di"]))` | `meters` | How far two groups of contributors disagree about the bed. |
 | {expr}`clamp(median(bed) - median(cts), 0, 1000)` | `meters` | A thickness that is never negative. |
 
 ## Errors

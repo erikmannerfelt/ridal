@@ -14,7 +14,7 @@ from typing import Any, ClassVar
 
 from docutils import nodes
 from pygments.lexer import RegexLexer, words
-from pygments.token import Number, Operator, Punctuation, Text, Token
+from pygments.token import Number, Operator, Punctuation, String, Text, Token
 from sphinx.application import Sphinx
 
 _APP_JS = Path(__file__).resolve().parents[2] / "src" / "server" / "assets" / "app.js"
@@ -49,6 +49,9 @@ class RidalExpressionLexer(RegexLexer):
     tokens: ClassVar[dict[str, list[Any]]] = {
         "root": [
             (r"\s+", Text),
+            # A username for only() and without(), before anything inside it
+            # can match as a name.
+            (r'"[^"]*"', String.Ridal),
             (words(REDUCERS, suffix=r"\b"), Reduce),
             (words(BUILTINS, suffix=r"\b"), Builtin),
             (words(KEYWORDS, suffix=r"\b"), Keyword),

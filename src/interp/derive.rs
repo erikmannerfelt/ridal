@@ -34,6 +34,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use gprinterp::{Document, Geometry};
 use rhai::{Engine, Scope, AST};
@@ -466,21 +467,56 @@ fn median(values: &[f64]) -> f64 {
 
 /// A per-user vector of values at one position.
 ///
-/// A newtype rather than a bare `Vec<f64>` so that Rhai's arithmetic operators
-/// resolve to element-wise operations on picks rather than to something
-/// ambiguous. `NaN` entries are absent values and are skipped by reductions.
+/// A type of its own rather than a bare `Vec<f64>` so that Rhai's arithmetic
+/// operators resolve to element-wise operations on picks rather than to
+/// something ambiguous. `NaN` entries are absent values and are skipped by
+/// reductions.
+///
+/// `users[i]` is whose value `values[i]` is, so that `only` and `without`
+/// (#326) can choose contributors by name. Every operation keeps the names of
+/// the array it maps, and `concatenate` joins them, so the names still line up
+/// with the values after any chain of operations. They are shared, because
+/// every layer at every position carries the same list.
 #[derive(Debug, Clone, PartialEq)]
-pub struct UserArray(pub Vec<f64>);
+pub struct UserArray {
+    pub values: Vec<f64>,
+    pub users: Arc<[String]>,
+}
 
 impl UserArray {
+    pub fn new(values: Vec<f64>, users: Arc<[String]>) -> UserArray {
+        debug_assert_eq!(values.len(), users.len(), "one name per value");
+        UserArray { values, users }
+    }
+
+    /// New values for the same contributors.
+    fn with(&self, values: Vec<f64>) -> UserArray {
+        UserArray::new(values, Arc::clone(&self.users))
+    }
+
+    /// `NaN` for every contributor `keep` refuses.
+    ///
+    /// The slot stays, rather than being dropped, so that the result still
+    /// lines up with the other layers in element-wise arithmetic, and the
+    /// reductions already skip a `NaN`.
+    fn keep_users(self, keep: impl Fn(&str) -> bool) -> UserArray {
+        let values = self
+            .values
+            .iter()
+            .zip(self.users.iter())
+            .map(|(v, user)| if keep(user) { *v } else { f64::NAN })
+            .collect();
+        self.with(values)
+    }
+
     fn map(self, other: &UserArray, f: impl Fn(f64, f64) -> f64) -> UserArray {
         // NaN propagates: an absent value on either side makes the result
         // absent, so a reduction never silently treats a missing pick as a
         // number.
         let values = self
-            .0
+            .values
             .iter()
-            .zip(&other.0)
+            .zip(&other.values)
             .map(|(a, b)| {
                 if a.is_nan() || b.is_nan() {
                     f64::NAN
@@ -489,12 +525,12 @@ impl UserArray {
                 }
             })
             .collect();
-        UserArray(values)
+        self.with(values)
     }
 
     fn map_scalar(self, scalar: f64, f: impl Fn(f64, f64) -> f64) -> UserArray {
-        UserArray(
-            self.0
+        self.with(
+            self.values
                 .iter()
                 .map(|a| if a.is_nan() { f64::NAN } else { f(*a, scalar) })
                 .collect(),
@@ -560,26 +596,26 @@ pub fn build_engine() -> Engine {
 fn register_user_array(engine: &mut Engine) {
     // Reductions: UserArray -> f64, all NaN-skipping.
     engine.register_fn("count", |a: UserArray| -> f64 {
-        a.0.iter().filter(|v| v.is_finite()).count() as f64
+        a.values.iter().filter(|v| v.is_finite()).count() as f64
     });
-    engine.register_fn("median", |a: UserArray| -> f64 { median(&a.0) });
+    engine.register_fn("median", |a: UserArray| -> f64 { median(&a.values) });
     engine.register_fn("mean", |a: UserArray| -> f64 {
-        let finite: Vec<f64> = a.0.iter().copied().filter(|v| v.is_finite()).collect();
+        let finite: Vec<f64> = a.values.iter().copied().filter(|v| v.is_finite()).collect();
         if finite.is_empty() {
             f64::NAN
         } else {
             finite.iter().sum::<f64>() / finite.len() as f64
         }
     });
-    engine.register_fn("std", |a: UserArray| -> f64 { std_dev(&a.0) });
-    engine.register_fn("nmad", |a: UserArray| -> f64 { nmad(&a.0) });
+    engine.register_fn("std", |a: UserArray| -> f64 { std_dev(&a.values) });
+    engine.register_fn("nmad", |a: UserArray| -> f64 { nmad(&a.values) });
     // An empty (or all-NaN) array is NaN, not infinity. Folding from
     // `f64::INFINITY` made `max(no_picks)` return `-inf`, which the sample
     // conversion then read as a real position and drew a fabricated line
     // across the whole radargram -- visible whenever a caller had no pick on
     // some layer.
     engine.register_fn("min", |a: UserArray| -> f64 {
-        let finite: Vec<f64> = a.0.iter().copied().filter(|v| v.is_finite()).collect();
+        let finite: Vec<f64> = a.values.iter().copied().filter(|v| v.is_finite()).collect();
         if finite.is_empty() {
             f64::NAN
         } else {
@@ -587,7 +623,7 @@ fn register_user_array(engine: &mut Engine) {
         }
     });
     engine.register_fn("max", |a: UserArray| -> f64 {
-        let finite: Vec<f64> = a.0.iter().copied().filter(|v| v.is_finite()).collect();
+        let finite: Vec<f64> = a.values.iter().copied().filter(|v| v.is_finite()).collect();
         if finite.is_empty() {
             f64::NAN
         } else {
@@ -595,15 +631,35 @@ fn register_user_array(engine: &mut Engine) {
         }
     });
     engine.register_fn("percentile", |a: UserArray, p: f64| -> f64 {
-        percentile(&a.0, p)
+        percentile(&a.values, p)
     });
 
     // Pooling is always explicit: there is no implicit union of layers.
     engine.register_fn("concatenate", |a: UserArray, b: UserArray| -> UserArray {
-        let mut values = a.0;
-        values.extend(b.0);
-        UserArray(values)
+        let mut values = a.values;
+        values.extend(b.values);
+        let users: Vec<String> = a.users.iter().chain(b.users.iter()).cloned().collect();
+        UserArray::new(values, users.into())
     });
+
+    // Choosing contributors by name (#326): a reference interpretation left
+    // out of a consensus, or two subgroups compared. A name nobody has is not
+    // an error -- a picker sees only their own picks, so an error would tell
+    // them which other accounts exist. It simply matches no one.
+    for (function, wanted) in [("only", true), ("without", false)] {
+        engine.register_fn(
+            function,
+            move |a: UserArray, name: rhai::ImmutableString| {
+                a.keep_users(|user| (user == name.as_str()) == wanted)
+            },
+        );
+        engine.register_fn(function, move |a: UserArray, names: rhai::Array| {
+            let names = user_names(names, function)?;
+            Ok::<_, Box<rhai::EvalAltResult>>(
+                a.keep_users(|user| names.iter().any(|n| n == user) == wanted),
+            )
+        });
+    }
 
     // Element-wise operations. NaN propagates through every one of them.
     engine.register_fn("+", |a: UserArray, b: UserArray| a.map(&b, |x, y| x + y));
@@ -635,8 +691,9 @@ fn register_user_array(engine: &mut Engine) {
     });
     engine.register_fn("deepest", |a: f64, b: UserArray| b.map_scalar(a, f64::max));
     engine.register_fn("clamp", |a: UserArray, lo: f64, hi: f64| {
-        UserArray(
-            a.0.iter()
+        a.with(
+            a.values
+                .iter()
                 .map(|v| {
                     if v.is_nan() {
                         f64::NAN
@@ -649,10 +706,10 @@ fn register_user_array(engine: &mut Engine) {
     });
     engine.register_fn("where", |cond: UserArray, a: UserArray, b: UserArray| {
         let values = cond
-            .0
+            .values
             .iter()
-            .zip(&a.0)
-            .zip(&b.0)
+            .zip(&a.values)
+            .zip(&b.values)
             .map(|((c, x), y)| {
                 if c.is_nan() {
                     f64::NAN
@@ -663,12 +720,13 @@ fn register_user_array(engine: &mut Engine) {
                 }
             })
             .collect();
-        UserArray(values)
+        a.with(values)
     });
     engine.register_fn("where", |cond: bool, a: UserArray, b: UserArray| {
-        UserArray(
-            a.0.iter()
-                .zip(&b.0)
+        a.with(
+            a.values
+                .iter()
+                .zip(&b.values)
                 .map(|(x, y)| if cond { *x } else { *y })
                 .collect(),
         )
@@ -712,20 +770,28 @@ fn register_user_array(engine: &mut Engine) {
     // thing to write, and a scalar branch broadcasts across the users, exactly
     // as it does for `+` and the other element-wise operators.
     engine.register_fn("where", |cond: UserArray, a: UserArray, b: f64| {
-        UserArray(pick(&cond.0, &a.0, &vec![b; a.0.len()]))
+        a.with(pick(&cond.values, &a.values, &vec![b; a.values.len()]))
     });
     engine.register_fn("where", |cond: UserArray, a: f64, b: UserArray| {
-        UserArray(pick(&cond.0, &vec![a; b.0.len()], &b.0))
+        b.with(pick(&cond.values, &vec![a; b.values.len()], &b.values))
     });
     engine.register_fn("where", |cond: UserArray, a: f64, b: f64| {
-        let n = cond.0.len();
-        UserArray(pick(&cond.0, &vec![a; n], &vec![b; n]))
+        let n = cond.values.len();
+        cond.with(pick(&cond.values, &vec![a; n], &vec![b; n]))
     });
     engine.register_fn("where", |cond: bool, a: UserArray, b: f64| {
-        UserArray(if cond { a.0 } else { vec![b; a.0.len()] })
+        if cond {
+            a
+        } else {
+            a.with(vec![b; a.values.len()])
+        }
     });
     engine.register_fn("where", |cond: bool, a: f64, b: UserArray| {
-        UserArray(if cond { vec![a; b.0.len()] } else { b.0 })
+        if cond {
+            b.with(vec![a; b.values.len()])
+        } else {
+            b
+        }
     });
 
     // Comparisons produce a 1.0/0.0 per-user mask, which is what `where`
@@ -733,18 +799,19 @@ fn register_user_array(engine: &mut Engine) {
     // with a pointer to `where`.
     for op in ["==", "!=", ">", ">=", "<", "<="] {
         engine.register_fn(op, |a: UserArray, b: UserArray| {
-            UserArray(
-                a.0.iter()
-                    .zip(&b.0)
+            a.with(
+                a.values
+                    .iter()
+                    .zip(&b.values)
                     .map(|(x, y)| compare(op, *x, *y))
                     .collect(),
             )
         });
         engine.register_fn(op, |a: UserArray, b: f64| {
-            UserArray(a.0.iter().map(|x| compare(op, *x, b)).collect())
+            a.with(a.values.iter().map(|x| compare(op, *x, b)).collect())
         });
         engine.register_fn(op, |a: f64, b: UserArray| {
-            UserArray(b.0.iter().map(|y| compare(op, a, *y)).collect())
+            b.with(b.values.iter().map(|y| compare(op, a, *y)).collect())
         });
         // Anything else compared with a layer is a mistake, and Rhai's
         // fallback for a comparison it has no operator for is a constant
@@ -761,8 +828,27 @@ fn register_user_array(engine: &mut Engine) {
     // `abs` of a layer is element-wise, like the arithmetic operators. Rhai's
     // standard library supplies the scalar form.
     engine.register_fn("abs", |a: UserArray| {
-        UserArray(a.0.iter().map(|v| v.abs()).collect())
+        a.with(a.values.iter().map(|v| v.abs()).collect())
     });
+}
+
+/// The usernames in the list given to `only` or `without`.
+fn user_names(names: rhai::Array, function: &str) -> Result<Vec<String>, Box<rhai::EvalAltResult>> {
+    names
+        .into_iter()
+        .map(|name| {
+            name.into_immutable_string()
+                .map(|name| name.to_string())
+                .map_err(|other| {
+                    format!(
+                        "{function}() takes usernames in quotes, such as \
+                         {function}(bed, [\"anna\", \"bo\"]), not {}",
+                        describe_type(other)
+                    )
+                    .into()
+                })
+        })
+        .collect()
 }
 
 /// The error for a comparison between a layer (or, in inference, any derived
@@ -993,6 +1079,27 @@ fn register_kinded(engine: &mut Engine) {
     engine.register_fn("abs", |a: Kinded| -> Kinded { a });
     engine.register_fn("is_nan", |a: Kinded| single(a, "is_nan").map(|_| true));
 
+    /// Refuse a single value where only per-contributor values have names.
+    fn per_contributor(a: Kinded, function: &str) -> Result<Kinded, Box<rhai::EvalAltResult>> {
+        if !a.is_array {
+            return Err(format!(
+                "{function}() takes a layer's per-contributor values, not a single value; \
+                 choose the contributors before reducing, as in median({function}(bed, \"anna\"))"
+            )
+            .into());
+        }
+        Ok(a)
+    }
+    for function in ["only", "without"] {
+        engine.register_fn(function, move |a: Kinded, _name: rhai::ImmutableString| {
+            per_contributor(a, function)
+        });
+        engine.register_fn(function, move |a: Kinded, names: rhai::Array| {
+            user_names(names, function)?;
+            per_contributor(a, function)
+        });
+    }
+
     // Arithmetic, with a plain number on either side (#270). A number is a
     // value with no position, so it is treated exactly as an attribute is:
     // `median(bed) - 10.0` and `10.0 - median(bed)` are both positions, the
@@ -1084,6 +1191,40 @@ pub fn compile(engine: &Engine, expression: &str) -> Result<AST, DeriveError> {
             expression: expression.to_string(),
             message: e.to_string(),
         })
+}
+
+/// Every username an expression names, sorted and without repeats.
+///
+/// Text has no use in the language other than naming contributors for
+/// `only` and `without`, so every string in the expression is one, wherever
+/// it appears -- in the call, or in a list bound with `let` first. The
+/// editor's preview uses this to point out a name with no picks (#326),
+/// which evaluation deliberately cannot.
+pub fn named_users(ast: &AST) -> Vec<String> {
+    use rhai::{ASTNode, Expr};
+    let mut names = std::collections::BTreeSet::new();
+    ast.walk(&mut |path: &[ASTNode]| {
+        match path.last() {
+            Some(ASTNode::Expr(Expr::StringConstant(name, _))) => {
+                names.insert(name.to_string());
+            }
+            // The optimiser folds a list of literals into one constant.
+            Some(ASTNode::Expr(Expr::DynamicConstant(value, _))) => {
+                let list = match value.as_array_ref() {
+                    Ok(list) => list.to_vec(),
+                    Err(_) => vec![(**value).clone()],
+                };
+                for value in list {
+                    if let Ok(name) = value.into_immutable_string() {
+                        names.insert(name.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+        true
+    });
+    names.into_iter().collect()
 }
 
 /// Infer an expression's kind without evaluating it on real data.
@@ -1243,6 +1384,7 @@ fn describe_type(name: &str) -> &str {
         "f64" | "i64" | "float" | "int" => "a number",
         "bool" => "true/false",
         "string" | "&str" | "ImmutableString" | "char" => "text",
+        "array" | "Array" | "Vec<Dynamic>" => "a list",
         "()" => "nothing",
         other => other,
     }
@@ -1456,7 +1598,8 @@ mod tests {
     }
 
     fn arrays(values: &[f64]) -> UserArray {
-        UserArray(values.to_vec())
+        let users: Vec<String> = (0..values.len()).map(|i| format!("user{i}")).collect();
+        UserArray::new(values.to_vec(), users.into())
     }
 
     /// Kind inference and evaluation must accept exactly the same
@@ -1549,6 +1692,19 @@ mod tests {
             "median(where(bed > true, bed, NaN))",
             "median(where(true == bed, bed, NaN))",
             "median(where(bed > \"50\", bed, NaN))",
+            // Choosing contributors by name (#326). `arrays` names them
+            // `user0`, `user1` and so on.
+            "median(only(bed, \"user0\"))",
+            "median(without(bed, [\"user0\", \"user1\"]))",
+            "count(only(concatenate(bed, bed), \"user1\"))",
+            "let field = [\"user0\"]; median(only(bed, field))",
+            "median(only(bed, \"nobody\"))",
+            // A reduced value or a derived item has no contributors left.
+            "only(median(bed), \"user0\")",
+            "only(dep, \"user0\")",
+            // A name must be text.
+            "median(only(bed, [1, 2]))",
+            "median(only(bed, 1))",
         ] {
             let ast = compile(&engine, expression).unwrap_or_else(|e| {
                 panic!("{expression} did not compile: {e}");
@@ -1557,7 +1713,7 @@ mod tests {
 
             let bound: BTreeMap<String, UserArray> = layers
                 .iter()
-                .map(|id| (id.clone(), UserArray(vec![1.0, 4.0, f64::NAN])))
+                .map(|id| (id.clone(), arrays(&[1.0, 4.0, f64::NAN])))
                 .collect();
             let evaluated = evaluate_at(&engine, &ast, expression, &bound, &other, &layers, &items);
 
@@ -1667,6 +1823,10 @@ mod tests {
             "clamp(median(bed), 0, bed)",
             "median(bed > \"x\")",
             "no_such_function(bed)",
+            "only(median(bed), \"anna\")",
+            "median(only(bed, [1]))",
+            "median(only(bed, 1))",
+            "only(bed)",
         ] {
             let ast = compile(&engine, expression).unwrap();
             let messages = [
@@ -1885,10 +2045,14 @@ mod tests {
         let reduced = reduce_picks(documents, set, &geometry(), &grid(11), false);
         let engine = build_engine();
         let ast = compile(&engine, expression).unwrap();
+        let users: Arc<[String]> = reduced.users.clone().into();
         let bound: BTreeMap<String, UserArray> = reduced
             .layers
             .iter()
-            .map(|(id, per_position)| (id.clone(), UserArray(per_position[position].clone())))
+            .map(|(id, per_position)| {
+                let values = per_position[position].clone();
+                (id.clone(), UserArray::new(values, users.clone()))
+            })
             .collect();
         let layer_ids: Vec<String> = bound.keys().cloned().collect();
         evaluate_at(
@@ -1995,6 +2159,43 @@ mod tests {
     /// Exclusivity is deliberately not transitive, which is the whole reason
     /// a layer may belong to several groups rather than carrying one "group"
     /// field. A and B conflict, B and C conflict, A and C coexist.
+    /// Contributors are named by the user id their picks are stored under,
+    /// which is the account's username.
+    #[test]
+    fn only_matches_the_user_the_picks_belong_to() {
+        let set = layer_set();
+        let documents = vec![
+            (
+                "zoe".to_string(),
+                document(&[("bed", &[[0.0, 10.0], [10.0, 10.0]])]),
+            ),
+            (
+                "amy".to_string(),
+                document(&[("bed", &[[0.0, 20.0], [10.0, 20.0]])]),
+            ),
+            (
+                "bo".to_string(),
+                document(&[("bed", &[[0.0, 40.0], [10.0, 40.0]])]),
+            ),
+        ];
+        let at = |expression: &str| eval_over_documents(expression, &set, &documents, 0);
+        let only_zoe = at("median(only(bed, \"zoe\"))");
+        assert_eq!(only_zoe, at("median(without(bed, [\"amy\", \"bo\"]))"));
+        assert_eq!(at("count(only(bed, \"zoe\"))"), 1.0);
+        assert_eq!(at("count(without(bed, \"zoe\"))"), 2.0);
+        assert!(
+            only_zoe < at("median(only(bed, \"amy\"))"),
+            "zoe picked shallower"
+        );
+        // Run by zoe alone, as a picker sees it: her own name still works.
+        let own = vec![documents[0].clone()];
+        assert_eq!(
+            eval_over_documents("median(only(bed, \"zoe\"))", &set, &own, 0),
+            only_zoe
+        );
+        assert!(eval_over_documents("median(only(bed, \"amy\"))", &set, &own, 0).is_nan());
+    }
+
     #[test]
     fn exclusivity_is_not_transitive_across_groups() {
         let mut set = layer_set();
@@ -2114,6 +2315,78 @@ mod tests {
         );
     }
 
+    /// `arrays` names the contributors `user0`, `user1` and so on.
+    #[test]
+    fn only_and_without_choose_contributors_by_name() {
+        let bed: &[(&str, &[f64])] = &[("bed", &[10.0, 20.0, 30.0])];
+        assert_eq!(eval("median(without(bed, \"user0\"))", bed), 25.0);
+        assert_eq!(eval("median(only(bed, [\"user0\", \"user2\"]))", bed), 20.0);
+        assert_eq!(
+            eval("median(without(bed, [\"user0\", \"user2\"]))", bed),
+            20.0
+        );
+        assert_eq!(
+            eval(
+                "let field = [\"user0\", \"user1\"]; median(only(bed, field))",
+                bed
+            ),
+            15.0
+        );
+        // Two subgroups compared, the case the issue asks for.
+        assert_eq!(
+            eval(
+                "median(only(bed, \"user2\")) - median(without(bed, \"user2\"))",
+                bed
+            ),
+            15.0
+        );
+        // A name nobody has matches no one, rather than failing.
+        assert_eq!(eval("count(only(bed, \"nobody\"))", bed), 0.0);
+        assert_eq!(eval("count(without(bed, \"nobody\"))", bed), 3.0);
+        assert!(eval("median(only(bed, \"nobody\"))", bed).is_nan());
+    }
+
+    /// The left-out contributors become `NaN` instead of being dropped, so
+    /// the result still lines up with other layers contributor by
+    /// contributor, and `concatenate` keeps each value's name.
+    #[test]
+    fn only_keeps_contributors_aligned() {
+        let layers: &[(&str, &[f64])] = &[("bed", &[10.0, 20.0, 30.0]), ("cts", &[1.0, 2.0, 3.0])];
+        assert_eq!(eval("median(only(bed, \"user1\") - cts)", layers), 18.0);
+        assert_eq!(eval("median(bed - without(cts, \"user1\"))", layers), 18.0);
+        let pooled: &[(&str, &[f64])] = &[("a", &[1.0, 2.0]), ("b", &[3.0, 4.0])];
+        assert_eq!(
+            eval("count(only(concatenate(a, b), \"user1\"))", pooled),
+            2.0
+        );
+        assert_eq!(
+            eval("median(only(concatenate(a, b), \"user1\"))", pooled),
+            3.0
+        );
+        // Filtering before or after pooling is the same thing.
+        assert_eq!(
+            eval(
+                "median(concatenate(only(a, \"user1\"), only(b, \"user1\")))",
+                pooled
+            ),
+            3.0
+        );
+    }
+
+    #[test]
+    fn named_users_finds_every_username_in_an_expression() {
+        let engine = build_engine();
+        let ast = compile(
+            &engine,
+            "let g = [\"bo\", \"anna\"]; median(only(bed, g)) - median(without(bed, \"cy\")) \
+             + median(only(bed, [\"anna\"]))",
+        )
+        .unwrap();
+        assert_eq!(named_users(&ast), ["anna", "bo", "cy"]);
+        let ast = compile(&engine, "median(bed)").unwrap();
+        assert!(named_users(&ast).is_empty());
+    }
+
     #[test]
     fn nan_propagates_through_elementwise_arithmetic() {
         // 10 + (NaN) is NaN; median skips it, so median of [10, NaN+10] is 10.
@@ -2204,6 +2477,10 @@ mod tests {
         );
         assert_eq!(infer("count(bed)"), Kind::Attribute);
         assert_eq!(infer("std(bed)"), Kind::Attribute);
+        // Choosing contributors keeps the kind of what it chooses from.
+        assert_eq!(infer("median(only(bed, \"anna\"))"), Kind::Layer);
+        assert_eq!(infer("median(without(bed, [\"anna\"]))"), Kind::Layer);
+        assert_eq!(infer("count(only(bed, \"anna\"))"), Kind::Attribute);
         // A plain number shifts or scales a position from either side, and
         // an attribute shifts it just as a number does (#270).
         for expression in [
