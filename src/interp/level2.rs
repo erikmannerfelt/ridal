@@ -42,6 +42,24 @@ pub use crate::identity::DEFAULT_USER;
 /// that threatens the process.
 const MAX_GRID_POINTS: usize = 10_000_000;
 
+/// Ceiling on the total points one export may hold.
+///
+/// [`MAX_GRID_POINTS`] bounds a single radargram's grid, but the grid is then
+/// sampled once per picked line and per user, and a merged download repeats
+/// that for every member. A document with a hundred lines, or a catalog-wide
+/// download, multiplies the same ten-million-point grid into gigabytes. This
+/// bounds that product instead: the same ten million, so the densest
+/// legitimate single line (a 50 km profile at 1 cm, five million points) still
+/// fits while the multiplication does not.
+///
+/// Point count is a proxy for bytes, not a measure of them. A `Level2Point`
+/// carries several owned strings beside its numbers and the GeoJSON writer
+/// builds a second full tree before serialising, so exactly how many bytes a
+/// point costs depends on label lengths and coordinate precision. This bounds
+/// how many points one download may hold, not the download's size in memory;
+/// claiming the latter would not be honest.
+pub const MAX_TOTAL_POINTS: usize = 10_000_000;
+
 /// Everything about one processed radargram that level 2 derivation needs.
 ///
 /// All per-trace vectors have length `n_traces` and all per-sample vectors
@@ -238,6 +256,19 @@ pub enum Level2Error {
     },
     /// A spacing that cannot produce points.
     InvalidSpacing(f64),
+    /// The export as a whole would exceed [`MAX_TOTAL_POINTS`]: the same grid
+    /// sampled by many lines, many users, or many merged members.
+    ///
+    /// Refused rather than clamped, and with the spacing named, matching
+    /// [`Level2Error::SpacingTooFine`] -- a caller who asked for a dense
+    /// spacing and silently got a truncated file would not know.
+    ExportTooLarge {
+        /// The count when the export was refused: a lower bound, since it
+        /// stops at the first line or member that crosses the limit.
+        points: usize,
+        /// The spacing in words, so the message says what was asked for.
+        spacing: String,
+    },
 }
 
 impl fmt::Display for Level2Error {
@@ -290,11 +321,48 @@ impl fmt::Display for Level2Error {
             Level2Error::InvalidSpacing(step) => {
                 write!(f, "a spacing of {step} m cannot produce points")
             }
+            Level2Error::ExportTooLarge { points, spacing } => write!(
+                f,
+                "this export would produce at least {points} points at {spacing}, above \
+                 the limit of {MAX_TOTAL_POINTS} for one download. Use a larger \
+                 spacing, or narrow the selection."
+            ),
         }
     }
 }
 
 impl std::error::Error for Level2Error {}
+
+/// How a spacing reads in an error message: the metric step when it has one,
+/// or the name of the spacing that does not.
+fn spacing_description(spacing: Spacing, step: Option<f64>) -> String {
+    match (spacing, step) {
+        (Spacing::ArcLength(_) | Spacing::Auto, Some(step)) => format!("{step} m spacing"),
+        (Spacing::PerTrace, _) => "per-trace spacing".to_string(),
+        (Spacing::Vertices, _) => "vertex spacing".to_string(),
+        (_, None) => "the requested spacing".to_string(),
+    }
+}
+
+/// Refuse an export whose total point count exceeds [`MAX_TOTAL_POINTS`].
+///
+/// `points` is the whole export's count, not one radargram's: the point is to
+/// bound the product over lines, users and merged members, which the
+/// per-radargram [`MAX_GRID_POINTS`] does not. `step` is the metric spacing
+/// actually used, `None` for the spacings with no step of their own.
+pub fn check_export_size(
+    points: usize,
+    spacing: Spacing,
+    step: Option<f64>,
+) -> Result<(), Level2Error> {
+    if points <= MAX_TOTAL_POINTS {
+        return Ok(());
+    }
+    Err(Level2Error::ExportTooLarge {
+        points,
+        spacing: spacing_description(spacing, step),
+    })
+}
 
 /// Derive the level 2 product from a level 1 document.
 pub fn export(
@@ -303,6 +371,25 @@ pub fn export(
     spacing: Spacing,
     user: &str,
     allows_overhangs: &dyn Fn(Option<&str>) -> bool,
+) -> Result<Level2Export, Level2Error> {
+    export_with_budget(document, geometry, spacing, user, allows_overhangs, 0)
+}
+
+/// [`export`], sharing one total budget with earlier members of a merged
+/// download.
+///
+/// `already_exported` counts the points produced by the members processed
+/// before this one. Each radargram's grid is capped on its own
+/// ([`MAX_GRID_POINTS`]); this caps the product over layers, users and
+/// members together ([`MAX_TOTAL_POINTS`]), checked as each line accumulates
+/// so a pathological document is refused before it is fully materialised.
+pub fn export_with_budget(
+    document: &Document,
+    geometry: &RadargramGeometry,
+    spacing: Spacing,
+    user: &str,
+    allows_overhangs: &dyn Fn(Option<&str>) -> bool,
+    already_exported: usize,
 ) -> Result<Level2Export, Level2Error> {
     geometry.validate()?;
 
@@ -350,10 +437,12 @@ pub fn export(
                     &feature_id,
                     user,
                 ));
+                check_export_size(already_exported + points.len(), spacing, step)?;
                 continue;
             }
             let line = Line::new(&vertices, &layer, line_index)?;
             points.extend(line.sample(geometry, grid, &layer, line_index, &feature_id, user)?);
+            check_export_size(already_exported + points.len(), spacing, step)?;
         }
     }
     if !vertex_layers.is_empty() {
@@ -808,6 +897,54 @@ mod tests {
             &doc,
             &geometry(),
             Spacing::ArcLength(1.0),
+            DEFAULT_USER,
+            &enforce_everywhere,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn the_total_budget_refuses_the_product_over_lines_and_members() {
+        // The per-radargram grid cap does not stop a hundred-line document,
+        // or a merged download, multiplying the same grid. `already_exported`
+        // stands in for points earlier members produced, so the limit is
+        // reachable in a test without allocating ten million of them.
+        let doc = document(&[[0.0, 5.0], [100.0, 6.0]]);
+        let err = export_with_budget(
+            &doc,
+            &geometry(),
+            Spacing::PerTrace,
+            DEFAULT_USER,
+            &enforce_everywhere,
+            MAX_TOTAL_POINTS - 1,
+        )
+        .expect_err("must refuse");
+        let message = err.to_string();
+        // The same shape as the per-grid refusal: what was asked for, and the
+        // limit, rather than silently truncating the file.
+        assert!(message.contains("per-trace spacing"), "{message}");
+        assert!(message.contains(&MAX_TOTAL_POINTS.to_string()), "{message}");
+        assert!(matches!(err, Level2Error::ExportTooLarge { .. }), "{err:?}");
+
+        // A metric spacing is named by its step.
+        let err = export_with_budget(
+            &doc,
+            &geometry(),
+            Spacing::ArcLength(10.0),
+            DEFAULT_USER,
+            &enforce_everywhere,
+            MAX_TOTAL_POINTS,
+        )
+        .expect_err("must refuse");
+        assert!(err.to_string().contains("10 m spacing"), "{err}");
+
+        // The boundary is inclusive, and an empty budget is a normal export.
+        assert!(check_export_size(MAX_TOTAL_POINTS, Spacing::Auto, Some(1.0)).is_ok());
+        assert!(check_export_size(MAX_TOTAL_POINTS + 1, Spacing::Auto, Some(1.0)).is_err());
+        assert!(export(
+            &doc,
+            &geometry(),
+            Spacing::PerTrace,
             DEFAULT_USER,
             &enforce_everywhere,
         )

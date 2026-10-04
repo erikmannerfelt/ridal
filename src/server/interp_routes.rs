@@ -895,6 +895,9 @@ pub async fn interpretation_level2(
 
     let mut exports = Vec::new();
     let mut warnings = Vec::new();
+    // Every user's points share one total: `every_user` multiplies the same
+    // radargram's grid by the number of contributors (#135).
+    let mut exported_points = 0usize;
     for user in &users {
         let Some(stored) = interpretations::read(project.documents(), &radargram, user)
             .map_err(interpretation_error)?
@@ -909,14 +912,16 @@ pub async fn interpretation_level2(
         if let Some(warning) = identity.warning {
             warnings.push(warning);
         }
-        let export = crate::interp::level2::export(
+        let export = crate::interp::level2::export_with_budget(
             &stored.document,
             &geometry,
             spacing,
             user.as_str(),
             &allows,
+            exported_points,
         )
         .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))?;
+        exported_points += export.points.len();
         exports.push(export);
     }
     if exports.is_empty() {
@@ -1526,6 +1531,11 @@ fn merged_level2(
     let mut derived: Vec<crate::interp::derived_points::DerivedPointsExport> = Vec::new();
     let mut skipped = Vec::new();
     let mut stale = Vec::new();
+    // One budget for the whole download: the per-radargram grid cap does not
+    // stop a hundred-line document, or a catalog-wide merge, multiplying it
+    // (#135). Each side is counted as members accumulate.
+    let mut picked_points = 0usize;
+    let mut derived_points = 0usize;
     for entry in &entries {
         let radargram = &entry.radargram_id;
         let path = state
@@ -1535,14 +1545,18 @@ fn merged_level2(
             .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
 
         if query.derived {
-            derived.push(super::derived_routes::export_derived_points(
+            let export = super::derived_routes::export_derived_points(
                 state,
                 caller,
                 radargram,
                 &geometry,
                 spacing,
                 query.include_unlisted,
-            )?);
+            )?;
+            derived_points += export.points.len();
+            crate::interp::level2::check_export_size(derived_points, spacing, export.spacing_m)
+                .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))?;
+            derived.push(export);
             continue;
         }
 
@@ -1578,18 +1592,20 @@ fn merged_level2(
             if identity.warning.is_some() && !stale.contains(&radargram.to_string()) {
                 stale.push(radargram.to_string());
             }
-            let export = crate::interp::level2::export(
+            let export = crate::interp::level2::export_with_budget(
                 &stored.document,
                 &geometry,
                 spacing,
                 user.as_str(),
                 &allows,
+                picked_points,
             )
             // Named, because in a group export "which one failed?" is the
             // first thing anyone would ask.
             .map_err(|e| {
                 ApiError::bad_request("level2_failed", format!("{}: {e}", radargram.as_str()))
             })?;
+            picked_points += export.points.len();
             picked.push(export);
         }
     }

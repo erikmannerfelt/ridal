@@ -819,6 +819,10 @@ pub async fn derived_level2(
         spacing,
         query.include_unlisted,
     )?;
+    // A single radargram's derived product is already grid-capped, but the
+    // same total budget applies so the limit is one thing everywhere (#135).
+    level2::check_export_size(export.points.len(), spacing, export.spacing_m)
+        .map_err(|e| ApiError::bad_request("level2_failed", e.to_string()))?;
 
     let exports = [export];
     let csv = matches!(query.format.as_deref(), Some("csv"));
