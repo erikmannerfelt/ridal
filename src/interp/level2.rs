@@ -263,6 +263,8 @@ pub enum Level2Error {
     /// [`Level2Error::SpacingTooFine`] -- a caller who asked for a dense
     /// spacing and silently got a truncated file would not know.
     ExportTooLarge {
+        /// The count when the export was refused: a lower bound, since it
+        /// stops at the first line or member that crosses the limit.
         points: usize,
         /// The spacing in words, so the message says what was asked for.
         spacing: String,
@@ -321,7 +323,7 @@ impl fmt::Display for Level2Error {
             }
             Level2Error::ExportTooLarge { points, spacing } => write!(
                 f,
-                "this export would produce about {points} points at {spacing}, above \
+                "this export would produce at least {points} points at {spacing}, above \
                  the limit of {MAX_TOTAL_POINTS} for one download. Use a larger \
                  spacing, or narrow the selection."
             ),
