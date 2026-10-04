@@ -109,16 +109,18 @@ pub enum Step {
     /// for a standstill at the start or end of the profile, so that
     /// interpretations made before this step still carry over.
     ///
-    /// Run it early, before the filters. A running `background_removal`
-    /// takes out standstills as long as its window before this step can see
-    /// them, and after `dewow` it missed one of eight on 800 MHz data.
+    /// Run it early, before the filters. After a running
+    /// `background_removal` it missed the longest standstills and found
+    /// false ones, and after `dewow` it missed a weak one on 100 MHz data.
     /// Run it before `equidistant_traces` too, which it can replace when the
     /// positions are poor. Standstills that together make up more than half
     /// the profile are not found. Examples:
     /// `remove_standstills`, `remove_standstills(6)`,
     /// `remove_standstills(min_duration=20)`.
     ///
-    /// So far this has only been tested on Malå data (25 and 800 MHz).
+    /// So far this has only been tested on Malå data (25, 100 and 800 MHz).
+    /// With the defaults it found every standstill identified by eye there
+    /// except one weak 100 MHz one, which `remove_standstills(7)` found.
     /// Check the result before relying on it for other instruments.
     #[command(rename_all = "snake_case")]
     RemoveStandstills {

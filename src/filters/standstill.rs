@@ -24,6 +24,10 @@
 //!   stop is a sizeable share of the profile. The mean only moves part of
 //!   the way towards it.
 //!
+//! What is left is weighted by energy, except that the loudest depths are
+//! scaled down to four times the median depth's level ([`ROW_CAP`]): a
+//! ring-down that jitters through a standstill would otherwise drown it.
+//!
 //! The semblance is turned into a score that means the same on any radar:
 //! `-ln(1 - S)`, as a robust z against the profile's own median and spread.
 //! A standstill is a stretch scoring above [`EXTEND_Z`] that reaches the
@@ -37,10 +41,10 @@
 //! something that differs from what most of the profile does. Standstills
 //! that together make up more than half of it are not found.
 //!
-//! Developed on 800 MHz Malå data from Austfonna and 25 MHz Malå data from
-//! Drønbreen, where it found every visually identified standstill and
-//! nothing else. Moving traces there score up to about 6, and standstills
-//! 10 to 36.
+//! Developed on Malå data: 800 MHz from Austfonna, 25 MHz from Drønbreen and
+//! 100 MHz (unshielded) from Kroppbreen. With the defaults it found every
+//! standstill identified by eye and nothing else, except one weak 100 MHz
+//! standstill that scored 7.3.
 
 use ndarray::{s, Array2, ArrayView2};
 
@@ -55,6 +59,22 @@ pub const DEFAULT_STRENGTH: f32 = 8.;
 /// the window starts to overlap moving traces, high enough that ordinary
 /// moving traces (median 0) never chain two detections together.
 pub const EXTEND_Z: f32 = 4.;
+
+/// How many times louder than the median sample row (by RMS) a row may be
+/// before it is scaled down to that level.
+///
+/// The semblance is weighted by energy, which is right where signal is
+/// strong and noise weak. But the loudest rows are often a ring-down that
+/// continues through a standstill and jitters from trace to trace: on an
+/// unshielded 100 MHz antenna at Kroppbreen, about the first 80 samples
+/// below the direct wave held 86 % of the energy, and the four standstills
+/// that showed only below them scored 1.7 to 7.3. Capped at four times the
+/// median, the weakest of them scored 7.3. Quiet rows are not raised: on
+/// 800 MHz data from Austfonna, giving every row the same weight raised
+/// interference that is coherent from trace to trace into false
+/// standstills. The cap also widened the margin between standstills and
+/// moving traces there and at Drønbreen, from about 2 to about 3.6.
+pub const ROW_CAP: f32 = 4.;
 
 /// Traces in the sliding semblance window.
 ///
@@ -108,9 +128,12 @@ impl Standstill {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detection {
     pub standstills: Vec<Standstill>,
-    /// The highest score outside every standstill, or `None` when nothing
-    /// is left outside them. How close the moving traces come to the
-    /// threshold.
+    /// Stretches that reached the threshold but were shorter than the
+    /// minimum duration, and so were left in place.
+    pub too_short: Vec<Standstill>,
+    /// The highest score outside every standstill and every stretch in
+    /// `too_short`, or `None` when nothing is left outside them. How close
+    /// the moving traces come to the threshold.
     pub highest_elsewhere: Option<f32>,
 }
 
@@ -199,14 +222,20 @@ pub fn detect(data: ArrayView2<f32>, settings: &Settings) -> Result<Detection, S
         })
         .collect();
     let mut standstills = merge(detected.iter().map(|&s| refine(&prepared, s)).collect());
+    let too_short: Vec<Standstill> = standstills
+        .iter()
+        .filter(|s| s.len() < settings.min_traces)
+        .copied()
+        .collect();
     standstills.retain(|s| s.len() >= settings.min_traces);
 
-    // "Elsewhere" is the moving profile. The traces refining trimmed off a
-    // detection score high only because the window reached into the
-    // standstill, so a kept standstill's detection is left out too.
+    // "Elsewhere" is the moving profile: neither a standstill nor a stretch
+    // that reached the threshold. The traces refining trimmed off a
+    // detection score high only because the window reached into it, so its
+    // detection is left out too.
     let mut inside = vec![false; width];
     let overlaps = |a: &Standstill, b: &Standstill| a.start < b.end && b.start < a.end;
-    for s in &standstills {
+    for s in standstills.iter().chain(&too_short) {
         inside[s.start..s.end].iter_mut().for_each(|v| *v = true);
         for d in detected.iter().filter(|d| overlaps(d, s)) {
             inside[d.start..d.end].iter_mut().for_each(|v| *v = true);
@@ -221,11 +250,14 @@ pub fn detect(data: ArrayView2<f32>, settings: &Settings) -> Result<Detection, S
 
     Ok(Detection {
         standstills,
+        too_short,
         highest_elsewhere,
     })
 }
 
-/// Subtract each trace's mean, then the mean trace of the profile.
+/// Subtract each trace's mean, then the mean trace of the profile, then
+/// scale down every sample row louder than [`ROW_CAP`] times the median
+/// row (by RMS) to that level.
 fn prepare(data: ArrayView2<f32>) -> Array2<f32> {
     let mut prepared = data.to_owned();
     for mut trace in prepared.columns_mut() {
@@ -233,6 +265,20 @@ fn prepare(data: ArrayView2<f32>) -> Array2<f32> {
         trace.mapv_inplace(|v| v - mean as f32);
     }
     rolling::background_removal(&mut prepared, None, Statistic::Mean);
+
+    let rms: Vec<f32> = prepared
+        .rows()
+        .into_iter()
+        .map(|row| {
+            (row.iter().map(|&v| (v as f64).powi(2)).sum::<f64>() / row.len() as f64).sqrt() as f32
+        })
+        .collect();
+    let cap = ROW_CAP * median(rms.clone());
+    for (mut row, &r) in prepared.rows_mut().into_iter().zip(&rms) {
+        if r > cap {
+            row.mapv_inplace(|v| v * cap / r);
+        }
+    }
     prepared
 }
 
@@ -564,7 +610,11 @@ pub(crate) mod tests {
             min_traces: 200,
             ..settings()
         };
-        assert!(detect(data.view(), &strict).unwrap().standstills.is_empty());
+        let found = detect(data.view(), &strict).unwrap();
+        assert!(found.standstills.is_empty());
+        // Reported as skipped, and not counted as the moving profile.
+        assert_eq!(found.too_short.len(), 1, "{:?}", found.too_short);
+        assert!(found.highest_elsewhere.unwrap() < DEFAULT_STRENGTH);
     }
 
     #[test]

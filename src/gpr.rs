@@ -2086,10 +2086,21 @@ impl GPR {
             filters::balance::Span::Traces(n) => format!("{n} traces"),
         };
         let threshold = format!("strength >= {strength}, >= {shortest}");
+        let skipped = match detection.too_short.as_slice() {
+            [] => String::new(),
+            short => format!(
+                " Skipped {} shorter than {shortest} (strongest {:.1}).",
+                short.len(),
+                short
+                    .iter()
+                    .map(|s| s.peak)
+                    .fold(f32::NEG_INFINITY, f32::max)
+            ),
+        };
         if detection.standstills.is_empty() {
             self.log_event(
                 "remove_standstills",
-                &format!("Found no standstills ({threshold}).{elsewhere}{no_frequency}"),
+                &format!("Found no standstills ({threshold}).{skipped}{elsewhere}{no_frequency}"),
                 start_time,
             );
             return;
@@ -2156,7 +2167,7 @@ impl GPR {
             "remove_standstills",
             &format!(
                 "Replaced {replaced} ({threshold}). Traces (duration, strength): {}. {width} -> {} \
-                 traces.{elsewhere}{no_frequency}",
+                 traces.{skipped}{elsewhere}{no_frequency}",
                 listed.join(", "),
                 self.width()
             ),
