@@ -117,6 +117,7 @@ never require a login, since they are how one happens.
 | `GET` | `/api/v1/datasets/{radargram_id}` | anyone | One radargram's summary metadata. |
 | `DELETE` | `/api/v1/datasets/{radargram_id}` | `operator` | Remove a radargram from the project, or stop serving it. |
 | `GET` | `/api/v1/datasets/{radargram_id}/attributes` | anyone | Human-readable metadata, the processing steps and log, and every raw attribute of the file. |
+| `GET` | `/api/v1/datasets/{radargram_id}/axes/gprinterp` | anyone | The `coordinates.axes` block a gprinterp document drawn on the current revision should carry, as the viewer writes it when saving, with the revision it describes. `null` when the file cannot describe its axes. Picks saved without it cannot be carried onto a reprocessed revision. |
 | `GET` | `/api/v1/datasets/{radargram_id}/axes` | anyone | The `twtt` and `depth` axes per sample and the `distance` and `elevation` per trace. An axis the file lacks is `null`. |
 | `GET` | `/api/v1/datasets/{radargram_id}/traces/{trace}` | anyone | One trace's amplitudes. |
 | `GET` | `/api/v1/datasets/{radargram_id}/track` | anyone | The radargram's track, for the map. |

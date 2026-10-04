@@ -13,8 +13,8 @@ dependencies = ["numpy"]
 full = ["xarray"]
 # The HTTP client, `ridal.client`.
 client = ["httpx>=0.27"]
-# `Catalog.to_pandas()` and friends.
-geo = ["pandas", "geopandas"]
+# `ridal.client.Catalog.to_pandas()`.
+geo = ["pandas"]
 
 [tool.pytest.ini_options]
 testpaths = ["test_ridal_interface.py", "tests"]
@@ -30,4 +30,4 @@ default-features = false
 
 [tool.pyrefly]
 project-includes = ["python", "tests"]
-search-path = ["python"]
+search-path = ["python", "tests/client"]

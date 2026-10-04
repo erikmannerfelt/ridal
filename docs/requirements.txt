@@ -3,3 +3,5 @@ myst-parser>=5
 sphinx-copybutton
 sphinx-design
 furo
+# ridal.client, which the Python reference documents.
+httpx

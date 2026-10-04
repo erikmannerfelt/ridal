@@ -326,11 +326,22 @@ pub async fn get_interpretation_carried(
 
     Ok((
         [(header::ETAG, format!("\"{}\"", stored.version))],
-        Json(serde_json::json!({
-            "report": carried.report,
-            "document": carried.document,
-        })),
+        Json(CarriedView {
+            report: carried.report,
+            document: carried.document,
+        }),
     ))
+}
+
+/// `GET …/interpretations/{user}/carried`: the picks as they would be drawn
+/// on the current revision, and what carrying them there did.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct CarriedView {
+    report: crate::interp::carry::CarryReport,
+    /// The gprinterp document as it should be drawn, or `null` when it
+    /// cannot be carried (`report.severity` is `refused`).
+    #[schema(required = true, value_type = Option<Object>)]
+    document: Option<gprinterp::Document>,
 }
 
 /// Which revision the page believed it was adopting onto.
@@ -591,15 +602,34 @@ pub async fn promote_interpretation(
 
     Ok((
         [(header::ETAG, format!("\"{version}\""))],
-        Json(serde_json::json!({
-            "radargram_id": radargram.as_str(),
-            "user": user.as_str(),
-            "from_revision": from_revision,
-            "to_revision": revision.to_string(),
-            "dropped": carried.report.dropped,
-            "archived": archived.map(|p| p.display().to_string()),
-        })),
+        Json(Promoted {
+            radargram_id: radargram.as_str().to_string(),
+            user: user.as_str().to_string(),
+            from_revision,
+            to_revision: revision.to_string(),
+            dropped: carried.report.dropped,
+            archived: archived.map(|p| p.display().to_string()),
+        }),
     ))
+}
+
+/// `POST …/interpretations/{user}/promote`: the carried view is now the
+/// interpretation.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Promoted {
+    radargram_id: String,
+    user: String,
+    /// The revision the picks were drawn on, where the document said.
+    #[schema(required = true)]
+    from_revision: Option<String>,
+    /// The revision they are now drawn on.
+    to_revision: String,
+    /// Features that did not fit on the new revision and were left out.
+    dropped: Vec<crate::interp::carry::Dropped>,
+    /// Where the interpretation as it was drawn was kept, or `null` when
+    /// nothing needed keeping.
+    #[schema(required = true)]
+    archived: Option<String>,
 }
 
 /// `PUT /api/v1/datasets/{id}/interpretations/{user}`
@@ -691,16 +721,29 @@ pub async fn put_interpretation(
     Ok((
         status,
         [(header::ETAG, format!("\"{version}\""))],
-        Json(serde_json::json!({
-            "radargram_id": radargram.as_str(),
-            "user": user.as_str(),
-            "version": version.as_str(),
+        Json(Saved {
+            radargram_id: radargram.as_str().to_string(),
+            user: user.as_str().to_string(),
+            version: version.as_str().to_string(),
             // Warnings are reported, not enforced: the format is permissive
             // by design and a document missing a stable feature id still
             // saves correctly.
-            "warnings": report.warnings.iter().map(|w| w.to_string()).collect::<Vec<_>>(),
-        })),
+            warnings: report.warnings.iter().map(|w| w.to_string()).collect(),
+        }),
     ))
+}
+
+/// `PUT …/interpretations/{user}`: the interpretation is saved.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Saved {
+    radargram_id: String,
+    user: String,
+    /// The new version, also sent as the `ETag`. Send it as `If-Match` with
+    /// the next save.
+    version: String,
+    /// What the gprinterp validator noticed but did not refuse, such as a
+    /// feature without a stable id.
+    warnings: Vec<String>,
 }
 
 /// `DELETE /api/v1/datasets/{id}/interpretations/{user}`

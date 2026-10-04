@@ -34,13 +34,7 @@ def ridal_binary() -> str:
 @pytest.fixture(scope="session")
 def radargram(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """A processed radargram, made once for the session."""
-    if not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists():
-        pytest.skip("processing the fixture needs PROJ, and the fixture")
-    import ridal
-
-    output = tmp_path_factory.mktemp("processed") / "line.nc"
-    ridal.process(str(FIXTURE), str(output), steps=["zero_corr"], quiet=True)
-    return output
+    return process_fixture(tmp_path_factory.mktemp("processed") / "line.nc")
 
 
 def start(argv: list[str]) -> tuple[subprocess.Popen[str], str]:
@@ -68,6 +62,38 @@ def stop(process: subprocess.Popen[str]) -> None:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired:
         process.kill()
+
+
+def process_fixture(output: Path) -> Path:
+    """Process the fixture radargram. Each call is a new revision of the same
+    radargram: the revision id follows the processing date."""
+    if not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists():
+        pytest.skip("processing the fixture needs PROJ, and the fixture")
+    import ridal
+
+    ridal.process(
+        str(FIXTURE),
+        str(output),
+        steps=["zero_corr"],
+        quiet=True,
+        radargram_id="line-01",
+    )
+    return output
+
+
+@pytest.fixture
+def empty_gui(tmp_path: Path) -> Iterator[Server]:
+    """``ridal gui`` over an empty project of the test's own, to change."""
+    binary = ridal_binary()
+    root = tmp_path / "project"
+    subprocess.run(
+        [binary, "project", "init", str(root)], check=True, capture_output=True
+    )
+    process, url = start([binary, "gui", str(root)])
+    try:
+        yield Server(url, root)
+    finally:
+        stop(process)
 
 
 @pytest.fixture(scope="session")

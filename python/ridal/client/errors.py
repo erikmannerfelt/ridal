@@ -26,6 +26,20 @@ class ProtocolError(RidalError):
     """
 
 
+class ReplacementRefused(RidalError):
+    """A replacement was not committed, because of what it would do to picks.
+
+    Attributes
+    ----------
+    report : ConsequenceReport or None
+        The server's report, which says what would have happened.
+    """
+
+    def __init__(self, reason: str, report: object | None) -> None:
+        super().__init__(reason)
+        self.report = report
+
+
 class ServerError(RidalError):
     """The server refused or failed a request.
 

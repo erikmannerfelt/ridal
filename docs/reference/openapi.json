@@ -14,6 +14,69 @@
   "paths": {},
   "components": {
     "schemas": {
+      "Added": {
+        "type": "object",
+        "description": "`POST /api/v1/datasets`: the radargram is in the project.",
+        "required": [
+          "radargram_id",
+          "revision_id",
+          "display_name",
+          "group_name",
+          "bytes",
+          "archived_interpretations"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The size of the file as stored.",
+            "minimum": 0
+          },
+          "archived_interpretations": {
+            "type": "integer",
+            "description": "How many interpretations sit in the archive under this id, from an\nearlier removal. Almost always zero. When it is not, the operator has\njust reused an id that someone drew picks on, and only they know\nwhether this is the same line coming back or a different one taking\nits name.",
+            "minimum": 0
+          }
+        }
+      },
+      "CarriedView": {
+        "type": "object",
+        "description": "`GET …/interpretations/{user}/carried`: the picks as they would be drawn\non the current revision, and what carrying them there did.",
+        "required": [
+          "report",
+          "document"
+        ],
+        "properties": {
+          "report": {
+            "$ref": "#/components/schemas/CarryReport"
+          },
+          "document": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The gprinterp document as it should be drawn, or `null` when it\ncannot be carried (`report.severity` is `refused`)."
+          }
+        }
+      },
       "CarryReport": {
         "type": "object",
         "description": "\nEvery field is sent, `null` when it does not apply, so a client reads one\nshape whatever happened.",
@@ -485,6 +548,31 @@
           }
         }
       },
+      "GprinterpAxes": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/axes/gprinterp`.",
+        "required": [
+          "radargram_id",
+          "revision_id",
+          "axes"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "revision_id": {
+            "type": "string",
+            "description": "The revision the axes describe. A document carrying them should name\nit in `source.revision_id`."
+          },
+          "axes": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The `coordinates.axes` block for a gprinterp document (its SPEC\n§7.4), or `null` when the file cannot describe its axes."
+          }
+        }
+      },
       "Grant": {
         "type": "object",
         "description": "What a token may do in one project, at most.",
@@ -721,6 +809,51 @@
           }
         }
       },
+      "Promoted": {
+        "type": "object",
+        "description": "`POST …/interpretations/{user}/promote`: the carried view is now the\ninterpretation.",
+        "required": [
+          "radargram_id",
+          "user",
+          "from_revision",
+          "to_revision",
+          "dropped",
+          "archived"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "from_revision": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The revision the picks were drawn on, where the document said."
+          },
+          "to_revision": {
+            "type": "string",
+            "description": "The revision they are now drawn on."
+          },
+          "dropped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Dropped"
+            },
+            "description": "Features that did not fit on the new revision and were left out."
+          },
+          "archived": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the interpretation as it was drawn was kept, or `null` when\nnothing needed keeping."
+          }
+        }
+      },
       "Replaced": {
         "type": "object",
         "description": "`POST /api/v1/datasets/{radargram_id}/replace/{token}`: the replace is done.",
@@ -743,7 +876,7 @@
       },
       "RevisionDeclarations": {
         "type": "object",
-        "description": "A processed file's identity and axis declarations: everything a\nreplace's consequence report reads from the incoming file (#331).\n\nThe body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`,\nand what `ridal._preflight_body` reads from a local file for the Python\nclient (#328), so one type is both ends of the request. A type of its\nown rather than [`AxisDeclarations`] itself, so the API does not change\nwhen that internal type does.",
+        "description": "A processed file's identity and axis declarations: everything a\nreplace's consequence report reads from the incoming file (#331).\n\nThe body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`,\nand what `ridal._ridal._preflight_body` reads from a local file for the\nPython client (#328), so one type is both ends of the request. A type of\nits own rather than [`AxisDeclarations`] itself, so the API does not\nchange when that internal type does.",
         "required": [
           "radargram_id",
           "processing_datetime",
@@ -815,6 +948,35 @@
           "operator",
           "admin"
         ]
+      },
+      "Saved": {
+        "type": "object",
+        "description": "`PUT …/interpretations/{user}`: the interpretation is saved.",
+        "required": [
+          "radargram_id",
+          "user",
+          "version",
+          "warnings"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "The new version, also sent as the `ETag`. Send it as `If-Match` with\nthe next save."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the gprinterp validator noticed but did not refuse, such as a\nfeature without a stable id."
+          }
+        }
       },
       "Severity": {
         "type": "string",

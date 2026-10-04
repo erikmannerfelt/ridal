@@ -16,7 +16,7 @@ use axum::http::header;
 use axum::response::IntoResponse;
 use utoipa::OpenApi;
 
-use super::{interp_routes, replace_routes, routes, site};
+use super::{interp_routes, lifecycle_routes, replace_routes, routes, site};
 use crate::interp::carry::{CarryReport, Displacement, Dropped, Severity};
 use crate::interp::source::RevisionDeclarations;
 use crate::project::roles::{DownloadScope, Role};
@@ -41,7 +41,12 @@ use crate::site::tokens;
         routes::DatasetList,
         routes::DatasetSummary,
         routes::DatasetAxes,
+        routes::GprinterpAxes,
         interp_routes::InterpretationList,
+        interp_routes::Saved,
+        interp_routes::Promoted,
+        interp_routes::CarriedView,
+        lifecycle_routes::Added,
         RevisionDeclarations,
         replace_routes::Staged,
         replace_routes::Replaced,
