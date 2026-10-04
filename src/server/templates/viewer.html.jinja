@@ -248,7 +248,10 @@
   </div>
   {% endif %}
 
-  <div id="pick-error" class="warning" role="status" aria-live="polite" hidden></div>
+  <div id="pick-error" class="warning" role="status" aria-live="polite" hidden>
+    <div id="pick-error-text"></div>
+    <button type="button" id="pick-error-dismiss" class="error-overlay-dismiss" aria-label="Dismiss">&times;</button>
+  </div>
 
   <dialog id="image-dialog">
     <h2>Download rendered image</h2>
