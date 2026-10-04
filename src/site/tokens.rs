@@ -432,7 +432,9 @@ mod tests {
             Some(60),
         )
         .unwrap();
-        assert!(text.starts_with("ridal_"), "{text}");
+        // No message: it would print the token, which the code scanner
+        // rightly treats as a secret written to a log.
+        assert!(text.starts_with("ridal_"));
         assert_eq!(text.len(), PREFIX.len() + 16 + 1 + 64);
         assert!(!text.contains(&token.token_hash));
         let stored = serde_json::to_string(&token).unwrap();
