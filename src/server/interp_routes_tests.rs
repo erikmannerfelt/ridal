@@ -1268,6 +1268,66 @@ async fn a_catalog_with_nothing_interpreted_says_so() {
     );
 }
 
+/// [`mixed_catalog_app`], but with `permits` as the whole render budget.
+fn mixed_catalog_app_with_permits(
+    permits: Arc<tokio::sync::Semaphore>,
+) -> (tempfile::TempDir, Router) {
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    let radargrams = radargrams(dir.path());
+    write_test_nc_with_axes(&radargrams.join("line-01.nc"), "line-01", Some("survey"));
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap()
+        .with_render_permits(permits),
+    );
+    (dir, build_router(state))
+}
+
+// #136: a merged export waits for a render permit like a render does, so a
+// server busy with renders turns it away with the same 503 rather than
+// starting it on top of them. The clock is paused, so the 30 s permit
+// timeout elapses as soon as the request has nothing else to do.
+#[tokio::test(start_paused = true)]
+#[serial_test::serial(netcdf)]
+async fn a_merged_level2_export_waits_for_a_render_permit() {
+    let (_dir, app) = mixed_catalog_app_with_permits(Arc::new(tokio::sync::Semaphore::new(0)));
+    for uri in ["/api/v1/groups/survey/level2", "/api/v1/catalog/level2"] {
+        let response = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        assert!(
+            response.headers().contains_key(header::RETRY_AFTER),
+            "a 503 without Retry-After leaves the client guessing: {uri}"
+        );
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"]["code"], "render_busy", "{uri}");
+    }
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_merged_level2_export_with_its_permits_closed_is_an_internal_error() {
+    let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    permits.close();
+    let (_dir, app) = mixed_catalog_app_with_permits(permits);
+    let (status, _, body) = get(&app, "/api/v1/catalog/level2").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["error"]["code"], "render_permits_closed");
+}
+
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn single_level2_points_name_their_radargram_too() {
