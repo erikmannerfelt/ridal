@@ -2338,6 +2338,12 @@ impl GPR {
         })
     }
 
+    /// Append `other`'s traces to these.
+    ///
+    /// Refused, naming both values, when anything the merged file would
+    /// state once for all its traces differs: the CRS, antenna frequency,
+    /// time window, antenna separation (nominal and effective) or medium
+    /// velocity.
     pub fn merge(&mut self, other: &GPR) -> Result<(), String> {
         let start_time = SystemTime::now();
         if self.location.crs != other.location.crs {
@@ -2354,6 +2360,28 @@ impl GPR {
             Err(format!(
                 "Time windows are different: {} vs {}",
                 self.metadata.time_window, other.metadata.time_window
+            ))
+        // The checks below do not stop the arrays concatenating; they stop
+        // the result declaring one value for the whole file that is true of
+        // only part of it (#151). Per-trace offsets (`crop_ns`,
+        // `time_zero_ns`) concatenate and need no check.
+        } else if self.metadata.antenna_separation != other.metadata.antenna_separation {
+            Err(format!(
+                "Antenna separations are different: {} m vs {} m",
+                self.metadata.antenna_separation, other.metadata.antenna_separation
+            ))
+        } else if self.antenna_separation_effective != other.antenna_separation_effective {
+            // Unlike the others this is recoverable, so say how.
+            Err(format!(
+                "Effective antenna separations are different: {} m vs {} m. One radargram \
+                 has had correct_antenna_separation applied and the other has not; apply it \
+                 to both before merging",
+                self.antenna_separation_effective, other.antenna_separation_effective
+            ))
+        } else if self.metadata.medium_velocity != other.metadata.medium_velocity {
+            Err(format!(
+                "Medium velocities are different: {} m/ns vs {} m/ns",
+                self.metadata.medium_velocity, other.metadata.medium_velocity
             ))
         } else {
             self.location
@@ -3599,6 +3627,40 @@ pub mod tests {
         let axis = crate::interp::anchors::trace_time_axis(&times).unwrap();
         let last = axis.points.unwrap().last().unwrap().trace;
         assert_eq!(last, 3547., "the trace_time anchor ends at trace {last}");
+    }
+
+    #[test]
+    fn merge_refuses_what_the_merged_file_could_not_state_once() {
+        let base = || make_dummy_gpr(20, 10, Some(1.));
+
+        let mut other = base();
+        other.metadata.antenna_separation = 4.;
+        let message = base().merge(&other).unwrap_err();
+        assert!(
+            message.contains("Antenna separations are different"),
+            "{message}"
+        );
+
+        // Corrected on one side only: recoverable, and the message says how.
+        let mut other = base();
+        other.antenna_separation_effective = 0.;
+        let message = base().merge(&other).unwrap_err();
+        assert!(message.contains("correct_antenna_separation"), "{message}");
+
+        let mut other = base();
+        other.metadata.medium_velocity = 0.1;
+        let message = base().merge(&other).unwrap_err();
+        assert!(
+            message.contains("Medium velocities are different"),
+            "{message}"
+        );
+
+        // Differently cropped inputs are fine: the offsets are per trace.
+        let mut other = base();
+        other.crop_ns = vec![3.; other.width()];
+        let mut merged = base();
+        merged.merge(&other).unwrap();
+        assert_eq!(merged.crop_ns.len(), 40);
     }
 
     /// `distances` and `velocities` must take the square root of the summed
