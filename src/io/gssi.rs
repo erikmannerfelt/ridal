@@ -309,6 +309,9 @@ mod tests {
     }
 
     #[test]
+    // EPSG:4326 is not UTM, so this runs `projinfo` and must not overlap the
+    // `serial` tests that unset `PATH` (see `coords::tests::test_projinfo_to_wkt`).
+    #[serial_test::parallel]
     fn test_load_gssi_dzg() {
         let temp_dir = tempfile::tempdir().unwrap();
         let dzg_path = temp_dir.path().join("track.DZG");

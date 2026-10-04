@@ -8,6 +8,7 @@ pub mod coordinates;
 pub mod gain;
 pub mod rolling;
 pub mod siglog;
+pub mod standstill;
 pub mod tones;
 pub mod zero_corr;
 #[cfg(test)]

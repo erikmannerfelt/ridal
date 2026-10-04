@@ -33,6 +33,22 @@ Recommended to be run as the first filter if required! The strength threshold (m
 |---|---|---|
 | `strength` | `1` | Mean absolute trace value below which a trace counts as empty |
 
+## remove_standstills
+Replace each stretch recorded while the radar stood still with its median trace.
+
+A time-triggered radar keeps recording when it stops, and in a standstill each trace repeats the one before it. This is found from the radar data alone, without the positions, by how coherent neighbouring traces are below the direct wave. Each stretch is scored as a robust z against the rest of the profile, and a stretch is a standstill when it reaches `strength` and lasts at least `min_duration`, given in seconds of recording (`5s`) or traces (`25`). Seconds use the trace interval in the file header, which `average_traces` keeps up to date.
+
+The log lists every standstill with its traces, duration and strength, and the highest strength elsewhere, so the threshold can be judged against both. Each median trace keeps the time and position of the middle of its stretch, or of the first or last trace for a standstill at the start or end of the profile, so that interpretations made before this step still carry over.
+
+Run it early, before the filters. After a running `background_removal` it missed the longest standstills and found false ones, and after `dewow` it missed a weak one on 100 MHz data. Run it before `equidistant_traces` too, which it can replace when the positions are poor. Standstills that together make up more than half the profile are not found. Examples: `remove_standstills`, `remove_standstills(6)`, `remove_standstills(min_duration=20)`.
+
+So far this has only been tested on Malå data (25, 100 and 800 MHz). With the defaults it found every standstill identified by eye there except one weak 100 MHz one, which `remove_standstills(7)` found. Check the result before relying on it for other instruments.
+
+| argument | default | description |
+|---|---|---|
+| `strength` | `8` | How far a standstill must stand out from the rest of the profile, as a robust z. Lower finds more |
+| `min_duration` | `5s` | The shortest standstill: seconds (`5s`) or traces (`25`) |
+
 ## average_traces
 Average traces in a given window.
 
