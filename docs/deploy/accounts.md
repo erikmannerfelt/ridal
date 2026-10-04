@@ -230,8 +230,14 @@ treated as someone who is not signed in. Like a password, a token is refused
 by a server reachable over the network without HTTPS
 (see {doc}`reverse-proxy`).
 
-For now, tokens are made on the server with the command line, or through the
-HTTP API from a signed-in session:
+Make one from the **API tokens** section of the site's **Settings** page
+(each project's settings page links to it), which lists your tokens and
+revokes them too. Each grant picks one of your
+projects, and its role and download scope start at your membership's and can
+only go down from there. A server administrator also finds every account's
+tokens there, under **Everyone's API tokens**, and can revoke any of them.
+
+On the server, the command line does the same for any account:
 
 ```bash
 ridal site token add anna --name laptop --grant dronbreen:operator --grant austfonna:viewer:results
@@ -242,11 +248,11 @@ ridal site token revoke 3f9a2c1d0b8e7a65
 `--grant` takes `PROJECT:ROLE` or `PROJECT:ROLE:DOWNLOAD`; without a
 download scope, the membership's applies. A grant above the account's
 membership is refused. A token lasts 90 days unless `--expires` says
-otherwise (`30d`, `12w`, `2y` or `never`). It is printed once and stored only
-as a hash, in the site's `tokens.json`. Send it as
-`Authorization: Bearer <token>`. Removing an account removes its tokens, and
-deleting a project removes it from every token. Creating and revoking a token
-are recorded in the site history.
+otherwise (`30d`, `12w`, `2y` or `never`). It is shown once, by the page or
+the command that made it, and stored only as a hash, in the site's
+`tokens.json`. Send it as `Authorization: Bearer <token>`. Removing an account
+removes its tokens, and deleting a project removes it from every token.
+Creating and revoking a token are recorded in the site history.
 
 ## Publishing a finished site
 

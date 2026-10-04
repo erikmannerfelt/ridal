@@ -55,6 +55,15 @@
           <button type="submit">Save site settings</button>
           <span id="site-settings-status" class="pick-status"></span>
         </form>
+        {#- Tokens belong to the account and can span projects, so they are
+            managed on the site's page; this only says where (#341). -#}
+        {% if site_managed %}
+          <p class="hint" id="api-tokens-link">
+            API tokens, which let a script such as the Python client act as
+            you, are on the
+            <a href="{{ site_settings_href }}#tokens-section">site settings page</a>.
+          </p>
+        {% endif %}
       </section>
     {% endif %}
 

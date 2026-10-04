@@ -2491,6 +2491,89 @@ async fn tokens_are_listed_and_revoked_by_their_owner_or_a_server_admin() {
 }
 
 #[tokio::test]
+async fn the_settings_page_offers_tokens_only_where_the_account_is_a_member() {
+    let (_dir, app, cookie) = token_site().await;
+    let archived = send(
+        &app,
+        post_json(
+            "/api/v1/projects/ice/archive",
+            &json!({}),
+            Some(&sign_in(&app, "cy").await),
+        ),
+    )
+    .await;
+    assert_eq!(archived.status, StatusCode::OK, "{}", archived.text);
+
+    // anna is an operator in glac and a viewer in ice, which is archived:
+    // both are offered, each with the membership as its ceiling, and the
+    // project she is not in is not.
+    let page = send(&app, get("/settings", Some(&cookie))).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    assert!(page.text.contains(r#"id="add-token""#), "{}", page.text);
+    assert!(
+        page.text
+            .contains(r#"<option value="glac" data-role="operator" data-download="all">"#),
+        "{}",
+        page.text
+    );
+    assert!(
+        page.text
+            .contains(r#"data-download="results">ice (archived)</option>"#),
+        "{}",
+        page.text
+    );
+    assert!(!page.text.contains(r#"value="other""#), "{}", page.text);
+    // Everyone's tokens are for a server administrator only.
+    assert!(!page.text.contains(r#"id="all-tokens""#), "{}", page.text);
+    // A project's settings page points to them, since that is where
+    // someone looking for a token is likely to start.
+    let project_page = send(&app, get("/p/glac/settings", Some(&cookie))).await;
+    assert!(
+        project_page.text.contains(r#"id="api-tokens-link""#)
+            && project_page.text.contains("settings#tokens-section"),
+        "{}",
+        project_page.text
+    );
+
+    // The secret is shown by the response that made it, never by a page.
+    let token = create_token(
+        &app,
+        &cookie,
+        json!([{"project": "glac", "role": "viewer", "download": "all"}]),
+    )
+    .await;
+    let later = send(&app, get("/settings", Some(&cookie))).await;
+    assert!(!later.text.contains(&token), "{}", later.text);
+    assert!(
+        !later.text.contains(token.rsplit('_').next().unwrap()),
+        "{}",
+        later.text
+    );
+
+    // An account in no project has nowhere to grant, and is told so.
+    let bo = sign_in(&app, "bo").await;
+    let page = send(&app, get("/settings", Some(&bo))).await;
+    assert!(
+        page.text.contains(r#"id="token-no-projects""#),
+        "{}",
+        page.text
+    );
+    assert!(!page.text.contains(r#"id="add-token""#), "{}", page.text);
+
+    // A server administrator may grant any project, as an administrator,
+    // and sees everyone's tokens.
+    let cy = sign_in(&app, "cy").await;
+    let page = send(&app, get("/settings", Some(&cy))).await;
+    assert!(
+        page.text
+            .contains(r#"<option value="other" data-role="admin" data-download="all">"#),
+        "{}",
+        page.text
+    );
+    assert!(page.text.contains(r#"id="all-tokens""#), "{}", page.text);
+}
+
+#[tokio::test]
 async fn a_token_is_refused_over_plain_http_on_a_network_address() {
     let hash = password_hash();
     let (dir, app) = site_with(
@@ -2641,4 +2724,12 @@ async fn ridal_gui_ignores_a_token() {
     assert_eq!(response.status, StatusCode::OK, "{}", response.text);
     let me = send(&app, bearer(get("/api/v1/auth/me", None), "ridal_nonsense")).await;
     assert_eq!(me.body["token"], Value::Null);
+    // Nor does its settings page send anyone to look for tokens.
+    let settings = send(&app, get("/p/default/settings", None)).await;
+    assert_eq!(settings.status, StatusCode::OK, "{}", settings.text);
+    assert!(
+        !settings.text.contains(r#"id="api-tokens-link""#),
+        "{}",
+        settings.text
+    );
 }

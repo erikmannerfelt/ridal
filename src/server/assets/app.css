@@ -1442,6 +1442,7 @@ button.danger {
 #derived-actions button,
 .group-draft button,
 dialog > p > button,
+#token-result button,
 button.danger {
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-strong);
@@ -1457,6 +1458,7 @@ button.danger {
 #derived-actions button:hover:not(:disabled),
 .group-draft button:hover:not(:disabled),
 dialog > p > button:hover:not(:disabled),
+#token-result button:hover:not(:disabled),
 button.danger:hover:not(:disabled) {
   border-color: var(--color-accent);
 }
@@ -2960,4 +2962,53 @@ button.danger:disabled {
 
 .layer-panel > summary:hover {
   background: var(--color-surface-sunken);
+}
+
+/* API tokens on the site settings page (#341). The secret is one long
+ * unbroken word, so it may break anywhere rather than widen the page on a
+ * phone. */
+.token-secret {
+  display: block;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+/* A token that never expires outlives the script it was made for unless
+ * someone remembers it, so its badge reads as a warning. */
+.project-badge.token-never {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+}
+
+/* The grant rows are one group, named by the legend; each row is the
+ * usual wrapping field row, with its Remove button on the inputs' line. */
+.token-grants {
+  border: 0;
+  padding: 0;
+  margin: 0 0 var(--space-4);
+  min-width: 0;
+}
+
+.token-grants legend {
+  padding: 0;
+  font-weight: 600;
+}
+
+.token-grant {
+  align-items: flex-end;
+}
+
+/* On a phone a row wraps onto two lines, and without a rule between rows
+ * the second line of one reads as the first of the next. */
+.token-grant + .token-grant {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+
+/* "glac: operator · results" and a date are each one value: broken over
+ * lines on a phone they read as several. The table scrolls instead. */
+.token-grant-line,
+.token-date {
+  white-space: nowrap;
 }

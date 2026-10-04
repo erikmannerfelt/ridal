@@ -4,9 +4,10 @@
  * NOT under assets/vendor/ -- scripts/vendor_leaflet.sh does `rm -rf` on
  * that directory.
  *
- * Loaded only on the landing page of a site, and every control it wires is
- * rendered only for a server administrator, so a non-admin visitor gets an
- * empty script rather than a broken page.
+ * Loaded on the landing and settings pages of a site. Every part looks up
+ * its own elements and does nothing when they are not there, since most
+ * are rendered only for a server administrator, and API tokens (#341) only
+ * on the settings page.
  *
  * Wrapped in an IIFE so it declares nothing globally; `assets.rs` has a
  * test that fails if any two scripts on a page collide.
@@ -75,6 +76,310 @@
       }
     });
   }
+
+  /* ---- API tokens (#341) -------------------------------------------- */
+
+  const tokensTable = byId("tokens-table");
+  const allTokensTable = byId("all-tokens-table");
+  const tokenError = byId("token-error");
+
+  const showTokenError = (message) => {
+    if (!tokenError) return;
+    RIDAL.setMessage(tokenError, message);
+    tokenError.hidden = false;
+  };
+  const clearTokenError = () => {
+    if (!tokenError) return;
+    tokenError.hidden = true;
+    tokenError.textContent = "";
+  };
+
+  /* The date alone: a token's lifetime is counted in days, and the time of
+   * day in UTC would only invite the question of which zone it is in. */
+  const tokenDate = (rfc3339) => String(rfc3339 || "").slice(0, 10);
+
+  function tokenRow(token, withAccount) {
+    const row = document.createElement("tr");
+    const cell = (text, klass) => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      if (klass) td.className = klass;
+      row.appendChild(td);
+      return td;
+    };
+    if (withAccount) cell(token.account || "");
+    cell(token.name);
+
+    const grants = cell("");
+    for (const grant of token.grants || []) {
+      const line = document.createElement("div");
+      line.className = "token-grant-line";
+      line.textContent = `${grant.project}: ${grant.role} · ${grant.download}`;
+      grants.appendChild(line);
+    }
+
+    cell(tokenDate(token.created), "token-date");
+
+    /* A token that never expires is the one most likely to outlive the
+     * script it was made for, so it is marked rather than left blank. An
+     * expired one still exists until revoked, and is marked as dead. */
+    const expires = cell("", "token-date");
+    if (!token.expires) {
+      const badge = document.createElement("span");
+      badge.className = "project-badge token-never";
+      badge.textContent = "never";
+      badge.title = "This token works until it is revoked.";
+      expires.appendChild(badge);
+    } else {
+      expires.textContent = tokenDate(token.expires);
+      if (Date.parse(token.expires) <= Date.now()) {
+        const badge = document.createElement("span");
+        badge.className = "project-badge";
+        badge.textContent = "expired";
+        expires.append(" ", badge);
+      }
+    }
+
+    const actions = cell("");
+    const group = document.createElement("div");
+    group.className = "row-actions";
+    const revoke = document.createElement("button");
+    revoke.type = "button";
+    revoke.className = "danger";
+    revoke.textContent = "Revoke";
+    revoke.addEventListener("click", () => revokeToken(token));
+    group.appendChild(revoke);
+    actions.appendChild(group);
+    return row;
+  }
+
+  function emptyTokenRow(columns, text) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = columns;
+    cell.className = "hint";
+    cell.textContent = text;
+    row.appendChild(cell);
+    return row;
+  }
+
+  async function loadTokens() {
+    if (!tokensTable) return;
+    try {
+      const body = await RIDAL.fetchJson(RIDAL.siteApiPath("tokens"));
+      const tokens = body.tokens || [];
+      tokensTable
+        .querySelector("tbody")
+        .replaceChildren(
+          ...(tokens.length
+            ? tokens.map((token) => tokenRow(token, false))
+            : [emptyTokenRow(5, "You have no API tokens.")]),
+        );
+    } catch (error) {
+      showTokenError(`Could not load your API tokens: ${error.message}`);
+    }
+  }
+
+  let allTokensLoaded = false;
+  async function loadAllTokens() {
+    if (!allTokensTable) return;
+    try {
+      const body = await RIDAL.fetchJson(
+        RIDAL.siteApiPath("tokens") + "?all=true",
+      );
+      const tokens = body.tokens || [];
+      allTokensTable
+        .querySelector("tbody")
+        .replaceChildren(
+          ...(tokens.length
+            ? tokens.map((token) => tokenRow(token, true))
+            : [emptyTokenRow(6, "Nobody has an API token.")]),
+        );
+      allTokensLoaded = true;
+    } catch (error) {
+      allTokensLoaded = false;
+      showError(`Could not load everyone's API tokens: ${error.message}`);
+    }
+  }
+
+  const allTokens = byId("all-tokens");
+  if (allTokens) {
+    allTokens.addEventListener("toggle", () => {
+      if (allTokens.open && !allTokensLoaded) loadAllTokens();
+    });
+  }
+
+  async function revokeToken(token) {
+    const owner = token.account ? ` (${token.account})` : "";
+    const confirmed = window.confirm(
+      `Revoke the API token "${token.name}"${owner}?\n\nAny script using it ` +
+        `is refused from its next request. This cannot be undone; a ` +
+        `replacement is a new token.`,
+    );
+    if (!confirmed) return;
+    clearError();
+    clearTokenError();
+    try {
+      await send("DELETE", RIDAL.siteApiPath("tokens", token.id), {});
+    } catch (error) {
+      showTokenError(error.message);
+    }
+    // Both lists, whichever the button was in: the same token may be in
+    // each for an administrator's own.
+    await loadTokens();
+    if (allTokensLoaded) await loadAllTokens();
+  }
+
+  const tokenResult = byId("token-result");
+  const tokenSecret = byId("token-secret");
+
+  /* Hidden and emptied, so the secret is in the page no longer than it
+   * has to be. */
+  function hideTokenResult() {
+    if (!tokenResult) return;
+    tokenSecret.textContent = "";
+    byId("token-copy-status").textContent = "";
+    tokenResult.hidden = true;
+  }
+
+  if (tokenResult) {
+    byId("token-done").addEventListener("click", hideTokenResult);
+    byId("token-copy").addEventListener("click", async () => {
+      const status = byId("token-copy-status");
+      try {
+        await navigator.clipboard.writeText(tokenSecret.textContent);
+        status.textContent = "Copied";
+      } catch {
+        // The clipboard API needs a secure context and a permission; when
+        // it is refused, select the text so a keyboard copy does it.
+        const range = document.createRange();
+        range.selectNodeContents(tokenSecret);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        status.textContent = "Selected: copy it with your keyboard";
+      }
+    });
+  }
+
+  const addTokenForm = byId("add-token");
+  if (addTokenForm) {
+    const rows = byId("token-grant-rows");
+    const template = byId("token-grant-template");
+    const addGrant = byId("token-add-grant");
+    const expires = addTokenForm.elements.expires;
+    const customExpiry = byId("token-custom-expiry");
+    const roleOrder = [...template.content.querySelector("select[name=role]").options]
+      .map((option) => option.value);
+    const scopeOrder = [
+      ...template.content.querySelector("select[name=download]").options,
+    ].map((option) => option.value);
+
+    expires.addEventListener("change", () => {
+      customExpiry.hidden = expires.value !== "custom";
+    });
+
+    /* Cut a select's options down to those no higher than `ceiling` in
+     * `order`, and choose the ceiling: a new grant can do what the
+     * membership can, which is what a script usually needs. */
+    function limit(select, order, ceiling) {
+      const top = order.indexOf(ceiling);
+      for (const option of select.options) {
+        const allowed = order.indexOf(option.value) <= top;
+        option.hidden = !allowed;
+        option.disabled = !allowed;
+      }
+      select.value = ceiling;
+    }
+
+    const grantRows = () => [...rows.querySelectorAll(".token-grant")];
+
+    /* One grant per project: a project taken in one row is disabled in the
+     * others, and there is no adding a row once every project is taken. */
+    function syncGrantRows() {
+      const taken = grantRows().map((row) => row.querySelector("[name=project]").value);
+      for (const row of grantRows()) {
+        const select = row.querySelector("[name=project]");
+        for (const option of select.options) {
+          option.disabled = option.value !== select.value && taken.includes(option.value);
+        }
+        row.querySelector(".token-remove-grant").hidden = grantRows().length === 1;
+      }
+      const count = template.content.querySelector("[name=project]").options.length;
+      addGrant.disabled = taken.length >= count;
+    }
+
+    function addGrantRow() {
+      const row = template.content.firstElementChild.cloneNode(true);
+      const project = row.querySelector("[name=project]");
+      const taken = grantRows().map((other) => other.querySelector("[name=project]").value);
+      const free = [...project.options].find((option) => !taken.includes(option.value));
+      if (!free) return;
+      project.value = free.value;
+      const applyCeiling = () => {
+        const chosen = project.selectedOptions[0];
+        limit(row.querySelector("[name=role]"), roleOrder, chosen.dataset.role);
+        limit(row.querySelector("[name=download]"), scopeOrder, chosen.dataset.download);
+        syncGrantRows();
+      };
+      project.addEventListener("change", applyCeiling);
+      row.querySelector(".token-remove-grant").addEventListener("click", () => {
+        row.remove();
+        syncGrantRows();
+      });
+      rows.appendChild(row);
+      applyCeiling();
+    }
+
+    function resetTokenForm() {
+      addTokenForm.reset();
+      customExpiry.hidden = true;
+      rows.replaceChildren();
+      addGrantRow();
+    }
+
+    addGrant.addEventListener("click", addGrantRow);
+    addTokenForm.elements.name.addEventListener("input", clearTokenError);
+    resetTokenForm();
+
+    addTokenForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearError();
+      clearTokenError();
+      hideTokenResult();
+      const name = addTokenForm.elements.name.value.trim();
+      if (!name) {
+        showTokenError("Give the token a name, such as the machine or script that will use it.");
+        return;
+      }
+      const lifetime =
+        expires.value === "custom"
+          ? addTokenForm.elements.custom_expires.value.trim()
+          : expires.value;
+      const grants = grantRows().map((row) => ({
+        project: row.querySelector("[name=project]").value,
+        role: row.querySelector("[name=role]").value,
+        download: row.querySelector("[name=download]").value,
+      }));
+      try {
+        const created = await send("POST", RIDAL.siteApiPath("tokens"), {
+          name,
+          expires: lifetime,
+          grants,
+        });
+        byId("token-result-name").textContent = `"${created.info.name}"`;
+        tokenSecret.textContent = created.token;
+        tokenResult.hidden = false;
+        resetTokenForm();
+        await loadTokens();
+        if (allTokensLoaded) await loadAllTokens();
+      } catch (error) {
+        showTokenError(error.message);
+      }
+    });
+  }
+
+  loadTokens();
 
   /* ---- New project -------------------------------------------------- */
 
