@@ -262,6 +262,29 @@ fn read_str_attr(file: &netcdf::File, name: &str) -> Option<String> {
 mod tests {
     #[test]
     #[serial_test::serial(netcdf)]
+    fn revision_declarations_need_a_current_ridal_file() {
+        // A legacy file has no radargram id to send, and an unrelated one no
+        // identity at all; each says which it is rather than sending nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("old.nc");
+        netcdf::create(&legacy)
+            .unwrap()
+            .add_attribute("program_version", "ridal version 0.3.0")
+            .unwrap();
+        let error = super::RevisionDeclarations::read(&legacy).unwrap_err();
+        assert!(error.contains("Reprocess it"), "{error}");
+
+        let other = dir.path().join("other.nc");
+        netcdf::create(&other)
+            .unwrap()
+            .add_dimension("x", 1)
+            .unwrap();
+        let error = super::RevisionDeclarations::read(&other).unwrap_err();
+        assert!(error.contains("not one Ridal processed"), "{error}");
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
     fn a_file_that_cannot_be_opened_is_an_error_not_an_empty_declaration() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("broken.nc");
