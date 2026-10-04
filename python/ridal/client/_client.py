@@ -562,7 +562,7 @@ class Client:
             document: dict[str, Any] = {
                 "key": answer["radargram_id"],
                 "source": {
-                    "radargram_id": answer["radargram_id"],
+                    "id": answer["radargram_id"],
                     "revision_id": answer["revision_id"],
                 },
                 "features": [],

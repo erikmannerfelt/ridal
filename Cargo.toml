@@ -48,7 +48,8 @@ serde_json = "1"
 
 # The level 1 interpretation format (`ridal interp`). Developed alongside
 # ridal in its own repository; see github.com/erikmannerfelt/gprinterp.
-gprinterp = "0.3"
+# 0.3.1 for the `utoipa` feature, which `server` turns on.
+gprinterp = "0.3.1"
 
 # Derived items (#205) are user-authored expressions over picked layers, e.g.
 # `median(bed)` or `std(bed)`. Rhai is an embedded scripting language with no
@@ -163,6 +164,7 @@ server = [
     "minijinja",
     "pulldown-cmark",
     "utoipa",
+    "gprinterp/utoipa",
     "walkdir",
     "lru",
     "webbrowser",

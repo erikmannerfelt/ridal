@@ -340,7 +340,7 @@ pub(super) struct CarriedView {
     report: crate::interp::carry::CarryReport,
     /// The gprinterp document as it should be drawn, or `null` when it
     /// cannot be carried (`report.severity` is `refused`).
-    #[schema(required = true, value_type = Option<Object>)]
+    #[schema(required = true)]
     document: Option<gprinterp::Document>,
 }
 

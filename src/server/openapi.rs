@@ -4,7 +4,8 @@
 //! So far it holds schemas only, for the bodies the Python client (#328)
 //! reads and sends; `paths` is empty until the routes are annotated. Each schema is
 //! derived from the type the handler serializes, so the file cannot describe
-//! a field the server does not send.
+//! a field the server does not send. The picks document's schemas (`Document`
+//! and the types in it) come from gprinterp's `utoipa` feature (#346).
 //!
 //! A server also serves it at `GET /api/v1/openapi.json`, to anyone: it
 //! describes the code, which is public, and nothing about the site.
@@ -53,6 +54,9 @@ use crate::site::tokens;
         replace_routes::ConsequenceReport,
         replace_routes::DocumentConsequence,
         replace_routes::ShapeChange,
+        // The picks document (#346): what `GET`/`PUT
+        // …/interpretations/{user}` carry, and the carried view's document.
+        gprinterp::Document,
         CarryReport,
         Dropped,
         Displacement,
@@ -91,7 +95,35 @@ fn spec_json() -> String {
 
 #[cfg(test)]
 mod tests {
-    use utoipa::OpenApi;
+    use utoipa::{OpenApi, PartialSchema, ToSchema};
+
+    /// gprinterp's schemas, by name: the picks document and every type in it.
+    fn gprinterp_schemas() -> serde_json::Map<String, serde_json::Value> {
+        let mut schemas = vec![(
+            gprinterp::Document::name().into_owned(),
+            gprinterp::Document::schema(),
+        )];
+        gprinterp::Document::schemas(&mut schemas);
+        schemas
+            .into_iter()
+            .map(|(name, schema)| (name, serde_json::to_value(schema).unwrap()))
+            .collect()
+    }
+
+    /// utoipa keys schemas by bare type name, so a Ridal type named like one
+    /// of gprinterp's (`Document`, `Axes`, `Source`, …) would silently
+    /// replace it in the spec, or be replaced by it.
+    #[test]
+    fn gprinterp_schemas_are_not_shadowed() {
+        let spec = serde_json::to_value(super::ApiDoc::openapi()).unwrap();
+        let components = &spec["components"]["schemas"];
+        for (name, schema) in gprinterp_schemas() {
+            assert_eq!(
+                components[&name], schema,
+                "the {name} schema is not gprinterp's; a Ridal type shares its name"
+            );
+        }
+    }
 
     /// Request bodies, whose optional fields really are optional: a client
     /// may leave them out and gets the default.
@@ -102,13 +134,16 @@ mod tests {
     ///
     /// utoipa leaves an `Option` field out of `required` unless it is marked
     /// `#[schema(required = true)]`, which would tell a client the key may
-    /// be missing. None of the response types skips a field when serializing.
+    /// be missing. None of Ridal's response types skips a field when
+    /// serializing. gprinterp's do: a picks document leaves out what it does
+    /// not have, so their optional fields really are optional.
     #[test]
     fn every_response_field_is_required() {
         let spec = serde_json::to_value(super::ApiDoc::openapi()).unwrap();
+        let gprinterp = gprinterp_schemas();
         let mut optional = Vec::new();
         for (name, schema) in spec["components"]["schemas"].as_object().unwrap() {
-            if REQUEST_BODIES.contains(&name.as_str()) {
+            if REQUEST_BODIES.contains(&name.as_str()) || gprinterp.contains_key(name) {
                 continue;
             }
             let required: Vec<&str> = schema["required"]

@@ -57,6 +57,131 @@
           }
         }
       },
+      "AnchorAxis": {
+        "type": "object",
+        "description": "An anchor axis: a named, invariant quantity plus the mapping from index to it (SPEC §7.4.2). The mapping's fields (SPEC §7.5) sit alongside `name`, `unit` and `synthetic`; which of them are present depends on `type`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "synthetic": {
+            "type": "boolean",
+            "description": "`true` when the producer fabricated these values rather than the\ninstrument recording them (SPEC §8.4)."
+          },
+          "t0": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "dt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "points": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Tiepoint"
+            }
+          },
+          "interpolation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "values": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        },
+        "additionalProperties": {}
+      },
+      "Axes": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Axis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "y": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Axis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": {}
+      },
+      "Axis": {
+        "type": "object",
+        "description": "One axis: the units the geometry is stored in, plus any anchor mappings\n(SPEC §7.4).",
+        "properties": {
+          "primary": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PrimaryAxis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnchorAxis"
+            },
+            "description": "Anchor mappings, in the producer's preference order."
+          },
+          "fallback": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AnchorAxis"
+            },
+            "description": "The pre-0.1 name for `anchor`, accepted on read (SPEC §7.4) and\nre-emitted only if it was present, so an old document round-trips\nunchanged rather than being silently rewritten."
+          }
+        },
+        "additionalProperties": {}
+      },
       "CarriedView": {
         "type": "object",
         "description": "`GET …/interpretations/{user}/carried`: the picks as they would be drawn\non the current revision, and what carrying them there did.",
@@ -69,11 +194,15 @@
             "$ref": "#/components/schemas/CarryReport"
           },
           "document": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "The gprinterp document as it should be drawn, or `null` when it\ncannot be carried (`report.severity` is `refused`)."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Document",
+                "description": "The gprinterp document as it should be drawn, or `null` when it\ncannot be carried (`report.severity` is `refused`)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -211,6 +340,74 @@
             "type": "string"
           }
         }
+      },
+      "Convention": {
+        "type": "object",
+        "description": "Indexing conventions (SPEC §7.3). The permitted values are fixed, and a validating reader rejects anything else.",
+        "properties": {
+          "origin": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "indexing": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pixel_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "axis_directions": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": {}
+      },
+      "Coordinates": {
+        "type": "object",
+        "description": "Coordinate semantics and mappings (SPEC §7).",
+        "properties": {
+          "space": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "convention": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Convention"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "axes": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Axes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": {}
       },
       "CreateTokenBody": {
         "type": "object",
@@ -459,6 +656,76 @@
           }
         }
       },
+      "Document": {
+        "type": "object",
+        "description": "A gprinterp document (SPEC §3).",
+        "required": [
+          "key",
+          "features"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Uniquely identifies the target radargram within the producer's scope."
+          },
+          "features": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Feature"
+            },
+            "description": "Always stored canonically as an array (SPEC §4.1), even when the\ninput used the permitted FeatureCollection form (SPEC §5.2)."
+          },
+          "schema": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "schema_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "date_modified": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Source"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "coordinates": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Coordinates"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "meta": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": {}
+      },
       "DocumentConsequence": {
         "allOf": [
           {
@@ -548,6 +815,204 @@
           }
         }
       },
+      "Feature": {
+        "type": "object",
+        "description": "A GeoJSON Feature (SPEC §4).",
+        "required": [
+          "type",
+          "geometry"
+        ],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "geometry": {
+            "$ref": "#/components/schemas/Geometry"
+          },
+          "properties": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": {}
+      },
+      "Geometry": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "coordinates"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Point"
+                ]
+              },
+              "coordinates": {
+                "$ref": "#/components/schemas/Position"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "coordinates"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "MultiPoint"
+                ]
+              },
+              "coordinates": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Position"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "coordinates"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "LineString"
+                ]
+              },
+              "coordinates": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Position"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "coordinates"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "MultiLineString"
+                ]
+              },
+              "coordinates": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Position"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "coordinates"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "Polygon"
+                ]
+              },
+              "coordinates": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Position"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "coordinates"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "MultiPolygon"
+                ]
+              },
+              "coordinates": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/Position"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "geometries"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "GeometryCollection"
+                ]
+              },
+              "geometries": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Geometry"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Any other geometry, kept as it is.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "pattern": "^(?!(Point|MultiPoint|LineString|MultiLineString|Polygon|MultiPolygon|GeometryCollection)$)"
+              }
+            }
+          }
+        ],
+        "description": "A GeoJSON geometry (SPEC §4.3). A geometry of a type not listed here is kept verbatim rather than rejected."
+      },
       "GprinterpAxes": {
         "type": "object",
         "description": "`GET /api/v1/datasets/{radargram_id}/axes/gprinterp`.",
@@ -565,11 +1030,15 @@
             "description": "The revision the axes describe. A document carrying them should name\nit in `source.revision_id`."
           },
           "axes": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "The `coordinates.axes` block for a gprinterp document (its SPEC\n§7.4), or `null` when the file cannot describe its axes."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Axes",
+                "description": "The `coordinates.axes` block for a gprinterp document (its SPEC\n§7.4), or `null` when the file cannot describe its axes."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -712,6 +1181,32 @@
             "$ref": "#/components/schemas/TokenInfo"
           }
         }
+      },
+      "Position": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        },
+        "description": "A GeoJSON position: `[x, y]` in index space (SPEC §7.1), trace index then sample index. Further elements are kept.",
+        "minItems": 2
+      },
+      "PrimaryAxis": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": {}
       },
       "ProjectEntry": {
         "type": "object",
@@ -1050,6 +1545,43 @@
           }
         }
       },
+      "Source": {
+        "type": "object",
+        "description": "Radargram linkage (SPEC §6).",
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The conceptual radargram; stable across reprocessing."
+          },
+          "revision_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The specific processed revision; changes on every reprocess."
+          },
+          "n_traces": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "n_samples": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": {}
+      },
       "Staged": {
         "type": "object",
         "description": "`POST /api/v1/datasets/{radargram_id}/replace`: the file is staged, and\nthis is what committing it would do.",
@@ -1071,6 +1603,26 @@
           },
           "report": {
             "$ref": "#/components/schemas/ConsequenceReport"
+          }
+        }
+      },
+      "Tiepoint": {
+        "type": "object",
+        "description": "A tiepoint of a `tiepoints` mapping (SPEC §7.5).",
+        "required": [
+          "trace",
+          "x"
+        ],
+        "properties": {
+          "trace": {
+            "type": "number",
+            "format": "double",
+            "description": "Index along the primary (index) axis."
+          },
+          "x": {
+            "type": "number",
+            "format": "double",
+            "description": "Value in the anchor axis' unit."
           }
         }
       },
