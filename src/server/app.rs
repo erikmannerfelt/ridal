@@ -1207,6 +1207,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let json: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["status"], "ok");
+        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[test]

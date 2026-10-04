@@ -7,8 +7,10 @@ can do too.
 :::{note}
 This page lists every endpoint, the permission it needs and what it does. A
 test fails if a route is added to or removed from the server without this
-page following. Request and response bodies are not described here yet; a
-machine-readable OpenAPI description is planned.
+page following. Request and response bodies are not described here yet. A
+machine-readable OpenAPI description is in progress: {download}`openapi.json`,
+also served at `/api/v1/openapi.json`, so far holds the schemas of the
+responses the Python client reads, and no routes.
 :::
 
 ## Conventions
@@ -67,7 +69,8 @@ Concurrent edits
 
 | Method | Path | Needs | Description |
 |---|---|---|---|
-| `GET` | `/api/v1/health` | nobody | `{"status": "ok"}` when the server is up. Never requires a login. |
+| `GET` | `/api/v1/health` | nobody | `{"status": "ok", "version": …}` when the server is up, with the Ridal version it runs. Never requires a login. |
+| `GET` | `/api/v1/openapi.json` | nobody | The OpenAPI description of this API, the same file as {download}`openapi.json`. Never requires a login. |
 | `GET` | `/api/v1/profiles` | anyone | The names of the built-in render profiles. |
 
 ## Signing in
@@ -100,7 +103,7 @@ never require a login, since they are how one happens.
 | `GET` | `/api/v1/datasets/{radargram_id}` | anyone | One radargram's summary metadata. |
 | `DELETE` | `/api/v1/datasets/{radargram_id}` | `operator` | Remove a radargram from the project, or stop serving it. |
 | `GET` | `/api/v1/datasets/{radargram_id}/attributes` | anyone | Human-readable metadata, the processing steps and log, and every raw attribute of the file. |
-| `GET` | `/api/v1/datasets/{radargram_id}/axes` | anyone | The `distance`, `twtt` and `depth` axes per sample and the `elevation` per trace. An axis the file lacks is `null`. |
+| `GET` | `/api/v1/datasets/{radargram_id}/axes` | anyone | The `twtt` and `depth` axes per sample and the `distance` and `elevation` per trace. An axis the file lacks is `null`. |
 | `GET` | `/api/v1/datasets/{radargram_id}/traces/{trace}` | anyone | One trace's amplitudes. |
 | `GET` | `/api/v1/datasets/{radargram_id}/track` | anyone | The radargram's track, for the map. |
 | `GET` | `/api/v1/datasets/{radargram_id}/views/topo/geometry` | anyone | The geometry of the topographically corrected view, or why it is unavailable. |

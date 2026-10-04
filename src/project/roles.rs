@@ -35,6 +35,16 @@ use serde::{Deserialize, Serialize};
 /// level: pickers also edit -- their own picks -- so the word would point at
 /// the wrong thing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "server",
+    schema(
+        description = "What someone may do in a project, weakest first. Each role \
+                          includes the ones before it: a `picker` writes their own \
+                          picks, an `operator` also curates and replaces radargrams, \
+                          and an `admin` also manages members and access."
+    )
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     /// Read the catalog and open radargrams; read the layer vocabulary; set
@@ -101,6 +111,18 @@ impl fmt::Display for Role {
 /// did before this existed. The control is there to restrict deliberately,
 /// so an upgrade must not quietly take downloads away.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(
+    feature = "server",
+    schema(
+        description = "What someone may download from a project, least first. \
+                          Each scope includes the ones before it: `none` allows \
+                          nothing, `results` the consensus results, `picks` adds \
+                          every contributor's raw picks, `derived` adds level 2 \
+                          points and rendered images, and `all` adds the radargram \
+                          files and tracks."
+    )
+)]
 #[serde(rename_all = "lowercase")]
 pub enum DownloadScope {
     /// Nothing leaves the server.

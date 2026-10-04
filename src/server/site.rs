@@ -506,6 +506,7 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         // under the project's key.
         .route("/settings", get(site_settings_page))
         .route("/api/v1/health", get(super::routes::health))
+        .route("/api/v1/openapi.json", get(super::openapi::openapi_json))
         .route("/api/v1/site", get(site_info))
         .route("/api/v1/site/audit", get(site_audit_log))
         .route("/api/v1/site/memberships", get(site_memberships))
@@ -772,7 +773,7 @@ async fn landing(
     let keys = directory
         .list()
         .map_err(|e| PageError(ApiError::internal("site_error", e.to_string())))?;
-    let projects: Vec<serde_json::Value> = keys
+    let projects: Vec<ProjectEntry> = keys
         .iter()
         .filter_map(|key| project_entry(&site, key, &caller, Lookup::Listing))
         .collect();
@@ -815,7 +816,7 @@ fn project_entry(
     key: &ProjectKey,
     caller: &SiteCaller,
     lookup: Lookup,
-) -> Option<serde_json::Value> {
+) -> Option<ProjectEntry> {
     let (project, members, standing) = standing(site, key, caller).ok()?;
     match standing {
         Standing::Hidden => return None,
@@ -840,24 +841,73 @@ fn project_entry(
         .description_long()
         .filter(|text| !text.trim().is_empty())
         .map(|text| super::markdown::render(&text));
-    Some(serde_json::json!({
-        "key": key.as_str(),
-        "name": project
+    Some(ProjectEntry {
+        key: key.as_str().to_string(),
+        name: project
             .config()
             .project
             .name
             .unwrap_or_else(|| key.as_str().to_string()),
-        "description": description,
-        "description_long_html": description_long_html,
-        "archived": site.site().ok()?.is_archived(key),
-        "created_by": project.config().project.created_by.map(|user| user.as_str().to_string()),
-        "member": member.is_some() || caller.server_admin,
-        "member_count": members.members.len(),
-        "radargram_count": radargram_count,
-        "role": role.as_str(),
-        "download": download.as_str(),
-        "require_auth_to_read": members.require_auth_to_read,
-    }))
+        description,
+        description_long_html,
+        archived: site.site().ok()?.is_archived(key),
+        created_by: project
+            .config()
+            .project
+            .created_by
+            .map(|user| user.as_str().to_string()),
+        member: member.is_some() || caller.server_admin,
+        member_count: members.members.len(),
+        radargram_count,
+        role,
+        download,
+        require_auth_to_read: members.require_auth_to_read,
+    })
+}
+
+/// `GET /api/v1/projects`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ProjectList {
+    /// The projects the caller may see, in key order.
+    projects: Vec<ProjectEntry>,
+}
+
+/// One project as the caller sees it: an entry of `GET /api/v1/projects`,
+/// and the whole of `GET /api/v1/projects/{key}`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ProjectEntry {
+    /// What the project is addressed by, in `/api/v1/projects/{key}/…`.
+    /// `ridal gui` serves its one project as `default`.
+    key: String,
+    /// The display name, or the key when the project has none.
+    name: String,
+    /// One line, for a card.
+    #[schema(required = true)]
+    description: Option<String>,
+    /// The long description rendered from Markdown to HTML, with raw HTML
+    /// in the source escaped. `null` when there is none.
+    #[schema(required = true)]
+    description_long_html: Option<String>,
+    archived: bool,
+    /// The account that created the project, if it was created through the
+    /// site rather than on the command line.
+    #[schema(required = true)]
+    created_by: Option<String>,
+    /// Whether the caller is a member, or a server administrator, who is
+    /// treated as one.
+    member: bool,
+    member_count: usize,
+    /// How many radargrams the last scan found, or `null` if the project
+    /// has never been scanned.
+    #[schema(required = true)]
+    radargram_count: Option<usize>,
+    /// The caller's role here. A non-member gets `viewer`, and a server
+    /// administrator `admin`.
+    role: Role,
+    /// The caller's download scope here.
+    download: DownloadScope,
+    /// Whether reading the project needs a login.
+    require_auth_to_read: bool,
 }
 
 /// `GET /settings` -- the site's own settings page.
@@ -882,7 +932,7 @@ async fn site_settings_page(
     let keys = directory
         .list()
         .map_err(|e| PageError(ApiError::internal("site_error", e.to_string())))?;
-    let projects: Vec<serde_json::Value> = keys
+    let projects: Vec<ProjectEntry> = keys
         .iter()
         .filter_map(|key| project_entry(&site, key, &caller, Lookup::Listing))
         .collect();
@@ -958,7 +1008,17 @@ async fn invite_page(Path(token): Path<String>) -> Result<Html<String>, PageErro
 // Site identity API
 // ---------------------------------------------------------------------------
 
-#[derive(serde::Deserialize)]
+/// The response to signing in, by password (`POST /api/v1/auth/login`) or
+/// by redeeming an invite (`POST /api/v1/auth/invite`). The session itself
+/// is the `ridal_session` cookie set alongside it.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct SignedIn {
+    user: String,
+    server_admin: bool,
+}
+
+/// The body of `POST /api/v1/auth/login`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct LoginBody {
     name: String,
     password: String,
@@ -1040,10 +1100,10 @@ async fn login(
 
     Ok((
         issue_session(&site, account)?,
-        Json(serde_json::json!({
-            "user": account.name.as_str(),
-            "server_admin": account.server_admin,
-        })),
+        Json(SignedIn {
+            user: account.name.as_str().to_string(),
+            server_admin: account.server_admin,
+        }),
     ))
 }
 
@@ -1069,19 +1129,39 @@ async fn logout() -> impl IntoResponse {
     (
         StatusCode::OK,
         [(header::SET_COOKIE, auth::cleared_cookie())],
-        Json(serde_json::json!({ "signed_out": true })),
+        Json(SignedOut { signed_out: true }),
     )
+}
+
+/// `POST /api/v1/auth/logout`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct SignedOut {
+    /// Always `true`. Signing out clears the cookie whether or not there
+    /// was a session.
+    signed_out: bool,
 }
 
 /// `GET /api/v1/auth/me` -- who the site thinks is calling.
 async fn me(State(site): State<Arc<SiteState>>, caller: SiteCaller) -> impl IntoResponse {
-    let configured = site.accounts_configured();
-    Json(serde_json::json!({
-        "user": caller.user.as_ref().map(|u| u.as_str()),
-        "authenticated": caller.user.is_some(),
-        "server_admin": caller.server_admin,
-        "authentication_configured": configured,
-    }))
+    Json(Me {
+        user: caller.user.as_ref().map(|u| u.as_str().to_string()),
+        authenticated: caller.user.is_some(),
+        server_admin: caller.server_admin,
+        authentication_configured: site.accounts_configured(),
+    })
+}
+
+/// `GET /api/v1/auth/me`: who the caller is.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Me {
+    /// The signed-in account, or `null` for an anonymous caller.
+    #[schema(required = true)]
+    user: Option<String>,
+    authenticated: bool,
+    server_admin: bool,
+    /// Whether the site has accounts at all. Without them there is nothing
+    /// to sign in to, and every caller is anonymous.
+    authentication_configured: bool,
 }
 
 fn account_for_invite<'a>(set: &'a AccountSet, token: &str, now: i64) -> Option<&'a Account> {
@@ -1202,10 +1282,10 @@ async fn redeem_invite(
 
     Ok((
         issue_session(&site, &account)?,
-        Json(serde_json::json!({
-            "user": account.name.as_str(),
-            "server_admin": account.server_admin,
-        })),
+        Json(SignedIn {
+            user: account.name.as_str().to_string(),
+            server_admin: account.server_admin,
+        }),
     ))
 }
 
@@ -1351,11 +1431,11 @@ async fn list_projects(
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
     let keys = site.site()?.list().map_err(site_error)?;
-    let projects: Vec<serde_json::Value> = keys
+    let projects: Vec<ProjectEntry> = keys
         .iter()
         .filter_map(|key| project_entry(&site, key, &caller, Lookup::Listing))
         .collect();
-    Ok(Json(serde_json::json!({ "projects": projects })))
+    Ok(Json(ProjectList { projects }))
 }
 
 #[derive(serde::Deserialize)]

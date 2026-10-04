@@ -79,6 +79,11 @@ minijinja = { version = "2", optional = true }
 # admin-authored prose read by every member, so it is trusted as *markup*,
 # never as HTML.
 pulldown-cmark = { version = "0.13", optional = true }
+# Schemas for the JSON the HTTP API returns (#330), committed as
+# `docs/reference/openapi.json` so the Python client (#328) can be checked
+# against them. `preserve_order` keeps fields in declaration order, so the
+# committed file reads like the structs and diffs stay small.
+utoipa = { version = "6", features = ["preserve_order"], optional = true }
 # Revision and render identities. Not optional: `RevisionId` is shared by
 # the server's cache invalidation and `ridal interp`'s level 2 provenance,
 # which must agree on the same string for the same file.
@@ -158,6 +163,7 @@ server = [
     "tokio-util",
     "minijinja",
     "pulldown-cmark",
+    "utoipa",
     "walkdir",
     "lru",
     "webbrowser",

@@ -110,11 +110,30 @@ impl ApiError {
     }
 }
 
+/// The body of every API error: `{"error": {"code", "message"}}`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ErrorBody {
+    error: ErrorDetail,
+}
+
+/// What went wrong, in `ErrorBody`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ErrorDetail {
+    /// Stable and machine-readable, such as `dataset_not_found`. A client
+    /// branches on this rather than on `message`.
+    code: &'static str,
+    /// For a person to read. The wording may change between releases.
+    message: String,
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let body = serde_json::json!({
-            "error": { "code": self.code, "message": self.message }
-        });
+        let body = ErrorBody {
+            error: ErrorDetail {
+                code: self.code,
+                message: self.message,
+            },
+        };
         let mut response = (self.status, Json(body)).into_response();
         for (name, value) in self.headers {
             if let Ok(value) = header::HeaderValue::from_str(&value) {
@@ -146,8 +165,21 @@ impl IntoResponse for PageError {
     }
 }
 
+/// `GET /api/v1/health`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Health {
+    /// Always `"ok"`: a server that can answer is up.
+    status: &'static str,
+    /// The Ridal version the server runs, such as `0.7.1`. Health needs no
+    /// login, so a client can check what it is talking to before signing in.
+    version: &'static str,
+}
+
 pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({"status": "ok"}))
+    Json(Health {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+    })
 }
 
 pub async fn list_profiles() -> impl IntoResponse {
@@ -158,55 +190,66 @@ pub async fn list_profiles() -> impl IntoResponse {
     Json(names)
 }
 
-#[derive(serde::Serialize)]
-struct DatasetSummary {
+/// One radargram as the catalog lists it: an entry of `GET /api/v1/datasets`,
+/// and the whole of `GET /api/v1/datasets/{radargram_id}`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct DatasetSummary {
     radargram_id: String,
+    /// `display_name` if there is one, otherwise `radargram_id`.
     effective_label: String,
+    #[schema(required = true)]
     display_name: Option<String>,
+    #[schema(required = true)]
     group_name: Option<String>,
+    #[schema(required = true)]
     group_id: Option<String>,
+    /// The file's path, relative to the directory it was found under.
     relative_path: String,
-    /// The exact stored string. Kept verbatim because the revision
-    /// fingerprint (#117) hashes it -- reformatting here would silently
-    /// change identity.
+    // Kept verbatim because the revision fingerprint (#117) hashes it --
+    // reformatting here would silently change identity.
+    /// The processing datetime exactly as the file stores it (RFC 3339).
+    /// The revision id is derived from it together with the radargram id.
     processing_datetime: String,
-    /// A human-readable rendering of the same instant, for UI display
-    /// only. The raw value carries nanosecond precision and a numeric
-    /// offset, which is noise in a catalog listing and wraps badly in a
-    /// narrow card.
+    // The raw value carries nanosecond precision and a numeric offset,
+    // which is noise in a catalog listing and wraps badly in a narrow card.
+    /// The same instant as `YYYY-MM-DD HH:MM`, for display only.
     processing_datetime_display: String,
+    /// Identifies this processing of the radargram (#117). A local file
+    /// with the same radargram id and revision id is the same revision.
     revision_id: String,
+    /// `[samples, traces]`: the rows and columns of the file's `data`.
     shape: (usize, usize),
+    // `null` rather than 0 because a radargram whose coordinates are
+    // missing cannot say how far it went, and the card leaves the row out
+    // rather than showing a misleading `0 m`.
     /// The track's total length in metres (#319), summed over its segments.
-    ///
-    /// `None` when the file has no readable track, which is not the same as
-    /// a zero length: a radargram whose coordinates are missing cannot say
-    /// how far it went, and the card leaves the row out rather than showing
-    /// a misleading `0 m`.
+    /// `null` when the file has no readable track.
+    #[schema(required = true)]
     track_length_m: Option<f64>,
-    /// Whether this radargram sits in the project rather than an external
-    /// root (#147).
-    ///
-    /// What the difference means to a user: a radargram in the project can
-    /// be removed, and one in an archive can only be ignored, because Ridal
-    /// never writes outside the project. The UI needs to offer different
-    /// words for those two, and this is what it asks.
+    // What the difference means to a user: a radargram in the project can
+    // be removed, and one in an archive can only be ignored, because Ridal
+    // never writes outside the project. The UI needs to offer different
+    // words for those two, and this is what it asks.
+    /// Whether this radargram sits in the project rather than in an external
+    /// root (#147). Only one in the project can be removed.
     in_project: bool,
-    /// Left out of listings by a project override (#145).
-    ///
-    /// Only ever reaches a caller who can change it, since listings for
-    /// everyone else drop the entry entirely -- so the flag is what the
-    /// catalog page collapses behind a disclosure rather than something a
-    /// `picker` could read off the API.
+    // Only ever true for a caller who can change it, since listings for
+    // everyone else drop the entry entirely -- so the flag is what the
+    // catalog page collapses behind a disclosure rather than something a
+    // `picker` could read off the API.
+    /// Left out of listings by a project override (#145). Unlisted entries
+    /// are listed only for `operator` and above.
     unlisted: bool,
-    /// Picked lines stored for this radargram, across every user.
-    ///
-    /// `None` when the catalog is not a project, which is different from
-    /// `Some(0)`: "nowhere to save picks" and "nobody has picked this yet"
-    /// should not look the same on a card.
+    // `null` is different from 0: "nowhere to save picks" and "nobody has
+    // picked this yet" should not look the same on a card.
+    /// Picked lines stored for this radargram, across every user. `null`
+    /// when the server is not serving a project, and in
+    /// `GET /api/v1/datasets/{radargram_id}`, which does not count them.
+    #[schema(required = true)]
     line_count: Option<usize>,
-    /// How many users have at least one picked line here (#272). `None`
+    /// How many users have at least one picked line here (#272). `null`
     /// exactly when `line_count` is.
+    #[schema(required = true)]
     contributor_count: Option<usize>,
 }
 
@@ -746,7 +789,17 @@ pub async fn list_datasets(
         })
         .collect();
     let warnings = readable_warnings(&catalog, &visible, &caller);
-    Json(serde_json::json!({ "entries": entries, "warnings": warnings }))
+    Json(DatasetList { entries, warnings })
+}
+
+/// `GET /api/v1/datasets`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct DatasetList {
+    /// The radargrams the caller may see, in catalog order.
+    entries: Vec<DatasetSummary>,
+    /// Problems found while cataloguing, such as a file that could not be
+    /// read, limited to those about radargrams the caller may see.
+    warnings: Vec<String>,
 }
 
 /// The entry for `radargram_id` in a catalog snapshot the caller is holding.
@@ -2502,23 +2555,32 @@ pub async fn dataset_attributes(
     })))
 }
 
-/// Distance/TWTT/depth/elevation axes for the viewer's cursor readout
-/// (item 3 of the planning round; `elevation` added for #168). All four
-/// are written unconditionally by `export.rs`, but small hand-built test
-/// fixtures (`write_test_nc`/`write_test_nc_with_track`) do not write them
-/// -- so each axis degrades independently to `null` rather than failing
-/// the whole response.
-///
-/// `elevation` is per-*trace* (unlike the other three, which are
-/// per-sample), the file's own raw values -- never the topographic view's
-/// clamped/interpolated `elev_eff`, since the point of showing this is to
-/// let someone spot a GPS spike and set a trusted range for it, which a
-/// silently-corrected readout would hide.
-#[derive(serde::Serialize)]
-struct AxesJson {
+// Written for the viewer's cursor readout (item 3 of the planning round;
+// `elevation` added for #168). All four are written unconditionally by
+// `export.rs`, but small hand-built test fixtures
+// (`write_test_nc`/`write_test_nc_with_track`) do not write them -- so each
+// axis degrades independently to `null` rather than failing the whole
+// response.
+//
+// `elevation` is the file's own raw values -- never the topographic view's
+// clamped/interpolated `elev_eff`, since the point of showing this is to let
+// someone spot a GPS spike and set a trusted range for it, which a
+// silently-corrected readout would hide.
+/// `GET /api/v1/datasets/{radargram_id}/axes`: a radargram's axes, read from
+/// the file's variables of the same names. An axis the file lacks is `null`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct DatasetAxes {
+    /// Along-track distance per trace, in metres.
+    #[schema(required = true)]
     distance: Option<Vec<f64>>,
+    /// Two-way travel time per sample, in nanoseconds.
+    #[schema(required = true)]
     twtt: Option<Vec<f64>>,
+    /// Depth per sample, in metres.
+    #[schema(required = true)]
     depth: Option<Vec<f64>>,
+    /// Surface elevation per trace, in metres, as the file stores it.
+    #[schema(required = true)]
     elevation: Option<Vec<f64>>,
 }
 
@@ -2533,7 +2595,7 @@ pub async fn dataset_axes(
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
     let file =
         netcdf::open(&path).map_err(|e| ApiError::internal("axes_read_failed", format!("{e}")))?;
-    Ok(Json(AxesJson {
+    Ok(Json(DatasetAxes {
         distance: super::track::read_f64_variable(&file, "distance").ok(),
         twtt: super::track::read_f64_variable(&file, "twtt").ok(),
         depth: super::track::read_f64_variable(&file, "depth").ok(),
