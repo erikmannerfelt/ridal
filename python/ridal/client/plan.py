@@ -5,8 +5,10 @@
 uploaded to find out what would happen. Only a file that would replace a
 radargram somebody has picked is asked about, through the server's replace
 preflight, which answers from the file's axes alone.
-:meth:`ridal.client.Client.apply` then acts on the plan one file at a time,
-so staged uploads never pile up against the project's size limit.
+Up to ``workers`` files are looked at at the same time.
+:meth:`ridal.client.Client.apply` then acts on the plan one file at a time:
+the server takes uploads one at a time anyway, and staged uploads never pile
+up against the project's size limit.
 """
 
 from collections.abc import Collection

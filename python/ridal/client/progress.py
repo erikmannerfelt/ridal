@@ -1,5 +1,6 @@
 """Progress reporting for long transfers, without a dependency on tqdm."""
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
@@ -28,11 +29,17 @@ class ProgressEvent:
 
 
 Progress: TypeAlias = Callable[[ProgressEvent], None]
-"""A callback that receives a :class:`ProgressEvent` as a transfer advances."""
+"""A callback that receives a :class:`ProgressEvent` as a transfer advances.
+
+:meth:`~ridal.client.Client.download_radargrams` calls it from several
+threads at once, one per file in flight.
+"""
 
 
 def tqdm_progress(**options: Any) -> Progress:
     """A :data:`Progress` callback that draws a tqdm bar per transfer.
+
+    Transfers running at the same time each get a bar of their own.
 
     Parameters
     ----------
@@ -52,8 +59,14 @@ def tqdm_progress(**options: Any) -> Progress:
         ) from error
 
     bars: dict[tuple[str, str], Any] = {}
+    # Concurrent downloads report from their own threads.
+    lock = threading.Lock()
 
     def report(event: ProgressEvent) -> None:
+        with lock:
+            _advance(event)
+
+    def _advance(event: ProgressEvent) -> None:
         key = (event.stage, event.label)
         bar = bars.get(key)
         if bar is None:

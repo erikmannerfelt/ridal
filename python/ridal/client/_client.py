@@ -1,11 +1,13 @@
 """The public :class:`Client`."""
 
+import concurrent.futures
 import os
-from collections.abc import Collection, Iterable
+import threading
+from collections.abc import Callable, Collection, Iterable
 from os import PathLike
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Final, Literal, Self, TypeAlias
+from typing import Any, Final, Literal, Self, TypeAlias, TypeVar
 
 import ridal
 from ridal import _ridal
@@ -19,7 +21,15 @@ TOKEN_VARIABLE: Final = "RIDAL_TOKEN"
 #: The project key ``ridal gui`` serves its one project under.
 DEFAULT_PROJECT: Final = "default"
 
+#: How many requests :meth:`Client.plan` and :meth:`Client.download_radargrams`
+#: have in flight at once by default. Enough to hide the round trips on a
+#: slow link without many large downloads competing for the same bandwidth.
+DEFAULT_WORKERS: Final = 4
+
 Spacing: TypeAlias = Literal["auto", "per-trace", "vertices"] | float
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
 
 
 class Client:
@@ -211,6 +221,53 @@ class Client:
             Path(destination),
             label=f"{radargram_id}.nc",
             progress=progress,
+        )
+
+    def download_radargrams(
+        self,
+        radargram_ids: Iterable[str],
+        directory: str | PathLike[str],
+        *,
+        workers: int = DEFAULT_WORKERS,
+        progress: Progress | None = None,
+    ) -> tuple[Path, ...]:
+        """Download several processed NetCDF files at once.
+
+        Parameters
+        ----------
+        radargram_ids : iterable of str
+        directory : path-like
+            Where to write each ``<radargram_id>.nc``. Created if missing.
+        workers : int, default 4
+            How many downloads run at the same time.
+        progress : callable, optional
+            As for :meth:`download_radargram`, called from several threads;
+            each event's ``label`` says which file it is about.
+            :func:`~ridal.client.tqdm_progress` draws one bar per file.
+
+        Returns
+        -------
+        tuple of pathlib.Path
+            Where each file was written, in the order of ``radargram_ids``.
+
+        Raises
+        ------
+        RidalError
+            The first download that failed. Those not yet started are not
+            started, and those under way finish first. Each file is moved
+            into place only when complete, so the finished ones are kept and
+            none is left half written.
+        """
+        target = Path(directory)
+        target.mkdir(parents=True, exist_ok=True)
+        return tuple(
+            _map(
+                lambda radargram_id: self.download_radargram(
+                    radargram_id, target, progress=progress
+                ),
+                radargram_ids,
+                workers,
+            )
         )
 
     def track(self, radargram_id: str) -> models.FeatureCollection:
@@ -433,64 +490,56 @@ class Client:
             raise errors.ReplacementRefused(reason, staged.report)
         return self.commit_replacement(radargram_id, staged.token)
 
-    def plan(self, paths: Iterable[str | PathLike[str]]) -> planning.Plan:
+    def plan(
+        self,
+        paths: Iterable[str | PathLike[str]],
+        *,
+        workers: int = DEFAULT_WORKERS,
+    ) -> planning.Plan:
         """Sort local radargrams against the project, without changing it.
 
         See :mod:`ridal.client.plan` for what each status means. Reads only
         local identities, the catalog and who has interpreted what, and asks
         the server's preflight about files that would replace picked
         radargrams. Replacing needs ``operator``, and so does the preflight.
+
+        Up to ``workers`` files are looked at at the same time; the records
+        keep the order of ``paths``.
         """
         served = self.catalog().by_id()
-        records = []
-        for path in map(Path, paths):
-            (local,) = ridal.info(path)
-            radargram_id, revision_id = local["radargram_id"], local["revision_id"]
-            if radargram_id is None:
-                records.append(
-                    planning.Record(
-                        path,
-                        "legacy",
-                        None,
-                        None,
-                        None,
-                        reason=local["reprocess_reason"],
-                    )
-                )
-                continue
-            current = served.get(radargram_id)
-            if current is None:
-                records.append(
-                    planning.Record(path, "new", radargram_id, revision_id, None)
-                )
-                continue
-            served_revision = current.revision_id
-            if served_revision == revision_id:
-                status: planning.Status = "unchanged"
-                records.append(
-                    planning.Record(
-                        path, status, radargram_id, revision_id, served_revision
-                    )
-                )
-                continue
-            if not self.interpretations(radargram_id).users:
-                records.append(
-                    planning.Record(
-                        path, "safe", radargram_id, revision_id, served_revision
-                    )
-                )
-                continue
-            records.append(
-                planning.Record(
-                    path,
-                    "risky",
-                    radargram_id,
-                    revision_id,
-                    served_revision,
-                    report=self.preflight(path),
-                )
-            )
+        records = _map(lambda path: self._plan_one(Path(path), served), paths, workers)
         return planning.Plan(tuple(records))
+
+    def _plan_one(
+        self, path: Path, served: dict[str, models.Dataset]
+    ) -> planning.Record:
+        """One file's record in a :meth:`plan`."""
+        (local,) = ridal.info(path)
+        radargram_id, revision_id = local["radargram_id"], local["revision_id"]
+        if radargram_id is None:
+            return planning.Record(
+                path, "legacy", None, None, None, reason=local["reprocess_reason"]
+            )
+        current = served.get(radargram_id)
+        if current is None:
+            return planning.Record(path, "new", radargram_id, revision_id, None)
+        served_revision = current.revision_id
+        if served_revision == revision_id:
+            return planning.Record(
+                path, "unchanged", radargram_id, revision_id, served_revision
+            )
+        if not self.interpretations(radargram_id).users:
+            return planning.Record(
+                path, "safe", radargram_id, revision_id, served_revision
+            )
+        return planning.Record(
+            path,
+            "risky",
+            radargram_id,
+            revision_id,
+            served_revision,
+            report=self.preflight(path),
+        )
 
     def apply(
         self,
@@ -505,6 +554,11 @@ class Client:
         ``allow`` on the server's own report for the uploaded file, and
         committed or discarded before the next begins. A file that fails is
         reported in its outcome and the rest continue.
+
+        Unlike :meth:`plan`, this does not run files side by side. The
+        server takes uploads one at a time, because measuring the room left
+        and installing a file are one decision, so a second upload would
+        only wait, and on a slow link wait long enough to time out.
         """
         outcomes = []
         for record in planned.records:
@@ -708,6 +762,56 @@ class Client:
                 "Not signed in, so there are no own picks to export. Pass user=…."
             )
         return user
+
+
+def _map(function: Callable[[_T], _R], items: Iterable[_T], workers: int) -> list[_R]:
+    """``function`` over ``items`` on up to ``workers`` threads, in order.
+
+    One ``httpx.Client`` is shared between them, which httpx supports. As
+    soon as one call raises, those not yet started are cancelled; those in
+    flight finish, and then the first exception in the order of ``items``
+    is raised.
+
+    >>> _map(str.upper, ["a", "b"], workers=2)
+    ['A', 'B']
+    """
+    if workers < 1:
+        raise ValueError(f"workers must be at least 1, not {workers}")
+    # Checked by each call before it starts, so a worker that has just seen
+    # a failure cannot pick up the next item before it is cancelled.
+    failed = threading.Event()
+
+    def call(item: _T) -> _R:
+        if failed.is_set():
+            raise _NotStarted
+        try:
+            return function(item)
+        except BaseException:
+            failed.set()
+            raise
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(call, item) for item in items]
+        try:
+            concurrent.futures.wait(
+                futures, return_when=concurrent.futures.FIRST_EXCEPTION
+            )
+        finally:
+            # Also on Ctrl-C, so only the calls already running finish.
+            failed.set()
+            for future in futures:
+                future.cancel()
+    for future in futures:
+        if future.cancelled():
+            continue
+        error = future.exception()
+        if error is not None and not isinstance(error, _NotStarted):
+            raise error
+    return [future.result() for future in futures]
+
+
+class _NotStarted(Exception):
+    """A call :func:`_map` skipped because an earlier one failed."""
 
 
 def _preconditions(etag: str | None, overwrite: bool) -> dict[str, str]:

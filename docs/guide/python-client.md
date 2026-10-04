@@ -65,6 +65,18 @@ client.download_level2("line-07", "downloads/", derived=True)
 client.download_derived("line-07", "downloads/")
 ```
 
+`download_radargrams` downloads several at once, four at a time by default
+(`workers=`), and returns where each went in the order asked for:
+
+```python
+ids = [dataset.radargram_id for dataset in client.catalog().datasets]
+paths = client.download_radargrams(ids, "downloads/")
+```
+
+If one fails, those not yet started are not started, those under way finish,
+and the error is raised. A `Client` may also be shared between your own
+threads, for example to fetch level 2 points for many radargrams at once.
+
 Tracks and level 2 points also come back in memory, as GeoJSON that turns
 into a `geopandas.GeoDataFrame` in the CRS it was asked for (it needs
 geopandas: `pip install "ridal[geo]"`):
@@ -102,9 +114,10 @@ be shown unmoved (`carried`), move (`approximate`), partly fall outside the
 new revision (`partial`), or not be shown at all (`refused`). Nothing is
 rewritten either way; picks stay as they were drawn.
 
-`apply` uploads the new files and replaces the others one at a time, and by
-default only where every set of picks would still be shown unmoved
-(`allow={"current", "carried"}`). Anything else is left alone and reported in
+`plan` looks at four files at a time (`workers=`). `apply` uploads the new
+files and replaces the others one at a time, since the server takes uploads
+one at a time, and by default only where every set of picks would still be
+shown unmoved (`allow={"current", "carried"}`). Anything else is left alone and reported in
 its outcome. Replacing needs the `operator` role.
 
 ## Saving picks

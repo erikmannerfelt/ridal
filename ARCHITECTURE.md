@@ -203,9 +203,17 @@ two ends of that request are one type.
   through `_http.Http`, one `httpx.Client`: the error envelope becomes an
   exception chosen by status (keeping the server's stable `code`),
   downloads stream to a temporary sibling and are moved into place whole,
-  uploads stream with a `Content-Length`. Concurrent transfers can come
-  later behind it without the public API changing; that is why `httpx`
-  was chosen over `urllib`, at the cost of a dependency.
+  uploads stream with a `Content-Length`. The `httpx.Client` is shared
+  between threads, which is what lets `plan()` and `download_radargrams()`
+  run several requests at once (`_client._map`, #346) without the layer
+  changing; that is why `httpx` was chosen over `urllib`, at the cost of a
+  dependency.
+- **Uploads stay one at a time.** The add and stage routes hold the
+  lifecycle lock while the body streams, because measuring the room left
+  and installing the file are one decision. Concurrent uploads would only
+  queue there, and a queued body sends nothing for long enough to hit the
+  client's timeout. Making them concurrent means reserving room under the
+  lock and streaming outside it, on the server.
 - **Dependencies are extras.** `ridal[client]` is `httpx`; `ridal[geo]`
   is pandas and geopandas, imported only inside `to_pandas()` and
   `to_geopandas()`. The base install stays numpy only. Progress is a
@@ -218,7 +226,8 @@ two ends of that request are one type.
 - **`plan()` asks before it uploads.** Local files are sorted by identity
   against the catalog (`new`, `unchanged`, `safe`, `risky`, `legacy`);
   only a file that would replace a picked radargram is sent to the preflight.
-  `apply()` then works one file at a time and decides on the server's report
+  `plan()` looks at several files at once; `apply()` then works one file
+  at a time and decides on the server's report
   for the staged file, not the preflight's, which is advice. There is no
   "collision" status: the revision id hashes the radargram id and the
   processing date, not the contents, so a file edited elsewhere without
