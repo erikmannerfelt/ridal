@@ -13,6 +13,8 @@ on:
 jobs:
   build:
     runs-on: ${{ inputs.os }}
+    permissions:
+      contents: read
     steps:
     - uses: actions/checkout@v6
 
@@ -23,6 +25,13 @@ jobs:
 
     - name: Set up Rust
       uses: dtolnay/rust-toolchain@stable
+
+    # Keyed by Python version too: the matrix builds each one on the same
+    # runner OS, and pyo3 is compiled per interpreter, so the jobs would
+    # otherwise overwrite one another's cache.
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: py${{ inputs.python-version }}
 
     - name: Install dependencies (macOS)
       if: runner.os == 'macOS'

@@ -5,10 +5,16 @@ on:
     tags:
     - v*
 
+permissions:
+  contents: read
+
 jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    # Creating a release writes to the repository.
+    permissions:
+      contents: write
 
     steps:
     - name: Create release
