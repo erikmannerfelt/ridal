@@ -15,6 +15,8 @@ on:
     - .github/workflows/python.yml
     - .github/workflows/python-build.yml
     - test_ridal_interface.py
+    - python/**
+    - tests/**
     - docs/**
     - .readthedocs.yaml
   workflow_dispatch:
@@ -76,6 +78,53 @@ jobs:
       run: |
         pip install -r docs/requirements.txt wheels/*.whl
         sphinx-build -W --keep-going -b html docs docs/_build/html
+
+  # The HTTP client's tests against real servers (#328). The wheel has no
+  # server in it, so this builds the `ridal` command as well, and installs
+  # PROJ to process the fixture radargram the tests serve.
+  client-integration:
+    name: Python client against a real server
+    needs: build-pr
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+
+    - name: Set up Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install PROJ
+      run: |
+        sudo apt update -y
+        sudo apt install -y proj-bin
+
+    - name: Build the ridal command
+      run: cargo build --no-default-features -F cli,server
+
+    - name: Download wheel
+      uses: actions/download-artifact@v4
+      with:
+        name: wheels-ubuntu-latest-py3.12
+        path: wheels
+
+    - name: Install the wheel with the client
+      run: |
+        pip install pytest pandas geopandas
+        whl=$(ls wheels/*.whl)
+        pip install "${whl}[client]"
+
+    - name: Test
+      env:
+        RIDAL_BIN: target/debug/ridal
+      run: python -m pytest tests/client -v
 
   build-all:
     name: Build all platforms

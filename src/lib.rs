@@ -72,7 +72,7 @@ const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 /// return `xarray.Dataset` objects. Otherwise, use the plain Python dataset
 /// representations such as `"xarray_dict"`.
 #[cfg(feature = "python")]
-#[pyo3::pymodule]
+#[pyo3::pymodule(name = "_ridal")]
 pub mod ridal {
     use crate::{formats, gpr};
     use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};

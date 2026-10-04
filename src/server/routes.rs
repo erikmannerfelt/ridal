@@ -2584,6 +2584,52 @@ pub(super) struct DatasetAxes {
     elevation: Option<Vec<f64>>,
 }
 
+/// `GET /api/v1/datasets/{radargram_id}/axes/gprinterp`: the axis block a
+/// gprinterp document drawn on this revision should carry (#328).
+///
+/// The same block the viewer writes into `coordinates.axes` when it saves.
+/// Without it, picks saved by a script could never be carried onto a
+/// reprocessed revision.
+pub async fn dataset_gprinterp_axes(
+    State(state): State<Arc<AppState>>,
+    Path(radargram_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let catalog = state.catalog();
+    let entry = lookup_dataset(&catalog, &radargram_id)?;
+    let axes = state
+        .absolute_path(entry)
+        .map(|path| {
+            crate::interp::anchors::axes_for_revision(
+                &path,
+                &entry.radargram_id,
+                &entry.revision_id,
+            )
+        })
+        .ok()
+        .filter(|axes| axes.is_usable())
+        .map(|axes| serde_json::to_value(&axes))
+        .transpose()
+        .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+    Ok(Json(GprinterpAxes {
+        radargram_id: entry.radargram_id.to_string(),
+        revision_id: entry.revision_id.to_string(),
+        axes,
+    }))
+}
+
+/// `GET /api/v1/datasets/{radargram_id}/axes/gprinterp`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct GprinterpAxes {
+    radargram_id: String,
+    /// The revision the axes describe. A document carrying them should name
+    /// it in `source.revision_id`.
+    revision_id: String,
+    /// The `coordinates.axes` block for a gprinterp document (its SPEC
+    /// §7.4), or `null` when the file cannot describe its axes.
+    #[schema(required = true, value_type = Option<Object>)]
+    axes: Option<serde_json::Value>,
+}
+
 pub async fn dataset_axes(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,

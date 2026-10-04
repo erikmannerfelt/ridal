@@ -7,6 +7,7 @@ How to use Ridal day to day.
 
 cli
 python
+python-client
 processing
 gui
 interpretation

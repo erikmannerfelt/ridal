@@ -3052,3 +3052,29 @@ async fn a_document_from_another_revision_is_carried_and_the_stored_one_is_untou
         "the authored coordinates were not rewritten"
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_axes_for_a_new_interpretation_are_served() {
+    // What the viewer writes into `coordinates.axes` when it saves, for a
+    // script to write too (#328). Without it, picks saved by a script could
+    // not be carried onto a reprocessed revision.
+    let (_dir, app) = project_app_with_axes();
+    let uri = format!("/api/v1/datasets/{RADARGRAM}/axes/gprinterp");
+    let (status, _, body) = get(&app, &uri).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["radargram_id"], RADARGRAM);
+    assert!(body["revision_id"]
+        .as_str()
+        .is_some_and(|id| !id.is_empty()));
+    assert!(body["axes"]["x"].is_object(), "{body}");
+
+    // A file that cannot describe its axes has none, rather than half.
+    let (_dir, app) = project_app(true);
+    let (status, _, body) = get(&app, &uri).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["axes"].is_null(), "{body}");
+
+    let (status, _, _) = get(&app, "/api/v1/datasets/nope/axes/gprinterp").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

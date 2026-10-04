@@ -1031,6 +1031,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::routes::dataset_axes),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/axes/gprinterp",
+            get(super::routes::dataset_gprinterp_axes),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/traces/{trace}",
             get(super::routes::dataset_trace),
         )

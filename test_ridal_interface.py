@@ -71,7 +71,7 @@ def test_info_reads_a_processed_file_and_its_preflight_body(tmp_path):
     assert record["revision_id"]
     assert record["samples"] > 0 and record["traces"] > 0
 
-    body = ridal._preflight_body(output)
+    body = ridal._ridal._preflight_body(output)
     assert body["radargram_id"] == record["radargram_id"]
     assert body["processing_datetime"] == record["processing_datetime"]
     assert len(body["time"]) == record["traces"]

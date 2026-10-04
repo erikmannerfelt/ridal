@@ -120,10 +120,10 @@ pub struct AxisDeclarations {
 /// replace's consequence report reads from the incoming file (#331).
 ///
 /// The body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`,
-/// and what `ridal._preflight_body` reads from a local file for the Python
-/// client (#328), so one type is both ends of the request. A type of its
-/// own rather than [`AxisDeclarations`] itself, so the API does not change
-/// when that internal type does.
+/// and what `ridal._ridal._preflight_body` reads from a local file for the
+/// Python client (#328), so one type is both ends of the request. A type of
+/// its own rather than [`AxisDeclarations`] itself, so the API does not
+/// change when that internal type does.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct RevisionDeclarations {
@@ -156,8 +156,8 @@ impl RevisionDeclarations {
     /// a legacy one has no radargram id to send.
     #[allow(
         dead_code,
-        reason = "called by `ridal._preflight_body` in lib.rs, which the bin target \
-                  does not build, and by tests"
+        reason = "called by `ridal._ridal._preflight_body` in lib.rs, which the bin \
+                  target does not build, and by tests"
     )]
     pub fn read(path: &Path) -> Result<Self, String> {
         let meta = match crate::io::inspect_ridal_netcdf(path)? {

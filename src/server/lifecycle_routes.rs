@@ -56,12 +56,16 @@ pub struct UploadQuery {
     filename: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+/// `POST /api/v1/datasets`: the radargram is in the project.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Added {
     radargram_id: String,
     revision_id: String,
+    #[schema(required = true)]
     display_name: Option<String>,
+    #[schema(required = true)]
     group_name: Option<String>,
+    /// The size of the file as stored.
     bytes: u64,
     /// How many interpretations sit in the archive under this id, from an
     /// earlier removal. Almost always zero. When it is not, the operator has
