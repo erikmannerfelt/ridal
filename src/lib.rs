@@ -1038,13 +1038,14 @@ pub mod ridal {
     /// Inspect one or more GPR files and return metadata summaries.
     ///
     /// This function reads metadata and summary information without performing a
-    /// full processing workflow.
+    /// full processing workflow. Raw recordings and NetCDF files Ridal processed
+    /// can both be inspected, and mixed.
     ///
     /// Parameters
     /// ----------
     /// inputs : path-like or sequence of path-like
     ///     One or more input files to inspect. A single path, list, or tuple of
-    ///     path-like objects is accepted.
+    ///     path-like objects is accepted. A ``.nc`` file is read as Ridal output.
     /// velocity : float, default 0.168
     ///     Propagation velocity in meters per nanosecond.
     /// cor : path-like, optional
@@ -1063,12 +1064,22 @@ pub mod ridal {
     /// Returns
     /// -------
     /// list of dict
-    ///     One metadata summary dictionary per input file.
+    ///     One metadata summary dictionary per input file. ``record["format"]["name"]``
+    ///     tells the two kinds apart: for a processed file it is ``"ridal"``, and
+    ///     the record holds ``ridal_version``, ``radargram_id``, ``display_name``,
+    ///     ``group_name``, ``group_id``, ``processing_datetime``, ``revision_id``,
+    ///     ``samples`` and ``traces``. ``revision_id`` is the id a Ridal server
+    ///     gives this revision of the radargram, so a local file can be matched to
+    ///     one a server already has. A file from a Ridal too old to have radargram
+    ///     ids has ``reprocess_reason`` set and the identity fields ``None``; for
+    ///     every other file ``reprocess_reason`` is ``None``.
     ///
     /// Raises
     /// ------
     /// RuntimeError
-    ///     If inspection fails.
+    ///     If inspection fails, if a ``.nc`` file is not one Ridal processed, or
+    ///     if ``cor``, ``dem``, ``crs`` or an override is given with a processed
+    ///     file, which they do not apply to.
     ///
     /// Notes
     /// -----
@@ -1122,6 +1133,29 @@ pub mod ridal {
                 json_to_py(py, &text)
             })
             .collect::<PyResult<Vec<Py<PyAny>>>>()
+    }
+
+    /// The body of a replace preflight for a processed file (#331). Private.
+    ///
+    /// For the HTTP client (#328): the file's radargram id, processing
+    /// datetime and axis declarations, as ``POST
+    /// /api/v1/datasets/{radargram_id}/replace/preflight`` takes them. The
+    /// shape is the server's request contract (``RevisionDeclarations`` in
+    /// the OpenAPI description) and changes with it.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If the file cannot be read, or is not a current Ridal file.
+    #[pyfunction]
+    fn _preflight_body(py: Python<'_>, path: Py<PyAny>) -> PyResult<Py<PyAny>> {
+        let path = fspath(py, path.bind(py))?;
+        let body = crate::interp::source::RevisionDeclarations::read(&path)
+            .map_err(PyRuntimeError::new_err)?;
+        let text = serde_json::to_string(&body).map_err(|e| {
+            PyRuntimeError::new_err(format!("Failed to serialize the preflight body: {e}"))
+        })?;
+        json_to_py(py, &text)
     }
 
     /// Removed legacy entry point for the old Python CLI wrapper.

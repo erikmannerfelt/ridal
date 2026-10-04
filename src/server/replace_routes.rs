@@ -45,7 +45,7 @@
 //! radargram with picks just to learn which are safe, each staged file
 //! counting against the project's size cap until it is swept. The report
 //! reads only the incoming file's [`AxisDeclarations`], a few kilobytes, so
-//! the preflight takes those instead of the file and answers with the same
+//! the preflight takes those ([`RevisionDeclarations`]) instead of the file and answers with the same
 //! report through the same [`consequences`]. It is advice, not a
 //! reservation: committing still needs the staged file, so what is
 //! installed is what the server read, and the radargram or its picks may
@@ -64,7 +64,7 @@ use super::auth::Caller;
 use super::routes::ApiError;
 use crate::identity::{RadargramId, RevisionId};
 use crate::interp::carry::{CarryReport, Severity};
-use crate::interp::source::AxisDeclarations;
+use crate::interp::source::{AxisDeclarations, RevisionDeclarations};
 use crate::io::RidalNetcdfKind;
 use crate::project::revisions::{self, ledger};
 use crate::project::roles::Role;
@@ -102,51 +102,6 @@ const STAGING_MAX_AGE_SECS: u64 = 6 * 60 * 60;
 pub struct ReplaceQuery {
     #[serde(default)]
     filename: Option<String>,
-}
-
-/// The body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`:
-/// everything the report reads from an incoming file, without the file.
-///
-/// A field of its own rather than [`AxisDeclarations`] itself, so the API
-/// does not change when that internal type does.
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-pub struct PreflightBody {
-    /// The file's radargram id. It must be the radargram in the path.
-    radargram_id: String,
-    /// The file's `ridal_processing_datetime` attribute, verbatim. With the
-    /// radargram id it gives the revision id.
-    processing_datetime: String,
-    /// The file's `time` variable: acquisition time per trace, in seconds
-    /// since the Unix epoch.
-    time: Vec<f64>,
-    /// The `anchor_name` attribute of the file's `twtt` variable, or `null`
-    /// when it has none.
-    #[schema(required = true)]
-    twtt_anchor: Option<String>,
-    /// The file's `twtt_crop` variable: one value, one per trace, or empty
-    /// when the file has none.
-    twtt_crop: Vec<f64>,
-    /// The file's `twtt_time_zero` variable, in the same way.
-    twtt_time_zero: Vec<f64>,
-    /// The spacing of the file's `twtt` variable in nanoseconds (its second
-    /// value minus its first), or 0 when it has fewer than two.
-    dt_ns: f64,
-    /// The length of the file's `twtt` variable.
-    n_samples: usize,
-}
-
-impl PreflightBody {
-    fn into_declarations(self) -> AxisDeclarations {
-        AxisDeclarations {
-            time: self.time,
-            twtt_anchor: self.twtt_anchor,
-            twtt_crop: self.twtt_crop,
-            twtt_time_zero: self.twtt_time_zero,
-            dt_ns: self.dt_ns,
-            processing_datetime: Some(self.processing_datetime),
-            n_samples: self.n_samples,
-        }
-    }
 }
 
 /// What replacing this radargram would do to one interpretation.
@@ -564,7 +519,7 @@ pub async fn preflight_replacement(
     State(state): State<Arc<AppState>>,
     caller: Caller,
     Path(radargram_id): Path<String>,
-    Json(body): Json<PreflightBody>,
+    Json(body): Json<RevisionDeclarations>,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "check a replacement")?;
     // Held for the same reason staging holds it: a commit landing midway
@@ -585,7 +540,7 @@ pub async fn preflight_replacement(
         &radargram,
         &from_revision,
         &from_path,
-        &body.into_declarations(),
+        &body.into_axis_declarations(),
         &to_revision,
     )?;
     Ok(Json(report))

@@ -18,6 +18,7 @@ use utoipa::OpenApi;
 
 use super::{interp_routes, replace_routes, routes, site};
 use crate::interp::carry::{CarryReport, Displacement, Dropped, Severity};
+use crate::interp::source::RevisionDeclarations;
 use crate::project::roles::{DownloadScope, Role};
 
 #[derive(OpenApi)]
@@ -40,7 +41,7 @@ use crate::project::roles::{DownloadScope, Role};
         routes::DatasetSummary,
         routes::DatasetAxes,
         interp_routes::InterpretationList,
-        replace_routes::PreflightBody,
+        RevisionDeclarations,
         replace_routes::Staged,
         replace_routes::Replaced,
         replace_routes::ConsequenceReport,

@@ -2301,6 +2301,45 @@ pub struct InfoRecord {
     pub related_files: RelatedFiles,
 }
 
+/// What `ridal info` reports for a NetCDF file Ridal processed (#11).
+///
+/// Identity rather than contents: enough to match a local file to a radargram
+/// a server already has. A file from a Ridal too old to have radargram ids
+/// is reported rather than refused, with `reprocess_reason` set and the
+/// identity fields `None`, so a caller sorting many files does not have to
+/// tell that apart from a failure.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessedInfoRecord {
+    pub input: String,
+    pub format: NamedFormat,
+    /// The Ridal version that wrote the file.
+    pub ridal_version: String,
+    /// Why the file has to be reprocessed before Ridal can use it, or
+    /// `None` when it does not.
+    pub reprocess_reason: Option<String>,
+    pub radargram_id: Option<String>,
+    pub display_name: Option<String>,
+    pub group_name: Option<String>,
+    pub group_id: Option<String>,
+    /// Verbatim from the file, since the revision id hashes this string.
+    pub processing_datetime: Option<String>,
+    /// The id a server gives this revision of the radargram (#117).
+    pub revision_id: Option<String>,
+    pub samples: Option<usize>,
+    pub traces: Option<usize>,
+}
+
+/// One inspected input: a raw recording, or a file Ridal processed.
+///
+/// Untagged, so each serializes as its own record; `format.name` tells them
+/// apart (`ridal` for a processed file).
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum Inspected {
+    Raw(InfoRecord),
+    Processed(ProcessedInfoRecord),
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcessResult {
     pub output_path: PathBuf,
@@ -2510,11 +2549,105 @@ fn info_record(
     })
 }
 
-pub fn inspect(params: InfoParams) -> Result<Vec<InfoRecord>, Box<dyn Error>> {
+/// Whether `path` is a NetCDF file, which `info` reads as Ridal output
+/// rather than as a raw recording.
+fn is_netcdf(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("nc"))
+}
+
+/// Inspect a NetCDF file as Ridal output, without loading its amplitudes.
+fn processed_info_record(path: &Path) -> Result<ProcessedInfoRecord, String> {
+    let record = |ridal_version: String| ProcessedInfoRecord {
+        input: path.to_string_lossy().to_string(),
+        format: NamedFormat {
+            name: "ridal",
+            description: "NetCDF processed by Ridal",
+        },
+        ridal_version,
+        reprocess_reason: None,
+        radargram_id: None,
+        display_name: None,
+        group_name: None,
+        group_id: None,
+        processing_datetime: None,
+        revision_id: None,
+        samples: None,
+        traces: None,
+    };
+    match crate::io::inspect_ridal_netcdf(path)? {
+        crate::io::RidalNetcdfKind::Supported(meta) => {
+            let revision_id = crate::identity::RevisionId::fingerprint_v1(
+                &meta.radargram_id,
+                &meta.processing_datetime,
+            );
+            let (samples, traces) = meta.shape;
+            Ok(ProcessedInfoRecord {
+                radargram_id: Some(meta.radargram_id.to_string()),
+                display_name: meta.display_name.map(|name| name.to_string()),
+                group_name: meta.group_name.map(|name| name.to_string()),
+                group_id: meta.group_id.map(|id| id.to_string()),
+                processing_datetime: Some(meta.processing_datetime),
+                revision_id: Some(revision_id.to_string()),
+                samples: Some(samples),
+                traces: Some(traces),
+                ..record(meta.ridal_version)
+            })
+        }
+        crate::io::RidalNetcdfKind::Legacy(version) => Ok(ProcessedInfoRecord {
+            reprocess_reason: Some(format!(
+                "This file was {}",
+                crate::io::legacy_reason(&version)
+            )),
+            ..record(version)
+        }),
+        crate::io::RidalNetcdfKind::NotRidal => Err(format!(
+            "{} is a NetCDF file but not one Ridal processed.",
+            path.display()
+        )),
+    }
+}
+
+pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
     let expanded = expand_input_paths(&params.filepaths)?;
-    let mut records = Vec::<InfoRecord>::new();
+    let mut records = Vec::<Inspected>::new();
+
+    // These describe how to read a raw recording. A processed file already
+    // carries the result, so given one they would be silently ignored.
+    let raw_only = [
+        ("cor", params.cor_path.is_some()),
+        ("dem", params.dem_path.is_some()),
+        ("crs", params.crs.is_some()),
+        (
+            "override_antenna_mhz",
+            params.override_antenna_mhz.is_some(),
+        ),
+        (
+            "override_antenna_separation",
+            params.override_antenna_separation.is_some(),
+        ),
+    ];
+    if let Some(netcdf) = expanded.iter().find(|input| is_netcdf(input)) {
+        let given: Vec<&str> = raw_only
+            .iter()
+            .filter(|(_, set)| *set)
+            .map(|(name, _)| *name)
+            .collect();
+        if !given.is_empty() {
+            return Err(format!(
+                "{} only apply to raw recordings, and {} was processed already.",
+                given.join(", "),
+                netcdf.display()
+            )
+            .into());
+        }
+    }
 
     for input in expanded {
+        if is_netcdf(&input) {
+            records.push(Inspected::Processed(processed_info_record(&input)?));
+            continue;
+        }
         let resolved = formats::resolve_input(&input)?;
         let (meta, location) = load_meta_and_location(
             &resolved,
@@ -2525,7 +2658,7 @@ pub fn inspect(params: InfoParams) -> Result<Vec<InfoRecord>, Box<dyn Error>> {
             params.override_antenna_mhz,
             params.override_antenna_separation,
         )?;
-        records.push(info_record(&resolved, &meta, &location)?);
+        records.push(Inspected::Raw(info_record(&resolved, &meta, &location)?));
     }
 
     Ok(records)
@@ -4136,5 +4269,96 @@ pub mod tests {
         );
 
         Ok(())
+    }
+
+    fn info_params(inputs: Vec<PathBuf>) -> super::InfoParams {
+        super::InfoParams {
+            filepaths: inputs,
+            dem_path: None,
+            cor_path: None,
+            medium_velocity: 0.168,
+            crs: None,
+            override_antenna_mhz: None,
+            override_antenna_separation: None,
+        }
+    }
+
+    fn processed(records: Vec<super::Inspected>) -> super::ProcessedInfoRecord {
+        match records.into_iter().next() {
+            Some(super::Inspected::Processed(record)) => record,
+            other => panic!("expected a processed record, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn info_reports_a_processed_file_by_its_ids() {
+        // #11: a local file is matched to a served radargram by its ids, so
+        // the revision id must be the one the server computes.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("line.nc");
+        let gpr = make_dummy_gpr(20, 10, Some(1.));
+        gpr.export(&path).unwrap();
+
+        let record = processed(super::inspect(info_params(vec![path])).unwrap());
+        let datetime = record.processing_datetime.clone().unwrap();
+        let id = crate::identity::RadargramId::new("test-radargram").unwrap();
+        assert_eq!(record.format.name, "ridal");
+        assert_eq!(record.radargram_id.as_deref(), Some("test-radargram"));
+        assert_eq!(
+            record.revision_id,
+            Some(crate::identity::RevisionId::fingerprint_v1(&id, &datetime).to_string())
+        );
+        assert_eq!((record.samples, record.traces), (Some(10), Some(20)));
+        assert_eq!(record.reprocess_reason, None);
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn info_reports_a_legacy_file_rather_than_failing() {
+        // A caller sorting many files sorts this one as "reprocess", which it
+        // could only do from an error by reading its message.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.nc");
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_attribute("program_version", "ridal version 0.3.0")
+                .unwrap();
+        }
+
+        let record = processed(super::inspect(info_params(vec![path])).unwrap());
+        assert_eq!(record.ridal_version, "ridal version 0.3.0");
+        assert!(record
+            .reprocess_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("Reprocess it")));
+        assert_eq!(record.radargram_id, None);
+        assert_eq!(record.revision_id, None);
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn info_refuses_a_netcdf_file_ridal_did_not_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("other.nc");
+        {
+            let mut file = netcdf::create(&path).unwrap();
+            file.add_dimension("x", 1).unwrap();
+        }
+        let error = super::inspect(info_params(vec![path])).unwrap_err();
+        assert!(
+            error.to_string().contains("not one Ridal processed"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn info_refuses_raw_file_options_with_a_processed_file() {
+        // Refused before any file is opened: they would be ignored, and an
+        // ignored `--crs` is a silent wrong answer about where a line is.
+        let mut params = info_params(vec![PathBuf::from("line.nc")]);
+        params.crs = Some("EPSG:32633".to_string());
+        let error = super::inspect(params).unwrap_err();
+        assert!(error.to_string().contains("crs only apply"), "{error}");
     }
 }

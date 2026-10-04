@@ -239,7 +239,7 @@ $ ridal info [OPTIONS] <INPUTS>...
 **Arguments**
 
 ```{option} <INPUTS>
-Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded
+Input header/data path(s), or NetCDF files Ridal processed, which are reported by their radargram and revision ids. Explicit paths are preferred, but glob patterns are also expanded
 
 Required.
 ```
