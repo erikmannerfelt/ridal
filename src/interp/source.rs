@@ -116,6 +116,96 @@ pub struct AxisDeclarations {
     pub n_samples: usize,
 }
 
+/// A processed file's identity and axis declarations: everything a
+/// replace's consequence report reads from the incoming file (#331).
+///
+/// The body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`,
+/// and what `ridal._preflight_body` reads from a local file for the Python
+/// client (#328), so one type is both ends of the request. A type of its
+/// own rather than [`AxisDeclarations`] itself, so the API does not change
+/// when that internal type does.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct RevisionDeclarations {
+    /// The file's radargram id. It must be the radargram in the path.
+    pub radargram_id: String,
+    /// The file's `ridal_processing_datetime` attribute, verbatim. With the
+    /// radargram id it gives the revision id.
+    pub processing_datetime: String,
+    /// The file's `time` variable: acquisition time per trace, in seconds
+    /// since the Unix epoch.
+    pub time: Vec<f64>,
+    /// The `anchor_name` attribute of the file's `twtt` variable, or `null`
+    /// when it has none.
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub twtt_anchor: Option<String>,
+    /// The file's `twtt_crop` variable: one value, one per trace, or empty
+    /// when the file has none.
+    pub twtt_crop: Vec<f64>,
+    /// The file's `twtt_time_zero` variable, in the same way.
+    pub twtt_time_zero: Vec<f64>,
+    /// The spacing of the file's `twtt` variable in nanoseconds (its second
+    /// value minus its first), or 0 when it has fewer than two.
+    pub dt_ns: f64,
+    /// The length of the file's `twtt` variable.
+    pub n_samples: usize,
+}
+
+impl RevisionDeclarations {
+    /// Read them from a processed file, which must be a current Ridal file:
+    /// a legacy one has no radargram id to send.
+    #[allow(
+        dead_code,
+        reason = "called by `ridal._preflight_body` in lib.rs, which the bin target \
+                  does not build, and by tests"
+    )]
+    pub fn read(path: &Path) -> Result<Self, String> {
+        let meta = match crate::io::inspect_ridal_netcdf(path)? {
+            crate::io::RidalNetcdfKind::Supported(meta) => meta,
+            crate::io::RidalNetcdfKind::Legacy(version) => {
+                return Err(format!(
+                    "{} was {}",
+                    path.display(),
+                    crate::io::legacy_reason(&version)
+                ))
+            }
+            crate::io::RidalNetcdfKind::NotRidal => {
+                return Err(format!(
+                    "{} is a NetCDF file but not one Ridal processed.",
+                    path.display()
+                ))
+            }
+        };
+        let declared = read_axis_declarations(path)?;
+        Ok(Self {
+            radargram_id: meta.radargram_id.to_string(),
+            processing_datetime: meta.processing_datetime,
+            time: declared.time,
+            twtt_anchor: declared.twtt_anchor,
+            twtt_crop: declared.twtt_crop,
+            twtt_time_zero: declared.twtt_time_zero,
+            dt_ns: declared.dt_ns,
+            n_samples: declared.n_samples,
+        })
+    }
+
+    #[cfg_attr(
+        not(feature = "server"),
+        allow(dead_code, reason = "called by the preflight route")
+    )]
+    pub fn into_axis_declarations(self) -> AxisDeclarations {
+        AxisDeclarations {
+            time: self.time,
+            twtt_anchor: self.twtt_anchor,
+            twtt_crop: self.twtt_crop,
+            twtt_time_zero: self.twtt_time_zero,
+            dt_ns: self.dt_ns,
+            processing_datetime: Some(self.processing_datetime),
+            n_samples: self.n_samples,
+        }
+    }
+}
+
 /// Read the axis declarations, or as much of them as the file carries.
 ///
 /// Lenient about content, unlike [`read_geometry`]: this describes what a
@@ -170,6 +260,29 @@ fn read_str_attr(file: &netcdf::File, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn revision_declarations_need_a_current_ridal_file() {
+        // A legacy file has no radargram id to send, and an unrelated one no
+        // identity at all; each says which it is rather than sending nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join("old.nc");
+        netcdf::create(&legacy)
+            .unwrap()
+            .add_attribute("program_version", "ridal version 0.3.0")
+            .unwrap();
+        let error = super::RevisionDeclarations::read(&legacy).unwrap_err();
+        assert!(error.contains("Reprocess it"), "{error}");
+
+        let other = dir.path().join("other.nc");
+        netcdf::create(&other)
+            .unwrap()
+            .add_dimension("x", 1)
+            .unwrap();
+        let error = super::RevisionDeclarations::read(&other).unwrap_err();
+        assert!(error.contains("not one Ridal processed"), "{error}");
+    }
+
     #[test]
     #[serial_test::serial(netcdf)]
     fn a_file_that_cannot_be_opened_is_an_error_not_an_empty_declaration() {

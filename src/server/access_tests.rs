@@ -4904,8 +4904,8 @@ async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
     assert!(radargrams(dir.path()).join("ours.nc").exists());
 }
 
-/// A new revision of `id` on disk, and the preflight body for it, read the
-/// way the Python client will read a local file (#11).
+/// A new revision of `id` on disk, and the preflight body for it, read by
+/// the same function `ridal._preflight_body` calls for the Python client.
 fn preflight_fixture(dir: &StdPath, id: &str) -> (std::path::PathBuf, Value) {
     let source = dir.join("new.nc");
     super::interp_routes_tests::write_test_nc_with_axes_at(
@@ -4914,17 +4914,9 @@ fn preflight_fixture(dir: &StdPath, id: &str) -> (std::path::PathBuf, Value) {
         None,
         "2026-06-01T00:00:00Z",
     );
-    let declared = crate::interp::source::read_axis_declarations(&source).unwrap();
-    let body = json!({
-        "radargram_id": id,
-        "processing_datetime": declared.processing_datetime.unwrap(),
-        "time": declared.time,
-        "twtt_anchor": declared.twtt_anchor,
-        "twtt_crop": declared.twtt_crop,
-        "twtt_time_zero": declared.twtt_time_zero,
-        "dt_ns": declared.dt_ns,
-        "n_samples": declared.n_samples,
-    });
+    let body =
+        serde_json::to_value(crate::interp::source::RevisionDeclarations::read(&source).unwrap())
+            .unwrap();
     (source, body)
 }
 

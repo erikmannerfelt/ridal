@@ -682,7 +682,9 @@ pub struct BatchProcessArgs {
 
 #[derive(Debug, clap::Args)]
 pub struct InfoArgs {
-    /// Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded.
+    /// Input header/data path(s), or NetCDF files Ridal processed, which are
+    /// reported by their radargram and revision ids. Explicit paths are
+    /// preferred, but glob patterns are also expanded.
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
 
@@ -1005,7 +1007,10 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
             if i > 0 {
                 println!();
             }
-            print_info_record(record);
+            match record {
+                gpr::Inspected::Raw(record) => print_info_record(record),
+                gpr::Inspected::Processed(record) => print_processed_info_record(record),
+            }
         }
     }
     Ok(())
@@ -1174,6 +1179,32 @@ fn step_mapping(
         }
     }
     Ok(out)
+}
+
+fn print_processed_info_record(record: &gpr::ProcessedInfoRecord) {
+    let or_none = |value: &Option<String>| value.clone().unwrap_or_else(|| "-".to_string());
+    println!("Input:\t\t{}", record.input);
+    println!(
+        "Format:\t\t{} ({})",
+        record.format.name, record.format.description
+    );
+    println!("Ridal version:\t{}", record.ridal_version);
+    if let Some(reason) = &record.reprocess_reason {
+        println!("Reprocess:\t{reason}");
+        return;
+    }
+    println!();
+    println!("Identity");
+    println!("--------");
+    println!("Radargram id:\t{}", or_none(&record.radargram_id));
+    println!("Display name:\t{}", or_none(&record.display_name));
+    println!("Group:\t\t{}", or_none(&record.group_name));
+    println!("Group id:\t{}", or_none(&record.group_id));
+    println!("Processed:\t{}", or_none(&record.processing_datetime));
+    println!("Revision id:\t{}", or_none(&record.revision_id));
+    if let (Some(samples), Some(traces)) = (record.samples, record.traces) {
+        println!("Shape:\t\t{samples} samples x {traces} traces");
+    }
 }
 
 fn print_info_record(record: &gpr::InfoRecord) {

@@ -545,71 +545,6 @@
           }
         }
       },
-      "PreflightBody": {
-        "type": "object",
-        "description": "The body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`:\neverything the report reads from an incoming file, without the file.\n\nA field of its own rather than [`AxisDeclarations`] itself, so the API\ndoes not change when that internal type does.",
-        "required": [
-          "radargram_id",
-          "processing_datetime",
-          "time",
-          "twtt_anchor",
-          "twtt_crop",
-          "twtt_time_zero",
-          "dt_ns",
-          "n_samples"
-        ],
-        "properties": {
-          "radargram_id": {
-            "type": "string",
-            "description": "The file's radargram id. It must be the radargram in the path."
-          },
-          "processing_datetime": {
-            "type": "string",
-            "description": "The file's `ridal_processing_datetime` attribute, verbatim. With the\nradargram id it gives the revision id."
-          },
-          "time": {
-            "type": "array",
-            "items": {
-              "type": "number",
-              "format": "double"
-            },
-            "description": "The file's `time` variable: acquisition time per trace, in seconds\nsince the Unix epoch."
-          },
-          "twtt_anchor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The `anchor_name` attribute of the file's `twtt` variable, or `null`\nwhen it has none."
-          },
-          "twtt_crop": {
-            "type": "array",
-            "items": {
-              "type": "number",
-              "format": "double"
-            },
-            "description": "The file's `twtt_crop` variable: one value, one per trace, or empty\nwhen the file has none."
-          },
-          "twtt_time_zero": {
-            "type": "array",
-            "items": {
-              "type": "number",
-              "format": "double"
-            },
-            "description": "The file's `twtt_time_zero` variable, in the same way."
-          },
-          "dt_ns": {
-            "type": "number",
-            "format": "double",
-            "description": "The spacing of the file's `twtt` variable in nanoseconds (its second\nvalue minus its first), or 0 when it has fewer than two."
-          },
-          "n_samples": {
-            "type": "integer",
-            "description": "The length of the file's `twtt` variable.",
-            "minimum": 0
-          }
-        }
-      },
       "ProjectEntry": {
         "type": "object",
         "description": "One project as the caller sees it: an entry of `GET /api/v1/projects`,\nand the whole of `GET /api/v1/projects/{key}`.",
@@ -723,6 +658,71 @@
           },
           "to_revision": {
             "type": "string"
+          }
+        }
+      },
+      "RevisionDeclarations": {
+        "type": "object",
+        "description": "A processed file's identity and axis declarations: everything a\nreplace's consequence report reads from the incoming file (#331).\n\nThe body of `POST /api/v1/datasets/{radargram_id}/replace/preflight`,\nand what `ridal._preflight_body` reads from a local file for the Python\nclient (#328), so one type is both ends of the request. A type of its\nown rather than [`AxisDeclarations`] itself, so the API does not change\nwhen that internal type does.",
+        "required": [
+          "radargram_id",
+          "processing_datetime",
+          "time",
+          "twtt_anchor",
+          "twtt_crop",
+          "twtt_time_zero",
+          "dt_ns",
+          "n_samples"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string",
+            "description": "The file's radargram id. It must be the radargram in the path."
+          },
+          "processing_datetime": {
+            "type": "string",
+            "description": "The file's `ridal_processing_datetime` attribute, verbatim. With the\nradargram id it gives the revision id."
+          },
+          "time": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The file's `time` variable: acquisition time per trace, in seconds\nsince the Unix epoch."
+          },
+          "twtt_anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The `anchor_name` attribute of the file's `twtt` variable, or `null`\nwhen it has none."
+          },
+          "twtt_crop": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The file's `twtt_crop` variable: one value, one per trace, or empty\nwhen the file has none."
+          },
+          "twtt_time_zero": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The file's `twtt_time_zero` variable, in the same way."
+          },
+          "dt_ns": {
+            "type": "number",
+            "format": "double",
+            "description": "The spacing of the file's `twtt` variable in nanoseconds (its second\nvalue minus its first), or 0 when it has fewer than two."
+          },
+          "n_samples": {
+            "type": "integer",
+            "description": "The length of the file's `twtt` variable.",
+            "minimum": 0
           }
         }
       },

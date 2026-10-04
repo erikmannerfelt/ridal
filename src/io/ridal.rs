@@ -329,7 +329,6 @@ pub fn export_locations(
 /// Only consumed by catalog discovery under the `server` feature (#122);
 /// the `cfg_attr` below reflects that honestly rather than blanket-allowing
 /// dead code for CLI-only builds.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum RidalNetcdfKind {
     NotRidal,
@@ -349,7 +348,6 @@ pub enum RidalNetcdfKind {
 /// replace, and catalog discovery) so the wording stays one decision instead
 /// of three (#167). Callers prepend whatever names the file for them, e.g.
 /// `format!("{name} was {}", legacy_reason(&version))`.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub fn legacy_reason(version: &str) -> String {
     format!(
         "processed by an old ridal ({version}), which predates radargram ids. \
@@ -359,7 +357,6 @@ pub fn legacy_reason(version: &str) -> String {
 
 /// Metadata read from a supported Ridal-produced NetCDF file, without
 /// loading the amplitude array.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct RidalNetcdfMetadata {
     pub radargram_id: crate::identity::RadargramId,
@@ -377,7 +374,6 @@ pub struct RidalNetcdfMetadata {
 
 /// Read a single global attribute as a string, or `None` if absent or not a
 /// string-valued attribute.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 fn read_global_str_attr(file: &netcdf::File, name: &str) -> Option<String> {
     let attr = file.attribute(name)?;
     match attr.value() {
@@ -389,7 +385,6 @@ fn read_global_str_attr(file: &netcdf::File, name: &str) -> Option<String> {
 /// Read a global attribute as a string, trying `primary` first and falling
 /// back to `legacy` if absent. Supports files written before the
 /// `ridal_*` attribute rename (#116); the value is otherwise identical.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 fn read_global_str(file: &netcdf::File, primary: &str, legacy: &str) -> Option<String> {
     read_global_str_attr(file, primary).or_else(|| read_global_str_attr(file, legacy))
 }
@@ -412,7 +407,6 @@ fn read_global_str(file: &netcdf::File, primary: &str, legacy: &str) -> Option<S
 /// Errors are reserved for failures to open or read the file at all, kept
 /// distinct from `NotRidal` so catalog discovery (#122) can report them
 /// separately rather than silently skipping unreadable candidates.
-#[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub fn inspect_ridal_netcdf(path: &Path) -> Result<RidalNetcdfKind, String> {
     let file = netcdf::open(path).map_err(|e| format!("Failed to open {path:?} as NetCDF: {e}"))?;
 
