@@ -1649,7 +1649,8 @@ mod tests {
     // `#[serial_test::serial(netcdf)]` added here and on inspect_ridal_netcdf's
     // tests below, which introduced enough concurrent netcdf::create/open calls
     // to make the same underlying race reproduce on every run instead of
-    // occasionally. Keeping the retry as a second line of defense.
+    // occasionally. The retry once kept here as a second line of defense
+    // went once #324 fixed the subprocess half of that race.
     #[serial_test::serial(netcdf)]
     fn test_save_netcdf() {
         let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));

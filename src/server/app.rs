@@ -1716,6 +1716,7 @@ mod tests {
         });
     }
 
+    #[test]
     #[serial_test::serial(netcdf)]
     fn index_page_gives_ungrouped_entries_a_map_like_any_group() {
         let rt = tokio::runtime::Runtime::new().unwrap();
