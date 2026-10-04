@@ -186,6 +186,52 @@ entries (`__revision_id`, `__shape`, `__start_stop_datetime`). This is
 an implicit convention rather than a typed one — if slug validation
 rules ever change, grep for these sentinels first.
 
+## The Python client (#328)
+
+`ridal.client` is pure Python, in `python/ridal/client/`, beside the Rust
+extension `ridal._ridal`, which `python/ridal/__init__.py` re-exports
+(maturin's mixed layout). Rust is used only to read local files: identity
+through `ridal.info`, and the replace preflight's body through the private
+`ridal._ridal._preflight_body`, which serializes the same
+`interp::source::RevisionDeclarations` type the server deserializes, so the
+two ends of that request are one type.
+
+- **The HTTP layer is one module.** Everything that touches the network goes
+  through `_http.Http`, one `httpx.Client`: the error envelope becomes an
+  exception chosen by status (keeping the server's stable `code`),
+  downloads stream to a temporary sibling and are moved into place whole,
+  uploads stream with a `Content-Length`. Concurrent transfers can come
+  later behind it without the public API changing; that is why `httpx`
+  was chosen over `urllib`, at the cost of a dependency.
+- **Dependencies are extras.** `ridal[client]` is `httpx`; `ridal[geo]`
+  is pandas and geopandas, imported only inside `to_pandas()` and
+  `to_geopandas()`. The base install stays numpy only. Progress is a
+  callback (`ProgressEvent`), with `tqdm_progress()` importing tqdm lazily.
+- **Records are held to the server.** Each frozen dataclass in `models.py`
+  mirrors a schema in `docs/reference/openapi.json`, and
+  `tests/client/test_schema.py` checks field names and nullability against
+  it, so a server change that the Rust test regenerates into the spec fails
+  the client's test rather than a user's script.
+- **`plan()` asks before it uploads.** Local files are sorted by identity
+  against the catalog (`new`, `unchanged`, `safe`, `risky`, `legacy`);
+  only a file that would replace a picked radargram is sent to the preflight.
+  `apply()` then works one file at a time and decides on the server's report
+  for the staged file, not the preflight's, which is advice. There is no
+  "collision" status: the revision id hashes the radargram id and the
+  processing date, not the contents, so a file edited elsewhere without
+  reprocessing is indistinguishable from the served one without a download.
+- **A script's picks need the revision's axes.** The browser writes
+  `coordinates.axes` from data embedded in the viewer page;
+  `GET …/axes/gprinterp` serves the same block, and
+  `interpretation_template()` starts a document from it. Without it, picks
+  saved by a script are refused when carried onto a reprocessed revision.
+  The client never stamps axes onto a document itself, since one drawn on an
+  older revision must not be labelled with the current one's.
+- **Testing** is in three layers: the schema check, unit tests against an
+  `httpx.MockTransport`, and integration tests against a real `ridal gui`
+  and site (`RIDAL_BIN`, plus PROJ to process the fixture), which run in
+  CI's `client-integration` job.
+
 ## Render pipeline
 
 Fixed order, enforced by module structure rather than just convention:
