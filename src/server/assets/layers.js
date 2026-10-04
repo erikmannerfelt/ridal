@@ -584,10 +584,11 @@ async function save() {
     }
     if (!response.ok) {
       const body = await response.json().catch(() => null);
-      showError(body?.error?.message || RIDAL.upstreamMessage(response.status));
       // Re-read so the page shows what is actually stored rather than the
-      // rejected edit.
+      // rejected edit. Before the error, not after: `load` clears the error
+      // box, which erased the message before it was ever drawn (#348).
       await load();
+      showError(body?.error?.message || RIDAL.upstreamMessage(response.status));
       return;
     }
     etag = response.headers.get("ETag");
@@ -650,12 +651,19 @@ if (form) {
         "id",
       ];
     }
-    if (!/^[a-z0-9_-]+$/.test(id)) {
-      const bad = [...id].find((c) => !/[a-z0-9_-]/.test(c));
+    // The server's rule for a new id (`is_valid_identifier`): it must work
+    // as a variable name in a derived-item expression, so no "-" (#348).
+    if (!/^[a-z][a-z0-9_]*$/.test(id)) {
+      const suggestion = RIDAL.sanitizeIdentifier(id, takenIds());
+      const bad = [...id].find((c) => !/[a-z0-9_]/.test(c));
+      const problem = bad === undefined
+        ? "The id must start with a lowercase letter."
+        : `The id cannot contain "${bad}".`;
       return [
-        `The id cannot contain "${bad}". Use lowercase letters, digits, "-" ` +
-          "and \"_\" only -- it ends up in exported columns and URLs. Put " +
-          "capitals, spaces and punctuation in the name instead.",
+        `${problem} Use lowercase letters, digits and "_" only, starting ` +
+          "with a letter -- the id is a variable name in derived-item " +
+          "expressions. Put capitals, spaces and punctuation in the name " +
+          `instead. Try "${suggestion}"?`,
         "id",
       ];
     }
@@ -668,17 +676,24 @@ if (form) {
     return null;
   }
 
+  function takenIds() {
+    return layers.map((layer) => layer.id);
+  }
+
   /* Derive the ID from the name while the name is being typed (#242), the
-   * same way the derived-item and basemap editors do. A layer ID is a slug
-   * (`RIDAL.slugify`), not an expression identifier. Once the ID is edited
-   * by hand it is left alone, so a deliberate choice is never clobbered by
-   * a later tweak to the name. */
+   * same way the derived-item and basemap editors do. A layer ID is an
+   * expression identifier (`RIDAL.sanitizeIdentifier`), not a slug: the
+   * server refuses a new id with "-" in it (#348). Once the ID is edited by
+   * hand it is left alone, so a deliberate choice is never clobbered by a
+   * later tweak to the name. */
   let idEdited = false;
   form.elements.id.addEventListener("input", () => {
     idEdited = true;
   });
   form.elements.name.addEventListener("input", () => {
-    if (!idEdited) form.elements.id.value = RIDAL.slugify(form.elements.name.value);
+    if (idEdited) return;
+    const name = form.elements.name.value;
+    form.elements.id.value = name.trim() === "" ? "" : RIDAL.sanitizeIdentifier(name, takenIds());
   });
 
   form.addEventListener("submit", (event) => {

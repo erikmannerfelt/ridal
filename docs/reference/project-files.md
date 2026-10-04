@@ -315,7 +315,10 @@ Each layer has:
 
 `id`
 : A stable identifier, written into every pick that uses the layer.
-  Required.
+  Required. A new id must be lowercase letters, digits and `_`, starting
+  with a letter (`superimposed_ice`, not `superimposed-ice`), because it is
+  also the layer's variable name in derived-item expressions
+  ({doc}`expressions`).
 
 `name`
 : The display name. Safe to change at any time. Required.
