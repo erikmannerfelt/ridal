@@ -41,6 +41,130 @@
     </form>
   </section>
 
+  {#- API tokens (#341): what lets a script act as this account, in the
+      projects it is granted and never above the membership there. Made and
+      revoked only from a signed-in session, which the routes enforce. -#}
+  <section class="settings-section" id="tokens-section">
+    <h2>API tokens<a class="docs-help" href="{{ docs_base|safe }}deploy/accounts.html#api-tokens"
+          target="_blank" rel="noopener" title="API tokens">?</a></h2>
+    <p class="hint">
+      A token lets a script, such as one using the Python client, act as you
+      in the projects you grant it. In each, it has at most the role and
+      download scope you give it, and never more than your own membership.
+    </p>
+
+    <div class="table-scroll">
+    <table id="tokens-table" class="layers-table">
+      <thead>
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Projects</th>
+          <th scope="col">Created</th>
+          <th scope="col">Expires</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    </div>
+
+    {#- The one moment a token's secret exists: only its hash is stored, so
+        it is shown once, from the response that created it, and is never
+        part of a page the server renders. -#}
+    <div id="token-result" class="warning" hidden>
+      <p><strong>Your new token <span id="token-result-name"></span>.</strong></p>
+      <p><code id="token-secret" class="path token-secret"></code></p>
+      <p>
+        Copy it now: it will not be shown again. Keep it as you would a
+        password. If it is lost, revoke it and create another.
+      </p>
+      <div class="bulk-actions">
+        <button type="button" id="token-copy">Copy</button>
+        <button type="button" id="token-done">Done</button>
+        <span id="token-copy-status" class="pick-status"></span>
+      </div>
+    </div>
+
+    {#- Projects a grant may name: the ones this account is a member of,
+        with the membership's role and scope as the highest a grant can ask
+        for there. A server administrator is a member everywhere. -#}
+    {% set grantable = projects | selectattr("member") | list %}
+    {% if grantable %}
+      <form id="add-token" class="add-layer" novalidate>
+        <h3>Create a token</h3>
+        <div class="add-layer-fields">
+          <label>Name
+            <input type="text" name="name" required maxlength="64"
+                   placeholder="laptop" autocomplete="off"
+                   autocapitalize="none" spellcheck="false">
+          </label>
+          <label>Expires
+            <select name="expires">
+              <option value="30d">in 30 days</option>
+              <option value="90d" selected>in 90 days</option>
+              <option value="1y">in a year</option>
+              <option value="never">never</option>
+              <option value="custom">after&hellip;</option>
+            </select>
+          </label>
+          <label id="token-custom-expiry" hidden>After
+            <input type="text" name="custom_expires" placeholder="12w"
+                   autocomplete="off" autocapitalize="none" spellcheck="false">
+          </label>
+        </div>
+        <p class="hint">
+          A custom lifetime is a number of days, weeks or years, such as
+          <code>30d</code>, <code>12w</code> or <code>2y</code>.
+        </p>
+
+        <fieldset class="token-grants">
+          <legend>Projects</legend>
+          <div id="token-grant-rows"></div>
+          <button type="button" id="token-add-grant">Add another project</button>
+        </fieldset>
+        {#- Cloned once per grant row. The options carry the membership as
+            data, so the role and download lists can be cut down to it. -#}
+        <template id="token-grant-template">
+          <div class="add-layer-fields token-grant">
+            <label>Project
+              <select name="project">
+                {% for project in grantable %}
+                  <option value="{{ project.key }}" data-role="{{ project.role }}" data-download="{{ project.download }}">
+                    {{- project.name }}{% if project.archived %} (archived){% endif -%}
+                  </option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Role
+              <select name="role">
+                {% for role in roles %}
+                  <option value="{{ role }}">{{ role }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Downloads
+              <select name="download">
+                {% for scope in download_scopes %}
+                  <option value="{{ scope }}">{{ scope }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="button" class="danger token-remove-grant">Remove</button>
+          </div>
+        </template>
+
+        <button type="submit">Create token</button>
+      </form>
+    {% else %}
+      <p class="hint" id="token-no-projects">
+        You are not a member of any project yet, so there is nowhere a token
+        could act. Ask a project administrator to add you to one.
+      </p>
+    {% endif %}
+
+    <div id="token-error" class="warning" role="status" aria-live="polite" hidden></div>
+  </section>
+
   {% if server_admin %}
     {#- Accounts are server-wide (#214): they sign in once and are given a
         role in each project. Creating one is an identity act, so it lives
@@ -77,6 +201,31 @@
           project's own settings page.
         </p>
         <div id="memberships-overview"></div>
+      </details>
+
+      {#- Every account's API tokens, so one can be revoked without
+          reaching the server's command line. Loaded when opened. -#}
+      <details id="all-tokens" class="bulk-users">
+        <summary>Everyone's API tokens</summary>
+        <p class="hint">
+          Every token on this site. Revoking one stops it at once, for
+          whichever script holds it.
+        </p>
+        <div class="table-scroll">
+        <table id="all-tokens-table" class="layers-table">
+          <thead>
+            <tr>
+              <th scope="col">Account</th>
+              <th scope="col">Name</th>
+              <th scope="col">Projects</th>
+              <th scope="col">Created</th>
+              <th scope="col">Expires</th>
+              <th scope="col"><span class="visually-hidden">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        </div>
       </details>
 
       {#- The one moment an invite token exists: only its hash is stored,

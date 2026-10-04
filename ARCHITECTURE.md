@@ -124,7 +124,10 @@ is state, not only layout:
   and hands `project_caller` the grant, which lowers the role and scope to
   `min(membership, ceiling)` and records `RoleCap::Token` so a refusal
   names the token. `Caller::audit_name` is what project audit entries use,
-  so a script's change reads as `anna via token ci`.
+  so a script's change reads as `anna via token ci`. The site settings page
+  manages them (#341) through the same routes; it renders each grantable
+  project's membership as the ceiling on its `<option>`, and the secret
+  exists only in the creating response, never in a rendered page.
 - **Routing** is one flat `build_site_router`: site routes under
   `/api/v1/…`, project pages under `/p/{key}/…`, project API under
   `/api/v1/projects/{key}/…`. A fallback rewrites a project-prefixed path to

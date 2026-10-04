@@ -29,8 +29,9 @@ print(client.me())  # Who it thinks you are, and with which token.
 ```
 
 The token comes from `token=` or the `RIDAL_TOKEN` environment variable,
-which keeps it out of scripts and notebooks. A server administrator makes one
-with `ridal site token add`; see {ref}`api-tokens`. A token is limited to the
+which keeps it out of scripts and notebooks. Make one on the site's Settings
+page, or as a server administrator with `ridal site token add`; see
+{ref}`api-tokens`. A token is limited to the
 projects and roles it was made for, which is why a script should use one
 rather than a password. `client.login(name, password)` also works, on a
 server reachable over HTTPS.
