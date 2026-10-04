@@ -73,6 +73,10 @@ pub enum Action {
     ProjectDeleted,
     /// A project's read/anonymous-download policy changed.
     AccessChanged,
+    /// An API token was created (#194).
+    TokenCreated,
+    /// An API token was revoked (#194).
+    TokenRevoked,
 }
 
 /// One thing that happened.

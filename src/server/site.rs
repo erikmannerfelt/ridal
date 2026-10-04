@@ -42,7 +42,7 @@ use crate::project::members;
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{DocumentStore, Expectation};
 use crate::site::accounts::{self, bulk, invite, Account, AccountError, AccountSet};
-use crate::site::{audit as site_audit, Grant, Site, SiteError};
+use crate::site::{audit as site_audit, tokens, Grant, Site, SiteError};
 
 /// The site's account file, for the "create the first one" hint.
 const ACCOUNTS_FILE: &str = accounts::ACCOUNTS_FILE;
@@ -398,9 +398,32 @@ fn member_error(error: members::MemberError) -> ApiError {
 #[derive(Debug, Clone)]
 pub struct SiteCaller {
     pub user: Option<UserId>,
+    /// Never true for a request with an API token, which does not carry
+    /// server administration even when its account has it.
     pub server_admin: bool,
     /// Whether the site has an account file at all.
     pub accounts_configured: bool,
+    /// The API token the request came with, if it did (#194).
+    pub token: Option<SiteToken>,
+}
+
+/// An API token, as the site resolved it for one request (#194).
+#[derive(Debug, Clone)]
+pub struct SiteToken {
+    pub id: String,
+    pub name: String,
+    pub grants: Vec<tokens::Grant>,
+    pub expires: Option<i64>,
+    /// Whether the token's account is a server administrator. In a granted
+    /// project that makes it an administrator, as the account would be; it
+    /// never makes the token one at the site level.
+    pub account_server_admin: bool,
+}
+
+impl SiteToken {
+    fn grant_for(&self, key: &ProjectKey) -> Option<&tokens::Grant> {
+        self.grants.iter().find(|grant| &grant.project == key)
+    }
 }
 
 impl SiteCaller {
@@ -409,6 +432,21 @@ impl SiteCaller {
             user: self.user.as_ref(),
             server_admin: self.server_admin,
             accounts_configured: self.accounts_configured,
+            token: None,
+        }
+    }
+
+    /// The caller as its account stands, for deciding which projects a
+    /// token's account may see. Only for a token's granted projects: at the
+    /// site level a token is never a server administrator.
+    fn account_view(&self) -> SiteCaller {
+        SiteCaller {
+            server_admin: self
+                .token
+                .as_ref()
+                .map_or(self.server_admin, |token| token.account_server_admin),
+            token: None,
+            ..self.clone()
         }
     }
 
@@ -429,6 +467,26 @@ impl SiteCaller {
     }
 }
 
+/// The caller the middleware resolved, whether or not it came with a token.
+fn resolved_caller(parts: &Parts) -> Result<SiteCaller, ApiError> {
+    parts
+        .extensions
+        .get::<SiteCaller>()
+        .cloned()
+        .ok_or_else(|| {
+            ApiError::internal(
+                "caller_unresolved",
+                "The request reached a handler without an identity. This is a bug \
+                 in how the router was assembled.",
+            )
+        })
+}
+
+/// Every site route refuses an API token unless it asks for
+/// [`TokenOrSession`] instead (#194). Accounts, memberships, preferences and
+/// tokens themselves are managed with a session, so a leaked token cannot
+/// turn itself into lasting access, and a site route added later refuses
+/// tokens without anyone having to remember to.
 impl FromRequestParts<Arc<SiteState>> for SiteCaller {
     type Rejection = ApiError;
 
@@ -436,37 +494,58 @@ impl FromRequestParts<Arc<SiteState>> for SiteCaller {
         parts: &mut Parts,
         _state: &Arc<SiteState>,
     ) -> Result<Self, Self::Rejection> {
-        parts
-            .extensions
-            .get::<SiteCaller>()
-            .cloned()
-            .ok_or_else(|| {
-                ApiError::internal(
-                    "caller_unresolved",
-                    "The request reached a handler without an identity. This is a bug \
-                 in how the router was assembled.",
-                )
-            })
+        let caller = resolved_caller(parts)?;
+        if caller.token.is_some() {
+            return Err(ApiError::forbidden(
+                "token_not_allowed",
+                "An API token cannot be used for this. It needs a signed-in \
+                 session: accounts, memberships and tokens are managed from a \
+                 browser or with `ridal site`.",
+            ));
+        }
+        Ok(caller)
     }
 }
 
-/// Resolve a site caller from the session cookie and `accounts.json`.
+/// A site caller that may have come with an API token, for the few site
+/// routes a token may use: who am I, and which projects can I reach (#194).
+pub struct TokenOrSession(pub SiteCaller);
+
+impl FromRequestParts<Arc<SiteState>> for TokenOrSession {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _state: &Arc<SiteState>,
+    ) -> Result<Self, Self::Rejection> {
+        resolved_caller(parts).map(TokenOrSession)
+    }
+}
+
+/// Resolve a site caller from an API token, or else the session cookie, and
+/// `accounts.json`.
 ///
 /// A damaged account file fails closed: no account matches, so only an
 /// anonymous caller remains. Under `ridal gui` there are no accounts, and
 /// the one person is the local default user wherever there is a project to
-/// keep their settings in.
-fn resolve_caller(site: &SiteState, headers: &HeaderMap, now: i64) -> SiteCaller {
+/// keep their settings in; a token sent there is ignored, since there is
+/// nothing it could add.
+///
+/// A token that does not hold is an error, never an anonymous caller: a
+/// script whose token was revoked must be told, not quietly given whatever
+/// the public may see (#194). A token wins over a cookie.
+fn resolve_caller(site: &SiteState, headers: &HeaderMap, now: i64) -> Result<SiteCaller, ApiError> {
     let directory = match &site.host {
         Host::Site(directory) => directory,
         Host::Local { store, .. } => {
-            return SiteCaller {
+            return Ok(SiteCaller {
                 user: store
                     .as_ref()
                     .and_then(|_| UserId::new(crate::identity::DEFAULT_USER).ok()),
                 server_admin: false,
                 accounts_configured: false,
-            }
+                token: None,
+            })
         }
     };
     let accounts = match accounts::read(directory.store()) {
@@ -474,15 +553,77 @@ fn resolve_caller(site: &SiteState, headers: &HeaderMap, now: i64) -> SiteCaller
         Ok(None) => None,
         Err(_) => Some(AccountSet::default()),
     };
+    if let Some(presented) = bearer_token(headers) {
+        return token_caller(site, directory, accounts.as_ref(), &presented, now);
+    }
     let account = accounts.as_ref().and_then(|set| {
         let key = site.session_key().ok()?;
         auth::signed_in(set, &key, headers, now)
     });
-    SiteCaller {
+    Ok(SiteCaller {
         user: account.map(|account| account.name.clone()),
         server_admin: account.is_some_and(|account| account.server_admin),
         accounts_configured: accounts.is_some(),
+        token: None,
+    })
+}
+
+/// The token in an `Authorization: Bearer` header. Only there: never a
+/// cookie, which a browser would send by itself, nor a query string, which
+/// ends up in logs.
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.trim().split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("bearer")
+        .then(|| token.trim().to_string())
+}
+
+/// The caller an API token stands for, or why it does not stand for one.
+fn token_caller(
+    site: &SiteState,
+    directory: &Site,
+    accounts: Option<&AccountSet>,
+    presented: &str,
+    now: i64,
+) -> Result<SiteCaller, ApiError> {
+    // A token is a password a script holds, so it travels under the same
+    // rule as one.
+    if !site.access.allow_password_login {
+        return Err(insecure_transport("an API token"));
     }
+    let invalid = || {
+        ApiError::unauthorized(
+            "invalid_token",
+            "That API token is not valid: it is mistyped, revoked, or its account \
+             is gone. Create a new one.",
+        )
+    };
+    let (set, _) = tokens::read(directory.store()).map_err(|_| invalid())?;
+    let token = tokens::authenticate(&set, presented, now).map_err(|refusal| match refusal {
+        tokens::Refusal::Expired => ApiError::unauthorized(
+            "token_expired",
+            "That API token has expired. Create a new one.",
+        ),
+        tokens::Refusal::Invalid | tokens::Refusal::Unsupported => invalid(),
+    })?;
+    let account = token
+        .account
+        .as_ref()
+        .and_then(|name| accounts?.get(name))
+        .ok_or_else(invalid)?;
+    Ok(SiteCaller {
+        user: Some(account.name.clone()),
+        server_admin: false,
+        accounts_configured: true,
+        token: Some(SiteToken {
+            id: token.id.clone(),
+            name: token.name.clone(),
+            grants: token.grants.clone(),
+            expires: token.expires,
+            account_server_admin: account.server_admin,
+        }),
+    })
 }
 
 async fn site_middleware(
@@ -490,9 +631,13 @@ async fn site_middleware(
     mut request: Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let caller = resolve_caller(&site, request.headers(), auth::now());
-    request.extensions_mut().insert(caller);
-    next.run(request).await
+    match resolve_caller(&site, request.headers(), auth::now()) {
+        Ok(caller) => {
+            request.extensions_mut().insert(caller);
+            next.run(request).await
+        }
+        Err(error) => error.into_response(),
+    }
 }
 
 /// Build the site's Axum application.
@@ -571,6 +716,8 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
             post(create_bulk_passwords),
         )
         .route("/api/v1/auth/me", get(me))
+        .route("/api/v1/tokens", get(list_tokens).post(create_token))
+        .route("/api/v1/tokens/{id}", axum::routing::delete(revoke_token))
         .route("/api/v1/auth/login", post(login))
         .route("/api/v1/auth/logout", post(logout))
         .route("/api/v1/auth/invite", post(redeem_invite))
@@ -648,6 +795,24 @@ async fn project_fallback(State(site): State<Arc<SiteState>>, mut request: Reque
             "The request reached a project without an identity.",
         ));
     };
+    // A token reaches only its granted projects, and is told so in the same
+    // words whether or not the project exists (#194). In one it is granted,
+    // its account's standing decides the rest, server administration
+    // included.
+    let grant = match &identity.token {
+        Some(token) => match token.grant_for(&key) {
+            Some(grant) => Some(grant.clone()),
+            None => {
+                return refuse(ApiError::forbidden(
+                    "token_not_granted",
+                    "This API token has no grant for this project.",
+                ))
+            }
+        },
+        None => None,
+    };
+    let token_name = identity.token.as_ref().map(|token| token.name.clone());
+    let identity = identity.account_view();
     // Building a project opens every radargram in it, so a caller who may
     // not see the project must be turned away before that, not by the
     // project's own middleware after it. Once built, that middleware is
@@ -685,10 +850,30 @@ async fn project_fallback(State(site): State<Arc<SiteState>>, mut request: Reque
         }
     };
     let state = &runtime.state;
+    // A token whose account has left the project is refused rather than
+    // given what the public may see there.
+    if grant.is_some() && !identity.server_admin {
+        let member = state.project.as_ref().is_some_and(|project| {
+            identity.user.as_ref().is_some_and(|user| {
+                members::read_for_access(project.documents())
+                    .get(user)
+                    .is_some()
+            })
+        });
+        if !member {
+            return refuse(ApiError::forbidden(
+                "token_membership_gone",
+                "This API token's account is no longer a member of this project.",
+            ));
+        }
+    }
     let caller = match &site.host {
         Host::Local { .. } => auth::local_caller(state.project.is_some(), site.access.read_only),
         Host::Site(_) => auth::project_caller(
-            &identity.identity(),
+            &auth::SiteIdentity {
+                token: token_name.as_deref().zip(grant.as_ref()),
+                ..identity.identity()
+            },
             state.project.as_ref(),
             state.site.as_ref().is_some_and(|context| context.archived),
             site.access.read_only,
@@ -1028,13 +1213,20 @@ fn password_login_allowed(site: &SiteState) -> Result<(), ApiError> {
     if site.access.allow_password_login {
         return Ok(());
     }
-    Err(ApiError::forbidden(
+    Err(insecure_transport("a password"))
+}
+
+/// Why a credential is refused over plain HTTP on a network address.
+fn insecure_transport(what: &str) -> ApiError {
+    ApiError::forbidden(
         "insecure_transport",
-        "This server is bound to a network address and does not terminate TLS, \
-         so a password sent to it would travel in the clear. Reach it through a \
-         TLS-terminating reverse proxy, or restart it with --allow-insecure-login \
-         to accept that.",
-    ))
+        format!(
+            "This server is bound to a network address and does not terminate TLS, \
+             so {what} sent to it would travel in the clear. Reach it through a \
+             TLS-terminating reverse proxy, or restart it with --allow-insecure-login \
+             to accept that."
+        ),
+    )
 }
 
 fn configured_accounts(site: &SiteState) -> Result<AccountSet, ApiError> {
@@ -1142,26 +1334,267 @@ pub(super) struct SignedOut {
 }
 
 /// `GET /api/v1/auth/me` -- who the site thinks is calling.
-async fn me(State(site): State<Arc<SiteState>>, caller: SiteCaller) -> impl IntoResponse {
+///
+/// The one site route that answers for an API token as well as a session,
+/// so a script can check what its token is (#194).
+async fn me(
+    State(site): State<Arc<SiteState>>,
+    TokenOrSession(caller): TokenOrSession,
+) -> impl IntoResponse {
     Json(Me {
         user: caller.user.as_ref().map(|u| u.as_str().to_string()),
         authenticated: caller.user.is_some(),
         server_admin: caller.server_admin,
         authentication_configured: site.accounts_configured(),
+        token: caller.token.as_ref().map(|token| TokenSummary {
+            id: token.id.clone(),
+            name: token.name.clone(),
+            grants: token.grants.clone(),
+            expires: token.expires.map(rfc3339),
+        }),
     })
 }
 
 /// `GET /api/v1/auth/me`: who the caller is.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(super) struct Me {
-    /// The signed-in account, or `null` for an anonymous caller.
+    /// The signed-in account, or `null` for an anonymous caller. With an API
+    /// token, the token's account.
     #[schema(required = true)]
     user: Option<String>,
     authenticated: bool,
+    /// Whether the caller administers the site. Always `false` with an API
+    /// token, which never carries server administration.
     server_admin: bool,
     /// Whether the site has accounts at all. Without them there is nothing
     /// to sign in to, and every caller is anonymous.
     authentication_configured: bool,
+    /// The API token the request came with, or `null` for a session.
+    #[schema(required = true)]
+    token: Option<TokenSummary>,
+}
+
+/// An API token as its holder may see it: never its secret (#194).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct TokenSummary {
+    /// Names the token in lists and the audit log, and revokes it.
+    id: String,
+    name: String,
+    /// The projects the token may act in, and its ceiling in each. In each,
+    /// the account's own membership also applies.
+    grants: Vec<tokens::Grant>,
+    /// RFC 3339, or `null` for a token that never expires.
+    #[schema(required = true)]
+    expires: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// API tokens (#194)
+// ---------------------------------------------------------------------------
+
+/// The signed-in account behind a token route. Every one of them needs a
+/// session: [`SiteCaller`] has already refused a token.
+fn token_owner<'a>(
+    site: &SiteState,
+    caller: &'a SiteCaller,
+    action: &str,
+) -> Result<&'a UserId, ApiError> {
+    if !site.accounts_configured() {
+        return Err(ApiError::conflict(
+            "no_accounts",
+            "This server has no accounts, so there is nobody for a token to act as.",
+        ));
+    }
+    caller.user.as_ref().ok_or_else(|| {
+        ApiError::unauthorized("authentication_required", format!("Sign in to {action}."))
+    })
+}
+
+fn token_error(error: tokens::TokenError) -> ApiError {
+    match &error {
+        tokens::TokenError::Store(e) => ApiError::internal("store_failed", e.to_string()),
+        tokens::TokenError::Malformed { .. } => {
+            ApiError::internal("malformed_tokens", error.to_string())
+        }
+        tokens::TokenError::NotFound(_) => {
+            ApiError::not_found("token_not_found", error.to_string())
+        }
+        tokens::TokenError::Rejected(_) => ApiError::bad_request("rejected", error.to_string()),
+    }
+}
+
+/// A stored token as the API shows it: everything but the hash.
+fn token_info(token: &tokens::Token) -> TokenInfo {
+    TokenInfo {
+        id: token.id.clone(),
+        name: token.name.clone(),
+        account: token.account.as_ref().map(|name| name.as_str().to_string()),
+        grants: token.grants.clone(),
+        created: rfc3339(token.created),
+        expires: token.expires.map(rfc3339),
+    }
+}
+
+/// A stored API token, without its secret or its hash.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct TokenInfo {
+    id: String,
+    name: String,
+    /// The account the token acts as.
+    #[schema(required = true)]
+    account: Option<String>,
+    /// The projects the token may act in, and its ceiling in each.
+    grants: Vec<tokens::Grant>,
+    /// RFC 3339.
+    created: String,
+    /// RFC 3339, or `null` for a token that never expires.
+    #[schema(required = true)]
+    expires: Option<String>,
+}
+
+/// `GET /api/v1/tokens`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct TokenList {
+    tokens: Vec<TokenInfo>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct TokenListQuery {
+    /// Every account's tokens, for a server administrator.
+    #[serde(default)]
+    all: bool,
+}
+
+/// `GET /api/v1/tokens` -- the caller's tokens, or with `?all=true` every
+/// account's, for a server administrator.
+async fn list_tokens(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    axum::extract::Query(query): axum::extract::Query<TokenListQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let owner = token_owner(&site, &caller, "list your API tokens")?;
+    if query.all {
+        caller.require_server_admin("list every account's API tokens")?;
+    }
+    let (set, _) = tokens::read(site.site()?.store()).map_err(token_error)?;
+    let tokens = set
+        .tokens
+        .iter()
+        .filter(|token| query.all || token.account.as_ref() == Some(owner))
+        .map(token_info)
+        .collect();
+    Ok(Json(TokenList { tokens }))
+}
+
+/// The body of `POST /api/v1/tokens`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+pub struct CreateTokenBody {
+    /// A label, such as `laptop` or `ci`.
+    name: String,
+    /// `30d`, `12w`, `2y` or `never`. Defaults to 90 days.
+    #[serde(default)]
+    expires: Option<String>,
+    /// The projects the token may act in. Each grant's role and download
+    /// scope may not exceed the account's membership there.
+    grants: Vec<tokens::Grant>,
+}
+
+/// `POST /api/v1/tokens`: the token, shown this once, and its record.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct NewToken {
+    /// The whole token, `ridal_<id>_<secret>`. It is not stored and cannot
+    /// be shown again; send it as `Authorization: Bearer <token>`.
+    token: String,
+    info: TokenInfo,
+}
+
+/// `POST /api/v1/tokens` -- create a token for the signed-in account.
+async fn create_token(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Json(body): Json<CreateTokenBody>,
+) -> Result<impl IntoResponse, ApiError> {
+    let owner = token_owner(&site, &caller, "create an API token")?.clone();
+    let directory = site.site()?;
+    let set = account_set(&site)?;
+    let account = set.get(&owner).ok_or_else(|| {
+        ApiError::unauthorized("authentication_required", "Sign in to create an API token.")
+    })?;
+    tokens::check_grants(directory, account, &body.grants).map_err(token_error)?;
+    let lifetime =
+        tokens::parse_lifetime(body.expires.as_deref().unwrap_or(tokens::DEFAULT_LIFETIME))
+            .map_err(token_error)?;
+    let (text, token) = tokens::mint(
+        auth::now(),
+        owner.clone(),
+        &body.name,
+        body.grants,
+        lifetime,
+    )
+    .map_err(token_error)?;
+    tokens::update(directory.store(), |set| {
+        set.tokens.push(token.clone());
+        Ok(())
+    })
+    .map_err(token_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::TokenCreated,
+            owner.as_str(),
+        )
+        .note(token.describe()),
+    );
+    Ok((
+        StatusCode::CREATED,
+        Json(NewToken {
+            token: text,
+            info: token_info(&token),
+        }),
+    ))
+}
+
+/// `DELETE /api/v1/tokens/{id}` -- revoke one of the caller's tokens, or
+/// anyone's for a server administrator.
+///
+/// Someone else's token is not found rather than forbidden, so ids cannot
+/// be probed.
+async fn revoke_token(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let owner = token_owner(&site, &caller, "revoke an API token")?;
+    let directory = site.site()?;
+    let revoked = tokens::update(directory.store(), |set| {
+        let index = set
+            .tokens
+            .iter()
+            .position(|token| {
+                token.id == id && (caller.server_admin || token.account.as_ref() == Some(owner))
+            })
+            .ok_or_else(|| tokens::TokenError::NotFound(id.clone()))?;
+        Ok(set.tokens.remove(index))
+    })
+    .map_err(token_error)?;
+    audit(
+        &site,
+        site_audit::Entry::new(
+            actor(&caller),
+            site_audit::Action::TokenRevoked,
+            revoked.account.as_ref().map_or("", |name| name.as_str()),
+        )
+        .note(revoked.describe()),
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Unix seconds as RFC 3339, UTC.
+fn rfc3339(seconds: i64) -> String {
+    chrono::DateTime::from_timestamp(seconds, 0)
+        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_default()
 }
 
 fn account_for_invite<'a>(set: &'a AccountSet, token: &str, now: i64) -> Option<&'a Account> {
@@ -1428,14 +1861,32 @@ async fn put_site_preferences(
 /// `GET /api/v1/projects`
 async fn list_projects(
     State(site): State<Arc<SiteState>>,
-    caller: SiteCaller,
+    TokenOrSession(caller): TokenOrSession,
 ) -> Result<impl IntoResponse, ApiError> {
     let keys = site.site()?.list().map_err(site_error)?;
     let projects: Vec<ProjectEntry> = keys
         .iter()
-        .filter_map(|key| project_entry(&site, key, &caller, Lookup::Listing))
+        .filter_map(|key| reachable_entry(&site, key, &caller, Lookup::Listing))
         .collect();
     Ok(Json(ProjectList { projects }))
+}
+
+/// A project as `caller` may reach it: for a token, only a granted project,
+/// with the role and download scope the token actually has there (#194).
+fn reachable_entry(
+    site: &SiteState,
+    key: &ProjectKey,
+    caller: &SiteCaller,
+    lookup: Lookup,
+) -> Option<ProjectEntry> {
+    let Some(token) = &caller.token else {
+        return project_entry(site, key, caller, lookup);
+    };
+    let grant = token.grant_for(key)?;
+    let mut entry = project_entry(site, key, &caller.account_view(), lookup)?;
+    entry.role = entry.role.min(grant.role);
+    entry.download = entry.download.min(grant.download);
+    Some(entry)
 }
 
 #[derive(serde::Deserialize)]
@@ -1478,11 +1929,11 @@ async fn create_project(
 /// `GET /api/v1/projects/{key}`
 async fn project_info(
     State(site): State<Arc<SiteState>>,
-    caller: SiteCaller,
+    TokenOrSession(caller): TokenOrSession,
     Path(key): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
     let key = parse_key(&key)?;
-    project_entry(&site, &key, &caller, Lookup::ByKey)
+    reachable_entry(&site, &key, &caller, Lookup::ByKey)
         .map(Json)
         .ok_or_else(hidden_project)
 }

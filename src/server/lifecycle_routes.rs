@@ -327,7 +327,7 @@ pub async fn upload_dataset(
         project.documents(),
         audit::Entry {
             at: now(),
-            user: caller.display_name().to_string(),
+            user: caller.audit_name(),
             action: audit::Action::Added,
             radargram_id: meta.radargram_id.to_string(),
             revision_id: Some(
@@ -481,7 +481,7 @@ pub async fn remove_dataset(
         project.documents(),
         audit::Entry {
             at,
-            user: caller.display_name().to_string(),
+            user: caller.audit_name(),
             action: if in_project {
                 audit::Action::Removed
             } else {
@@ -551,7 +551,7 @@ pub async fn restore_dataset(
         project.documents(),
         audit::Entry {
             at: now(),
-            user: caller.display_name().to_string(),
+            user: caller.audit_name(),
             action: audit::Action::Unignored,
             radargram_id: id.to_string(),
             revision_id: None,

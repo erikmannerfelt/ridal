@@ -874,7 +874,7 @@ pub async fn commit_replacement(
         project.documents(),
         audit::Entry {
             at,
-            user: caller.display_name().to_string(),
+            user: caller.audit_name(),
             action: audit::Action::Replaced,
             radargram_id: radargram.to_string(),
             revision_id: Some(to_revision.to_string()),
