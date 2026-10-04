@@ -280,7 +280,7 @@ const RIDAL = Object.freeze({
    *
    * Every Ridal route answers a failure with the same envelope (#120), so a
    * failure carrying no envelope came from something *between* the browser
-   * and Ridal. That is almost always the reverse proxy the README recommends
+   * and Ridal. That is almost always the reverse proxy the documentation recommends
    * putting in front of a served project, and the status says which way it
    * went wrong:
    *

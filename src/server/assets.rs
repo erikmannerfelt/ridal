@@ -249,7 +249,7 @@ mod tests {
     ///
     /// Every route answers a failure with the same envelope (#120), so a
     /// failure carrying no envelope came from in front of Ridal -- in a
-    /// served deployment, the reverse proxy the README recommends. The
+    /// served deployment, the reverse proxy the documentation recommends. The
     /// fallbacks used to read `Could not add it (${response.status}).`,
     /// which is how a proxy's 1 MB body limit reached a user as four
     /// characters and no way to act on them.

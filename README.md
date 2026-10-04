@@ -6,6 +6,9 @@ https://github.com/erikmannerfelt/ridal/actions/workflows/rust.yml
 [![codecov](https://codecov.io/github/erikmannerfelt/ridal/graph/badge.svg?token=187FAAJB4B)](https://codecov.io/github/erikmannerfelt/ridal)
 
 # ![](https://raw.githubusercontent.com/erikmannerfelt/ridal/v0.5.0/images/logo.svg) Ridal — Speeding up Ground Penetrating Radar (GPR) processing
+
+**Documentation: [ridal.readthedocs.io](https://ridal.readthedocs.io/en/stable/)**
+
 The aim of `ridal` is to quickly and accurately process GPR data.
 In one command, most data can be processed in pre-set profiles or with custom filter settings, and batch modes allow for sequences of datasets to be processed with the same settings.
 It can be used from the command line, from Python, or through a browser GUI for looking at and interpreting the results.
@@ -144,50 +147,7 @@ Without a path, `ridal gui` looks for the project by searching upwards from the 
 Picked layers can be exported as points, as GeoJSON or CSV, from the browser or with `ridal interp export`.
 
 `ridal gui` is for looking at your own files on your own computer, and it stops when you do.
-To keep a project up for longer, or to share it with colleagues, `ridal server start` binds a fixed port instead:
-```bash
-ridal server start my_survey/ --port 8000
-```
-Everyone who reaches that address is the same anonymous user until the project has accounts.
-The first account is made from the command line, since there is no one to ask for permission yet:
-```bash
-ridal project user add erik --role admin
-```
-This prints a single-use invite link to send to that person, which is where they set their own password.
-Ridal does not encrypt anything itself, so serving a project beyond your own machine means leaving it on `127.0.0.1` and putting a reverse proxy in front of it.
-
-The proxy needs two settings that its defaults get wrong for radargrams (#248).
-With nginx:
-
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8000;
-
-    # nginx refuses a request body over 1 MB by default, which every
-    # radargram exceeds. It does so before Ridal sees the upload, so what
-    # reaches the browser is nginx's 413 rather than anything Ridal can
-    # explain. Ridal already caps uploads itself, against `max_bytes` under
-    # `[radargrams]` in ridal.toml, and says what it refused and why -- so
-    # removing the limit here leaves one cap rather than two, and the one
-    # that can describe itself.
-    client_max_body_size 0;
-
-    # Ridal checks an upload against that cap as the bytes arrive. Left on,
-    # nginx buffers the whole file to its own disk before passing on a
-    # byte, so an over-cap upload costs a full transfer and a second copy on
-    # the proxy before anything refuses it.
-    proxy_request_buffering off;
-
-    # A radargram takes longer to upload than the default 60s.
-    client_body_timeout 300s;
-    proxy_read_timeout 300s;
-    proxy_send_timeout 300s;
-}
-```
-
-Ridal cannot detect or work around a limit imposed in front of it, so if an
-upload fails with a message about the web server in front of Ridal, this is
-the section to check.
+To share projects with colleagues over the network, see [Running a server](https://ridal.readthedocs.io/en/stable/deploy/index.html) in the documentation.
 
 
 ## Papers using Ridal
