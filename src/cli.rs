@@ -463,6 +463,11 @@ pub struct GuiArgs {
     /// `ridal server start`).
     #[arg(long)]
     pub open_browser: bool,
+
+    /// Port to bind on loopback. Omitted, any free port is used; a fixed
+    /// one keeps bookmarks and scripts pointing at the same address.
+    #[arg(long)]
+    pub port: Option<u16>,
 }
 
 #[cfg(feature = "server")]
@@ -916,7 +921,13 @@ fn render_service_config(
 fn gui_command(args: GuiArgs) -> Result<(), String> {
     let config = render_service_config(args.cache_memory_mb, args.n_workers)?;
     let path = gui_root(args.path.as_deref());
-    crate::server::launch::run_gui(&path, args.read_only, args.open_browser, config)
+    crate::server::launch::run_gui(
+        &path,
+        args.read_only,
+        args.open_browser,
+        args.port.unwrap_or(0),
+        config,
+    )
 }
 
 /// What `ridal gui` serves when it was given no path.
@@ -1804,6 +1815,22 @@ mod tests {
         let args = Args::try_parse_from(["ridal", "gui", "--open-browser"]).unwrap();
         match args.command {
             Commands::Gui(gui) => assert!(gui.open_browser),
+            other => panic!("expected the gui command, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn gui_takes_any_free_port_unless_given_one() {
+        let args = Args::try_parse_from(["ridal", "gui"]).unwrap();
+        match args.command {
+            Commands::Gui(gui) => assert_eq!(gui.port, None),
+            other => panic!("expected the gui command, got {other:?}"),
+        }
+
+        let args = Args::try_parse_from(["ridal", "gui", "--port", "8765"]).unwrap();
+        match args.command {
+            Commands::Gui(gui) => assert_eq!(gui.port, Some(8765)),
             other => panic!("expected the gui command, got {other:?}"),
         }
     }

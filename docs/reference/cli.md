@@ -1043,6 +1043,10 @@ Serve a project without accepting any writes
 Open a browser after starting (off by default, matching `ridal server start`)
 ```
 
+```{option} --port <PORT>
+Port to bind on loopback. Omitted, any free port is used; a fixed one keeps bookmarks and scripts pointing at the same address
+```
+
 ## `ridal server`
 
 ```{program} ridal server

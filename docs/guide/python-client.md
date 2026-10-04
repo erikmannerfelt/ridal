@@ -15,8 +15,10 @@ pip install "ridal[client]"
 ## Connecting
 
 A client acts in one project. `ridal gui` serves its one project as
-`default` and prints its address when it starts. On a site, a project has a
-key, and an API token says who you are:
+`default` and prints its address when it starts; `--port` fixes that address,
+so a script can name it in advance (`ridal gui --port 8765` is
+`http://127.0.0.1:8765`). On a site, a project has a key, and an API token
+says who you are:
 
 ```python
 import ridal.client

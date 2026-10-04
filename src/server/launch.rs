@@ -18,6 +18,7 @@ async fn serve_gui(
     root: &Path,
     read_only: bool,
     open_browser: bool,
+    port: u16,
     config: RenderServiceConfig,
 ) -> Result<(), String> {
     // A project is found by searching upwards, so pointing Ridal at a
@@ -70,7 +71,14 @@ async fn serve_gui(
 
     let router = site::build_site_router(SiteState::local(state));
     let home = format!("/p/{}/", super::app::DEFAULT_PROJECT_KEY);
-    serve(router, IpAddr::from([127, 0, 0, 1]), 0, &home, open_browser).await
+    serve(
+        router,
+        IpAddr::from([127, 0, 0, 1]),
+        port,
+        &home,
+        open_browser,
+    )
+    .await
 }
 
 /// Remove upload temporaries a crash left in a project, saying what went
@@ -284,20 +292,21 @@ fn limit_malloc_arenas() {
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 const MALLOC_ARENAS: libc::c_int = 4;
 
-/// `ridal gui`: local convenience mode. Binds loopback only and selects an
-/// available port. The URL is always printed; a browser is opened only when
-/// `--open-browser` was passed, and a failure to open it is a warning, never
-/// a reason to stop the server (#120, #200).
+/// `ridal gui`: local convenience mode. Binds loopback only, on `port`, or
+/// on any available port when it is 0 (#343). The URL is always printed; a
+/// browser is opened only when `--open-browser` was passed, and a failure
+/// to open it is a warning, never a reason to stop the server (#120, #200).
 pub fn run_gui(
     root: &Path,
     read_only: bool,
     open_browser: bool,
+    port: u16,
     config: RenderServiceConfig,
 ) -> Result<(), String> {
     limit_malloc_arenas();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to start async runtime: {e}"))?;
-    runtime.block_on(serve_gui(root, read_only, open_browser, config))
+    runtime.block_on(serve_gui(root, read_only, open_browser, port, config))
 }
 
 /// `ridal server start`: deployment-oriented mode. Loopback by default;
