@@ -14,8 +14,9 @@ from typing import Any, Final
 
 import pytest
 
-pytest.importorskip("httpx")
+httpx = pytest.importorskip("httpx")
 
+from ridal import client as ridal_client
 from ridal.client import models
 
 SPEC: Final = Path(__file__).parents[2] / "docs" / "reference" / "openapi.json"
@@ -68,3 +69,50 @@ def server_nullable(property: dict[str, Any]) -> bool:
     if "null" in property.get("type", []):
         return True
     return any(branch.get("type") == "null" for branch in property.get("oneOf", []))
+
+
+def undeclared(value: Any, schema: dict[str, Any], where: str) -> list[str]:
+    """Keys of ``value`` its schema does not name, and required keys it lacks.
+
+    The gprinterp schemas allow further properties (its SPEC §3.3), so a
+    misspelt key would validate; this is stricter, because the client should
+    only write what the format defines.
+    """
+    if "$ref" in schema:
+        return undeclared(value, schemas()[schema["$ref"].rsplit("/", 1)[1]], where)
+    if "oneOf" in schema:
+        if value is None:
+            return []
+        (branch,) = [b for b in schema["oneOf"] if b.get("type") != "null"]
+        return undeclared(value, branch, where)
+    if not isinstance(value, dict) or "properties" not in schema:
+        return []
+    problems = [
+        f"{where} lacks {key}" for key in schema.get("required", []) if key not in value
+    ]
+    for key, item in value.items():
+        if key not in schema["properties"]:
+            problems.append(f"{where}.{key}")
+        else:
+            problems += undeclared(item, schema["properties"][key], f"{where}.{key}")
+    return problems
+
+
+def test_an_interpretation_template_is_a_gprinterp_document() -> None:
+    answer = {
+        "radargram_id": "line-01",
+        "revision_id": "c92181a29a7b28b99605e463f6890a27",
+        "axes": {"x": {"primary": {"name": "trace", "unit": "index"}}},
+    }
+    # The fake answer is what the server sends, so the template is built
+    # from the real shape.
+    assert set(answer) == set(schemas()["GprinterpAxes"]["properties"])
+
+    def handler(request: Any) -> Any:
+        return httpx.Response(200, json=answer)
+
+    transport = httpx.MockTransport(handler)
+    with ridal_client.Client("https://ridal.test/", _transport=transport) as client:
+        document = client.interpretation_template("line-01")
+    assert undeclared(document, schemas()["Document"], "document") == []
+    assert document["source"]["id"] == "line-01"

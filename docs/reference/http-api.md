@@ -10,7 +10,8 @@ test fails if a route is added to or removed from the server without this
 page following. Request and response bodies are not described here yet. A
 machine-readable OpenAPI description is in progress: {download}`openapi.json`,
 also served at `/api/v1/openapi.json`, so far holds the schemas of the
-responses the Python client reads, and no routes.
+responses the Python client reads and of the picks document (`Document`, from
+gprinterp), and no routes.
 :::
 
 ## Conventions

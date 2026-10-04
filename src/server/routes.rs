@@ -2626,7 +2626,7 @@ pub(super) struct GprinterpAxes {
     revision_id: String,
     /// The `coordinates.axes` block for a gprinterp document (its SPEC
     /// §7.4), or `null` when the file cannot describe its axes.
-    #[schema(required = true, value_type = Option<Object>)]
+    #[schema(required = true, value_type = Option<gprinterp::document::Axes>)]
     axes: Option<serde_json::Value>,
 }
 
