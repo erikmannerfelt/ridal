@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ import pytest
 
 httpx = pytest.importorskip("httpx")
 
+import ridal
 from ridal import client as ridal_client
 from ridal.client import errors
 
@@ -182,6 +184,96 @@ def test_an_interrupted_download_leaves_nothing(tmp_path: Path) -> None:
     ):
         client.download_radargram("line-01", tmp_path / "line-01.nc")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_downloads_run_side_by_side_and_keep_their_order(tmp_path: Path) -> None:
+    # Each answer waits until both requests are in, which only happens if
+    # they are in flight at once; one at a time, the barrier times out.
+    both = threading.Barrier(2, timeout=10)
+
+    def handler(request: Any) -> Any:
+        both.wait()
+        radargram_id = request.url.path.split("/")[-2]
+        return httpx.Response(200, content=radargram_id.encode())
+
+    events: list[ridal_client.ProgressEvent] = []
+    with fake(handler) as client:
+        written = client.download_radargrams(
+            ["line-02", "line-01"], tmp_path / "new", workers=2, progress=events.append
+        )
+    assert written == (tmp_path / "new" / "line-02.nc", tmp_path / "new" / "line-01.nc")
+    assert [path.read_bytes() for path in written] == [b"line-02", b"line-01"]
+    assert {event.label for event in events} == {"line-01.nc", "line-02.nc"}
+
+
+def test_a_failed_download_stops_those_not_yet_started(tmp_path: Path) -> None:
+    asked: list[str] = []
+
+    def handler(request: Any) -> Any:
+        radargram_id = request.url.path.split("/")[-2]
+        asked.append(radargram_id)
+        if radargram_id == "line-02":
+            return refusal(403, "download_not_permitted")
+        return httpx.Response(200, content=b"ok")
+
+    with fake(handler) as client, pytest.raises(errors.Forbidden):
+        client.download_radargrams(
+            ["line-01", "line-02", "line-03"], tmp_path, workers=1
+        )
+    assert asked == ["line-01", "line-02"]
+    assert [path.name for path in tmp_path.iterdir()] == ["line-01.nc"]
+
+
+def test_workers_must_be_at_least_one(tmp_path: Path) -> None:
+    with fake(lambda request: httpx.Response(200)) as client, pytest.raises(ValueError):
+        client.download_radargrams(["line-01"], tmp_path, workers=0)
+
+
+def test_a_plan_looks_at_files_side_by_side_and_keeps_their_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    served = [
+        {**DATASET, "radargram_id": radargram_id, "revision_id": "old"}
+        for radargram_id in ("line-01", "line-02")
+    ]
+    local = {
+        "a.nc": ("line-02", "new"),
+        "b.nc": ("line-01", "new"),
+        "c.nc": ("line-09", "new"),
+        "d.nc": ("line-01", "old"),
+    }
+    monkeypatch.setattr(
+        ridal,
+        "info",
+        lambda path: [
+            {
+                "radargram_id": local[Path(path).name][0],
+                "revision_id": local[Path(path).name][1],
+                "reprocess_reason": None,
+            }
+        ],
+    )
+    # Both changed files are asked about at once, or the barrier times out.
+    both = threading.Barrier(2, timeout=10)
+
+    def handler(request: Any) -> Any:
+        if request.url.path.endswith("/datasets"):
+            return httpx.Response(200, json={"entries": served, "warnings": []})
+        radargram_id = request.url.path.split("/")[-2]
+        both.wait()
+        return httpx.Response(
+            200,
+            json={"radargram_id": radargram_id, "users": [], "writable": True},
+        )
+
+    with fake(handler) as client:
+        planned = client.plan(local, workers=4)
+    assert [(record.path.name, record.status) for record in planned.records] == [
+        ("a.nc", "safe"),
+        ("b.nc", "safe"),
+        ("c.nc", "new"),
+        ("d.nc", "unchanged"),
+    ]
 
 
 def test_level2_asks_for_the_callers_own_picks_by_default(tmp_path: Path) -> None:

@@ -1,9 +1,9 @@
 """The HTTP layer: one ``httpx.Client``, the error envelope, and transfers.
 
 Everything here is about talking to a Ridal server, nothing about what the
-answers mean; that is :mod:`ridal.client._client`. Keeping it in one place is
-what lets the transfers become concurrent later without the public API
-changing.
+answers mean; that is :mod:`ridal.client._client`. Nothing here holds state
+between requests beyond the ``httpx.Client``, which is safe to share between
+threads, so one :class:`Http` serves concurrent requests too.
 """
 
 import contextlib
