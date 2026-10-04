@@ -2060,3 +2060,20 @@ async fn the_rest_of_the_site_api_answers_as_documented() {
     let last = send(&app, delete("/api/v1/accounts/anna", Some(&anna))).await;
     assert_eq!(last.status, StatusCode::BAD_REQUEST, "{}", last.text);
 }
+
+#[tokio::test]
+async fn the_openapi_description_is_served_without_a_login() {
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, password_hash())],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let response = send(&app, get("/api/v1/openapi.json", None)).await;
+    assert_eq!(response.status, StatusCode::OK);
+    let committed = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/reference/openapi.json"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert_eq!(response.text, committed);
+}

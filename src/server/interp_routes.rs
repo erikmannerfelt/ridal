@@ -200,11 +200,22 @@ pub async fn list_interpretations(
     let radargram = parse_radargram(&radargram_id)?;
     let users = interpretations::list_users(project.documents(), &radargram)
         .map_err(interpretation_error)?;
-    Ok(Json(serde_json::json!({
-        "radargram_id": radargram.as_str(),
-        "users": users,
-        "writable": caller.may(Role::Picker),
-    })))
+    Ok(Json(InterpretationList {
+        radargram_id: radargram.as_str().to_string(),
+        users,
+        writable: caller.may(Role::Picker),
+    }))
+}
+
+/// `GET /api/v1/datasets/{radargram_id}/interpretations`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct InterpretationList {
+    radargram_id: String,
+    /// Everyone with a stored interpretation of this radargram, by account
+    /// name. Listing them needs no download scope; reading one may.
+    users: Vec<String>,
+    /// Whether the caller may save picks here, which takes the `picker` role.
+    writable: bool,
 }
 
 /// `GET /api/v1/datasets/{id}/interpretations/{user}`

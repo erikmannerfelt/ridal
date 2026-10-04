@@ -1,0 +1,474 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Ridal HTTP API",
+    "description": "Schemas of the JSON bodies the Ridal server returns. Routes are not described here yet; see the HTTP API reference page for them.",
+    "contact": {
+      "name": "Erik Schytt Mannerfelt"
+    },
+    "license": {
+      "name": ""
+    },
+    "version": "1"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "DatasetAxes": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/axes`: a radargram's axes, read from\nthe file's variables of the same names. An axis the file lacks is `null`.",
+        "required": [
+          "distance",
+          "twtt",
+          "depth",
+          "elevation"
+        ],
+        "properties": {
+          "distance": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Along-track distance per trace, in metres."
+          },
+          "twtt": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Two-way travel time per sample, in nanoseconds."
+          },
+          "depth": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Depth per sample, in metres."
+          },
+          "elevation": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "Surface elevation per trace, in metres, as the file stores it."
+          }
+        }
+      },
+      "DatasetList": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets`.",
+        "required": [
+          "entries",
+          "warnings"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DatasetSummary"
+            },
+            "description": "The radargrams the caller may see, in catalog order."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Problems found while cataloguing, such as a file that could not be\nread, limited to those about radargrams the caller may see."
+          }
+        }
+      },
+      "DatasetSummary": {
+        "type": "object",
+        "description": "One radargram as the catalog lists it: an entry of `GET /api/v1/datasets`,\nand the whole of `GET /api/v1/datasets/{radargram_id}`.",
+        "required": [
+          "radargram_id",
+          "effective_label",
+          "display_name",
+          "group_name",
+          "group_id",
+          "relative_path",
+          "processing_datetime",
+          "processing_datetime_display",
+          "revision_id",
+          "shape",
+          "track_length_m",
+          "in_project",
+          "unlisted",
+          "line_count",
+          "contributor_count"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "effective_label": {
+            "type": "string",
+            "description": "`display_name` if there is one, otherwise `radargram_id`."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relative_path": {
+            "type": "string",
+            "description": "The file's path, relative to the directory it was found under."
+          },
+          "processing_datetime": {
+            "type": "string",
+            "description": "The processing datetime exactly as the file stores it (RFC 3339).\nThe revision id is derived from it together with the radargram id."
+          },
+          "processing_datetime_display": {
+            "type": "string",
+            "description": "The same instant as `YYYY-MM-DD HH:MM`, for display only."
+          },
+          "revision_id": {
+            "type": "string",
+            "description": "Identifies this processing of the radargram (#117). A local file\nwith the same radargram id and revision id is the same revision."
+          },
+          "shape": {
+            "type": "array",
+            "items": false,
+            "prefixItems": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "integer",
+                "minimum": 0
+              }
+            ],
+            "description": "`[samples, traces]`: the rows and columns of the file's `data`."
+          },
+          "track_length_m": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The track's total length in metres (#319), summed over its segments.\n`null` when the file has no readable track."
+          },
+          "in_project": {
+            "type": "boolean",
+            "description": "Whether this radargram sits in the project rather than in an external\nroot (#147). Only one in the project can be removed."
+          },
+          "unlisted": {
+            "type": "boolean",
+            "description": "Left out of listings by a project override (#145). Unlisted entries\nare listed only for `operator` and above."
+          },
+          "line_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Picked lines stored for this radargram, across every user. `null`\nwhen the server is not serving a project, and in\n`GET /api/v1/datasets/{radargram_id}`, which does not count them.",
+            "minimum": 0
+          },
+          "contributor_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many users have at least one picked line here (#272). `null`\nexactly when `line_count` is.",
+            "minimum": 0
+          }
+        }
+      },
+      "DownloadScope": {
+        "type": "string",
+        "description": "What someone may download from a project, least first. Each scope includes the ones before it: `none` allows nothing, `results` the consensus results, `picks` adds every contributor's raw picks, `derived` adds level 2 points and rendered images, and `all` adds the radargram files and tracks.",
+        "enum": [
+          "none",
+          "results",
+          "picks",
+          "derived",
+          "all"
+        ]
+      },
+      "ErrorBody": {
+        "type": "object",
+        "description": "The body of every API error: `{\"error\": {\"code\", \"message\"}}`.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "description": "What went wrong, in `ErrorBody`.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Stable and machine-readable, such as `dataset_not_found`. A client\nbranches on this rather than on `message`."
+          },
+          "message": {
+            "type": "string",
+            "description": "For a person to read. The wording may change between releases."
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "description": "`GET /api/v1/health`.",
+        "required": [
+          "status",
+          "version"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Always `\"ok\"`: a server that can answer is up."
+          },
+          "version": {
+            "type": "string",
+            "description": "The Ridal version the server runs, such as `0.7.1`. Health needs no\nlogin, so a client can check what it is talking to before signing in."
+          }
+        }
+      },
+      "InterpretationList": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/interpretations`.",
+        "required": [
+          "radargram_id",
+          "users",
+          "writable"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Everyone with a stored interpretation of this radargram, by account\nname. Listing them needs no download scope; reading one may."
+          },
+          "writable": {
+            "type": "boolean",
+            "description": "Whether the caller may save picks here, which takes the `picker` role."
+          }
+        }
+      },
+      "LoginBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/auth/login`.",
+        "required": [
+          "name",
+          "password"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
+      "Me": {
+        "type": "object",
+        "description": "`GET /api/v1/auth/me`: who the caller is.",
+        "required": [
+          "user",
+          "authenticated",
+          "server_admin",
+          "authentication_configured"
+        ],
+        "properties": {
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The signed-in account, or `null` for an anonymous caller."
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "server_admin": {
+            "type": "boolean"
+          },
+          "authentication_configured": {
+            "type": "boolean",
+            "description": "Whether the site has accounts at all. Without them there is nothing\nto sign in to, and every caller is anonymous."
+          }
+        }
+      },
+      "ProjectEntry": {
+        "type": "object",
+        "description": "One project as the caller sees it: an entry of `GET /api/v1/projects`,\nand the whole of `GET /api/v1/projects/{key}`.",
+        "required": [
+          "key",
+          "name",
+          "description",
+          "description_long_html",
+          "archived",
+          "created_by",
+          "member",
+          "member_count",
+          "radargram_count",
+          "role",
+          "download",
+          "require_auth_to_read"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "What the project is addressed by, in `/api/v1/projects/{key}/…`.\n`ridal gui` serves its one project as `default`."
+          },
+          "name": {
+            "type": "string",
+            "description": "The display name, or the key when the project has none."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One line, for a card."
+          },
+          "description_long_html": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The long description rendered from Markdown to HTML, with raw HTML\nin the source escaped. `null` when there is none."
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account that created the project, if it was created through the\nsite rather than on the command line."
+          },
+          "member": {
+            "type": "boolean",
+            "description": "Whether the caller is a member, or a server administrator, who is\ntreated as one."
+          },
+          "member_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "radargram_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many radargrams the last scan found, or `null` if the project\nhas never been scanned.",
+            "minimum": 0
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The caller's role here. A non-member gets `viewer`, and a server\nadministrator `admin`."
+          },
+          "download": {
+            "$ref": "#/components/schemas/DownloadScope",
+            "description": "The caller's download scope here."
+          },
+          "require_auth_to_read": {
+            "type": "boolean",
+            "description": "Whether reading the project needs a login."
+          }
+        }
+      },
+      "ProjectList": {
+        "type": "object",
+        "description": "`GET /api/v1/projects`.",
+        "required": [
+          "projects"
+        ],
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectEntry"
+            },
+            "description": "The projects the caller may see, in key order."
+          }
+        }
+      },
+      "Role": {
+        "type": "string",
+        "description": "What someone may do in a project, weakest first. Each role includes the ones before it: a `picker` writes their own picks, an `operator` also curates and replaces radargrams, and an `admin` also manages members and access.",
+        "enum": [
+          "viewer",
+          "picker",
+          "operator",
+          "admin"
+        ]
+      },
+      "SignedIn": {
+        "type": "object",
+        "description": "The response to signing in, by password (`POST /api/v1/auth/login`) or\nby redeeming an invite (`POST /api/v1/auth/invite`). The session itself\nis the `ridal_session` cookie set alongside it.",
+        "required": [
+          "user",
+          "server_admin"
+        ],
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "server_admin": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SignedOut": {
+        "type": "object",
+        "description": "`POST /api/v1/auth/logout`.",
+        "required": [
+          "signed_out"
+        ],
+        "properties": {
+          "signed_out": {
+            "type": "boolean",
+            "description": "Always `true`. Signing out clears the cookie whether or not there\nwas a session."
+          }
+        }
+      }
+    }
+  }
+}

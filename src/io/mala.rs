@@ -259,6 +259,9 @@ mod tests {
     }
 
     #[test]
+    // EPSG:4326 is not UTM, so this runs `projinfo` and must not overlap the
+    // `serial` tests that unset `PATH` (see `coords::tests::test_projinfo_to_wkt`).
+    #[serial_test::parallel]
     #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI
     fn test_load_cor() {
         let temp_dir = tempfile::tempdir().unwrap();
