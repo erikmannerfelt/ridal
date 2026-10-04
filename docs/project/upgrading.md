@@ -3,6 +3,25 @@
 What to do when moving an existing project, server or script to a new
 version. {doc}`changelog` lists everything that changed.
 
+## From 0.7 to 0.8
+
+Nothing needs migrating: projects, sites and processed files from 0.7 work
+as they are.
+
+- **Processing.** Reprocessing a profile whose traces run past its last (or
+  before its first) `.cor` fix gives those traces new times (#350). Nothing
+  else in the default profile changes.
+- **Merging.** `batch-process --merge` no longer merges files that differ in
+  antenna separation or medium velocity, so a merge of such files gives more
+  groups than before (#151).
+- **Python.** The extension module is now `ridal._ridal`. Code that imports
+  from `ridal` is unaffected; only private names moved.
+- **HTTP API.** The replace report (`CarryReport`, `Dropped` and
+  `ConsequenceReport.shape`) now sends fields that do not apply as `null`
+  rather than leaving them out (#339). The 503 `render_busy` is now also
+  returned by group and catalog level 2 exports, which share the limit set
+  by `--n-workers` (#336).
+
 ## From 0.6 to 0.7
 
 ### Processing gives different results

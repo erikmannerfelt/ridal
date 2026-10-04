@@ -3,6 +3,82 @@
 What changed in each release. {doc}`upgrading` says what to do about the
 changes that affect existing data, scripts or servers.
 
+## 0.8.0
+
+### Python client
+
+- **`ridal.client`**, an HTTP client for a Ridal server, `ridal gui` or a
+  site (#328, #344), described in {doc}`../guide/python-client`. It reads
+  the catalog, axes and picks, downloads radargrams and level 2 products,
+  uploads and replaces radargrams, and saves and promotes picks. `plan()`
+  sorts a directory of processed files into new, unchanged, safe, risky and
+  legacy, asking the server what replacing each would do to its picks, and
+  `apply()` uploads them. Install it with `pip install "ridal[client]"`;
+  `ridal[geo]` adds `to_pandas()` and `to_geopandas()`.
+- `plan()` and the new `download_radargrams()` work on several files at
+  once (#357). `apply()` stays one file at a time.
+- The Rust extension is now `ridal._ridal`, inside a pure-Python `ridal`
+  package (#344). Every public name is still available as `ridal.<name>`.
+
+### API tokens
+
+- **API tokens** let a script act as an account without a password (#194,
+  #342), described in {doc}`../deploy/accounts`. A token is limited to the
+  projects it is granted, with a role and download ceiling in each, and
+  never reaches a site's own routes. Create them on the site's Settings
+  page (#354) or with `ridal site token`.
+
+### Processing
+
+- New step {step}`remove_standstills`, which finds where a time-triggered
+  radar stood still from the radar data alone and replaces each stop with
+  its median trace (#327, #351). It is not in the default profile.
+- Traces past the last `.cor` fix (or the first) get times that advance at
+  the trace interval, instead of all sharing the time of that fix (#350).
+  Positions are still held. This applies to Malå, pulseEKKO and GSSI, and
+  lets picks carry to the very end of such a profile.
+- `ridal info` and `ridal.info()` read a processed `.nc` and report its
+  identity and revision, or why a legacy file needs reprocessing (#11,
+  #340).
+- Merging refuses files with different antenna separation, effective
+  antenna separation or medium velocity (#151). `batch-process --merge`
+  starts a new group at such a file instead.
+
+### Interpretation
+
+- `only()` and `without()` choose contributors by username in derived
+  expressions, as in `median(without(bed, "anna"))` (#326, #355). See
+  {doc}`../reference/expressions`.
+- A layer with a name of several words can be added: its id is now derived
+  as an expression identifier, and a refused save keeps its error visible
+  (#348, #349).
+- The overlap explanation toast has a close button, and closes itself once
+  the overlap is gone (#352).
+
+### Server
+
+- A replace **preflight**: what replacing a radargram would do to its
+  picks, from the new file's axes alone, without uploading it (#331, #339).
+- `GET /api/v1/openapi.json` publishes the schemas of the responses the
+  client reads, including the picks document (#338, #339, #356). Health
+  reports the server's version.
+- `…/axes/gprinterp` returns the axes block a saved picks document needs,
+  so picks saved by a script can be carried onto a later revision (#344).
+- A level 2 export is bounded by its total point count, not just one grid
+  (#135, #335), and group and catalog exports no longer block other
+  requests while they run (#136, #336).
+- `ridal gui --port` chooses the port (#343).
+- `ridal server start` and `ridal gui` shut down cleanly on SIGTERM as well
+  as Ctrl+C.
+- An unreadable radargram file is reported as one, rather than as a
+  radargram that declares no axes or has changed on disk (#325).
+- External tools no longer inherit open NetCDF files, which made a file
+  just written fail to reopen with `Netcdf(-101)` (#129, #324).
+
+### Documentation
+
+- Running a server as a systemd service, in {doc}`../deploy/server` (#304).
+
 ## 0.7.1
 
 ### Processing
