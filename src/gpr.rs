@@ -2069,20 +2069,23 @@ impl GPR {
         };
 
         let width = self.width();
-        let seconds = |n: usize| {
+        // A duration in seconds where the trace interval gives one.
+        let duration = |n: usize| {
             if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
-                format!(", {:.1} s", n as f32 * seconds_per_trace)
+                format!("{:.1} s", n as f32 * seconds_per_trace)
             } else {
-                String::new()
+                format!("{n} traces")
             }
         };
         let elsewhere = detection.highest_elsewhere.map_or(String::new(), |z| {
-            format!(" The highest strength elsewhere was {z:.1}.")
+            format!(" Highest strength elsewhere: {z:.1}.")
         });
-        let threshold = format!(
-            "strength threshold {strength}, at least {min_traces} traces{}",
-            seconds(min_traces)
-        );
+        // The minimum duration as it was given.
+        let shortest = match min_duration {
+            filters::balance::Span::Seconds(s) => format!("{s} s"),
+            filters::balance::Span::Traces(n) => format!("{n} traces"),
+        };
+        let threshold = format!("strength >= {strength}, >= {shortest}");
         if detection.standstills.is_empty() {
             self.log_event(
                 "remove_standstills",
@@ -2137,22 +2140,24 @@ impl GPR {
             .iter()
             .map(|s| {
                 format!(
-                    "traces {}-{} ({} traces{}, strength {:.1})",
+                    "{}-{} ({}, {:.1})",
                     s.start,
                     s.end - 1,
-                    s.len(),
-                    seconds(s.len()),
+                    duration(s.len()),
                     s.peak
                 )
             })
             .collect();
+        let replaced = match detection.standstills.len() {
+            1 => "1 standstill with its median trace".to_string(),
+            n => format!("{n} standstills with their median trace"),
+        };
         self.log_event(
             "remove_standstills",
             &format!(
-                "Replaced {} standstill(s) with their median trace ({threshold}): {}. Reduced \
-                 trace number from {width} to {}.{elsewhere}{no_frequency}",
-                detection.standstills.len(),
-                listed.join("; "),
+                "Replaced {replaced} ({threshold}). Traces (duration, strength): {}. {width} -> {} \
+                 traces.{elsewhere}{no_frequency}",
+                listed.join(", "),
                 self.width()
             ),
             start_time,
@@ -4534,9 +4539,10 @@ pub mod tests {
         let removed = before.len() - gpr.width();
         assert!((280..=310).contains(&removed), "removed {removed}");
         let log = gpr.log.last().unwrap();
-        assert!(log.contains("Replaced 3 standstill(s)"), "{log}");
-        assert!(log.contains("strength threshold 8"), "{log}");
-        assert!(log.contains("highest strength elsewhere"), "{log}");
+        assert!(log.contains("Replaced 3 standstills"), "{log}");
+        assert!(log.contains("(strength >= 8, >= 5 s)"), "{log}");
+        assert!(log.contains("Traces (duration, strength): 0-"), "{log}");
+        assert!(log.contains("Highest strength elsewhere"), "{log}");
 
         // Times stay strictly increasing, and the ends of the profile keep
         // their times: what keeps interpretations carryable.
