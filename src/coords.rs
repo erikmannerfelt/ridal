@@ -201,7 +201,7 @@ fn proj_parse_crs(text: &str) -> Result<String, String> {
             .stdout(std::process::Stdio::piped()),
     )
     .map_err(|e| {
-        if e.to_string().contains("No such file or directory") {
+        if e.kind() == std::io::ErrorKind::NotFound {
             format!("PROJ (projinfo) cannot be found / is not installed: {e}")
         } else {
             format!("Call error when spawning process: {e}")
@@ -456,7 +456,7 @@ fn projinfo_to_wkt(definition: &str) -> Result<String, String> {
             .stdout(std::process::Stdio::piped()),
     )
     .map_err(|e| {
-        if e.to_string().contains("No such file or directory") {
+        if e.kind() == std::io::ErrorKind::NotFound {
             format!("PROJ (projinfo) cannot be found / is not installed: {e}")
         } else {
             format!("Call error when spawning projinfo: {e}")
@@ -722,7 +722,6 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn test_crs_from_user() {
         for (crs_str, expected) in make_test_cases() {
             let _parsed_proj = super::proj_parse_crs(&crs_str).unwrap();
@@ -738,20 +737,16 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
-    #[cfg(not(target_os = "windows"))] // Added 2026-03-13 because the path unsetting logic doesn't work on Windows
     fn test_crs_noproj() {
         // This test simulates machines without PROJ installed. UTM CRSes should work but not others.
-        temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
+        crate::tools::without_tools(|| {
             // This "complex" CRS should fail
             let res = super::Crs::from_user_input("EPSG:3006");
-
-            if let Err(msg) = res {
-                assert!(msg.contains("PROJ (projinfo) cannot be found / is not installed"))
-            } else {
-                eprintln!("WARNING: Could not properly unset the PROJ location. Skipping test.");
-                return;
-            }
+            let msg = res.unwrap_err();
+            assert!(
+                msg.contains("PROJ (projinfo) cannot be found / is not installed"),
+                "{msg}"
+            );
             // A UTM CRS should still work.
             let parsed = super::Crs::from_user_input("EPSG:32633").unwrap();
 
@@ -821,7 +816,6 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn test_crs_convert() {
         let coords = vec![
             Coord { x: 15., y: 78. },
@@ -842,15 +836,11 @@ mod tests {
         }
     }
     #[test]
-    // Runs `projinfo`, so it must not overlap the tests that unset `PATH`
-    // process-wide to simulate a machine without PROJ or GDAL
-    // (`test_crs_noproj` here, `dem::tests::test_no_gdal_failure`). Those
-    // are `serial`, but that only excludes each other -- an unmarked test
-    // still runs alongside them and finds no `projinfo` on `PATH`. That is
-    // the "random failure" the cfg above blames on macOS: it is a race, not
-    // a platform.
-    #[serial_test::parallel]
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))] // Added windows 2026-04-6, macos 2026-04-13 (random failure)
+    // macOS was excluded after a random failure (#108): another test unset
+    // `PATH` process-wide while this one ran. The tests that simulate a
+    // missing PROJ now use `tools::without_tools`, which touches only their
+    // own thread.
+    #[cfg(not(target_os = "windows"))] // Added windows 2026-04-6
     fn test_projinfo_to_wkt() {
         let retval = super::projinfo_to_wkt("EPSG:32633").unwrap();
 

@@ -41,6 +41,10 @@ pub fn parse_step_list(steps: &str) -> Result<Vec<String>, String> {
 /// CI also sets `HDF5_USE_FILE_LOCKING=FALSE` (#154), which hides the
 /// failure rather than preventing it, and only there.
 pub fn spawn_tool(command: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+    #[cfg(test)]
+    if TOOLS_HIDDEN.get() {
+        return Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -53,6 +57,32 @@ pub fn spawn_tool(command: &mut std::process::Command) -> std::io::Result<std::p
     }
     let _guard = netcdf_sys::libnetcdf_lock.lock();
     command.spawn()
+}
+
+#[cfg(test)]
+thread_local! {
+    static TOOLS_HIDDEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `f` as if no external tool were installed: every [`spawn_tool`] on
+/// this thread fails as a missing program does.
+///
+/// For the tests that simulate a machine without PROJ or GDAL (#108). They
+/// used to unset `PATH`, which is process-wide, so any test spawning a tool
+/// meanwhile failed too unless it was marked to stay out of their way, and
+/// one that was not failed at random on macOS. This touches only the
+/// calling thread.
+#[cfg(test)]
+pub fn without_tools<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TOOLS_HIDDEN.set(false);
+        }
+    }
+    TOOLS_HIDDEN.set(true);
+    let _restore = Restore;
+    f()
 }
 
 /// Mark every descriptor above stderr close-on-exec, in a forked child.

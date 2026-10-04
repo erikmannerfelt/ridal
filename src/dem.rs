@@ -197,39 +197,6 @@ mod tests {
         ]
     }
 
-    pub fn get_gdal_version() -> Result<String, String> {
-        let child = crate::tools::spawn_tool(
-            std::process::Command::new("gdalinfo")
-                .arg("--version")
-                .stderr(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped()),
-        )
-        .map_err(|e| super::spawn_error("gdalinfo", &e))?;
-
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("Call failed: {e}"))?;
-
-        if output.status.success() {
-            let mut version = String::from_utf8_lossy(&output.stdout)
-                .trim()
-                .to_string()
-                .replace("GDAL ", "");
-
-            if let Some((first, _)) = version.split_once(",") {
-                version = first.trim().to_string();
-            }
-            Ok(version)
-        } else if output.stderr.is_empty() {
-            Err("Unknown error getting GDAL version.".to_string())
-        } else {
-            Err(format!(
-                "Error getting GDAL version: {}",
-                String::from_utf8_lossy(&output.stderr)
-            ))
-        }
-    }
-
     pub fn supports_interpolation() -> Result<bool, String> {
         use std::io::Write;
         use std::process::Stdio;
@@ -274,7 +241,6 @@ mod tests {
 
     #[test]
     #[cfg(not(target_os = "windows"))] // Added 2026-04-12 because gdal stopped working properly in CI
-    #[serial_test::serial]
     fn test_read_elevations() {
         let coords_elevs = make_test_coords();
         let working_coords = coords_elevs
@@ -333,8 +299,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    #[serial_test::serial]
+    #[cfg(not(target_os = "windows"))]
     fn test_no_gdal_failure() {
         let crs = Crs::Utm(UtmCrs {
             zone: 33,
@@ -345,18 +310,9 @@ mod tests {
 
         let dem_path = get_dem_path();
 
-        println!("Sampling DEM");
         let coords_wgs84 = crate::coords::to_wgs84(&working_coords, &crs).unwrap();
-        // super::sample_dem(&dem_path, &coords_wgs84, None).unwrap();
-        // let original_path = std::env::var("PATH").unwrap();
-        // let temp_path = "/some/empty/directory";
-        // std::env::set_var("PATH", temp_path);
 
-        temp_env::with_vars(vec![("PATH", Option::<&str>::None)], || {
-            if get_gdal_version().is_ok() {
-                eprintln!("WARNING: Could not properly unset the GDAL location. Skipping test.");
-                return;
-            };
+        crate::tools::without_tools(|| {
             let res = super::sample_dem(&dem_path, &coords_wgs84);
             // Names the program Ridal actually tried to run. `sample_dem`
             // spawns `gdallocationinfo`, not `gdalinfo`, and saying so is
@@ -371,8 +327,5 @@ mod tests {
                 res
             );
         });
-
-        // Restore the original PATH
-        // std::env::set_var("PATH", original_path);
     }
 }
