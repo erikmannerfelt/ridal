@@ -3,6 +3,20 @@
 What to do when moving an existing project, server or script to a new
 version. {doc}`changelog` lists everything that changed.
 
+## From 0.8.0 to 0.8.1
+
+Nothing needs migrating. Two things in the Python client behave
+differently (#362):
+
+- **`apply()` stops on an outage.** At the first `TransportError` or
+  `Unavailable` it stops, and the remaining files get the new action
+  `not_attempted` rather than each failing in turn. Code that counts
+  outcomes by action, or matches on every value of `Action`, should allow
+  for it. Pass `stop_on_outage=False` for the 0.8.0 behaviour.
+- **`502` and `504` are `Unavailable`.** It is still a `ServerError`, so
+  code catching that is unaffected; code checking
+  `type(error) is ServerError` for those statuses is not.
+
 ## From 0.7 to 0.8
 
 Nothing needs migrating: projects, sites and processed files from 0.7 work

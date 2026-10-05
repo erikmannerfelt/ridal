@@ -64,6 +64,10 @@ jobs:
         maturin build --release --features python --no-default-features --auditwheel repair
 
     - name: Install built wheel
+      # bash on every OS, Windows included: the default there is PowerShell,
+      # which cannot parse the `$(...)` below. PRs build on Ubuntu only, so
+      # a Windows-only failure here first shows on `main`.
+      shell: bash
       run: |
         # By path, not --find-links: between a release and the next version
         # bump, PyPI has a wheel with the same version, and pip may take
