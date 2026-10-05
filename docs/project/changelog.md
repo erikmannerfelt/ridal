@@ -3,6 +3,27 @@
 What changed in each release. {doc}`upgrading` says what to do about the
 changes that affect existing data, scripts or servers.
 
+## 0.8.1
+
+### Python client
+
+- `apply()` stops at the first sign that the server is down, rather than
+  trying every remaining file against it (#361, #362). The file it was on is
+  `failed`, and every later file that would have been uploaded is
+  `not_attempted`, a new action. Planning again picks up where it stopped.
+  `apply(..., stop_on_outage=False)` keeps trying every file, as before.
+- `502` and `504` raise `Unavailable`, as `503` does, so a proxy in front of
+  a server that is down counts as an outage (#362).
+
+### Viewer
+
+- Tapping the selected line anywhere offers to split it there, at the
+  tapped trace (#360, #364). It used to deselect the line; tapping off it
+  still does. Two-vertex lines can now be split too.
+- A **Show tooltips on vertices** checkbox under "Editing help" hides the
+  "Drag to move" and "Add vertex here" tooltips, and is remembered per
+  person (#363, #364). My settings has the same checkbox.
+
 ## 0.8.0
 
 ### Python client
