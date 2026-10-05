@@ -95,7 +95,8 @@ class PayloadTooLarge(ServerError):
 
 
 class Unavailable(ServerError):
-    """``503``: the server is busy. Retrying later may work."""
+    """``502``, ``503`` or ``504``: the server, or a proxy in front of it,
+    cannot answer now. Retrying later may work."""
 
 
 _BY_STATUS: Final[dict[int, type[ServerError]]] = {
@@ -106,7 +107,9 @@ _BY_STATUS: Final[dict[int, type[ServerError]]] = {
     409: Conflict,
     412: PreconditionFailed,
     413: PayloadTooLarge,
+    502: Unavailable,
     503: Unavailable,
+    504: Unavailable,
 }
 
 
