@@ -547,13 +547,22 @@ class Client:
         *,
         allow: Collection[models.Severity] = planning.DEFAULT_ALLOW,
         progress: Progress | None = None,
+        stop_on_outage: bool = True,
     ) -> tuple[planning.Outcome, ...]:
         """Upload the new files of a plan and replace the changed ones.
 
         One file at a time: a replacement is staged, checked against
         ``allow`` on the server's own report for the uploaded file, and
-        committed or discarded before the next begins. A file that fails is
-        reported in its outcome and the rest continue.
+        committed or discarded before the next begins. A file the server
+        refuses is reported in its outcome and the rest continue.
+
+        When the server stops answering (a
+        :class:`~ridal.client.errors.TransportError` or
+        :class:`~ridal.client.errors.Unavailable`), that file fails and the
+        files after it are ``not_attempted`` rather than each tried against
+        a server that is not there. Planning again marks what was done as
+        ``unchanged``, so applying that plan carries on where this stopped.
+        ``stop_on_outage=False`` tries every file regardless.
 
         Unlike :meth:`plan`, this does not run files side by side. The
         server takes uploads one at a time, because measuring the room left
@@ -561,10 +570,14 @@ class Client:
         only wait, and on a slow link wait long enough to time out.
         """
         outcomes = []
+        outage: str | None = None
         for record in planned.records:
             if record.status in ("unchanged", "legacy"):
                 detail = record.reason or "the server already has this revision"
                 outcomes.append(planning.Outcome(record, "skipped", detail))
+                continue
+            if outage is not None:
+                outcomes.append(planning.Outcome(record, "not_attempted", outage))
                 continue
             try:
                 if record.status == "new":
@@ -594,6 +607,12 @@ class Client:
                         report=staged.report,
                     )
                 )
+            except (errors.TransportError, errors.Unavailable) as error:
+                outcomes.append(planning.Outcome(record, "failed", str(error)))
+                if stop_on_outage:
+                    outage = (
+                        f"not tried: the server stopped answering at {record.path.name}"
+                    )
             except errors.RidalError as error:
                 outcomes.append(planning.Outcome(record, "failed", str(error)))
         return tuple(outcomes)

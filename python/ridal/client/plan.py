@@ -37,7 +37,15 @@ Status: TypeAlias = Literal["new", "unchanged", "safe", "risky", "legacy"]
     Processed by a Ridal too old to have radargram ids. Reprocess it.
 """
 
-Action: TypeAlias = Literal["uploaded", "replaced", "skipped", "failed"]
+Action: TypeAlias = Literal[
+    "uploaded", "replaced", "skipped", "failed", "not_attempted"
+]
+"""What :meth:`~ridal.client.Client.apply` did with a record.
+
+``not_attempted``
+    Left alone because the server stopped answering at an earlier file.
+    Plan again and apply to carry on.
+"""
 
 #: The severities a replacement may reach without being asked for.
 DEFAULT_ALLOW: Final[frozenset[models.Severity]] = frozenset({"current", "carried"})

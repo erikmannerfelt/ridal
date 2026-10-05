@@ -87,7 +87,9 @@ def test_a_token_is_sent_as_a_bearer_header(monkeypatch: pytest.MonkeyPatch) -> 
         (409, "wrong_radargram", errors.Conflict),
         (412, "version_conflict", errors.PreconditionFailed),
         (413, "project_full", errors.PayloadTooLarge),
+        (502, "http_502", errors.Unavailable),
         (503, "busy", errors.Unavailable),
+        (504, "http_504", errors.Unavailable),
         (500, "store_failed", errors.ServerError),
     ],
 )
@@ -273,6 +275,98 @@ def test_a_plan_looks_at_files_side_by_side_and_keeps_their_order(
         ("b.nc", "safe"),
         ("c.nc", "new"),
         ("d.nc", "unchanged"),
+    ]
+
+
+def new_files(directory: Path, *names: str) -> ridal_client.Plan:
+    """A plan that uploads an empty ``<name>.nc`` for each of ``names``."""
+    records = []
+    for name in names:
+        path = directory / f"{name}.nc"
+        path.touch()
+        records.append(ridal_client.Record(path, "new", name, "a", None))
+    return ridal_client.Plan(tuple(records))
+
+
+def uploaded_name(request: Any) -> str:
+    return Path(request.url.params["filename"]).stem
+
+
+def added(request: Any) -> Any:
+    name = uploaded_name(request)
+    return httpx.Response(
+        200,
+        json={
+            "radargram_id": name,
+            "revision_id": "a",
+            "display_name": None,
+            "group_name": None,
+            "bytes": 0,
+            "archived_interpretations": 0,
+        },
+    )
+
+
+def unreachable(request: Any) -> Any:
+    raise httpx.ConnectError("refused", request=request)
+
+
+@pytest.mark.parametrize(
+    "outage",
+    [
+        lambda request: httpx.Response(502, text="<html>Bad gateway</html>"),
+        lambda request: refusal(503, "busy"),
+        unreachable,
+    ],
+    ids=["502", "503", "unreachable"],
+)
+def test_apply_stops_when_the_server_stops_answering(
+    outage: Any, tmp_path: Path
+) -> None:
+    asked: list[str] = []
+
+    def handler(request: Any) -> Any:
+        asked.append(uploaded_name(request))
+        return outage(request) if len(asked) == 2 else added(request)
+
+    planned = new_files(tmp_path, "line-01", "line-02", "line-03", "line-04")
+    planned = ridal_client.Plan(
+        (
+            *planned.records[:3],
+            ridal_client.Record(Path("old.nc"), "unchanged", "line-05", "a", "a"),
+            planned.records[3],
+        )
+    )
+    with fake(handler) as client:
+        outcomes = client.apply(planned)
+    assert asked == ["line-01", "line-02"]
+    assert [outcome.action for outcome in outcomes] == [
+        "uploaded",
+        "failed",
+        "not_attempted",
+        "skipped",
+        "not_attempted",
+    ]
+
+
+def test_apply_goes_on_past_a_refusal_or_when_asked_to(tmp_path: Path) -> None:
+    def handler(request: Any) -> Any:
+        if uploaded_name(request) == "line-02":
+            return refusal(409, "dataset_exists")
+        if uploaded_name(request) == "line-03":
+            return refusal(503, "busy")
+        return added(request)
+
+    with fake(handler) as client:
+        outcomes = client.apply(
+            new_files(tmp_path, "line-01", "line-02", "line-03", "line-04"),
+            stop_on_outage=False,
+        )
+    assert [outcome.action for outcome in outcomes] == [
+        "uploaded",
+        "failed",
+        "failed",
+        "uploaded",
     ]
 
 

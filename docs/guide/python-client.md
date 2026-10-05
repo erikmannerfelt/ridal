@@ -120,6 +120,13 @@ one at a time, and by default only where every set of picks would still be
 shown unmoved (`allow={"current", "carried"}`). Anything else is left alone and reported in
 its outcome. Replacing needs the `operator` role.
 
+A file the server refuses is reported as `failed` and the rest go on. If the
+server stops answering instead (it cannot be reached, or answers `502`, `503`
+or `504`), `apply` stops there: the files after it are `not_attempted`. Plan
+again once the server is back, and what was already done shows up as
+`unchanged`, so applying that plan carries on where the first one stopped.
+Pass `stop_on_outage=False` to try every file regardless.
+
 ## Saving picks
 
 A picks document is a gprinterp document. Start one from

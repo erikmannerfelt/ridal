@@ -65,7 +65,11 @@ jobs:
 
     - name: Install built wheel
       run: |
-        pip install --force-reinstall --find-links target/wheels "ridal[client]"
+        # By path, not --find-links: between a release and the next version
+        # bump, PyPI has a wheel with the same version, and pip may take
+        # that one instead, testing the release rather than this tree.
+        whl=$(ls target/wheels/ridal-*.whl)
+        pip install --force-reinstall "${whl}[client]"
 
     - name: Smoke test
       run: |
