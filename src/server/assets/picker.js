@@ -55,6 +55,53 @@
     ];
   }
 
+  /** Split a line at a new vertex inside segment `segmentIndex` (#360).
+   *
+   * `vertex` is inserted between `coordinates[segmentIndex]` and the vertex
+   * after it, and becomes the vertex both halves share -- exactly as if it
+   * had been there and `splitCoordinates` had been asked to split at it. So
+   * the vertex count goes up by two: one for the insert, one for the split.
+   *
+   * Returns `null` for a segment the line does not have. The new vertex is
+   * always interior, so there is no end to refuse.
+   */
+  function splitCoordinatesOnSegment(coordinates, segmentIndex, vertex) {
+    if (segmentIndex < 0 || segmentIndex >= coordinates.length - 1) return null;
+    return splitCoordinates(
+      [
+        ...coordinates.slice(0, segmentIndex + 1),
+        vertex,
+        ...coordinates.slice(segmentIndex + 1),
+      ],
+      segmentIndex + 1,
+    );
+  }
+
+  /** Every place a line passes through `trace`, as
+   * `[{ segmentIndex, vertex: [trace, sample] }]` (#360).
+   *
+   * The sample is interpolated between the segment's stored vertices, so the
+   * vertex lies on the line as it is stored and exported -- not on the line
+   * as drawn, which a display shift (`shiftAt`) can bend away from it.
+   *
+   * One entry for a line that is a function of trace; more for one that
+   * doubles back, which only a layer allowing overhangs can hold. A segment
+   * at a single trace is skipped: every sample on it is at that trace, so
+   * the trace alone cannot say where on it a split belongs.
+   */
+  function crossingsAtTrace(coordinates, trace) {
+    const crossings = [];
+    for (let i = 0; i < coordinates.length - 1; i++) {
+      const [t0, s0] = coordinates[i];
+      const [t1, s1] = coordinates[i + 1];
+      if (t0 === t1) continue;
+      if (trace < Math.min(t0, t1) || trace > Math.max(t0, t1)) continue;
+      const sample = s0 + ((trace - t0) / (t1 - t0)) * (s1 - s0);
+      crossings.push({ segmentIndex: i, vertex: [trace, sample] });
+    }
+    return crossings;
+  }
+
   /** Join two lines end to end.
    *
    * `aAtStart` / `bAtStart` say which end of each line is being joined.
@@ -542,7 +589,7 @@
 
         // Dragging an end of a stored line onto the end of another is how
         // two lines are joined back together -- the inverse of tapping a
-        // middle vertex to split one.
+        // line to split it.
         const isEnd = index === 0 || index === coordinates.length - 1;
         if (featureIndex !== undefined && featureIndex !== null && isEnd) {
           const target = findJoinTarget(featureIndex, dropped);
@@ -841,7 +888,7 @@
      *
      * Two features out, one in, via a `splice` pair that removes the higher
      * index first so the lower one is still valid -- the same discipline as
-     * `splitSelectedAt`, and for the same reason: a merge written as "add
+     * `splitSelected`, and for the same reason: a merge written as "add
      * the joined line, then remove the two originals" leaves an original
      * behind whenever a removal is skipped. */
     function joinWith(featureIndex, draggedAtStart, target) {
@@ -901,13 +948,14 @@
 
     /** The confirmation both destructive line edits ask for.
      *
-     * Splitting and joining are each triggered by a gesture aimed at a
-     * vertex -- a tap that could have been the start of a drag, or a drop
-     * that could have been a plain move -- and each is awkward to undo by
-     * hand on a long horizon. So both ask, and they ask identically.
+     * Splitting and joining are each triggered by a gesture aimed at the
+     * line -- a tap that could have been the start of a drag or meant to
+     * select, or a drop that could have been a plain move -- and each is
+     * awkward to undo by hand on a long horizon. So both ask, and they ask
+     * identically.
      *
-     * A popup at the vertex rather than a prompt in the selection panel
-     * above the map: the gesture landed here, and a question that appears
+     * A popup where the line will change rather than a prompt in the
+     * selection panel above the map: the gesture landed here, and a question that appears
      * above the radargram is a question that gets answered without being
      * read. Not `window.confirm`, which blocks the Chromium harness and
      * reads as a browser dialog rather than part of the page -- the same
@@ -956,14 +1004,130 @@
       }
     }
 
-    /** Ask before splitting, anchored at the vertex that was tapped. */
-    function confirmSplitAt(vertexIndex, marker) {
-      confirmAt(marker.getLatLng(), {
+    /** Ask before splitting the selected line, anchored where it will split.
+     *
+     * `halvesOf` is called on confirmation with the line's coordinates and
+     * returns the two halves, or `null` for a place that cannot be split.
+     *
+     * The line is remembered as the object it is now, not as `selected`: the
+     * popup does not stop a tap on another line from selecting it, and a
+     * Split pressed after that would otherwise cut the newly selected line
+     * at an index meant for this one. */
+    function confirmSplit(latlng, halvesOf) {
+      const feature = features[selected];
+      confirmAt(latlng, {
         name: "split",
         question: "Split the line here?",
         verb: "Split",
-        onConfirm: () => splitSelectedAt(vertexIndex),
+        onConfirm: () => {
+          if (features[selected] !== feature) return;
+          splitSelected(halvesOf(feature.geometry.coordinates));
+        },
       });
+    }
+
+    /** Ask before splitting at the vertex that was tapped. */
+    function confirmSplitAt(vertexIndex, marker) {
+      confirmSplit(marker.getLatLng(), (coordinates) =>
+        splitCoordinates(coordinates, vertexIndex),
+      );
+    }
+
+    /** Ask before splitting the selected line where it was tapped (#360).
+     *
+     * At the tapped *trace*, not the point on the line nearest the tap: a
+     * split decides where along the profile one half ends and the other
+     * begins, so that is the coordinate to honour. The nearest point on a
+     * steep segment can be traces away from where the finger went, and the
+     * line's wide hit target means the tap's height above or below the line
+     * is imprecise anyway. Where the line passes the trace more than once
+     * (an overhang), the crossing nearest the tap on screen is meant.
+     *
+     * A segment at a single trace has no answer by trace, and a tap past an
+     * end of the line has no crossing at all; for those the nearest point on
+     * the line on screen stands in.
+     *
+     * A tap that lands on an existing vertex splits there rather than
+     * inserting a second vertex on top of it -- the result the user meant,
+     * without a near-duplicate vertex nobody can see.
+     *
+     * Nothing changes until the split is confirmed, so dismissing the
+     * prompt has nothing to undo. */
+    function confirmSplitOnLine(latlng) {
+      const coordinates = features[selected].geometry.coordinates;
+      const tap = map.latLngToContainerPoint(latlng);
+      const onScreen = ([trace, sample]) =>
+        map.latLngToContainerPoint(toLatLng(trace, sample));
+
+      let place = null;
+      let placeDistance = Infinity;
+      for (const crossing of crossingsAtTrace(coordinates, toIndex(latlng)[0])) {
+        const distance = onScreen(crossing.vertex).distanceTo(tap);
+        if (distance < placeDistance) {
+          place = crossing;
+          placeDistance = distance;
+        }
+      }
+      if (place === null) place = nearestOnLine(coordinates, tap);
+
+      const { segmentIndex, vertex } = place;
+      for (const index of [segmentIndex, segmentIndex + 1]) {
+        if (onScreen(coordinates[index]).distanceTo(onScreen(vertex)) > SNAP_RADIUS_PX) {
+          continue;
+        }
+        if (index === 0 || index === coordinates.length - 1) {
+          showError(
+            "That is the end of the line, so there is nothing to split off. " +
+              "Tap further along the line to split it.",
+          );
+          return;
+        }
+        confirmSplit(toLatLng(...coordinates[index]), (current) =>
+          splitCoordinates(current, index),
+        );
+        return;
+      }
+      confirmSplit(toLatLng(vertex[0], vertex[1]), (current) =>
+        splitCoordinatesOnSegment(current, segmentIndex, vertex),
+      );
+    }
+
+    /** The point on a line nearest `tap` on screen, as
+     * `{ segmentIndex, vertex }`.
+     *
+     * Measured on screen, where "nearest" means what it looks like, but the
+     * vertex is placed by interpolating the stored vertices at the same
+     * fraction of the segment, so it lies on the line as stored. */
+    function nearestOnLine(coordinates, tap) {
+      let best = null;
+      for (let i = 0; i < coordinates.length - 1; i++) {
+        const a = map.latLngToContainerPoint(toLatLng(...coordinates[i]));
+        const b = map.latLngToContainerPoint(toLatLng(...coordinates[i + 1]));
+        const along = b.subtract(a);
+        const lengthSquared = along.x * along.x + along.y * along.y;
+        const t =
+          lengthSquared === 0
+            ? 0
+            : Math.min(
+                1,
+                Math.max(
+                  0,
+                  ((tap.x - a.x) * along.x + (tap.y - a.y) * along.y) /
+                    lengthSquared,
+                ),
+              );
+        const distance = a.add(along.multiplyBy(t)).distanceTo(tap);
+        if (best === null || distance < best.distance) {
+          const [t0, s0] = coordinates[i];
+          const [t1, s1] = coordinates[i + 1];
+          best = {
+            segmentIndex: i,
+            vertex: [t0 + t * (t1 - t0), s0 + t * (s1 - s0)],
+            distance,
+          };
+        }
+      }
+      return best;
     }
 
     /** Ask before joining, anchored where the end was dropped.
@@ -989,16 +1153,15 @@
      * halves, then remove the original" leaves the original behind whenever
      * the removal is skipped or the handler fires twice, which is how a
      * split turns into duplicate overlapping lines. */
-    function splitSelectedAt(vertexIndex) {
-      const feature = features[selected];
-      const halves = splitCoordinates(feature.geometry.coordinates, vertexIndex);
+    function splitSelected(halves) {
       if (halves === null) {
         showError(
-          "Tap a vertex in the middle of the line to split it -- splitting at " +
-            "an end would leave a line with a single vertex.",
+          "Tap the line away from its ends to split it -- splitting at an " +
+            "end would leave a line with a single vertex.",
         );
         return;
       }
+      const feature = features[selected];
       const label = feature.properties && feature.properties.label;
       features.splice(
         selected,
@@ -1069,10 +1232,14 @@
         hit.on("click", (event) => {
           // While a line is in progress, a tap over an existing line is
           // still a new vertex -- lines must not become holes in the drawing
-          // surface. Outside that, a tap selects the line it lands on.
+          // surface. Outside that, a tap selects the line it lands on, and a
+          // tap on the line already selected offers to split it there
+          // (#360). It used to deselect, which ended the edit for a tap
+          // that was aimed at the line; a tap off it still does.
           if (draft) return;
           L.DomEvent.stopPropagation(event);
-          select(index === selected ? null : index);
+          if (index === selected) confirmSplitOnLine(event.latlng);
+          else select(index);
         });
 
         const line = L.polyline(points, {
@@ -1452,11 +1619,10 @@
       const label = feature.properties && feature.properties.label;
       selectedLayer.value = label || "";
       paintSwatch(selectedSwatch, label);
-      const many = feature.geometry.coordinates.length > 2;
       selectionHint.textContent =
         "Drag a vertex to move it, or onto its neighbour to remove it. " +
         "Tap a small handle between two vertices to add one. " +
-        (many ? "Tap a middle vertex to split. " : "") +
+        "Tap the line anywhere to split it there. " +
         "Drop an end onto another line's end in the same layer to join them.";
     }
 
