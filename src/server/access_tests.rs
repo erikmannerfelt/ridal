@@ -1915,6 +1915,90 @@ async fn opening_zoomed_out_is_a_personal_choice() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn hiding_vertex_tooltips_is_remembered_per_person() {
+    // #363. Shown by default; hiding them from the editing panel is meant
+    // to last, so it is stored, and showing them again stores nothing.
+    let hash = password_hash();
+    let (dir, app) = app_with(vec![
+        activated("erik", Role::Picker, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let viewer_uri = format!("/view/{RADARGRAM}");
+    let checked = r#"id="pick-vertex-tooltips"
+               checked>"#;
+
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(
+        page.text.contains("showVertexTooltips: true"),
+        "{}",
+        page.text
+    );
+    assert!(page.text.contains(checked), "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_vertex_tooltips": false}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["show_vertex_tooltips"], false);
+
+    // The checkbox arrives unticked, rather than ticked until the script
+    // catches up.
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(
+        page.text.contains("showVertexTooltips: false"),
+        "{}",
+        page.text
+    );
+    assert!(!page.text.contains(checked), "{}", page.text);
+    let settings = get(&app, "/api/v1/settings", Some(&student)).await;
+    assert_eq!(
+        settings.body["my_show_vertex_tooltips"], false,
+        "{}",
+        settings.text
+    );
+    let page = get(&app, &viewer_uri, Some(&erik)).await;
+    assert!(
+        page.text.contains("showVertexTooltips: true"),
+        "{}",
+        page.text
+    );
+
+    // Saving another setting leaves it alone: the panel and the settings
+    // page each send only what they show.
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_picks": false}),
+        Some(&student),
+    )
+    .await;
+    let page = get(&app, &viewer_uri, Some(&student)).await;
+    assert!(
+        page.text.contains("showVertexTooltips: false"),
+        "{}",
+        page.text
+    );
+
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_vertex_tooltips": true}),
+        Some(&student),
+    )
+    .await;
+    let stored =
+        std::fs::read_to_string(data(dir.path()).join("preferences/student.json")).unwrap();
+    assert!(!stored.contains("show_vertex_tooltips"), "{stored}");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn hiding_group_radargrams_cascades_from_the_project_to_the_person() {
     // #314. Shown by default; a project may open on the headings instead,
     // and a person may disagree with it either way.

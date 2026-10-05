@@ -244,6 +244,13 @@
     <details id="pick-selection-help" class="picker-selection-help">
       <summary>Editing help</summary>
       <span id="pick-selection-hint" class="pick-status"></span>
+      {#- #363. Saved to this person's settings on change, so hiding the
+          tooltips once hides them for good. -#}
+      <label class="pick-vertex-tooltips">
+        <input type="checkbox" id="pick-vertex-tooltips"
+               {% if show_vertex_tooltips %}checked{% endif %}>
+        Show tooltips on vertices
+      </label>
     </details>
   </div>
   {% endif %}
@@ -449,6 +456,9 @@
     {#- Whether the viewer opens on the whole radargram rather than on its
         start (#315), from this person's settings. -#}
     openZoomedOut: {% if open_zoomed_out %}true{% else %}false{% endif %},
+    {#- Whether the handles of a line being edited carry their tooltips
+        (#363), from this person's settings. -#}
+    showVertexTooltips: {% if show_vertex_tooltips %}true{% else %}false{% endif %},
   };
 </script>
 <script src="/static/viewer.js"></script>

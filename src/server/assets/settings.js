@@ -248,6 +248,11 @@
     // Only `true` is ever stored; absent means zoomed in.
     const zoomedOut = byId("my-open-zoomed-out");
     if (zoomedOut) zoomedOut.checked = settings.my_open_zoomed_out === true;
+    // Only `false` is ever stored; absent means shown.
+    const vertexTooltips = byId("my-show-vertex-tooltips");
+    if (vertexTooltips) {
+      vertexTooltips.checked = settings.my_show_vertex_tooltips !== false;
+    }
     const myGroups = byId("my-show-group-radargrams");
     if (myGroups) myGroups.value = boolChoice(settings.my_show_group_radargrams);
     fillOptions(byId("my-spacing"), spacings, settings.my_spacing, "Project default");
@@ -347,6 +352,7 @@
         x_scale: Number(byId("my-xscale").value) || null,
         show_picks: byId("my-show-picks").checked,
         open_zoomed_out: byId("my-open-zoomed-out").checked,
+        show_vertex_tooltips: byId("my-show-vertex-tooltips").checked,
         show_group_radargrams: parseBoolChoice(byId("my-show-group-radargrams").value),
         level2_spacing: byId("my-spacing").value || null,
         level2_format: byId("my-format").value || null,
@@ -360,6 +366,8 @@
         byId("my-xscale").value = saved.x_scale ? String(saved.x_scale) : "";
         byId("my-show-picks").checked = saved.show_picks !== false;
         byId("my-open-zoomed-out").checked = saved.open_zoomed_out === true;
+        byId("my-show-vertex-tooltips").checked =
+          saved.show_vertex_tooltips !== false;
         byId("my-show-group-radargrams").value = boolChoice(saved.show_group_radargrams);
         byId("my-spacing").value = saved.level2_spacing || "";
         byId("my-format").value = saved.level2_format || "";

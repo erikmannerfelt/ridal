@@ -50,6 +50,7 @@ pub async fn get_preferences(
         "basemap": preferences.basemap,
         "show_group_radargrams": preferences.show_group_radargrams,
         "open_zoomed_out": preferences.open_zoomed_out,
+        "show_vertex_tooltips": preferences.show_vertex_tooltips,
     })))
 }
 
@@ -100,6 +101,10 @@ pub struct PreferencesBody {
     /// Whether the viewer opens on the whole radargram (#315).
     #[serde(default, deserialize_with = "present")]
     open_zoomed_out: Option<Option<bool>>,
+    /// Whether the handles of a line being edited carry their tooltips
+    /// (#363).
+    #[serde(default, deserialize_with = "present")]
+    show_vertex_tooltips: Option<Option<bool>>,
 }
 
 /// Tell an absent key from one sent as `null`.
@@ -229,6 +234,11 @@ pub async fn put_preferences(
         // built-in answer and is stored as absence.
         stored.open_zoomed_out = sent.filter(|zoomed_out| *zoomed_out);
     }
+    if let Some(sent) = body.show_vertex_tooltips {
+        // A checkbox like `show_picks`, shown by default: shown is stored as
+        // absence.
+        stored.show_vertex_tooltips = sent.filter(|shown| !*shown);
+    }
     if let Some(sent) = body.show_group_radargrams {
         // A dropdown with "Project default", so kept as sent, shown
         // included: in a project that hides them, "show them to me" has to
@@ -268,6 +278,7 @@ pub async fn put_preferences(
         "basemap": stored.basemap,
         "show_group_radargrams": stored.show_group_radargrams,
         "open_zoomed_out": stored.open_zoomed_out,
+        "show_vertex_tooltips": stored.show_vertex_tooltips,
     })))
 }
 

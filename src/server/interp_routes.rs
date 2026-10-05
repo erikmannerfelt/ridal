@@ -1137,6 +1137,7 @@ pub async fn get_settings(
         "default_show_group_radargrams": project.and_then(|p| p.default_show_group_radargrams()),
         "my_show_group_radargrams": mine.show_group_radargrams,
         "my_open_zoomed_out": mine.open_zoomed_out,
+        "my_show_vertex_tooltips": mine.show_vertex_tooltips,
         // Two lists, deliberately. `basemaps` is what may be *chosen* --
         // the project's entries plus the built-in, with unusable ones
         // dropped -- and fills the two dropdowns. `project_basemaps` is
