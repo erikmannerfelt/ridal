@@ -354,6 +354,7 @@
     const layerSwatch = document.getElementById("pick-layer-swatch");
     const selectedSwatch = document.getElementById("pick-selected-swatch");
     const visibilityButton = document.getElementById("pick-visibility");
+    const vertexTooltipsBox = document.getElementById("pick-vertex-tooltips");
 
     /** Stored features, as gprinterp features in index space. */
     let features = [];
@@ -408,6 +409,18 @@
      * overhang markers belong to an edit in progress, and an edit in
      * progress forces this back on -- see `revealPicks`. */
     let picksVisible = CFG.showPicks !== false;
+
+    /** Whether the handles of a line being edited carry their tooltips
+     * (#363).
+     *
+     * They are instructions -- "Drag to move, tap to split", "Add vertex
+     * here" -- which help in the first few minutes and sit on top of the
+     * vertex being aimed at after that. Unlike `picksVisible` this one is
+     * saved as soon as it changes: hiding them once is meant to be for good,
+     * and a setting that came back on every page would be the annoyance it
+     * exists to remove. The line's own tooltip and the violation markers'
+     * keep theirs, since those carry information rather than instructions. */
+    let vertexTooltips = CFG.showVertexTooltips !== false;
 
     /** The reason the toast is explaining, when it was opened from a
      * violation marker; null otherwise. `redrawMarkers` closes the toast once
@@ -770,7 +783,7 @@
       marker.setZIndexOffset(900);
       // Hover-only affordance: on a touch screen the tooltip opens on the
       // same tap that adds the vertex, so it is noise at best.
-      if (!COARSE_POINTER) {
+      if (!COARSE_POINTER && vertexTooltips) {
         marker.bindTooltip("Add vertex here");
       }
 
@@ -1316,9 +1329,11 @@
           },
           selected,
         );
-        handle.bindTooltip(
-          interior ? "Drag to move, tap to split" : "Drag to move",
-        );
+        if (vertexTooltips) {
+          handle.bindTooltip(
+            interior ? "Drag to move, tap to split" : "Drag to move",
+          );
+        }
         // Once the handle is being dragged the tooltip sits exactly where
         // the vertex is being aimed, and what is happening is already
         // obvious. Unbound rather than closed for the same reason as the
@@ -1954,6 +1969,29 @@
     visibilityButton.textContent = picksVisible ? "Hide picks" : "Show picks";
     visibilityButton.setAttribute("aria-pressed", String(picksVisible));
     visibilityButton.addEventListener("click", () => setPicksVisible(!picksVisible));
+
+    // Rendered checked or not by the template from the same setting; set
+    // again here for the same reason as the visibility button above.
+    vertexTooltipsBox.checked = vertexTooltips;
+    vertexTooltipsBox.addEventListener("change", async () => {
+      vertexTooltips = vertexTooltipsBox.checked;
+      redrawHandles();
+      // Only this field: the endpoint leaves every setting it is not sent
+      // alone, so this cannot undo a choice made on the settings page.
+      try {
+        await RIDAL.fetchJson(RIDAL.apiPath("preferences"), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ show_vertex_tooltips: vertexTooltips }),
+        });
+      } catch (error) {
+        // The page keeps the choice either way; it is only not remembered.
+        showError(
+          `The vertex tooltips are ${vertexTooltips ? "shown" : "hidden"} on ` +
+            `this page, but that could not be saved: ${error.message}`,
+        );
+      }
+    });
     toggleButton.addEventListener("click", () => {
       if (draft) finishLine();
       else startLine();

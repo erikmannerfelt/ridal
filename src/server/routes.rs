@@ -535,6 +535,14 @@ fn resolve_show_group_radargrams(state: &AppState, caller: &Caller) -> bool {
     )
 }
 
+/// Whether the handles of a line being edited carry their tooltips
+/// (#363). No project layer, like `show_picks`.
+fn resolve_show_vertex_tooltips(state: &AppState, caller: &Caller) -> bool {
+    my_preferences(state, caller)
+        .show_vertex_tooltips
+        .unwrap_or(true)
+}
+
 /// Whether the viewer should open on the whole radargram (#315).
 ///
 /// No project layer: opening zoomed in is what bounds the render load when
@@ -1692,6 +1700,9 @@ pub async fn viewer_page(
             show_picks => resolve_show_picks(&state, &caller),
             // Whether the viewer opens on the whole radargram (#315).
             open_zoomed_out => resolve_open_zoomed_out(&state, &caller),
+            // Whether editing handles carry their tooltips (#363). The
+            // checkbox in the editing panel changes and saves it.
+            show_vertex_tooltips => resolve_show_vertex_tooltips(&state, &caller),
             ..map_page_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;

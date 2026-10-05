@@ -1753,6 +1753,16 @@ button.danger:disabled {
   margin-top: var(--space-1);
 }
 
+/* On its own line under the hint, in the hint's size: it is part of the
+ * help, not a control on the line (#363). */
+.picker-selection-help .pick-vertex-tooltips {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  font-size: var(--text-sm);
+}
+
 /* --- Vertex handles and overhang markers ---------------------------------
  *
  * Handles are Leaflet divIcons, so they are styled here rather than through

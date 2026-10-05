@@ -48,8 +48,9 @@
 //! [`Preferences::show_picks`] is the standing exception: it is a checkbox
 //! rather than a dropdown, a third "project default" state would need a
 //! control that does not exist yet, and there is no project layer under it
-//! to defer to. [`Preferences::open_zoomed_out`] is the same kind of
-//! setting and follows it.
+//! to defer to. [`Preferences::open_zoomed_out`] and
+//! [`Preferences::show_vertex_tooltips`] are the same kind of setting and
+//! follow it.
 
 #![cfg_attr(
     not(feature = "server"),
@@ -154,6 +155,18 @@ pub struct Preferences {
     /// only `true` is stored, and unticking it stores absence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_zoomed_out: Option<bool>,
+    /// Whether the handles on a line being edited explain themselves on
+    /// hover -- "Drag to move, tap to split", "Add vertex here" (#363).
+    ///
+    /// Instructions, which help the first few minutes and get in the way
+    /// after that, so they can be switched off from the editing panel and
+    /// stay off. Per person and per project with no project layer under it:
+    /// whether you still need the hints is not the project's call.
+    ///
+    /// A checkbox, so it follows [`Preferences::show_picks`]'s exception:
+    /// shown is stored as absence, and only `false` is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_vertex_tooltips: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -280,6 +293,7 @@ mod tests {
                 basemap: Some("osm".to_string()),
                 show_group_radargrams: Some(false),
                 open_zoomed_out: Some(true),
+                show_vertex_tooltips: Some(false),
             },
             &Expectation::Absent,
         )
@@ -295,6 +309,7 @@ mod tests {
         assert_eq!(erik.basemap.as_deref(), Some("osm"));
         assert_eq!(erik.show_group_radargrams, Some(false));
         assert_eq!(erik.open_zoomed_out, Some(true));
+        assert_eq!(erik.show_vertex_tooltips, Some(false));
         // The point of the whole module: two people can disagree.
         assert_eq!(
             read(&store, &user("student")).unwrap(),
@@ -320,6 +335,7 @@ mod tests {
                 basemap: None,
                 show_group_radargrams: None,
                 open_zoomed_out: None,
+                show_vertex_tooltips: None,
             },
             &Expectation::Absent,
         )
@@ -337,6 +353,7 @@ mod tests {
             "level2_format",
             "show_group_radargrams",
             "open_zoomed_out",
+            "show_vertex_tooltips",
         ] {
             assert!(!text.contains(absent), "{absent} should be absent:\n{text}");
         }
@@ -375,6 +392,7 @@ mod tests {
                 basemap: None,
                 show_group_radargrams: None,
                 open_zoomed_out: None,
+                show_vertex_tooltips: None,
             },
             &Expectation::Absent,
         )
