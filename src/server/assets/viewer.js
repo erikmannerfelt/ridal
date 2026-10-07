@@ -718,11 +718,14 @@ if (GROUP) {
           }).addTo(overviewMap);
           return { visible, hit };
         });
+        // A clicked sibling turns orange as well as heavier, so the track
+        // the open popup belongs to stands out among the grey ones.
         RIDAL.bindTrackHighlight(
           pairs,
           null,
           style.weight,
           unlisted ? style.weight : RIDAL.siblingFocusWeight,
+          { color: RIDAL.siblingSelectedColor, opacity: RIDAL.siblingSelectedOpacity },
         );
       }
     })

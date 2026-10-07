@@ -101,6 +101,11 @@ const RIDAL = Object.freeze({
   // Weight while a sibling's track is hovered or its popup is open --
   // mirrors trackFocusWeight's role for the index page's own tracks.
   siblingFocusWeight: 5,
+  // A sibling whose popup is open, i.e. the one that was clicked. Orange
+  // rather than `trackColor`'s red-orange, so it does not read as this
+  // radargram's own track, and fully opaque so it stands out.
+  siblingSelectedColor: "#f90",
+  siblingSelectedOpacity: 1,
 
   // An unlisted radargram, which only an operator or admin sees (#192). It
   // is drawn muted and dashed, and does not define the map bounds, so it
@@ -1133,14 +1138,28 @@ const RIDAL = Object.freeze({
    *
    * Takes `{ visible, hit }` pairs: events come from the wide companion,
    * while the weight change is applied to the line that can actually be
-   * seen. */
-  bindTrackHighlight(pairs, card, baseWeight, focusWeight) {
+   * seen.
+   *
+   * `selectedStyle`, if given, is applied to the visible lines while the
+   * popup is open, so a clicked track is told apart from a hovered one. The
+   * lines' own values for those keys come back when it closes. */
+  bindTrackHighlight(pairs, card, baseWeight, focusWeight, selectedStyle = null) {
     let hovered = false;
     let popupOpen = false;
+    const ownStyles = selectedStyle
+      ? pairs.map(({ visible }) =>
+          Object.fromEntries(
+            Object.keys(selectedStyle).map((key) => [key, visible.options[key]]),
+          ),
+        )
+      : null;
     const apply = () => {
       const on = hovered || popupOpen;
-      pairs.forEach(({ visible, hit }) => {
+      pairs.forEach(({ visible, hit }, i) => {
         visible.setStyle({ weight: on ? focusWeight : baseWeight });
+        if (selectedStyle) {
+          visible.setStyle(popupOpen ? selectedStyle : ownStyles[i]);
+        }
         if (on) {
           // Order matters: the companion first, so the visible line still
           // ends up above it.
