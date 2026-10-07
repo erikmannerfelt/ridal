@@ -31,12 +31,55 @@ document.getElementById('index-profile-select').addEventListener('change', (even
 // is a setting the server already applied; this changes it for this page
 // only, the same way the viewer's "Show picks" does. Unhiding is also what
 // lets the hidden cards' lazy thumbnails start loading.
-document.querySelectorAll('.group-toggle').forEach((button) => {
+//
+// "This page" includes the reloads the page does to itself after an edit
+// (`reloadKeepingGroups`): without carrying the state across, removing one
+// radargram from a group the operator had just shown hid it again.
+const GROUPS_SHOWN = 'ridal.groups-shown';
+
+function setGroupShown(button, shown) {
   const target = document.getElementById(button.getAttribute('aria-controls'));
+  target.hidden = !shown;
+  button.setAttribute('aria-expanded', String(shown));
+  button.textContent = shown ? 'Hide all' : 'Show all';
+}
+
+/** Reload the page, keeping each group shown or hidden as it is now.
+ *
+ * Keyed by group id rather than the toggle's own id, which is a loop index
+ * and shifts when the edit adds or removes a group. Read back, and cleared,
+ * once on the next load; storage that is unavailable only costs the state. */
+function reloadKeepingGroups() {
+  const shown = {};
+  document.querySelectorAll('.group-toggle').forEach((button) => {
+    shown[button.closest('section.group').id] = button.getAttribute('aria-expanded') === 'true';
+  });
+  try {
+    sessionStorage.setItem(GROUPS_SHOWN, JSON.stringify(shown));
+  } catch (_) {
+    // Nothing to do: the page opens the way the setting says.
+  }
+  window.location.reload();
+}
+
+(function restoreGroupsShown() {
+  let shown = null;
+  try {
+    shown = JSON.parse(sessionStorage.getItem(GROUPS_SHOWN));
+    sessionStorage.removeItem(GROUPS_SHOWN);
+  } catch (_) {
+    return;
+  }
+  if (!shown || typeof shown !== 'object') return;
+  document.querySelectorAll('.group-toggle').forEach((button) => {
+    const groupId = button.closest('section.group').id;
+    if (groupId in shown) setGroupShown(button, shown[groupId]);
+  });
+})();
+
+document.querySelectorAll('.group-toggle').forEach((button) => {
   button.addEventListener('click', () => {
-    target.hidden = !target.hidden;
-    button.setAttribute('aria-expanded', String(!target.hidden));
-    button.textContent = target.hidden ? 'Show all' : 'Hide all';
+    setGroupShown(button, button.getAttribute('aria-expanded') !== 'true');
   });
 });
 
@@ -410,7 +453,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       save.disabled = false;
     }
     dialog.close();
-    window.location.reload();
+    reloadKeepingGroups();
   });
 })();
 
@@ -501,7 +544,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
     dialog.close();
     // Same reason the radargram dialog reloads: a rename changes a heading,
     // every card's group and the download menu labels under it.
-    window.location.reload();
+    reloadKeepingGroups();
   });
 })();
 
@@ -626,7 +669,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
     }
     // Reloaded rather than patched: a new radargram may create a group
     // section, which is most of the page.
-    window.location.reload();
+    reloadKeepingGroups();
   });
 })();
 
@@ -697,7 +740,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
       confirm.disabled = false;
     }
     dialog.close();
-    window.location.reload();
+    reloadKeepingGroups();
   });
 })();
 
@@ -954,7 +997,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
     }
     // Committed, so there is nothing staged left to give back.
     token = null;
-    window.location.reload();
+    reloadKeepingGroups();
   });
 
   document.getElementById('replace-close').addEventListener('click', () => {
