@@ -241,6 +241,8 @@ Correct for the separation between the antenna transmitter and receiver.
 
 With the transmitter and receiver apart, a reflection travels two slant legs, and time zero (the air wave's arrival at the receiver) comes after the pulse left the transmitter. Depth is therefore not linear in travel time, least of all near the surface. This step resamples each trace so that each sample represents a consistent depth interval.
 
+The `slant` grid keeps the sample interval: one sample is `v * dt / 2` deep, starting from the depth of the first sample's travel time, so the output's `depth` coordinate is the depth of each sample exactly. Up to 0.8.1 its spacing was taken from the data and came out slightly larger, and `depth` fell short by a fraction of a percent.
+
 Afterwards, `twtt` is the travel time a coincident transmitter and receiver would have recorded rather than the travel time between the pair, and the output declares that with `twtt:anchor_name = "twtt_normal_incidence"` and `antenna_separation_effective = 0`.
 
 `legacy` is the conversion before 0.7, which used the full separation where the geometry needs half and, after a zero correction, no separation at all. It exists to regenerate data processed with it, and picks made on its grid, exactly.

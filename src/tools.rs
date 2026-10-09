@@ -458,11 +458,11 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
         Resampler::_new(x_values, target_x_values, false)
     }
 
-    /*
+    /// Resample onto `target_x_values` exactly, rather than onto a grid
+    /// derived from the values' own range.
     pub fn new_with_target(x_values: Array1<F>, target_x_values: Array1<F>) -> Self {
         Resampler::_new(x_values, target_x_values, false)
     }
-    */
 
     fn _new_debug(x_values: Array1<F>, resolution: F) -> Self {
         let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
