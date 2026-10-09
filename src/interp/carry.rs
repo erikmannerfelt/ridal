@@ -170,6 +170,10 @@ pub struct CarryReport {
     /// One sentence for the banner, written for whoever is looking at the
     /// radargram rather than for a log.
     pub headline: String,
+    /// Reasons to check the carried picks against the data that the axes
+    /// cannot see, such as one revision being migrated and the other not
+    /// (#370). Empty when there are none.
+    pub warnings: Vec<String>,
 }
 
 /// The carried view, and what it cost.
@@ -270,7 +274,7 @@ pub fn with_snapshot_axes(
                     .is_empty()
         });
     if already {
-        return document.clone();
+        return with_snapshot_recording_clock(document, snapshot);
     }
     let Some(y_anchor) = snapshot.y_anchor.as_deref() else {
         // A snapshot that never recorded which anchor its values are is
@@ -297,13 +301,8 @@ pub fn with_snapshot_axes(
     // clock -- no shared anchor, though both files have that mapping and
     // it is exact.
     let mut y = vec![explicit(y_anchor, &snapshot.y_values, "ns")];
-    if let Some(alternate) = &snapshot.y_alternate {
-        let shifted: Vec<f64> = snapshot
-            .y_values
-            .iter()
-            .map(|v| v + alternate.offset)
-            .collect();
-        y.push(explicit(&alternate.name, &shifted, "ns"));
+    if let Some(alternate) = snapshot_alternate(snapshot) {
+        y.push(alternate);
     }
     let axes = serde_json::json!({
         "x": {"anchor": [explicit("trace_time", &snapshot.x_values, "s")]},
@@ -316,7 +315,119 @@ pub fn with_snapshot_axes(
     out
 }
 
-/// Every `(x, y)` vertex of every feature, in order.
+/// A snapshot's second `y` anchor as a gprinterp anchor, unless it is a
+/// corrected revision's clock kept the pre-#370 way, which is wrong.
+fn snapshot_alternate(
+    snapshot: &crate::project::revisions::AxisSnapshot,
+) -> Option<serde_json::Value> {
+    let alternate = snapshot.y_alternate.as_ref()?;
+    if alternate.is_stale_for(snapshot.y_anchor.as_deref()) {
+        return None;
+    }
+    Some(match &alternate.tiepoints {
+        Some(points) => serde_json::json!({
+            "name": alternate.name,
+            "unit": "ns",
+            "type": "tiepoints",
+            "interpolation": "linear",
+            "points": points
+                .iter()
+                .map(|[sample, value]| serde_json::json!({"trace": sample, "x": value}))
+                .collect::<Vec<_>>(),
+        }),
+        None => serde_json::json!({
+            "name": alternate.name,
+            "unit": "ns",
+            "type": "explicit",
+            "values": snapshot
+                .y_values
+                .iter()
+                .map(|v| v + alternate.offset)
+                .collect::<Vec<f64>>(),
+        }),
+    })
+}
+
+/// A document with axes of its own, given the snapshot's recording clock in
+/// place of a stale one (#370).
+///
+/// A document saved on a corrected revision before #370 carries the wrong,
+/// regular clock, which [`carry`] sets aside. If its revision was superseded
+/// since, the snapshot taken then has the clock reconstructed, and the
+/// picks can go on relating to uncorrected revisions through it.
+fn with_snapshot_recording_clock(
+    document: &gprinterp::Document,
+    snapshot: &crate::project::revisions::AxisSnapshot,
+) -> gprinterp::Document {
+    let Some(clock) = snapshot
+        .y_alternate
+        .as_ref()
+        .filter(|a| a.name == "recording_time" && a.tiepoints.is_some())
+        .and_then(|_| snapshot_alternate(snapshot))
+    else {
+        return document.clone();
+    };
+    let Ok(mut value) = serde_json::to_value(document) else {
+        return document.clone();
+    };
+    let Some(anchors) = value
+        .pointer_mut("/coordinates/axes/y/anchor")
+        .and_then(|a| a.as_array_mut())
+    else {
+        return document.clone();
+    };
+    if !has_stale_recording_clock(anchors) {
+        return document.clone();
+    }
+    anchors.retain(|a| a["name"] != "recording_time");
+    anchors.push(clock);
+    serde_json::from_value(value).unwrap_or_else(|_| document.clone())
+}
+
+/// Whether a `y` anchor list carries the recording clock a corrected
+/// revision used to offer: regular, beside `twtt_normal_incidence`.
+///
+/// Before #370 a revision corrected for antenna separation offered its
+/// recording clock as a regular axis, as though the samples had not been
+/// resampled onto a depth grid. Documents saved on one, and snapshots kept
+/// of one, carry that axis, and carrying through it places picks several
+/// samples from where they were drawn while reporting that nothing moved.
+/// The travel-time anchor's name is what tells such a revision apart.
+fn has_stale_recording_clock(anchors: &[serde_json::Value]) -> bool {
+    let named = |name: &str| anchors.iter().any(|a| a["name"] == name);
+    named("twtt_normal_incidence")
+        && anchors
+            .iter()
+            .any(|a| a["name"] == "recording_time" && a["type"] == "regular")
+}
+
+/// The document without a stale recording clock, and whether it had one.
+///
+/// Set aside rather than corrected: the document cannot say how its
+/// revision was corrected, and a wrong axis is worse than a missing one.
+/// What is left still carries onto any revision with the same correction,
+/// through `twtt_normal_incidence`.
+fn without_stale_recording_clock(document: &gprinterp::Document) -> (gprinterp::Document, bool) {
+    let Ok(mut value) = serde_json::to_value(document) else {
+        return (document.clone(), false);
+    };
+    let Some(anchors) = value
+        .pointer_mut("/coordinates/axes/y/anchor")
+        .and_then(|a| a.as_array_mut())
+    else {
+        return (document.clone(), false);
+    };
+    if !has_stale_recording_clock(anchors) {
+        return (document.clone(), false);
+    }
+    anchors.retain(|a| a["name"] != "recording_time");
+    match serde_json::from_value(value) {
+        Ok(cleaned) => (cleaned, true),
+        Err(_) => (document.clone(), false),
+    }
+}
+
+/// Every `(x, y)` vertex of every feature, in order./// Every `(x, y)` vertex of every feature, in order.
 fn vertices(document: &gprinterp::Document) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
     for feature in &document.features {
@@ -404,6 +515,7 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
             moved: None,
             refusal: Some(reason),
             headline,
+            warnings: Vec::new(),
         },
     };
 
@@ -423,9 +535,13 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
                 moved: None,
                 refusal: None,
                 headline: "These picks were drawn on the revision you are looking at.".to_string(),
+                warnings: Vec::new(),
             },
         };
     }
+
+    let (document, stale_clock) = without_stale_recording_clock(document);
+    let document = &document;
 
     let target = match target_axes(axes) {
         Ok(target) => target,
@@ -442,6 +558,17 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
 
     let outcome = match gprinterp::reanchor(document, &target) {
         Ok(outcome) => outcome,
+        Err(e) if stale_clock => {
+            return refuse(
+                format!("{e}; the recording clock saved with the picks was set aside (#370)"),
+                "These picks were drawn on a revision corrected for antenna separation, \
+                 and the recording clock saved with them is from before Ridal accounted \
+                 for that correction moving the samples. They can be carried onto \
+                 revisions with the same correction, but not onto this one. They are \
+                 kept exactly as drawn."
+                    .to_string(),
+            )
+        }
         Err(e) => {
             return refuse(
                 e.to_string(),
@@ -533,8 +660,67 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
             moved,
             refusal: None,
             headline,
+            warnings: Vec::new(),
         },
     }
+}
+
+/// Add what the revisions' processing says the axes cannot account for.
+///
+/// Migration moves reflections within the image and leaves the grid where
+/// it was, so a pick carried between a migrated and an unmigrated revision
+/// is placed exactly -- on data that may have moved from under it. That is
+/// a *may*: a flat reflector does not move at all. So it is a warning on a
+/// carry that went ahead, never a refusal. Said only where both sides are
+/// known, since an unknown is not a difference.
+pub fn add_processing_warnings(
+    carried: &mut Carried,
+    from: crate::project::revisions::ledger::RevisionFacts,
+    to: crate::project::revisions::ledger::RevisionFacts,
+) {
+    if !carried.report.severity.has_view() || carried.report.severity == Severity::Current {
+        return;
+    }
+    if let (Some(from), Some(to)) = (from.migrated, to.migrated) {
+        if from != to {
+            let (drawn, now) = if from {
+                ("a migrated revision", "this one is not")
+            } else {
+                ("a revision that was not migrated", "this one is")
+            };
+            carried.report.warnings.push(format!(
+                "These picks were drawn on {drawn}, and {now}. Migration moves \
+                 reflections without moving the grid, so the picks are where they were \
+                 drawn but the reflectors under them may have moved. Check them \
+                 against the data."
+            ));
+        }
+    }
+}
+
+/// The document without a regular `recording_time` anchor.
+///
+/// For a document the ledger knows was drawn on a revision corrected for
+/// antenna separation, where that anchor can only be the stale clock of
+/// [`has_stale_recording_clock`] -- including on a revision that never
+/// located time zero, which has no `twtt_normal_incidence` to recognise it
+/// by.
+pub fn without_regular_recording_clock(document: &gprinterp::Document) -> gprinterp::Document {
+    let Ok(mut value) = serde_json::to_value(document) else {
+        return document.clone();
+    };
+    let Some(anchors) = value
+        .pointer_mut("/coordinates/axes/y/anchor")
+        .and_then(|a| a.as_array_mut())
+    else {
+        return document.clone();
+    };
+    let before = anchors.len();
+    anchors.retain(|a| !(a["name"] == "recording_time" && a["type"] == "regular"));
+    if anchors.len() == before {
+        return document.clone();
+    }
+    serde_json::from_value(value).unwrap_or_else(|_| document.clone())
 }
 
 #[cfg(test)]
@@ -632,6 +818,58 @@ mod tests {
     }
 
     #[test]
+    fn a_difference_in_migration_is_a_warning_not_a_refusal() {
+        // #370: migration moves reflections, not the grid, so the picks are
+        // placed exactly and may still sit on data that moved.
+        use crate::project::revisions::ledger::RevisionFacts;
+        let drawn_on = axes(0.0, 0.0, "twtt");
+        let doc = document("rev-a", &drawn_on, &[(2.0, 3.0), (4.0, 5.0)]);
+        let facts = |migrated| RevisionFacts {
+            separation_corrected: Some(false),
+            migrated: Some(migrated),
+        };
+
+        let mut carried = carry(&doc, &drawn_on, "rev-b");
+        add_processing_warnings(&mut carried, facts(false), facts(true));
+        assert!(carried.report.severity.has_view());
+        assert_eq!(carried.report.warnings.len(), 1);
+        assert!(carried.report.warnings[0].contains("may have moved"));
+
+        for (from, to) in [
+            (facts(true), facts(true)),
+            (RevisionFacts::default(), facts(true)),
+        ] {
+            let mut carried = carry(&doc, &drawn_on, "rev-b");
+            add_processing_warnings(&mut carried, from, to);
+            assert!(carried.report.warnings.is_empty(), "{from:?} -> {to:?}");
+        }
+
+        // Nothing carried, nothing to warn about.
+        let mut current = carry(&doc, &drawn_on, "rev-a");
+        add_processing_warnings(&mut current, facts(false), facts(true));
+        assert!(current.report.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_ledger_known_correction_sets_aside_a_regular_clock_without_a_travel_time() {
+        // A corrected revision that never located time zero has no
+        // `twtt_normal_incidence` to recognise its stale clock by, so the
+        // route strips it on the ledger's word instead.
+        let drawn_on = axes(0.0, 100.0, "recording_time");
+        let doc = document("rev-a", &drawn_on, &[(2.0, 3.0)]);
+        let stripped = without_regular_recording_clock(&doc);
+        let value = serde_json::to_value(&stripped).unwrap();
+        let anchors = value
+            .pointer("/coordinates/axes/y/anchor")
+            .and_then(|a| a.as_array())
+            .map(Vec::len)
+            .unwrap_or(0);
+        assert_eq!(anchors, 0, "{value}");
+        let refused = carry(&stripped, &axes(0.0, 100.0, "recording_time"), "rev-b");
+        assert_eq!(refused.report.severity, Severity::Refused);
+    }
+
+    #[test]
     fn a_document_with_no_axes_of_its_own_can_borrow_a_snapshot() {
         // Interpretations saved before the picker emitted
         // `coordinates.axes` record which revision they were drawn on and
@@ -697,6 +935,7 @@ mod tests {
             y_alternate: Some(crate::project::revisions::AlternateAnchor {
                 name: "recording_time".to_string(),
                 offset: 50.0,
+                tiepoints: None,
             }),
         };
         let rescued = with_snapshot_axes(&doc, &snapshot);

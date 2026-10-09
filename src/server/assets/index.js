@@ -851,9 +851,12 @@ document.querySelectorAll('.group-map').forEach((el) => {
       const left = d.dropped && d.dropped.length > 0
         ? ` — ${d.dropped.length} left out`
         : '';
+      const warned = d.warnings && d.warnings.length > 0
+        ? ` — ${d.warnings.join(' ')}`
+        : '';
       rows.push([
         `Picks by ${d.user}`,
-        `${TIER_WORDS[d.severity] || d.severity}${moved}${left}`,
+        `${TIER_WORDS[d.severity] || d.severity}${moved}${left}${warned}`,
       ]);
     }
 

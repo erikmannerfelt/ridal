@@ -97,12 +97,32 @@ pub struct AxisSnapshot {
     pub y_alternate: Option<AlternateAnchor>,
 }
 
-/// A second `y` anchor for the same samples, a fixed distance away.
+/// A second `y` anchor for the same samples, a fixed distance away -- or,
+/// for a revision corrected for antenna separation, along a curve.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AlternateAnchor {
     pub name: String,
     /// Added to each of `y_values` to get this anchor's value.
     pub offset: f64,
+    /// `(sample, value)` tiepoints, when the anchor is not a fixed distance
+    /// from `y_values` and `offset` does not apply (#370). A corrected
+    /// revision's samples were resampled onto a depth grid, so its recording
+    /// clock bends away from its travel time near the surface. Absent in
+    /// every snapshot written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tiepoints: Option<Vec<[f64; 2]>>,
+}
+
+impl AlternateAnchor {
+    /// The recording clock a corrected revision offered before #370: a
+    /// constant offset from `twtt_normal_incidence`, which is wrong
+    /// wherever the correction bent the clock -- several samples, on
+    /// Drønbreen. Ignored rather than carried through.
+    pub fn is_stale_for(&self, y_anchor: Option<&str>) -> bool {
+        self.tiepoints.is_none()
+            && self.name == "recording_time"
+            && y_anchor == Some("twtt_normal_incidence")
+    }
 }
 
 impl AxisSnapshot {
@@ -398,7 +418,18 @@ pub fn put(
         // when this one has something to add -- the alternate anchor is
         // what lets a corrected revision relate to an uncorrected one, and
         // a snapshot that predates it would otherwise never gain it.
-        if snapshot.y_alternate.is_some() && stored.y_alternate.is_none() {
+        let gains_alternate = snapshot.y_alternate.is_some() && stored.y_alternate.is_none();
+        // And when the stored alternate is a corrected revision's clock as
+        // it was wrongly kept before #370.
+        let corrects_alternate = stored
+            .y_alternate
+            .as_ref()
+            .is_some_and(|a| a.is_stale_for(stored.y_anchor.as_deref()))
+            && snapshot
+                .y_alternate
+                .as_ref()
+                .is_some_and(|a| a.tiepoints.is_some());
+        if gains_alternate || corrects_alternate {
             store.write_bytes(&relative, &bytes, &Expectation::Version(version))?;
         }
         return Ok(());
@@ -565,6 +596,7 @@ mod tests {
         now.y_alternate = Some(AlternateAnchor {
             name: "recording_time".to_string(),
             offset: 50.757_175,
+            tiepoints: None,
         });
         put(&store, &id, &now).expect("the same mapping, said more fully");
 
@@ -587,6 +619,50 @@ mod tests {
     }
 
     #[test]
+    fn a_corrected_revisions_stale_clock_is_replaced_by_its_reconstruction() {
+        // #370: before it, a revision corrected for antenna separation kept
+        // its recording clock as an offset from `twtt_normal_incidence`,
+        // which is wrong. A re-snapshot of the same revision brings the
+        // reconstructed clock, and that has to win over the stale one.
+        let (_dir, store) = store();
+        let id = RadargramId::new("line-01").unwrap();
+        let mut stale = snapshot("rev-a");
+        stale.y_anchor = Some("twtt_normal_incidence".to_string());
+        stale.y_alternate = Some(AlternateAnchor {
+            name: "recording_time".to_string(),
+            offset: 100.0,
+            tiepoints: None,
+        });
+        assert!(stale
+            .y_alternate
+            .as_ref()
+            .unwrap()
+            .is_stale_for(stale.y_anchor.as_deref()));
+        put(&store, &id, &stale).unwrap();
+
+        let mut rebuilt = stale.clone();
+        rebuilt.y_alternate = Some(AlternateAnchor {
+            name: "recording_time".to_string(),
+            offset: 0.0,
+            tiepoints: Some(vec![[0.0, 100.0], [10.0, 140.0], [1987.0, 2600.0]]),
+        });
+        put(&store, &id, &rebuilt).unwrap();
+        let stored = get(&store, &id, "rev-a").unwrap().unwrap();
+        assert_eq!(stored.y_alternate, rebuilt.y_alternate);
+        // The same mapping as far as the checksum is concerned, so the
+        // ledger's record of the revision still matches.
+        assert_eq!(stale.checksum(), rebuilt.checksum());
+
+        // An uncorrected revision's offset clock is exact, not stale.
+        let plain = AlternateAnchor {
+            name: "recording_time".to_string(),
+            offset: 50.0,
+            tiepoints: None,
+        };
+        assert!(!plain.is_stale_for(Some("twtt")));
+    }
+
+    #[test]
     fn the_checksum_does_not_move_when_a_snapshot_gains_an_alternate() {
         // The ledger records a checksum when a revision is superseded, and
         // `axes_for_revision_checked` compares against it. If adding the
@@ -603,6 +679,7 @@ mod tests {
         richer.y_alternate = Some(AlternateAnchor {
             name: "recording_time".to_string(),
             offset: 50.757_175,
+            tiepoints: None,
         });
         assert_eq!(plain.checksum(), richer.checksum());
 
@@ -787,6 +864,33 @@ pub mod ledger {
         /// supersession with nothing on the other side of it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub superseded_by: Option<String>,
+        /// Whether it was corrected for antenna separation (#370). `None`
+        /// where it was recorded before this existed, or its file did not
+        /// say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub separation_corrected: Option<bool>,
+        /// Whether it was migrated, which moves reflections without moving
+        /// the grid. `None` as for `separation_corrected`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub migrated: Option<bool>,
+    }
+
+    /// What a revision's processing did that carrying picks off it has to
+    /// know, once its file may be gone (#370).
+    #[derive(Debug, Clone, Copy, Default, PartialEq)]
+    pub struct RevisionFacts {
+        pub separation_corrected: Option<bool>,
+        pub migrated: Option<bool>,
+    }
+
+    impl RevisionFacts {
+        pub fn of(declared: &crate::interp::source::AxisDeclarations) -> Self {
+            let separation = declared.separation.as_ref();
+            Self {
+                separation_corrected: separation.map(|s| s.is_corrected()),
+                migrated: separation.map(|s| s.is_migrated()),
+            }
+        }
     }
 
     #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -894,7 +998,39 @@ pub mod ledger {
             axis_checksum: checksum,
             superseded_at: None,
             superseded_by: None,
+            ..Default::default()
         });
+    }
+
+    /// Fill in what a revision's file says about its processing.
+    ///
+    /// Only where unknown, for the reason [`note_current`] only fills in a
+    /// checksum: a revision id names one processing run, so what was
+    /// recorded about it is what is true of it. A revision the ledger has
+    /// no record of is left alone; recording it is `note_current`'s job.
+    pub fn note_facts(ledger: &mut Ledger, radargram: &str, revision: &str, facts: RevisionFacts) {
+        let Some(record) = ledger
+            .radargrams
+            .get_mut(radargram)
+            .and_then(|records| records.iter_mut().find(|r| r.revision_id == revision))
+        else {
+            return;
+        };
+        record.separation_corrected = record.separation_corrected.or(facts.separation_corrected);
+        record.migrated = record.migrated.or(facts.migrated);
+    }
+
+    /// The facts recorded for a revision, as far as they are known.
+    pub fn facts(ledger: &Ledger, radargram: &str, revision: &str) -> RevisionFacts {
+        ledger
+            .radargrams
+            .get(radargram)
+            .and_then(|records| records.iter().find(|r| r.revision_id == revision))
+            .map(|record| RevisionFacts {
+                separation_corrected: record.separation_corrected,
+                migrated: record.migrated,
+            })
+            .unwrap_or_default()
     }
 
     /// Record that a revision has been superseded.
@@ -920,6 +1056,7 @@ pub mod ledger {
                 axis_checksum: None,
                 superseded_at: Some(at.to_string()),
                 superseded_by: by.map(str::to_string),
+                ..Default::default()
             });
         }
         if let Some(by) = by {
@@ -1046,6 +1183,37 @@ mod ledger_tests {
             !ledger.has_history("line-01"),
             "one revision is not a history"
         );
+    }
+
+    #[test]
+    fn what_a_revisions_processing_did_is_recorded_once_and_kept() {
+        // #370: whether a revision was corrected for antenna separation or
+        // migrated has to outlive its file, which a reprocess replaces.
+        let (_dir, store) = store();
+        let corrected = RevisionFacts {
+            separation_corrected: Some(true),
+            migrated: Some(false),
+        };
+        update(&store, |ledger| {
+            // Nothing to fill in for a revision the ledger does not know.
+            note_facts(ledger, "line-01", "rev-a", corrected);
+            note_current(ledger, "line-01", "rev-a", None);
+            note_facts(ledger, "line-01", "rev-a", corrected);
+            // A later reading does not overwrite what was recorded.
+            note_facts(
+                ledger,
+                "line-01",
+                "rev-a",
+                RevisionFacts {
+                    separation_corrected: Some(false),
+                    migrated: Some(true),
+                },
+            );
+        })
+        .unwrap();
+        let (ledger, _) = read(&store).unwrap();
+        assert_eq!(facts(&ledger, "line-01", "rev-a"), corrected);
+        assert_eq!(facts(&ledger, "line-01", "rev-b"), RevisionFacts::default());
     }
 
     #[test]

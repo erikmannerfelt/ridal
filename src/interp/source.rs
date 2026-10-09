@@ -114,6 +114,10 @@ pub struct AxisDeclarations {
     /// rather than a dimension, so it is the length of the thing an
     /// interpretation's `sample` coordinate actually indexes.
     pub n_samples: usize,
+    /// The antenna geometry and the correction for it (#370), which decide
+    /// whether the samples are still evenly spaced on the recording clock.
+    /// `None` when the file does not say.
+    pub separation: Option<crate::interp::separation::SeparationDeclarations>,
 }
 
 /// A processed file's identity and axis declarations: everything a
@@ -149,6 +153,23 @@ pub struct RevisionDeclarations {
     pub dt_ns: f64,
     /// The length of the file's `twtt` variable.
     pub n_samples: usize,
+    /// The file's `antenna_separation` attribute, in metres (#370).
+    #[serde(default)]
+    pub antenna_separation_m: Option<f64>,
+    /// The file's `antenna_separation_effective` attribute, in metres:
+    /// zero once the radargram was corrected for the separation.
+    #[serde(default)]
+    pub antenna_separation_effective_m: Option<f64>,
+    /// The file's `medium_velocity` attribute, in m/ns.
+    #[serde(default)]
+    pub medium_velocity: Option<f64>,
+    /// The file's `processing_steps` attribute.
+    #[serde(default)]
+    pub processing_steps: Vec<String>,
+    /// The depth grid spacing in metres that the file's `processing_log`
+    /// records for `correct_antenna_separation`, when it records one.
+    #[serde(default)]
+    pub logged_resolution_m: Option<f64>,
 }
 
 impl RevisionDeclarations {
@@ -177,6 +198,7 @@ impl RevisionDeclarations {
             }
         };
         let declared = read_axis_declarations(path)?;
+        let separation = declared.separation;
         Ok(Self {
             radargram_id: meta.radargram_id.to_string(),
             processing_datetime: meta.processing_datetime,
@@ -186,6 +208,16 @@ impl RevisionDeclarations {
             twtt_time_zero: declared.twtt_time_zero,
             dt_ns: declared.dt_ns,
             n_samples: declared.n_samples,
+            antenna_separation_m: separation.as_ref().map(|s| s.antenna_separation_m),
+            antenna_separation_effective_m: separation
+                .as_ref()
+                .map(|s| s.antenna_separation_effective_m),
+            medium_velocity: separation.as_ref().map(|s| s.medium_velocity),
+            processing_steps: separation
+                .as_ref()
+                .map(|s| s.processing_steps.clone())
+                .unwrap_or_default(),
+            logged_resolution_m: separation.and_then(|s| s.logged_resolution_m),
         })
     }
 
@@ -202,6 +234,24 @@ impl RevisionDeclarations {
             dt_ns: self.dt_ns,
             processing_datetime: Some(self.processing_datetime),
             n_samples: self.n_samples,
+            separation: match (
+                self.antenna_separation_m,
+                self.antenna_separation_effective_m,
+                self.medium_velocity,
+            ) {
+                (
+                    Some(antenna_separation_m),
+                    Some(antenna_separation_effective_m),
+                    Some(medium_velocity),
+                ) => Some(crate::interp::separation::SeparationDeclarations {
+                    antenna_separation_m,
+                    antenna_separation_effective_m,
+                    medium_velocity,
+                    processing_steps: self.processing_steps,
+                    logged_resolution_m: self.logged_resolution_m,
+                }),
+                _ => None,
+            },
         }
     }
 }
@@ -236,6 +286,27 @@ pub fn read_axis_declarations(path: &Path) -> Result<AxisDeclarations, String> {
             _ => 0.0,
         },
         n_samples: twtt.len(),
+        separation: read_separation(&file),
+    })
+}
+
+/// The antenna geometry, or `None` when the file lacks any of it.
+fn read_separation(
+    file: &netcdf::File,
+) -> Option<crate::interp::separation::SeparationDeclarations> {
+    let processing_steps = match file.attribute("processing_steps")?.value().ok()? {
+        netcdf::AttributeValue::Strs(steps) => steps,
+        netcdf::AttributeValue::Str(step) => vec![step],
+        _ => return None,
+    };
+    Some(crate::interp::separation::SeparationDeclarations {
+        antenna_separation_m: read_f64_attr(file, "antenna_separation")?,
+        antenna_separation_effective_m: read_f64_attr(file, "antenna_separation_effective")?,
+        medium_velocity: read_f64_attr(file, "medium_velocity")?,
+        processing_steps,
+        logged_resolution_m: read_str_attr(file, "processing_log")
+            .as_deref()
+            .and_then(crate::interp::separation::logged_resolution),
     })
 }
 

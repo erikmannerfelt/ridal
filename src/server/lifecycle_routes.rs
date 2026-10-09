@@ -306,6 +306,10 @@ pub async fn upload_dataset(
             }
             .checksum()
         });
+    let facts = declared
+        .as_ref()
+        .map(ledger::RevisionFacts::of)
+        .unwrap_or_default();
     if let Err(e) = ledger::update(project.documents(), |l| {
         ledger::note_current_again(
             l,
@@ -313,6 +317,7 @@ pub async fn upload_dataset(
             &revision_id,
             baseline.clone(),
         );
+        ledger::note_facts(l, meta.radargram_id.as_str(), &revision_id, facts);
     }) {
         // The file is installed. Refusing now would report a failure that
         // did not happen, the same reason the audit log does not fail its
@@ -714,8 +719,10 @@ fn snapshot_axes(
     // The ledger is a record *of* the snapshot, which is now safely on
     // disk, so a failure here is the audit log's kind of failure rather
     // than the snapshot's: worth saying, not worth refusing over.
+    let facts = ledger::RevisionFacts::of(&declared);
     if let Err(e) = ledger::update(project.documents(), |l| {
         ledger::note_current(l, id.as_str(), revision, Some(checksum.clone()));
+        ledger::note_facts(l, id.as_str(), revision, facts);
     }) {
         eprintln!("Warning: could not record the axis checksum of '{id}': {e}");
     }
