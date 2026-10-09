@@ -2476,6 +2476,21 @@ button.danger:disabled {
   max-width: 100%;
 }
 
+/* Wider than a phone, the row does not wrap and the button can sit
+ * mid-screen, so a panel at the row's left edge opened a long way from
+ * the button that opened it (#374). There the button is the containing
+ * block instead, and the panel hangs from it. Its `100%` would then be
+ * the button's width, so the cap goes; `min-width` sizes it. */
+@media (width > 40rem) {
+  .download-menu {
+    position: relative;
+  }
+
+  .download-menu > ul {
+    max-width: none;
+  }
+}
+
 /* The Display menu is the first item in the row, so its left edge is the
  * row's and hanging the panel from the button is on screen too. It has to
  * be: anchored to the row, the panel opened below the *whole* row, which on

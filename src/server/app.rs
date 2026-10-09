@@ -1757,7 +1757,10 @@ mod tests {
 
     #[test]
     #[serial_test::serial(netcdf)]
-    fn index_page_shows_ungrouped_heading_even_when_it_is_the_only_section() {
+    fn index_page_drops_the_ungrouped_heading_when_nothing_is_grouped() {
+        // #369: with no groups at all, "Ungrouped" is every radargram, so
+        // the heading says nothing and its Download repeats the
+        // catalog-wide one. Its Hide all stays.
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let dir = tempfile::tempdir().unwrap();
@@ -1767,10 +1770,19 @@ mod tests {
             let (status, body) = get(&app, "/").await;
             assert_eq!(status, StatusCode::OK);
             let html = String::from_utf8(body.to_vec()).unwrap();
-            assert!(
-                html.contains(">Ungrouped<"),
-                "heading must show even with no named groups present: {html}"
-            );
+            assert!(!html.contains(">Ungrouped<"), "{html}");
+            assert!(!html.contains("download-menu-group-"), "{html}");
+            assert!(html.contains(">Download</summary>"), "{html}");
+            assert!(!html.contains(">Download all<"), "{html}");
+            assert!(html.contains(">Hide all</button>") || html.contains(">Show all</button>"));
+
+            // One named group brings the heading and both menus back.
+            write_test_nc_with_track(&dir.path().join("b.nc"), "grouped-b", Some("Some Group"));
+            let app = test_app(dir.path());
+            let (_, body) = get(&app, "/").await;
+            let html = String::from_utf8(body.to_vec()).unwrap();
+            assert!(html.contains(">Ungrouped<"), "{html}");
+            assert!(html.contains(">Download all<"), "{html}");
         });
     }
 
