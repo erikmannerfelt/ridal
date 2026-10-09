@@ -894,6 +894,16 @@ async fn a_site_project_links_back_to_the_site_root() {
         page.text
     );
     assert!(page.text.contains(">Projects<"), "{}", page.text);
+    // #373: below the project's own pages and set apart, not first in the
+    // menu where it was clicked by mistake.
+    let menu_position = |needle: &str| page.text.find(needle).expect(needle);
+    assert!(menu_position(">Settings<") < menu_position(">Projects<"));
+    assert!(
+        page.text
+            .contains(r#"<li class="site-menu-separated"><a href="/">Projects</a></li>"#),
+        "{}",
+        page.text
+    );
 }
 
 #[tokio::test]

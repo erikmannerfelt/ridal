@@ -175,6 +175,10 @@
   {#- The catalog-wide downloads sit with the catalog-wide control, above
       the first group heading, so "everything" reads as the outer scope of
       the per-group menus below rather than as another group. -#}
+  {#- A catalog with no groups at all (#369): "Ungrouped" is then every
+      radargram, so its heading says nothing and its Download menu repeats
+      the catalog-wide one, which no longer needs "all" to tell it apart. -#}
+  {%- set only_ungrouped = groups | length == 1 and groups[0].id == "_none" %}
   <div class="controls">
     <label>Render profile:
       <select id="index-profile-select">
@@ -184,7 +188,7 @@
       </select>
     </label>
     {{ download_menu("catalog", api_base ~ "/catalog", "all radargrams",
-                     "Download all", project) }}
+                     "Download" if only_ungrouped else "Download all", project) }}
     {#- A plain button rather than a menu: one action, and hiding a single
         item behind a disclosure is a click for nothing. -#}
     {% if can_edit_project %}
@@ -200,8 +204,8 @@
   {% endif %}
 
   {#- "Ungrouped" is just another entry in `groups` (see routes.rs's
-      index_page), not a special case: same map, same heading treatment,
-      always shown even when it's the only section on the page. -#}
+      index_page), not a special case: same map, same heading treatment.
+      The one exception is `only_ungrouped`, above. -#}
   {#- A jump list above the first group (#309): a survey can run to dozens
       of groups, and finding one by scrolling is the problem this solves.
       Rendered only when there is a choice to make. Deliberately not
@@ -233,7 +237,9 @@
         name and the buttons that act on it far apart. Stacked, the buttons
         belong visibly to the heading above them and still wrap on a phone. -#}
     <div class="group-heading">
+      {% if not only_ungrouped %}
       <h2>{{ group.label }}</h2>
+      {% endif %}
       <div class="group-actions">
         {#- Hides this group's cards, not its map (#314): a catalog with
             hundreds of radargrams is long because of the cards, and the
@@ -248,12 +254,14 @@
                 aria-expanded="{% if show_group_radargrams %}true{% else %}false{% endif %}"
         >{% if show_group_radargrams %}Hide all{% else %}Show all{% endif %}</button>
         {% endif %}
+        {% if not only_ungrouped %}
         {{ download_menu(
              "group-" ~ loop.index,
              api_base ~ "/groups/" ~ group.id,
              group.label,
              "Download",
              project) }}
+        {% endif %}
         {#- "Ungrouped" is not a group, it is the radargrams in none, so
             there is nothing about it to edit. -#}
         {% if can_edit_project and group.id != "_none" %}
