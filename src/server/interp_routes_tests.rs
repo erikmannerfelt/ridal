@@ -185,6 +185,17 @@ fn write_test_nc_full(
     file.add_attribute("ridal_radargram_id", radargram_id)
         .unwrap();
     file.add_attribute("crs", "EPSG:32633").unwrap();
+    // Acquired at a separation that was not corrected for, and not
+    // migrated, so the revision's facts are known (#370).
+    file.add_attribute("antenna_separation", 2.0f32).unwrap();
+    file.add_attribute("antenna_separation_effective", 2.0f32)
+        .unwrap();
+    file.add_attribute("medium_velocity", 0.168f32).unwrap();
+    file.add_attribute(
+        "processing_steps",
+        netcdf::AttributeValue::Strs(vec!["zero_corr".to_string()]),
+    )
+    .unwrap();
 
     // What #144 added, so this fixture is a radargram processed by a
     // current Ridal: the anchor name on the axis, and where sample 0 and
@@ -3050,6 +3061,69 @@ async fn a_document_from_another_revision_is_carried_and_the_stored_one_is_untou
         stored["features"][0]["geometry"]["coordinates"],
         serde_json::json!([[5.0, 2.0], [30.0, 3.0]]),
         "the authored coordinates were not rewritten"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn picks_from_a_migrated_revision_carry_with_a_warning() {
+    // #370: migration moves reflections and not the grid, so the picks are
+    // placed where they were drawn and the reflectors may have moved. The
+    // carry goes ahead; the report says so.
+    let (dir, app) = project_app_with_axes();
+    let uri = "/api/v1/datasets/line-01/interpretations/default";
+    let axes = offered_axes(&app).await;
+    let document = document_with_axes(&axes, &[[5.0, 2.0], [30.0, 3.0]], "rev-migrated");
+    let (status, _, body) = put(&app, uri, &document, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let carried = |app: Router| async move {
+        let (status, _, body) = send(
+            &app,
+            Request::builder()
+                .uri(format!("{uri}/carried"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    };
+    let body = carried(app.clone()).await;
+    assert_eq!(
+        body["report"]["warnings"],
+        serde_json::json!([]),
+        "nothing recorded about the revision drawn on, so nothing to say: {body}"
+    );
+
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    crate::project::revisions::ledger::update(project.documents(), |ledger| {
+        use crate::project::revisions::ledger::*;
+        supersede(
+            ledger,
+            "line-01",
+            "rev-migrated",
+            None,
+            "2026-10-01T00:00:00Z",
+        );
+        note_facts(
+            ledger,
+            "line-01",
+            "rev-migrated",
+            RevisionFacts {
+                separation_corrected: Some(false),
+                migrated: Some(true),
+            },
+        );
+    })
+    .unwrap();
+    let body = carried(app).await;
+    assert_ne!(body["report"]["severity"], "refused", "{body}");
+    let warnings = body["report"]["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{body}");
+    assert!(
+        warnings[0].as_str().unwrap().contains("may have moved"),
+        "{body}"
     );
 }
 

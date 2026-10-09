@@ -22,11 +22,14 @@
 
 pub mod anchors;
 pub mod carry;
+#[cfg(test)]
+mod carry_separation_tests;
 pub mod checks;
 pub mod derive;
 #[cfg(test)]
 pub mod derive_regression_tests;
 pub mod derived_points;
 pub mod level2;
+pub mod separation;
 pub mod source;
 pub mod writer;

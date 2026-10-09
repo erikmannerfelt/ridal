@@ -442,7 +442,64 @@ pub fn recording_time_axis(crop_ns: &[f64], dt_ns: f64) -> Option<AnchorAxis> {
     })
 }
 
-/// The anchor axes a radargram currently offers, as SPEC §7.4 shapes them.
+/// The recording clock this radargram offers, if any.
+///
+/// Regular for a radargram whose samples are still evenly spaced in time.
+/// One corrected for antenna separation was resampled onto a depth grid
+/// instead, so its clock is the correction run backwards (#370), offered as
+/// tiepoints; the regular axis would claim the samples had not moved. When
+/// the correction cannot be reconstructed it offers no clock at all, which
+/// stops a carry rather than misplacing one.
+fn recording_clock(declared: &crate::interp::source::AxisDeclarations) -> Option<AnchorAxis> {
+    match &declared.separation {
+        Some(separation) if separation.is_corrected() => {
+            let times = crate::interp::separation::recording_times(
+                separation,
+                &declared.twtt_crop,
+                &declared.twtt_time_zero,
+                declared.dt_ns,
+                declared.n_samples,
+            )
+            .ok()?;
+            sample_tiepoint_axis("recording_time", &times, declared.dt_ns)
+        }
+        // A file that names its travel time as corrected but does not
+        // say how cannot be trusted with a regular clock either.
+        None if declared.twtt_anchor.as_deref() == Some("twtt_normal_incidence") => None,
+        _ => recording_time_axis(&declared.twtt_crop, declared.dt_ns),
+    }
+}
+
+/// A `tiepoints` axis over the samples, thinned to within a hundredth of a
+/// sample interval of `values`.
+fn sample_tiepoint_axis(name: &str, values: &[f64], dt_ns: f64) -> Option<AnchorAxis> {
+    if values.len() < 2 || values.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    if !values.windows(2).all(|pair| pair[1] > pair[0]) {
+        return None;
+    }
+    let tolerance = vec![dt_ns.abs() * 0.01; values.len()];
+    let points: Vec<Tiepoint> = thin(reduce_tiepoints(values, &tolerance))
+        .into_iter()
+        .map(|i| Tiepoint {
+            trace: i as f64,
+            x: values[i],
+        })
+        .collect();
+    let points = strictly_increasing(points);
+    (points.len() >= 2).then(|| AnchorAxis {
+        name: name.to_string(),
+        unit: "ns".to_string(),
+        type_: "tiepoints",
+        t0: None,
+        dt: None,
+        points: Some(points),
+        interpolation: Some("linear"),
+    })
+}
+
+/// The anchor axes a radargram currently offers, as SPEC §7.4 shapes them./// The anchor axes a radargram currently offers, as SPEC §7.4 shapes them.
 ///
 /// The revision id is checked against the file rather than trusted. The id
 /// beside these axes comes from the catalog snapshot; the axes come from
@@ -545,7 +602,7 @@ pub fn axes_from_declarations(declared: &crate::interp::source::AxisDeclarations
             &declared.twtt_time_zero,
             declared.dt_ns,
         ),
-        recording_time_axis(&declared.twtt_crop, declared.dt_ns),
+        recording_clock(declared),
     ]
     .into_iter()
     .flatten()
@@ -593,7 +650,7 @@ pub struct SnapshotValues {
     pub y_values: Vec<f64>,
     /// Acquisition time per trace.
     pub x_values: Vec<f64>,
-    /// The revision's other `y` anchor, as a constant offset.
+    /// The revision's other `y` anchor, as a constant offset or tiepoints.
     pub y_alternate: Option<crate::project::revisions::AlternateAnchor>,
 }
 
@@ -606,11 +663,10 @@ pub fn snapshot_values(
         .unwrap_or_default()
         .into_iter();
     let y = anchors.next()?;
-    let t0 = y.t0?;
-    let dt = y.dt?;
     if declared.n_samples == 0 {
         return None;
     }
+    let y_values = anchor_values(&y, declared.n_samples)?;
     // Validated through the same function that builds the live axis, not
     // merely counted. A count says two timestamps arrived; it does not say
     // they advance, are finite, or can be inverted -- and a snapshot of
@@ -620,32 +676,73 @@ pub fn snapshot_values(
     // snapshot is the thing later revisions are related through.
     trace_time_axis(&declared.time)?;
 
-    // The revision's other `y` anchor, as the constant it is. Both are
-    // regular axes over the same samples with the same step, so they
-    // differ only in where they start -- and keeping the second one costs
-    // a name and a number rather than another array of travel times.
-    let alternate = anchors.next().and_then(|other| {
-        let other_t0 = other.t0?;
-        let same_step = other.dt.is_some_and(|other_dt| {
-            (other_dt - dt).abs() <= f64::EPSILON * dt.abs().max(1.0) * 8.0
-        });
-        if !same_step {
-            return None;
+    // The revision's other `y` anchor. Two regular axes over the same
+    // samples with the same step differ only in where they start, and cost
+    // a name and a number rather than another array of travel times. A
+    // corrected revision's recording clock bends away from its travel time
+    // (#370), so it keeps its tiepoints instead.
+    let alternate = anchors.next().and_then(|other| match (other.type_, y.dt) {
+        ("regular", Some(dt)) => {
+            let offset = other.t0? - y.t0?;
+            let same_step = other.dt.is_some_and(|other_dt| {
+                (other_dt - dt).abs() <= f64::EPSILON * dt.abs().max(1.0) * 8.0
+            });
+            same_step.then_some(crate::project::revisions::AlternateAnchor {
+                name: other.name,
+                offset,
+                tiepoints: None,
+            })
         }
-        Some(crate::project::revisions::AlternateAnchor {
+        ("tiepoints", _) => Some(crate::project::revisions::AlternateAnchor {
             name: other.name,
-            offset: other_t0 - t0,
-        })
+            offset: 0.0,
+            tiepoints: Some(
+                other
+                    .points?
+                    .iter()
+                    .map(|point| [point.trace, point.x])
+                    .collect(),
+            ),
+        }),
+        _ => None,
     });
 
     Some(SnapshotValues {
         y_anchor: Some(y.name),
-        y_values: (0..declared.n_samples)
-            .map(|i| t0 + i as f64 * dt)
-            .collect(),
+        y_values,
         x_values: declared.time.clone(),
         y_alternate: alternate,
     })
+}
+
+/// An anchor's value at every one of `n` samples.
+fn anchor_values(anchor: &AnchorAxis, n: usize) -> Option<Vec<f64>> {
+    match anchor.type_ {
+        "regular" => {
+            let (t0, dt) = (anchor.t0?, anchor.dt?);
+            Some((0..n).map(|i| t0 + i as f64 * dt).collect())
+        }
+        "tiepoints" => {
+            let points = anchor.points.as_ref()?;
+            if points.len() < 2 {
+                return None;
+            }
+            Some(
+                (0..n)
+                    .map(|i| {
+                        let at = i as f64;
+                        let segment = points
+                            .windows(2)
+                            .find(|pair| at <= pair[1].trace)
+                            .unwrap_or(&points[points.len() - 2..]);
+                        let (a, b) = (&segment[0], &segment[1]);
+                        a.x + (b.x - a.x) * (at - a.trace) / (b.trace - a.trace)
+                    })
+                    .collect(),
+            )
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -941,6 +1038,7 @@ mod tests {
             twtt_time_zero: vec![4.0],
             dt_ns: 0.4,
             n_samples: 16,
+            separation: None,
             processing_datetime: None,
         };
         assert!(snapshot_values(&declared(vec![0.0, 1.0, 2.0])).is_some());
@@ -1028,6 +1126,7 @@ mod tests {
             twtt_time_zero: vec![50.757_175],
             dt_ns: dt,
             n_samples: 1992,
+            separation: None,
             processing_datetime: None,
         });
         let uncorrected = axes_from_declarations(&crate::interp::source::AxisDeclarations {
@@ -1037,6 +1136,7 @@ mod tests {
             twtt_time_zero: vec![0.0],
             dt_ns: dt,
             n_samples: 2024,
+            separation: None,
             processing_datetime: None,
         });
 
@@ -1077,6 +1177,7 @@ mod tests {
             twtt_time_zero: vec![zero],
             dt_ns: dt,
             n_samples: n,
+            separation: None,
             processing_datetime: None,
         };
 

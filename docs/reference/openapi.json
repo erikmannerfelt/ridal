@@ -219,7 +219,8 @@
           "dropped",
           "moved",
           "refusal",
-          "headline"
+          "headline",
+          "warnings"
         ],
         "properties": {
           "severity": {
@@ -280,6 +281,13 @@
           "headline": {
             "type": "string",
             "description": "One sentence for the banner, written for whoever is looking at the\nradargram rather than for a log."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Reasons to check the carried picks against the data that the axes\ncannot see, such as one revision being migrated and the other not\n(#370). Empty when there are none."
           }
         }
       },
@@ -1431,6 +1439,45 @@
             "type": "integer",
             "description": "The length of the file's `twtt` variable.",
             "minimum": 0
+          },
+          "antenna_separation_m": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The file's `antenna_separation` attribute, in metres (#370)."
+          },
+          "antenna_separation_effective_m": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The file's `antenna_separation_effective` attribute, in metres:\nzero once the radargram was corrected for the separation."
+          },
+          "medium_velocity": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The file's `medium_velocity` attribute, in m/ns."
+          },
+          "processing_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The file's `processing_steps` attribute."
+          },
+          "logged_resolution_m": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The depth grid spacing in metres that the file's `processing_log`\nrecords for `correct_antenna_separation`, when it records one."
           }
         }
       },

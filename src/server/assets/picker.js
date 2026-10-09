@@ -2294,7 +2294,12 @@
       carryBanner.hidden = false;
       carryBanner.classList.toggle("is-refused", report.severity === "refused");
       carryTier.textContent = TIER_LABEL[report.severity] || "Carried";
-      carryHeadline.textContent = report.headline || "";
+      // Warnings in the sentence rather than folded into the details: they
+      // are about whether to trust what is on screen, which is the
+      // headline's job (#370).
+      carryHeadline.textContent = [report.headline || "", ...(report.warnings || [])]
+        .filter(Boolean)
+        .join(" ");
 
       // The numbers behind the sentence, for whoever wants them. Folded
       // away by default: the headline is what most people need, and a

@@ -511,6 +511,9 @@ class CarryReport:
     moved: Displacement | None
     refusal: str | None
     headline: str
+    #: What the axes cannot account for, such as one revision being
+    #: migrated and the other not. Empty from servers that predate it.
+    warnings: tuple[str, ...] = ()
 
     @classmethod
     def from_json(cls, data: Any) -> "CarryReport":
@@ -529,6 +532,7 @@ def _carry_fields(d: Mapping[str, Any]) -> CarryReport:
         moved=None if d["moved"] is None else Displacement.from_json(d["moved"]),
         refusal=d["refusal"],
         headline=d["headline"],
+        warnings=tuple(d.get("warnings", ())),
     )
 
 

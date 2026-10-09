@@ -189,6 +189,39 @@ entries (`__revision_id`, `__shape`, `__start_stop_datetime`). This is
 an implicit convention rather than a typed one — if slug validation
 rules ever change, grep for these sentinels first.
 
+## Carrying picks across revisions (#148, #370)
+
+Picks are stored in sample and trace indices of the revision they were
+drawn on. `interp::carry` places them on another revision through
+gprinterp's anchor axes: `trace_time` for `x`, and for `y` the travel time
+(`twtt`, or `twtt_normal_incidence` after an antenna-separation correction)
+or, failing a shared one, `recording_time`, the original recording's clock.
+`interp::anchors` builds those axes from the file; `project::revisions`
+keeps a snapshot of a revision's axes when it is superseded, and the
+ledger (`revisions.json`) its history.
+
+- **A corrected revision's recording clock is reconstructed, not
+  assumed (#370).** `correct_antenna_separation` resamples onto a depth
+  grid, so the clock is not regular there. `interp::separation` inverts
+  the correction's depth function from what the file records (method and
+  direct velocity in `processing_steps`, separation and velocity as
+  attributes, the legacy grid spacing from the processing log) and the
+  axis is offered as tiepoints. When it cannot be reconstructed, no clock
+  is offered: no carry is better than a misplaced one.
+- **The slant grid is the one the coordinates describe (#379).** It steps
+  by `v · dt / 2` from the first sample's `twtt · v / 2`, so a corrected
+  file needs nothing beyond its existing coordinates to be inverted.
+- **The old regular clock is set aside wherever it turns up**: in a
+  document's own axes beside `twtt_normal_incidence`, in a snapshot
+  (`AlternateAnchor::is_stale_for`), or on the ledger's word for a
+  corrected revision that never located time zero. A snapshot taken since
+  supplies the reconstructed clock (`with_kept_axes`, used by the carried
+  view, adopting and the replace report alike).
+- **The ledger records what processing did** (`separation_corrected`,
+  `migrated`) where the file is read for a snapshot, because the file of a
+  superseded revision is gone. A difference in migration is a warning on
+  the carry, never a refusal: migration moves reflections, not the grid.
+
 ## The Python client (#328)
 
 `ridal.client` is pure Python, in `python/ridal/client/`, beside the Rust

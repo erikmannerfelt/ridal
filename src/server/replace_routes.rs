@@ -383,7 +383,15 @@ fn consequences(
         else {
             continue;
         };
-        let carried = crate::interp::carry::carry(&stored.document, &to_axes, to_revision.as_str());
+        let source = super::interp_routes::with_kept_axes(project, radargram, &stored.document);
+        let mut carried = crate::interp::carry::carry(&source, &to_axes, to_revision.as_str());
+        super::interp_routes::add_processing_warnings(
+            &mut carried,
+            project,
+            radargram,
+            &stored.document,
+            Some(to_declared),
+        );
         documents.push(DocumentConsequence {
             user: user_id.as_str().to_string(),
             carry: carried.report,
@@ -803,6 +811,7 @@ pub async fn commit_replacement(
                 ),
             )
         })?;
+        let facts = ledger::RevisionFacts::of(&from_declared);
         if let Err(e) = ledger::update(project.documents(), |l| {
             ledger::note_current(
                 l,
@@ -810,6 +819,7 @@ pub async fn commit_replacement(
                 from_revision.as_str(),
                 Some(checksum.clone()),
             );
+            ledger::note_facts(l, radargram.as_str(), from_revision.as_str(), facts);
         }) {
             eprintln!("Warning: could not record the axis checksum of '{radargram}': {e}");
         }
@@ -930,6 +940,7 @@ mod tests {
                     moved: None,
                     refusal: None,
                     headline: String::new(),
+                    warnings: Vec::new(),
                 },
             })
             .collect();
