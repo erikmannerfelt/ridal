@@ -156,7 +156,7 @@ pub struct Preferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_zoomed_out: Option<bool>,
     /// Whether the handles on a line being edited explain themselves on
-    /// hover -- "Drag to move, tap to split", "Add vertex here" (#363).
+    /// hover -- "Drag to move, tap for options", "Add vertex here" (#363).
     ///
     /// Instructions, which help the first few minutes and get in the way
     /// after that, so they can be switched off from the editing panel and

@@ -826,6 +826,10 @@ section.group {
   font-size: 0.75rem;
 }
 
+.pick-confirm > * {
+  white-space: nowrap;
+}
+
 .popup-thumb {
   display: block;
   margin-top: var(--space-1);

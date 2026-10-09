@@ -356,6 +356,41 @@
     const visibilityButton = document.getElementById("pick-visibility");
     const vertexTooltipsBox = document.getElementById("pick-vertex-tooltips");
 
+    /** The line "Delete line" is asking about, or null when it is not.
+     *
+     * Deleting used to happen on the first press, and the only way back was
+     * reloading the last save (#375). The question replaces the button in
+     * the panel, as the layer panel's delete does, rather than popping up on
+     * the map: the press landed in the panel, so that is where the answer
+     * is looked for. Held as the feature rather than its index, so that
+     * selecting another line -- which redraws the panel -- withdraws the
+     * question instead of moving it to a line it was never asked about. */
+    let deleteAskedFor = null;
+    const deletePrompt = document.createElement("span");
+    deletePrompt.className = "pick-confirm";
+    deletePrompt.hidden = true;
+    {
+      const text = document.createElement("span");
+      text.textContent = "Delete this line?";
+      const yes = document.createElement("button");
+      yes.type = "button";
+      yes.id = "pick-delete-confirm";
+      yes.className = "danger";
+      yes.textContent = "Delete";
+      yes.addEventListener("click", () => {
+        const asked = deleteAskedFor;
+        withdrawDelete();
+        if (asked !== null && features[selected] === asked) deleteSelected();
+      });
+      const no = document.createElement("button");
+      no.type = "button";
+      no.id = "pick-delete-cancel";
+      no.textContent = "Cancel";
+      no.addEventListener("click", withdrawDelete);
+      deletePrompt.append(text, yes, no);
+      deleteButton.after(deletePrompt);
+    }
+
     /** Stored features, as gprinterp features in index space. */
     let features = [];
     /** ETag of the document these came from, or null if none is stored yet. */
@@ -413,7 +448,7 @@
     /** Whether the handles of a line being edited carry their tooltips
      * (#363).
      *
-     * They are instructions -- "Drag to move, tap to split", "Add vertex
+     * They are instructions -- "Drag to move, tap for options", "Add vertex
      * here" -- which help in the first few minutes and sit on top of the
      * vertex being aimed at after that. Unlike `picksVisible` this one is
      * saved as soon as it changes: hiding them once is meant to be for good,
@@ -596,7 +631,7 @@
         // before the join below because a neighbour on the same line is the
         // nearer, more local target -- joining is about a *different* line.
         if (droppedOnNeighbour(coordinates, index, dropped)) {
-          removeVertex(coordinates, index);
+          removeVertex(coordinates, index, "Vertex removed -- it was dropped onto its neighbour.");
           return;
         }
 
@@ -732,8 +767,9 @@
      * deliberate button.
      *
      * Says what happened, because a vertex vanishing under a finger is
-     * otherwise indistinguishable from a mis-drag -- and there is no undo. */
-    function removeVertex(coordinates, index) {
+     * otherwise indistinguishable from a mis-drag -- and there is no undo.
+     * `message` says how it was removed. */
+    function removeVertex(coordinates, index, message) {
       if (coordinates.length <= 2) {
         showError(
           "A line needs at least two vertices, so this one cannot be removed. " +
@@ -745,7 +781,7 @@
       coordinates.splice(index, 1);
       markDirty();
       redraw();
-      showInfo("Vertex removed -- it was dropped onto its neighbour.");
+      showInfo(message);
     }
 
     /** The small handle between two vertices that inserts a third.
@@ -984,29 +1020,41 @@
      * taken -- Cancel, a click on the map, Escape. The join needs it: its
      * drag has already moved the marker while `coordinates` still holds the
      * old position, so anything short of a confirmation has to put it back.
+     *
+     * A tapped vertex has more than one thing it can do (#371), so instead
+     * of `verb` and `onConfirm` a caller may pass `actions`, each
+     * `{ id, verb, run }`, shown in order before Cancel. Either way a
+     * button's id is `pick-<name>-<id>`, the single action's id being
+     * `confirm`.
      */
-    function confirmAt(latlng, { name, question, verb, onConfirm, onDismiss }) {
+    function confirmAt(latlng, { name, question, verb, onConfirm, actions, onDismiss }) {
       let confirmed = false;
       const content = document.createElement("div");
       content.className = "pick-confirm";
       const text = document.createElement("span");
       text.textContent = question;
-      const yes = document.createElement("button");
-      yes.type = "button";
-      yes.id = `pick-${name}-confirm`;
-      yes.textContent = verb;
-      yes.addEventListener("click", () => {
-        confirmed = true;
-        map.closePopup();
-        onConfirm();
-      });
+      content.append(text);
+      for (const action of actions || [{ id: "confirm", verb, run: onConfirm }]) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.id = `pick-${name}-${action.id}`;
+        button.textContent = action.verb;
+        button.addEventListener("click", () => {
+          confirmed = true;
+          map.closePopup();
+          action.run();
+        });
+        content.append(button);
+      }
       const no = document.createElement("button");
       no.type = "button";
       no.id = `pick-${name}-cancel`;
       no.textContent = "Cancel";
       no.addEventListener("click", () => map.closePopup());
-      content.append(text, yes, no);
-      const popup = L.popup({ closeButton: false, autoPan: false })
+      content.append(no);
+      // Leaflet caps a popup at 300 px and wraps what does not fit, which
+      // broke the vertex prompt's three buttons over two lines each.
+      const popup = L.popup({ closeButton: false, autoPan: false, maxWidth: 420 })
         .setLatLng(latlng)
         .setContent(content)
         .openOn(map);
@@ -1039,11 +1087,50 @@
       });
     }
 
-    /** Ask before splitting at the vertex that was tapped. */
-    function confirmSplitAt(vertexIndex, marker) {
-      confirmSplit(marker.getLatLng(), (coordinates) =>
-        splitCoordinates(coordinates, vertexIndex),
-      );
+    /** What a tapped vertex of the selected line can do (#371).
+     *
+     * An interior vertex can split the line or be removed; an end can only
+     * be removed, and only while the line keeps two vertices, so a tapped
+     * end of a two-vertex line offers nothing and opens nothing. Dragging
+     * a vertex onto its neighbour still removes it too: this is the way
+     * that does not depend on aiming a drop.
+     *
+     * Both actions check that the line and the vertex are still the ones
+     * that were tapped. The popup does not stop a tap from selecting
+     * another line, or a drag from removing or inserting a vertex, and an
+     * index taken before either would act on the wrong one. */
+    function offerVertexActions(vertexIndex, marker) {
+      const feature = features[selected];
+      const coordinates = feature.geometry.coordinates;
+      const vertex = coordinates[vertexIndex];
+      const interior = vertexIndex > 0 && vertexIndex < coordinates.length - 1;
+      const stillThere = () =>
+        features[selected] === feature && coordinates[vertexIndex] === vertex;
+      const actions = [];
+      if (interior) {
+        actions.push({
+          id: "split",
+          verb: "Split here",
+          run: () => {
+            if (stillThere()) splitSelected(splitCoordinates(coordinates, vertexIndex));
+          },
+        });
+      }
+      if (coordinates.length > 2) {
+        actions.push({
+          id: "remove",
+          verb: "Remove vertex",
+          run: () => {
+            if (stillThere()) removeVertex(coordinates, vertexIndex, "Vertex removed.");
+          },
+        });
+      }
+      if (!actions.length) return;
+      confirmAt(marker.getLatLng(), {
+        name: "vertex",
+        question: interior ? "This vertex:" : "This end:",
+        actions,
+      });
     }
 
     /** Ask before splitting the selected line where it was tapped (#360).
@@ -1208,6 +1295,20 @@
       redraw();
     }
 
+    function askDelete() {
+      if (selected === null) return;
+      deleteAskedFor = features[selected];
+      deleteButton.hidden = true;
+      deletePrompt.hidden = false;
+      document.getElementById("pick-delete-cancel").focus();
+    }
+
+    function withdrawDelete() {
+      deleteAskedFor = null;
+      deletePrompt.hidden = true;
+      deleteButton.hidden = false;
+    }
+
     // --- Rendering -----------------------------------------------------------
 
     function redraw() {
@@ -1323,15 +1424,15 @@
           index,
           label,
           interior ? "interior" : "end",
-          () => {
-            // `handle` is assigned by the time a tap can reach this.
-            if (interior) confirmSplitAt(index, handle);
-          },
+          // `handle` is assigned by the time a tap can reach this.
+          () => offerVertexActions(index, handle),
           selected,
         );
         if (vertexTooltips) {
           handle.bindTooltip(
-            interior ? "Drag to move, tap to split" : "Drag to move",
+            interior || coordinates.length > 2
+              ? "Drag to move, tap for options"
+              : "Drag to move",
           );
         }
         // Once the handle is being dragged the tooltip sits exactly where
@@ -1629,6 +1730,7 @@
       // future style rule makes the panel visible again, which is the way
       // this failed the first time.
       deleteButton.disabled = !active;
+      if (!active || features[selected] !== deleteAskedFor) withdrawDelete();
       if (!active) return;
       const feature = features[selected];
       const label = feature.properties && feature.properties.label;
@@ -1636,6 +1738,7 @@
       paintSwatch(selectedSwatch, label);
       selectionHint.textContent =
         "Drag a vertex to move it, or onto its neighbour to remove it. " +
+        "Tap a vertex to split the line there or remove it. " +
         "Tap a small handle between two vertices to add one. " +
         "Tap the line anywhere to split it there. " +
         "Drop an end onto another line's end in the same layer to join them.";
@@ -2012,7 +2115,7 @@
       redrawMarkers();
       updateStatus();
     });
-    deleteButton.addEventListener("click", deleteSelected);
+    deleteButton.addEventListener("click", askDelete);
     selectedLayer.addEventListener("change", () => {
       if (selected === null) return;
       const feature = features[selected];
