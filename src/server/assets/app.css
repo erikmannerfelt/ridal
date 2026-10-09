@@ -826,6 +826,10 @@ section.group {
   font-size: 0.75rem;
 }
 
+.pick-confirm > * {
+  white-space: nowrap;
+}
+
 .popup-thumb {
   display: block;
   margin-top: var(--space-1);
@@ -1436,13 +1440,16 @@ button.danger {
  * next to a browser-default Cancel — two controls of visibly different
  * shape offering one choice, which reads as one of them being an
  * afterthought. The other dialogs were consistent only because neither of
- * their buttons was styled at all. */
+ * their buttons was styled at all. The selection panel's "Delete this
+ * line?" is the same pair: its Delete is `.danger`, and its Cancel would
+ * otherwise take the panel's `.controls button` look. */
 .add-layer button,
 #groups-actions button,
 #derived-actions button,
 .group-draft button,
 dialog > p > button,
 #token-result button,
+#pick-delete-cancel,
 button.danger {
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-strong);
@@ -1459,6 +1466,7 @@ button.danger {
 .group-draft button:hover:not(:disabled),
 dialog > p > button:hover:not(:disabled),
 #token-result button:hover:not(:disabled),
+#pick-delete-cancel:hover,
 button.danger:hover:not(:disabled) {
   border-color: var(--color-accent);
 }
