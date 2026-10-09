@@ -2,17 +2,19 @@
 //!
 //! # Coordinate reference systems
 //!
-//! GeoJSON output is WGS84 by default, which is what RFC 7946 mandates. The
-//! `crs` member of the older 2008 draft is *not* emitted: support for it is
-//! inconsistent, and a reader that ignores it places the whole dataset near
-//! the equator rather than failing -- a silent, badly wrong result for a
-//! data product.
+//! GeoJSON output is WGS84 by default, which is what RFC 7946 mandates.
+//! Projected coordinates are carried as `easting`/`northing` properties on
+//! every point, alongside the `crs` string, which is lossless and readable
+//! by everything. `--crs` additionally reprojects the geometry itself for
+//! callers who want that; it is opt-in precisely because the result is no
+//! longer portable GeoJSON.
 //!
-//! Projected coordinates are therefore carried as `easting`/`northing`
-//! properties on every point, alongside the `crs` string, which is lossless
-//! and readable by everything. `--crs` additionally reprojects the geometry
-//! itself for callers who want that; it is opt-in precisely because the
-//! result is no longer portable GeoJSON.
+//! A reprojected file declares its CRS with the `crs` member of the older
+//! 2008 draft, which GDAL, and so QGIS and GeoPandas, still read (#372). A
+//! WGS84 file does not: there it adds nothing, and RFC 7946 removed it. The
+//! risk the member carries -- a reader that ignores it places the data near
+//! the equator -- is a risk projected geometry runs with or without it, so
+//! declaring it can only help the readers that look.
 
 use std::fmt::Write as _;
 
@@ -92,6 +94,31 @@ fn project_positions(
     }
 }
 
+/// The 2008-draft `crs` member for a file whose geometry is in `crs`, or
+/// `None` for WGS84, which RFC 7946 makes the default.
+///
+/// An EPSG code is written as the OGC URN, the form GDAL itself writes and
+/// every reader of the member understands. Anything else -- a PROJ string
+/// or WKT given to `--crs` -- is written as it was given, which GDAL reads
+/// back through the same parser that accepted it on the way in.
+fn crs_member(crs: &OutputCrs, native: &str) -> Option<serde_json::Value> {
+    let OutputCrs::Named(_) = crs else {
+        return None;
+    };
+    let label = crs.label(native);
+    let name = match label.split_once(':') {
+        Some((authority, code))
+            if authority.eq_ignore_ascii_case("epsg")
+                && !code.is_empty()
+                && code.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            format!("urn:ogc:def:crs:EPSG::{code}")
+        }
+        _ => label,
+    };
+    Some(serde_json::json!({"type": "name", "properties": {"name": name}}))
+}
+
 /// Serialize as a GeoJSON FeatureCollection of points.
 /// Serialize one or more exports as a single GeoJSON FeatureCollection.
 ///
@@ -139,7 +166,7 @@ pub fn to_geojson(exports: &[Level2Export], crs: &OutputCrs) -> Result<String, S
         })
         .collect();
 
-    let collection = serde_json::json!({
+    let mut collection = serde_json::json!({
         "type": "FeatureCollection",
         // Not a GeoJSON member: provenance for the whole file, so a
         // downstream user can tell which radargrams and which processing
@@ -153,6 +180,9 @@ pub fn to_geojson(exports: &[Level2Export], crs: &OutputCrs) -> Result<String, S
         },
         "features": features,
     });
+    if let Some(member) = crs_member(crs, &native) {
+        collection["crs"] = member;
+    }
 
     serde_json::to_string_pretty(&collection).map_err(|e| format!("Failed to serialize: {e}"))
 }
@@ -312,7 +342,7 @@ pub fn to_geojson_derived(
         })
         .collect();
 
-    let collection = serde_json::json!({
+    let mut collection = serde_json::json!({
         "type": "FeatureCollection",
         "ridal": {
             "product_level": 2,
@@ -322,6 +352,9 @@ pub fn to_geojson_derived(
         },
         "features": features,
     });
+    if let Some(member) = crs_member(crs, &native) {
+        collection["crs"] = member;
+    }
 
     serde_json::to_string_pretty(&collection).map_err(|e| format!("Failed to serialize: {e}"))
 }
@@ -522,6 +555,38 @@ mod tests {
         let text = to_geojson(&[export()], &OutputCrs::Wgs84).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert!(value.get("crs").is_none());
+    }
+
+    #[test]
+    fn projected_geojson_declares_its_crs_as_an_ogc_urn() {
+        // #372: without it, QGIS and GeoPandas read the native coordinates
+        // with no CRS at all and put the points nowhere near the survey.
+        let urn = serde_json::json!({
+            "type": "name",
+            "properties": {"name": "urn:ogc:def:crs:EPSG::32633"},
+        });
+        for name in ["native", "EPSG:32633", "epsg:32633"] {
+            let text = to_geojson(&[export()], &OutputCrs::Named(name.into())).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["crs"], urn, "{name}");
+        }
+        let text =
+            to_geojson_derived(&[derived_export()], &OutputCrs::Named("native".into())).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["crs"], urn);
+    }
+
+    #[test]
+    fn a_crs_that_is_not_an_epsg_code_is_declared_as_given() {
+        // GDAL reads the member's name with the parser that accepts any
+        // `--crs` input, so passing it through is what round-trips.
+        let proj = "+proj=utm +zone=33 +datum=WGS84 +units=m +no_defs";
+        let member = crs_member(&OutputCrs::Named(proj.into()), "EPSG:32633").unwrap();
+        assert_eq!(member["properties"]["name"], proj);
+        assert!(crs_member(&OutputCrs::Wgs84, "EPSG:32633").is_none());
+        // Not a code, so not mistaken for one.
+        let odd = crs_member(&OutputCrs::Named("EPSG:".into()), "EPSG:32633").unwrap();
+        assert_eq!(odd["properties"]["name"], "EPSG:");
     }
 
     #[test]

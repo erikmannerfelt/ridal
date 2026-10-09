@@ -424,7 +424,7 @@ Default: `auto`.
 ```{option} --crs <CRS>
 CRS for the output geometry. WGS84 by default, which is what RFC 7946 requires of GeoJSON. Accepts "native" for the radargram's own projected CRS, or any CRS string PROJ understands.
 
-Note that projected GeoJSON is not portable: readers that follow RFC 7946 will interpret the coordinates as degrees. Native easting/northing are always present as properties regardless.
+Projected GeoJSON declares its CRS with the 2008 `crs` member, which GDAL (and so QGIS and GeoPandas) reads, but it is not portable: readers that follow RFC 7946 strictly will interpret the coordinates as degrees. Native easting/northing are always present as properties regardless.
 ```
 
 ```{option} --user <USER>
