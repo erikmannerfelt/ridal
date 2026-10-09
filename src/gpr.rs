@@ -1157,22 +1157,71 @@ impl GPR {
             SeparationMethod::Legacy => self.legacy_depths(),
         };
         let max_depth = depths.iter().cloned().fold(0.0f32, f32::max);
+        let min_depth = depths.iter().cloned().fold(f32::INFINITY, f32::min);
 
         if max_depth == 0.0 {
             eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.antenna_separation_effective);
             panic!("");
         }
 
-        let resolution = vertical_resolution_of(&depths);
-        let resampler = tools::Resampler::<f32>::new(depths, resolution);
+        // The grid the corrected radargram is resampled onto.
+        //
+        // Slant: the grid the file's own coordinates already describe
+        // (#379). The sample interval is kept, so the exported `twtt` steps
+        // by `dt` from the first sample's travel time, and `depth` is
+        // `twtt * v / 2` -- so the grid has to start at the first sample's
+        // `twtt * v / 2` and step by `v * dt / 2` for those coordinates to be
+        // the depths of the samples they label. A spacing taken from the
+        // data instead (the 0.8 quantile of the depth steps, which is
+        // larger than `v * dt / 2` because the slant geometry stretches the
+        // shallow part) left the `depth` coordinate short by 0.3 % on
+        // Drønbreen, half a metre at 150 m. Being derivable from the file
+        // is also what lets picks be carried across the correction (#370).
+        //
+        // Legacy keeps its own grid, which is what reproduces published
+        // results to the micrometre (`derive_regression_tests`).
+        let (resampler, resolution, origin_note) = match method {
+            SeparationMethod::Slant => {
+                let velocity = self.metadata.medium_velocity;
+                let resolution = velocity * self.vertical_resolution_ns() / 2.;
+                let origin = self.twtt_first_sample_ns() * velocity / 2.;
+                let n_samples = ((max_depth - origin) / resolution).floor().max(0.) as usize + 1;
+                let target =
+                    Array1::from_iter((0..n_samples).map(|k| origin + k as f32 * resolution));
+                // Only after a crop below time zero: then the first sample's
+                // travel time is not the shallowest depth, and the grid
+                // either leaves out or reaches above the shallowest data.
+                let note = if (origin - min_depth).abs() > resolution / 2. {
+                    format!(
+                        " The grid starts at {origin} m, the depth of the first sample's travel \
+                         time, while the shallowest sample was at {min_depth} m."
+                    )
+                } else {
+                    String::new()
+                };
+                (
+                    tools::Resampler::<f32>::new_with_target(depths, target),
+                    resolution,
+                    note,
+                )
+            }
+            SeparationMethod::Legacy => {
+                let resolution = vertical_resolution_of(&depths);
+                (
+                    tools::Resampler::<f32>::new(depths, resolution),
+                    resolution,
+                    String::new(),
+                )
+            }
+        };
 
         //resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
         self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
         //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
-        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m with the {} geometry (height changed from {} px to {} px).", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.antenna_separation_effective, match method {
+        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m with the {} geometry (height changed from {} px to {} px).{}", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.antenna_separation_effective, match method {
             SeparationMethod::Slant => format!("slant (direct wave at {direct_velocity} m/ns)"),
             SeparationMethod::Legacy => method.to_string(),
-        }, height_before, self.height()), start_time);
+        }, height_before, self.height(), origin_note), start_time);
 
         self.antenna_separation_effective = 0.;
         self.metadata.samples = self.height() as u32;
@@ -4452,6 +4501,50 @@ pub mod tests {
         assert_ne!(gpr.height(), 1024);
 
         assert!(gpr.data[[10, 0]] > 10.);
+    }
+
+    #[test]
+    fn a_slant_corrected_radargram_is_where_its_depth_coordinate_says() {
+        // #379. Every sample holds its own original index, so after the
+        // correction each row says which original sample it came from, and
+        // that sample's depth before the correction has to be the depth
+        // the corrected radargram labels the row with. The data-derived
+        // spacing this replaces fell 0.3 % short of that on Drønbreen.
+        let mut gpr = make_test_gpr(Some(4), Some(1024));
+        gpr.antenna_separation_effective = 6.2;
+        let before = gpr.depths_timed_from(crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS);
+        gpr.correct_antenna_separation(
+            super::SeparationMethod::Slant,
+            crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
+        );
+        let after = gpr.depths();
+        let resolution = after[1] - after[0];
+        assert!(
+            (resolution - gpr.metadata.medium_velocity * gpr.vertical_resolution_ns() / 2.).abs()
+                < 1e-6
+        );
+
+        let depth_of_original = |index: f32| {
+            let low = index.floor() as usize;
+            let fraction = index - low as f32;
+            before[low] + fraction * (before[(low + 1).min(before.len() - 1)] - before[low])
+        };
+        let deepest = before[before.len() - 1];
+        let mut checked = 0;
+        for (row, labelled) in after.iter().enumerate() {
+            // Above the direct wave every sample collapses to 0 m, so no
+            // single original sample is "the" one there.
+            if *labelled < 1.0 || *labelled > deepest - resolution {
+                continue;
+            }
+            let actual = depth_of_original(gpr.data[[row, 0]]);
+            assert!(
+                (actual - labelled).abs() < 1e-3,
+                "row {row}: labelled {labelled} m, holds data from {actual} m"
+            );
+            checked += 1;
+        }
+        assert!(checked > 500, "{checked}");
     }
 
     #[test]
