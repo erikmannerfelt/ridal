@@ -773,6 +773,16 @@ pub struct BatchProcessArgs {
     /// --id-pattern.
     #[arg(long = "display-name-pattern", requires = "id_pattern")]
     pub display_name_pattern: Option<String>,
+
+    /// Print what the batch would do -- which inputs make which output,
+    /// under which id, and why the inputs were split where they were --
+    /// and process nothing.
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
+
+    /// With --dry-run, print the plan as JSON.
+    #[arg(long, requires = "dry_run")]
+    pub json: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -862,6 +872,78 @@ fn resolve_steps(
 
     gpr::validate_steps(&resolved_steps)?;
     Ok(resolved_steps)
+}
+
+/// A duration as people say it: `25 s`, `14 min 3 s`, `2 h 5 min`.
+fn human_duration(seconds: f64) -> String {
+    let total = seconds.round() as u64;
+    let days = total / 86_400;
+    if days > 0 {
+        let h = (total % 86_400) / 3600;
+        return if h == 0 {
+            format!("{days} d")
+        } else {
+            format!("{days} d {h} h")
+        };
+    }
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    match (h, m, s) {
+        (0, 0, s) => format!("{s} s"),
+        (0, m, 0) => format!("{m} min"),
+        (0, m, s) => format!("{m} min {s} s"),
+        (h, 0, _) => format!("{h} h"),
+        (h, m, _) => format!("{h} h {m} min"),
+    }
+}
+
+/// `batch-process --dry-run` as text: one block per output, each saying why
+/// it is not part of the one before.
+fn describe_batch_plan(plan: &gpr::BatchPlan) -> String {
+    let n_inputs: usize = plan.outputs.iter().map(|o| o.inputs.len()).sum();
+    let mut out = format!(
+        "{} output{} from {} input{}, {}.\n",
+        plan.outputs.len(),
+        if plan.outputs.len() == 1 { "" } else { "s" },
+        n_inputs,
+        if n_inputs == 1 { "" } else { "s" },
+        match plan.merge_threshold_seconds {
+            Some(t) => format!("merging recordings less than {} apart", human_duration(t)),
+            None => "one per input (no --merge)".to_string(),
+        }
+    );
+    for planned in &plan.outputs {
+        out.push('\n');
+        if let Some(split) = &planned.split {
+            let gap = human_duration(split.gap_seconds);
+            // `GPR::merge` words its reasons as sentences; here they follow
+            // a colon or an "and".
+            let reason = split.incompatible.as_deref().map(|reason| {
+                let mut chars = reason.chars();
+                chars
+                    .next()
+                    .map(|c| c.to_lowercase().chain(chars).collect::<String>())
+                    .unwrap_or_default()
+            });
+            let why = match (reason, split.over_threshold) {
+                (Some(reason), true) => format!("{gap} after the previous one, and {reason}"),
+                (Some(reason), false) => reason,
+                (None, _) => format!("{gap} after the previous one"),
+            };
+            out.push_str(&format!("  (new radargram: {why})\n"));
+        }
+        out.push_str(&format!(
+            "{} -> {}\n",
+            planned.radargram_id,
+            planned.output.display()
+        ));
+        if let Some(name) = &planned.display_name {
+            out.push_str(&format!("  \"{name}\"\n"));
+        }
+        for input in &planned.inputs {
+            out.push_str(&format!("  {}\n", input.display()));
+        }
+    }
+    out
 }
 
 /// A batch-mode `--render`/`--track` directory: `None` when the flag was not
@@ -1080,6 +1162,19 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         id_pattern: args.id_pattern.clone(),
         display_name_pattern: args.display_name_pattern.clone(),
     };
+
+    if args.dry_run {
+        let plan = gpr::plan_batch(&params)?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&plan).map_err(|e| e.to_string())?
+            );
+        } else {
+            print!("{}", describe_batch_plan(&plan));
+        }
+        return Ok(());
+    }
 
     let result = gpr::run_batch(params)?;
     // Each listed path is a file written; with --no-export there are none.
@@ -1848,6 +1943,75 @@ mod tests {
             Commands::BatchProcess(args) => Ok(args),
             other => panic!("expected batch-process, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn durations_read_as_people_say_them() {
+        assert_eq!(human_duration(25.), "25 s");
+        assert_eq!(human_duration(600.), "10 min");
+        assert_eq!(human_duration(843.), "14 min 3 s");
+        assert_eq!(human_duration(7500.), "2 h 5 min");
+        assert_eq!(human_duration(3. * 86_400. + 7200.), "3 d 2 h");
+    }
+
+    #[test]
+    fn a_plan_reads_as_one_block_per_output() {
+        let output = |id: &str, inputs: &[&str], split: Option<gpr::Split>| gpr::PlannedOutput {
+            radargram_id: id.to_string(),
+            display_name: None,
+            output: PathBuf::from(format!("out/{id}.nc")),
+            inputs: inputs.iter().map(PathBuf::from).collect(),
+            split,
+        };
+        let plan = gpr::BatchPlan {
+            merge_threshold_seconds: Some(600.),
+            outputs: vec![
+                output("line-01", &["a.rad", "b.rad"], None),
+                output(
+                    "line-02",
+                    &["c.rad"],
+                    Some(gpr::Split {
+                        gap_seconds: 843.,
+                        over_threshold: true,
+                        incompatible: None,
+                    }),
+                ),
+                output(
+                    "line-03",
+                    &["d.rad"],
+                    Some(gpr::Split {
+                        gap_seconds: 1500.,
+                        over_threshold: true,
+                        incompatible: Some("Antenna frequencies are different: 100 vs 25".into()),
+                    }),
+                ),
+            ],
+        };
+        let text = describe_batch_plan(&plan);
+        assert!(text
+            .starts_with("3 outputs from 4 inputs, merging recordings less than 10 min apart.\n"));
+        assert!(
+            text.contains("line-01 -> out/line-01.nc\n  a.rad\n  b.rad\n"),
+            "{text}"
+        );
+        assert!(text.contains("  (new radargram: 14 min 3 s after the previous one)\n"));
+        assert!(
+            text.contains("(new radargram: 25 min after the previous one, and antenna frequencies")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_dry_run_processes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().to_str().unwrap();
+        let args = batch_args(&["--output", out, "--render", "--dry-run", "--json"]).unwrap();
+        batch_process_command(&args).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        assert!(
+            batch_args(&["--output", out, "--json"]).is_err(),
+            "--json needs --dry-run"
+        );
     }
 
     #[test]
