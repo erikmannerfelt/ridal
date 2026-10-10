@@ -756,6 +756,23 @@ pub struct BatchProcessArgs {
     /// derived from --group-name is not the one wanted.
     #[arg(long = "group-id")]
     pub group_id: Option<String>,
+
+    /// Name each output's radargram id after a pattern, and its file
+    /// `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a
+    /// counter in time order), {freq} (antenna MHz), {nfiles} (inputs
+    /// merged), {date} (YYYYMMDD) and {group}. {n:02} pads to two digits;
+    /// {n, from=15} starts at 15, {n, from=next} continues after the ids
+    /// already in the output directory, and {n, per=freq} counts each
+    /// frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}".
+    #[arg(long = "id-pattern")]
+    pub id_pattern: Option<String>,
+
+    /// Name each output's display name after a pattern, with the
+    /// placeholders of --id-pattern plus {id} and {group_name}, and any
+    /// text. A bare {n} is the number in the output's id. Needs
+    /// --id-pattern.
+    #[arg(long = "display-name-pattern", requires = "id_pattern")]
+    pub display_name_pattern: Option<String>,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1060,6 +1077,8 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         user_metadata,
         group: args.group.clone(),
         group_id: args.group_id.clone(),
+        id_pattern: args.id_pattern.clone(),
+        display_name_pattern: args.display_name_pattern.clone(),
     };
 
     let result = gpr::run_batch(params)?;

@@ -130,6 +130,13 @@ fn sanitize_to_slug(stem: &str) -> String {
     out.trim_matches(['-', '_']).to_string()
 }
 
+/// [`sanitize_to_slug`] for one part of an id rather than a whole one, as
+/// an id pattern's `{stem}` (#368): the caller validates the id it is part
+/// of.
+pub fn slug_fragment(text: &str) -> String {
+    sanitize_to_slug(text)
+}
+
 /// Transliterate the letters that have an obvious ASCII mapping for use in an
 /// *expression identifier* (#206).
 ///

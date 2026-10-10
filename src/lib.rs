@@ -8,6 +8,8 @@ mod export;
 mod filters;
 mod formats;
 mod gpr;
+/// Radargram id and display name patterns for batches (#368).
+mod id_pattern;
 mod identity;
 mod interp;
 mod io;
@@ -749,7 +751,26 @@ pub mod ridal {
     ///     (survey, campaign, location), used for catalog grouping. Non-ASCII
     ///     is accepted and written unchanged; see `process` for the reader
     ///     caveat. Applied uniformly to the whole batch; radargram IDs and
-    ///     display names are still derived per output.
+    ///     display names are still derived per output, unless `id_pattern` and
+    ///     `display_name_pattern` say otherwise.
+    /// id_pattern : str, optional
+    ///     Name each output's radargram id after a pattern, and its file
+    ///     ``<id>.nc``. Placeholders: ``{stem}`` (the first input's file stem),
+    ///     ``{n}`` (a counter over the outputs in time order), ``{freq}``
+    ///     (antenna frequency in MHz), ``{nfiles}`` (how many inputs were
+    ///     merged), ``{date}`` (``YYYYMMDD``) and ``{group}``. ``{n:02}`` pads to
+    ///     two digits; ``{n, from=15}`` starts at 15, ``{n, from=next}``
+    ///     continues after the ids already in `output`, and ``{n, per=freq}``
+    ///     counts each frequency separately. For example,
+    ///     ``"dronbreen-2026-{freq}mhz-{n:02, per=freq}"``. Literal text may only
+    ///     hold lowercase ASCII letters, digits, ``-`` and ``_``. Every id is
+    ///     checked before anything is processed, and two outputs with the same
+    ///     id are an error. Without a pattern, each id comes from its first
+    ///     input's file name.
+    /// display_name_pattern : str, optional
+    ///     Name each output's display name after a pattern: the placeholders of
+    ///     `id_pattern`, plus ``{id}`` and ``{group_name}``, and any text. A
+    ///     bare ``{n}`` is the number in the output's id. Needs `id_pattern`.
     ///
     /// Returns
     /// -------
@@ -799,6 +820,8 @@ pub mod ridal {
         metadata=None,
         group_id=None,
         group_name=None,
+        id_pattern=None,
+        display_name_pattern=None,
  ))]
     fn batch_process(
         py: Python<'_>,
@@ -824,6 +847,8 @@ pub mod ridal {
         metadata: Option<Py<PyAny>>,
         group_id: Option<String>,
         group_name: Option<String>,
+        id_pattern: Option<String>,
+        display_name_pattern: Option<String>,
     ) -> PyResult<Vec<String>> {
         use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
@@ -935,6 +960,8 @@ pub mod ridal {
             user_metadata,
             group: group_name,
             group_id,
+            id_pattern,
+            display_name_pattern,
         };
 
         let result =

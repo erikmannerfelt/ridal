@@ -18,6 +18,7 @@ mod export;
 mod filters;
 mod formats;
 mod gpr;
+mod id_pattern;
 mod identity;
 mod interp;
 mod io;
