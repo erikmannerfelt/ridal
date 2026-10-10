@@ -36,6 +36,17 @@ pub enum Commands {
     /// Run the web server explicitly (for remote or persistent deployment)
     #[cfg(feature = "server")]
     Server(ServerArgs),
+    /// Run one processing job that a server wrote to a file, reporting each
+    /// step on stdout as a line of JSON (#382). The server starts this; it
+    /// is not meant to be run by hand.
+    #[command(hide = true)]
+    ProcessJob(ProcessJobArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProcessJobArgs {
+    /// The job, as JSON.
+    pub spec: PathBuf,
 }
 
 #[derive(Debug, clap::Args)]
@@ -440,6 +451,73 @@ pub struct InterpExportArgs {
     pub user: String,
 }
 
+/// How much processing the server takes on (#382). Shared by `ridal gui`
+/// and `ridal server start`, and site-wide: every project's jobs count.
+#[cfg(feature = "server")]
+#[derive(Debug, clap::Args)]
+pub struct ProcessingArgs {
+    /// Processing jobs to run at once, across the whole server. Each runs
+    /// as a process of its own.
+    #[arg(long, default_value_t = crate::server::processing::DEFAULT_PROCESSING_JOBS)]
+    pub processing_jobs: usize,
+
+    /// Memory the running processing jobs may use together, in MB. A job
+    /// is admitted by an estimate of what it needs; one that needs more
+    /// than this is refused.
+    #[arg(long, default_value_t = crate::server::processing::DEFAULT_PROCESSING_MEMORY_MB)]
+    pub processing_memory_mb: u64,
+
+    /// Threads each processing job may use. Defaults to the machine's
+    /// processors divided by --processing-jobs.
+    #[arg(long)]
+    pub processing_threads: Option<usize>,
+
+    /// How long one processing job may run before it is stopped, e.g.
+    /// "30 min" or "2 h".
+    #[arg(long, default_value = "30 min")]
+    pub processing_timeout: String,
+
+    /// Processing jobs one person may have waiting or running at once.
+    #[arg(long, default_value_t = crate::server::processing::DEFAULT_MAX_QUEUED_PER_USER)]
+    pub max_queued_per_user: usize,
+}
+
+#[cfg(feature = "server")]
+impl ProcessingArgs {
+    fn config(&self) -> Result<crate::server::processing::ProcessingConfig, String> {
+        // Refused rather than clamped, as --n-workers is: zero jobs would
+        // queue every job forever.
+        if self.processing_jobs == 0 {
+            return Err("--processing-jobs must be at least 1".to_string());
+        }
+        if self.processing_threads == Some(0) {
+            return Err("--processing-threads must be at least 1".to_string());
+        }
+        if self.max_queued_per_user == 0 {
+            return Err("--max-queued-per-user must be at least 1".to_string());
+        }
+        let timeout = parse_duration::parse(&self.processing_timeout).map_err(|e| {
+            format!(
+                "Invalid --processing-timeout '{}': {e}",
+                self.processing_timeout
+            )
+        })?;
+        let processors = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        Ok(crate::server::processing::ProcessingConfig {
+            jobs: self.processing_jobs,
+            memory_bytes: self.processing_memory_mb * 1024 * 1024,
+            threads_per_job: self
+                .processing_threads
+                .unwrap_or((processors / self.processing_jobs).max(1)),
+            timeout,
+            max_queued_per_user: self.max_queued_per_user,
+            ..crate::server::processing::ProcessingConfig::default()
+        })
+    }
+}
+
 #[cfg(feature = "server")]
 #[derive(Debug, clap::Args)]
 pub struct GuiArgs {
@@ -456,6 +534,9 @@ pub struct GuiArgs {
     /// Number of worker threads for CPU-heavy rendering.
     #[arg(long)]
     pub n_workers: Option<usize>,
+
+    #[command(flatten)]
+    pub processing: ProcessingArgs,
 
     /// Serve a project without accepting any writes.
     #[arg(long)]
@@ -531,6 +612,9 @@ pub struct ServerStartArgs {
     /// Number of worker threads for CPU-heavy rendering.
     #[arg(long)]
     pub n_workers: Option<usize>,
+
+    #[command(flatten)]
+    pub processing: ProcessingArgs,
 }
 
 #[derive(Debug, clap::Args)]
@@ -987,6 +1071,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
         Commands::Render(args) => render_command(args),
+        Commands::ProcessJob(args) => crate::job::run_from_file(&args.spec),
         Commands::Interp(args) => match args.command {
             InterpCommand::Export(args) => interp_export_command(&args),
         },
@@ -1036,6 +1121,7 @@ fn gui_command(args: GuiArgs) -> Result<(), String> {
         args.open_browser,
         args.port.unwrap_or(0),
         config,
+        args.processing.config()?,
     )
 }
 
@@ -1080,6 +1166,7 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
                 start_args.read_only,
                 start_args.allow_insecure_login,
                 config,
+                start_args.processing.config()?,
             )
         }
     }
@@ -1942,6 +2029,50 @@ mod tests {
         match Args::try_parse_from(argv)?.command {
             Commands::BatchProcess(args) => Ok(args),
             other => panic!("expected batch-process, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_server_starts_jobs_with_a_hidden_subcommand() {
+        match Args::try_parse_from(["ridal", "process-job", "job-1.json"])
+            .unwrap()
+            .command
+        {
+            Commands::ProcessJob(args) => assert_eq!(args.spec, PathBuf::from("job-1.json")),
+            other => panic!("expected process-job, got {other:?}"),
+        }
+        // Not something to offer in `ridal --help`.
+        let help = <Args as clap::CommandFactory>::command()
+            .render_help()
+            .to_string();
+        assert!(!help.contains("process-job"), "{help}");
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn processing_limits_are_checked_and_threads_shared_out() {
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["ridal", "gui"];
+            argv.extend_from_slice(extra);
+            match Args::try_parse_from(argv).unwrap().command {
+                Commands::Gui(gui) => gui.processing.config(),
+                other => panic!("expected the gui command, got {other:?}"),
+            }
+        };
+        let config = parse(&["--processing-jobs", "2", "--processing-timeout", "2 h"]).unwrap();
+        assert_eq!(config.jobs, 2);
+        assert_eq!(config.timeout, std::time::Duration::from_secs(7200));
+        let processors = std::thread::available_parallelism().map_or(1, |n| n.get());
+        assert_eq!(config.threads_per_job, (processors / 2).max(1));
+        assert_eq!(config.memory_bytes, 4096 * 1024 * 1024);
+
+        for refused in [
+            &["--processing-jobs", "0"][..],
+            &["--processing-threads", "0"],
+            &["--max-queued-per-user", "0"],
+            &["--processing-timeout", "soon"],
+        ] {
+            assert!(parse(refused).is_err(), "{refused:?}");
         }
     }
 

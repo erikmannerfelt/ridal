@@ -20,6 +20,7 @@ async fn serve_gui(
     open_browser: bool,
     port: u16,
     config: RenderServiceConfig,
+    processing: super::processing::ProcessingConfig,
 ) -> Result<(), String> {
     // A project is found by searching upwards, so pointing Ridal at a
     // subdirectory or at a single file inside a project still saves
@@ -69,7 +70,7 @@ async fn serve_gui(
         );
     }
 
-    let router = site::build_site_router(SiteState::local(state));
+    let router = site::build_site_router(SiteState::local(state, processing));
     let home = format!("/p/{}/", super::app::DEFAULT_PROJECT_KEY);
     serve(
         router,
@@ -131,6 +132,7 @@ fn warn_about_project_accounts(project: &crate::project::Project) {
 /// and serving one through the site entry point would silently expose
 /// whatever the project happened to hold. The refusal points at `ridal gui`
 /// for local single-project work and at `ridal site init` for making a site.
+#[allow(clippy::too_many_arguments)]
 async fn serve_site(
     root: &Path,
     host: IpAddr,
@@ -139,6 +141,7 @@ async fn serve_site(
     read_only: bool,
     allow_insecure_login: bool,
     config: RenderServiceConfig,
+    processing: super::processing::ProcessingConfig,
 ) -> Result<(), String> {
     // A project, found by walking upwards, is the one input that must be
     // refused rather than treated as a site. Checked before `Site::discover`,
@@ -205,6 +208,7 @@ async fn serve_site(
             allow_password_login: host.is_loopback() || allow_insecure_login,
         },
         config,
+        processing,
     );
 
     println!("Site {site_name} ({})", site_root.display());
@@ -327,11 +331,19 @@ pub fn run_gui(
     open_browser: bool,
     port: u16,
     config: RenderServiceConfig,
+    processing: super::processing::ProcessingConfig,
 ) -> Result<(), String> {
     limit_malloc_arenas();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to start async runtime: {e}"))?;
-    runtime.block_on(serve_gui(root, read_only, open_browser, port, config))
+    runtime.block_on(serve_gui(
+        root,
+        read_only,
+        open_browser,
+        port,
+        config,
+        processing,
+    ))
 }
 
 /// `ridal server start`: deployment-oriented mode. Loopback by default;
@@ -346,6 +358,7 @@ pub fn run_server_start(
     read_only: bool,
     allow_insecure_login: bool,
     config: RenderServiceConfig,
+    processing: super::processing::ProcessingConfig,
 ) -> Result<(), String> {
     limit_malloc_arenas();
     let runtime = tokio::runtime::Runtime::new()
@@ -358,6 +371,7 @@ pub fn run_server_start(
         read_only,
         allow_insecure_login,
         config,
+        processing,
     ))
 }
 
@@ -436,6 +450,7 @@ mod tests {
             read_only,
             false,
             crate::server::render_service::RenderServiceConfig::default(),
+            crate::server::processing::ProcessingConfig::default(),
         )
         .await
         .unwrap_err()

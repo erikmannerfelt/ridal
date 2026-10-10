@@ -216,7 +216,12 @@ pub(super) fn write_people(root: &StdPath, set: &UserSet) {
 /// A server over the site at `root`, as `ridal server start` builds one.
 pub(super) fn site_router(root: &StdPath, access: AccessOptions) -> Router {
     let site = Site::open(root).unwrap();
-    build_site_router(SiteState::new(site, access, RenderServiceConfig::default()))
+    build_site_router(SiteState::new(
+        site,
+        access,
+        RenderServiceConfig::default(),
+        crate::server::processing::ProcessingConfig::default(),
+    ))
 }
 
 /// A `ridal gui` over the project at `root`, served at `/p/default/`.
@@ -225,7 +230,10 @@ pub(super) fn gui_router(root: &StdPath, access: AccessOptions) -> Router {
     let state =
         AppState::build_with_project(root, &RenderServiceConfig::default(), project, access)
             .unwrap();
-    build_site_router(SiteState::local(state))
+    build_site_router(SiteState::local(
+        state,
+        crate::server::processing::ProcessingConfig::default(),
+    ))
 }
 
 /// The parts of a response these tests assert on.

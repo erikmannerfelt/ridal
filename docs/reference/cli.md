@@ -1049,6 +1049,34 @@ In-memory cache budget for encoded chunk/overview images, in MB, for the whole s
 Number of worker threads for CPU-heavy rendering
 ```
 
+```{option} --processing-jobs <PROCESSING_JOBS>
+Processing jobs to run at once, across the whole server. Each runs as a process of its own
+
+Default: `1`.
+```
+
+```{option} --processing-memory-mb <PROCESSING_MEMORY_MB>
+Memory the running processing jobs may use together, in MB. A job is admitted by an estimate of what it needs; one that needs more than this is refused
+
+Default: `4096`.
+```
+
+```{option} --processing-threads <PROCESSING_THREADS>
+Threads each processing job may use. Defaults to the machine's processors divided by --processing-jobs
+```
+
+```{option} --processing-timeout <PROCESSING_TIMEOUT>
+How long one processing job may run before it is stopped, e.g. "30 min" or "2 h"
+
+Default: `30 min`.
+```
+
+```{option} --max-queued-per-user <MAX_QUEUED_PER_USER>
+Processing jobs one person may have waiting or running at once
+
+Default: `5`.
+```
+
 ```{option} --read-only
 Serve a project without accepting any writes
 ```
@@ -1125,4 +1153,32 @@ In-memory cache budget for encoded chunk/overview images, in MB, for the whole s
 
 ```{option} --n-workers <N_WORKERS>
 Number of worker threads for CPU-heavy rendering
+```
+
+```{option} --processing-jobs <PROCESSING_JOBS>
+Processing jobs to run at once, across the whole server. Each runs as a process of its own
+
+Default: `1`.
+```
+
+```{option} --processing-memory-mb <PROCESSING_MEMORY_MB>
+Memory the running processing jobs may use together, in MB. A job is admitted by an estimate of what it needs; one that needs more than this is refused
+
+Default: `4096`.
+```
+
+```{option} --processing-threads <PROCESSING_THREADS>
+Threads each processing job may use. Defaults to the machine's processors divided by --processing-jobs
+```
+
+```{option} --processing-timeout <PROCESSING_TIMEOUT>
+How long one processing job may run before it is stopped, e.g. "30 min" or "2 h"
+
+Default: `30 min`.
+```
+
+```{option} --max-queued-per-user <MAX_QUEUED_PER_USER>
+Processing jobs one person may have waiting or running at once
+
+Default: `5`.
 ```

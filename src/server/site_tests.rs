@@ -76,7 +76,12 @@ fn site_with(
     for name in projects {
         site.create_project(&key(name), Some(name), None).unwrap();
     }
-    let state = SiteState::new(site, access, RenderServiceConfig::default());
+    let state = SiteState::new(
+        site,
+        access,
+        RenderServiceConfig::default(),
+        crate::server::processing::ProcessingConfig::default(),
+    );
     (dir, build_site_router(state))
 }
 
@@ -321,6 +326,7 @@ async fn an_invite_into_a_project_adds_the_membership_on_redemption() {
         site,
         AccessOptions::default(),
         RenderServiceConfig::default(),
+        crate::server::processing::ProcessingConfig::default(),
     );
     let app = build_site_router(state);
 

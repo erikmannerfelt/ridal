@@ -612,6 +612,24 @@ normalize → colormap → encode.** Everything lives under
   generate it only once — a queued request finds the result already
   cached rather than re-rendering, which is pinned by a test rather
   than implemented as separate single-flight machinery.
+- **Processing never runs in the server's process** (#382). A job is a
+  `JobSpec` (`src/job.rs`) written to a file and run as `ridal process-job
+  <spec>`, a hidden subcommand that reports each step as a line of JSON on
+  stdout and writes the `.nc` to a temporary sibling, renamed into place
+  only when complete. A crash, an out-of-memory kill or a timeout takes the
+  child and nothing else, the child's memory goes back to the system when
+  it exits (the glibc-arena trap above does not apply), and it does not
+  share the server's NetCDF lock with every render. `server::processing`
+  is the site-wide queue in front of it, on `SiteState::processing`:
+  `--processing-jobs` children at once, a `--processing-memory-mb` budget
+  that admits jobs by an estimate (one larger than the whole budget is
+  refused at once rather than queued forever), `--processing-threads` as
+  each child's `RAYON_NUM_THREADS`, a `--processing-timeout` after which
+  the child is killed, and `--max-queued-per-user`. Drafts go before
+  batch items, and one key (the revision a job would produce) is one job.
+  There is no scheduler loop: `dispatch` starts what fits whenever a job is
+  submitted or finishes. After a kill, the child's pipes are waited for for
+  two seconds only, so a grandchild still holding them cannot keep a slot.
 - **netcdf-c/HDF5 is not thread-safe.** A global lock serialises every
   netcdf call, which is a hard ceiling on read parallelism no amount of
   tokio tuning lifts. Tests use `#[serial_test::serial(netcdf)]` plus

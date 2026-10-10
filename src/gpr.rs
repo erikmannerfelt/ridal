@@ -3019,6 +3019,16 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
 pub fn build_processed_gpr(
     params: RunParams,
 ) -> Result<(GPR, PathBuf), Box<dyn std::error::Error>> {
+    build_processed_gpr_with_progress(params, &mut |_, _, _| {})
+}
+
+/// [`build_processed_gpr`], calling `on_step(index, of, step)` before each
+/// step runs, for a caller that reports progress other than by printing
+/// (`ridal process-job`, #382).
+pub fn build_processed_gpr_with_progress(
+    params: RunParams,
+    on_step: &mut dyn FnMut(usize, usize, &str),
+) -> Result<(GPR, PathBuf), Box<dyn std::error::Error>> {
     let expanded = expand_input_paths(&params.filepaths)?;
     if expanded.is_empty() {
         return Err("No input files were provided.".into());
@@ -3093,6 +3103,7 @@ pub fn build_processed_gpr(
         println!("Processing {:?}", gpr.metadata.data_filepath);
     }
     for (i, step) in params.steps.iter().enumerate() {
+        on_step(i, params.steps.len(), step);
         if !params.quiet {
             println!(
                 "{}/{}, t+{:.2} s, Running step {}.",
