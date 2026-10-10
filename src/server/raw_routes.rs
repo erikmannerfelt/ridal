@@ -205,6 +205,27 @@ pub struct SourceBody {
     pub dem: Option<NamedFile>,
 }
 
+/// A source's CRS, as an EPSG code: `EPSG:32633`.
+///
+/// Rebuilt from the number rather than passed on, because it ends up on
+/// the command line of the PROJ tools. The other forms `ridal process
+/// --crs` takes are for the command line, where the person typing them is
+/// the one running the tools.
+fn source_crs(text: &str) -> Result<String, ApiError> {
+    let trimmed = text.trim();
+    let code = trimmed
+        .get(..5)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("epsg:"))
+        .and_then(|_| trimmed[5..].parse::<u32>().ok())
+        .filter(|code| *code > 0);
+    code.map(|code| format!("EPSG:{code}")).ok_or_else(|| {
+        ApiError::bad_request(
+            "invalid_crs",
+            format!("'{text}' is not an EPSG code; write it as `EPSG:32633`."),
+        )
+    })
+}
+
 pub async fn put_source(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -222,6 +243,7 @@ pub async fn put_source(
     }
     let expected = expectation_from(&headers);
     let data_dir = project.data_dir().to_path_buf();
+    let crs = body.crs.as_deref().map(source_crs).transpose()?;
 
     // Reading recordings parses headers and projects positions, which runs
     // PROJ: off the async executor.
@@ -256,7 +278,7 @@ pub async fn put_source(
                     .and_then(|d| raw::file_path(&data_dir, &d.blake3)),
                 cor_path: None,
                 medium_velocity: 0.168,
-                crs: body.crs.clone(),
+                crs: crs.clone(),
                 override_antenna_mhz: None,
                 override_antenna_separation: None,
             })
@@ -270,7 +292,7 @@ pub async fn put_source(
             Ok((
                 Source {
                     bundles,
-                    crs: body.crs.clone(),
+                    crs: crs.clone(),
                     dem,
                 },
                 records,

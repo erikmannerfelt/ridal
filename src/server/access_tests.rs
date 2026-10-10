@@ -6037,6 +6037,27 @@ async fn raw_data_is_uploaded_once_and_a_source_names_it() {
         std::fs::read(format!("assets/mala/{stem}.rd3")).unwrap()
     );
 
+    // A CRS is an EPSG code, which is all that reaches the PROJ tools.
+    let crs = put(
+        &app,
+        "/api/v1/sources/line-new",
+        &json!({"recordings": [recording], "crs": "epsg:32633"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(crs.status, StatusCode::OK, "{}", crs.text);
+    assert_eq!(crs.body["source"]["crs"], "EPSG:32633");
+    for refused in ["--version", "WGS84 UTM Zone 33N", "EPSG:", "EPSG:-1"] {
+        let response = put(
+            &app,
+            "/api/v1/sources/line-new",
+            &json!({"recordings": [recording], "crs": refused}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{refused}");
+        assert_eq!(response.body["error"]["code"], "invalid_crs", "{refused}");
+    }
     // A file that was never uploaded is named, and nothing is written.
     let missing = put(
         &app,
