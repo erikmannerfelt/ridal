@@ -64,6 +64,31 @@ for all its traces: the CRS, antenna frequency, time window, antenna
 separation and medium velocity. A file that differs in any of them starts a
 new output instead.
 
+`--dry-run` shows what a batch would do without processing anything: which
+inputs make which output, under which id, and why the inputs were split where
+they were. `--json` prints the same as JSON.
+
+```console
+$ ridal batch-process "data/*.rd3" --merge "10 min" -o output/ --dry-run
+3 outputs from 5 inputs, merging recordings less than 10 min apart.
+
+dat_0140_a1 -> output/DAT_0140_A1.nc
+  data/DAT_0140_A1.rd3
+  data/DAT_0141_A1.rd3
+
+  (new radargram: 14 min 3 s after the previous one)
+dat_0142_a1 -> output/DAT_0142_A1.nc
+  data/DAT_0142_A1.rd3
+  data/DAT_0143_A1.rd3
+
+  (new radargram: antenna frequencies are different: 100 vs 25)
+dat_0144_a1 -> output/DAT_0144_A1.nc
+  data/DAT_0144_A1.rd3
+```
+
+Two inputs that would write the same output, such as files with one name in
+different directories, are refused rather than overwriting each other.
+
 `-r` and `-t` on their own put the images and tracks in the output
 directory, or in the directory given after them. With `--no-export`, `-o` is
 optional and those go in the current directory.

@@ -231,6 +231,14 @@ Name each output's radargram id after a pattern, and its file `<id>.nc`. Placeho
 Name each output's display name after a pattern, with the placeholders of --id-pattern plus {id} and {group_name}, and any text. A bare {n} is the number in the output's id. Needs --id-pattern
 ```
 
+```{option} --dry-run
+Print what the batch would do -- which inputs make which output, under which id, and why the inputs were split where they were -- and process nothing
+```
+
+```{option} --json
+With --dry-run, print the plan as JSON
+```
+
 ## `ridal info`
 
 ```{program} ridal info
