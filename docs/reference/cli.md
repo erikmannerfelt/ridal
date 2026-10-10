@@ -124,7 +124,7 @@ Explicit override for the group's id, when the id automatically derived from --g
 Batch-process one or more GPR profiles into many outputs
 
 ```console
-$ ridal batch-process [OPTIONS] --output <OUTPUT> <INPUTS>...
+$ ridal batch-process [OPTIONS] <INPUTS>...
 ```
 
 **Arguments**
@@ -138,9 +138,7 @@ Required.
 **Options**
 
 ```{option} -o <OUTPUT>, --output <OUTPUT>
-Output directory. Must already exist
-
-Required.
+Output directory. Must already exist. Optional with --no-export, where it is only the default for --render and --track and is the current directory when not given
 ```
 
 ```{option} -v <VELOCITY>, --velocity <VELOCITY>
@@ -162,7 +160,7 @@ Which coordinate reference system to project coordinates in
 ```
 
 ```{option} -t <TRACK>, --track <TRACK>
-Export location tracks to CSV in the given directory
+Export location tracks to CSV in the given directory. If no directory is given, they go in the output directory
 ```
 
 ```{option} --default
@@ -182,7 +180,7 @@ Suppress progress messages
 ```
 
 ```{option} -r <RENDER>, --render <RENDER>
-Render images into the given directory
+Render images into the given directory. If no directory is given, they go in the output directory
 ```
 
 ```{option} --render-profile <RENDER_PROFILE>

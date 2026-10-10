@@ -3222,7 +3222,10 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             override_antenna_mhz: params.override_antenna_mhz,
             override_antenna_separation: params.override_antenna_separation,
             user_metadata: params.user_metadata.clone(),
-            radargram_id: None,
+            // The id process mode would fall back to, given here so that it
+            // does not print its advice to pass --radargram-id once per
+            // output: batch mode has no such option (#368).
+            radargram_id: Some(crate::identity::RadargramId::from_fallback(stem)?.to_string()),
             display_name: None,
             group: params.group.clone(),
             group_id: params.group_id.clone(),

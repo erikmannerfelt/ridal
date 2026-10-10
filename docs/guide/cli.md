@@ -64,6 +64,11 @@ for all its traces: the CRS, antenna frequency, time window, antenna
 separation and medium velocity. A file that differs in any of them starts a
 new output instead.
 
+Each output's radargram id comes from its first input's file name. `-r` and
+`-t` on their own put the images and tracks in the output directory, or in
+the directory given after them. With `--no-export`, `-o` is optional and
+those go in the current directory.
+
 ## Rendering an image
 
 `-r` renders the processed profile as a JPEG beside the output. A file that is

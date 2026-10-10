@@ -1,7 +1,7 @@
 use crate::{formats, gpr, tools, user_metadata};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
@@ -657,9 +657,11 @@ pub struct BatchProcessArgs {
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
 
-    /// Output directory. Must already exist.
-    #[arg(short, long, required = true)]
-    pub output: PathBuf,
+    /// Output directory. Must already exist. Optional with --no-export,
+    /// where it is only the default for --render and --track and is the
+    /// current directory when not given.
+    #[arg(short, long, required_unless_present = "no_export")]
+    pub output: Option<PathBuf>,
 
     /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
     #[arg(short, long, default_value = "0.168")]
@@ -677,7 +679,8 @@ pub struct BatchProcessArgs {
     #[arg(long)]
     pub crs: Option<String>,
 
-    /// Export location tracks to CSV in the given directory.
+    /// Export location tracks to CSV in the given directory. If no directory
+    /// is given, they go in the output directory.
     #[arg(short, long)]
     pub track: Option<Option<PathBuf>>,
 
@@ -697,7 +700,8 @@ pub struct BatchProcessArgs {
     #[arg(short, long)]
     pub quiet: bool,
 
-    /// Render images into the given directory.
+    /// Render images into the given directory. If no directory is given,
+    /// they go in the output directory.
     #[arg(short, long)]
     pub render: Option<Option<PathBuf>>,
 
@@ -843,13 +847,17 @@ fn resolve_steps(
     Ok(resolved_steps)
 }
 
+/// A batch-mode `--render`/`--track` directory: `None` when the flag was not
+/// given, `default` when it was given without a value (#368; it used to be
+/// silently ignored), and the given directory otherwise.
 fn optional_existing_dir(
     value: &Option<Option<PathBuf>>,
     label: &str,
+    default: &Path,
 ) -> Result<Option<PathBuf>, String> {
     match value {
         None => Ok(None),
-        Some(None) => Ok(None),
+        Some(None) => Ok(Some(default.to_path_buf())),
         Some(Some(path)) => {
             if !path.is_dir() {
                 Err(format!(
@@ -1014,15 +1022,18 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
     Ok(())
 }
 fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
-    if !args.output.is_dir() {
+    // Without --output, clap has already required --no-export, so nothing is
+    // written there: it is only where a bare --render or --track puts files.
+    let output = args.output.clone().unwrap_or_else(|| PathBuf::from("."));
+    if !output.is_dir() {
         return Err(format!(
             "output must be an existing directory in batch mode: {}",
-            args.output.display()
+            output.display()
         ));
     }
 
-    let render_dir = optional_existing_dir(&args.render, "render")?;
-    let track_dir = optional_existing_dir(&args.track, "track")?;
+    let render_dir = optional_existing_dir(&args.render, "render", &output)?;
+    let track_dir = optional_existing_dir(&args.track, "track", &output)?;
 
     let resolved_steps =
         resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
@@ -1030,7 +1041,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
 
     let params = gpr::BatchRunParams {
         filepaths: args.inputs.clone(),
-        output_dir: args.output.clone(),
+        output_dir: output,
         dem_path: args.dem.clone(),
         cor_path: args.cor.clone(),
         medium_velocity: args.velocity,
@@ -1052,7 +1063,8 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
     };
 
     let result = gpr::run_batch(params)?;
-    if !args.quiet {
+    // Each listed path is a file written; with --no-export there are none.
+    if !args.quiet && !args.no_export {
         for path in result.output_paths {
             println!("{}", path.display());
         }
@@ -1800,6 +1812,59 @@ mod tests {
         crate::site::Site::init(dir.path(), None).unwrap();
         let refused = add_bulk(dir.path(), &["--count", "2"]).unwrap_err();
         assert!(refused.contains("--server-admin"), "{refused}");
+    }
+
+    fn batch_args(extra: &[&str]) -> Result<BatchProcessArgs, clap::Error> {
+        let mut argv = vec![
+            "ridal",
+            "batch-process",
+            "assets/mala/dronbreen-20250327-DAT_0066_A1.rad",
+            "--steps",
+            "subset(0 100 0 200)",
+            "--quiet",
+        ];
+        argv.extend_from_slice(extra);
+        match Args::try_parse_from(argv)?.command {
+            Commands::BatchProcess(args) => Ok(args),
+            other => panic!("expected batch-process, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_batch_needs_an_output_directory_only_to_write_into() {
+        // #368: `--no-export` used to need `--output .` anyway.
+        assert!(batch_args(&[]).is_err(), "nothing to write into");
+        let args = batch_args(&["--no-export"]).unwrap();
+        assert_eq!(args.output, None);
+    }
+
+    #[test]
+    fn a_bare_batch_render_or_track_goes_to_the_output_directory() {
+        // #368: a bare `--render` was accepted and then silently ignored.
+        let output = Path::new("out");
+        assert_eq!(optional_existing_dir(&None, "render", output), Ok(None));
+        assert_eq!(
+            optional_existing_dir(&Some(None), "render", output),
+            Ok(Some(output.to_path_buf()))
+        );
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            optional_existing_dir(&Some(Some(dir.path().to_path_buf())), "render", output),
+            Ok(Some(dir.path().to_path_buf()))
+        );
+        assert!(optional_existing_dir(&Some(Some("missing".into())), "render", output).is_err());
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_bare_batch_render_writes_an_image_beside_the_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().to_str().unwrap();
+        let args = batch_args(&["--output", out, "--render"]).unwrap();
+        batch_process_command(&args).unwrap();
+        let stem = "dronbreen-20250327-DAT_0066_A1";
+        assert!(dir.path().join(format!("{stem}.nc")).is_file());
+        assert!(dir.path().join(format!("{stem}.jpg")).is_file());
     }
 
     #[cfg(feature = "server")]
