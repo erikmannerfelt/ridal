@@ -131,14 +131,16 @@ pub struct ConsequenceReport {
     pub from_revision: String,
     pub to_revision: String,
     /// `true` when the incoming file fingerprints to the revision id the
-    /// outgoing one already has.
+    /// outgoing one already has. The replace is then refused.
     ///
-    /// `RevisionId` is `hash(radargram_id + processing_datetime)` and says
-    /// nothing about contents, so a file edited in another tool can carry
-    /// the same datetime and produce the same id. Every cache and
-    /// staleness check would then believe nothing changed. Ridal cannot
-    /// produce this itself, which is exactly why it has to be reported
-    /// rather than assumed away.
+    /// For a file with a recipe (#382) this means it was made from the
+    /// same raw files in the same way, so there is nothing to replace.
+    /// Without one, `RevisionId` is `hash(radargram_id +
+    /// processing_datetime)` and says nothing about contents, so a file
+    /// edited in another tool can carry the same datetime and produce the
+    /// same id. Every cache and staleness check would then believe nothing
+    /// changed, which is why it has to be reported rather than assumed
+    /// away.
     pub revision_id_collision: bool,
     /// `null` when either revision has no `time` axis to count traces by.
     #[schema(required = true)]
@@ -415,11 +417,7 @@ fn consequences(
     let revision_id_collision = from_revision == to_revision;
 
     let headline = if revision_id_collision {
-        "The new file has the same processing date as the current one, so Ridal \
-         cannot tell them apart: both produce the same revision id, and every \
-         cache and staleness check will believe nothing changed. Reprocess it so \
-         it gets its own date."
-            .to_string()
+        same_revision_message(to_declared.recipe_hash.is_some())
     } else if !outgoing_axes_kept && !documents.is_empty() {
         "The current revision does not describe its axes, so its mapping cannot be \
          kept. Replacing it would leave every pick drawn on it impossible to place \
@@ -471,6 +469,27 @@ fn consequences(
         worst,
         headline,
     })
+}
+
+/// Why a file with the current revision id cannot replace it.
+///
+/// Two different situations share one id. A file with a recipe (#382) is
+/// named by what it was made from, so the same id means the same
+/// processing, and the honest answer is that nothing would change. A file
+/// without one is named by its processing date, and the same id means a
+/// date that cannot tell two files apart.
+fn same_revision_message(incoming_has_recipe: bool) -> String {
+    if incoming_has_recipe {
+        "The new file was made from the same raw files with the same processing as \
+         the current one, so it is the same revision. There is nothing to replace."
+            .to_string()
+    } else {
+        "The new file has the same processing date as the current one, so Ridal \
+         cannot tell them apart: both produce the same revision id, and every \
+         cache and staleness check will believe nothing changed. Reprocess it so \
+         it gets its own date."
+            .to_string()
+    }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -542,7 +561,11 @@ pub async fn preflight_replacement(
     drop(catalog);
 
     same_radargram(&body.radargram_id, &radargram)?;
-    let to_revision = RevisionId::fingerprint_v1(&radargram, &body.processing_datetime);
+    let to_revision = RevisionId::declared(
+        &radargram,
+        &body.processing_datetime,
+        body.recipe_hash.as_deref(),
+    );
     let report = consequences(
         project,
         &radargram,
@@ -633,7 +656,7 @@ pub async fn stage_replacement(
 
     same_radargram(meta.radargram_id.as_str(), &radargram)?;
 
-    let to_revision = RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime);
+    let to_revision = meta.revision_id();
     let to_declared = declarations_of(&staged, "uploaded", &radargram)?;
     let report = consequences(
         project,
@@ -752,7 +775,7 @@ pub async fn commit_replacement(
             ),
         ));
     }
-    let to_revision = RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime);
+    let to_revision = meta.revision_id();
 
     // Refused here, not only in the dialog. The browser disables the button
     // for both of these, but a disabled button is a courtesy and this
@@ -761,9 +784,7 @@ pub async fn commit_replacement(
     if to_revision == from_revision {
         return Err(ApiError::conflict(
             "revision_id_collision",
-            format!(
-                "The new file has the same processing date as the current one, so both                  produce revision {to_revision}. Ridal could not tell them apart                  afterwards, and every cache and staleness check would believe nothing                  had changed. Reprocess it so it gets its own date."
-            ),
+            same_revision_message(meta.recipe_hash.is_some()),
         ));
     }
 

@@ -4937,10 +4937,11 @@ async fn only_an_operator_may_replace_a_radargram() {
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
-    // `RevisionId` is hash(radargram_id + processing_datetime) and says
-    // nothing about contents, so a file edited in another tool can carry
-    // the same datetime and land on the same id. Every cache and staleness
-    // check would then believe nothing changed.
+    // A file without a recipe is named by hash(radargram_id +
+    // processing_datetime), which says nothing about contents, so a file
+    // edited in another tool can carry the same datetime and land on the
+    // same id. Every cache and staleness check would then believe nothing
+    // changed.
     //
     // The dialog disables its button for this, but a disabled button is a
     // courtesy and committing deletes the old file. Refused here too.
@@ -4986,6 +4987,66 @@ async fn a_replacement_that_cannot_be_told_apart_is_refused_by_the_server() {
     let still = get(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     assert_eq!(still.status, StatusCode::OK);
     assert!(radargrams(dir.path()).join("ours.nc").exists());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_replacement_with_the_same_recipe_is_refused_as_nothing_to_replace() {
+    // #382: a file with a recipe is named by what it was made from, so the
+    // same recipe processed again, on another day, is the same revision.
+    // That is refused as well, but for what it is: nothing would change,
+    // not a date that cannot tell two files apart.
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let with_recipe = |path: &StdPath| {
+        let mut file = netcdf::append(path).unwrap();
+        file.add_attribute("ridal_recipe_hash", "same-recipe")
+            .unwrap();
+    };
+    // Before the project is first opened, so the catalog reads it this way.
+    with_recipe(&radargrams(dir.path()).join("ours.nc"));
+    let erik = sign_in(&app, "erik").await;
+
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("again.nc");
+    super::interp_routes_tests::write_test_nc_with_axes_at(
+        &source,
+        "ours",
+        None,
+        "2026-10-10T12:00:00Z",
+    );
+    with_recipe(&source);
+    let bytes = std::fs::read(&source).unwrap();
+
+    let staged = post_bytes(&app, "/api/v1/datasets/ours/replace", bytes, Some(&erik)).await;
+    assert_eq!(staged.status, StatusCode::OK, "{}", staged.text);
+    let report = &staged.body["report"];
+    assert_eq!(report["revision_id_collision"], true);
+    assert_eq!(report["from_revision"], report["to_revision"]);
+    let headline = report["headline"].as_str().unwrap();
+    assert!(headline.contains("same revision"), "{headline}");
+    assert!(!headline.contains("processing date"), "{headline}");
+
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    let refused = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "revision_id_collision");
+    assert!(
+        refused.text.contains("nothing to replace"),
+        "{}",
+        refused.text
+    );
 }
 
 /// A new revision of `id` on disk, and the preflight body for it, read by

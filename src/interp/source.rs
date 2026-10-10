@@ -35,7 +35,11 @@ pub fn read_geometry(path: &Path) -> Result<RadargramGeometry, String> {
                 "{path:?} has no 'ridal_processing_datetime' attribute, so its revision is unknown"
             )
         })?;
-    let revision_id = RevisionId::fingerprint_v1(&radargram_id, &processing_datetime);
+    let revision_id = RevisionId::declared(
+        &radargram_id,
+        &processing_datetime,
+        read_str_attr(&file, "ridal_recipe_hash").as_deref(),
+    );
 
     let crs =
         read_str_attr(&file, "crs").ok_or_else(|| format!("{path:?} has no 'crs' attribute"))?;
@@ -110,6 +114,9 @@ pub struct AxisDeclarations {
     /// different moments, and a file reprocessed in place between them
     /// would otherwise pair one revision's mapping with another's id.
     pub processing_datetime: Option<String>,
+    /// The file's own `ridal_recipe_hash` (#382), which names the revision
+    /// instead of the datetime when it is there.
+    pub recipe_hash: Option<String>,
     /// How many samples the revision has. Read from the travel-time axis
     /// rather than a dimension, so it is the length of the thing an
     /// interpretation's `sample` coordinate actually indexes.
@@ -134,8 +141,14 @@ pub struct RevisionDeclarations {
     /// The file's radargram id. It must be the radargram in the path.
     pub radargram_id: String,
     /// The file's `ridal_processing_datetime` attribute, verbatim. With the
-    /// radargram id it gives the revision id.
+    /// radargram id it gives the revision id of a file without a recipe.
     pub processing_datetime: String,
+    /// The file's `ridal_recipe_hash` attribute (#382), or `null` when it
+    /// has none. When present, it and the radargram id give the revision
+    /// id instead of the datetime.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub recipe_hash: Option<String>,
     /// The file's `time` variable: acquisition time per trace, in seconds
     /// since the Unix epoch.
     pub time: Vec<f64>,
@@ -202,6 +215,7 @@ impl RevisionDeclarations {
         Ok(Self {
             radargram_id: meta.radargram_id.to_string(),
             processing_datetime: meta.processing_datetime,
+            recipe_hash: meta.recipe_hash,
             time: declared.time,
             twtt_anchor: declared.twtt_anchor,
             twtt_crop: declared.twtt_crop,
@@ -233,6 +247,7 @@ impl RevisionDeclarations {
             twtt_time_zero: self.twtt_time_zero,
             dt_ns: self.dt_ns,
             processing_datetime: Some(self.processing_datetime),
+            recipe_hash: self.recipe_hash,
             n_samples: self.n_samples,
             separation: match (
                 self.antenna_separation_m,
@@ -274,6 +289,7 @@ pub fn read_axis_declarations(path: &Path) -> Result<AxisDeclarations, String> {
     Ok(AxisDeclarations {
         time: read_f64_variable(&file, "time").unwrap_or_default(),
         processing_datetime: read_str_attr(&file, "ridal_processing_datetime"),
+        recipe_hash: read_str_attr(&file, "ridal_recipe_hash"),
         twtt_anchor: file
             .variable("twtt")
             .and_then(|var| read_str_attr_of(&var, "anchor_name")),

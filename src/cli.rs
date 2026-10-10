@@ -1312,6 +1312,7 @@ fn print_processed_info_record(record: &gpr::ProcessedInfoRecord) {
     println!("Group:\t\t{}", or_none(&record.group_name));
     println!("Group id:\t{}", or_none(&record.group_id));
     println!("Processed:\t{}", or_none(&record.processing_datetime));
+    println!("Recipe:\t\t{}", or_none(&record.recipe_hash));
     println!("Revision id:\t{}", or_none(&record.revision_id));
     if let (Some(samples), Some(traces)) = (record.samples, record.traces) {
         println!("Shape:\t\t{samples} samples x {traces} traces");

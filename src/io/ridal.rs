@@ -367,9 +367,24 @@ pub struct RidalNetcdfMetadata {
     /// #117 hashes this exact string, so re-serializing a parsed value could
     /// silently change revision identity by changing formatting.
     pub processing_datetime: String,
+    /// `ridal_recipe_hash`, written since #382 by every run from raw files.
+    /// When present, it and not the datetime names the revision.
+    pub recipe_hash: Option<String>,
     pub ridal_version: String,
     /// `(n_samples, n_traces)`, i.e. `(rows, columns)` of the `data` variable.
     pub shape: (usize, usize),
+}
+
+impl RidalNetcdfMetadata {
+    /// The revision this file declares; see
+    /// [`crate::identity::RevisionId::declared`].
+    pub fn revision_id(&self) -> crate::identity::RevisionId {
+        crate::identity::RevisionId::declared(
+            &self.radargram_id,
+            &self.processing_datetime,
+            self.recipe_hash.as_deref(),
+        )
+    }
 }
 
 /// Read a single global attribute as a string, or `None` if absent or not a
@@ -469,6 +484,7 @@ pub fn inspect_ridal_netcdf(path: &Path) -> Result<RidalNetcdfKind, String> {
         group_name,
         group_id,
         processing_datetime,
+        recipe_hash: read_global_str_attr(&file, "ridal_recipe_hash"),
         ridal_version,
         shape,
     }))

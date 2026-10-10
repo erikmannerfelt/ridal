@@ -162,7 +162,7 @@ Four concepts that are easy to conflate and load-bearing to keep apart
 | Radargram identity | `RadargramId` | yes |
 | Display label | `DisplayName` | n/a — cosmetic only |
 | Group name / id | `GroupName` / `GroupId` | n/a — cosmetic only |
-| Processed revision | `RevisionId` | **no** — changes every run |
+| Processed revision | `RevisionId` | **no** — changes when the inputs or processing do |
 
 A site adds two more validated slugs of the same shape: `ProjectKey`, a
 project's immutable directory name under `projects/` (the editable display
@@ -170,10 +170,48 @@ name lives in `ridal.toml`), and `UserId`, an account name.
 
 `RadargramId` and `GroupId` are validated ASCII slugs (`[a-z0-9_-]`, ≤128
 characters, no reserved names, never starting with `_` or `-`).
-`RevisionId` is a blake3 fingerprint of `(radargram_id,
-processing_datetime)`, deliberately excluding path, filesystem
-timestamps, filesize, and display name — moving or renaming a processed
-file does not invalidate its cache; reprocessing does.
+`RevisionId` has two schemes, chosen in one place,
+`RevisionId::declared`, so the catalog, `ridal info`, the replace report
+and the axis checks cannot disagree about a file:
+
+- **v2 (#382)**, for every file processed from raw data since: a blake3
+  fingerprint of `(radargram_id, ridal_recipe_hash)`. The recipe
+  (`src/recipe.rs`, stored as `ridal_recipe` beside its hash) is what the
+  file was made from: each raw file's blake3 by role, in merge order (the
+  `--cor` override in place of a recording's own), the DEM's blake3, the
+  CRS, medium velocity, antenna overrides, each step's canonical call with
+  its `Step::version`, and `CORE_PROCESSING_VERSION`. The same raw data
+  processed the same way is the same revision, whenever and wherever it
+  was processed, so reprocessing identically changes nothing: the
+  overview cache stays valid, picks stay on the current revision, and a
+  replace is refused as having nothing to replace. Readers trust the
+  stored hash rather than recomputing it, so a later change to how
+  recipes are serialized cannot move an existing file's id.
+- **v1**, for files without a recipe: a blake3 fingerprint of
+  `(radargram_id, processing_datetime)`. Reprocessing always gives a new
+  revision, and a file edited in another tool and given back its old
+  datetime gives the same one, which is what the ledger's axis checksum
+  is there to catch.
+
+Both deliberately exclude path, filesystem timestamps, filesize, display
+name, group and user metadata: moving or renaming a processed file does
+not invalidate its cache. v2 also excludes file names and the Ridal
+release, so a GUI-only release changes no revision.
+
+**Versions are what keep v2 honest.** A change to what a step writes bumps
+that step's `Step::version` (an exhaustive match, so a new step has to
+choose one); a change outside the steps that reaches the file (reading a
+format, merging, coordinates, travel time and depth geometry, writing the
+NetCDF) bumps `CORE_PROCESSING_VERSION`. A changed default needs neither,
+since the canonical call records defaults filled in. The golden test in
+`src/steps/digests.rs` processes `dronbreen-20220329-DAT_0237_A1`, digests
+every exported variable and numeric attribute (relative to each
+variable's first value, with two projections onto fixed pseudo-random
+weights so that a shift by one sample cannot hide in unchanged sums), and
+compares against `src/steps/digests.json` with a tolerance that holds
+across thread counts and platforms. It fails when output moves and the
+guarding version does not, and `UPDATE_STEP_DIGESTS=1` refuses to record
+such a change; `=force` is for numerically insignificant ones only.
 
 `RadargramId` and the recognition logic live outside the `server`
 feature specifically so the CLI's `process`/`batch` commands can use the

@@ -11,7 +11,7 @@ import shutil
 import socket
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -64,9 +64,10 @@ def stop(process: subprocess.Popen[str]) -> None:
         process.kill()
 
 
-def process_fixture(output: Path) -> Path:
-    """Process the fixture radargram. Each call is a new revision of the same
-    radargram: the revision id follows the processing date."""
+def process_fixture(output: Path, steps: Sequence[str] = ("zero_corr",)) -> Path:
+    """Process the fixture radargram as ``line-01``. The revision id follows
+    the raw files and ``steps`` (#382), so the same steps give the same
+    revision and different ones a new revision of the same radargram."""
     if not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists():
         pytest.skip("processing the fixture needs PROJ, and the fixture")
     import ridal
@@ -74,7 +75,7 @@ def process_fixture(output: Path) -> Path:
     ridal.process(
         str(FIXTURE),
         str(output),
-        steps=["zero_corr"],
+        steps=list(steps),
         quiet=True,
         radargram_id="line-01",
     )
