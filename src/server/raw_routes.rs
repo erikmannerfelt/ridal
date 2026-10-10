@@ -308,7 +308,7 @@ pub async fn put_source(
     let version = raw::write_source(project.documents(), &id, &source, &expected)
         .map_err(|e| store_error(&e))?;
     // A switched source may leave files nothing names any more.
-    sweep(project);
+    sweep(&state, project);
     Ok((
         with_etag(&version),
         Json(SourceView {
@@ -336,17 +336,19 @@ pub async fn delete_source(
             format!("'{id}' has no raw data in this project."),
         ));
     }
-    sweep(project);
+    sweep(&state, project);
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Delete the raw files nothing needs any more. Not fatal: what it fails to
+/// Delete the raw files nothing needs any more: no source names them, and
+/// no draft still being processed reads them. Not fatal: what it fails to
 /// delete, the next sweep will.
-pub(super) fn sweep(project: &crate::project::Project) {
+pub(super) fn sweep(state: &AppState, project: &crate::project::Project) {
+    let keep: HashSet<String> = state.drafts.in_use(state.processing.as_deref());
     if let Err(e) = raw::sweep(
         project.documents(),
         project.data_dir(),
-        &HashSet::new(),
+        &keep,
         raw::SWEEP_MIN_AGE,
     ) {
         tracing::warn!(error = e.as_str(), "raw data left unswept");

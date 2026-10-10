@@ -150,6 +150,12 @@ pub struct AppState {
     /// band in memory. The permit is acquired *before* spawning so a
     /// client that disconnects while queued never starts one at all.
     pub render_permits: Arc<Semaphore>,
+    /// The site's processing queue (#382), shared by every project: the
+    /// limits on processing are site-wide. `None` for a state built
+    /// without a site, which then cannot process.
+    pub processing: Option<Arc<super::processing::ProcessingQueue>>,
+    /// The drafts made in this project since the server started.
+    pub drafts: super::draft_routes::Drafts,
 }
 
 /// Record a project's catalog size after a scan, for the site landing
@@ -383,6 +389,8 @@ impl AppState {
             // render forever. The CLI rejects `--n-workers 0` with a
             // clear message, so this only guards programmatic callers.
             render_permits: Arc::new(Semaphore::new(config.n_workers.max(1))),
+            processing: None,
+            drafts: Default::default(),
         };
         // At startup too, not only on rediscovery. Most projects never
         // add or remove anything through the GUI, and those are exactly
@@ -621,6 +629,12 @@ impl AppState {
     /// alone and keep the budget `build_with_project` sized for one project.
     pub fn with_render_permits(mut self, permits: Arc<Semaphore>) -> Self {
         self.render_permits = permits;
+        self
+    }
+
+    /// Process through the site's queue rather than not at all.
+    pub fn with_processing(mut self, queue: Arc<super::processing::ProcessingQueue>) -> Self {
+        self.processing = Some(queue);
         self
     }
 
@@ -957,6 +971,27 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             "/api/v1/processing/assignments/{radargram_id}",
             axum::routing::put(super::processing_routes::put_assignment)
                 .delete(super::processing_routes::delete_assignment),
+        )
+        .route(
+            "/api/v1/sources/{radargram_id}/drafts",
+            axum::routing::post(super::draft_routes::create_draft),
+        )
+        .route("/api/v1/drafts", get(super::draft_routes::list_drafts))
+        .route(
+            "/api/v1/drafts/{job}",
+            get(super::draft_routes::get_draft).delete(super::draft_routes::delete_draft),
+        )
+        .route(
+            "/api/v1/drafts/{job}/views/{view}/overview",
+            get(super::draft_routes::draft_overview),
+        )
+        .route(
+            "/api/v1/drafts/{job}/download",
+            get(super::draft_routes::download_draft),
+        )
+        .route(
+            "/api/v1/drafts/{job}/commit",
+            axum::routing::post(super::draft_routes::commit_draft),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/track.geojson",

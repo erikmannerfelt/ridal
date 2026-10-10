@@ -197,6 +197,31 @@ samples (`subset`, `remove_traces`).
 | `PUT` | `/api/v1/processing/assignments/{radargram_id}` | `operator` | Put a radargram in a processing profile: `profile`, and optionally `pre_steps`, which may only be `subset` and `remove_traces`. |
 | `DELETE` | `/api/v1/processing/assignments/{radargram_id}` | `operator` | Take a radargram out of its processing profile. |
 
+## Drafts
+
+A **draft** is a radargram processed on the server from its raw data, to
+look at before it becomes the radargram. Only an `operator` makes drafts, and
+a draft is private to whoever made it: anyone else is told it does not
+exist. Drafts are processed one or a few at a time, by the server's
+processing queue, and kept for a day.
+
+Committing a draft checks first that the radargram is still the revision it
+was made against, and refuses with `radargram_moved` if someone has replaced
+it, added it or removed it since. A draft of a radargram that is served is
+staged as a replacement: the answer is the same consequence report and token
+as `POST /api/v1/datasets/{radargram_id}/replace`, and the token commits it
+in the same way. A draft of a new id is installed as an upload.
+
+| Method | Path | Needs | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/sources/{radargram_id}/drafts` | `operator` | Process the radargram's raw data: `steps`, and optionally `medium_velocity`, `antenna_mhz_override` and `antenna_separation_override`. Answers `202` with the draft's `job` number and state. Asking again for the same draft answers the same one. |
+| `GET` | `/api/v1/drafts` | `operator` | The caller's drafts. |
+| `GET` | `/api/v1/drafts/{job}` | `operator`, own | One draft: its `state` (`queued`, `running`, `done`, `failed`, `cancelled` or `timed_out`), the step it is on, and the revision it was made against. |
+| `DELETE` | `/api/v1/drafts/{job}` | `operator`, own | Stop a draft, or throw a finished one away. |
+| `GET` | `/api/v1/drafts/{job}/views/{view}/overview` | `operator`, own | A low-resolution image of a finished draft. Query: `profile`. |
+| `GET` | `/api/v1/drafts/{job}/download` | `operator`, own; download `all` | A finished draft's NetCDF file. |
+| `POST` | `/api/v1/drafts/{job}/commit` | `operator`, own | Make a finished draft the radargram, as described above. |
+
 ## Interpretations
 
 A `picker` may only write their own interpretation. Reading someone else's
@@ -285,6 +310,7 @@ policy and invitations with `403` `archived`.
 | `GET` | `/api/v1/site/preferences` | signed in | The caller's own site-wide settings, currently the theme. |
 | `PUT` | `/api/v1/site/preferences` | signed in | Change them. Any role may. |
 | `GET` | `/api/v1/site/audit` | server administrator | The site's account, membership and project history, most recent first. |
+| `GET` | `/api/v1/site/processing` | server administrator | The processing queue: every job it still knows of, with its owner and state, and how many are queued and running and how much of the memory budget they use. |
 | `GET` | `/api/v1/site/memberships` | server administrator | Every account and the projects it belongs to. |
 | `GET` | `/api/v1/accounts` | server administrator | Every account, without hashes or invite tokens. |
 | `POST` | `/api/v1/accounts` | server administrator | Create an account and mint its invite, optionally naming a project, role and download. It cannot create a server administrator. |

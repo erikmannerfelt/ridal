@@ -24,10 +24,6 @@
 //! There is no scheduler loop: [`ProcessingQueue::dispatch`] starts what can
 //! start, and runs whenever a job is submitted or finishes.
 
-// Nothing submits a job yet: the draft and batch routes of phase 5 (#382)
-// are its first callers. Remove this when they land.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -83,6 +79,7 @@ pub enum Priority {
     /// Someone is waiting to look at it.
     Draft,
     /// One radargram of a batch.
+    #[allow(dead_code, reason = "batches are #382 phase 6")]
     Batch,
 }
 
