@@ -605,3 +605,90 @@ fn step_digests() {
         problems.join("\n\n")
     );
 }
+
+/// A small table by hand: one core variable, one base variable, and one
+/// step with one run that changes `data`.
+fn toy_table(data_sum: f64) -> Table {
+    let d = |sum: f64| digest([1., 2., 3. + sum].into_iter());
+    let core: Digests = [("data".to_string(), d(0.))].into();
+    let base = core.clone();
+    let runs = [(
+        "gain(0.002)".to_string(),
+        [("data".to_string(), Some(d(data_sum)))].into(),
+    )]
+    .into();
+    Table {
+        core_version: 1,
+        subset_version: 1,
+        core,
+        base,
+        steps: [("gain".to_string(), StepEntry { version: 1, runs })].into(),
+    }
+}
+
+#[test]
+fn the_comparison_tells_an_unbumped_change_from_a_stale_table() {
+    let stored = toy_table(1.);
+    assert!(compare(&stored, &toy_table(1.)).unbumped.is_empty());
+    assert!(compare(&stored, &toy_table(1.)).stale.is_empty());
+
+    // Output moved, version did not: the one failure that matters.
+    let moved = compare(&stored, &toy_table(2.));
+    assert_eq!(moved.unbumped.len(), 1, "{moved:?}");
+    assert!(moved.unbumped[0].contains("`gain(0.002)` changed (data)"));
+
+    // Bumped: the table is behind, which regenerating fixes.
+    let mut bumped = toy_table(2.);
+    bumped.steps.get_mut("gain").unwrap().version = 2;
+    let verdict = compare(&stored, &bumped);
+    assert!(verdict.unbumped.is_empty(), "{verdict:?}");
+    assert!(verdict.stale[0].contains("`gain` is version 2"));
+
+    // The core moving is reported once, as the core, not once per step.
+    let mut core_moved = toy_table(2.);
+    core_moved.core = [("data".to_string(), digest([5., 6.].into_iter()))].into();
+    let verdict = compare(&stored, &core_moved);
+    assert_eq!(verdict.unbumped.len(), 1, "{verdict:?}");
+    assert!(verdict.unbumped[0].contains("CORE_PROCESSING_VERSION"));
+
+    // Runs and steps that come and go make the table stale.
+    let mut extra = toy_table(1.);
+    extra
+        .steps
+        .get_mut("gain")
+        .unwrap()
+        .runs
+        .insert("gain(1)".to_string(), BTreeMap::new());
+    extra.steps.insert(
+        "abslog".to_string(),
+        StepEntry {
+            version: 1,
+            runs: BTreeMap::new(),
+        },
+    );
+    let verdict = compare(&stored, &extra);
+    assert_eq!(verdict.stale.len(), 2, "{verdict:?}");
+    let verdict = compare(&extra, &stored);
+    assert_eq!(verdict.stale.len(), 2, "{verdict:?}");
+}
+
+#[test]
+fn the_rendered_table_reads_back_as_itself() {
+    let mut table = toy_table(1.);
+    // A removed variable is stored as null.
+    table
+        .steps
+        .get_mut("gain")
+        .unwrap()
+        .runs
+        .get_mut("gain(0.002)")
+        .unwrap()
+        .insert("twtt".to_string(), None);
+    let read: Table = serde_json::from_str(&render(&table)).unwrap();
+    let verdict = compare(&read, &table);
+    assert!(
+        verdict.unbumped.is_empty() && verdict.stale.is_empty(),
+        "{verdict:?}"
+    );
+    assert_eq!(read.steps["gain"].runs["gain(0.002)"]["twtt"], None);
+}
