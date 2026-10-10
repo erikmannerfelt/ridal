@@ -158,6 +158,24 @@ never require a login, since they are how one happens.
 | `GET` | `/api/v1/groups/{group}/track.geojson` | download `all` | Every track in a group as one GeoJSON file. |
 | `GET` | `/api/v1/catalog/track.geojson` | download `all` | Every track being served as one GeoJSON file. |
 
+## Raw data
+
+The raw recordings a radargram is made from, kept so that it can be
+processed on the server. Each file is stored once, by its blake3, however
+many radargrams use it, and counts toward the project's size limit. A
+radargram's **source** names its recordings, in the order they are merged,
+and optionally a CRS and a DEM. A source is keyed by radargram id, so it can
+be set before the radargram has been processed. Removing a radargram from
+the project removes its source too; ignoring one does not.
+
+| Method | Path | Needs | Description |
+|---|---|---|---|
+| `POST` | `/api/v1/raw` | `operator` | Upload one raw file as the request body. Query: `filename`, required, since a file's name says what it is to its recording (`DAT_0001_A1.rd3`). Answers its `name`, `blake3` and size. Uploading a file the project already has stores nothing new. |
+| `GET` | `/api/v1/raw/{blake3}` | download `all` | A stored raw file. |
+| `GET` | `/api/v1/sources/{radargram_id}` | `viewer` | What the radargram is made from, with an `ETag`. |
+| `PUT` | `/api/v1/sources/{radargram_id}` | `operator` | Set or switch what the radargram is made from: `recordings`, a list of recordings in merge order, each a list of `{name, blake3}` as the upload answered, and optionally `crs` and `dem`. Which file is a recording's header, data and positions is read from the names. Every recording is read before anything is saved, and what its header and positions say is in the answer. Takes `If-Match`. |
+| `DELETE` | `/api/v1/sources/{radargram_id}` | `operator` | Forget what the radargram is made from. Files no other source names are deleted after an hour. |
+
 ## Interpretations
 
 A `picker` may only write their own interpretation. Reading someone else's

@@ -5932,3 +5932,199 @@ async fn a_preference_nothing_offers_is_refused_rather_than_stored() {
     .await;
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
 }
+
+/// Upload the three files of a fixture recording as raw data, and the
+/// recording as `PUT /sources` takes it.
+async fn upload_recording(app: &Router, stem: &str, session: &str) -> Value {
+    let mut files = Vec::new();
+    for ext in ["rad", "rd3", "cor"] {
+        let name = format!("{stem}.{ext}");
+        let bytes = std::fs::read(format!("assets/mala/{name}")).unwrap();
+        let stored = post_bytes(
+            app,
+            &format!("/api/v1/raw?filename={name}"),
+            bytes,
+            Some(session),
+        )
+        .await;
+        assert_eq!(stored.status, StatusCode::CREATED, "{}", stored.text);
+        assert_eq!(stored.body["name"], name);
+        files.push(json!({"name": name, "blake3": stored.body["blake3"]}));
+    }
+    Value::Array(files)
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn raw_data_is_uploaded_once_and_a_source_names_it() {
+    // #382 phase 4.
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("vera", Role::Viewer, DownloadScope::None, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let vera = sign_in(&app, "vera").await;
+    let stem = "dronbreen-20250327-DAT_0066_A1";
+    let recording = upload_recording(&app, stem, &erik).await;
+
+    // Uploading the same file again stores nothing new.
+    let again = post_bytes(
+        &app,
+        &format!("/api/v1/raw?filename={stem}.cor"),
+        std::fs::read(format!("assets/mala/{stem}.cor")).unwrap(),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(again.body["blake3"], recording[2]["blake3"]);
+
+    // A source for an id that has no processed file yet.
+    let set = put(
+        &app,
+        "/api/v1/sources/line-new",
+        &json!({"recordings": [recording]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let bundle = &set.body["source"]["bundles"][0];
+    assert_eq!(bundle["format"], "ramac");
+    assert_eq!(bundle["files"][1]["role"], "data");
+    assert_eq!(set.body["recordings"][0]["format"]["name"], "ramac");
+    assert!(
+        set.body["recordings"][0]["metadata"]["last_trace"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    let etag = set.etag.clone().unwrap();
+
+    // Anyone in the project may see it; only an operator may set it, and
+    // only someone who may download the radargram may download its raw data.
+    let seen = get(&app, "/api/v1/sources/line-new", Some(&vera)).await;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.text);
+    assert_eq!(seen.body["source"], set.body["source"]);
+    assert_eq!(seen.etag.as_deref(), Some(etag.as_str()));
+    let refused = put(
+        &app,
+        "/api/v1/sources/line-new",
+        &json!({"recordings": [recording]}),
+        Some(&vera),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let file = format!("/api/v1/raw/{}", recording[1]["blake3"].as_str().unwrap());
+    assert_eq!(
+        get(&app, &file, Some(&vera)).await.status,
+        StatusCode::FORBIDDEN
+    );
+    // Byte for byte, which the text-decoding helpers cannot show.
+    let downloaded = app
+        .clone()
+        .oneshot(
+            request("GET", &file, Some(&erik))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(downloaded.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(downloaded.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        bytes.as_ref(),
+        std::fs::read(format!("assets/mala/{stem}.rd3")).unwrap()
+    );
+
+    // A file that was never uploaded is named, and nothing is written.
+    let missing = put(
+        &app,
+        "/api/v1/sources/line-other",
+        &json!({"recordings": [[{"name": "DAT_0001_A1.rad", "blake3": "a".repeat(64)}]]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::BAD_REQUEST, "{}", missing.text);
+    assert!(
+        missing.text.contains("has not been uploaded"),
+        "{}",
+        missing.text
+    );
+    assert_eq!(
+        get(&app, "/api/v1/sources/line-other", Some(&erik))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+
+    // Forgotten: the source goes, and its files once a sweep is due.
+    assert_eq!(
+        delete(&app, "/api/v1/sources/line-new", Some(&erik))
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(&app, "/api/v1/sources/line-new", Some(&erik))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let data_dir = project_root(dir.path()).join(crate::project::DEFAULT_DATA_DIR);
+    let swept = crate::project::raw::sweep(
+        &crate::project::store::DocumentStore::new(data_dir.clone()),
+        &data_dir,
+        &Default::default(),
+        std::time::Duration::ZERO,
+    )
+    .unwrap();
+    assert_eq!(swept.files, 3);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn removing_a_radargram_removes_its_raw_data_too() {
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    for id in ["ours", "theirs"] {
+        let set = put(
+            &app,
+            &format!("/api/v1/sources/{id}"),
+            &json!({"recordings": [recording]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    }
+
+    // `ours` is in the project and is deleted; `theirs` is outside it, so
+    // it is only ignored and could be restored, and keeps its raw data.
+    for id in ["ours", "theirs"] {
+        let removed = delete(&app, &format!("/api/v1/datasets/{id}"), Some(&erik)).await;
+        assert!(removed.status.is_success(), "{id}: {}", removed.text);
+    }
+    assert_eq!(
+        get(&app, "/api/v1/sources/ours", Some(&erik)).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&app, "/api/v1/sources/theirs", Some(&erik))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let data_dir = project_root(dir.path()).join(crate::project::DEFAULT_DATA_DIR);
+    assert!(recording
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|f| crate::project::raw::contains(&data_dir, f["blake3"].as_str().unwrap())));
+}

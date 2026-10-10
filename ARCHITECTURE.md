@@ -260,6 +260,38 @@ ledger (`revisions.json`) its history.
   superseded revision is gone. A difference in migration is a warning on
   the carry, never a refusal: migration moves reflections, not the grid.
 
+## Raw data and sources (#382)
+
+`project::raw` keeps raw files under `ridal_data/raw/files/<aa>/<blake3>`,
+each stored once by content however many radargrams use it, and one
+**source** document per radargram id under `raw/sources/<id>.json`: its
+recordings in merge order, each a `recipe::Bundle` (the type a recipe
+records, so a source and the recipe of what was processed from it compare
+directly), plus an optional CRS and DEM. The routes are in
+`server::raw_routes`.
+
+- **Roles come from names.** A client sends each recording as the files
+  it is made of, by name and hash. `bundles_of` lays them out under their
+  own names (symlinks, one directory per recording so two may share a
+  name) and lets `formats::resolve_input` say which is the header, the data
+  and the positions, as it would for files on disk. A file the reader does
+  not use is refused: a source says exactly what a radargram is made from.
+  `PUT` reads every recording before saving, and answers what each header
+  says.
+- **Nothing counts references.** `sweep` deletes a stored file when no
+  source names it and it is older than an hour, recomputing the set from
+  the sources each time, so it cannot drift and survives a crash halfway
+  through a delete. The hour is what keeps a file uploaded just before its
+  source is written; uploading a stored file again makes it young again. A
+  source that cannot be parsed stops a sweep rather than counting as naming
+  nothing.
+- **A source is keyed by id, not by a served radargram**, so one can exist
+  before the radargram has been processed. Removing a radargram that lives
+  in the project removes its source; ignoring one outside it does not,
+  since that can be lifted.
+- Raw files count toward `max_bytes` because the quota measures the whole
+  project directory; the laid-out symlinks count as links.
+
 ## The Python client (#328)
 
 `ridal.client` is pure Python, in `python/ridal/client/`, beside the Rust

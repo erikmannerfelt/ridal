@@ -926,6 +926,20 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::routes::dataset_download),
         )
         .route(
+            "/api/v1/raw",
+            axum::routing::post(super::raw_routes::upload_raw_file),
+        )
+        .route(
+            "/api/v1/raw/{blake3}",
+            get(super::raw_routes::download_raw_file),
+        )
+        .route(
+            "/api/v1/sources/{radargram_id}",
+            get(super::raw_routes::get_source)
+                .put(super::raw_routes::put_source)
+                .delete(super::raw_routes::delete_source),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/track.geojson",
             get(super::routes::dataset_track_geojson),
         )

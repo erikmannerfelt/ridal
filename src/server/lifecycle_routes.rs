@@ -435,6 +435,23 @@ pub async fn remove_dataset(
         std::fs::remove_file(&path).map_err(|e| {
             ApiError::internal("remove_failed", format!("Could not remove the file: {e}"))
         })?;
+        // Its raw data goes with it (#382). Not when it is only ignored
+        // below: that can be lifted, and the raw data is what it would be
+        // processed from again. Not fatal: the radargram is already gone,
+        // and a source left behind is only space.
+        match crate::project::raw::remove_source(
+            project.documents(),
+            &id,
+            &crate::project::store::Expectation::Any,
+        ) {
+            Ok(true) => super::raw_routes::sweep(project),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(
+                radargram = id.as_str(),
+                error = %e,
+                "raw data left behind after removing the radargram"
+            ),
+        }
         "removed"
     } else {
         // Outside the project, so the file is not Ridal's to delete. The
