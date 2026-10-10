@@ -552,6 +552,10 @@ pub struct GPR {
     /// end of [`build_processed_gpr`], from CLI arguments and the output
     /// stem -- not populated on GPR instances still mid-processing.
     pub identity: RidalIdentity,
+    /// The raw files and settings this radargram was read with, when it
+    /// was read from raw files (#382). With [`GPR::steps`], they make the
+    /// recipe that export records and the revision id is derived from.
+    pub inputs: Option<crate::recipe::Inputs>,
 }
 
 /// Persistent identity metadata for one processed output. See
@@ -587,6 +591,39 @@ impl GPR {
         self.check_finite(step_name, non_finite_before)?;
         self.steps.push(parsed.canonical);
         Ok(())
+    }
+
+    /// The recipe this radargram was processed with (#382), or `None` when
+    /// it was not read from raw files and its inputs are unknown.
+    ///
+    /// Each step's version is that of the step as registered now, which is
+    /// the one that ran: [`GPR::steps`] holds only steps this process ran.
+    pub fn recipe(&self) -> Result<Option<crate::recipe::Recipe>, String> {
+        let Some(inputs) = &self.inputs else {
+            return Ok(None);
+        };
+        let steps = self
+            .steps
+            .iter()
+            .map(|canonical| {
+                let parsed = crate::steps::parse_one(canonical)?;
+                Ok(crate::recipe::RecipeStep {
+                    step: canonical.clone(),
+                    version: parsed.step.version(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Some(crate::recipe::Recipe {
+            format: crate::recipe::RECIPE_FORMAT,
+            core_version: crate::recipe::CORE_PROCESSING_VERSION,
+            bundles: inputs.bundles.clone(),
+            dem: inputs.dem.clone(),
+            crs: self.location.crs.clone(),
+            medium_velocity: self.metadata.medium_velocity,
+            antenna_mhz_override: inputs.antenna_mhz_override,
+            antenna_separation_override: inputs.antenna_separation_override,
+            steps,
+        }))
     }
 
     fn count_non_finite(&self) -> usize {
@@ -784,6 +821,7 @@ impl GPR {
             time_zero_ns: self.time_zero_ns[min_trace_ as usize..max_trace_ as usize].to_vec(),
             user_metadata: self.user_metadata.clone(),
             identity: self.identity.clone(),
+            inputs: self.inputs.clone(),
         };
         new_gpr.log_event(
             "subset",
@@ -946,6 +984,7 @@ impl GPR {
             time_zero_ns: vec![0.; n_traces],
             user_metadata: user_metadata::UserMetadata::new(),
             identity: RidalIdentity::default(),
+            inputs: None,
         })
     }
 
@@ -2629,9 +2668,15 @@ pub struct ProcessedInfoRecord {
     pub display_name: Option<String>,
     pub group_name: Option<String>,
     pub group_id: Option<String>,
-    /// Verbatim from the file, since the revision id hashes this string.
+    /// Verbatim from the file, since the revision id of a file without a
+    /// recipe hashes this string.
     pub processing_datetime: Option<String>,
-    /// The id a server gives this revision of the radargram (#117).
+    /// The hash of what the file was made from (#382), or `None` for a
+    /// file written before recipes were recorded.
+    pub recipe_hash: Option<String>,
+    /// The id a server gives this revision of the radargram (#117): from
+    /// `recipe_hash` when there is one, otherwise from
+    /// `processing_datetime`.
     pub revision_id: Option<String>,
     pub samples: Option<usize>,
     pub traces: Option<usize>,
@@ -2879,16 +2924,14 @@ fn processed_info_record(path: &Path) -> Result<ProcessedInfoRecord, String> {
         group_name: None,
         group_id: None,
         processing_datetime: None,
+        recipe_hash: None,
         revision_id: None,
         samples: None,
         traces: None,
     };
     match crate::io::inspect_ridal_netcdf(path)? {
         crate::io::RidalNetcdfKind::Supported(meta) => {
-            let revision_id = crate::identity::RevisionId::fingerprint_v1(
-                &meta.radargram_id,
-                &meta.processing_datetime,
-            );
+            let revision_id = meta.revision_id();
             let (samples, traces) = meta.shape;
             Ok(ProcessedInfoRecord {
                 radargram_id: Some(meta.radargram_id.to_string()),
@@ -2896,6 +2939,7 @@ fn processed_info_record(path: &Path) -> Result<ProcessedInfoRecord, String> {
                 group_name: meta.group_name.map(|name| name.to_string()),
                 group_id: meta.group_id.map(|id| id.to_string()),
                 processing_datetime: Some(meta.processing_datetime),
+                recipe_hash: meta.recipe_hash,
                 revision_id: Some(revision_id.to_string()),
                 samples: Some(samples),
                 traces: Some(traces),
@@ -2988,6 +3032,22 @@ pub fn build_processed_gpr(
     }
 
     let output_path = derive_output_path(params.output_path.as_ref(), &resolved_inputs[0])?;
+    // Hashed here, from the same resolution the readers use, so the recipe
+    // names exactly the files that were read: the `--cor` override in
+    // place of each recording's own, as `load_meta_and_location` does.
+    let inputs = crate::recipe::Inputs {
+        bundles: resolved_inputs
+            .iter()
+            .map(|resolved| crate::recipe::bundle_of(resolved, params.cor_path.as_deref()))
+            .collect::<Result<Vec<_>, String>>()?,
+        dem: params
+            .dem_path
+            .as_deref()
+            .map(crate::recipe::hash_file)
+            .transpose()?,
+        antenna_mhz_override: params.override_antenna_mhz,
+        antenna_separation_override: params.override_antenna_separation,
+    };
     let first_resolved = resolved_inputs.remove(0);
     let (first_meta, first_location) = load_meta_and_location(
         &first_resolved,
@@ -3005,6 +3065,7 @@ pub fn build_processed_gpr(
         )
     })?;
     gpr.user_metadata = params.user_metadata.clone();
+    gpr.inputs = Some(inputs);
 
     for resolved in resolved_inputs {
         let (meta, location) = load_meta_and_location(
@@ -3700,6 +3761,7 @@ pub mod tests {
                 group_name: None,
                 group_id: None,
             },
+            inputs: None,
         }
     }
 
@@ -3971,6 +4033,7 @@ pub mod tests {
             time_zero_ns: vec![0.; width],
             user_metadata: crate::user_metadata::UserMetadata::new(),
             identity: super::RidalIdentity::default(),
+            inputs: None,
         }
     }
 
@@ -5052,6 +5115,84 @@ pub mod tests {
         );
         assert_eq!((record.samples, record.traces), (Some(10), Some(20)));
         assert_eq!(record.reprocess_reason, None);
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_file_is_named_by_its_recipe_so_processing_again_is_the_same_revision() {
+        // #382: the revision id comes from what the file was made from, not
+        // from when, so running the same processing twice gives one
+        // revision and changing a step gives another.
+        let dir = tempfile::tempdir().unwrap();
+        let run = |name: &str, steps: &[&str]| {
+            let output = dir.path().join(name);
+            let mut params = info_run_params(&output);
+            params.steps = steps.iter().map(|s| s.to_string()).collect();
+            super::run(params).unwrap();
+            processed(super::inspect(info_params(vec![output])).unwrap())
+        };
+        let first = run("first.nc", &["subset(0 200 0 300)", "dewow"]);
+        let again = run("again.nc", &["subset(0 200 0 300)", "dewow"]);
+        let other = run("other.nc", &["subset(0 200 0 300)", "dewow(method=mean)"]);
+
+        let hash = first
+            .recipe_hash
+            .clone()
+            .expect("a run from raw files records its recipe");
+        assert_ne!(first.processing_datetime, again.processing_datetime);
+        assert_eq!(again.recipe_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(first.revision_id, again.revision_id);
+        let id = crate::identity::RadargramId::new("line-01").unwrap();
+        assert_eq!(
+            first.revision_id,
+            Some(crate::identity::RevisionId::fingerprint_v2(&id, &hash).to_string())
+        );
+        assert_ne!(other.recipe_hash, first.recipe_hash);
+        assert_ne!(other.revision_id, first.revision_id);
+
+        // The stored recipe is the one that hashes to the stored hash, and
+        // says what was read and run.
+        let file = netcdf::open(dir.path().join("first.nc")).unwrap();
+        let text = match file.attribute("ridal_recipe").unwrap().value().unwrap() {
+            netcdf::AttributeValue::Str(text) => text,
+            other => panic!("ridal_recipe is {other:?}"),
+        };
+        let recipe: crate::recipe::Recipe = serde_json::from_str(&text).unwrap();
+        assert_eq!(recipe.hash(), hash);
+        assert_eq!(recipe.core_version, crate::recipe::CORE_PROCESSING_VERSION);
+        assert_eq!(recipe.bundles.len(), 1);
+        assert_eq!(recipe.bundles[0].format, "ramac");
+        assert_eq!(recipe.bundles[0].files.len(), 3);
+        let steps: Vec<&str> = recipe.steps.iter().map(|s| s.step.as_str()).collect();
+        assert_eq!(steps.len(), 2);
+        assert!(steps[1].starts_with("dewow("), "{steps:?}");
+        assert!(recipe.steps.iter().all(|s| s.version >= 1));
+    }
+
+    fn info_run_params(output: &std::path::Path) -> super::RunParams {
+        super::RunParams {
+            filepaths: vec!["assets/mala/dronbreen-20250327-DAT_0066_A1.rad".into()],
+            output_path: Some(output.to_path_buf()),
+            dem_path: None,
+            cor_path: None,
+            medium_velocity: 0.168,
+            crs: None,
+            quiet: true,
+            track_path: None,
+            steps: Vec::new(),
+            no_export: false,
+            render_path: None,
+            render_profile: None,
+            render_width: None,
+            render_topo: false,
+            override_antenna_mhz: None,
+            override_antenna_separation: None,
+            user_metadata: crate::user_metadata::UserMetadata::new(),
+            radargram_id: Some("line-01".to_string()),
+            display_name: None,
+            group: None,
+            group_id: None,
+        }
     }
 
     #[test]

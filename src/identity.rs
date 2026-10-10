@@ -610,6 +610,43 @@ impl RevisionId {
         Self(hasher.finalize().to_hex()[..32].to_string())
     }
 
+    /// `RevisionFingerprintV2` (#382): a revision named by what it was made
+    /// from, the file's recipe hash (see [`crate::recipe`]), rather than by
+    /// when.
+    ///
+    /// The same raw files processed the same way are the same revision,
+    /// whenever and wherever they were processed, so processing twice
+    /// changes nothing and two people asking for the same processing get
+    /// one answer. Still a declared identifier, as v1 is: it trusts the
+    /// recipe hash the file states, and floating point that differs
+    /// between machines does not make two revisions of one recipe.
+    pub fn fingerprint_v2(radargram_id: &RadargramId, recipe_hash: &str) -> Self {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"ridal-revision-v2");
+        // Length-framed, unlike v1's two fields, which are kept as they are
+        // so that no v1 id ever moves.
+        hasher.update(&(radargram_id.as_str().len() as u64).to_le_bytes());
+        hasher.update(radargram_id.as_str().as_bytes());
+        hasher.update(recipe_hash.as_bytes());
+        Self(hasher.finalize().to_hex()[..32].to_string())
+    }
+
+    /// The revision a processed file declares: v2 from its recipe hash when
+    /// it has one, otherwise v1 from its processing datetime.
+    ///
+    /// The one place that chooses, so that the catalog, `ridal info`, the
+    /// replace report and the axis checks cannot disagree about a file.
+    pub fn declared(
+        radargram_id: &RadargramId,
+        processing_datetime: &str,
+        recipe_hash: Option<&str>,
+    ) -> Self {
+        match recipe_hash {
+            Some(hash) => Self::fingerprint_v2(radargram_id, hash),
+            None => Self::fingerprint_v1(radargram_id, processing_datetime),
+        }
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -995,5 +1032,49 @@ mod tests {
         fn takes_radargram_id(_: RadargramId) {}
         let id = RadargramId::new("a").unwrap();
         takes_radargram_id(id);
+    }
+
+    #[test]
+    fn revision_ids_are_pinned() {
+        // Every catalog, cache and interpretation names revisions by these
+        // values. Neither scheme may move.
+        let id = RadargramId::new("line-01").unwrap();
+        assert_eq!(
+            RevisionId::fingerprint_v1(&id, "2020-01-01T00:00:00Z").as_str(),
+            "79b788cbfa2b876c5d70aca092b7e987"
+        );
+        assert_eq!(
+            RevisionId::fingerprint_v2(&id, "abc").as_str(),
+            "7f9efa0a205361aa0e3f8ed128b272fc"
+        );
+    }
+
+    #[test]
+    fn a_file_with_a_recipe_is_named_by_it_and_one_without_by_its_date() {
+        let id = RadargramId::new("line-01").unwrap();
+        let when = "2020-01-01T00:00:00Z";
+        assert_eq!(
+            RevisionId::declared(&id, when, None),
+            RevisionId::fingerprint_v1(&id, when)
+        );
+        assert_eq!(
+            RevisionId::declared(&id, when, Some("abc")),
+            RevisionId::fingerprint_v2(&id, "abc")
+        );
+        // Processed again later, from the same recipe: the same revision.
+        assert_eq!(
+            RevisionId::declared(&id, "2026-10-10T12:00:00Z", Some("abc")),
+            RevisionId::declared(&id, when, Some("abc"))
+        );
+        let other = RadargramId::new("line-02").unwrap();
+        assert_ne!(
+            RevisionId::fingerprint_v2(&other, "abc"),
+            RevisionId::fingerprint_v2(&id, "abc"),
+            "the same raw data under two ids is two radargrams"
+        );
+        assert_ne!(
+            RevisionId::fingerprint_v2(&id, "abx"),
+            RevisionId::fingerprint_v2(&id, "abc")
+        );
     }
 }

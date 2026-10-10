@@ -24,10 +24,12 @@ Status: TypeAlias = Literal["new", "unchanged", "safe", "risky", "legacy"]
 ``new``
     No radargram with its id is served: it would be uploaded.
 ``unchanged``
-    The served radargram has this revision id: nothing to do. The id comes
-    from the radargram id and the processing date, not the contents, so a
-    file edited in another tool without reprocessing looks unchanged too;
-    reprocess it to give it a revision of its own.
+    The served radargram has this revision id: nothing to do. A file
+    processed since Ridal recorded recipes (#382) is named by the raw files
+    and processing it was made from, so the same processing run again is
+    unchanged too. An older file is named by its processing date, not its
+    contents, so one edited in another tool without reprocessing looks
+    unchanged as well; reprocess it to give it a revision of its own.
 ``safe``
     It would replace a radargram nobody has interpreted.
 ``risky``

@@ -1,6 +1,6 @@
 """The client changing things on a real ``ridal gui``: uploads, replaces and picks."""
 
-import time
+import itertools
 from pathlib import Path
 from typing import Any
 
@@ -14,12 +14,15 @@ from ridal import client as ridal_client
 from ridal.client import errors
 from servers import Server
 
+_revisions = itertools.count(2)
+
 
 def revision(directory: Path, name: str) -> Path:
-    """A new revision of the fixture radargram. A second apart, so the
-    processing dates, and with them the revision ids, differ."""
-    time.sleep(1.1)
-    return process_fixture(directory / name)
+    """A new revision of the fixture radargram. Processed differently from
+    every other one, since the same processing is the same revision (#382);
+    the amplitudes change and the axes do not."""
+    factor = next(_revisions)
+    return process_fixture(directory / name, ["zero_corr", f"multiply({factor})"])
 
 
 def a_line(client: ridal_client.Client, radargram_id: str) -> dict[str, Any]:

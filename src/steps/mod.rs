@@ -942,6 +942,47 @@ fn translate(error: &clap::Error, raw: &RawStep) -> StepError {
 }
 
 impl Step {
+    /// The version of what this step computes, recorded in a processed
+    /// file's recipe and hashed into its revision id (#382).
+    ///
+    /// Bump it in the same change that alters what the step writes, for
+    /// any of its arguments: a fix, a new algorithm, a different edge case.
+    /// A changed default needs no bump, since the recipe records the
+    /// canonical call with defaults filled in. The golden test in
+    /// `steps::digests` fails when a step's output changes and this does
+    /// not. A change outside the steps bumps
+    /// [`crate::recipe::CORE_PROCESSING_VERSION`] instead.
+    ///
+    /// No wildcard arm, so a new step cannot be added without choosing.
+    pub fn version(&self) -> u32 {
+        match self {
+            Step::Subset { .. } => 1,
+            Step::RemoveTraces { .. } => 1,
+            Step::RemoveEmptyTraces { .. } => 1,
+            Step::RemoveStandstills { .. } => 1,
+            Step::AverageTraces { .. } => 1,
+            Step::ZeroCorr { .. } => 1,
+            Step::Bandpass { .. } => 1,
+            Step::BandpassMhz { .. } => 1,
+            Step::EquidistantTraces { .. } => 1,
+            Step::ShiftCoordinates { .. } => 1,
+            Step::Dewow { .. } => 1,
+            Step::BackgroundRemoval { .. } => 1,
+            Step::RemoveTones { .. } => 1,
+            Step::BalanceTraces { .. } => 1,
+            Step::AutoGain { .. } => 1,
+            Step::Gain { .. } => 1,
+            Step::KirchhoffMigration2d => 1,
+            Step::Abslog => 1,
+            Step::Siglog { .. } => 1,
+            Step::AdaptiveSiglog { .. } => 1,
+            Step::Unphase => 1,
+            Step::CorrectTopography => 1,
+            Step::CorrectAntennaSeparation { .. } => 1,
+            Step::Multiply { .. } => 1,
+        }
+    }
+
     /// Reject argument combinations that clap cannot express.
     fn validate(&self) -> Result<(), String> {
         match self {
@@ -1288,6 +1329,9 @@ fn describe(command: &clap::Command) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod digests;
 
 #[cfg(test)]
 mod tests {

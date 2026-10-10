@@ -317,7 +317,7 @@
           },
           "revision_id_collision": {
             "type": "boolean",
-            "description": "`true` when the incoming file fingerprints to the revision id the\noutgoing one already has.\n\n`RevisionId` is `hash(radargram_id + processing_datetime)` and says\nnothing about contents, so a file edited in another tool can carry\nthe same datetime and produce the same id. Every cache and\nstaleness check would then believe nothing changed. Ridal cannot\nproduce this itself, which is exactly why it has to be reported\nrather than assumed away."
+            "description": "`true` when the incoming file fingerprints to the revision id the\noutgoing one already has. The replace is then refused.\n\nFor a file with a recipe (#382) this means it was made from the\nsame raw files in the same way, so there is nothing to replace.\nWithout one, `RevisionId` is `hash(radargram_id +\nprocessing_datetime)` and says nothing about contents, so a file\nedited in another tool can carry the same datetime and produce the\nsame id. Every cache and staleness check would then believe nothing\nchanged, which is why it has to be reported rather than assumed\naway."
           },
           "shape": {
             "oneOf": [
@@ -1383,6 +1383,7 @@
         "required": [
           "radargram_id",
           "processing_datetime",
+          "recipe_hash",
           "time",
           "twtt_anchor",
           "twtt_crop",
@@ -1397,7 +1398,14 @@
           },
           "processing_datetime": {
             "type": "string",
-            "description": "The file's `ridal_processing_datetime` attribute, verbatim. With the\nradargram id it gives the revision id."
+            "description": "The file's `ridal_processing_datetime` attribute, verbatim. With the\nradargram id it gives the revision id of a file without a recipe."
+          },
+          "recipe_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The file's `ridal_recipe_hash` attribute (#382), or `null` when it\nhas none. When present, it and the radargram id give the revision\nid instead of the datetime."
           },
           "time": {
             "type": "array",

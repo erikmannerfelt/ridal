@@ -548,7 +548,8 @@ pub fn axes_for_revision_checked(
         }
     };
     let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
-        &crate::identity::RevisionId::fingerprint_v1(radargram_id, when) == revision_id
+        &crate::identity::RevisionId::declared(radargram_id, when, declared.recipe_hash.as_deref())
+            == revision_id
     });
     if !same_revision {
         eprintln!(
@@ -1040,6 +1041,7 @@ mod tests {
             n_samples: 16,
             separation: None,
             processing_datetime: None,
+            recipe_hash: None,
         };
         assert!(snapshot_values(&declared(vec![0.0, 1.0, 2.0])).is_some());
         assert!(
@@ -1128,6 +1130,7 @@ mod tests {
             n_samples: 1992,
             separation: None,
             processing_datetime: None,
+            recipe_hash: None,
         });
         let uncorrected = axes_from_declarations(&crate::interp::source::AxisDeclarations {
             time: vec![0.0, 1.0, 2.0],
@@ -1138,6 +1141,7 @@ mod tests {
             n_samples: 2024,
             separation: None,
             processing_datetime: None,
+            recipe_hash: None,
         });
 
         let names = |axes: &Axes| -> Vec<String> {
@@ -1179,6 +1183,7 @@ mod tests {
             n_samples: n,
             separation: None,
             processing_datetime: None,
+            recipe_hash: None,
         };
 
         let clock = snapshot_values(&declared(0.0, 0.0, 2024)).expect("the clock is a mapping");

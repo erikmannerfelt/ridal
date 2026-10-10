@@ -239,6 +239,19 @@ impl GPR {
             )),
         );
 
+        // What the file was made from (#382). The hash is stored beside the
+        // recipe rather than recomputed by readers, so a later change to
+        // how recipes are serialized cannot move the revision id of a file
+        // already written; it is the id's only input besides the
+        // radargram id.
+        if let Some(recipe) = self.recipe()? {
+            attrs.insert("ridal_recipe".into(), ExportAttr::String(recipe.to_json()));
+            attrs.insert(
+                "ridal_recipe_hash".into(),
+                ExportAttr::String(recipe.hash()),
+            );
+        }
+
         // Persistent identity metadata (#116). `identity.radargram_id` is
         // always populated by build_processed_gpr() before export; a caller
         // that reaches export_dataset() without going through it (e.g. a

@@ -14,6 +14,9 @@ mod identity;
 mod interp;
 mod io;
 mod project;
+/// What a processed radargram was made from (#382): raw file checksums,
+/// settings and versioned steps, hashed into its revision id.
+mod recipe;
 /// Radargram rendering: source window -> view -> resample -> normalize ->
 /// colormap -> encode. Outside the `server` feature because nothing in it
 /// is about HTTP -- the CLI's `ridal render` and the web GUI are two
@@ -1094,10 +1097,14 @@ pub mod ridal {
     ///     One metadata summary dictionary per input file. ``record["format"]["name"]``
     ///     tells the two kinds apart: for a processed file it is ``"ridal"``, and
     ///     the record holds ``ridal_version``, ``radargram_id``, ``display_name``,
-    ///     ``group_name``, ``group_id``, ``processing_datetime``, ``revision_id``,
-    ///     ``samples`` and ``traces``. ``revision_id`` is the id a Ridal server
-    ///     gives this revision of the radargram, so a local file can be matched to
-    ///     one a server already has. A file from a Ridal too old to have radargram
+    ///     ``group_name``, ``group_id``, ``processing_datetime``, ``recipe_hash``,
+    ///     ``revision_id``, ``samples`` and ``traces``. ``revision_id`` is the id a
+    ///     Ridal server gives this revision of the radargram, so a local file can be
+    ///     matched to one a server already has. It is derived from ``recipe_hash``,
+    ///     the hash of the raw files and processing the file was made from, so the
+    ///     same raw data processed the same way has the same ``revision_id``. A file
+    ///     written before recipes were recorded has ``recipe_hash`` ``None``, and
+    ///     its ``revision_id`` comes from ``processing_datetime`` instead. A file from a Ridal too old to have radargram
     ///     ids has ``reprocess_reason`` set and the identity fields ``None``; for
     ///     every other file ``reprocess_reason`` is ``None``.
     ///

@@ -432,6 +432,7 @@ impl Catalog {
                 }
                 RidalNetcdfKind::NotRidal => continue, // silently ignored, per #122/#123.
             };
+            let revision_id = meta.revision_id();
 
             // The file's own ridal_group_name/ridal_group_id win; absent
             // that, fall back to the catalog-relative parent directory as
@@ -453,8 +454,6 @@ impl Catalog {
                 },
             };
 
-            let revision_id =
-                RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime);
             let display_name = meta.display_name;
             let entry = CatalogEntry {
                 radargram_id: meta.radargram_id.clone(),

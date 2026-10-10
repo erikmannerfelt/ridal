@@ -278,9 +278,7 @@ pub async fn upload_dataset(
     // have been removed before. Re-uploading the same revision makes it
     // current once more, and a record still marked superseded would
     // contradict the catalog that is serving it.
-    let revision_id =
-        crate::identity::RevisionId::fingerprint_v1(&meta.radargram_id, &meta.processing_datetime)
-            .to_string();
+    let revision_id = meta.revision_id().to_string();
     // The upload is installed either way. A file that cannot be read back
     // gets no checksum, as one without axes does, but says so: a checksum
     // missing for that reason is one later checks silently go without.
@@ -339,13 +337,7 @@ pub async fn upload_dataset(
             user: caller.audit_name(),
             action: audit::Action::Added,
             radargram_id: meta.radargram_id.to_string(),
-            revision_id: Some(
-                crate::identity::RevisionId::fingerprint_v1(
-                    &meta.radargram_id,
-                    &meta.processing_datetime,
-                )
-                .to_string(),
-            ),
+            revision_id: Some(meta.revision_id().to_string()),
             note: match (&query.filename, archived_interpretations) {
                 (name, 0) => name.clone(),
                 (Some(name), n) => Some(format!(
@@ -362,11 +354,7 @@ pub async fn upload_dataset(
         StatusCode::CREATED,
         Json(Added {
             radargram_id: meta.radargram_id.to_string(),
-            revision_id: crate::identity::RevisionId::fingerprint_v1(
-                &meta.radargram_id,
-                &meta.processing_datetime,
-            )
-            .to_string(),
+            revision_id: meta.revision_id().to_string(),
             display_name: meta.display_name.map(|n| n.to_string()),
             group_name: meta.group_name.map(|n| n.to_string()),
             bytes,
@@ -689,7 +677,8 @@ fn snapshot_axes(
     // mapping with another's id -- which is the exact cross-revision
     // mistake snapshots exist to prevent, committed by the snapshot.
     let same_revision = declared.processing_datetime.as_deref().is_some_and(|when| {
-        crate::identity::RevisionId::fingerprint_v1(id, when).as_str() == revision
+        crate::identity::RevisionId::declared(id, when, declared.recipe_hash.as_deref()).as_str()
+            == revision
     });
     if !same_revision {
         return Err(format!(

@@ -23,6 +23,7 @@ mod identity;
 mod interp;
 mod io;
 mod project;
+mod recipe;
 mod render;
 #[cfg(feature = "server")]
 mod server;
