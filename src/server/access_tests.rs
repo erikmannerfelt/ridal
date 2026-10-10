@@ -6149,3 +6149,175 @@ async fn removing_a_radargram_removes_its_raw_data_too() {
         .iter()
         .all(|f| crate::project::raw::contains(&data_dir, f["blake3"].as_str().unwrap())));
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_processing_profile_is_versioned_and_shared_by_its_radargrams() {
+    // #382 phase 6.
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("vera", Role::Viewer, DownloadScope::None, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let vera = sign_in(&app, "vera").await;
+    let profile = |steps: &[&str]| json!({"name": "Svalbard 100 MHz", "steps": steps, "medium_velocity": 0.168});
+
+    let created = put(
+        &app,
+        "/api/v1/processing/profiles/svalbard-100mhz",
+        &profile(&["dewow", "gain(0.002)"]),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+    assert_eq!(created.body["current_version"], 1);
+    assert!(created.body["versions"][0]["steps"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("dewow("));
+    assert_eq!(created.body["versions"][0]["by"], "erik");
+
+    // A viewer reads, and may not change.
+    let seen = get(
+        &app,
+        "/api/v1/processing/profiles/svalbard-100mhz",
+        Some(&vera),
+    )
+    .await;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.text);
+    let refused = put(
+        &app,
+        "/api/v1/processing/profiles/svalbard-100mhz",
+        &profile(&["dewow"]),
+        Some(&vera),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    // Changing the steps is version 2; against a stale ETag it is refused.
+    let changed = send(
+        &app,
+        request(
+            "PUT",
+            "/api/v1/processing/profiles/svalbard-100mhz",
+            Some(&erik),
+        )
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_MATCH, created.etag.clone().unwrap())
+        .body(Body::from(profile(&["dewow", "gain(0.003)"]).to_string()))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(changed.body["current_version"], 2, "{}", changed.text);
+    let stale = send(
+        &app,
+        request(
+            "PUT",
+            "/api/v1/processing/profiles/svalbard-100mhz",
+            Some(&erik),
+        )
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::IF_MATCH, created.etag.clone().unwrap())
+        .body(Body::from(profile(&["dewow"]).to_string()))
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        stale.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        stale.text
+    );
+
+    // Bad steps name what is wrong.
+    let bad = put(
+        &app,
+        "/api/v1/processing/profiles/other",
+        &profile(&["dewoww"]),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad.body["error"]["code"], "invalid_steps");
+
+    // Two radargrams use it, one cropping first; a pre-step that processes
+    // is refused.
+    for (id, pre) in [("ours", json!(["subset(0 2000)"])), ("theirs", json!([]))] {
+        let assigned = put(
+            &app,
+            &format!("/api/v1/processing/assignments/{id}"),
+            &json!({"profile": "svalbard-100mhz", "pre_steps": pre}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
+    }
+    let custom = put(
+        &app,
+        "/api/v1/processing/assignments/ours",
+        &json!({"profile": "svalbard-100mhz", "pre_steps": ["dewow"]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(custom.status, StatusCode::BAD_REQUEST);
+    assert!(
+        custom.text.contains("only choose traces and samples"),
+        "{}",
+        custom.text
+    );
+    let unknown = put(
+        &app,
+        "/api/v1/processing/assignments/ours",
+        &json!({"profile": "nope"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+    let listed = get(&app, "/api/v1/processing/profiles", Some(&vera)).await;
+    assert_eq!(
+        listed.body["profiles"][0]["members"],
+        json!(["ours", "theirs"])
+    );
+    let assignments = get(&app, "/api/v1/processing/assignments", Some(&vera)).await;
+    assert!(assignments.body["radargrams"]["ours"]["pre_steps"][0]
+        .as_str()
+        .unwrap()
+        .starts_with("subset("));
+
+    // In use, it cannot be deleted; unused, it can.
+    let in_use = delete(
+        &app,
+        "/api/v1/processing/profiles/svalbard-100mhz",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(in_use.status, StatusCode::CONFLICT, "{}", in_use.text);
+    for id in ["ours", "theirs"] {
+        let removed = delete(
+            &app,
+            &format!("/api/v1/processing/assignments/{id}"),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(removed.status, StatusCode::NO_CONTENT);
+    }
+    let deleted = delete(
+        &app,
+        "/api/v1/processing/profiles/svalbard-100mhz",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    assert_eq!(
+        get(
+            &app,
+            "/api/v1/processing/profiles/svalbard-100mhz",
+            Some(&erik)
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+}

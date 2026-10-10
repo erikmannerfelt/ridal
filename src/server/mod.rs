@@ -76,6 +76,7 @@ pub mod overrides_routes;
 pub mod overview_cache;
 pub mod preference_routes;
 pub mod processing;
+pub mod processing_routes;
 pub mod raw_routes;
 pub mod render_service;
 pub mod replace_routes;

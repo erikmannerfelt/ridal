@@ -940,6 +940,25 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
                 .delete(super::raw_routes::delete_source),
         )
         .route(
+            "/api/v1/processing/profiles",
+            get(super::processing_routes::list_profiles),
+        )
+        .route(
+            "/api/v1/processing/profiles/{profile}",
+            get(super::processing_routes::get_profile)
+                .put(super::processing_routes::put_profile)
+                .delete(super::processing_routes::delete_profile),
+        )
+        .route(
+            "/api/v1/processing/assignments",
+            get(super::processing_routes::list_assignments),
+        )
+        .route(
+            "/api/v1/processing/assignments/{radargram_id}",
+            axum::routing::put(super::processing_routes::put_assignment)
+                .delete(super::processing_routes::delete_assignment),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/track.geojson",
             get(super::routes::dataset_track_geojson),
         )

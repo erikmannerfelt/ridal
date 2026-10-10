@@ -176,6 +176,27 @@ the project removes its source too; ignoring one does not.
 | `PUT` | `/api/v1/sources/{radargram_id}` | `operator` | Set or switch what the radargram is made from: `recordings`, a list of recordings in merge order, each a list of `{name, blake3}` as the upload answered, and optionally `crs`, an EPSG code such as `EPSG:32633`, and `dem`. Which file is a recording's header, data and positions is read from the names. Every recording is read before anything is saved, and what its header and positions say is in the answer. Takes `If-Match`. |
 | `DELETE` | `/api/v1/sources/{radargram_id}` | `operator` | Forget what the radargram is made from. Files no other source names are deleted after an hour. |
 
+## Processing profiles
+
+A **processing profile** is processing that many radargrams share: a name,
+a list of steps and a medium velocity. It is not a catalog group, and its
+radargrams may be in any number of groups. Steps are stored written out in
+full, with every default filled in. Changing the steps or the velocity makes
+a new version, and every version is kept; changing only the name or
+description does not. A radargram is **assigned** to one profile, and may
+have steps of its own that run first, as long as they only choose traces and
+samples (`subset`, `remove_traces`).
+
+| Method | Path | Needs | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/processing/profiles` | `viewer` | Every processing profile, each with its versions and the radargrams that use it. |
+| `GET` | `/api/v1/processing/profiles/{profile}` | `viewer` | One processing profile, with an `ETag`. |
+| `PUT` | `/api/v1/processing/profiles/{profile}` | `operator` | Create or change a processing profile: `name`, `steps`, `medium_velocity` and optionally `description`. Takes `If-Match`. |
+| `DELETE` | `/api/v1/processing/profiles/{profile}` | `operator` | Delete a processing profile. Refused while any radargram uses it. |
+| `GET` | `/api/v1/processing/assignments` | `viewer` | Which radargram uses which processing profile, and the steps of its own. |
+| `PUT` | `/api/v1/processing/assignments/{radargram_id}` | `operator` | Put a radargram in a processing profile: `profile`, and optionally `pre_steps`, which may only be `subset` and `remove_traces`. |
+| `DELETE` | `/api/v1/processing/assignments/{radargram_id}` | `operator` | Take a radargram out of its processing profile. |
+
 ## Interpretations
 
 A `picker` may only write their own interpretation. Reading someone else's
