@@ -25,7 +25,9 @@ def test_run_cli_raises_migration_error():
         ridal.run_cli("--default", "line01.rad")
 
 
-FIXTURE = Path(__file__).parent / "assets" / "mala" / "dronbreen-20250327-DAT_0066_A1.rd3"
+FIXTURE = (
+    Path(__file__).parent / "assets" / "mala" / "dronbreen-20250327-DAT_0066_A1.rd3"
+)
 
 
 @pytest.mark.skipif(
@@ -79,3 +81,31 @@ def test_info_reads_a_processed_file_and_its_preflight_body(tmp_path):
 
     with pytest.raises(RuntimeError, match="only apply to raw recordings"):
         ridal.info(output, crs="EPSG:32633")
+
+
+@pytest.mark.skipif(
+    not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists(),
+    reason="processing the fixture's coordinates needs PROJ, and the fixture",
+)
+def test_batch_process_names_outputs_after_an_id_pattern(tmp_path):
+    # #368: the same patterns as `batch-process --id-pattern`.
+    outputs = ridal.batch_process(
+        [str(FIXTURE.with_suffix(".rad"))],
+        str(tmp_path),
+        steps=["subset(0 50 0 100)"],
+        quiet=True,
+        id_pattern="line-{freq}mhz-{n:02, from=7}",
+        display_name_pattern="Line {n} at {freq} MHz",
+    )
+    assert [Path(p).name for p in outputs] == ["line-25mhz-07.nc"]
+    (record,) = ridal.info(outputs)
+    assert record["radargram_id"] == "line-25mhz-07"
+    assert record["display_name"] == "Line 7 at 25 MHz"
+
+    with pytest.raises(RuntimeError, match="uppercase"):
+        ridal.batch_process(
+            [str(FIXTURE.with_suffix(".rad"))],
+            str(tmp_path),
+            quiet=True,
+            id_pattern="line-{freq}MHz",
+        )

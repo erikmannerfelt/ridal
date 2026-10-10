@@ -64,10 +64,51 @@ for all its traces: the CRS, antenna frequency, time window, antenna
 separation and medium velocity. A file that differs in any of them starts a
 new output instead.
 
-Each output's radargram id comes from its first input's file name. `-r` and
-`-t` on their own put the images and tracks in the output directory, or in
-the directory given after them. With `--no-export`, `-o` is optional and
-those go in the current directory.
+`-r` and `-t` on their own put the images and tracks in the output
+directory, or in the directory given after them. With `--no-export`, `-o` is
+optional and those go in the current directory.
+
+### Naming the outputs
+
+Each output's radargram id comes from its first input's file name, unless
+`--id-pattern` gives a pattern for it. The outputs are then named after their
+ids:
+
+```bash
+ridal batch-process "data/*.rd3" --merge "10 min" --default -o output/ \
+  --group-name "Drønbreen" \
+  --id-pattern "{group}-2026-{freq}mhz-{n:02, per=freq}" \
+  --display-name-pattern "Drønbreen 2026, {freq} MHz, line {n}"
+```
+
+| Placeholder | Value |
+|---|---|
+| `{stem}` | the first input's file stem: `dat_0142_a1` |
+| `{n}` | a counter over the outputs, in the order they were recorded, from 1 |
+| `{freq}` | the antenna frequency in MHz |
+| `{nfiles}` | how many inputs were merged into the output |
+| `{date}` | the date of the first trace, `YYYYMMDD` |
+| `{group}` | the group id, from `--group-name` or `--group-id` |
+
+`{n:02}` pads a number to two digits, and so do `{freq:04}` and
+`{nfiles:02}`. The counter takes options after a comma:
+
+- `{n, from=15}` starts at 15.
+- `{n, from=next}` continues after the highest number among the radargrams
+  already in the output directory whose ids match the pattern.
+- `{n, per=freq}` counts each frequency separately, so the example above
+  gives `dronbreen-2026-100mhz-01`, `dronbreen-2026-100mhz-02` and
+  `dronbreen-2026-800mhz-01`. `per=freq+date` counts each frequency on each
+  day.
+
+An id may only hold lowercase ASCII letters, digits, `-` and `_`, so the text
+around the placeholders is checked when the pattern is read: write `mhz`, not
+`MHz`. Every id is worked out before anything is processed, and two outputs
+that would get the same one are an error.
+
+`--display-name-pattern` takes the same placeholders and any text, plus `{id}`
+and `{group_name}`. Its `{n}` is the number in the output's id, so line 7 is
+`…-07`, unless it is given `from=` or `per=` of its own.
 
 ## Rendering an image
 

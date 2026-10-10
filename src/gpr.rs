@@ -2519,10 +2519,15 @@ pub struct BatchRunParams {
     pub user_metadata: user_metadata::UserMetadata,
     // Batch mode derives a radargram ID and (absent) display name per output
     // from each output's own stem -- an explicit single ID or display name
-    // would collide across outputs. A group applies uniformly to the whole
-    // batch, since batch runs typically process one survey or campaign.
+    // would collide across outputs -- unless patterns say otherwise (#368).
+    // A group applies uniformly to the whole batch, since batch runs
+    // typically process one survey or campaign.
     pub group: Option<String>,
     pub group_id: Option<String>,
+    /// An id pattern (see [`crate::id_pattern`]). The outputs are then named
+    /// after their ids, `<id>.nc`.
+    pub id_pattern: Option<String>,
+    pub display_name_pattern: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3180,18 +3185,30 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             .collect::<Vec<Vec<PathBuf>>>()
     };
 
+    let groups: Vec<Vec<PathBuf>> = groups.into_iter().filter(|g| !g.is_empty()).collect();
+    // Every name is rendered before anything is processed, so a pattern that
+    // collides or cannot be rendered costs nothing.
+    let names = batch_names(&params, &groups)?;
+
     let mut output_paths = Vec::<PathBuf>::new();
 
-    for group in groups {
-        if group.is_empty() {
-            continue;
-        }
-
+    for (index, group) in groups.into_iter().enumerate() {
         let first = &group[0];
-        let stem = first
+        let file_stem = first
             .file_stem()
             .and_then(|s| s.to_str())
             .ok_or_else(|| format!("Could not derive output stem from {}", first.display()))?;
+        let (radargram_id, display_name) = match &names {
+            Some((ids, display_names)) => (
+                Some(ids[index].to_string()),
+                display_names
+                    .as_ref()
+                    .and_then(|names| names[index].as_ref())
+                    .map(|name| name.as_str().to_string()),
+            ),
+            None => (None, None),
+        };
+        let stem = radargram_id.as_deref().unwrap_or(file_stem);
         let output_nc = params.output_dir.join(format!("{stem}.nc"));
 
         let render_path = params
@@ -3222,11 +3239,15 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
             override_antenna_mhz: params.override_antenna_mhz,
             override_antenna_separation: params.override_antenna_separation,
             user_metadata: params.user_metadata.clone(),
-            // The id process mode would fall back to, given here so that it
-            // does not print its advice to pass --radargram-id once per
-            // output: batch mode has no such option (#368).
-            radargram_id: Some(crate::identity::RadargramId::from_fallback(stem)?.to_string()),
-            display_name: None,
+            // Without a pattern, the id process mode would fall back to,
+            // given here so that it does not print its advice to pass
+            // --radargram-id once per output: batch mode has no such option
+            // (#368).
+            radargram_id: Some(match radargram_id {
+                Some(id) => id,
+                None => crate::identity::RadargramId::from_fallback(file_stem)?.to_string(),
+            }),
+            display_name,
             group: params.group.clone(),
             group_id: params.group_id.clone(),
         };
@@ -3238,6 +3259,133 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
     }
 
     Ok(BatchProcessResult { output_paths })
+}
+
+/// The ids and display names the patterns give each output of a batch, in
+/// output order, or `None` without an id pattern (#368).
+///
+/// Reads each output's first header and positions, which is what a pattern
+/// can refer to: the start time orders `{n}` and gives `{date}`, and the
+/// antenna gives `{freq}`. `from=next` continues after the ids of the
+/// processed files already in the output directory.
+#[allow(clippy::type_complexity)]
+fn batch_names(
+    params: &BatchRunParams,
+    groups: &[Vec<PathBuf>],
+) -> Result<
+    Option<(
+        Vec<crate::identity::RadargramId>,
+        Option<Vec<Option<crate::identity::DisplayName>>>,
+    )>,
+    String,
+> {
+    use crate::id_pattern::{BatchFacts, OutputFacts, Pattern, PatternKind};
+
+    let parse = |text: &str, kind: PatternKind, flag: &str| {
+        Pattern::parse(text, kind).map_err(|e| format!("--{flag}: {}", e.render(text)))
+    };
+    let Some(id_text) = params.id_pattern.as_deref() else {
+        if params.display_name_pattern.is_some() {
+            return Err(
+                "--display-name-pattern needs --id-pattern too: each output's display name \
+                 is rendered beside its id"
+                    .to_string(),
+            );
+        }
+        return Ok(None);
+    };
+    let id_pattern = parse(id_text, PatternKind::Id, "id-pattern")?;
+    let display_pattern = params
+        .display_name_pattern
+        .as_deref()
+        .map(|text| parse(text, PatternKind::DisplayName, "display-name-pattern"))
+        .transpose()?;
+
+    let group = crate::identity::resolve_group(
+        params.group.as_deref(),
+        params.group_id.as_deref(),
+        None,
+        None,
+    )?;
+    let batch = match group {
+        Some((name, id)) => BatchFacts {
+            group_id: Some(id),
+            group_name: Some(name),
+        },
+        None => BatchFacts::default(),
+    };
+
+    let outputs = groups
+        .iter()
+        .map(|group| {
+            let first = &group[0];
+            let resolved = formats::resolve_input(first)?;
+            let (meta, location) = load_meta_and_location(
+                &resolved,
+                params.medium_velocity,
+                params.crs.as_ref(),
+                params.cor_path.as_ref(),
+                None,
+                params.override_antenna_mhz,
+                params.override_antenna_separation,
+            )
+            .map_err(|e| format!("{}: {e}", first.display()))?;
+            Ok(OutputFacts {
+                label: first
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                stem: first
+                    .file_stem()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                start_seconds: location
+                    .cor_points
+                    .first()
+                    .map(|p| p.time_seconds)
+                    .ok_or_else(|| format!("No location points found in '{}'", first.display()))?,
+                antenna_mhz: meta.antenna_mhz,
+                n_files: group.len(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let existing = if id_pattern.needs_existing_ids() {
+        existing_radargram_ids(&params.output_dir)
+    } else {
+        Vec::new()
+    };
+    let ids = crate::id_pattern::render_ids(&id_pattern, &outputs, &batch, &existing)?;
+    let display_names = display_pattern
+        .map(|pattern| {
+            crate::id_pattern::render_display_names(
+                &pattern,
+                &id_pattern,
+                &outputs,
+                &batch,
+                &ids,
+                &existing,
+            )
+        })
+        .transpose()?;
+    Ok(Some((ids, display_names)))
+}
+
+/// The radargram ids of the processed files directly in `dir`. A file that
+/// is not one is skipped: this only finds where a counter left off.
+fn existing_radargram_ids(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| is_netcdf(path))
+        .filter_map(|path| match crate::io::inspect_ridal_netcdf(&path) {
+            Ok(crate::io::RidalNetcdfKind::Supported(meta)) => Some(meta.radargram_id.to_string()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn expand_cli_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
@@ -4744,6 +4892,124 @@ pub mod tests {
         );
 
         Ok(())
+    }
+
+    fn batch_params(output: &std::path::Path, id_pattern: Option<&str>) -> super::BatchRunParams {
+        super::BatchRunParams {
+            filepaths: vec![
+                "assets/mala/dronbreen-20250327-DAT_0066_A1.rad".into(),
+                "assets/mala/dronbreen-20220329-DAT_0237_A1.rad".into(),
+                "assets/mala/scott_turnerbreen-20240207-DAT_0454_A1_2500-4000.rad".into(),
+            ],
+            output_dir: output.to_path_buf(),
+            dem_path: None,
+            cor_path: None,
+            medium_velocity: 0.168,
+            crs: None,
+            quiet: true,
+            track_dir: None,
+            steps: vec!["subset(0 50 0 100)".to_string()],
+            no_export: false,
+            render_dir: None,
+            render_profile: None,
+            render_width: None,
+            render_topo: false,
+            merge: None,
+            override_antenna_mhz: None,
+            override_antenna_separation: None,
+            user_metadata: crate::user_metadata::UserMetadata::new(),
+            group: Some("Drønbreen".to_string()),
+            group_id: None,
+            id_pattern: id_pattern.map(str::to_string),
+            display_name_pattern: None,
+        }
+    }
+
+    fn ids_in(dir: &std::path::Path) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .map(|path| {
+                let record = processed(super::inspect(info_params(vec![path.clone()])).unwrap());
+                (
+                    path.file_name().unwrap().to_string_lossy().to_string(),
+                    record.radargram_id.unwrap(),
+                )
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_batch_names_its_outputs_after_the_id_pattern() {
+        // #368. The 2022 and 2024 lines are 100 MHz, the 2025 one 25 MHz,
+        // and the counter runs in time order within each frequency.
+        let dir = tempfile::tempdir().unwrap();
+        let mut params = batch_params(dir.path(), Some("{group}-{freq}mhz-{n:02, per=freq}"));
+        params.display_name_pattern = Some("{group_name}, {freq} MHz line {n}".to_string());
+        super::run_batch(params).unwrap();
+        assert_eq!(
+            ids_in(dir.path()),
+            [
+                (
+                    "dronbreen-100mhz-01.nc".to_string(),
+                    "dronbreen-100mhz-01".to_string()
+                ),
+                (
+                    "dronbreen-100mhz-02.nc".to_string(),
+                    "dronbreen-100mhz-02".to_string()
+                ),
+                (
+                    "dronbreen-25mhz-01.nc".to_string(),
+                    "dronbreen-25mhz-01".to_string()
+                ),
+            ]
+        );
+        let record = processed(
+            super::inspect(info_params(vec![dir.path().join("dronbreen-100mhz-02.nc")])).unwrap(),
+        );
+        assert_eq!(
+            record.display_name.as_deref(),
+            Some("Drønbreen, 100 MHz line 2")
+        );
+
+        // Again, continuing: one more of each frequency.
+        super::run_batch(batch_params(
+            dir.path(),
+            Some("{group}-{freq}mhz-{n:02, per=freq, from=next}"),
+        ))
+        .unwrap();
+        let names: Vec<String> = ids_in(dir.path()).into_iter().map(|(_, id)| id).collect();
+        assert!(
+            names.contains(&"dronbreen-100mhz-04".to_string()),
+            "{names:?}"
+        );
+        assert!(
+            names.contains(&"dronbreen-25mhz-02".to_string()),
+            "{names:?}"
+        );
+        assert_eq!(names.len(), 6);
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_pattern_that_collides_processes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let refused =
+            super::run_batch(batch_params(dir.path(), Some("{group}-{freq}mhz"))).unwrap_err();
+        assert!(
+            refused.contains("would both be 'dronbreen-100mhz'"),
+            "{refused}"
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+
+        let mut params = batch_params(dir.path(), None);
+        params.display_name_pattern = Some("{n}".to_string());
+        assert!(super::run_batch(params)
+            .unwrap_err()
+            .contains("needs --id-pattern"));
     }
 
     fn info_params(inputs: Vec<PathBuf>) -> super::InfoParams {

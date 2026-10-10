@@ -223,6 +223,14 @@ Human-readable name of the group all outputs in this batch belong to (survey, ca
 Explicit override for the group's id, when the id automatically derived from --group-name is not the one wanted
 ```
 
+```{option} --id-pattern <ID_PATTERN>
+Name each output's radargram id after a pattern, and its file `<id>.nc`. Placeholders: {stem} (first input's file stem), {n} (a counter in time order), {freq} (antenna MHz), {nfiles} (inputs merged), {date} (YYYYMMDD) and {group}. {n:02} pads to two digits; {n, from=15} starts at 15, {n, from=next} continues after the ids already in the output directory, and {n, per=freq} counts each frequency separately. Example: "dronbreen-2026-{freq}mhz-{n:02, per=freq}"
+```
+
+```{option} --display-name-pattern <DISPLAY_NAME_PATTERN>
+Name each output's display name after a pattern, with the placeholders of --id-pattern plus {id} and {group_name}, and any text. A bare {n} is the number in the output's id. Needs --id-pattern
+```
+
 ## `ridal info`
 
 ```{program} ridal info
