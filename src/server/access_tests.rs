@@ -7102,17 +7102,33 @@ async fn batch_app(
     Router,
     String,
 ) {
+    batch_app_processing(members, Default::default()).await
+}
+
+/// [`batch_app`], with the rest of `processing` as given.
+#[cfg(unix)]
+async fn batch_app_processing(
+    members: &[&str],
+    processing: crate::server::processing::ProcessingConfig,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    Router,
+    String,
+) {
     let prepared = tempfile::tempdir().unwrap();
     for id in members {
         prepare_draft(prepared.path(), id);
     }
     let hash = password_hash();
-    let (dir, archive, app) = drafting_app(
+    let (dir, archive, app) = drafting_app_processing(
         vec![
             activated("erik", Role::Operator, DownloadScope::All, &hash),
             activated("pia", Role::Picker, DownloadScope::All, &hash),
         ],
         prepared.path(),
+        processing,
     );
     let erik = sign_in(&app, "erik").await;
     let made = put(
@@ -7282,6 +7298,61 @@ async fn a_batch_reprocesses_and_commits_a_profile_s_stale_radargrams() {
     assert_eq!(gone["line-new"]["outcome"], "committed");
     assert_eq!(batches[1]["id"], started.body["id"]);
     assert_eq!(outcomes(&batches[1])["ours"]["outcome"], "committed");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_batch_of_some_of_a_profile_leaves_the_rest_and_two_batches_never_share_one() {
+    // No job ever starts, so the first batch's items stay unfinished for as
+    // long as the test needs them to.
+    let (_prepared, _dir, _archive, app, erik) = batch_app_processing(
+        &["line-a", "line-b"],
+        crate::server::processing::ProcessingConfig {
+            jobs: 0,
+            ..Default::default()
+        },
+    )
+    .await;
+    let reprocess = |body: Value| {
+        let app = app.clone();
+        let erik = erik.clone();
+        async move {
+            post(
+                &app,
+                "/api/v1/processing/profiles/p/reprocess",
+                &body,
+                Some(&erik),
+            )
+            .await
+        }
+    };
+    // One catalog group's radargrams, say.
+    let some = reprocess(json!({"radargram_ids": ["line-a"]})).await;
+    assert_eq!(some.status, StatusCode::ACCEPTED, "{}", some.text);
+    let items: Vec<&str> = some.body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["radargram_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(items, ["line-a"]);
+
+    // The whole profile, while that runs: line-a is the other batch's.
+    let all = reprocess(json!({})).await;
+    assert_eq!(all.status, StatusCode::ACCEPTED, "{}", all.text);
+    let by_id = outcomes(&all.body);
+    assert_eq!(by_id["line-a"]["outcome"], "skipped");
+    assert_eq!(
+        by_id["line-a"]["reason"],
+        "already being processed by another batch"
+    );
+    assert_eq!(by_id["line-b"]["outcome"], "waiting");
+
+    // And nothing is left for a third.
+    let none = reprocess(json!({"radargram_ids": ["line-a", "line-b"]})).await;
+    assert_eq!(none.status, StatusCode::CONFLICT, "{}", none.text);
+    assert_eq!(none.body["error"]["code"], "nothing_to_reprocess");
 }
 
 #[cfg(unix)]

@@ -414,8 +414,11 @@ with no review (`server::batch_routes`).
 
 - **What it takes**: every member `stale` or `not_processed` (and
   `older_processing` when asked), from the same `processing_routes::statuses`
-  the status route uses, at the profile version current when it starts.
-  Members without raw data are listed as skipped.
+  the status route uses, at the profile version current when it starts,
+  or only those of them in `radargram_ids` (a catalog group's). Members
+  without raw data are listed as skipped, and so is one an unfinished
+  item of another batch already has: checked and registered under the
+  `Batches` lock, so two batches started at once never share a radargram.
 - **Jobs are drafts' jobs.** `draft_routes::prepare` lays out the raw
   files and builds the `JobRequest` for both, so the two process alike.
   Items go to the queue `IN_FLIGHT` (two) at a time as `Priority::Batch`,
@@ -434,6 +437,18 @@ with no review (`server::batch_routes`).
   files their items read.
 - **On the page**, "Process N out-of-date radargrams…" asks inline, then
   follows `GET /processing/batches/{id}` until it ends.
+- **In the catalog** (`index.js`), every card of a radargram in a profile
+  gets a badge from one `GET /processing/status` for the whole page:
+  current, stale, custom steps (`custom`: stale with steps or a velocity
+  that match no version of the profile, as opposed to left behind by it),
+  older processing, not processed or no raw data. For an operator,
+  "processing" and "failed" come from the batches (newest first, so the
+  latest word on a radargram wins) and their own drafts, and the page
+  looks again every ten seconds while anything is processing. Each group's
+  heading counts its stale and not-processed radargrams; an operator's
+  "Process N out-of-date…" starts one batch per profile involved, each
+  limited to the group's radargrams. A badge links to its profile on the
+  Processing page (`#profile-<id>`).
 
 ## The Python client (#328)
 

@@ -414,7 +414,8 @@
 
     const section = el(
       'section',
-      { className: 'processing-profile' },
+      // Where a catalog card's processing badge lands.
+      { className: 'processing-profile', id: `profile-${profile.id}` },
       el(
         'h2',
         {},
@@ -765,11 +766,12 @@
       ),
     );
     renderHistory(batches.batches, profiles.profiles);
-    // The process dialog's "Add a DEM" links to `#dems`, which the
-    // profiles drawn above it have moved since the browser looked.
+    // Links land on a profile (a catalog card's badge) or on `#dems` (the
+    // process dialog's "Add a DEM"), drawn or moved since the browser
+    // looked for them.
     await demsLoaded;
-    if (!landed && window.location.hash === '#dems') {
-      document.getElementById('dems')?.scrollIntoView();
+    if (!landed && window.location.hash.length > 1) {
+      document.getElementById(decodeURIComponent(window.location.hash.slice(1)))?.scrollIntoView();
     }
     landed = true;
   }

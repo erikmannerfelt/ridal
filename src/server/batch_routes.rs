@@ -213,6 +213,10 @@ pub struct ReprocessBody {
     /// says (`older_processing`). Off by default: that is not stale.
     #[serde(default)]
     pub include_older: bool,
+    /// Only these of the profile's radargrams, such as one catalog group's.
+    /// Omitted, every one.
+    #[serde(default)]
+    pub radargram_ids: Option<Vec<RadargramId>>,
 }
 
 pub async fn reprocess(
@@ -249,6 +253,13 @@ pub async fn reprocess(
         if status.profile != profile_id {
             continue;
         }
+        if body
+            .radargram_ids
+            .as_ref()
+            .is_some_and(|only| !only.contains(&status.radargram_id))
+        {
+            continue;
+        }
         let outcome = match status.state {
             ProcessingState::Stale { .. } | ProcessingState::NotProcessed => Outcome::Waiting,
             ProcessingState::OlderProcessing { .. } if body.include_older => Outcome::Waiting,
@@ -262,24 +273,55 @@ pub async fn reprocess(
             outcome,
         });
     }
-    if !items.iter().any(|item| item.outcome == Outcome::Waiting) {
-        return Err(ApiError::conflict(
-            "nothing_to_reprocess",
-            format!(
-                "Every radargram in '{}' that can be processed is up to date.",
-                profile.id
-            ),
-        ));
-    }
-
-    let batch = Batch {
-        id: super::lifecycle_routes::uuid(),
-        profile: profile.id.clone(),
-        version: profile.current().version,
-        started_by: caller.audit_name(),
-        started_at: chrono::Utc::now().to_rfc3339(),
-        finished_at: None,
-        items,
+    let batch = {
+        // Checked and registered under one lock, so two batches started at
+        // once (a group's and its profile's, say) cannot both take a
+        // radargram: the second skips what the first is processing.
+        let mut inner = state
+            .batches
+            .inner
+            .lock()
+            .expect("the batches lock is not poisoned");
+        let taken: HashSet<&RadargramId> = inner
+            .values()
+            .flat_map(|live| &live.batch.items)
+            .filter(|item| !item.outcome.is_finished())
+            .map(|item| &item.radargram_id)
+            .collect();
+        for item in &mut items {
+            if item.outcome == Outcome::Waiting && taken.contains(&item.radargram_id) {
+                item.outcome = Outcome::Skipped {
+                    reason: "already being processed by another batch".to_string(),
+                };
+            }
+        }
+        if !items.iter().any(|item| item.outcome == Outcome::Waiting) {
+            return Err(ApiError::conflict(
+                "nothing_to_reprocess",
+                format!(
+                    "Every radargram in '{}' that can be processed is up to date, or \
+                     being processed already.",
+                    profile.id
+                ),
+            ));
+        }
+        let batch = Batch {
+            id: super::lifecycle_routes::uuid(),
+            profile: profile.id.clone(),
+            version: profile.current().version,
+            started_by: caller.audit_name(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+            finished_at: None,
+            items,
+        };
+        inner.insert(
+            batch.id.clone(),
+            Live {
+                batch: batch.clone(),
+                hashes: HashMap::new(),
+            },
+        );
+        batch
     };
     append(
         project,
@@ -297,18 +339,6 @@ pub async fn reprocess(
             },
         );
     }
-    state
-        .batches
-        .inner
-        .lock()
-        .expect("the batches lock is not poisoned")
-        .insert(
-            batch.id.clone(),
-            Live {
-                batch: batch.clone(),
-                hashes: HashMap::new(),
-            },
-        );
     tokio::spawn(drive(Arc::clone(&state), caller, batch.id.clone()));
     Ok((StatusCode::ACCEPTED, Json(batch)))
 }
