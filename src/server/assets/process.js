@@ -72,6 +72,8 @@
   // not processed again for nothing; and whether one is being made.
   let lastRun = null;
   let running = false;
+  // A finished draft is waiting to be applied.
+  let draftReady = false;
   let job = null;
   let token = null;
   let showingDraft = true;
@@ -83,6 +85,7 @@
   };
 
   function reset() {
+    draftReady = false;
     errorBox.hidden = true;
     progress.textContent = '';
     result.hidden = true;
@@ -95,11 +98,15 @@
   }
 
   /** Show the raw-data stage or the steps stage, and only their buttons. */
+  const profileLabel = document.getElementById('process-profile-label');
+  const profileSlot = document.getElementById('process-profile-slot');
   function stage(raw) {
     rawStage.hidden = !raw;
     draftStage.hidden = raw;
     upload.hidden = !raw;
     run.hidden = raw;
+    // With the upload's other choices, or just above the steps it picks.
+    (raw ? rawStage : profileSlot).appendChild(profileLabel);
   }
 
   /** In the viewer, the button says what it will do: process, when the
@@ -136,9 +143,27 @@
       // profile, so the profile's steps are the better start.
       if (assignment) {
         const own = assignment.pre_steps || [];
-        if (own.every((step, i) => steps[i] === step)) {
+        if (own.length && own.every((step, i) => steps[i] === step)) {
           steps = steps.slice(own.length);
         } else {
+          // Not made through the profile as it stands. Still, a file whose
+          // steps are a selection followed by a version of the profile's
+          // was most likely made that way with own steps that were since
+          // lost: offer them again rather than leave them among the rest.
+          const profile = profiles.find((p) => p.id === assignment.profile);
+          const selects = (step) => /^(subset|remove_traces)\(/.test(step);
+          for (const version of [...(profile?.versions || [])].reverse()) {
+            const rest = steps.length - version.steps.length;
+            const tail = steps.slice(rest);
+            if (
+              rest >= 0 &&
+              tail.every((step, i) => step === version.steps[i]) &&
+              steps.slice(0, rest).every(selects)
+            ) {
+              if (own.length === 0 && rest > 0) preSteps.value = steps.slice(0, rest).join('\n');
+              break;
+            }
+          }
           fillFromProfile(assignment.profile);
           return;
         }
@@ -430,11 +455,10 @@
         progress.textContent = `Step ${draft.step.index + 1} of ${draft.step.of}: ${draft.step.step}`;
       } else progress.textContent = 'Reading the raw data…';
     } else if (draft.state === 'done') {
+      draftReady = true;
       finishRun(true);
       progress.textContent = 'Done. Nothing changes until you apply it.';
       result.hidden = false;
-      // Served, applying shows what it would do first; new, it is added.
-      commit.textContent = served ? 'Apply…' : 'Apply and close';
       commit.hidden = false;
       // A radargram that is not served yet has nothing to compare with.
       toggle.hidden = draft.base_revision === null;
@@ -459,17 +483,41 @@
    * own while it is in a profile, so which steps are whose is plain. */
   const preBox = document.getElementById('process-pre');
   const preSteps = document.getElementById('process-pre-steps');
-  const stepsLabel = document.getElementById('process-steps-label');
+  const mainBox = document.getElementById('process-main');
+  const mainSummary = document.getElementById('process-main-summary');
+  const mainNote = document.getElementById('process-main-note');
   const preLines = () => (preBox.hidden ? [] : linesIn(preSteps));
   // Kept when the radargram leaves its profile, so that coming back (a
   // mistaken click on None, say) does not lose them.
   let keptPre = [];
   function showPre() {
-    const inProfile = Boolean(assignment);
-    preBox.hidden = !inProfile;
-    stepsLabel.textContent = inProfile
-      ? "Then these steps, one per line: the profile's, unless you change them"
-      : 'Steps, one per line';
+    preBox.hidden = !assignment;
+    showMain(true);
+  }
+
+  /** In a profile, its steps and velocity fold away under a line that
+   * says whose they are, and open, saying so, once they differ from the
+   * profile's. Outside one they are just the steps, always open. `fold`
+   * closes them again when they are the profile's. */
+  function showMain(fold = false) {
+    const profile = assignment && profiles.find((p) => p.id === assignment.profile);
+    const current = profile?.versions.find((v) => v.version === profile.current_version);
+    mainBox.classList.toggle('process-main-free', !profile);
+    mainNote.hidden = !profile;
+    if (!profile) {
+      mainBox.open = true;
+      return;
+    }
+    const differs =
+      !current ||
+      JSON.stringify(linesIn(stepsBox)) !== JSON.stringify(current.steps) ||
+      Number(velocityBox.value) !== current.medium_velocity;
+    mainSummary.textContent = differs
+      ? `Steps and velocity: changed from ${profile.name}'s for this radargram`
+      : `Steps and velocity: ${profile.name}'s, version ${current.version}`;
+    mainSummary.classList.toggle('process-differs', differs);
+    if (differs) mainBox.open = true;
+    else if (fold) mainBox.open = false;
   }
 
   /** The steps as they are sent: its own first, then the rest. */
@@ -485,6 +533,19 @@
     const same = lastRun !== null && runKey() === lastRun;
     run.disabled = running || same;
     run.title = same ? 'This draft is made from these steps already. Change them to process again.' : '';
+    // A draft is applied as it was made: once the boxes say something
+    // else, applying it would not apply what they say.
+    if (draftReady) {
+      commit.hidden = !same;
+      if (!same) {
+        confirm.hidden = true;
+        progress.textContent =
+          'The steps have changed since this draft was made. Process again to apply them.';
+      } else {
+        progress.textContent = 'Done. Nothing changes until you apply it.';
+      }
+    }
+    showMain();
   }
   stepsBox.addEventListener('input', updateRun);
   preSteps.addEventListener('input', updateRun);
@@ -506,6 +567,7 @@
     stepsBox.value = current.steps.join('\n');
     velocityBox.value = String(current.medium_velocity);
     updateRun();
+    showMain(true);
   }
 
   /** Save the radargram in `profileId` with `pre` as its own steps; the
@@ -664,6 +726,7 @@
     dialog.showModal();
     await loadAssignment();
     if (!raw) await prefill();
+    showMain(true);
   }
 
   if (viewerOpen) viewerOpen.addEventListener('click', () => begin(!hasSource));
@@ -844,14 +907,30 @@
       return;
     }
     token = body.token;
+    const report = body.report;
+    // Nothing anyone picked moves or is left out: nothing to look at.
+    const harmless =
+      !report.revision_id_collision &&
+      report.documents.every(
+        (d) => (d.severity === 'current' || d.severity === 'carried') && !(d.dropped || []).length,
+      );
+    if (harmless) {
+      await applyReplacement();
+      return;
+    }
     commit.hidden = true;
-    progress.textContent = 'What applying it would do is above. Nothing has changed yet.';
-    render(body.report);
+    progress.textContent =
+      "Applying it would change people's picks, as above. Nothing has changed yet.";
+    render(report);
   });
 
-  confirm.addEventListener('click', async () => {
+  confirm.addEventListener('click', applyReplacement);
+
+  /** Install the staged replacement and reload, to show it. */
+  async function applyReplacement() {
     if (!token) return;
     confirm.disabled = true;
+    commit.disabled = true;
     progress.textContent = 'Applying…';
     try {
       const response = await fetch(
@@ -861,19 +940,21 @@
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         confirm.disabled = false;
+        commit.disabled = false;
         progress.textContent = '';
         fail(body?.error?.message || RIDAL.upstreamMessage(response.status));
         return;
       }
     } catch (error) {
       confirm.disabled = false;
+      commit.disabled = false;
       fail(`Could not replace it (${error.message}).`);
       return;
     }
     token = null;
     job = null;
     window.location.reload();
-  });
+  }
 
   document.getElementById('process-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {

@@ -373,13 +373,18 @@ source names, to look at before it becomes the radargram
   `assets/process.js`) is one template included by the viewer, the catalog
   and the Processing page. It starts from the served file's
   `processing_steps`, polls the draft while it runs, shows its overview
-  with a toggle to the current one, and commits through the draft's commit
-  route and then the replace token, as the catalog's replace dialog does.
-  Closing it throws the draft away. For a radargram in a profile it shows
-  the pre-steps in a box of their own above the rest, saves changed ones to
-  the assignment when it processes, and says where the radargram stands
-  (`GET /processing/status?radargram_id=`) with a button back to the
-  profile's steps.
+  with a toggle to the current one, and applies through the draft's commit
+  route and then the replace token. One button does both when the
+  consequence report says no one's picks move or are left out; otherwise
+  the report is shown first. A change to the steps, velocity or profile
+  after a draft withdraws the button, since applying would not apply what
+  the boxes say. Cancel (closing) throws the draft away. For a radargram in
+  a profile it shows, in the order they run, the pre-steps in a box of
+  their own, the profile, and the profile's steps and velocity folded
+  under a line that says when they differ from the profile's; it saves
+  changed pre-steps to the assignment when it processes, and says where
+  the radargram stands (`GET /processing/status?radargram_id=`) with a
+  button back to the profile's steps.
   Verified in headless Chromium driven over the DevTools protocol (Node's
   built-in `WebSocket`), not `--dump-dom`: virtual time races past a job
   that takes real seconds.

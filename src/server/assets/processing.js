@@ -192,6 +192,7 @@
         'td',
         {},
         el('a', {
+          className: 'processing-id',
           href: RIDAL.pagePath('view', member.id),
           textContent: member.id,
         }),
@@ -493,7 +494,10 @@
           { className: 'table-scroll' },
           el(
             'table',
-            { className: 'processing-members' },
+            // The layers page's table: columns keep a readable width and
+            // the wrapper scrolls sideways on a narrow screen, rather than
+            // squeezing the reasons into a column a word wide.
+            { className: 'processing-members layers-table' },
             el('thead', {}, el('tr', {}, ...head.map((h) => el('th', { scope: 'col', textContent: h })))),
             el('tbody', {}, ...members.map((m) => memberRow(profile, m, statuses[m.id]))),
           ),
