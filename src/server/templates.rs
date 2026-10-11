@@ -40,6 +40,11 @@ pub fn environment() -> Environment<'static> {
     )
     .expect("layers template must parse");
     env.add_template(
+        "processing.html.jinja",
+        include_str!("templates/processing.html.jinja"),
+    )
+    .expect("processing template must parse");
+    env.add_template(
         "settings.html.jinja",
         include_str!("templates/settings.html.jinja"),
     )
@@ -84,6 +89,7 @@ mod tests {
             "index.html.jinja",
             "viewer.html.jinja",
             "layers.html.jinja",
+            "processing.html.jinja",
             "settings.html.jinja",
             "login.html.jinja",
             "invite.html.jinja",
@@ -117,6 +123,10 @@ mod tests {
             (
                 "layers.html.jinja",
                 include_str!("templates/layers.html.jinja"),
+            ),
+            (
+                "processing.html.jinja",
+                include_str!("templates/processing.html.jinja"),
             ),
             (
                 "settings.html.jinja",

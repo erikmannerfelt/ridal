@@ -72,6 +72,7 @@ embedded_asset!(index_js, "index.js", "text/javascript");
 embedded_asset!(viewer_js, "viewer.js", "text/javascript");
 embedded_asset!(layers_js, "layers.js", "text/javascript");
 embedded_asset!(process_js, "process.js", "text/javascript");
+embedded_asset!(processing_js, "processing.js", "text/javascript");
 embedded_asset!(settings_js, "settings.js", "text/javascript");
 embedded_asset!(site_js, "site.js", "text/javascript");
 embedded_asset!(login_js, "login.js", "text/javascript");
@@ -268,6 +269,7 @@ mod tests {
             ("panel.js", include_str!("assets/panel.js")),
             ("process.js", include_str!("assets/process.js")),
             ("layers.js", include_str!("assets/layers.js")),
+            ("processing.js", include_str!("assets/processing.js")),
             ("settings.js", include_str!("assets/settings.js")),
             ("login.js", include_str!("assets/login.js")),
             ("site.js", include_str!("assets/site.js")),
@@ -575,6 +577,10 @@ mod tests {
                 vec![app, ("layers.js", include_str!("assets/layers.js"))],
             ),
             (
+                "processing",
+                vec![app, ("processing.js", include_str!("assets/processing.js"))],
+            ),
+            (
                 "settings",
                 vec![app, ("settings.js", include_str!("assets/settings.js"))],
             ),
@@ -669,6 +675,7 @@ mod tests {
             ("panel.js", include_str!("assets/panel.js")),
             ("process.js", include_str!("assets/process.js")),
             ("layers.js", include_str!("assets/layers.js")),
+            ("processing.js", include_str!("assets/processing.js")),
             ("settings.js", include_str!("assets/settings.js")),
             ("login.js", include_str!("assets/login.js")),
             ("site.js", include_str!("assets/site.js")),

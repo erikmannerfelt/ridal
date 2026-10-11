@@ -311,6 +311,22 @@ a place or a year, and one profile (an antenna, a medium) spans many.
   `remove_traces`. Anything else would be processing the radargram
   differently while it still claims the profile.
 - A profile in use cannot be deleted; the refusal names who uses it.
+- **Staleness is computed, never stored.** `processing::state_of` compares
+  what a served file's recipe records (`io::read_recipe`) with what the
+  radargram's profile and source say now: the profile version whose steps
+  (after the radargram's pre-steps) and velocity match, the raw files, the
+  DEM and the CRS. Any difference is `stale`, with a reason per difference.
+  The same steps run by an older `Step::version` or
+  `CORE_PROCESSING_VERSION` is `older_processing`, not stale. A served
+  file without a recipe is stale, since it cannot be compared; a radargram
+  without raw data is `no_raw_data` and never stale, since nothing can
+  reprocess it. `GET /processing/status` opens each served file once to
+  read its recipe.
+- **The Processing page** (`/processing`, `assets/processing.js`) lists the
+  profiles with their current steps, members and each member's state and
+  reasons. An operator creates profiles (with `If-None-Match: *`, so a new
+  one cannot replace an existing id), changes them (with the `ETag` read
+  when the form opened), and puts radargrams in and out.
 
 ## Drafts (#382)
 

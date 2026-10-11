@@ -346,6 +346,145 @@ pub fn assign(
     }
 }
 
+/// Where a radargram stands against its processing profile.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ProcessingState {
+    /// Processed as the profile says now, from the raw data its source names.
+    Current { profile_version: u32 },
+    /// Processed some other way than the profile and source say now.
+    Stale {
+        /// The profile version it was processed with, when it matches one.
+        profile_version: Option<u32>,
+        reasons: Vec<String>,
+    },
+    /// Processed as the profile says, but by an older version of a step or
+    /// of the rest of Ridal (#383). Not stale: the same request gives a
+    /// different file only because Ridal has changed since.
+    OlderProcessing {
+        profile_version: u32,
+        reasons: Vec<String>,
+    },
+    /// Raw data and a profile, but nothing processed yet.
+    NotProcessed,
+    /// No raw data in the project, so nothing can be reprocessed. Never
+    /// counted as stale (#382).
+    NoRawData,
+}
+
+/// The steps a radargram in `profile` is processed with at `version`.
+fn expected_steps(assignment: &Assignment, version: &ProfileVersion) -> Vec<String> {
+    assignment
+        .pre_steps
+        .iter()
+        .chain(version.steps.iter())
+        .cloned()
+        .collect()
+}
+
+/// Where a radargram stands: `recipe` is what its served file records
+/// (`None` with no file, or one without a recipe), `source` what the
+/// project says it is made from.
+pub fn state_of(
+    assignment: &Assignment,
+    profile: &Profile,
+    source: Option<&super::raw::Source>,
+    served: bool,
+    recipe: Option<&crate::recipe::Recipe>,
+) -> ProcessingState {
+    let Some(source) = source else {
+        return ProcessingState::NoRawData;
+    };
+    if !served {
+        return ProcessingState::NotProcessed;
+    }
+    let current = profile.current();
+    let Some(recipe) = recipe else {
+        return ProcessingState::Stale {
+            profile_version: None,
+            reasons: vec![
+                "processed before Ridal recorded what a file was made from, so it \
+                 cannot be compared"
+                    .to_string(),
+            ],
+        };
+    };
+
+    let steps: Vec<String> = recipe.steps.iter().map(|s| s.step.clone()).collect();
+    let matched = profile
+        .versions
+        .iter()
+        .rev()
+        .find(|v| {
+            expected_steps(assignment, v) == steps && v.medium_velocity == recipe.medium_velocity
+        })
+        .map(|v| v.version);
+
+    let mut reasons = Vec::new();
+    match matched {
+        Some(v) if v == current.version => {}
+        Some(v) => reasons.push(format!(
+            "processed with version {v} of the profile, which is now at version {}",
+            current.version
+        )),
+        None => {
+            reasons.push("processed with steps or a velocity the profile never had".to_string())
+        }
+    }
+    if recipe.bundles != source.bundles {
+        reasons.push("its raw data has been switched since".to_string());
+    }
+    if recipe.dem.as_ref().map(|d| &d.blake3) != source.dem.as_ref().map(|d| &d.blake3) {
+        reasons.push("its DEM has changed since".to_string());
+    }
+    if let Some(crs) = &source.crs {
+        if crs != &recipe.crs {
+            reasons.push(format!(
+                "processed in {}, and its source now says {crs}",
+                recipe.crs
+            ));
+        }
+    }
+    if !reasons.is_empty() {
+        return ProcessingState::Stale {
+            profile_version: matched,
+            reasons,
+        };
+    }
+
+    // The same request; is it the same Ridal?
+    let mut older = Vec::new();
+    if recipe.core_version < crate::recipe::CORE_PROCESSING_VERSION {
+        older.push(format!(
+            "reading and writing files has changed since (version {} → {})",
+            recipe.core_version,
+            crate::recipe::CORE_PROCESSING_VERSION
+        ));
+    }
+    for step in &recipe.steps {
+        if let Ok(parsed) = crate::steps::parse_one(&step.step) {
+            let now = parsed.step.version();
+            if step.version < now {
+                let name = step.step.split('(').next().unwrap_or_default();
+                older.push(format!(
+                    "`{name}` has changed since (version {} → {now})",
+                    step.version
+                ));
+            }
+        }
+    }
+    if older.is_empty() {
+        ProcessingState::Current {
+            profile_version: current.version,
+        }
+    } else {
+        ProcessingState::OlderProcessing {
+            profile_version: current.version,
+            reasons: older,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,5 +676,194 @@ mod tests {
         assign(&store, &line, None).unwrap();
         assert!(delete_profile(&store, &p, &Expectation::Any).unwrap());
         assert!(read_profile(&store, &p).unwrap().is_none());
+    }
+
+    fn recipe_of(steps: &[String], velocity: f32) -> crate::recipe::Recipe {
+        crate::recipe::Recipe {
+            format: crate::recipe::RECIPE_FORMAT,
+            core_version: crate::recipe::CORE_PROCESSING_VERSION,
+            bundles: vec![bundle("aa")],
+            dem: None,
+            crs: "EPSG:32633".to_string(),
+            medium_velocity: velocity,
+            antenna_mhz_override: None,
+            antenna_separation_override: None,
+            steps: steps
+                .iter()
+                .map(|s| crate::recipe::RecipeStep {
+                    step: s.clone(),
+                    version: crate::steps::parse_one(s).unwrap().step.version(),
+                })
+                .collect(),
+        }
+    }
+
+    fn bundle(data: &str) -> crate::recipe::Bundle {
+        crate::recipe::Bundle {
+            format: "ramac".to_string(),
+            files: vec![crate::recipe::BundleFile {
+                role: crate::recipe::FileRole::Data,
+                file: crate::recipe::HashedFile {
+                    name: "DAT_0001_A1.rd3".to_string(),
+                    blake3: data.to_string(),
+                },
+            }],
+        }
+    }
+
+    fn source(data: &str) -> super::super::raw::Source {
+        super::super::raw::Source {
+            bundles: vec![bundle(data)],
+            crs: None,
+            dem: None,
+        }
+    }
+
+    #[test]
+    fn a_radargram_is_current_until_its_profile_or_source_moves_on() {
+        let (_dir, store) = store();
+        let p = id("p");
+        let (v1, _) = save_profile(
+            &store,
+            &p,
+            edit(&["dewow"], 0.168),
+            "a",
+            "t",
+            &Expectation::Any,
+        )
+        .unwrap();
+        let assignment = Assignment {
+            profile: p.clone(),
+            pre_steps: canonical_pre_steps(&["subset(0 100)".to_string()]).unwrap(),
+        };
+        let processed = recipe_of(&expected_steps(&assignment, v1.current()), 0.168);
+        let state = |profile: &Profile, source: &super::super::raw::Source| {
+            state_of(&assignment, profile, Some(source), true, Some(&processed))
+        };
+        assert_eq!(
+            state(&v1, &source("aa")),
+            ProcessingState::Current { profile_version: 1 }
+        );
+
+        // The profile moves on: stale, and it says from which version.
+        let (v2, _) = save_profile(
+            &store,
+            &p,
+            edit(&["dewow", "gain(0.002)"], 0.168),
+            "a",
+            "t",
+            &Expectation::Any,
+        )
+        .unwrap();
+        match state(&v2, &source("aa")) {
+            ProcessingState::Stale {
+                profile_version: Some(1),
+                reasons,
+            } => {
+                assert!(
+                    reasons[0].contains("version 1 of the profile, which is now at version 2"),
+                    "{reasons:?}"
+                )
+            }
+            other => panic!("{other:?}"),
+        }
+        // The raw data is switched (a better .cor, say): stale.
+        match state(&v1, &source("bb")) {
+            ProcessingState::Stale { reasons, .. } => {
+                assert!(reasons[0].contains("switched"), "{reasons:?}")
+            }
+            other => panic!("{other:?}"),
+        }
+        // A CRS the source now names that the file was not processed in.
+        let mut crs = source("aa");
+        crs.crs = Some("EPSG:32634".to_string());
+        assert!(matches!(state(&v1, &crs), ProcessingState::Stale { .. }));
+    }
+
+    #[test]
+    fn what_cannot_be_reprocessed_is_never_stale() {
+        let (_dir, store) = store();
+        let p = id("p");
+        let (profile, _) = save_profile(
+            &store,
+            &p,
+            edit(&["dewow"], 0.168),
+            "a",
+            "t",
+            &Expectation::Any,
+        )
+        .unwrap();
+        let assignment = Assignment {
+            profile: p,
+            pre_steps: vec![],
+        };
+        assert_eq!(
+            state_of(&assignment, &profile, None, true, None),
+            ProcessingState::NoRawData
+        );
+        assert_eq!(
+            state_of(&assignment, &profile, Some(&source("aa")), false, None),
+            ProcessingState::NotProcessed
+        );
+        // Served, but from before recipes: it cannot be compared, so it is
+        // reprocessed to be sure.
+        assert!(matches!(
+            state_of(&assignment, &profile, Some(&source("aa")), true, None),
+            ProcessingState::Stale {
+                profile_version: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_older_step_is_older_processing_not_stale() {
+        let (_dir, store) = store();
+        let p = id("p");
+        let (profile, _) = save_profile(
+            &store,
+            &p,
+            edit(&["dewow"], 0.168),
+            "a",
+            "t",
+            &Expectation::Any,
+        )
+        .unwrap();
+        let assignment = Assignment {
+            profile: p,
+            pre_steps: vec![],
+        };
+        let mut processed = recipe_of(&profile.current().steps, 0.168);
+        processed.steps[0].version = 0;
+        match state_of(
+            &assignment,
+            &profile,
+            Some(&source("aa")),
+            true,
+            Some(&processed),
+        ) {
+            ProcessingState::OlderProcessing {
+                profile_version: 1,
+                reasons,
+            } => {
+                assert!(reasons[0].starts_with("`dewow` has changed"), "{reasons:?}")
+            }
+            other => panic!("{other:?}"),
+        }
+        // Steps the profile never had: stale, with no version to name.
+        let other = recipe_of(&canonical_steps(&["gain(0.1)".to_string()]).unwrap(), 0.168);
+        assert!(matches!(
+            state_of(
+                &assignment,
+                &profile,
+                Some(&source("aa")),
+                true,
+                Some(&other)
+            ),
+            ProcessingState::Stale {
+                profile_version: None,
+                ..
+            }
+        ));
     }
 }

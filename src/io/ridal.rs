@@ -404,6 +404,18 @@ fn read_global_str(file: &netcdf::File, primary: &str, legacy: &str) -> Option<S
     read_global_str_attr(file, primary).or_else(|| read_global_str_attr(file, legacy))
 }
 
+/// The recipe a processed file records (#382), or `None` for a file
+/// written before recipes were, or by something else.
+pub fn read_recipe(path: &Path) -> Result<Option<crate::recipe::Recipe>, String> {
+    let file = netcdf::open(path).map_err(|e| format!("Failed to open {path:?} as NetCDF: {e}"))?;
+    let Some(text) = read_global_str_attr(&file, "ridal_recipe") else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| format!("{path:?} records a recipe that cannot be read: {e}"))
+}
+
 /// Inspect `path` for Ridal recognition without loading the amplitude array.
 ///
 /// Recognition requires `ridal_version`, `ridal_processing_datetime` and a
