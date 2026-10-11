@@ -109,6 +109,16 @@
   </figure>
   <p id="process-headline"></p>
   <div id="process-detail"></div>
+  {#- After applying steps that differ from the radargram's processing
+      profile: make them the profile's next version, and process the
+      profile's other radargrams with it. process.js fills it in. -#}
+  <div id="process-offer" class="process-offer" hidden>
+    <p id="process-offer-text"></p>
+    <p>
+      <button type="button" id="process-offer-yes"></button>
+      <button type="button" id="process-offer-no">No, only this radargram</button>
+    </p>
+  </div>
   {#- What is happening now, beside the buttons that started it, both kept
       in view at the foot of the dialog however long it has grown. -#}
   <div class="process-footer">

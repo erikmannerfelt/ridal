@@ -1467,6 +1467,7 @@ dialog > p > button,
 .process-footer > p > button,
 .process-steps-help > button,
 .process-standing > button,
+.process-offer > p > button,
 .processing-actions button,
 .processing-add button,
 .processing-edit button,
@@ -1491,6 +1492,7 @@ dialog > p > button:hover:not(:disabled),
 .process-footer > p > button:hover:not(:disabled),
 .process-steps-help > button:hover:not(:disabled),
 .process-standing > button:hover:not(:disabled),
+.process-offer > p > button:hover:not(:disabled),
 .processing-actions button:hover:not(:disabled),
 .processing-add button:hover:not(:disabled),
 .processing-edit button:hover:not(:disabled),
@@ -3027,6 +3029,18 @@ a.processing-state:hover {
 }
 .process-dem .hint {
   margin: var(--space-1) 0 0;
+}
+/* The offer to make applied steps the profile's next version: set apart
+   from the report above it, as a question of its own. */
+.process-offer {
+  margin: var(--space-2) 0;
+  padding: var(--space-1) var(--space-3);
+  border-left: 3px solid var(--color-accent);
+}
+.process-offer > p:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 .process-remove {
   margin-left: var(--space-2);

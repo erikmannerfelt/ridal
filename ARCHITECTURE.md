@@ -402,7 +402,13 @@ source names, to look at before it becomes the radargram
   under a line that says when they differ from the profile's; it saves
   changed pre-steps to the assignment when it processes, and says where
   the radargram stands (`GET /processing/status?radargram_id=`) with a
-  button back to the profile's steps.
+  button back to the profile's steps. Applying steps or a velocity that are
+  not the profile's current ones ends on an offer instead of a reload: make
+  them the profile's next version (`PUT` with the profile's `ETag`, after
+  checking it is still at the version the dialog saw) and start a batch for
+  its other radargrams with no review, as decided in #382. The radargram
+  just applied matches the new version, so the batch passes it over. Steps
+  that read the same once canonical make no version, and it says so.
   Verified in headless Chromium driven over the DevTools protocol (Node's
   built-in `WebSocket`), not `--dump-dom`: virtual time races past a job
   that takes real seconds.

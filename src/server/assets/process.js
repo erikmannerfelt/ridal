@@ -98,6 +98,8 @@
     headline.textContent = '';
     detail.replaceChildren();
     token = null;
+    offer.hidden = true;
+    document.getElementById('process-close').textContent = 'Cancel';
   }
 
   /** Show the raw-data stage or the steps stage, and only their buttons. */
@@ -975,8 +977,7 @@
     if (response.status === 201) {
       // A new radargram: it is in the catalog now, so go and look at it.
       job = null;
-      if (window.RIDAL_VIEWER) window.location.reload();
-      else window.location.href = RIDAL.pagePath('view', radargramId);
+      afterApply(true);
       return;
     }
     token = body.token;
@@ -1026,12 +1027,165 @@
     }
     token = null;
     job = null;
-    window.location.reload();
+    afterApply(false);
   }
+
+  /** Where to go once applied: the new radargram, or this page again to
+   * show what replaced it. Deferred while the offer below is open. */
+  let leaveTo = null;
+  function leave() {
+    const to = leaveTo;
+    leaveTo = null;
+    if (to === 'view' && !window.RIDAL_VIEWER) window.location.href = RIDAL.pagePath('view', radargramId);
+    else window.location.reload();
+  }
+
+  /** The profile change applying this draft would make the profile's:
+   * its steps or velocity, when they are not the profile's current ones. */
+  function profileChange() {
+    if (!assignment) return null;
+    const profile = profiles.find((p) => p.id === assignment.profile);
+    const current = profile?.versions.find((v) => v.version === profile.current_version);
+    if (!current) return null;
+    const steps = linesIn(stepsBox);
+    const velocity = Number(velocityBox.value);
+    if (JSON.stringify(steps) === JSON.stringify(current.steps) && velocity === current.medium_velocity) {
+      return null;
+    }
+    const others = profile.members.filter((id) => id !== radargramId);
+    return { profile, next: current.version + 1, steps, velocity, others };
+  }
+
+  const offer = document.getElementById('process-offer');
+  const offerText = document.getElementById('process-offer-text');
+  const offerYes = document.getElementById('process-offer-yes');
+  const offerNo = document.getElementById('process-offer-no');
+  let offered = null;
+
+  /** Applied. With steps of its own, offer to make them the profile's next
+   * version, and to process the profile's other radargrams with it; the
+   * one just applied is then current, so it is not among them. */
+  function afterApply(isNew) {
+    leaveTo = isNew ? 'view' : 'reload';
+    offered = profileChange();
+    if (!offered) {
+      leave();
+      return;
+    }
+    const { profile, next, others } = offered;
+    const n = others.length;
+    // What was applied is done with: the question is all that is left.
+    progress.textContent = '';
+    status.textContent = '';
+    draftStage.hidden = true;
+    result.hidden = true;
+    headline.textContent = `Applied to ${radargramId}.`;
+    detail.replaceChildren();
+    for (const button of [run, toggle, commit, confirm]) button.hidden = true;
+    offerText.textContent =
+      `${radargramId} was processed with steps or a velocity other than ${profile.name}'s. ` +
+      `Make them version ${next} of ${profile.name}` +
+      (n === 0 ? '?' : n === 1
+        ? ', and process its other radargram with them, applying it without review?'
+        : `, and process its ${n} other radargrams with them, applying each without review?`);
+    offerYes.textContent = n
+      ? `Save as version ${next} and process ${n} more`
+      : `Save as version ${next}`;
+    offerYes.disabled = false;
+    offerNo.textContent = 'No, only this radargram';
+    offer.hidden = false;
+    document.getElementById('process-close').textContent = 'Close';
+  }
+
+  offerNo.addEventListener('click', () => dialog.close());
+  offerYes.addEventListener('click', async () => {
+    if (!offered) return;
+    const { profile, next, steps, velocity, others } = offered;
+    offerYes.disabled = true;
+    errorBox.hidden = true;
+    progress.textContent = `Saving version ${next} of ${profile.name}…`;
+    try {
+      // Against the profile as it is now, so a change someone made since
+      // the dialog opened is refused rather than overwritten.
+      const read = await fetch(RIDAL.apiPath('processing', 'profiles', profile.id));
+      if (!read.ok) throw new Error(RIDAL.upstreamMessage(read.status));
+      const now = await read.json();
+      if (now.current_version !== next - 1) {
+        throw new Error(
+          `${profile.name} has changed since this dialog opened (it is at version ` +
+            `${now.current_version} now). Change it on the Processing page instead.`,
+        );
+      }
+      const saved = await RIDAL.fetchJson(RIDAL.apiPath('processing', 'profiles', profile.id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'If-Match': read.headers.get('ETag') },
+        body: JSON.stringify({
+          name: now.name,
+          description: now.description || '',
+          steps,
+          medium_velocity: velocity,
+        }),
+      });
+      // Written differently but the same steps once read: no new version,
+      // and nothing for the others to catch up with.
+      if (saved.current_version !== next) {
+        offerText.textContent =
+          `These are ${profile.name}'s steps already, written differently; nothing ` +
+          'was changed.';
+        offerYes.hidden = true;
+        offerNo.textContent = 'Close';
+        progress.textContent = '';
+        return;
+      }
+      let said = `Saved as version ${next} of ${profile.name}.`;
+      let follow = false;
+      if (others.length) {
+        progress.textContent = 'Starting a batch for the others…';
+        try {
+          const batch = await RIDAL.fetchJson(
+            RIDAL.apiPath('processing', 'profiles', profile.id, 'reprocess'),
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({}),
+            },
+          );
+          const waiting = batch.items.filter((i) => i.outcome === 'waiting').length;
+          said += ` Processing ${waiting} other radargram${waiting === 1 ? '' : 's'}; follow ` +
+            `${waiting === 1 ? 'it' : 'them'} on the`;
+          follow = true;
+        } catch (error) {
+          // Nothing else could be processed (no raw data, say): the
+          // version is saved all the same.
+          said += ` The others were not processed: ${error.message}`;
+        }
+      }
+      offerText.replaceChildren(said);
+      if (follow) {
+        const link = document.createElement('a');
+        link.href = RIDAL.pagePath('processing');
+        link.textContent = 'Processing page';
+        offerText.append(' ', link, '.');
+      }
+      offerYes.hidden = true;
+      offerNo.textContent = 'Close';
+      progress.textContent = '';
+    } catch (error) {
+      progress.textContent = '';
+      offerYes.disabled = false;
+      fail(`Could not save the profile (${error.message}).`);
+    }
+  });
 
   document.getElementById('process-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {
     if (uploading) uploading.abort();
+    // Applied, with the offer open: show what was applied now.
+    if (leaveTo) {
+      offer.hidden = true;
+      leave();
+      return;
+    }
     // A staged replacement nobody committed goes too.
     if (token) {
       fetch(`${RIDAL.apiPath('datasets', radargramId, 'replace')}/${token}`, {
