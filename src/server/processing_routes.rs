@@ -396,6 +396,9 @@ pub(super) async fn statuses(
         work.push((radargram, assignment, profile, source, served));
     }
     drop(catalog);
+    // A setting that is not a CRS is refused when processing; here it is
+    // read as none, so the page still says where everything stands.
+    let project_crs = project.processing_crs().ok().flatten();
 
     tokio::task::spawn_blocking(move || {
         work.into_iter()
@@ -410,6 +413,7 @@ pub(super) async fn statuses(
                         source.as_ref(),
                         served.is_some(),
                         recipe.as_ref(),
+                        project_crs.as_deref(),
                     ),
                     profile: assignment.profile,
                     radargram_id: radargram,

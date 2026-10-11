@@ -398,13 +398,15 @@ fn expected_steps(assignment: &Assignment, version: &ProfileVersion) -> Vec<Stri
 
 /// Where a radargram stands: `recipe` is what its served file records
 /// (`None` with no file, or one without a recipe), `source` what the
-/// project says it is made from.
+/// project says it is made from, and `project_crs` the project's
+/// `[processing] crs`, if it sets one.
 pub fn state_of(
     assignment: &Assignment,
     profile: &Profile,
     source: Option<&super::raw::Source>,
     served: bool,
     recipe: Option<&crate::recipe::Recipe>,
+    project_crs: Option<&str>,
 ) -> ProcessingState {
     let Some(source) = source else {
         return ProcessingState::NoRawData;
@@ -453,13 +455,18 @@ pub fn state_of(
     if recipe.dem.as_ref().map(|d| &d.blake3) != source.dem.as_ref().map(|d| &d.file.blake3) {
         reasons.push("its DEM has changed since".to_string());
     }
-    if let Some(crs) = &source.crs {
-        if crs != &recipe.crs {
-            reasons.push(format!(
-                "processed in {}, and its source now says {crs}",
-                recipe.crs
-            ));
-        }
+    // The CRS it would be processed in now: its source's, else the
+    // project's. With neither, any is right: the zone that suits the track.
+    match (&source.crs, project_crs) {
+        (Some(crs), _) if crs != &recipe.crs => reasons.push(format!(
+            "processed in {}, and its source now says {crs}",
+            recipe.crs
+        )),
+        (None, Some(crs)) if crs != recipe.crs => reasons.push(format!(
+            "processed in {}, and the project's CRS is now {crs}",
+            recipe.crs
+        )),
+        _ => {}
     }
     if !reasons.is_empty() {
         return ProcessingState::Stale {
@@ -755,7 +762,14 @@ mod tests {
         };
         let processed = recipe_of(&expected_steps(&assignment, v1.current()), 0.168);
         let state = |profile: &Profile, source: &super::super::raw::Source| {
-            state_of(&assignment, profile, Some(source), true, Some(&processed))
+            state_of(
+                &assignment,
+                profile,
+                Some(source),
+                true,
+                Some(&processed),
+                None,
+            )
         };
         assert_eq!(
             state(&v1, &source("aa")),
@@ -796,6 +810,36 @@ mod tests {
         let mut crs = source("aa");
         crs.crs = Some("EPSG:32634".to_string());
         assert!(matches!(state(&v1, &crs), ProcessingState::Stale { .. }));
+
+        // The project's CRS counts for a source that names none, and only
+        // then: a source's own still wins.
+        let with = |project: Option<&str>, source: &super::super::raw::Source| {
+            state_of(
+                &assignment,
+                &v1,
+                Some(source),
+                true,
+                Some(&processed),
+                project,
+            )
+        };
+        assert_eq!(
+            with(Some("EPSG:32633"), &source("aa")),
+            ProcessingState::Current { profile_version: 1 }
+        );
+        match with(Some("EPSG:32634"), &source("aa")) {
+            ProcessingState::Stale { reasons, .. } => assert!(
+                reasons[0].contains("the project's CRS is now EPSG:32634"),
+                "{reasons:?}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        let mut own = source("aa");
+        own.crs = Some("EPSG:32633".to_string());
+        assert_eq!(
+            with(Some("EPSG:32634"), &own),
+            ProcessingState::Current { profile_version: 1 }
+        );
     }
 
     #[test]
@@ -816,17 +860,24 @@ mod tests {
             pre_steps: vec![],
         };
         assert_eq!(
-            state_of(&assignment, &profile, None, true, None),
+            state_of(&assignment, &profile, None, true, None, None),
             ProcessingState::NoRawData
         );
         assert_eq!(
-            state_of(&assignment, &profile, Some(&source("aa")), false, None),
+            state_of(
+                &assignment,
+                &profile,
+                Some(&source("aa")),
+                false,
+                None,
+                None
+            ),
             ProcessingState::NotProcessed
         );
         // Served, but from before recipes: it cannot be compared, so it is
         // reprocessed to be sure.
         assert!(matches!(
-            state_of(&assignment, &profile, Some(&source("aa")), true, None),
+            state_of(&assignment, &profile, Some(&source("aa")), true, None, None),
             ProcessingState::Stale {
                 profile_version: None,
                 custom: false,
@@ -860,6 +911,7 @@ mod tests {
             Some(&source("aa")),
             true,
             Some(&processed),
+            None,
         ) {
             ProcessingState::OlderProcessing {
                 profile_version: 1,
@@ -877,7 +929,8 @@ mod tests {
                 &profile,
                 Some(&source("aa")),
                 true,
-                Some(&other)
+                Some(&other),
+                None,
             ),
             ProcessingState::Stale {
                 profile_version: None,

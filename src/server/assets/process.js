@@ -779,9 +779,24 @@
     activityLine.hidden = false;
   }
 
+  /** What a source that names no CRS is processed in: the project's, when
+   * it sets one, else the zone that suits the track. Said in the CRS box,
+   * so leaving it empty is a choice someone can see. */
+  const automaticCrs = crsBox.placeholder;
+  async function loadProjectCrs() {
+    try {
+      const settings = await RIDAL.fetchJson(RIDAL.apiPath('settings'));
+      crsBox.placeholder = settings.processing_crs
+        ? `The project's: ${settings.processing_crs}`
+        : automaticCrs;
+    } catch {
+      crsBox.placeholder = automaticCrs;
+    }
+  }
+
   /** The profiles, and which one this radargram is in, if any. */
   async function loadAssignment() {
-    await Promise.all([loadProfiles(), loadDems()]);
+    await Promise.all([loadProfiles(), loadDems(), loadProjectCrs()]);
     assignment = null;
     if (radargramId !== null) {
       try {

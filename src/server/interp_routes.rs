@@ -1127,6 +1127,9 @@ pub async fn get_settings(
         "description_long": project.and_then(|p| p.description_long()),
         "root": project.map(|p| p.root().display().to_string()),
         "default_profile": project.and_then(|p| p.default_profile()),
+        // What a radargram whose raw data names no CRS is processed in
+        // (#382); `null` for the UTM zone that suits each track.
+        "processing_crs": project.and_then(|p| p.processing_crs().ok().flatten()),
         "profiles": profiles,
         "default_xscale": project.and_then(|p| p.default_xscale()),
         "xscales": crate::server::routes::x_scale_options(),

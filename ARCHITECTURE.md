@@ -291,6 +291,13 @@ directly), plus an optional CRS and DEM. The routes are in
   since that can be lifted.
 - Raw files count toward `max_bytes` because the quota measures the whole
   project directory; the laid-out symlinks count as links.
+- **Which CRS a job uses**: the source's own `crs`, else the project's
+  `[processing] crs` (`Project::processing_crs`, an EPSG code or an error
+  naming the setting), else none, and the job picks the UTM zone that suits
+  the track (`UtmCrs::optimal_crs`). `processing::state_of` compares a
+  file's recipe against the same order, so changing the project's CRS makes
+  the radargrams that rely on it stale. Removing it does not: with no
+  setting, whatever zone a file was processed in is right.
 - **DEMs are project resources** (`raw/dems/<id>.json`, routes in
   `server::dem_routes`): a name, an id and a stored file, uploaded once and
   linked to by any number of sources. A source's `dem` is a `SourceDem`:

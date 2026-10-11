@@ -425,7 +425,14 @@ pub(super) async fn prepare(
         output: output.clone(),
         steps: processing.steps,
         medium_velocity: processing.medium_velocity,
-        crs: source.crs.clone(),
+        // A source's own CRS, else the project's; with neither, the job
+        // picks the UTM zone that suits the track.
+        crs: match &source.crs {
+            Some(crs) => Some(crs.clone()),
+            None => project
+                .processing_crs()
+                .map_err(|e| ApiError::conflict("invalid_project_crs", e))?,
+        },
         dem,
         cor: None,
         antenna_mhz_override: processing.antenna_mhz_override,

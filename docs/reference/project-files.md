@@ -145,6 +145,7 @@ show_group_radargrams = false
 
 [processing]
 max_queued_jobs = 2
+crs = "EPSG:32633"
 
 [map]
 default_basemap = "local-orthophoto"
@@ -248,6 +249,14 @@ name_field = "Stake"
   the same server. It can only lower the server's own limit,
   `--max-queued-per-project`; a larger value is read as the server's.
   Default: the server's.
+
+`crs`
+: The CRS, as an EPSG code such as `EPSG:32633`, that a radargram processed
+  on the server is projected into when its raw data names none. Radargrams
+  either side of a UTM zone boundary then share one CRS. A CRS set on a
+  radargram's raw data still wins. Changing it makes every radargram that
+  relies on it out of date, until it is processed again. Default: none, and
+  each radargram is processed in the UTM zone that suits its own track.
 
 ### `[map]`
 

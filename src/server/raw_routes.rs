@@ -229,20 +229,9 @@ pub struct SourceBody {
     pub dem: Option<String>,
 }
 
-/// A source's CRS, as an EPSG code: `EPSG:32633`.
-///
-/// Rebuilt from the number rather than passed on, because it ends up on
-/// the command line of the PROJ tools. The other forms `ridal process
-/// --crs` takes are for the command line, where the person typing them is
-/// the one running the tools.
+/// A source's CRS, as an EPSG code: `EPSG:32633` ([`raw::epsg_code`]).
 fn source_crs(text: &str) -> Result<String, ApiError> {
-    let trimmed = text.trim();
-    let code = trimmed
-        .get(..5)
-        .filter(|prefix| prefix.eq_ignore_ascii_case("epsg:"))
-        .and_then(|_| trimmed[5..].parse::<u32>().ok())
-        .filter(|code| *code > 0);
-    code.map(|code| format!("EPSG:{code}")).ok_or_else(|| {
+    raw::epsg_code(text).ok_or_else(|| {
         ApiError::bad_request(
             "invalid_crs",
             format!("'{text}' is not an EPSG code; write it as `EPSG:32633`."),
