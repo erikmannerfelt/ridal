@@ -1364,6 +1364,8 @@ fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
         active_theme => resolve_theme(state, caller),
         current_user => caller.user.as_ref().map(|u| u.as_str()),
         current_role => caller.role.as_str(),
+        // Who starts batches, and so who is told when one has finished.
+        may_process => caller.may(crate::project::roles::Role::Operator),
         // Whether to offer a sign-in link at all. A project with no
         // accounts has nothing to sign in to, and a link to a login page
         // that cannot succeed is worse than no link.

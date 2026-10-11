@@ -118,6 +118,13 @@
     </nav>
   </header>
   <main>
+    {#- A batch someone started has finished (#382): told once, on whatever
+        page of the project they open next, until they dismiss it. app.js
+        fills it in. Only for whoever may process, the only ones who start
+        batches. -#}
+    {% if in_project and may_process %}
+    <div id="batch-banner" class="batch-banner" role="status" hidden></div>
+    {% endif %}
     {% block content %}{% endblock %}
   </main>
   {# app.js after leaflet.js, so both L and RIDAL exist before page scripts. #}

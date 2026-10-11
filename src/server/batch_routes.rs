@@ -62,6 +62,11 @@ pub enum Outcome {
     },
     Committed {
         revision_id: String,
+        /// Whose picks did not come across whole: moved enough to matter,
+        /// partly left out, or not carried at all. Empty when every
+        /// interpretation carried, or there were none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        picks_not_carried: Vec<PicksNotCarried>,
     },
     /// Processed to exactly what is served already.
     AlreadyCurrent,
@@ -78,6 +83,42 @@ pub enum Outcome {
 impl Outcome {
     fn is_finished(&self) -> bool {
         !matches!(self, Outcome::Waiting | Outcome::Processing { .. })
+    }
+}
+
+/// One person's picks that a committed item did not carry whole, from the
+/// replacement's consequence report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PicksNotCarried {
+    pub user: String,
+    /// `approximate`, `partial` or `refused`, as the report says.
+    pub severity: crate::interp::carry::Severity,
+    /// How many of their features were left out.
+    #[serde(default)]
+    pub dropped: usize,
+}
+
+impl PicksNotCarried {
+    /// The documents of a staged replacement's report that did not carry
+    /// whole.
+    fn from_report(report: &serde_json::Value) -> Vec<Self> {
+        use crate::interp::carry::Severity;
+        report["documents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|document| {
+                let severity: Severity =
+                    serde_json::from_value(document["severity"].clone()).ok()?;
+                let dropped = document["dropped"].as_array().map_or(0, Vec::len);
+                let whole = matches!(severity, Severity::Current | Severity::Carried);
+                (!whole || dropped > 0).then(|| PicksNotCarried {
+                    user: document["user"].as_str().unwrap_or_default().to_string(),
+                    severity,
+                    dropped,
+                })
+            })
+            .collect()
     }
 }
 
@@ -98,6 +139,17 @@ pub struct Batch {
     pub started_at: String,
     pub finished_at: Option<String>,
     pub items: Vec<Item>,
+    /// When whoever started it dismissed its report, so it is no longer
+    /// announced to them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_at: Option<String>,
+}
+
+impl Batch {
+    /// Finished, or stopped by a restart: nothing more will happen to it.
+    fn ended(&self) -> bool {
+        self.finished_at.is_some() || self.items.iter().all(|i| i.outcome.is_finished())
+    }
 }
 
 /// One line of the batch history.
@@ -113,6 +165,11 @@ enum Entry {
         outcome: Outcome,
     },
     Finished {
+        batch_id: String,
+        at: String,
+    },
+    /// Whoever started it has seen its report.
+    Seen {
         batch_id: String,
         at: String,
     },
@@ -186,6 +243,11 @@ fn history(state: &AppState, project: &crate::project::Project) -> Vec<Batch> {
             Entry::Finished { batch_id, at } => {
                 if let Some(batch) = index.get(&batch_id).map(|i| &mut batches[*i]) {
                     batch.finished_at = Some(at);
+                }
+            }
+            Entry::Seen { batch_id, at } => {
+                if let Some(batch) = index.get(&batch_id).map(|i| &mut batches[*i]) {
+                    batch.seen_at.get_or_insert(at);
                 }
             }
         }
@@ -313,6 +375,7 @@ pub async fn reprocess(
             started_at: chrono::Utc::now().to_rfc3339(),
             finished_at: None,
             items,
+            seen_at: None,
         };
         inner.insert(
             batch.id.clone(),
@@ -630,6 +693,8 @@ async fn commit(
                 Ok(response) => match json_of(response).await {
                     Some(body) => Outcome::Committed {
                         revision_id: body["revision_id"].as_str().unwrap_or_default().to_string(),
+                        // A new radargram has nobody's picks on it.
+                        picks_not_carried: Vec::new(),
                     },
                     None => Outcome::Failed {
                         message: "the new radargram was added, but its answer was unreadable"
@@ -666,6 +731,7 @@ async fn commit(
         return Outcome::AlreadyCurrent;
     }
     let token = staged["token"].as_str().unwrap_or_default().to_string();
+    let picks_not_carried = PicksNotCarried::from_report(&staged["report"]);
     match super::replace_routes::commit_replacement(
         State(Arc::clone(state)),
         caller.clone(),
@@ -677,6 +743,7 @@ async fn commit(
             let body = json_of(response.into_response()).await.unwrap_or_default();
             Outcome::Committed {
                 revision_id: body["to_revision"].as_str().unwrap_or_default().to_string(),
+                picks_not_carried,
             }
         }
         Err(e) => Outcome::Failed {
@@ -708,6 +775,55 @@ pub async fn list_batches(
     Ok(Json(BatchList { batches }))
 }
 
+/// `GET /api/v1/processing/batches/unseen`: the caller's batches that have
+/// ended and whose report they have not dismissed, newest first. What the
+/// banner on every page announces.
+pub async fn unseen_batches(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+) -> Result<Json<BatchList>, ApiError> {
+    caller.require(Role::Operator, "see your batches")?;
+    let project = super::interp_routes::readable_project(&state)?;
+    let me = caller.audit_name();
+    let batches = history(&state, project)
+        .into_iter()
+        .filter(|b| b.started_by == me && b.ended() && b.seen_at.is_none())
+        .collect();
+    Ok(Json(BatchList { batches }))
+}
+
+/// `POST /api/v1/processing/batches/{batch}/seen`: the caller has seen the
+/// report of a batch they started, so it is no longer announced. Only for
+/// the one who started it: it is their banner.
+pub async fn mark_batch_seen(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(batch): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    caller.require(Role::Operator, "dismiss a batch's report")?;
+    let project = super::interp_routes::readable_project(&state)?;
+    let found = history(&state, project)
+        .into_iter()
+        .find(|b| b.id == batch)
+        .ok_or_else(|| ApiError::not_found("no_such_batch", "There is no batch with that id."))?;
+    if found.started_by != caller.audit_name() {
+        return Err(ApiError::forbidden(
+            "not_your_batch",
+            "Only whoever started a batch is told when it has finished.",
+        ));
+    }
+    if found.seen_at.is_none() {
+        append(
+            project,
+            &Entry::Seen {
+                batch_id: found.id,
+                at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn get_batch(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -720,4 +836,35 @@ pub async fn get_batch(
         .find(|b| b.id == batch)
         .map(Json)
         .ok_or_else(|| ApiError::not_found("no_such_batch", "There is no batch with that id."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PicksNotCarried;
+    use crate::interp::carry::Severity;
+    use serde_json::json;
+
+    #[test]
+    fn only_picks_that_did_not_carry_whole_are_reported() {
+        let report = json!({"documents": [
+            {"user": "anna", "severity": "current", "dropped": []},
+            {"user": "ben", "severity": "carried", "dropped": []},
+            {"user": "cleo", "severity": "approximate", "dropped": []},
+            {"user": "dag", "severity": "partial", "dropped": [{}, {}]},
+            {"user": "eva", "severity": "refused", "dropped": []},
+        ]});
+        let users: Vec<(String, Severity, usize)> = PicksNotCarried::from_report(&report)
+            .into_iter()
+            .map(|p| (p.user, p.severity, p.dropped))
+            .collect();
+        assert_eq!(
+            users,
+            [
+                ("cleo".to_string(), Severity::Approximate, 0),
+                ("dag".to_string(), Severity::Partial, 2),
+                ("eva".to_string(), Severity::Refused, 0),
+            ]
+        );
+        assert!(PicksNotCarried::from_report(&json!({"documents": []})).is_empty());
+    }
 }

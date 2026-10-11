@@ -7248,6 +7248,41 @@ async fn a_batch_reprocesses_and_commits_a_profile_s_stale_radargrams() {
             .status,
         StatusCode::OK
     );
+    // Its report is announced to whoever started it until they dismiss it.
+    let unseen = get(&app, "/api/v1/processing/batches/unseen", Some(&erik)).await;
+    assert_eq!(unseen.status, StatusCode::OK, "{}", unseen.text);
+    assert_eq!(unseen.body["batches"][0]["id"], started.body["id"]);
+    let refused = get(&app, "/api/v1/processing/batches/unseen", Some(&pia)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let seen_uri = format!(
+        "/api/v1/processing/batches/{}/seen",
+        started.body["id"].as_str().unwrap()
+    );
+    let seen = post(&app, &seen_uri, &json!({}), Some(&erik)).await;
+    assert_eq!(seen.status, StatusCode::NO_CONTENT, "{}", seen.text);
+    let again = post(&app, &seen_uri, &json!({}), Some(&erik)).await;
+    assert_eq!(again.status, StatusCode::NO_CONTENT, "{}", again.text);
+    let unseen = get(&app, "/api/v1/processing/batches/unseen", Some(&erik)).await;
+    assert_eq!(unseen.body["batches"], json!([]));
+    let one = get(
+        &app,
+        &format!(
+            "/api/v1/processing/batches/{}",
+            started.body["id"].as_str().unwrap()
+        ),
+        Some(&erik),
+    )
+    .await;
+    assert!(one.body["seen_at"].is_string(), "{}", one.text);
+    let missing = post(
+        &app,
+        "/api/v1/processing/batches/nope/seen",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+
     let status = get(&app, "/api/v1/processing/status", Some(&erik)).await;
     for radargram in status.body["radargrams"].as_array().unwrap() {
         let expected = if radargram["radargram_id"] == "theirs" {

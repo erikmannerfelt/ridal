@@ -1016,8 +1016,16 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::batch_routes::list_batches),
         )
         .route(
+            "/api/v1/processing/batches/unseen",
+            get(super::batch_routes::unseen_batches),
+        )
+        .route(
             "/api/v1/processing/batches/{batch}",
             get(super::batch_routes::get_batch),
+        )
+        .route(
+            "/api/v1/processing/batches/{batch}/seen",
+            axum::routing::post(super::batch_routes::mark_batch_seen),
         )
         .route(
             "/api/v1/sources/{radargram_id}/drafts",

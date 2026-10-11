@@ -42,12 +42,12 @@
 //! Collapsing those into "approximate" would put the first and the third
 //! behind the same word.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::interp::anchors::Axes;
 
 /// How much the carried view can be trusted, worst first when reported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
