@@ -1387,6 +1387,8 @@ fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
         // Admins may release a cross-user result and may download every
         // contributor's picks in one file; both are the same authority.
         can_administer => caller.may(crate::project::roles::Role::Admin),
+        // Processing on the server (#382) is an operator's.
+        can_operate => caller.may(crate::project::roles::Role::Operator),
     }
 }
 

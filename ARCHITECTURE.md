@@ -344,6 +344,15 @@ source names, to look at before it becomes the radargram
   `get_or_build_overview` as a served radargram's.
 - Drafts are forgotten after `DRAFT_TTL` (a day), and their laid-out raw
   files as soon as they finish. A restart forgets them all.
+- **In the viewer** (`assets/process.js`), an operator gets a *Process…*
+  button when the project has the radargram's raw data. Its dialog starts
+  from the served file's `processing_steps`, one per line, polls the draft
+  while it runs, shows its overview with a toggle to the current one, and
+  commits through the draft's commit route and then the replace token, as
+  the catalog's replace dialog does. Closing it throws the draft away.
+  Verified in headless Chromium driven over the DevTools protocol (Node's
+  built-in `WebSocket`), not `--dump-dom`: virtual time races past a job
+  that takes real seconds.
 
 ## The Python client (#328)
 

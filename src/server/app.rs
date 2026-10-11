@@ -869,6 +869,7 @@ pub fn static_router() -> Router {
         .route("/static/settings.js", get(super::assets::settings_js))
         .route("/static/site.js", get(super::assets::site_js))
         .route("/static/layers.js", get(super::assets::layers_js))
+        .route("/static/process.js", get(super::assets::process_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
