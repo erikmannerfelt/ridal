@@ -6291,6 +6291,38 @@ async fn recordings_that_cannot_be_merged_are_refused_as_a_source() {
 }
 
 #[tokio::test]
+async fn the_add_raw_data_page_is_an_operators_and_says_so_to_anyone_else() {
+    // #382 phase 7: shown and explained rather than hidden, as the
+    // processing page is, and linked from the catalog only for whoever can
+    // use it.
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("pia", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let pia = sign_in(&app, "pia").await;
+
+    let page = get(&app, "/ingest", Some(&erik)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text.contains(r#"id="ingest-drop""#), "{}", page.text);
+    assert!(page.text.contains("/static/ingest.js"));
+    let catalog = get(&app, "/", Some(&erik)).await;
+    assert!(catalog.text.contains("/ingest"), "the catalog links to it");
+
+    let page = get(&app, "/ingest", Some(&pia)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text.contains("needs the <code>operator</code> role"));
+    assert!(!page.text.contains(r#"id="ingest-drop""#));
+    assert!(!page.text.contains("/static/ingest.js"));
+    let catalog = get(&app, "/", Some(&pia)).await;
+    assert!(!catalog.text.contains("/ingest"));
+
+    let script = get(&app, "/static/ingest.js", None).await;
+    assert_eq!(script.status, StatusCode::OK);
+}
+
+#[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_ingest_plan_groups_and_names_uploaded_recordings() {
     // #382 phase 7: the plan route, and the source that a plan's output
