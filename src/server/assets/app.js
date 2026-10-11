@@ -1731,3 +1731,60 @@ const RIDAL = Object.freeze({
     }
   });
 })();
+
+/* A batch the visitor started has finished (#382). Told on the next page
+ * of the project they open, with how it went and a link to its report;
+ * gone once they follow the link or dismiss it, on every device, since
+ * the server remembers. */
+(function setupBatchBanner() {
+  const banner = document.getElementById("batch-banner");
+  if (!banner) return;
+  const seen = (batch) =>
+    fetch(RIDAL.apiPath("processing", "batches", batch.id, "seen"), {
+      method: "POST",
+      keepalive: true,
+    }).catch(() => {});
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  (async function announce() {
+    let batches;
+    try {
+      batches = (await RIDAL.fetchJson(RIDAL.apiPath("processing", "batches", "unseen"))).batches;
+    } catch {
+      return;
+    }
+    if (!batches.length) return;
+    const lines = batches.map((batch) => {
+      const by = {};
+      for (const item of batch.items) by[item.outcome] = (by[item.outcome] || 0) + 1;
+      const moved = batch.items.filter((i) => (i.picks_not_carried || []).length).length;
+      const parts = [];
+      if (by.committed) parts.push(`${by.committed} applied`);
+      if (moved) parts.push(`${count(moved, "radargram", "radargrams")} with picks that did not carry`);
+      if (by.failed) parts.push(`${by.failed} failed`);
+      if (by.interrupted) parts.push(`${by.interrupted} interrupted`);
+      if (by.skipped) parts.push(`${by.skipped} skipped`);
+      const line = document.createElement("p");
+      const ended = batch.finished_at ? "has finished" : "was stopped by a restart";
+      line.append(
+        `Your batch for processing profile ${batch.profile} (version ${batch.version}) ${ended}` +
+          (parts.length ? `: ${parts.join(", ")}. ` : ". "),
+      );
+      const link = document.createElement("a");
+      link.href = `${RIDAL.pagePath("processing")}#batch-${batch.id}`;
+      link.textContent = "See the report";
+      link.addEventListener("click", () => seen(batch));
+      line.append(link);
+      return line;
+    });
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => {
+      for (const batch of batches) seen(batch);
+      banner.hidden = true;
+    });
+    lines[lines.length - 1].append(dismiss);
+    banner.replaceChildren(...lines);
+    banner.hidden = false;
+  })();
+})();

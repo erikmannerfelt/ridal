@@ -455,6 +455,14 @@ with no review (`server::batch_routes`).
   "Process N out-of-date…" starts one batch per profile involved, each
   limited to the group's radargrams. A badge links to its profile on the
   Processing page (`#profile-<id>`).
+- **The report** names, per applied item, whose picks did not carry whole
+  (`picks_not_carried`, from the staged replacement's consequence report:
+  approximate, partial or refused), so nobody has to open each radargram
+  to find out. Whoever started a batch is told once it has ended, by a
+  banner in `base.html.jinja` that `app.js` fills from
+  `GET /processing/batches/unseen` on any project page. Following its link
+  or dismissing it appends a `seen` entry to the ledger, so it is gone on
+  every device, not just in one browser.
 
 ## The Python client (#328)
 

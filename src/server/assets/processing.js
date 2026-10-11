@@ -294,11 +294,23 @@
     const parts = Object.entries(counts)
       .filter(([outcome]) => outcome !== 'waiting' && outcome !== 'processing')
       .map(([outcome, n]) => `${n} ${OUTCOME_WORDS[outcome] || outcome}`);
+    const moved = batch.items.filter((i) => (i.picks_not_carried || []).length).length;
+    if (moved) parts.push(`${moved} with picks that did not carry`);
     const progress = batch.finished_at
       ? 'Finished'
       : `${finished} of ${batch.items.length} done`;
     return `${progress}${parts.length ? `: ${parts.join(', ')}` : ''}.`;
   }
+
+  /** Whose picks an applied item did not carry whole, as a phrase. */
+  const CARRY_WORDS = { approximate: 'moved', partial: 'partly left out', refused: 'not carried' };
+  const notCarried = (picks) =>
+    picks
+      .map((p) => {
+        const how = p.dropped ? `${p.dropped} left out` : CARRY_WORDS[p.severity] || p.severity;
+        return `${p.user}'s (${how})`;
+      })
+      .join(', ');
 
   function batchItems(batch) {
     return el(
@@ -306,11 +318,19 @@
       { className: 'processing-batch-items' },
       ...batch.items.map((item) => {
         const why = item.reason || item.message;
+        const picks = item.picks_not_carried || [];
+        const said = picks.length
+          ? `applied, but some picks did not carry: ${notCarried(picks)}. Check them in the viewer.`
+          : `${OUTCOME_WORDS[item.outcome] || item.outcome}${why ? `: ${why}` : ''}`;
         return el(
           'li',
-          {},
-          el('code', { textContent: item.radargram_id }),
-          ` ${OUTCOME_WORDS[item.outcome] || item.outcome}${why ? `: ${why}` : ''}`,
+          { className: picks.length ? 'processing-batch-picks' : '' },
+          el(
+            'a',
+            { href: RIDAL.pagePath('view', item.radargram_id) },
+            el('code', { textContent: item.radargram_id }),
+          ),
+          ` ${said}`,
         );
       }),
     );
@@ -522,7 +542,8 @@
       ...batches.map((b) =>
         el(
           'details',
-          { className: 'processing-history-batch' },
+          // The banner for a finished batch links here.
+          { className: 'processing-history-batch', id: `batch-${b.id}` },
           el('summary', {
             textContent:
               `${b.started_at.slice(0, 16).replace('T', ' ')} UTC: ` +
@@ -533,7 +554,17 @@
         ),
       ),
     );
+    const linked = window.location.hash.startsWith('#batch-')
+      ? document.getElementById(window.location.hash.slice(1))
+      : null;
+    if (linked && !historyShown) {
+      historyShown = true;
+      linked.open = true;
+      document.getElementById('processing-history').open = true;
+      linked.scrollIntoView();
+    }
   }
+  let historyShown = false;
 
   /* --- DEMs ------------------------------------------------------------ */
 

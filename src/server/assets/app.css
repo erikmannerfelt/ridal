@@ -1468,6 +1468,7 @@ dialog > p > button,
 .process-steps-help > button,
 .process-standing > button,
 .process-offer > p > button,
+.batch-banner button,
 .processing-actions button,
 .processing-add button,
 .processing-edit button,
@@ -1493,6 +1494,7 @@ dialog > p > button:hover:not(:disabled),
 .process-steps-help > button:hover:not(:disabled),
 .process-standing > button:hover:not(:disabled),
 .process-offer > p > button:hover:not(:disabled),
+.batch-banner button:hover:not(:disabled),
 .processing-actions button:hover:not(:disabled),
 .processing-add button:hover:not(:disabled),
 .processing-edit button:hover:not(:disabled),
@@ -2928,6 +2930,29 @@ a.processing-state:hover {
 }
 .processing-history {
   margin: var(--space-5) 0;
+}
+/* An applied item whose picks did not all carry: the one line in a batch
+   report someone has to act on. */
+.processing-batch-picks {
+  color: var(--color-warning-text);
+}
+/* A finished batch, announced once to whoever started it. */
+.batch-banner {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+}
+.batch-banner p {
+  margin: 0 0 var(--space-1);
+}
+.batch-banner p:last-child {
+  margin: 0;
+}
+.batch-banner button {
+  margin-left: var(--space-2);
 }
 /* The project's DEMs: a table like a profile's, and the form under it. */
 .processing-dems {
