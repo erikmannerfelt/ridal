@@ -1353,6 +1353,29 @@ async fn the_site_audit_requires_a_server_admin() {
 }
 
 #[tokio::test]
+async fn the_processing_queue_is_for_a_server_admin_to_see() {
+    // #382, #391: what the queue is doing, for whoever runs the server.
+    let hash = password_hash();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &[],
+        AccessOptions::default(),
+    );
+    let anna = sign_in(&app, "anna").await;
+    let seen = send(&app, get("/api/v1/site/processing", Some(&anna))).await;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.text);
+    assert_eq!(seen.body["snapshot"]["running"], 0);
+    assert_eq!(seen.body["jobs"], json!([]));
+
+    let bo = sign_in(&app, "bo").await;
+    let refused = send(&app, get("/api/v1/site/processing", Some(&bo))).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn the_memberships_overview_groups_accounts_by_project() {
     let hash = password_hash();
     let (_dir, app) = site_with(
