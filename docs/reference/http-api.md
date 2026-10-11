@@ -208,32 +208,9 @@ A **draft** is a radargram processed on the server from its raw data, to
 look at before it becomes the radargram. Only an `operator` makes drafts, and
 a draft is private to whoever made it: anyone else is told it does not
 exist. Drafts are processed one or a few at a time, by the server's
-processing queue, and kept for a day.
-
-Committing a draft checks first that the radargram is still the revision it
-was made against, and refuses with `radargram_moved` if someone has replaced
-it, added it or removed it since. A draft of a radargram that is served is
-staged as a replacement: the answer is the same consequence report and token
-as `POST /api/v1/datasets/{radargram_id}/replace`, and the token commits it
-in the same way. A draft of a new id is installed as an upload.
-
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `POST` | `/api/v1/sources/{radargram_id}/drafts` | `operator` | Process the radargram's raw data: `steps`, and optionally `medium_velocity`, `antenna_mhz_override` and `antenna_separation_override`. Answers `202` with the draft's `job` number and state. Asking again for the same draft answers the same one. |
-| `GET` | `/api/v1/drafts` | `operator` | The caller's drafts. |
-| `GET` | `/api/v1/drafts/{job}` | `operator`, own | One draft: its `state` (`queued`, `running`, `done`, `failed`, `cancelled` or `timed_out`), the step it is on, and the revision it was made against. |
-| `DELETE` | `/api/v1/drafts/{job}` | `operator`, own | Stop a draft, or throw a finished one away. |
-| `GET` | `/api/v1/drafts/{job}/views/{view}/overview` | `operator`, own | A low-resolution image of a finished draft. Query: `profile`. |
-| `GET` | `/api/v1/drafts/{job}/download` | `operator`, own; download `all` | A finished draft's NetCDF file. |
-| `POST` | `/api/v1/drafts/{job}/commit` | `operator`, own | Make a finished draft the radargram, as described above. |
-
-## Drafts
-
-A **draft** is a radargram processed on the server from its raw data, to
-look at before it becomes the radargram. Only an `operator` makes drafts, and
-a draft is private to whoever made it: anyone else is told it does not
-exist. Drafts are processed one or a few at a time, by the server's
-processing queue, and kept for a day.
+processing queue, and kept for a day after they were last used
+(`--draft-ttl`), or less when a project's finished drafts take more space
+than `--draft-cache-mb` allows: the least recently used go first.
 
 Committing a draft checks first that the radargram is still the revision it
 was made against, and refuses with `radargram_moved` if someone has replaced

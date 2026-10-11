@@ -367,8 +367,12 @@ source names, to look at before it becomes the radargram
 - **Looking at a draft** opens a `RenderService` over its file on first
   request and keeps it with the draft. The overview goes through the same
   `get_or_build_overview` as a served radargram's.
-- Drafts are forgotten after `DRAFT_TTL` (a day), and their laid-out raw
-  files as soon as they finish. A restart forgets them all.
+- Drafts are forgotten once unused for `--draft-ttl` (a day), or, least
+  recently used first, when a project's finished drafts take more than
+  `--draft-cache-mb` (the most recently used one always stays). Using one
+  is anything its owner asks of it. Only finished drafts are forgotten, so
+  forgetting costs a rerun, never work. Their laid-out raw files go as
+  soon as they finish. A restart forgets them all.
 - **The process dialog** (`templates/process_dialog.html.jinja`,
   `assets/process.js`) is one template included by the viewer, the catalog
   and the Processing page. It starts from the served file's
