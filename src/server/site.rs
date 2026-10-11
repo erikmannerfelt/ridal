@@ -83,6 +83,13 @@ pub struct SiteState {
     /// One render budget for the whole site, so `--n-workers` means
     /// "concurrent renders across this server" rather than per project.
     pub render_permits: Arc<Semaphore>,
+    /// Every processing job on this server, whichever project it is for:
+    /// `--processing-jobs` and the other limits are site-wide (#382).
+    #[allow(
+        dead_code,
+        reason = "read by the draft and batch routes of #382 phase 5"
+    )]
+    pub processing: Arc<super::processing::ProcessingQueue>,
     /// The projects opened so far, keyed by their immutable key.
     projects: RwLock<HashMap<ProjectKey, Arc<ProjectRuntime>>>,
     /// The site-wide cookie-signing key, loaded on first use.
@@ -90,8 +97,14 @@ pub struct SiteState {
 }
 
 impl SiteState {
-    pub fn new(site: Site, access: AccessOptions, render_config: RenderServiceConfig) -> Arc<Self> {
+    pub fn new(
+        site: Site,
+        access: AccessOptions,
+        render_config: RenderServiceConfig,
+        processing: super::processing::ProcessingConfig,
+    ) -> Arc<Self> {
         Arc::new(Self {
+            processing: super::processing::ProcessingQueue::new(processing),
             host: Host::Site(site),
             access,
             // `.max(1)`: a zero-permit semaphore would deadlock every render.
@@ -104,7 +117,7 @@ impl SiteState {
 
     /// `ridal gui`'s site of one: `state`, already built, as the project
     /// `default` (#214).
-    pub fn local(state: AppState) -> Arc<Self> {
+    pub fn local(state: AppState, processing: super::processing::ProcessingConfig) -> Arc<Self> {
         let name = state
             .project
             .as_ref()
@@ -123,6 +136,7 @@ impl SiteState {
         });
         let key = local_key();
         Arc::new(Self {
+            processing: super::processing::ProcessingQueue::new(processing),
             host: Host::Local { name, store },
             access,
             render_permits,

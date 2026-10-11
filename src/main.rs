@@ -22,6 +22,7 @@ mod id_pattern;
 mod identity;
 mod interp;
 mod io;
+mod job;
 mod project;
 mod recipe;
 mod render;
