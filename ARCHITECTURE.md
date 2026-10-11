@@ -311,6 +311,10 @@ a place or a year, and one profile (an antenna, a medium) spans many.
   `remove_traces`. Anything else would be processing the radargram
   differently while it still claims the profile.
 - A profile in use cannot be deleted; the refusal names who uses it.
+- **Only a radargram with raw data joins a profile**: `PUT
+  /processing/assignments/{id}` refuses `no_source` without a source, as
+  there would be nothing to process. One whose source is removed later
+  stays, as `no_raw_data`.
 - **Staleness is computed, never stored.** `processing::state_of` compares
   what a served file's recipe records (`io::read_recipe`) with what the
   radargram's profile and source say now: the profile version whose steps
@@ -323,10 +327,15 @@ a place or a year, and one profile (an antenna, a medium) spans many.
   reprocess it. `GET /processing/status` opens each served file once to
   read its recipe.
 - **The Processing page** (`/processing`, `assets/processing.js`) lists the
-  profiles with their current steps, members and each member's state and
-  reasons. An operator creates profiles (with `If-None-Match: *`, so a new
-  one cannot replace an existing id), changes them (with the `ETag` read
-  when the form opened), and puts radargrams in and out.
+  profiles with their current steps, members and each member's state, with
+  the reasons folded under it. An operator creates profiles (name first,
+  id derived from it; `If-None-Match: *`, so a new one cannot replace an
+  existing id), changes them (with the `ETag` read when the form opened),
+  puts radargrams with raw data in and out (`GET /sources` says which),
+  edits their pre-steps, starts a batch, and opens the process dialog on
+  any member: the page includes `process_dialog.html.jinja` and
+  `process.js`, which handles `button[data-process-radargram]` by
+  delegation, so rows drawn after load work as the catalog's cards do.
 
 ## Drafts (#382)
 
@@ -360,15 +369,48 @@ source names, to look at before it becomes the radargram
   `get_or_build_overview` as a served radargram's.
 - Drafts are forgotten after `DRAFT_TTL` (a day), and their laid-out raw
   files as soon as they finish. A restart forgets them all.
-- **In the viewer** (`assets/process.js`), an operator gets a *Process…*
-  button when the project has the radargram's raw data. Its dialog starts
-  from the served file's `processing_steps`, one per line, polls the draft
-  while it runs, shows its overview with a toggle to the current one, and
-  commits through the draft's commit route and then the replace token, as
-  the catalog's replace dialog does. Closing it throws the draft away.
+- **The process dialog** (`templates/process_dialog.html.jinja`,
+  `assets/process.js`) is one template included by the viewer, the catalog
+  and the Processing page. It starts from the served file's
+  `processing_steps`, polls the draft while it runs, shows its overview
+  with a toggle to the current one, and commits through the draft's commit
+  route and then the replace token, as the catalog's replace dialog does.
+  Closing it throws the draft away. For a radargram in a profile it shows
+  the pre-steps in a box of their own above the rest, saves changed ones to
+  the assignment when it processes, and says where the radargram stands
+  (`GET /processing/status?radargram_id=`) with a button back to the
+  profile's steps.
   Verified in headless Chromium driven over the DevTools protocol (Node's
   built-in `WebSocket`), not `--dump-dom`: virtual time races past a job
   that takes real seconds.
+
+## Batches (#382)
+
+A batch reprocesses a profile's out-of-date radargrams and applies each
+with no review (`server::batch_routes`).
+
+- **What it takes**: every member `stale` or `not_processed` (and
+  `older_processing` when asked), from the same `processing_routes::statuses`
+  the status route uses, at the profile version current when it starts.
+  Members without raw data are listed as skipped.
+- **Jobs are drafts' jobs.** `draft_routes::prepare` lays out the raw
+  files and builds the `JobRequest` for both, so the two process alike.
+  Items go to the queue `IN_FLIGHT` (two) at a time as `Priority::Batch`,
+  which the queue runs after drafts, so a batch neither fills the queue
+  nor uses up the starter's per-person allowance; `TooMany` waits a tick.
+- **Applying is a commit as a person makes one**: the item's base revision
+  must still be the catalog's (else `skipped`), then `stage_replacement` and
+  `commit_replacement` (or `upload_dataset` for a radargram not served
+  yet), so their refusals hold. A revision collision means it was already
+  current. A newer profile version supersedes the items not yet started.
+- **The history is a JSONL ledger**, `processing/batches/audit.jsonl`:
+  a `started` entry with every item, one per finished item, `finished`.
+  Reading it rebuilds each batch; one with no `finished` and nothing
+  running it (a restart) reads its unfinished items as `interrupted`.
+  `AppState::batches` holds the running ones, and the raw sweep keeps the
+  files their items read.
+- **On the page**, "Process N out-of-date radargrams…" asks inline, then
+  follows `GET /processing/batches/{id}` until it ends.
 
 ## The Python client (#328)
 

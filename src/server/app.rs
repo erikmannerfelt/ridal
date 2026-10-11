@@ -156,6 +156,8 @@ pub struct AppState {
     pub processing: Option<Arc<super::processing::ProcessingQueue>>,
     /// The drafts made in this project since the server started.
     pub drafts: super::draft_routes::Drafts,
+    /// The batches running in this project.
+    pub batches: super::batch_routes::Batches,
 }
 
 /// Record a project's catalog size after a scan, for the site landing
@@ -391,6 +393,7 @@ impl AppState {
             render_permits: Arc::new(Semaphore::new(config.n_workers.max(1))),
             processing: None,
             drafts: Default::default(),
+            batches: Default::default(),
         };
         // At startup too, not only on rediscovery. Most projects never
         // add or remove anything through the GUI, and those are exactly
@@ -950,6 +953,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             "/api/v1/raw/{blake3}",
             get(super::raw_routes::download_raw_file),
         )
+        .route("/api/v1/sources", get(super::raw_routes::list_sources))
         .route(
             "/api/v1/sources/{radargram_id}",
             get(super::raw_routes::get_source)
@@ -978,6 +982,18 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             "/api/v1/processing/assignments/{radargram_id}",
             axum::routing::put(super::processing_routes::put_assignment)
                 .delete(super::processing_routes::delete_assignment),
+        )
+        .route(
+            "/api/v1/processing/profiles/{profile}/reprocess",
+            axum::routing::post(super::batch_routes::reprocess),
+        )
+        .route(
+            "/api/v1/processing/batches",
+            get(super::batch_routes::list_batches),
+        )
+        .route(
+            "/api/v1/processing/batches/{batch}",
+            get(super::batch_routes::get_batch),
         )
         .route(
             "/api/v1/sources/{radargram_id}/drafts",

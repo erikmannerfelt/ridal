@@ -3,6 +3,7 @@
 //! ```text
 //! POST   /api/v1/raw?filename=…          upload one file; answers its blake3
 //! GET    /api/v1/raw/{blake3}            download a stored file
+//! GET    /api/v1/sources                 which radargram ids have raw data
 //! GET    /api/v1/sources/{radargram_id}  what a radargram is made from
 //! PUT    /api/v1/sources/{radargram_id}  set or switch it, and read each recording
 //! DELETE /api/v1/sources/{radargram_id}  forget it
@@ -153,6 +154,26 @@ pub async fn download_raw_file(
         axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file)),
     )
         .into_response())
+}
+
+/// `GET /api/v1/sources`.
+#[derive(Debug, Serialize)]
+pub struct SourceList {
+    /// Sorted. Served or not: raw data uploaded for a radargram that has
+    /// not been processed yet is listed too.
+    pub radargram_ids: Vec<String>,
+}
+
+pub async fn list_sources(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+) -> Result<Json<SourceList>, ApiError> {
+    caller.require(Role::Viewer, "see which radargrams have raw data")?;
+    let project = readable_project(&state)?;
+    let mut radargram_ids = raw::source_ids(project.documents())
+        .map_err(|e| ApiError::internal("source_read_failed", e))?;
+    radargram_ids.sort();
+    Ok(Json(SourceList { radargram_ids }))
 }
 
 /// `GET`/`PUT /api/v1/sources/{radargram_id}`.
@@ -344,10 +365,11 @@ pub async fn delete_source(
 }
 
 /// Delete the raw files nothing needs any more: no source names them, and
-/// no draft still being processed reads them. Not fatal: what it fails to
+/// no draft or batch item still being processed reads them. Not fatal: what it fails to
 /// delete, the next sweep will.
 pub(super) fn sweep(state: &AppState, project: &crate::project::Project) {
-    let keep: HashSet<String> = state.drafts.in_use(state.processing.as_deref());
+    let mut keep: HashSet<String> = state.drafts.in_use(state.processing.as_deref());
+    keep.extend(state.batches.in_use());
     if let Err(e) = raw::sweep(
         project.documents(),
         project.data_dir(),

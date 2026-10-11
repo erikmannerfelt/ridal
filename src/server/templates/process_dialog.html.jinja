@@ -30,6 +30,12 @@
     </select>
   </label>
   <section id="process-draft">
+    {#- Where the radargram stands against its processing profile, and the
+        one-click way back to it when it is stale. -#}
+    <div id="process-standing" class="process-standing" hidden>
+      <p id="process-standing-text"></p>
+      <button type="button" id="process-use-profile" hidden>Use the profile's steps</button>
+    </div>
     <ul id="process-recordings" class="process-files"></ul>
     <p class="process-steps-help">
       <button type="button" id="process-default-steps"
@@ -38,7 +44,22 @@
       &middot;
       <a href="{{ docs_base|safe }}guide/processing.html" target="_blank" rel="noopener">Processing guide</a>
     </p>
-    <label class="process-steps">Steps, one per line
+    {#- Only for a radargram in a processing profile: its own steps, run
+        before the profile's. Kept in a box of their own so it is plain
+        which steps belong to the radargram and which to the profile. -#}
+    <div id="process-pre" class="process-pre" hidden>
+      <label class="process-steps">Steps before the profile, one per line
+        <textarea id="process-pre-steps" rows="2" spellcheck="false"
+                  placeholder="subset(0 2000)"></textarea>
+      </label>
+      <p class="hint">
+        This radargram's own steps, run first, before the profile's steps
+        below. Only <code>subset</code> and <code>remove_traces</code>, to
+        choose its traces and samples. Saved with the radargram when you
+        process, so the profile runs them too.
+      </p>
+    </div>
+    <label class="process-steps"><span id="process-steps-label">Steps, one per line</span>
       <textarea id="process-steps" rows="8" spellcheck="false"
                 placeholder="As `ridal steps` lists them, e.g.&#10;zero_corr&#10;dewow&#10;bandpass(0.1 0.9)"></textarea>
     </label>
@@ -48,10 +69,14 @@
   </section>
   <div id="process-error" class="warning" hidden></div>
   <figure id="process-result" class="process-result" hidden>
-    {#- The page's render profiles, starting at the one the page shows:
-        process.js copies them from its select. -#}
+    {#- The render profiles, starting at the person's own. On a page with
+        its own render profile select, process.js follows that instead. -#}
     <label>Render profile
-      <select id="process-render"></select>
+      <select id="process-render">
+        {%- for p in profiles %}
+        <option value="{{ p }}" {% if p == active_profile %}selected{% endif %}>{{ p }}</option>
+        {%- endfor %}
+      </select>
     </label>
     <img id="process-image" alt="">
     <figcaption id="process-caption"></figcaption>

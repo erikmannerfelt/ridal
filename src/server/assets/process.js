@@ -21,8 +21,6 @@
   if (!dialog) return;
   const viewerOpen = document.getElementById('process-open');
   const catalogOpen = document.getElementById('process-new');
-  const cardOpens = [...document.querySelectorAll('button[data-process-radargram]')];
-  if (!viewerOpen && !catalogOpen && cardOpens.length === 0) return;
 
   const title = document.getElementById('process-title');
   const status = document.getElementById('process-status');
@@ -131,7 +129,21 @@
       const attributes = await RIDAL.fetchJson(
         RIDAL.apiPath('datasets', radargramId, 'attributes'),
       );
-      stepsBox.value = (attributes.processing_steps || []).join('\n');
+      let steps = attributes.processing_steps || [];
+      // In a profile, the radargram's own steps are in their own box: the
+      // file's steps go below them without the ones they begin with. A
+      // file that does not begin with them was not made through the
+      // profile, so the profile's steps are the better start.
+      if (assignment) {
+        const own = assignment.pre_steps || [];
+        if (own.every((step, i) => steps[i] === step)) {
+          steps = steps.slice(own.length);
+        } else {
+          fillFromProfile(assignment.profile);
+          return;
+        }
+      }
+      stepsBox.value = steps.join('\n');
     } catch {
       // Unreadable: start empty.
     }
@@ -339,6 +351,7 @@
       stage(false);
       describe(source.recordings);
       progress.textContent = '';
+      await showStanding();
       status.textContent =
         'The raw data is stored. Choose the steps and process; nothing is ' +
         (served ? 'replaced' : 'added to the catalog') +
@@ -436,12 +449,31 @@
     polling = setTimeout(poll, 1000);
   }
 
-  /** The steps in the box, as they are sent. */
-  const stepLines = () =>
-    stepsBox.value
+  const linesIn = (box) =>
+    box.value
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line !== '' && !line.startsWith('#'));
+
+  /** The radargram's own steps, run before the profile's: a box of their
+   * own while it is in a profile, so which steps are whose is plain. */
+  const preBox = document.getElementById('process-pre');
+  const preSteps = document.getElementById('process-pre-steps');
+  const stepsLabel = document.getElementById('process-steps-label');
+  const preLines = () => (preBox.hidden ? [] : linesIn(preSteps));
+  // Kept when the radargram leaves its profile, so that coming back (a
+  // mistaken click on None, say) does not lose them.
+  let keptPre = [];
+  function showPre() {
+    const inProfile = Boolean(assignment);
+    preBox.hidden = !inProfile;
+    stepsLabel.textContent = inProfile
+      ? "Then these steps, one per line: the profile's, unless you change them"
+      : 'Steps, one per line';
+  }
+
+  /** The steps as they are sent: its own first, then the rest. */
+  const stepLines = () => [...preLines(), ...linesIn(stepsBox)];
   const runKey = () => JSON.stringify([stepLines(), Number(velocityBox.value)]);
   // What the draft being made is made from, until it is done.
   let pendingKey = null;
@@ -455,6 +487,7 @@
     run.title = same ? 'This draft is made from these steps already. Change them to process again.' : '';
   }
   stepsBox.addEventListener('input', updateRun);
+  preSteps.addEventListener('input', updateRun);
   velocityBox.addEventListener('input', updateRun);
 
   function finishRun(succeeded) {
@@ -464,37 +497,58 @@
     updateRun();
   }
 
-  /** Fill the steps and velocity from a profile's current version, after
-   * the radargram's own selection steps, as a batch runs them. */
+  /** Fill the steps below the radargram's own with a profile's current
+   * version, and its velocity, as a batch runs them. */
   function fillFromProfile(profileId) {
     const profile = profiles.find((p) => p.id === profileId);
     const current = profile?.versions.find((v) => v.version === profile.current_version);
     if (!current) return;
-    const own = assignment?.profile === profileId ? assignment.pre_steps || [] : [];
-    stepsBox.value = [...own, ...current.steps].join('\n');
+    stepsBox.value = current.steps.join('\n');
     velocityBox.value = String(current.medium_velocity);
     updateRun();
   }
 
+  /** Save the radargram in `profileId` with `pre` as its own steps; the
+   * server's answer is what is shown, in its canonical form. */
+  async function saveAssignment(profileId, pre) {
+    const saved = await RIDAL.fetchJson(
+      RIDAL.apiPath('processing', 'assignments', radargramId),
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: profileId, pre_steps: pre }),
+      },
+    );
+    assignment = { profile: saved.profile, pre_steps: saved.pre_steps || [] };
+    keptPre = assignment.pre_steps;
+    preSteps.value = assignment.pre_steps.join('\n');
+    showPre();
+  }
+
   /** Put the radargram in `profileId`, or take it out of its profile for
-   * `''`, keeping its own selection steps when it moves. */
+   * `''`. Its own steps go with it: into the steps box when it leaves, so
+   * what it is processed with does not change, and back into their own
+   * box when it joins again. */
   async function assign(profileId) {
-    const path = RIDAL.apiPath('processing', 'assignments', radargramId);
     if (profileId === '') {
-      await RIDAL.fetchJson(path, { method: 'DELETE' }).catch((error) => {
-        if (error.status !== 404) throw error;
+      // `fetch` rather than `fetchJson`: a 204 has no body to read.
+      const response = await fetch(RIDAL.apiPath('processing', 'assignments', radargramId), {
+        method: 'DELETE',
       });
+      if (!response.ok && response.status !== 404) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error?.message || RIDAL.upstreamMessage(response.status));
+      }
+      const own = preLines();
+      keptPre = own;
       assignment = null;
+      showPre();
+      if (own.length) stepsBox.value = [...own, ...linesIn(stepsBox)].join('\n');
+      updateRun();
       return;
     }
-    const body = { profile: profileId };
-    if (assignment?.pre_steps?.length) body.pre_steps = assignment.pre_steps;
-    await RIDAL.fetchJson(path, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    assignment = { profile: profileId, pre_steps: body.pre_steps || [] };
+    const own = assignment ? preLines() : keptPre;
+    await saveAssignment(profileId, own);
     fillFromProfile(profileId);
   }
 
@@ -508,12 +562,59 @@
       await assign(profileId);
       const name = profiles.find((p) => p.id === profileId)?.name;
       status.textContent = name
-        ? `${radargramId} is in ${name} now; its steps are filled in.`
-        : `${radargramId} is in no processing profile now.`;
+        ? `${radargramId} is in ${name} now: its own steps are in the first box, the ` +
+          "profile's below."
+        : `${radargramId} is in no processing profile now; its own steps, if it had ` +
+          'any, are at the top of the steps.';
+      await showStanding();
     } catch (error) {
       profileBox.value = assignment?.profile || '';
       fail(`Could not change the processing profile (${error.message}).`);
     }
+  });
+
+  /** Where the radargram stands against its profile, said above the
+   * steps, with a way back to the profile's steps when it has left them. */
+  const standing = document.getElementById('process-standing');
+  const standingText = document.getElementById('process-standing-text');
+  const useProfile = document.getElementById('process-use-profile');
+  async function showStanding() {
+    standing.hidden = true;
+    if (!assignment || radargramId === null) return;
+    const profile = profiles.find((p) => p.id === assignment.profile);
+    let status = null;
+    try {
+      const answer = await RIDAL.fetchJson(
+        `${RIDAL.apiPath('processing', 'status')}?radargram_id=${encodeURIComponent(radargramId)}`,
+      );
+      status = answer.radargrams[0] || null;
+    } catch {
+      return;
+    }
+    if (!status || !profile) return;
+    const name = `${profile.name} (version ${profile.current_version})`;
+    const why = (status.reasons || []).join('; ');
+    const says = {
+      current: `Up to date with ${name}.`,
+      stale: `What is served now is stale against ${name}: ${why}. Process with the ` +
+        "profile's steps and apply the draft to bring it up to date.",
+      older_processing: `Processed as ${name} says, but by an older Ridal: ${why}.`,
+      not_processed: `In ${name}, and not processed yet.`,
+      no_raw_data: `In ${name}, but without raw data.`,
+    };
+    standingText.textContent = says[status.state] || status.state;
+    standing.classList.toggle('warning', status.state === 'stale');
+    useProfile.hidden = status.state === 'current' || status.state === 'no_raw_data';
+    standing.hidden = false;
+  }
+  useProfile.addEventListener('click', () => {
+    if (!assignment) return;
+    preSteps.value = assignment.pre_steps.join('\n');
+    fillFromProfile(assignment.profile);
+    useProfile.hidden = true;
+    standingText.textContent =
+      "The profile's steps are filled in below. Process, and apply the draft, to bring " +
+      'it up to date.';
   });
 
   /** The profiles, and which one this radargram is in, if any. */
@@ -529,6 +630,10 @@
       }
     }
     profileBox.value = assignment?.profile || '';
+    keptPre = assignment?.pre_steps || [];
+    preSteps.value = keptPre.join('\n');
+    showPre();
+    await showStanding();
   }
 
   /** Open at the stage this radargram needs. */
@@ -577,30 +682,40 @@
     }
     return sourceKnown.get(id);
   }
-  for (const button of cardOpens) {
-    const id = button.dataset.processRadargram;
+  // Delegated, so a button drawn after load (the processing page's rows)
+  // works as one in the catalog's cards does. `toggle` does not bubble, so
+  // it is caught on the way down.
+  document.addEventListener(
+    'toggle',
+    async (event) => {
+      const menu = event.target;
+      if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
+      for (const button of menu.querySelectorAll('button[data-process-radargram]')) {
+        try {
+          const known = await hasSourceFor(button.dataset.processRadargram);
+          button.textContent = known ? 'Process…' : 'Attach raw data…';
+        } catch {
+          // Asked again on the click.
+        }
+      }
+    },
+    true,
+  );
+  document.addEventListener('click', async (event) => {
+    const button = event.target.closest?.('button[data-process-radargram]');
+    if (!button) return;
     const menu = button.closest('details');
-    menu?.addEventListener('toggle', async () => {
-      if (!menu.open) return;
-      try {
-        button.textContent = (await hasSourceFor(id)) ? 'Process…' : 'Attach raw data…';
-      } catch {
-        // Asked again on the click.
-      }
-    });
-    button.addEventListener('click', async () => {
-      if (menu) menu.open = false;
-      radargramId = id;
-      served = true;
-      stepsBox.value = '';
-      try {
-        hasSource = await hasSourceFor(id);
-      } catch (error) {
-        hasSource = false;
-      }
-      begin(!hasSource);
-    });
-  }
+    if (menu) menu.open = false;
+    radargramId = button.dataset.processRadargram;
+    served = button.dataset.served !== 'false';
+    stepsBox.value = '';
+    try {
+      hasSource = await hasSourceFor(radargramId);
+    } catch {
+      hasSource = false;
+    }
+    begin(!hasSource);
+  });
 
   document.getElementById('process-default-steps').addEventListener('click', (event) => {
     stepsBox.value = event.currentTarget.dataset.steps;
@@ -620,13 +735,20 @@
   run.addEventListener('click', async () => {
     discard();
     reset();
-    const steps = stepLines();
     const velocity = Number(velocityBox.value);
-    pendingKey = runKey();
     running = true;
     updateRun();
     progress.textContent = 'Sending…';
     try {
+      // Its own steps belong to the radargram, not to this draft: saved
+      // with it, so the profile and a batch run them too.
+      const own = preLines();
+      if (assignment && JSON.stringify(own) !== JSON.stringify(assignment.pre_steps)) {
+        await saveAssignment(assignment.profile, own);
+      }
+      // After the save, which writes them back in their canonical form.
+      const steps = stepLines();
+      pendingKey = runKey();
       const draft = await RIDAL.fetchJson(
         RIDAL.apiPath('sources', radargramId, 'drafts'),
         {

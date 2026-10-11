@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -29,7 +29,7 @@ use crate::project::processing::{self, Assignment, Assignments, Profile, Profile
 use crate::project::roles::Role;
 use crate::project::store::StoreError;
 
-fn processing_error(error: processing::ProcessingError) -> ApiError {
+pub(super) fn processing_error(error: processing::ProcessingError) -> ApiError {
     use processing::ProcessingError as E;
     match &error {
         E::Store(StoreError::Conflict { .. }) => {
@@ -219,6 +219,21 @@ pub async fn put_assignment(
     let project = writable_project(&state, &caller, "put a radargram in a processing profile")?;
     let radargram = parse_radargram(&radargram_id)?;
     let profile = parse_profile(&body.profile)?;
+    // A profile is processing to run, and without raw data there is
+    // nothing to run it on. A source removed later leaves the radargram in
+    // its profile, shown as having no raw data.
+    let has_source = crate::project::raw::read_source(project.documents(), &radargram)
+        .map_err(|e| ApiError::internal("source_read_failed", e))?
+        .is_some();
+    if !has_source {
+        return Err(ApiError::conflict(
+            "no_source",
+            format!(
+                "'{radargram}' has no raw data in this project, so a processing profile \
+                 has nothing to process. Attach its raw data first."
+            ),
+        ));
+    }
     let assignment = processing::assign(
         project.documents(),
         &radargram,
@@ -259,12 +274,36 @@ pub struct StatusList {
 ///
 /// Reads each served file's recipe, so it opens every file once: off the
 /// async executor.
+#[derive(Debug, Default, Deserialize)]
+pub struct StatusQuery {
+    /// Only this radargram: what the process dialog asks, rather than
+    /// reading every file in the project to show one.
+    pub radargram_id: Option<String>,
+}
+
 pub async fn processing_status(
     State(state): State<Arc<AppState>>,
     caller: Caller,
+    Query(query): Query<StatusQuery>,
 ) -> Result<Json<StatusList>, ApiError> {
     caller.require(Role::Viewer, "see which radargrams are up to date")?;
     let project = readable_project(&state)?;
+    let only = query
+        .radargram_id
+        .as_deref()
+        .map(parse_radargram)
+        .transpose()?;
+    let radargrams = statuses(&state, project, only.as_ref()).await?;
+    Ok(Json(StatusList { radargrams }))
+}
+
+/// Where every radargram in a profile stands. Shared by the status route
+/// and by a batch deciding what to reprocess.
+pub(super) async fn statuses(
+    state: &AppState,
+    project: &crate::project::Project,
+    only: Option<&RadargramId>,
+) -> Result<Vec<RadargramStatus>, ApiError> {
     let (assignments, _) =
         processing::read_assignments(project.documents()).map_err(processing_error)?;
     let profiles: std::collections::HashMap<ProfileId, Profile> =
@@ -277,6 +316,9 @@ pub async fn processing_status(
     let catalog = state.catalog();
     let mut work = Vec::new();
     for (radargram, assignment) in assignments.radargrams {
+        if only.is_some_and(|only| only != &radargram) {
+            continue;
+        }
         let Some(profile) = profiles.get(&assignment.profile).cloned() else {
             continue;
         };
@@ -290,7 +332,7 @@ pub async fn processing_status(
     }
     drop(catalog);
 
-    let radargrams = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         work.into_iter()
             .map(|(radargram, assignment, profile, source, served)| {
                 let recipe = served
@@ -311,6 +353,5 @@ pub async fn processing_status(
             .collect()
     })
     .await
-    .map_err(|e| ApiError::internal("status_failed", e.to_string()))?;
-    Ok(Json(StatusList { radargrams }))
+    .map_err(|e| ApiError::internal("status_failed", e.to_string()))
 }
