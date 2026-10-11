@@ -2746,6 +2746,9 @@ button.danger:disabled {
   display: block;
   margin: 0.5rem 0;
 }
+.process-dialog input[type="text"] {
+  width: min(24rem, 100%);
+}
 .process-steps textarea {
   display: block;
   box-sizing: border-box;
@@ -2769,6 +2772,11 @@ button.danger:disabled {
 }
 .process-files:empty {
   display: none;
+}
+.process-remove {
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  line-height: 1.4;
 }
 
 .replace-detail {

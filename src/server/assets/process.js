@@ -55,7 +55,18 @@
   // a commit is a replacement rather than an addition.
   let served = Boolean(window.RIDAL_VIEWER);
   let files = [];
+  // What has been uploaded in this page, so taking a file out and trying
+  // again does not send the others twice. The server would keep one copy
+  // anyway; this saves the transfer.
+  const uploaded = new Map();
+  const fileKey = (file) => `${file.name}:${file.size}:${file.lastModified}`;
   let uploading = null;
+  // The radargram's place in a processing profile, as the server has it.
+  let assignment = null;
+  // What the last draft that finished was made from, so the same thing is
+  // not processed again for nothing; and whether one is being made.
+  let lastRun = null;
+  let running = false;
   let job = null;
   let token = null;
   let showingDraft = true;
@@ -136,13 +147,17 @@
     profileBox.value = profiles.some((p) => p.id === chosen) ? chosen : '';
   }
 
+  const stemOf = (file) => {
+    const dot = file.name.lastIndexOf('.');
+    return dot > 0 ? file.name.slice(0, dot) : file.name;
+  };
+
   /** The chosen files as recordings: grouped by name without extension,
    * in name order. */
   function recordings() {
     const groups = new Map();
     for (const file of files) {
-      const dot = file.name.lastIndexOf('.');
-      const stem = dot > 0 ? file.name.slice(0, dot) : file.name;
+      const stem = stemOf(file);
       if (!groups.has(stem)) groups.set(stem, []);
       groups.get(stem).push(file);
     }
@@ -156,9 +171,21 @@
     for (const recording of recordings()) {
       const item = document.createElement('li');
       const size = recording.files.reduce((sum, f) => sum + f.size, 0);
-      item.textContent =
+      const text = document.createElement('span');
+      text.textContent =
         `${recording.stem}: ${recording.files.map((f) => f.name).join(', ')} ` +
         `(${RIDAL.formatBytes(size)})`;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'process-remove';
+      remove.textContent = '×';
+      remove.title = `Leave out ${recording.stem}`;
+      remove.setAttribute('aria-label', `Leave out ${recording.stem}`);
+      remove.addEventListener('click', () => {
+        files = files.filter((f) => stemOf(f) !== recording.stem);
+        listFiles();
+      });
+      item.append(text, remove);
       fileList.appendChild(item);
     }
     upload.disabled = files.length === 0;
@@ -166,7 +193,12 @@
 
   choose.addEventListener('click', () => picker.click());
   picker.addEventListener('change', () => {
-    files = [...(picker.files || [])];
+    // Added to what is chosen already, so a recording in another folder can
+    // join; a file chosen twice is there once.
+    for (const file of picker.files || []) {
+      files = files.filter((f) => f.name !== file.name);
+      files.push(file);
+    }
     // Reset, so choosing the same files again still fires `change`.
     picker.value = '';
     listFiles();
@@ -238,6 +270,11 @@
         const bundle = [];
         for (const file of recording.files) {
           done += 1;
+          const known = uploaded.get(fileKey(file));
+          if (known) {
+            bundle.push(known);
+            continue;
+          }
           let lastPercent = -1;
           const progress = (loaded, size) => {
             const percent = Math.round((loaded / size) * 100);
@@ -257,7 +294,9 @@
             fail(response.json?.error?.message || RIDAL.upstreamMessage(response.status));
             return;
           }
-          bundle.push({ name: response.json.name, blake3: response.json.blake3 });
+          const stored = { name: response.json.name, blake3: response.json.blake3 };
+          uploaded.set(fileKey(file), stored);
+          bundle.push(stored);
         }
         named.push(bundle);
       }
@@ -275,18 +314,10 @@
       hasSource = true;
 
       const profileId = profileBox.value;
-      if (profileId !== '') {
-        await RIDAL.fetchJson(RIDAL.apiPath('processing', 'assignments', id), {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ profile: profileId }),
-        });
-        const profile = profiles.find((p) => p.id === profileId);
-        const current = profile?.versions.find((v) => v.version === profile.current_version);
-        if (current) {
-          stepsBox.value = current.steps.join('\n');
-          velocityBox.value = String(current.medium_velocity);
-        }
+      if (profileId !== (assignment?.profile || '')) {
+        await assign(profileId);
+      } else if (profileId !== '') {
+        fillFromProfile(profileId);
       } else {
         await prefill();
       }
@@ -298,14 +329,13 @@
       status.textContent =
         'The raw data is stored. Choose the steps and process; nothing is ' +
         (served ? 'replaced' : 'added to the catalog') +
-        ' until you make the draft the radargram.';
+        ' until you apply the processing version.';
     } catch (error) {
       status.textContent = '';
-      fail(
-        error.message === 'upload cancelled'
-          ? 'Upload cancelled.'
-          : `Could not store the raw data (${error.message}).`,
-      );
+      // A refusal from the server is a sentence of its own: shown as it is.
+      if (error.message === 'upload cancelled') fail('Upload cancelled.');
+      else if (error.status) fail(error.message);
+      else fail(`Could not store the raw data (${error.message}).`);
     } finally {
       upload.disabled = files.length === 0;
       choose.disabled = false;
@@ -340,8 +370,8 @@
     image.src = overviewUrl(draft);
     image.alt = draft ? 'The draft' : 'The radargram as it is served now';
     caption.textContent = draft
-      ? 'The draft.'
-      : 'As it is served now.';
+      ? 'Shown: the draft.'
+      : 'Shown: as it is served now.';
     toggle.textContent = draft ? 'Show current' : 'Show draft';
   }
 
@@ -351,7 +381,7 @@
       draft = await RIDAL.fetchJson(RIDAL.apiPath('drafts', String(job)));
     } catch (error) {
       fail(`Could not follow the draft (${error.message}).`);
-      run.disabled = false;
+      finishRun(false);
       return;
     }
     if (draft.state === 'queued') {
@@ -361,8 +391,8 @@
         ? `Step ${draft.step.index + 1} of ${draft.step.of}: ${draft.step.step}`
         : 'Starting…';
     } else if (draft.state === 'done') {
-      run.disabled = false;
-      status.textContent = 'Done. Nothing has changed until you make it the radargram.';
+      finishRun(true);
+      status.textContent = 'Done. Nothing has changed until you apply this processing version.';
       result.hidden = false;
       commit.hidden = false;
       // A radargram that is not served yet has nothing to compare with.
@@ -370,7 +400,7 @@
       show(true);
       return;
     } else {
-      run.disabled = false;
+      finishRun(false);
       status.textContent = '';
       fail(draft.message || `The draft ended without a result (${draft.state}).`);
       return;
@@ -378,8 +408,105 @@
     polling = setTimeout(poll, 1000);
   }
 
+  /** The steps in the box, as they are sent. */
+  const stepLines = () =>
+    stepsBox.value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !line.startsWith('#'));
+  const runKey = () => JSON.stringify([stepLines(), Number(velocityBox.value)]);
+  // What the draft being made is made from, until it is done.
+  let pendingKey = null;
+
+  /** Process is offered while a draft is not being made and what is in the
+   * boxes is not what the last finished draft was made from: the same
+   * steps would make the same draft. */
+  function updateRun() {
+    const same = lastRun !== null && runKey() === lastRun;
+    run.disabled = running || same;
+    run.title = same ? 'This draft is made from these steps already. Change them to process again.' : '';
+  }
+  stepsBox.addEventListener('input', updateRun);
+  velocityBox.addEventListener('input', updateRun);
+
+  function finishRun(succeeded) {
+    running = false;
+    lastRun = succeeded ? pendingKey : null;
+    pendingKey = null;
+    updateRun();
+  }
+
+  /** Fill the steps and velocity from a profile's current version, after
+   * the radargram's own selection steps, as a batch runs them. */
+  function fillFromProfile(profileId) {
+    const profile = profiles.find((p) => p.id === profileId);
+    const current = profile?.versions.find((v) => v.version === profile.current_version);
+    if (!current) return;
+    const own = assignment?.profile === profileId ? assignment.pre_steps || [] : [];
+    stepsBox.value = [...own, ...current.steps].join('\n');
+    velocityBox.value = String(current.medium_velocity);
+    updateRun();
+  }
+
+  /** Put the radargram in `profileId`, or take it out of its profile for
+   * `''`, keeping its own selection steps when it moves. */
+  async function assign(profileId) {
+    const path = RIDAL.apiPath('processing', 'assignments', radargramId);
+    if (profileId === '') {
+      await RIDAL.fetchJson(path, { method: 'DELETE' }).catch((error) => {
+        if (error.status !== 404) throw error;
+      });
+      assignment = null;
+      return;
+    }
+    const body = { profile: profileId };
+    if (assignment?.pre_steps?.length) body.pre_steps = assignment.pre_steps;
+    await RIDAL.fetchJson(path, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assignment = { profile: profileId, pre_steps: body.pre_steps || [] };
+    fillFromProfile(profileId);
+  }
+
+  /** Before there is raw data the choice waits for the upload, which
+   * assigns it; after, it is made at once and fills in the steps. */
+  profileBox.addEventListener('change', async () => {
+    if (!hasSource || !rawStage.hidden) return;
+    const profileId = profileBox.value;
+    errorBox.hidden = true;
+    try {
+      await assign(profileId);
+      const name = profiles.find((p) => p.id === profileId)?.name;
+      status.textContent = name
+        ? `${radargramId} is in ${name} now; its steps are filled in.`
+        : `${radargramId} is in no processing profile now.`;
+    } catch (error) {
+      profileBox.value = assignment?.profile || '';
+      fail(`Could not change the processing profile (${error.message}).`);
+    }
+  });
+
+  /** The profiles, and which one this radargram is in, if any. */
+  async function loadAssignment() {
+    await loadProfiles();
+    assignment = null;
+    if (radargramId !== null) {
+      try {
+        const all = await RIDAL.fetchJson(RIDAL.apiPath('processing', 'assignments'));
+        assignment = all.radargrams?.[radargramId] || null;
+      } catch {
+        // No assignments to read: in no profile.
+      }
+    }
+    profileBox.value = assignment?.profile || '';
+  }
+
   /** Open at the stage this radargram needs. */
   async function begin(raw) {
+    lastRun = null;
+    updateRun();
     reset();
     stage(raw);
     recordingList.replaceChildren();
@@ -392,17 +519,17 @@
       title.textContent = served ? `Raw data for ${radargramId}` : 'New radargram from raw data';
       status.textContent = served
         ? 'Choose the raw files this radargram was processed from. It stays as ' +
-          'it is until you process them and make the draft the radargram.'
+          'it is until you process them and apply the processing version.'
         : 'Choose the raw files of one radargram: several recordings are merged ' +
           'in name order.';
     } else {
       title.textContent = `Process ${radargramId}`;
       status.textContent =
-        'Change the steps and process. Nothing changes until you make the draft the radargram.';
+        'Change the steps and process. Nothing changes until you apply the processing version.';
     }
     dialog.showModal();
-    if (raw) await loadProfiles();
-    else await prefill();
+    await loadAssignment();
+    if (!raw) await prefill();
   }
 
   if (viewerOpen) viewerOpen.addEventListener('click', () => begin(!hasSource));
@@ -419,12 +546,11 @@
   run.addEventListener('click', async () => {
     discard();
     reset();
-    const steps = stepsBox.value
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '' && !line.startsWith('#'));
+    const steps = stepLines();
     const velocity = Number(velocityBox.value);
-    run.disabled = true;
+    pendingKey = runKey();
+    running = true;
+    updateRun();
     status.textContent = 'Sending…';
     try {
       const draft = await RIDAL.fetchJson(
@@ -441,7 +567,7 @@
       job = draft.job;
       poll();
     } catch (error) {
-      run.disabled = false;
+      finishRun(false);
       status.textContent = '';
       fail(error.message);
     }

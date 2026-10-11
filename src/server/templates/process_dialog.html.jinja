@@ -15,16 +15,20 @@
              accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx">
     </p>
     <ul id="process-file-list" class="process-files"></ul>
-    <label>CRS for the positions, optional
+    {#- Left empty, the positions go in the UTM zone that suits them best,
+        as `ridal process` does without `--crs`. -#}
+    <label>CRS for the positions
       <input type="text" id="process-crs" autocomplete="off" spellcheck="false"
-             placeholder="EPSG:32633">
-    </label>
-    <label>Processing profile
-      <select id="process-profile">
-        <option value="">None</option>
-      </select>
+             placeholder="Automatic: the best UTM zone for the track">
     </label>
   </section>
+  {#- In both stages: a new radargram can start in a profile, and one being
+      processed can be moved to another. -#}
+  <label>Processing profile
+    <select id="process-profile">
+      <option value="">None</option>
+    </select>
+  </label>
   <section id="process-draft">
     <ul id="process-recordings" class="process-files"></ul>
     <label class="process-steps">Steps, one per line
@@ -47,7 +51,7 @@
     <button type="button" id="process-cancel-upload" hidden>Cancel upload</button>
     <button type="button" id="process-run">Process</button>
     <button type="button" id="process-toggle" hidden>Show current</button>
-    <button type="button" id="process-commit" hidden>Make this the radargram&hellip;</button>
+    <button type="button" id="process-commit" hidden>Apply this processing version</button>
     <button type="button" id="process-confirm" class="danger" hidden>Replace</button>
     <button type="button" id="process-close">Close</button>
   </p>

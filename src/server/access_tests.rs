@@ -5969,6 +5969,44 @@ async fn upload_recording(app: &Router, stem: &str, session: &str) -> Value {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn recordings_that_cannot_be_merged_are_refused_as_a_source() {
+    // Refused when the source is set, not when the first draft fails.
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let old = upload_recording(&app, "dronbreen-20220329-DAT_0237_A1", &erik).await;
+    let new = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    let refused = put(
+        &app,
+        "/api/v1/sources/line-mixed",
+        &json!({"recordings": [old, new]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "recordings_not_mergeable");
+    let message = refused.body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("dronbreen-20220329-DAT_0237_A1.rad")
+            && message.contains("antenna frequencies differ"),
+        "{message}"
+    );
+    assert_eq!(
+        get(&app, "/api/v1/sources/line-mixed", Some(&erik))
+            .await
+            .status,
+        StatusCode::NOT_FOUND,
+        "nothing was set"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn raw_data_is_uploaded_once_and_a_source_names_it() {
     // #382 phase 4.
     let hash = password_hash();

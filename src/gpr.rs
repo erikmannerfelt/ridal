@@ -2648,6 +2648,58 @@ pub struct InfoRecord {
     pub related_files: RelatedFiles,
 }
 
+/// Whether `records`, in merge order, can be merged into one radargram, from
+/// their headers alone: the checks [`GPR::merge`] makes that do not need the
+/// data, so a mismatch can be refused before anything is processed (#382).
+/// Keep the two in step.
+///
+/// Each record is compared with the first. The message names both files.
+pub fn check_mergeable(records: &[InfoRecord]) -> Result<(), String> {
+    let Some(first) = records.first() else {
+        return Ok(());
+    };
+    let name = |record: &InfoRecord| {
+        Path::new(&record.input)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| record.input.clone())
+    };
+    for other in &records[1..] {
+        let (a, b) = (&first.metadata, &other.metadata);
+        let differs = if first.location.crs != other.location.crs {
+            Some(format!(
+                "their positions are in different CRSs ({} and {}); give one CRS for both",
+                first.location.crs, other.location.crs
+            ))
+        } else if a.antenna_mhz != b.antenna_mhz {
+            Some(format!(
+                "their antenna frequencies differ ({} and {} MHz)",
+                a.antenna_mhz, b.antenna_mhz
+            ))
+        } else if a.time_window_ns != b.time_window_ns {
+            Some(format!(
+                "their time windows differ ({} and {} ns)",
+                a.time_window_ns, b.time_window_ns
+            ))
+        } else if a.antenna_separation_m != b.antenna_separation_m {
+            Some(format!(
+                "their antenna separations differ ({} and {} m)",
+                a.antenna_separation_m, b.antenna_separation_m
+            ))
+        } else {
+            None
+        };
+        if let Some(differs) = differs {
+            return Err(format!(
+                "{} and {} cannot be merged into one radargram: {differs}.",
+                name(first),
+                name(other)
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// What `ridal info` reports for a NetCDF file Ridal processed (#11).
 ///
 /// Identity rather than contents: enough to match a local file to a radargram

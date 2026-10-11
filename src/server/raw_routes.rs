@@ -304,6 +304,9 @@ pub async fn put_source(
     .await
     .map_err(|e| ApiError::internal("source_failed", e.to_string()))?;
     let (source, recordings) = result.map_err(|e| ApiError::bad_request("source_unreadable", e))?;
+    // Refused now rather than when the first draft fails to merge them.
+    crate::gpr::check_mergeable(&recordings)
+        .map_err(|e| ApiError::bad_request("recordings_not_mergeable", e))?;
 
     let version = raw::write_source(project.documents(), &id, &source, &expected)
         .map_err(|e| store_error(&e))?;
