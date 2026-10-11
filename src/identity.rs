@@ -385,6 +385,7 @@ slug_newtype!(RadargramId, "radargram ID");
 slug_newtype!(GroupId, "group");
 slug_newtype!(UserId, "user");
 slug_newtype!(ProjectKey, "project key");
+slug_newtype!(ProfileId, "processing profile id");
 
 /// The author recorded when Ridal has no authentication to ask.
 ///

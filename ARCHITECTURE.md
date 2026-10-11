@@ -292,6 +292,26 @@ directly), plus an optional CRS and DEM. The routes are in
 - Raw files count toward `max_bytes` because the quota measures the whole
   project directory; the laid-out symlinks count as links.
 
+## Processing profiles (#382)
+
+`project::processing` keeps **processing profiles** under
+`ridal_data/processing/profiles/<id>.json` and which radargram uses which in
+`processing/assignments.json`. A profile is not a catalog group: a group is
+a place or a year, and one profile (an antenna, a medium) spans many.
+
+- **Every version is kept.** A profile document holds all its versions,
+  oldest first. Changing the steps or the velocity appends one; changing
+  the name or description does not, since it processes nothing
+  differently. Steps are stored canonical, with defaults written out, as a
+  recipe records them, so a changed default is not a silent change to a
+  profile.
+- **Pre-steps only select.** An assignment may give a radargram steps of
+  its own that run before the profile's, and `Step::selects_only` (an
+  exhaustive match, like `Step::version`) limits them to `subset` and
+  `remove_traces`. Anything else would be processing the radargram
+  differently while it still claims the profile.
+- A profile in use cannot be deleted; the refusal names who uses it.
+
 ## The Python client (#328)
 
 `ridal.client` is pure Python, in `python/ridal/client/`, beside the Rust

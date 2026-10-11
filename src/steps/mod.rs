@@ -983,6 +983,40 @@ impl Step {
         }
     }
 
+    /// Whether the step only chooses which traces and samples to keep, and
+    /// so may run before a processing profile's steps as one radargram's
+    /// own (#382). A radargram with any other step of its own is processed
+    /// differently from its profile, and is custom.
+    ///
+    /// No wildcard arm, so a new step cannot be added without choosing.
+    pub fn selects_only(&self) -> bool {
+        match self {
+            Step::Subset { .. } | Step::RemoveTraces { .. } => true,
+            Step::RemoveEmptyTraces { .. }
+            | Step::RemoveStandstills { .. }
+            | Step::AverageTraces { .. }
+            | Step::ZeroCorr { .. }
+            | Step::Bandpass { .. }
+            | Step::BandpassMhz { .. }
+            | Step::EquidistantTraces { .. }
+            | Step::ShiftCoordinates { .. }
+            | Step::Dewow { .. }
+            | Step::BackgroundRemoval { .. }
+            | Step::RemoveTones { .. }
+            | Step::BalanceTraces { .. }
+            | Step::AutoGain { .. }
+            | Step::Gain { .. }
+            | Step::KirchhoffMigration2d
+            | Step::Abslog
+            | Step::Siglog { .. }
+            | Step::AdaptiveSiglog { .. }
+            | Step::Unphase
+            | Step::CorrectTopography
+            | Step::CorrectAntennaSeparation { .. }
+            | Step::Multiply { .. } => false,
+        }
+    }
+
     /// Reject argument combinations that clap cannot express.
     fn validate(&self) -> Result<(), String> {
         match self {

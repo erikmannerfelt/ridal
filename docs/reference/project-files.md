@@ -20,6 +20,9 @@ my_survey/
       derived.json                derived items
     preferences/
       <user>.json                 one person's display preferences
+    processing/
+      profiles/<profile>.json     a processing profile, every version of it
+      assignments.json            which radargram uses which profile
     users.json                    this project's members, and its access policy
     overrides.json                corrected radargram and group metadata
     revisions/, revisions.json    earlier revisions of replaced radargrams
@@ -39,12 +42,13 @@ gui` never writes it, and ignores it when it is there.
 
 ## What to keep
 
-`interpretations/`, `layers/` and `derived/` are **authored**: people made
-them, and nothing can recreate them. `raw/` holds raw recordings uploaded to
-the project; it may be the only copy of them on the server, so back it up
-too. Back them up, and keep them in version
-control if the project is in a git repository. The `.gitignore` that
-`ridal project init` writes already leaves them in.
+`interpretations/`, `layers/`, `derived/` and `processing/` are **authored**:
+people made them, and nothing can recreate them. Back them up, and keep them
+in version control if the project is in a git repository. The `.gitignore`
+that `ridal project init` writes already leaves them in.
+
+`raw/` holds the raw recordings uploaded to the project. It may be the only
+copy of them on the server, so back it up too.
 
 `cache/` is **derived**. Deleting it is always safe; Ridal rebuilds it. It
 contains a `CACHEDIR.TAG`, so backup tools that honour the convention skip it.
