@@ -5967,6 +5967,291 @@ async fn upload_recording(app: &Router, stem: &str, session: &str) -> Value {
     Value::Array(files)
 }
 
+/// Upload a file as raw data, as `PUT /dems` takes it.
+async fn upload_file(app: &Router, path: &str, session: &str) -> Value {
+    let name = StdPath::new(path).file_name().unwrap().to_string_lossy();
+    let stored = post_bytes(
+        app,
+        &format!("/api/v1/raw?filename={name}"),
+        std::fs::read(path).unwrap(),
+        Some(session),
+    )
+    .await;
+    assert_eq!(stored.status, StatusCode::CREATED, "{}", stored.text);
+    json!({"name": name, "blake3": stored.body["blake3"]})
+}
+
+/// A DEM over Drønbreen, made from the Mettebreen fixture's values: the
+/// fixtures have no DEM that covers a recording. `size` pixels a side, so
+/// two of them are two files.
+fn dronbreen_dem(dir: &StdPath, size: u32) -> std::path::PathBuf {
+    let path = dir.join(format!("dronbreen-{size}.tif"));
+    let status = std::process::Command::new("gdal_translate")
+        .args([
+            "-q",
+            "-a_srs",
+            "EPSG:4326",
+            "-a_ullr",
+            "16",
+            "79",
+            "17.5",
+            "77.5",
+        ])
+        .args(["-outsize", &size.to_string(), &size.to_string()])
+        .arg("assets/test_dem_dtm20_mettebreen.tif")
+        .arg(&path)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    path
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_dem_is_added_once_linked_per_radargram_and_kept_while_linked() {
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("pia", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let pia = sign_in(&app, "pia").await;
+    let dem_file = upload_file(&app, dronbreen_dem(dir.path(), 10).to_str().unwrap(), &erik).await;
+    let other_dem = upload_file(&app, dronbreen_dem(dir.path(), 12).to_str().unwrap(), &erik).await;
+    let elsewhere = upload_file(&app, "assets/test_dem_dtm20_mettebreen.tif", &erik).await;
+    let not_a_raster = upload_file(&app, "assets/mala/README.md", &erik).await;
+    let named = |name: &str, file: &Value| json!({"name": name, "file": file});
+
+    // Only an operator adds one, and only a raster.
+    let refused = put(
+        &app,
+        "/api/v1/dems/dronbreen",
+        &named("Drønbreen", &dem_file),
+        Some(&pia),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let unreadable = put(
+        &app,
+        "/api/v1/dems/notes",
+        &named("Notes", &not_a_raster),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        unreadable.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        unreadable.text
+    );
+    assert_eq!(unreadable.body["error"]["code"], "dem_unreadable");
+    let no_file = put(
+        &app,
+        "/api/v1/dems/dronbreen",
+        &json!({"name": "Drønbreen"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        no_file.body["error"]["code"], "file_required",
+        "{}",
+        no_file.text
+    );
+
+    let created = put(
+        &app,
+        "/api/v1/dems/dronbreen",
+        &named("Drønbreen", &dem_file),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text);
+    assert_eq!(created.body["by"], "erik");
+    assert!(created.body["bytes"].as_u64().unwrap() > 0);
+    let mettebreen = put(
+        &app,
+        "/api/v1/dems/mettebreen",
+        &named("Mettebreen", &elsewhere),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        mettebreen.status,
+        StatusCode::CREATED,
+        "{}",
+        mettebreen.text
+    );
+    let listed = get(&app, "/api/v1/dems", Some(&pia)).await;
+    assert_eq!(listed.body["dems"][0]["id"], "dronbreen", "{}", listed.text);
+    assert_eq!(listed.body["dems"][0]["radargram_ids"], json!([]));
+
+    // A source names one by id, when it is set or afterwards; one that
+    // does not cover the recordings is refused either way.
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    let with_dem = |dem: &str| json!({"recordings": [recording], "dem": dem});
+    let missing = put(
+        &app,
+        "/api/v1/sources/line-01",
+        &with_dem("nowhere"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.text);
+    assert_eq!(missing.body["error"]["code"], "no_such_dem");
+    let off = put(
+        &app,
+        "/api/v1/sources/line-01",
+        &with_dem("mettebreen"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::BAD_REQUEST, "{}", off.text);
+    assert!(
+        off.body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("with the DEM 'mettebreen'"),
+        "{}",
+        off.text
+    );
+    let set = put(
+        &app,
+        "/api/v1/sources/line-01",
+        &with_dem("dronbreen"),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(set.body["source"]["dem"]["id"], "dronbreen");
+    assert_eq!(set.body["source"]["dem"]["blake3"], dem_file["blake3"]);
+    let set = put(
+        &app,
+        "/api/v1/sources/line-02",
+        &json!({"recordings": [recording]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let off = put(
+        &app,
+        "/api/v1/sources/line-02/dem",
+        &json!({"dem": "mettebreen"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::BAD_REQUEST, "{}", off.text);
+    let linked = put(
+        &app,
+        "/api/v1/sources/line-02/dem",
+        &json!({"dem": "dronbreen"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(linked.status, StatusCode::OK, "{}", linked.text);
+    assert_eq!(linked.body["source"]["dem"]["id"], "dronbreen");
+    assert_eq!(
+        linked.body["source"]["bundles"], set.body["source"]["bundles"],
+        "the recordings are left alone"
+    );
+    assert_eq!(linked.body["recordings"].as_array().unwrap().len(), 1);
+    // Against an older version of the source, refused.
+    let stale = send(
+        &app,
+        request("PUT", "/api/v1/sources/line-02/dem", Some(&erik))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::IF_MATCH, set.etag.clone().unwrap())
+            .body(Body::from(json!({"dem": null}).to_string()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        stale.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        stale.text
+    );
+    let one = get(&app, "/api/v1/dems/dronbreen", Some(&pia)).await;
+    assert_eq!(one.body["radargram_ids"], json!(["line-01", "line-02"]));
+
+    // While linked: renamed, yes; given another file or deleted, no.
+    let renamed = put(
+        &app,
+        "/api/v1/dems/dronbreen",
+        &json!({"name": "Drønbreen 2008"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.text);
+    assert_eq!(renamed.body["name"], "Drønbreen 2008");
+    assert_eq!(renamed.body["file"]["blake3"], dem_file["blake3"]);
+    let same = put(
+        &app,
+        "/api/v1/dems/dronbreen",
+        &named("Drønbreen 2008", &dem_file),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        same.status,
+        StatusCode::OK,
+        "the same file again is no change: {}",
+        same.text
+    );
+    let replaced = put(
+        &app,
+        "/api/v1/dems/dronbreen",
+        &named("Drønbreen 2008", &other_dem),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(replaced.status, StatusCode::CONFLICT, "{}", replaced.text);
+    assert_eq!(replaced.body["error"]["code"], "dem_in_use");
+    let gone = delete(&app, "/api/v1/dems/dronbreen", Some(&erik)).await;
+    assert_eq!(gone.status, StatusCode::CONFLICT);
+    let message = gone.body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("line-01, line-02"), "{message}");
+
+    // Nothing linked to it, a DEM's file is replaced, and it can go.
+    let replaced = put(
+        &app,
+        "/api/v1/dems/mettebreen",
+        &named("Mettebreen", &other_dem),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.text);
+    assert_eq!(replaced.body["file"]["blake3"], other_dem["blake3"]);
+    let deleted = delete(&app, "/api/v1/dems/mettebreen", Some(&erik)).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    assert_eq!(
+        get(&app, "/api/v1/dems/mettebreen", Some(&erik))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    for line in ["line-01", "line-02"] {
+        let unlinked = put(
+            &app,
+            &format!("/api/v1/sources/{line}/dem"),
+            &json!({"dem": null}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(
+            unlinked.body["source"]["dem"],
+            Value::Null,
+            "{}",
+            unlinked.text
+        );
+    }
+    let deleted = delete(&app, "/api/v1/dems/dronbreen", Some(&erik)).await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text);
+    assert_eq!(
+        get(&app, "/api/v1/dems", Some(&erik)).await.body["dems"],
+        json!([])
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn recordings_that_cannot_be_merged_are_refused_as_a_source() {

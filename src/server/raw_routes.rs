@@ -9,6 +9,8 @@
 //! DELETE /api/v1/sources/{radargram_id}  forget it
 //! ```
 //!
+//! DEMs, which a source links to by id, are [`super::dem_routes`].
+//!
 //! A source is keyed by radargram id, not by a served radargram, so one can
 //! be set for an id that has no processed file yet: that is where server
 //! processing starts. The files themselves live in [`crate::project::raw`].
@@ -30,7 +32,7 @@ use crate::project::raw::{self, NamedFile, Source};
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{StoreError, Version};
 
-fn project_for<'a>(
+pub(super) fn project_for<'a>(
     state: &'a AppState,
     caller: &Caller,
     action: &str,
@@ -46,7 +48,7 @@ fn project_for<'a>(
     })
 }
 
-fn store_error(error: &StoreError) -> ApiError {
+pub(super) fn store_error(error: &StoreError) -> ApiError {
     match error {
         StoreError::Conflict { .. } => {
             ApiError::precondition_failed("version_conflict", error.to_string())
@@ -222,8 +224,9 @@ pub struct SourceBody {
     pub recordings: Vec<Vec<NamedFile>>,
     #[serde(default)]
     pub crs: Option<String>,
+    /// One of the project's DEMs, by id (`GET /api/v1/dems`).
     #[serde(default)]
-    pub dem: Option<NamedFile>,
+    pub dem: Option<String>,
 }
 
 /// A source's CRS, as an EPSG code: `EPSG:32633`.
@@ -265,51 +268,25 @@ pub async fn put_source(
     let expected = expectation_from(&headers);
     let data_dir = project.data_dir().to_path_buf();
     let crs = body.crs.as_deref().map(source_crs).transpose()?;
+    let dem = body
+        .dem
+        .as_deref()
+        .map(|id| super::dem_routes::link_to(project, &super::dem_routes::parse_dem(id)?))
+        .transpose()?;
 
     // Reading recordings parses headers and projects positions, which runs
     // PROJ: off the async executor.
     let result = tokio::task::spawn_blocking(move || {
         let work = raw::incoming_path(&data_dir)?.with_extension("source");
-        let outcome = (|| {
+        let outcome = (|| -> Result<_, String> {
             let bundles = raw::bundles_of(&data_dir, &body.recordings, &work)?;
-            let dem = match &body.dem {
-                None => None,
-                Some(dem) => {
-                    if !raw::contains(&data_dir, &dem.blake3) {
-                        return Err(format!(
-                            "{} ({}) has not been uploaded to this project",
-                            dem.name, dem.blake3
-                        ));
-                    }
-                    Some(crate::recipe::HashedFile {
-                        name: dem.name.clone(),
-                        blake3: dem.blake3.clone(),
-                    })
-                }
-            };
-            let headers: Vec<std::path::PathBuf> =
-                raw::materialize(&data_dir, &body.recordings, &work.join("read"))?
-                    .into_iter()
-                    .map(|resolved| resolved.header)
-                    .collect();
-            let records = crate::gpr::inspect(crate::gpr::InfoParams {
-                filepaths: headers,
-                dem_path: dem
-                    .as_ref()
-                    .and_then(|d| raw::file_path(&data_dir, &d.blake3)),
-                cor_path: None,
-                medium_velocity: 0.168,
-                crs: crs.clone(),
-                override_antenna_mhz: None,
-                override_antenna_separation: None,
-            })
-            .map_err(|e| format!("the recordings cannot be read: {e}"))?
-            .into_iter()
-            .filter_map(|record| match record {
-                crate::gpr::Inspected::Raw(record) => Some(record),
-                crate::gpr::Inspected::Processed(_) => None,
-            })
-            .collect::<Vec<_>>();
+            let records = read_recordings(
+                &data_dir,
+                &body.recordings,
+                &work.join("read"),
+                crs.clone(),
+                dem.as_ref(),
+            )?;
             Ok((
                 Source {
                     bundles,
@@ -329,8 +306,7 @@ pub async fn put_source(
     crate::gpr::check_mergeable(&recordings)
         .map_err(|e| ApiError::bad_request("recordings_not_mergeable", e))?;
 
-    let version = raw::write_source(project.documents(), &id, &source, &expected)
-        .map_err(|e| store_error(&e))?;
+    let version = write_with_dem(&state, project, &id, &source, &expected)?;
     // A switched source may leave files nothing names any more.
     sweep(&state, project);
     Ok((
@@ -342,6 +318,71 @@ pub async fn put_source(
         }),
     )
         .into_response())
+}
+
+/// What each of `recordings` says, read as a draft would read them: with
+/// `crs` and `dem`, so a DEM that does not cover them is refused here.
+/// Lays them out under `work`, which the caller removes.
+pub(super) fn read_recordings(
+    data_dir: &std::path::Path,
+    recordings: &[Vec<NamedFile>],
+    work: &std::path::Path,
+    crs: Option<String>,
+    dem: Option<&raw::SourceDem>,
+) -> Result<Vec<crate::gpr::InfoRecord>, String> {
+    let headers: Vec<std::path::PathBuf> = raw::materialize(data_dir, recordings, work)?
+        .into_iter()
+        .map(|resolved| resolved.header)
+        .collect();
+    let records = crate::gpr::inspect(crate::gpr::InfoParams {
+        filepaths: headers,
+        dem_path: dem.and_then(|d| raw::file_path(data_dir, &d.file.blake3)),
+        cor_path: None,
+        medium_velocity: 0.168,
+        crs,
+        override_antenna_mhz: None,
+        override_antenna_separation: None,
+    })
+    .map_err(|e| match dem {
+        Some(dem) => format!(
+            "the recordings cannot be read with the DEM '{}': {e}",
+            dem.id
+        ),
+        None => format!("the recordings cannot be read: {e}"),
+    })?;
+    Ok(records
+        .into_iter()
+        .filter_map(|record| match record {
+            crate::gpr::Inspected::Raw(record) => Some(record),
+            crate::gpr::Inspected::Processed(_) => None,
+        })
+        .collect())
+}
+
+/// Write `source`, checking first that the DEM it links to, if any, still
+/// has the file it was read with. The DEM's file cannot change while a
+/// source links to it, but this one may not be linked yet.
+pub(super) fn write_with_dem(
+    state: &AppState,
+    project: &crate::project::Project,
+    id: &crate::identity::RadargramId,
+    source: &Source,
+    expected: &crate::project::store::Expectation,
+) -> Result<Version, ApiError> {
+    let _links = state.dem_links();
+    if let Some(dem) = &source.dem {
+        if super::dem_routes::link_to(project, &dem.id)? != *dem {
+            return Err(ApiError::conflict(
+                "dem_changed",
+                format!(
+                    "The DEM '{}' was given another file while the recordings were \
+                     read. Try again.",
+                    dem.id
+                ),
+            ));
+        }
+    }
+    raw::write_source(project.documents(), id, source, expected).map_err(|e| store_error(&e))
 }
 
 pub async fn delete_source(

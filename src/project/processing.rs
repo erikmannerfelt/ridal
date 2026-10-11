@@ -435,7 +435,7 @@ pub fn state_of(
     if recipe.bundles != source.bundles {
         reasons.push("its raw data has been switched since".to_string());
     }
-    if recipe.dem.as_ref().map(|d| &d.blake3) != source.dem.as_ref().map(|d| &d.blake3) {
+    if recipe.dem.as_ref().map(|d| &d.blake3) != source.dem.as_ref().map(|d| &d.file.blake3) {
         reasons.push("its DEM has changed since".to_string());
     }
     if let Some(crs) = &source.crs {

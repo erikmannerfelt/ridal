@@ -32,6 +32,7 @@ my_survey/
     raw/                          raw data, for processing on the server
       files/<aa>/<blake3>         each raw file once, named by its content
       sources/<radargram_id>.json what each radargram is made from
+      dems/<dem_id>.json          a DEM, which sources link to by id
     cache/                        derived data; safe to delete
       overviews/<revision>/       whole-radargram thumbnails, kept across restarts
 ```

@@ -2892,6 +2892,13 @@ button.danger:disabled {
 .processing-history {
   margin: var(--space-5) 0;
 }
+/* The project's DEMs: a table like a profile's, and the form under it. */
+.processing-dems {
+  margin: var(--space-5) 0;
+}
+.processing-dems td input[type="text"] {
+  min-width: 12rem;
+}
 .processing-history-batch summary {
   cursor: pointer;
 }
@@ -2978,6 +2985,13 @@ button.danger:disabled {
 .process-standing > p {
   margin: 0;
   flex: 1 1 20rem;
+}
+/* The DEM select and the line under it that says where to add one. */
+.process-dem {
+  margin: var(--space-2) 0;
+}
+.process-dem .hint {
+  margin: var(--space-1) 0 0;
 }
 .process-remove {
   margin-left: var(--space-2);

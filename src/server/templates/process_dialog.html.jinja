@@ -22,6 +22,21 @@
              placeholder="Automatic: the best UTM zone for the track">
     </label>
   </section>
+  {#- The project's DEMs, uploaded on the Processing page. Like the profile
+      select, process.js moves it: into the upload's choices, then above the
+      recordings, where a change links the radargram at once. -#}
+  <div id="process-dem-field" class="process-dem">
+    <label>DEM
+      <select id="process-dem">
+        <option value="">None</option>
+      </select>
+    </label>
+    <p class="hint">
+      For the surface elevation along the track.
+      <a href="{{ page_base|safe }}/processing#dems" target="_blank" rel="noopener">Add a DEM</a>
+      on the Processing page.
+    </p>
+  </div>
   {#- In both stages: a new radargram can start in a profile, and one being
       processed can be moved to another. process.js moves it to where each
       stage wants it: here for the upload, just above the steps after. -#}
@@ -37,6 +52,7 @@
       <p id="process-standing-text"></p>
       <button type="button" id="process-use-profile" hidden>Use the profile's steps</button>
     </div>
+    <div id="process-dem-slot"></div>
     <ul id="process-recordings" class="process-files"></ul>
     {#- In the order they run: the radargram's own steps (only while it is
         in a profile), the profile, then the profile's steps. -#}

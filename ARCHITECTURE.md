@@ -291,6 +291,20 @@ directly), plus an optional CRS and DEM. The routes are in
   since that can be lifted.
 - Raw files count toward `max_bytes` because the quota measures the whole
   project directory; the laid-out symlinks count as links.
+- **DEMs are project resources** (`raw/dems/<id>.json`, routes in
+  `server::dem_routes`): a name, an id and a stored file, uploaded once and
+  linked to by any number of sources. A source's `dem` is a `SourceDem`:
+  the DEM's id and its file's hash at the time of linking, so recipes and
+  staleness compare hashes exactly as before and need not read the DEM
+  documents. The two cannot drift because a DEM's file is replaced, or the
+  DEM deleted, only while nothing links to it; who links is computed from
+  the sources (`dem_users`), never counted. `AppState::dem_links` is held
+  over "who links to it" and the write that depends on it, in both
+  directions, and a source write re-checks that its DEM still has the file
+  its recordings were read with. `sweep` keeps every DEM's file as well as
+  every source's. A DEM is checked with `gdalinfo` when its file is set,
+  and setting or linking a source reads the recordings with it, so one that
+  does not cover them is refused there rather than by a draft.
 
 ## Processing profiles (#382)
 

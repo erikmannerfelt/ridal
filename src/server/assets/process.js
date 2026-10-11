@@ -39,6 +39,9 @@
   const fileList = document.getElementById('process-file-list');
   const crsBox = document.getElementById('process-crs');
   const profileBox = document.getElementById('process-profile');
+  const demField = document.getElementById('process-dem-field');
+  const demBox = document.getElementById('process-dem');
+  const demSlot = document.getElementById('process-dem-slot');
   const upload = document.getElementById('process-upload');
   const cancelUpload = document.getElementById('process-cancel-upload');
   const stepsBox = document.getElementById('process-steps');
@@ -107,6 +110,8 @@
     run.hidden = raw;
     // With the upload's other choices, or just above the steps it picks.
     (raw ? rawStage : profileSlot).appendChild(profileLabel);
+    // The DEM likewise: with the upload, or above the recordings.
+    (raw ? rawStage : demSlot).appendChild(demField);
   }
 
   /** In the viewer, the button says what it will do: process, when the
@@ -191,6 +196,67 @@
     }
     profileBox.value = profiles.some((p) => p.id === chosen) ? chosen : '';
   }
+
+  /** The project's DEMs, and the one this radargram's source links to.
+   * Read each time the dialog opens: they are added on another page. */
+  let linkedDem = '';
+  async function loadDems() {
+    let dems = [];
+    try {
+      dems = (await RIDAL.fetchJson(RIDAL.apiPath('dems'))).dems;
+    } catch {
+      dems = [];
+    }
+    linkedDem = '';
+    if (hasSource && radargramId !== null) {
+      try {
+        const source = await RIDAL.fetchJson(RIDAL.apiPath('sources', radargramId));
+        linkedDem = source.source.dem?.id || '';
+      } catch {
+        // No source to read: no DEM.
+      }
+    }
+    demBox.replaceChildren(new Option('None', ''));
+    for (const dem of dems) demBox.append(new Option(`${dem.name} (${dem.id})`, dem.id));
+    // A link to a DEM that has since gone is still the source's: shown
+    // as its id rather than as None, which it is not.
+    if (linkedDem && !dems.some((d) => d.id === linkedDem)) {
+      demBox.append(new Option(linkedDem, linkedDem));
+    }
+    demBox.value = linkedDem;
+  }
+
+  /** Before there is raw data the choice goes with the upload; after, it
+   * is linked at once, which makes what is served stale. */
+  demBox.addEventListener('change', async () => {
+    if (!hasSource || !rawStage.hidden) return;
+    const dem = demBox.value;
+    errorBox.hidden = true;
+    demBox.disabled = true;
+    progress.textContent = dem ? 'Reading the recordings with the DEM…' : '';
+    try {
+      const answer = await RIDAL.fetchJson(RIDAL.apiPath('sources', radargramId, 'dem'), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dem: dem === '' ? null : dem }),
+      });
+      linkedDem = answer.source.dem?.id || '';
+      if (answer.recordings.length) describe(answer.recordings);
+      const name = demBox.selectedOptions[0]?.textContent;
+      status.textContent =
+        (linkedDem ? `${radargramId} takes its elevations from ${name} now.` :
+          `${radargramId} has no DEM now.`) +
+        (served ? ' What is served was made otherwise, so it needs processing again.' : '');
+      await showStanding();
+    } catch (error) {
+      demBox.value = linkedDem;
+      fail(`Could not change the DEM (${error.message}).`);
+    } finally {
+      demBox.disabled = false;
+      progress.textContent = '';
+      updateRun();
+    }
+  });
 
   const stemOf = (file) => {
     const dot = file.name.lastIndexOf('.');
@@ -356,8 +422,13 @@
       const source = await RIDAL.fetchJson(RIDAL.apiPath('sources', id), {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recordings: named, crs: crs === '' ? null : crs }),
+        body: JSON.stringify({
+          recordings: named,
+          crs: crs === '' ? null : crs,
+          dem: demBox.value === '' ? null : demBox.value,
+        }),
       });
+      linkedDem = source.source.dem?.id || '';
       radargramId = id;
       hasSource = true;
       sourceKnown.set(id, true);
@@ -522,7 +593,8 @@
 
   /** The steps as they are sent: its own first, then the rest. */
   const stepLines = () => [...preLines(), ...linesIn(stepsBox)];
-  const runKey = () => JSON.stringify([stepLines(), Number(velocityBox.value)]);
+  // The DEM too: linking another makes another draft.
+  const runKey = () => JSON.stringify([stepLines(), Number(velocityBox.value), linkedDem]);
   // What the draft being made is made from, until it is done.
   let pendingKey = null;
 
@@ -540,7 +612,8 @@
       if (!same) {
         confirm.hidden = true;
         progress.textContent =
-          'The steps have changed since this draft was made. Process again to apply them.';
+          'The steps or the DEM have changed since this draft was made. Process again ' +
+          'to apply them.';
       } else {
         progress.textContent = 'Done. Nothing changes until you apply it.';
       }
@@ -681,7 +754,7 @@
 
   /** The profiles, and which one this radargram is in, if any. */
   async function loadAssignment() {
-    await loadProfiles();
+    await Promise.all([loadProfiles(), loadDems()]);
     assignment = null;
     if (radargramId !== null) {
       try {
