@@ -68,6 +68,10 @@ impl ApiError {
         Self::new(StatusCode::PAYLOAD_TOO_LARGE, code, message)
     }
 
+    pub(super) fn too_many_requests(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, code, message)
+    }
+
     pub(super) fn conflict(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::CONFLICT, code, message)
     }
@@ -839,7 +843,7 @@ pub async fn dataset_detail(
     Ok(Json(to_summary(&state, entry)))
 }
 
-fn lookup_view(view: &str) -> Result<DatasetView, ApiError> {
+pub(super) fn lookup_view(view: &str) -> Result<DatasetView, ApiError> {
     match view {
         "standard" => Ok(DatasetView::Standard),
         "topo" => Ok(DatasetView::Topographic),
@@ -850,7 +854,7 @@ fn lookup_view(view: &str) -> Result<DatasetView, ApiError> {
     }
 }
 
-fn lookup_profile(name: &str) -> Result<RenderProfile, ApiError> {
+pub(super) fn lookup_profile(name: &str) -> Result<RenderProfile, ApiError> {
     RenderProfile::by_name(name).ok_or_else(|| {
         ApiError::bad_request(
             "unknown_render_profile",
@@ -866,7 +870,7 @@ fn lookup_profile(name: &str) -> Result<RenderProfile, ApiError> {
 /// anything for the person who opens it.
 #[derive(Deserialize)]
 pub struct ProfileQuery {
-    profile: Option<String>,
+    pub(super) profile: Option<String>,
     /// Horizontal stretch for this page. Fell out of naming the cascade:
     /// with the chain in one function, the parameter the profile already
     /// had was one line rather than a fourth place to get the order wrong.
@@ -874,7 +878,7 @@ pub struct ProfileQuery {
     xscale: Option<f64>,
 }
 
-fn image_response(bytes: Vec<u8>, profile: &RenderProfile) -> Response {
+pub(super) fn image_response(bytes: Vec<u8>, profile: &RenderProfile) -> Response {
     (
         [(header::CONTENT_TYPE, profile.format.content_type())],
         bytes,
@@ -908,7 +912,7 @@ const OVERVIEW_BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// a build permit is only taken for a real build (#301). The service
 /// re-checks the cache once the permits are held, so concurrent requests
 /// for one overview still build it once.
-async fn get_or_build_overview(
+pub(super) async fn get_or_build_overview(
     state: Arc<AppState>,
     radargram: Arc<super::app::OpenRadargram>,
     spec: OverviewSpec,
@@ -1126,7 +1130,7 @@ fn topo_unavailable_error(e: crate::render::topo::TopoUnavailable) -> ApiError {
 /// semaphore a render acquires would make a burst of chunk requests for an
 /// already-resolved corrected view compete for render slots over work
 /// that produces no image. `Standard` needs no lock at all.
-async fn resolve_view_height(
+pub(super) async fn resolve_view_height(
     readers: crate::server::render_service::ReaderPool,
     radargram: Arc<super::app::OpenRadargram>,
     dataset_view: DatasetView,
@@ -1383,6 +1387,8 @@ fn caller_context(state: &AppState, caller: &Caller) -> minijinja::Value {
         // Admins may release a cross-user result and may download every
         // contributor's picks in one file; both are the same authority.
         can_administer => caller.may(crate::project::roles::Role::Admin),
+        // Processing on the server (#382) is an operator's.
+        can_operate => caller.may(crate::project::roles::Role::Operator),
     }
 }
 
@@ -1957,7 +1963,7 @@ pub async fn dataset_image(
 ///
 /// `RadargramId` and `UserId` are slugs, so nothing here can carry a quote,
 /// a newline or a path separator into the header.
-fn attachment(filename: &str) -> (header::HeaderName, String) {
+pub(super) fn attachment(filename: &str) -> (header::HeaderName, String) {
     (
         header::CONTENT_DISPOSITION,
         format!("attachment; filename=\"{filename}\""),

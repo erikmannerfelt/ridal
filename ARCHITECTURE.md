@@ -312,6 +312,48 @@ a place or a year, and one profile (an antenna, a medium) spans many.
   differently while it still claims the profile.
 - A profile in use cannot be deleted; the refusal names who uses it.
 
+## Drafts (#382)
+
+A draft is a radargram processed on the server, from the raw data its
+source names, to look at before it becomes the radargram
+(`server::draft_routes`).
+
+- **Processing goes through the site's queue.** `POST
+  /sources/{id}/drafts` lays the source's files out under
+  `raw/jobs/<job>/` (symlinks), writes a `JobSpec` whose output is
+  `cache/drafts/<job>.nc`, and submits it as a `Draft` job with an
+  estimate of eight times the raw data's size. `AppState::processing` is
+  the site's queue, handed to every project runtime as the render permits
+  are; `AppState::drafts` remembers, while the server runs, whose each
+  draft is and what it was made against. The sweep of raw files keeps
+  whatever a draft still being processed reads.
+- **One key per person and request**: the source's document version, the
+  canonical steps, the velocity and the overrides. Not the revision the
+  draft will produce: that depends on the CRS a job resolves from the
+  positions, which is the job's work.
+- **Private.** Another operator's draft answers `404`, the same as none.
+- **Committing reuses what exists.** It refuses with `radargram_moved`
+  when the catalog's revision is not the one recorded when the draft was
+  asked for, which is the compare-and-swap #382 describes. Then, for a
+  served radargram, it calls `stage_replacement` with the draft as the
+  body, so the answer is the consequence report and a token committed by
+  the existing replace route; for a new id, it calls `upload_dataset`.
+  Neither path has a second implementation.
+- **Looking at a draft** opens a `RenderService` over its file on first
+  request and keeps it with the draft. The overview goes through the same
+  `get_or_build_overview` as a served radargram's.
+- Drafts are forgotten after `DRAFT_TTL` (a day), and their laid-out raw
+  files as soon as they finish. A restart forgets them all.
+- **In the viewer** (`assets/process.js`), an operator gets a *Process…*
+  button when the project has the radargram's raw data. Its dialog starts
+  from the served file's `processing_steps`, one per line, polls the draft
+  while it runs, shows its overview with a toggle to the current one, and
+  commits through the draft's commit route and then the replace token, as
+  the catalog's replace dialog does. Closing it throws the draft away.
+  Verified in headless Chromium driven over the DevTools protocol (Node's
+  built-in `WebSocket`), not `--dump-dom`: virtual time races past a job
+  that takes real seconds.
+
 ## The Python client (#328)
 
 `ridal.client` is pure Python, in `python/ridal/client/`, beside the Rust

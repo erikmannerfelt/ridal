@@ -65,6 +65,7 @@ pub mod catalog;
 pub mod derived_routes;
 #[cfg(test)]
 mod derived_routes_tests;
+pub mod draft_routes;
 pub mod interp_routes;
 #[cfg(test)]
 mod interp_routes_tests;

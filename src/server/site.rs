@@ -129,14 +129,15 @@ impl SiteState {
             .map(|project| DocumentStore::new(project.documents().root().to_path_buf()));
         let access = state.access;
         let render_permits = Arc::clone(&state.render_permits);
-        let state = Arc::new(state);
+        let processing = super::processing::ProcessingQueue::new(processing);
+        let state = Arc::new(state.with_processing(Arc::clone(&processing)));
         let runtime = Arc::new(ProjectRuntime {
             router: super::app::build_router(Arc::clone(&state)),
             state,
         });
         let key = local_key();
         Arc::new(Self {
-            processing: super::processing::ProcessingQueue::new(processing),
+            processing,
             host: Host::Local { name, store },
             access,
             render_permits,
@@ -235,7 +236,8 @@ impl SiteState {
                         archived: site.is_archived(key),
                     }),
                 )
-                .with_render_permits(Arc::clone(&self.render_permits));
+                .with_render_permits(Arc::clone(&self.render_permits))
+                .with_processing(Arc::clone(&self.processing));
         let state = Arc::new(state);
         let router = super::app::build_router(Arc::clone(&state));
         let runtime = Arc::new(ProjectRuntime { state, router });
@@ -668,6 +670,7 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         .route("/api/v1/openapi.json", get(super::openapi::openapi_json))
         .route("/api/v1/site", get(site_info))
         .route("/api/v1/site/audit", get(site_audit_log))
+        .route("/api/v1/site/processing", get(site_processing))
         .route("/api/v1/site/memberships", get(site_memberships))
         .route(
             "/api/v1/site/preferences",
@@ -1773,6 +1776,21 @@ async fn site_audit_log(
         .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
     let entries: Vec<&site_audit::Entry> = log.entries.iter().rev().take(AUDIT_PAGE).collect();
     Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
+/// `GET /api/v1/site/processing` -- what the processing queue is doing,
+/// for whoever runs the server (#382): every job it still knows of, with
+/// its owner and state, and how much of the limits is in use.
+async fn site_processing(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+) -> Result<impl IntoResponse, ApiError> {
+    site.require_server_admin(&caller, "see the processing queue")?;
+    site.site()?;
+    Ok(Json(serde_json::json!({
+        "snapshot": site.processing.snapshot(),
+        "jobs": site.processing.list(),
+    })))
 }
 
 /// `GET /api/v1/projects/{key}/audit` -- the history of one project, for the

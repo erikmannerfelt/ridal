@@ -53,7 +53,7 @@ pub struct UploadQuery {
     /// messages only — **never** used to build a path. The file lands at a
     /// name derived from the radargram id inside it.
     #[serde(default)]
-    filename: Option<String>,
+    pub filename: Option<String>,
 }
 
 /// `POST /api/v1/datasets`: the radargram is in the project.
@@ -444,7 +444,7 @@ pub async fn remove_dataset(
             &id,
             &crate::project::store::Expectation::Any,
         ) {
-            Ok(true) => super::raw_routes::sweep(project),
+            Ok(true) => super::raw_routes::sweep(&state, project),
             Ok(false) => {}
             Err(e) => tracing::warn!(
                 radargram = id.as_str(),
