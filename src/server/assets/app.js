@@ -213,20 +213,33 @@ const RIDAL = Object.freeze({
    * A single paragraph sets one text node, exactly as before, so this is a
    * no-op for the short messages that make up nearly every call.
    *
+   * Lines indented by two spaces are shown as they are, in a monospaced
+   * block, as in Markdown: that is how a step or id-pattern error quotes
+   * the text it is about and underlines the wrong part with `^^^`, which
+   * only lines up if the spaces and the font are kept.
+   *
    * The host must be able to hold block children -- `.warning` as a <div>,
    * not as a <p>. A <p> cannot legally contain one. */
   setMessage(element, message) {
     element.replaceChildren();
     const text = message == null ? "" : String(message);
     const paragraphs = text.split("\n\n");
-    if (paragraphs.length === 1) {
+    if (paragraphs.length === 1 && !text.includes("\n  ")) {
       element.textContent = text;
       return;
     }
     for (const paragraph of paragraphs) {
+      const lines = paragraph.split("\n");
+      const quoted = lines.findIndex((l, i) => i > 0 && l.startsWith("  "));
       const line = document.createElement("p");
-      line.textContent = paragraph;
+      line.textContent = (quoted < 0 ? lines : lines.slice(0, quoted)).join("\n");
       element.appendChild(line);
+      if (quoted >= 0) {
+        const block = document.createElement("pre");
+        block.className = "message-quote";
+        block.textContent = lines.slice(quoted).map((l) => l.replace(/^ {2}/, "")).join("\n");
+        element.appendChild(block);
+      }
     }
   },
 

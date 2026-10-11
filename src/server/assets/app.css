@@ -281,6 +281,21 @@ code {
   margin-bottom: var(--space-3);
 }
 
+/* The text a message quotes, kept as written so a `^^^` underline lines
+ * up with what it points at (RIDAL.setMessage). */
+.warning > p:first-child {
+  margin-top: 0;
+}
+.warning > :last-child {
+  margin-bottom: 0;
+}
+.message-quote {
+  font-family: var(--font-mono);
+  margin: var(--space-1) 0 0;
+  white-space: pre;
+  overflow-x: auto;
+}
+
 /* A failed fetch used to leave a blank map, which reads as "no data
  * here" rather than "the request failed". RIDAL.reportError overlays
  * this on the element that would otherwise be mysteriously empty, so the
