@@ -1466,6 +1466,11 @@ button.danger {
 dialog > p > button,
 .process-footer > p > button,
 .process-steps-help > button,
+.process-standing > button,
+.processing-actions button,
+.processing-add button,
+.processing-edit button,
+.processing-members button,
 #token-result button,
 #pick-delete-cancel,
 button.danger {
@@ -1485,6 +1490,11 @@ button.danger {
 dialog > p > button:hover:not(:disabled),
 .process-footer > p > button:hover:not(:disabled),
 .process-steps-help > button:hover:not(:disabled),
+.process-standing > button:hover:not(:disabled),
+.processing-actions button:hover:not(:disabled),
+.processing-add button:hover:not(:disabled),
+.processing-edit button:hover:not(:disabled),
+.processing-members button:hover:not(:disabled),
 #token-result button:hover:not(:disabled),
 #pick-delete-cancel:hover,
 button.danger:hover:not(:disabled) {
@@ -1505,6 +1515,10 @@ button.danger:hover:not(:disabled) {
 .group-draft button:disabled,
 dialog > p > button:disabled,
 dialog button:disabled,
+.processing-actions button:disabled,
+.processing-add button:disabled,
+.processing-edit button:disabled,
+.processing-members button:disabled,
 button.danger:disabled {
   color: var(--color-text-muted);
   border-color: var(--color-border);
@@ -2770,6 +2784,130 @@ button.danger:disabled {
 .process-result {
   margin: 0.5rem 0;
 }
+
+/* The processing page (#382): a profile per section, its radargrams with
+   where each stands. Stale is the one that asks for something, so it is
+   the only warning-coloured state. */
+.processing-profile {
+  margin: var(--space-5) 0;
+}
+.processing-steps {
+  font-family: var(--font-mono);
+  background: var(--color-surface-sunken);
+  padding: 0.5rem;
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+}
+.processing-state {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.processing-state-stale {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+}
+.processing-state-no_raw_data,
+.processing-state-not_processed {
+  color: var(--color-text-muted);
+}
+/* Why a radargram is stale, one reason a line under its state. A minimum
+   width, as the layers page's cells have, so a narrow screen scrolls the
+   table instead of wrapping each reason a word to a line. */
+.processing-reasons {
+  min-width: 14rem;
+  margin: var(--space-1) 0 0;
+  padding-left: 1.2rem;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+.processing-pre summary,
+.processing-why summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+.processing-pre textarea,
+.processing-add textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 14rem;
+  margin: var(--space-1) 0;
+  font-family: var(--font-mono);
+}
+.processing-pre .processing-steps {
+  margin: var(--space-1) 0 0;
+}
+.processing-members td {
+  vertical-align: top;
+}
+.processing-id {
+  white-space: nowrap;
+}
+.processing-row-actions {
+  white-space: nowrap;
+}
+/* Adding a radargram is one action of several fields: boxed, so it does
+   not read as part of the table above it, and bounded like the layers
+   page's add box, so it neither stretches on a wide screen nor overflows
+   a narrow one. */
+.processing-add {
+  margin: var(--space-3) 0;
+  max-width: 44rem;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface-sunken);
+  min-width: 0;
+}
+.processing-add select {
+  max-width: 100%;
+}
+.processing-add legend {
+  padding: 0 var(--space-1);
+  font-weight: 600;
+}
+.processing-confirm {
+  display: block;
+}
+.processing-batch {
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--color-accent);
+  background: var(--color-surface-sunken);
+}
+.processing-batch > p {
+  margin: 0 0 var(--space-1);
+}
+.processing-batch-items {
+  margin: var(--space-1) 0 0;
+  padding-left: 1.2rem;
+  font-size: var(--text-sm);
+}
+.processing-history {
+  margin: var(--space-5) 0;
+}
+.processing-history-batch summary {
+  cursor: pointer;
+}
+.processing-new label,
+.processing-edit label,
+.processing-add label {
+  display: block;
+  margin: 0.5rem 0;
+}
+.processing-new textarea,
+.processing-edit textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  font-family: var(--font-mono);
+}
 .process-files {
   margin: 0.25rem 0;
   font-family: var(--font-mono);
@@ -2805,54 +2943,46 @@ button.danger:disabled {
 .process-steps-help button {
   margin-right: auto;
 }
+/* Where the radargram stands against its profile: plain when current,
+   a warning box when stale (process.js adds `.warning`). */
+.process-pre {
+  margin: var(--space-2) 0;
+  padding: var(--space-1) var(--space-3);
+  border-left: 3px solid var(--color-border-strong);
+}
+.process-pre .hint {
+  margin: 0 0 var(--space-1);
+}
+/* The steps and velocity: folded under whose they are while the radargram
+   is in a profile, plain steps (no summary) outside one. */
+.process-main {
+  margin: var(--space-2) 0;
+}
+.process-main > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.process-main-free > summary {
+  display: none;
+}
+.process-main > summary.process-differs {
+  color: var(--color-warning-text);
+}
+.process-standing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+.process-standing > p {
+  margin: 0;
+  flex: 1 1 20rem;
+}
 .process-remove {
   margin-left: var(--space-2);
   padding: 0 var(--space-2);
   line-height: 1.4;
-}
-
-/* The processing page (#382): a profile per section, its radargrams with
-   where each stands. Stale is the one that asks for something, so it is
-   the only warning-coloured state. */
-.processing-profile {
-  margin: var(--space-5) 0;
-}
-.processing-steps {
-  font-family: var(--font-mono);
-  background: var(--color-surface-sunken);
-  padding: 0.5rem;
-  border-radius: var(--radius-sm);
-  white-space: pre-wrap;
-}
-.processing-state {
-  display: inline-block;
-  padding: 0 0.4rem;
-  border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-sm);
-  font-size: var(--text-sm);
-  white-space: nowrap;
-}
-.processing-state-stale {
-  background: var(--color-warning-bg);
-  border-color: var(--color-warning-border);
-  color: var(--color-warning-text);
-}
-.processing-state-no_raw_data,
-.processing-state-not_processed {
-  color: var(--color-text-muted);
-}
-.processing-new label,
-.processing-edit label,
-.processing-add label {
-  display: block;
-  margin: 0.5rem 0;
-}
-.processing-new textarea,
-.processing-edit textarea {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  font-family: var(--font-mono);
 }
 
 .replace-detail {

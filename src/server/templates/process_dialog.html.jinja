@@ -23,35 +23,70 @@
     </label>
   </section>
   {#- In both stages: a new radargram can start in a profile, and one being
-      processed can be moved to another. -#}
-  <label>Processing profile
+      processed can be moved to another. process.js moves it to where each
+      stage wants it: here for the upload, just above the steps after. -#}
+  <label id="process-profile-label">Processing profile
     <select id="process-profile">
       <option value="">None</option>
     </select>
   </label>
   <section id="process-draft">
+    {#- Where the radargram stands against its processing profile, and the
+        one-click way back to it when it is stale. -#}
+    <div id="process-standing" class="process-standing" hidden>
+      <p id="process-standing-text"></p>
+      <button type="button" id="process-use-profile" hidden>Use the profile's steps</button>
+    </div>
     <ul id="process-recordings" class="process-files"></ul>
-    <p class="process-steps-help">
-      <button type="button" id="process-default-steps"
-              data-steps="{{ default_processing_steps | join('\n') }}">Replace with default steps</button>
-      <a href="{{ docs_base|safe }}reference/steps.html" target="_blank" rel="noopener">All processing steps</a>
-      &middot;
-      <a href="{{ docs_base|safe }}guide/processing.html" target="_blank" rel="noopener">Processing guide</a>
-    </p>
-    <label class="process-steps">Steps, one per line
-      <textarea id="process-steps" rows="8" spellcheck="false"
-                placeholder="As `ridal steps` lists them, e.g.&#10;zero_corr&#10;dewow&#10;bandpass(0.1 0.9)"></textarea>
-    </label>
-    <label>Medium velocity (m/ns)
-      <input type="number" id="process-velocity" step="0.001" min="0.01" value="0.168">
-    </label>
+    {#- In the order they run: the radargram's own steps (only while it is
+        in a profile), the profile, then the profile's steps. -#}
+    <div id="process-pre" class="process-pre" hidden>
+      <label class="process-steps">Steps before the profile, one per line
+        <textarea id="process-pre-steps" rows="2" spellcheck="false"
+                  placeholder="subset(0 2000)"></textarea>
+      </label>
+      <p class="hint">
+        This radargram's own, run first. Only <code>subset</code> and
+        <code>remove_traces</code>.
+      </p>
+    </div>
+    <div id="process-profile-slot"></div>
+    {#- In a profile, its steps are folded away: they are the profile's,
+        and changing them is a decision of its own. Outside one they are
+        simply the steps, always open. -#}
+    <details id="process-main" class="process-main" open>
+      <summary id="process-main-summary"></summary>
+      <p id="process-main-note" class="hint" hidden>
+        These are the profile's. Changed here, they apply to this radargram
+        only, and it will show as stale until it is processed with the
+        profile's steps again.
+      </p>
+      <p class="process-steps-help">
+        <button type="button" id="process-default-steps"
+                data-steps="{{ default_processing_steps | join('\n') }}">Replace with default steps</button>
+        <a href="{{ docs_base|safe }}reference/steps.html" target="_blank" rel="noopener">All processing steps</a>
+        &middot;
+        <a href="{{ docs_base|safe }}guide/processing.html" target="_blank" rel="noopener">Processing guide</a>
+      </p>
+      <label class="process-steps">Steps, one per line
+        <textarea id="process-steps" rows="8" spellcheck="false"
+                  placeholder="As `ridal steps` lists them, e.g.&#10;zero_corr&#10;dewow&#10;bandpass(0.1 0.9)"></textarea>
+      </label>
+      <label>Medium velocity (m/ns)
+        <input type="number" id="process-velocity" step="0.001" min="0.01" value="0.168">
+      </label>
+    </details>
   </section>
   <div id="process-error" class="warning" hidden></div>
   <figure id="process-result" class="process-result" hidden>
-    {#- The page's render profiles, starting at the one the page shows:
-        process.js copies them from its select. -#}
+    {#- The render profiles, starting at the person's own. On a page with
+        its own render profile select, process.js follows that instead. -#}
     <label>Render profile
-      <select id="process-render"></select>
+      <select id="process-render">
+        {%- for p in profiles %}
+        <option value="{{ p }}" {% if p == active_profile %}selected{% endif %}>{{ p }}</option>
+        {%- endfor %}
+      </select>
     </label>
     <img id="process-image" alt="">
     <figcaption id="process-caption"></figcaption>
@@ -67,9 +102,10 @@
     <button type="button" id="process-cancel-upload" hidden>Cancel upload</button>
     <button type="button" id="process-run">Process</button>
     <button type="button" id="process-toggle" hidden>Show current</button>
-    <button type="button" id="process-commit" hidden>Apply</button>
-    <button type="button" id="process-confirm" class="danger" hidden>Apply and close</button>
-    <button type="button" id="process-close">Close</button>
+    <button type="button" id="process-commit" hidden>Apply and close</button>
+    <button type="button" id="process-confirm" class="danger" hidden>Apply anyway and close</button>
+    {#- Cancel, not Close: closing throws away a draft that was not applied. -#}
+    <button type="button" id="process-close">Cancel</button>
   </p>
   </div>
 </dialog>

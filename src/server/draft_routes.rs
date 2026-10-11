@@ -223,18 +223,53 @@ fn tidy(state: &AppState) {
     });
 }
 
-pub async fn create_draft(
-    State(state): State<Arc<AppState>>,
-    caller: Caller,
-    Path(radargram_id): Path<String>,
-    Json(body): Json<DraftBody>,
-) -> Result<Response, ApiError> {
-    let project = project_for(&state, &caller, "process a radargram")?;
-    let queue = Arc::clone(queue(&state)?);
-    let id = parse_radargram(&radargram_id)?;
-    tidy(&state);
+/// What to process a radargram's raw data with.
+pub(super) struct Processing {
+    /// Canonical.
+    pub steps: Vec<String>,
+    pub medium_velocity: f32,
+    pub antenna_mhz_override: Option<f32>,
+    pub antenna_separation_override: Option<f32>,
+}
 
-    let (source, source_version) = raw::read_source(project.documents(), &id)
+/// A job ready to submit, and what its caller needs to keep about it.
+pub(super) struct Prepared {
+    pub request: JobRequest,
+    /// The revision served when it was prepared; `None` for an id with no
+    /// processed file yet. What a commit is checked against.
+    pub base_revision: Option<String>,
+    pub output: PathBuf,
+    /// Where its raw files are laid out; remove it when the job is done.
+    pub work: PathBuf,
+    /// Its raw files, to keep from a sweep while it runs.
+    pub hashes: Vec<String>,
+}
+
+pub(super) fn submit_error(e: super::processing::SubmitError) -> ApiError {
+    match e {
+        super::processing::SubmitError::TooMany { .. } => {
+            ApiError::too_many_requests("too_many_jobs", e.to_string())
+        }
+        super::processing::SubmitError::TooLarge { .. } => {
+            ApiError::bad_request("job_too_large", e.to_string())
+        }
+    }
+}
+
+/// Prepare a job that processes radargram `id` from its source with
+/// `processing`, writing into `output_dir`: its raw files laid out, its
+/// spec, and its key. Shared by drafts and batches, so the two process
+/// alike.
+pub(super) async fn prepare(
+    state: &AppState,
+    project: &crate::project::Project,
+    id: &RadargramId,
+    processing: Processing,
+    owner: &str,
+    priority: Priority,
+    output_dir: &std::path::Path,
+) -> Result<Prepared, ApiError> {
+    let (source, source_version) = raw::read_source(project.documents(), id)
         .map_err(|e| ApiError::internal("source_read_failed", e))?
         .ok_or_else(|| {
             ApiError::not_found(
@@ -242,22 +277,9 @@ pub async fn create_draft(
                 format!("'{id}' has no raw data in this project to process."),
             )
         })?;
-    let steps = body
-        .steps
-        .iter()
-        .map(|step| crate::steps::parse_one(step).map(|parsed| parsed.canonical))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| ApiError::bad_request("invalid_steps", e))?;
-    let velocity = body.medium_velocity.unwrap_or(0.168);
-    if !(velocity.is_finite() && velocity > 0.) {
-        return Err(ApiError::bad_request(
-            "invalid_velocity",
-            "The medium velocity must be a positive number of m/ns.",
-        ));
-    }
 
     // What it is made against, and what it is called: the served
-    // radargram's names, so a committed draft keeps them.
+    // radargram's names, so a committed file keeps them.
     let catalog = state.catalog();
     let entry = catalog.find_entry(id.as_str());
     let base_revision = entry.map(|e| e.revision_id.to_string());
@@ -271,13 +293,13 @@ pub async fn create_draft(
     // positions are projected, which is the job's work.
     let mut hasher = blake3::Hasher::new();
     for part in [
-        caller.display_name(),
+        owner,
         id.as_str(),
         source_version.as_str(),
-        &steps.join("\n"),
-        &velocity.to_string(),
-        &format!("{:?}", body.antenna_mhz_override),
-        &format!("{:?}", body.antenna_separation_override),
+        &processing.steps.join("\n"),
+        &processing.medium_velocity.to_string(),
+        &format!("{:?}", processing.antenna_mhz_override),
+        &format!("{:?}", processing.antenna_separation_override),
     ] {
         hasher.update(&(part.len() as u64).to_le_bytes());
         hasher.update(part.as_bytes());
@@ -287,10 +309,9 @@ pub async fn create_draft(
     let data_dir = project.data_dir().to_path_buf();
     let name = super::lifecycle_routes::uuid();
     let work = data_dir.join(raw::RAW_DIR).join("jobs").join(&name);
-    let drafts_dir = project.cache_dir().join("drafts");
-    std::fs::create_dir_all(&drafts_dir)
-        .map_err(|e| ApiError::internal("draft_failed", e.to_string()))?;
-    let output = drafts_dir.join(format!("{name}.nc"));
+    std::fs::create_dir_all(output_dir)
+        .map_err(|e| ApiError::internal("job_failed", e.to_string()))?;
+    let output = output_dir.join(format!("{name}.nc"));
 
     let recordings: Vec<Vec<NamedFile>> = source
         .bundles
@@ -311,7 +332,7 @@ pub async fn create_draft(
         let work = work.clone();
         tokio::task::spawn_blocking(move || raw::materialize(&data_dir, &recordings, &work))
             .await
-            .map_err(|e| ApiError::internal("draft_failed", e.to_string()))?
+            .map_err(|e| ApiError::internal("job_failed", e.to_string()))?
             .map_err(|e| ApiError::conflict("source_unavailable", e))?
     };
     // A processing job holds the whole radargram and works on copies of
@@ -332,37 +353,83 @@ pub async fn create_draft(
             .map(|resolved| resolved.header)
             .collect(),
         output: output.clone(),
-        steps,
-        medium_velocity: velocity,
+        steps: processing.steps,
+        medium_velocity: processing.medium_velocity,
         crs: source.crs.clone(),
         dem: source
             .dem
             .as_ref()
             .and_then(|dem| raw::file_path(&data_dir, &dem.blake3)),
         cor: None,
-        antenna_mhz_override: body.antenna_mhz_override,
-        antenna_separation_override: body.antenna_separation_override,
+        antenna_mhz_override: processing.antenna_mhz_override,
+        antenna_separation_override: processing.antenna_separation_override,
         radargram_id: id.to_string(),
         display_name,
         group_name,
         group_id,
     };
-    let job = queue
-        .submit(JobRequest {
+    Ok(Prepared {
+        request: JobRequest {
             key,
-            owner: caller.display_name().to_string(),
-            priority: Priority::Draft,
+            owner: owner.to_string(),
+            priority,
             spec,
             estimate_bytes,
-        })
-        .map_err(|e| match e {
-            super::processing::SubmitError::TooMany { .. } => {
-                ApiError::too_many_requests("too_many_jobs", e.to_string())
-            }
-            super::processing::SubmitError::TooLarge { .. } => {
-                ApiError::bad_request("job_too_large", e.to_string())
-            }
-        })?;
+        },
+        base_revision,
+        output,
+        work,
+        hashes: source.hashes().map(str::to_string).collect(),
+    })
+}
+
+pub async fn create_draft(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(radargram_id): Path<String>,
+    Json(body): Json<DraftBody>,
+) -> Result<Response, ApiError> {
+    let project = project_for(&state, &caller, "process a radargram")?;
+    let queue = Arc::clone(queue(&state)?);
+    let id = parse_radargram(&radargram_id)?;
+    tidy(&state);
+
+    let steps = body
+        .steps
+        .iter()
+        .map(|step| crate::steps::parse_one(step).map(|parsed| parsed.canonical))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| ApiError::bad_request("invalid_steps", e))?;
+    let velocity = body.medium_velocity.unwrap_or(0.168);
+    if !(velocity.is_finite() && velocity > 0.) {
+        return Err(ApiError::bad_request(
+            "invalid_velocity",
+            "The medium velocity must be a positive number of m/ns.",
+        ));
+    }
+    let prepared = prepare(
+        &state,
+        project,
+        &id,
+        Processing {
+            steps,
+            medium_velocity: velocity,
+            antenna_mhz_override: body.antenna_mhz_override,
+            antenna_separation_override: body.antenna_separation_override,
+        },
+        caller.display_name(),
+        Priority::Draft,
+        &project.cache_dir().join("drafts"),
+    )
+    .await?;
+    let Prepared {
+        request,
+        base_revision,
+        output,
+        work,
+        hashes,
+    } = prepared;
+    let job = queue.submit(request).map_err(submit_error)?;
 
     let mut inner = state
         .drafts
@@ -381,7 +448,7 @@ pub async fn create_draft(
                 base_revision,
                 output,
                 work,
-                hashes: source.hashes().map(str::to_string).collect(),
+                hashes,
                 created: std::time::Instant::now(),
                 view: None,
             });

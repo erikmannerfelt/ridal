@@ -61,6 +61,7 @@ mod access_tests;
 pub mod app;
 pub mod assets;
 pub mod auth;
+pub mod batch_routes;
 pub mod catalog;
 pub mod derived_routes;
 #[cfg(test)]

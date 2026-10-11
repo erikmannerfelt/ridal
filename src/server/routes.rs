@@ -46,6 +46,13 @@ impl ApiError {
         self
     }
 
+    /// The message meant for a person, without the status or code. For a
+    /// caller that reports an error somewhere other than in a response,
+    /// such as a batch item's outcome.
+    pub(super) fn message(&self) -> &str {
+        &self.message
+    }
+
     pub(super) fn not_found(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::NOT_FOUND, code, message)
     }
@@ -106,11 +113,6 @@ impl ApiError {
     #[cfg(test)]
     pub(super) fn status_code(&self) -> StatusCode {
         self.status
-    }
-
-    #[cfg(test)]
-    pub(super) fn message(&self) -> &str {
-        &self.message
     }
 }
 
@@ -1446,10 +1448,16 @@ pub async fn processing_page(
     let tmpl = env
         .get_template("processing.html.jinja")
         .expect("processing template is always registered");
+    // For the process dialog's images, as on the catalog and the viewer.
+    let profiles: Vec<String> = RenderProfile::built_in_profiles()
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
     let html = tmpl
         .render(minijinja::context! {
             project => state.project.is_some(),
             writable => caller.may(crate::project::roles::Role::Operator),
+            profiles => profiles,
             active_profile => active_profile,
             ..caller_context(&state, &caller),
         })

@@ -427,9 +427,10 @@ pub fn state_of(
             "processed with version {v} of the profile, which is now at version {}",
             current.version
         )),
-        None => {
-            reasons.push("processed with steps or a velocity the profile never had".to_string())
-        }
+        None => reasons.push(
+            "processed with steps or a medium velocity that match no version of the profile"
+                .to_string(),
+        ),
     }
     if recipe.bundles != source.bundles {
         reasons.push("its raw data has been switched since".to_string());

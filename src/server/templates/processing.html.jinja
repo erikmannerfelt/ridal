@@ -7,7 +7,10 @@
     share: a list of steps and a medium velocity. It is not a group, and its
     radargrams may be in any number of groups. Each radargram in a profile is
     marked <strong>stale</strong> when it was processed some other way than
-    the profile and its raw data say now.
+    the profile and its raw data say now. <strong>Process out-of-date
+    radargrams</strong> on a profile processes every one that is stale or
+    not processed yet and applies each; <strong>Process&hellip;</strong> on
+    one radargram lets you look at the result before applying it.
   </p>
 
   {% if not project %}
@@ -47,10 +50,14 @@
   {% if project and writable %}
   <details class="processing-new" id="processing-new">
     <summary>New processing profile</summary>
+    {#- The name comes first because the id is derived from it, as on the
+        settings page: the id box's placeholder shows what will be stored
+        if it is left alone. -#}
     <form id="processing-new-form">
-      <label>Id <input name="id" required pattern="[a-z0-9][a-z0-9_-]*"
-             placeholder="svalbard-100mhz"></label>
       <label>Name <input name="name" required placeholder="Svalbard, 100 MHz"></label>
+      <label>ID (from the name)
+        <input name="id" pattern="[a-z0-9][a-z0-9_-]*" placeholder="svalbard-100-mhz"
+               autocomplete="off" autocapitalize="none" spellcheck="false"></label>
       <label class="process-steps">Steps, one per line
         <textarea name="steps" rows="6" spellcheck="false"></textarea></label>
       <label>Medium velocity (m/ns)
@@ -58,9 +65,18 @@
       <p><button type="submit">Create</button></p>
     </form>
   </details>
+
+  {#- Every batch that reprocessed a profile, newest first. -#}
+  <details class="processing-history" id="processing-history">
+    <summary>Recent batches</summary>
+    <div id="processing-history-list"></div>
+  </details>
+
+  {% include "process_dialog.html.jinja" %}
   {% endif %}
 {% endblock %}
 
 {% block extrascript %}
 <script src="/static/processing.js"></script>
+{% if project and writable %}<script src="/static/process.js"></script>{% endif %}
 {% endblock %}

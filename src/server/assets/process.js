@@ -21,8 +21,6 @@
   if (!dialog) return;
   const viewerOpen = document.getElementById('process-open');
   const catalogOpen = document.getElementById('process-new');
-  const cardOpens = [...document.querySelectorAll('button[data-process-radargram]')];
-  if (!viewerOpen && !catalogOpen && cardOpens.length === 0) return;
 
   const title = document.getElementById('process-title');
   const status = document.getElementById('process-status');
@@ -74,6 +72,8 @@
   // not processed again for nothing; and whether one is being made.
   let lastRun = null;
   let running = false;
+  // A finished draft is waiting to be applied.
+  let draftReady = false;
   let job = null;
   let token = null;
   let showingDraft = true;
@@ -85,6 +85,7 @@
   };
 
   function reset() {
+    draftReady = false;
     errorBox.hidden = true;
     progress.textContent = '';
     result.hidden = true;
@@ -97,11 +98,15 @@
   }
 
   /** Show the raw-data stage or the steps stage, and only their buttons. */
+  const profileLabel = document.getElementById('process-profile-label');
+  const profileSlot = document.getElementById('process-profile-slot');
   function stage(raw) {
     rawStage.hidden = !raw;
     draftStage.hidden = raw;
     upload.hidden = !raw;
     run.hidden = raw;
+    // With the upload's other choices, or just above the steps it picks.
+    (raw ? rawStage : profileSlot).appendChild(profileLabel);
   }
 
   /** In the viewer, the button says what it will do: process, when the
@@ -131,7 +136,39 @@
       const attributes = await RIDAL.fetchJson(
         RIDAL.apiPath('datasets', radargramId, 'attributes'),
       );
-      stepsBox.value = (attributes.processing_steps || []).join('\n');
+      let steps = attributes.processing_steps || [];
+      // In a profile, the radargram's own steps are in their own box: the
+      // file's steps go below them without the ones they begin with. A
+      // file that does not begin with them was not made through the
+      // profile, so the profile's steps are the better start.
+      if (assignment) {
+        const own = assignment.pre_steps || [];
+        if (own.length && own.every((step, i) => steps[i] === step)) {
+          steps = steps.slice(own.length);
+        } else {
+          // Not made through the profile as it stands. Still, a file whose
+          // steps are a selection followed by a version of the profile's
+          // was most likely made that way with own steps that were since
+          // lost: offer them again rather than leave them among the rest.
+          const profile = profiles.find((p) => p.id === assignment.profile);
+          const selects = (step) => /^(subset|remove_traces)\(/.test(step);
+          for (const version of [...(profile?.versions || [])].reverse()) {
+            const rest = steps.length - version.steps.length;
+            const tail = steps.slice(rest);
+            if (
+              rest >= 0 &&
+              tail.every((step, i) => step === version.steps[i]) &&
+              steps.slice(0, rest).every(selects)
+            ) {
+              if (own.length === 0 && rest > 0) preSteps.value = steps.slice(0, rest).join('\n');
+              break;
+            }
+          }
+          fillFromProfile(assignment.profile);
+          return;
+        }
+      }
+      stepsBox.value = steps.join('\n');
     } catch {
       // Unreadable: start empty.
     }
@@ -339,6 +376,7 @@
       stage(false);
       describe(source.recordings);
       progress.textContent = '';
+      await showStanding();
       status.textContent =
         'The raw data is stored. Choose the steps and process; nothing is ' +
         (served ? 'replaced' : 'added to the catalog') +
@@ -417,11 +455,10 @@
         progress.textContent = `Step ${draft.step.index + 1} of ${draft.step.of}: ${draft.step.step}`;
       } else progress.textContent = 'Reading the raw data…';
     } else if (draft.state === 'done') {
+      draftReady = true;
       finishRun(true);
       progress.textContent = 'Done. Nothing changes until you apply it.';
       result.hidden = false;
-      // Served, applying shows what it would do first; new, it is added.
-      commit.textContent = served ? 'Apply…' : 'Apply and close';
       commit.hidden = false;
       // A radargram that is not served yet has nothing to compare with.
       toggle.hidden = draft.base_revision === null;
@@ -436,12 +473,55 @@
     polling = setTimeout(poll, 1000);
   }
 
-  /** The steps in the box, as they are sent. */
-  const stepLines = () =>
-    stepsBox.value
+  const linesIn = (box) =>
+    box.value
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line !== '' && !line.startsWith('#'));
+
+  /** The radargram's own steps, run before the profile's: a box of their
+   * own while it is in a profile, so which steps are whose is plain. */
+  const preBox = document.getElementById('process-pre');
+  const preSteps = document.getElementById('process-pre-steps');
+  const mainBox = document.getElementById('process-main');
+  const mainSummary = document.getElementById('process-main-summary');
+  const mainNote = document.getElementById('process-main-note');
+  const preLines = () => (preBox.hidden ? [] : linesIn(preSteps));
+  // Kept when the radargram leaves its profile, so that coming back (a
+  // mistaken click on None, say) does not lose them.
+  let keptPre = [];
+  function showPre() {
+    preBox.hidden = !assignment;
+    showMain(true);
+  }
+
+  /** In a profile, its steps and velocity fold away under a line that
+   * says whose they are, and open, saying so, once they differ from the
+   * profile's. Outside one they are just the steps, always open. `fold`
+   * closes them again when they are the profile's. */
+  function showMain(fold = false) {
+    const profile = assignment && profiles.find((p) => p.id === assignment.profile);
+    const current = profile?.versions.find((v) => v.version === profile.current_version);
+    mainBox.classList.toggle('process-main-free', !profile);
+    mainNote.hidden = !profile;
+    if (!profile) {
+      mainBox.open = true;
+      return;
+    }
+    const differs =
+      !current ||
+      JSON.stringify(linesIn(stepsBox)) !== JSON.stringify(current.steps) ||
+      Number(velocityBox.value) !== current.medium_velocity;
+    mainSummary.textContent = differs
+      ? `Steps and velocity: changed from ${profile.name}'s for this radargram`
+      : `Steps and velocity: ${profile.name}'s, version ${current.version}`;
+    mainSummary.classList.toggle('process-differs', differs);
+    if (differs) mainBox.open = true;
+    else if (fold) mainBox.open = false;
+  }
+
+  /** The steps as they are sent: its own first, then the rest. */
+  const stepLines = () => [...preLines(), ...linesIn(stepsBox)];
   const runKey = () => JSON.stringify([stepLines(), Number(velocityBox.value)]);
   // What the draft being made is made from, until it is done.
   let pendingKey = null;
@@ -453,8 +533,22 @@
     const same = lastRun !== null && runKey() === lastRun;
     run.disabled = running || same;
     run.title = same ? 'This draft is made from these steps already. Change them to process again.' : '';
+    // A draft is applied as it was made: once the boxes say something
+    // else, applying it would not apply what they say.
+    if (draftReady) {
+      commit.hidden = !same;
+      if (!same) {
+        confirm.hidden = true;
+        progress.textContent =
+          'The steps have changed since this draft was made. Process again to apply them.';
+      } else {
+        progress.textContent = 'Done. Nothing changes until you apply it.';
+      }
+    }
+    showMain();
   }
   stepsBox.addEventListener('input', updateRun);
+  preSteps.addEventListener('input', updateRun);
   velocityBox.addEventListener('input', updateRun);
 
   function finishRun(succeeded) {
@@ -464,37 +558,59 @@
     updateRun();
   }
 
-  /** Fill the steps and velocity from a profile's current version, after
-   * the radargram's own selection steps, as a batch runs them. */
+  /** Fill the steps below the radargram's own with a profile's current
+   * version, and its velocity, as a batch runs them. */
   function fillFromProfile(profileId) {
     const profile = profiles.find((p) => p.id === profileId);
     const current = profile?.versions.find((v) => v.version === profile.current_version);
     if (!current) return;
-    const own = assignment?.profile === profileId ? assignment.pre_steps || [] : [];
-    stepsBox.value = [...own, ...current.steps].join('\n');
+    stepsBox.value = current.steps.join('\n');
     velocityBox.value = String(current.medium_velocity);
     updateRun();
+    showMain(true);
+  }
+
+  /** Save the radargram in `profileId` with `pre` as its own steps; the
+   * server's answer is what is shown, in its canonical form. */
+  async function saveAssignment(profileId, pre) {
+    const saved = await RIDAL.fetchJson(
+      RIDAL.apiPath('processing', 'assignments', radargramId),
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ profile: profileId, pre_steps: pre }),
+      },
+    );
+    assignment = { profile: saved.profile, pre_steps: saved.pre_steps || [] };
+    keptPre = assignment.pre_steps;
+    preSteps.value = assignment.pre_steps.join('\n');
+    showPre();
   }
 
   /** Put the radargram in `profileId`, or take it out of its profile for
-   * `''`, keeping its own selection steps when it moves. */
+   * `''`. Its own steps go with it: into the steps box when it leaves, so
+   * what it is processed with does not change, and back into their own
+   * box when it joins again. */
   async function assign(profileId) {
-    const path = RIDAL.apiPath('processing', 'assignments', radargramId);
     if (profileId === '') {
-      await RIDAL.fetchJson(path, { method: 'DELETE' }).catch((error) => {
-        if (error.status !== 404) throw error;
+      // `fetch` rather than `fetchJson`: a 204 has no body to read.
+      const response = await fetch(RIDAL.apiPath('processing', 'assignments', radargramId), {
+        method: 'DELETE',
       });
+      if (!response.ok && response.status !== 404) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error?.message || RIDAL.upstreamMessage(response.status));
+      }
+      const own = preLines();
+      keptPre = own;
       assignment = null;
+      showPre();
+      if (own.length) stepsBox.value = [...own, ...linesIn(stepsBox)].join('\n');
+      updateRun();
       return;
     }
-    const body = { profile: profileId };
-    if (assignment?.pre_steps?.length) body.pre_steps = assignment.pre_steps;
-    await RIDAL.fetchJson(path, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    assignment = { profile: profileId, pre_steps: body.pre_steps || [] };
+    const own = assignment ? preLines() : keptPre;
+    await saveAssignment(profileId, own);
     fillFromProfile(profileId);
   }
 
@@ -508,12 +624,59 @@
       await assign(profileId);
       const name = profiles.find((p) => p.id === profileId)?.name;
       status.textContent = name
-        ? `${radargramId} is in ${name} now; its steps are filled in.`
-        : `${radargramId} is in no processing profile now.`;
+        ? `${radargramId} is in ${name} now: its own steps are in the first box, the ` +
+          "profile's below."
+        : `${radargramId} is in no processing profile now; its own steps, if it had ` +
+          'any, are at the top of the steps.';
+      await showStanding();
     } catch (error) {
       profileBox.value = assignment?.profile || '';
       fail(`Could not change the processing profile (${error.message}).`);
     }
+  });
+
+  /** Where the radargram stands against its profile, said above the
+   * steps, with a way back to the profile's steps when it has left them. */
+  const standing = document.getElementById('process-standing');
+  const standingText = document.getElementById('process-standing-text');
+  const useProfile = document.getElementById('process-use-profile');
+  async function showStanding() {
+    standing.hidden = true;
+    if (!assignment || radargramId === null) return;
+    const profile = profiles.find((p) => p.id === assignment.profile);
+    let status = null;
+    try {
+      const answer = await RIDAL.fetchJson(
+        `${RIDAL.apiPath('processing', 'status')}?radargram_id=${encodeURIComponent(radargramId)}`,
+      );
+      status = answer.radargrams[0] || null;
+    } catch {
+      return;
+    }
+    if (!status || !profile) return;
+    const name = `${profile.name} (version ${profile.current_version})`;
+    const why = (status.reasons || []).join('; ');
+    const says = {
+      current: `Up to date with ${name}.`,
+      stale: `What is served now is stale against ${name}: ${why}. Process with the ` +
+        "profile's steps and apply the draft to bring it up to date.",
+      older_processing: `Processed as ${name} says, but by an older Ridal: ${why}.`,
+      not_processed: `In ${name}, and not processed yet.`,
+      no_raw_data: `In ${name}, but without raw data.`,
+    };
+    standingText.textContent = says[status.state] || status.state;
+    standing.classList.toggle('warning', status.state === 'stale');
+    useProfile.hidden = status.state === 'current' || status.state === 'no_raw_data';
+    standing.hidden = false;
+  }
+  useProfile.addEventListener('click', () => {
+    if (!assignment) return;
+    preSteps.value = assignment.pre_steps.join('\n');
+    fillFromProfile(assignment.profile);
+    useProfile.hidden = true;
+    standingText.textContent =
+      "The profile's steps are filled in below. Process, and apply the draft, to bring " +
+      'it up to date.';
   });
 
   /** The profiles, and which one this radargram is in, if any. */
@@ -529,6 +692,10 @@
       }
     }
     profileBox.value = assignment?.profile || '';
+    keptPre = assignment?.pre_steps || [];
+    preSteps.value = keptPre.join('\n');
+    showPre();
+    await showStanding();
   }
 
   /** Open at the stage this radargram needs. */
@@ -559,6 +726,7 @@
     dialog.showModal();
     await loadAssignment();
     if (!raw) await prefill();
+    showMain(true);
   }
 
   if (viewerOpen) viewerOpen.addEventListener('click', () => begin(!hasSource));
@@ -577,30 +745,40 @@
     }
     return sourceKnown.get(id);
   }
-  for (const button of cardOpens) {
-    const id = button.dataset.processRadargram;
+  // Delegated, so a button drawn after load (the processing page's rows)
+  // works as one in the catalog's cards does. `toggle` does not bubble, so
+  // it is caught on the way down.
+  document.addEventListener(
+    'toggle',
+    async (event) => {
+      const menu = event.target;
+      if (!(menu instanceof HTMLDetailsElement) || !menu.open) return;
+      for (const button of menu.querySelectorAll('button[data-process-radargram]')) {
+        try {
+          const known = await hasSourceFor(button.dataset.processRadargram);
+          button.textContent = known ? 'Process…' : 'Attach raw data…';
+        } catch {
+          // Asked again on the click.
+        }
+      }
+    },
+    true,
+  );
+  document.addEventListener('click', async (event) => {
+    const button = event.target.closest?.('button[data-process-radargram]');
+    if (!button) return;
     const menu = button.closest('details');
-    menu?.addEventListener('toggle', async () => {
-      if (!menu.open) return;
-      try {
-        button.textContent = (await hasSourceFor(id)) ? 'Process…' : 'Attach raw data…';
-      } catch {
-        // Asked again on the click.
-      }
-    });
-    button.addEventListener('click', async () => {
-      if (menu) menu.open = false;
-      radargramId = id;
-      served = true;
-      stepsBox.value = '';
-      try {
-        hasSource = await hasSourceFor(id);
-      } catch (error) {
-        hasSource = false;
-      }
-      begin(!hasSource);
-    });
-  }
+    if (menu) menu.open = false;
+    radargramId = button.dataset.processRadargram;
+    served = button.dataset.served !== 'false';
+    stepsBox.value = '';
+    try {
+      hasSource = await hasSourceFor(radargramId);
+    } catch {
+      hasSource = false;
+    }
+    begin(!hasSource);
+  });
 
   document.getElementById('process-default-steps').addEventListener('click', (event) => {
     stepsBox.value = event.currentTarget.dataset.steps;
@@ -620,13 +798,20 @@
   run.addEventListener('click', async () => {
     discard();
     reset();
-    const steps = stepLines();
     const velocity = Number(velocityBox.value);
-    pendingKey = runKey();
     running = true;
     updateRun();
     progress.textContent = 'Sending…';
     try {
+      // Its own steps belong to the radargram, not to this draft: saved
+      // with it, so the profile and a batch run them too.
+      const own = preLines();
+      if (assignment && JSON.stringify(own) !== JSON.stringify(assignment.pre_steps)) {
+        await saveAssignment(assignment.profile, own);
+      }
+      // After the save, which writes them back in their canonical form.
+      const steps = stepLines();
+      pendingKey = runKey();
       const draft = await RIDAL.fetchJson(
         RIDAL.apiPath('sources', radargramId, 'drafts'),
         {
@@ -722,14 +907,30 @@
       return;
     }
     token = body.token;
+    const report = body.report;
+    // Nothing anyone picked moves or is left out: nothing to look at.
+    const harmless =
+      !report.revision_id_collision &&
+      report.documents.every(
+        (d) => (d.severity === 'current' || d.severity === 'carried') && !(d.dropped || []).length,
+      );
+    if (harmless) {
+      await applyReplacement();
+      return;
+    }
     commit.hidden = true;
-    progress.textContent = 'What applying it would do is above. Nothing has changed yet.';
-    render(body.report);
+    progress.textContent =
+      "Applying it would change people's picks, as above. Nothing has changed yet.";
+    render(report);
   });
 
-  confirm.addEventListener('click', async () => {
+  confirm.addEventListener('click', applyReplacement);
+
+  /** Install the staged replacement and reload, to show it. */
+  async function applyReplacement() {
     if (!token) return;
     confirm.disabled = true;
+    commit.disabled = true;
     progress.textContent = 'Applying…';
     try {
       const response = await fetch(
@@ -739,19 +940,21 @@
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         confirm.disabled = false;
+        commit.disabled = false;
         progress.textContent = '';
         fail(body?.error?.message || RIDAL.upstreamMessage(response.status));
         return;
       }
     } catch (error) {
       confirm.disabled = false;
+      commit.disabled = false;
       fail(`Could not replace it (${error.message}).`);
       return;
     }
     token = null;
     job = null;
     window.location.reload();
-  });
+  }
 
   document.getElementById('process-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {

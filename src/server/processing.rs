@@ -79,7 +79,6 @@ pub enum Priority {
     /// Someone is waiting to look at it.
     Draft,
     /// One radargram of a batch.
-    #[allow(dead_code, reason = "batches are #382 phase 6")]
     Batch,
 }
 

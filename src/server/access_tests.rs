@@ -6292,6 +6292,31 @@ async fn a_processing_profile_is_versioned_and_shared_by_its_radargrams() {
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
     assert_eq!(bad.body["error"]["code"], "invalid_steps");
 
+    // Only a radargram with raw data can be in a profile: without it there
+    // is nothing to process.
+    let no_raw = put(
+        &app,
+        "/api/v1/processing/assignments/ours",
+        &json!({"profile": "svalbard-100mhz"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(no_raw.status, StatusCode::CONFLICT, "{}", no_raw.text);
+    assert_eq!(no_raw.body["error"]["code"], "no_source");
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    for id in ["ours", "theirs"] {
+        let set = put(
+            &app,
+            &format!("/api/v1/sources/{id}"),
+            &json!({"recordings": [recording]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    }
+    let sourced = get(&app, "/api/v1/sources", Some(&vera)).await;
+    assert_eq!(sourced.body["radargram_ids"], json!(["ours", "theirs"]));
+
     // Two radargrams use it, one cropping first; a pre-step that processes
     // is refused.
     for (id, pre) in [("ours", json!(["subset(0 2000)"])), ("theirs", json!([]))] {
@@ -6644,25 +6669,29 @@ async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
     )
     .await;
     assert_eq!(made.status, StatusCode::OK, "{}", made.text);
+    // Both get raw data and join the profile; `theirs` then loses its raw
+    // data again.
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
     for id in ["ours", "theirs"] {
-        put(
+        let set = put(
+            &app,
+            &format!("/api/v1/sources/{id}"),
+            &json!({"recordings": [recording]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+        let assigned = put(
             &app,
             &format!("/api/v1/processing/assignments/{id}"),
             &json!({"profile": "p"}),
             Some(&erik),
         )
         .await;
+        assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
     }
-    // `ours` gets raw data; `theirs` has none.
-    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
-    let set = put(
-        &app,
-        "/api/v1/sources/ours",
-        &json!({"recordings": [recording]}),
-        Some(&erik),
-    )
-    .await;
-    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    let removed = delete(&app, "/api/v1/sources/theirs", Some(&erik)).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
 
     let status = get(&app, "/api/v1/processing/status", Some(&erik)).await;
     assert_eq!(status.status, StatusCode::OK, "{}", status.text);
@@ -6680,4 +6709,257 @@ async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
         .as_str()
         .unwrap()
         .contains("before Ridal recorded"));
+
+    // One radargram only, as the process dialog asks.
+    let one = get(
+        &app,
+        "/api/v1/processing/status?radargram_id=ours",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        one.body["radargrams"].as_array().unwrap().len(),
+        1,
+        "{}",
+        one.text
+    );
+    assert_eq!(one.body["radargrams"][0]["radargram_id"], "ours");
+}
+
+/// A project with profile `p` (`subset(0 100 0 200)`, the steps
+/// [`prepare_draft`] runs), `members` assigned to it with the fixture
+/// recording as their raw data, and `theirs` assigned and then left with none.
+#[cfg(unix)]
+async fn batch_app(
+    members: &[&str],
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    Router,
+    String,
+) {
+    let prepared = tempfile::tempdir().unwrap();
+    for id in members {
+        prepare_draft(prepared.path(), id);
+    }
+    let hash = password_hash();
+    let (dir, archive, app) = drafting_app(
+        vec![
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+            activated("pia", Role::Picker, DownloadScope::All, &hash),
+        ],
+        prepared.path(),
+    );
+    let erik = sign_in(&app, "erik").await;
+    let made = put(
+        &app,
+        "/api/v1/processing/profiles/p",
+        &json!({"name": "P", "steps": ["subset(0 100 0 200)"], "medium_velocity": 0.168}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.text);
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    for id in members.iter().chain(&["theirs"]) {
+        let set = put(
+            &app,
+            &format!("/api/v1/sources/{id}"),
+            &json!({"recordings": [recording]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+        let assigned = put(
+            &app,
+            &format!("/api/v1/processing/assignments/{id}"),
+            &json!({"profile": "p"}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
+    }
+    // Raw data taken away after it joined: still in the profile, with none.
+    let removed = delete(&app, "/api/v1/sources/theirs", Some(&erik)).await;
+    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    (prepared, dir, archive, app, erik)
+}
+
+#[cfg(unix)]
+async fn batch_finished(app: &Router, batch: &Value, session: &str) -> Value {
+    for _ in 0..400 {
+        let got = get(
+            app,
+            &format!("/api/v1/processing/batches/{}", batch.as_str().unwrap()),
+            Some(session),
+        )
+        .await;
+        assert_eq!(got.status, StatusCode::OK, "{}", got.text);
+        if !got.body["finished_at"].is_null() {
+            return got.body;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("batch {batch} did not finish");
+}
+
+#[cfg(unix)]
+fn outcomes(batch: &Value) -> std::collections::HashMap<String, Value> {
+    batch["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["radargram_id"].as_str().unwrap().to_string(), i.clone()))
+        .collect()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_batch_reprocesses_and_commits_a_profile_s_stale_radargrams() {
+    // #382 phase 6: `ours` is served but stale, `line-new` has raw data and
+    // was never processed, and `theirs` has no raw data.
+    let (_prepared, dir, _archive, app, erik) = batch_app(&["ours", "line-new"]).await;
+    let pia = sign_in(&app, "pia").await;
+
+    let refused = post(
+        &app,
+        "/api/v1/processing/profiles/p/reprocess",
+        &json!({}),
+        Some(&pia),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let missing = post(
+        &app,
+        "/api/v1/processing/profiles/nope/reprocess",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.text);
+
+    let started = post(
+        &app,
+        "/api/v1/processing/profiles/p/reprocess",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.text);
+    assert_eq!(started.body["version"], 1);
+    let theirs = &outcomes(&started.body)["theirs"];
+    assert_eq!(theirs["outcome"], "skipped");
+    assert_eq!(theirs["reason"], "no raw data in the project");
+
+    let done = batch_finished(&app, &started.body["id"], &erik).await;
+    let by_id = outcomes(&done);
+    for id in ["ours", "line-new"] {
+        assert_eq!(by_id[id]["outcome"], "committed", "{done}");
+        assert!(
+            by_id[id]["revision_id"]
+                .as_str()
+                .is_some_and(|r| !r.is_empty()),
+            "{done}"
+        );
+    }
+    assert_eq!(
+        get(&app, "/api/v1/datasets/line-new", Some(&erik))
+            .await
+            .status,
+        StatusCode::OK
+    );
+    let status = get(&app, "/api/v1/processing/status", Some(&erik)).await;
+    for radargram in status.body["radargrams"].as_array().unwrap() {
+        let expected = if radargram["radargram_id"] == "theirs" {
+            "no_raw_data"
+        } else {
+            "current"
+        };
+        assert_eq!(radargram["state"], expected, "{radargram}");
+    }
+    // Nothing left to do.
+    let again = post(
+        &app,
+        "/api/v1/processing/profiles/p/reprocess",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.text);
+    assert_eq!(again.body["error"]["code"], "nothing_to_reprocess");
+
+    // The history is on disk. A batch the server never finished reads as
+    // interrupted, item by item, once nothing is running it.
+    let ledger = project_root(dir.path())
+        .join(crate::project::DEFAULT_DATA_DIR)
+        .join("processing/batches")
+        .join(crate::project::jsonl::FILE);
+    let mut lines = std::fs::read_to_string(&ledger).unwrap();
+    lines.push_str(
+        &json!({"event": "started", "batch": {
+            "id": "gone", "profile": "p", "version": 1, "started_by": "erik",
+            "started_at": "2026-10-11T00:00:00Z", "finished_at": null,
+            "items": [
+                {"radargram_id": "ours", "outcome": "processing", "job": 99},
+                {"radargram_id": "line-new", "outcome": "committed", "revision_id": "x"}
+            ]
+        }})
+        .to_string(),
+    );
+    lines.push('\n');
+    std::fs::write(&ledger, lines).unwrap();
+    let listed = get(&app, "/api/v1/processing/batches", Some(&erik)).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let batches = listed.body["batches"].as_array().unwrap();
+    assert_eq!(batches.len(), 2);
+    assert_eq!(batches[0]["id"], "gone", "newest first");
+    let gone = outcomes(&batches[0]);
+    assert_eq!(gone["ours"]["outcome"], "interrupted");
+    assert_eq!(gone["line-new"]["outcome"], "committed");
+    assert_eq!(batches[1]["id"], started.body["id"]);
+    assert_eq!(outcomes(&batches[1])["ours"]["outcome"], "committed");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_newer_profile_version_supersedes_a_batch_s_unstarted_items() {
+    // Three items, two in flight at a time: the third waits, and a change to
+    // the profile before it starts skips it.
+    let (_prepared, _dir, _archive, app, erik) = batch_app(&["line-a", "line-b", "line-c"]).await;
+    let started = post(
+        &app,
+        "/api/v1/processing/profiles/p/reprocess",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.text);
+    let changed = put(
+        &app,
+        "/api/v1/processing/profiles/p",
+        &json!({"name": "P", "steps": ["subset(0 100 0 200)"], "medium_velocity": 0.17}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(changed.status, StatusCode::OK, "{}", changed.text);
+
+    let done = batch_finished(&app, &started.body["id"], &erik).await;
+    let superseded: Vec<&Value> = done["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["reason"] == "superseded by version 2 of the profile")
+        .collect();
+    assert!(!superseded.is_empty(), "{done}");
+    for item in done["items"].as_array().unwrap() {
+        if item["radargram_id"] != "theirs" {
+            assert!(
+                item["outcome"] == "committed"
+                    || item["reason"] == "superseded by version 2 of the profile",
+                "{done}"
+            );
+        }
+    }
 }
