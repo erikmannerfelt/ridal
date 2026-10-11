@@ -47,6 +47,22 @@
   <div id="processing-profiles"
        data-writable="{% if writable %}true{% else %}false{% endif %}"></div>
 
+  {% if project %}
+  {#- With processing optional, raw data nobody has processed would be
+      invisible: it has no card in the catalog and may be in no profile. -#}
+  <section class="processing-unprocessed" id="raw-unprocessed" hidden>
+    <h2>Raw data not processed yet</h2>
+    <p class="hint">
+      Radargrams the project has raw data for but no processed file:
+      uploaded and not processed yet, or left behind when processing
+      stopped. <strong>Process&hellip;</strong> one to look at it before it
+      is added to the catalog, or put it in a profile and process that
+      profile's out-of-date radargrams.
+    </p>
+    <div id="raw-unprocessed-list"></div>
+  </section>
+  {% endif %}
+
   {% if project and writable %}
   <details class="processing-new" id="processing-new">
     <summary>New processing profile</summary>
