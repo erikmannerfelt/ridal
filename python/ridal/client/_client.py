@@ -1,10 +1,11 @@
 """The public :class:`Client`."""
 
 import concurrent.futures
+import dataclasses
 import os
 import threading
 import time
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from os import PathLike
 from pathlib import Path
 from types import TracebackType
@@ -836,7 +837,9 @@ class Client:
         *,
         crs: str | None = None,
         dem: str | None = None,
+        names: models.SourceNames | None | Literal["keep"] = "keep",
         etag: str | None = None,
+        only_new: bool = False,
     ) -> models.SourceView:
         """Set or switch what a radargram is made from. Needs ``operator``.
 
@@ -854,15 +857,22 @@ class Client:
             (``[processing] crs``), else the UTM zone that suits the track.
         dem : str, optional
             The id of one of the project's DEMs (:meth:`dems`).
+        names : SourceNames or None, optional
+            What to call the radargram until it is served. ``"keep"`` (the
+            default) keeps what the source had, and ``None`` removes it.
         etag : str, optional
             The source's version from :meth:`source`: the change is refused
             (:class:`~ridal.client.errors.PreconditionFailed`) if it has
             changed since.
+        only_new : bool, default False
+            Refuse (:class:`~ridal.client.errors.PreconditionFailed`) if the
+            radargram has a source already, as creating from
+            :meth:`plan_ingest` does.
 
         The server reads every recording before saving, and refuses
         recordings that cannot be merged, or a DEM that does not cover them.
         """
-        body = {
+        body: dict[str, Any] = {
             "recordings": [
                 [{"name": f.name, "blake3": f.blake3} for f in files]
                 for files in recordings
@@ -870,14 +880,95 @@ class Client:
             "crs": crs,
             "dem": dem,
         }
+        if names != "keep":
+            body["names"] = None if names is None else dataclasses.asdict(names)
         response = self._http.request(
             "PUT",
             self._project_path("sources", radargram_id),
             json=body,
-            headers={"If-Match": etag} if etag else {},
+            headers={"If-Match": etag}
+            if etag
+            else {"If-None-Match": "*"}
+            if only_new
+            else {},
         )
         return models.SourceView.from_json(
             _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def plan_ingest(
+        self,
+        recordings: Iterable[Iterable[models.StoredFile | models.HashedFile]],
+        *,
+        merge_threshold_seconds: float | None = None,
+        excluded: Iterable[str] = (),
+        joins: Iterable[str] = (),
+        splits: Iterable[str] = (),
+        id_pattern: str | None = None,
+        display_name_pattern: str | None = None,
+        ids: Mapping[str, str] | None = None,
+        display_names: Mapping[str, str] | None = None,
+        group_name: str | None = None,
+        group_id: str | None = None,
+        crs: str | None = None,
+        dem: str | None = None,
+        include_tracks: bool = True,
+    ) -> models.IngestPlan:
+        """Group uploaded recordings into the radargrams they would make, and
+        name them. Needs ``operator``. Nothing is created: once
+        :attr:`~ridal.client.IngestPlan.ok`, each output is a
+        :meth:`set_source` with ``only_new=True``.
+
+        Parameters
+        ----------
+        recordings : iterable of iterables of StoredFile
+            Every uploaded recording, in any order, each the files it is
+            made of as :meth:`upload_raw` answered.
+        merge_threshold_seconds : float, optional
+            Recordings less than this far apart in time are merged, when
+            their headers allow. ``None`` never merges.
+        excluded, joins, splits : iterable of str
+            Recordings by key (:attr:`PlannedRecording.key`): to leave out,
+            to keep with the one before them whatever the gap, and to start
+            a new radargram although they would merge.
+        id_pattern, display_name_pattern : str, optional
+            As ``ridal batch-process --id-pattern`` takes them. Without an
+            id pattern, each output is named after its first file.
+        ids, display_names : mapping of str to str, optional
+            Typed over what the patterns give, by the key of the output's
+            first recording.
+        group_name, group_id : str, optional
+            The catalog group, which ``{group}`` and ``{group_name}``
+            render.
+        crs, dem : str, optional
+            As for :meth:`set_source`.
+        include_tracks : bool
+            Whether to send each recording's simplified track.
+
+        A plan with problems is still answered in full; its ``problems``
+        say what stops it and where.
+        """
+        body: dict[str, Any] = {
+            "recordings": [
+                {"files": [{"name": f.name, "blake3": f.blake3} for f in files]}
+                for files in recordings
+            ],
+            "merge_threshold_seconds": merge_threshold_seconds,
+            "excluded": list(excluded),
+            "joins": list(joins),
+            "splits": list(splits),
+            "id_pattern": id_pattern,
+            "display_name_pattern": display_name_pattern,
+            "ids": dict(ids or {}),
+            "display_names": dict(display_names or {}),
+            "group_name": group_name,
+            "group_id": group_id,
+            "crs": crs,
+            "dem": dem,
+            "include_tracks": include_tracks,
+        }
+        return models.IngestPlan.from_json(
+            self._http.json("POST", self._project_path("ingest", "plan"), json=body)
         )
 
     def delete_source(self, radargram_id: str, *, etag: str | None = None) -> None:

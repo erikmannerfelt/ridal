@@ -6292,6 +6292,130 @@ async fn recordings_that_cannot_be_merged_are_refused_as_a_source() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn an_ingest_plan_groups_and_names_uploaded_recordings() {
+    // #382 phase 7: the plan route, and the source that a plan's output
+    // becomes.
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("pia", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let pia = sign_in(&app, "pia").await;
+    let old = upload_recording(&app, "dronbreen-20220329-DAT_0237_A1", &erik).await;
+    let new = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    let mut body = json!({
+        "recordings": [{"files": new}, {"files": old}],
+        "merge_threshold_seconds": 600,
+        "id_pattern": "dronbreen-{freq}mhz",
+        "display_name_pattern": "{group_name}, {freq} MHz",
+        "group_name": "Drønbreen",
+    });
+
+    let refused = post(&app, "/api/v1/ingest/plan", &body, Some(&pia)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    let plan = post(&app, "/api/v1/ingest/plan", &body, Some(&erik)).await;
+    assert_eq!(plan.status, StatusCode::OK, "{}", plan.text);
+    assert_eq!(plan.body["problems"], json!([]), "{}", plan.text);
+    // In time order, and the antennas differ, so no join could make one.
+    let recordings = plan.body["recordings"].as_array().unwrap();
+    assert_eq!(recordings[0]["name"], "dronbreen-20220329-DAT_0237_A1.rad");
+    assert_eq!(
+        recordings[0]["files"][0],
+        "dronbreen-20220329-DAT_0237_A1.rad"
+    );
+    assert!(recordings[0]["track"].as_array().unwrap().len() >= 2);
+    let outputs = plan.body["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 2);
+    let split = &outputs[1]["split"];
+    assert_eq!(split["over_threshold"], true);
+    assert!(split["incompatible"].is_string(), "{split}");
+    let id = outputs[1]["radargram_id"].as_str().unwrap().to_string();
+    assert!(id.starts_with("dronbreen-") && id.ends_with("mhz"), "{id}");
+    assert!(outputs[1]["display_name"]
+        .as_str()
+        .unwrap()
+        .starts_with("Drønbreen, "));
+
+    let twice = post(
+        &app,
+        "/api/v1/ingest/plan",
+        &json!({"recordings": [{"files": new}, {"files": new}]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(twice.body["error"]["code"], "duplicate_recording");
+
+    body["joins"] = json!([recordings[1]["key"]]);
+    body["include_tracks"] = json!(false);
+    let joined = post(&app, "/api/v1/ingest/plan", &body, Some(&erik)).await;
+    assert_eq!(joined.body["problems"][0]["kind"], "join_refused");
+    assert_eq!(joined.body["recordings"][0]["track"], Value::Null);
+    body["joins"] = json!([]);
+
+    // Created as the page creates it: a source with its names, which may
+    // not replace one that appeared since the plan.
+    let source = json!({"recordings": [new], "names": {
+        "display_name": outputs[1]["display_name"], "group_name": "Drønbreen"
+    }});
+    let create = |session: String| {
+        let app = app.clone();
+        let uri = format!("/api/v1/sources/{id}");
+        let source = source.clone();
+        async move {
+            send(
+                &app,
+                request("PUT", &uri, Some(&session))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::IF_NONE_MATCH, "*")
+                    .body(Body::from(source.to_string()))
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+    let created = create(erik.clone()).await;
+    assert_eq!(created.status, StatusCode::OK, "{}", created.text);
+    assert_eq!(created.body["source"]["names"]["group_id"], "dronbreen");
+    let again = create(erik.clone()).await;
+    assert_eq!(again.status, StatusCode::PRECONDITION_FAILED);
+
+    // Planned again, the id is taken by raw data alone.
+    let plan = post(&app, "/api/v1/ingest/plan", &body, Some(&erik)).await;
+    let problem = &plan.body["problems"][0];
+    assert_eq!(problem["kind"], "id_taken", "{}", plan.text);
+    assert_eq!(problem["output"], 1);
+    assert_eq!(problem["served"], false);
+    assert_eq!(problem["has_source"], true);
+
+    // Switching the recordings keeps the names; `null` removes them.
+    let uri = format!("/api/v1/sources/{id}");
+    let switched = put(&app, &uri, &json!({"recordings": [new]}), Some(&erik)).await;
+    assert_eq!(
+        switched.body["source"]["names"]["display_name"],
+        outputs[1]["display_name"]
+    );
+    let cleared = put(
+        &app,
+        &uri,
+        &json!({"recordings": [new], "names": null}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(cleared.body["source"]["names"], Value::Null);
+    let refused = put(
+        &app,
+        &uri,
+        &json!({"recordings": [new], "names": {"group_id": "dronbreen"}}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(refused.body["error"]["code"], "group_id_without_name");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn raw_data_is_uploaded_once_and_a_source_names_it() {
     // #382 phase 4.
     let hash = password_hash();
@@ -6711,7 +6835,8 @@ fn drafting_app_processing(
             "#!/bin/sh\n\
              out=$(sed -n 's/.*\"output\":\"\\([^\"]*\\)\".*/\\1/p' \"$2\")\n\
              id=$(sed -n 's/.*\"radargram_id\":\"\\([^\"]*\\)\".*/\\1/p' \"$2\")\n\
-             cp {}/\"$id\".nc \"$out\"\n\
+             cp {0}/\"$id\".nc \"$out\"\n\
+             cp \"$2\" {0}/\"$id\".spec.json\n\
              echo '{{\"event\":\"step\",\"index\":0,\"of\":1,\"step\":\"subset\"}}'\n\
              echo \"{{\\\"event\\\":\\\"done\\\",\\\"output\\\":\\\"$out\\\",\\\"revision_id\\\":\\\"r\\\"}}\"\n",
             prepared.display()
@@ -6857,14 +6982,19 @@ async fn a_draft_is_processed_looked_at_and_committed() {
     let pia = sign_in(&app, "pia").await;
     let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
     for id in ["line-new", "ours"] {
+        // What to call the new one comes with its raw data (#382 phase 7);
+        // the served one keeps the catalog's names whatever its source says.
         let set = put(
             &app,
             &format!("/api/v1/sources/{id}"),
-            &json!({"recordings": [recording]}),
+            &json!({"recordings": [recording], "names": {
+                "display_name": "Line, new", "group_name": "Drønbreen", "group_id": null
+            }}),
             Some(&erik),
         )
         .await;
         assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+        assert_eq!(set.body["source"]["names"]["group_id"], "dronbreen");
     }
     let steps = json!({"steps": ["subset(0 100 0 200)"]});
 
@@ -6942,6 +7072,15 @@ async fn a_draft_is_processed_looked_at_and_committed() {
             .status,
         StatusCode::OK
     );
+    // The job was asked to write the source's names (the stand-in job
+    // here copies a file processed beforehand, so it keeps the spec).
+    let spec: Value = serde_json::from_str(
+        &std::fs::read_to_string(prepared.path().join("line-new.spec.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(spec["display_name"], "Line, new");
+    assert_eq!(spec["group_name"], "Drønbreen");
+    assert_eq!(spec["group_id"], "dronbreen");
 
     // A served id: two drafts against the same revision. The first commit
     // is staged with its report, and committed as a replacement is.

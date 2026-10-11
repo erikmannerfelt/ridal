@@ -28,7 +28,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{expectation_from, parse_radargram, readable_project};
 use super::routes::ApiError;
-use crate::project::raw::{self, NamedFile, Source};
+use crate::project::raw::{self, NamedFile, Source, SourceNames};
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{StoreError, Version};
 
@@ -227,6 +227,46 @@ pub struct SourceBody {
     /// One of the project's DEMs, by id (`GET /api/v1/dems`).
     #[serde(default)]
     pub dem: Option<String>,
+    /// What to call the radargram until it is served (#382 phase 7).
+    /// Absent keeps what the source had; `null` removes it.
+    #[serde(default, deserialize_with = "super::preference_routes::present")]
+    pub names: Option<Option<SourceNames>>,
+}
+
+/// `names` as a source keeps them: a display name, and a group whose id is
+/// derived from its name unless given. Every part empty is none.
+pub(super) fn source_names(names: SourceNames) -> Result<Option<SourceNames>, ApiError> {
+    let display_name = names
+        .display_name
+        .as_deref()
+        .and_then(crate::identity::DisplayName::from_input);
+    if names.group_id.is_some()
+        && names
+            .group_name
+            .as_deref()
+            .and_then(crate::identity::GroupName::from_input)
+            .is_none()
+    {
+        return Err(ApiError::bad_request(
+            "group_id_without_name",
+            "A group id is the URL-safe form of a group's name, so give the name too.",
+        ));
+    }
+    let group = crate::identity::resolve_group(
+        names.group_name.as_deref(),
+        names.group_id.as_deref(),
+        None,
+        None,
+    )
+    .map_err(|e| ApiError::bad_request("invalid_group_id", e))?;
+    if display_name.is_none() && group.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(SourceNames {
+        display_name: display_name.map(|n| n.to_string()),
+        group_name: group.as_ref().map(|(name, _)| name.to_string()),
+        group_id: group.map(|(_, id)| id.to_string()),
+    }))
 }
 
 /// A source's CRS, as an EPSG code: `EPSG:32633` ([`raw::epsg_code`]).
@@ -257,6 +297,15 @@ pub async fn put_source(
     let expected = expectation_from(&headers);
     let data_dir = project.data_dir().to_path_buf();
     let crs = body.crs.as_deref().map(source_crs).transpose()?;
+    let names = match body.names {
+        Some(names) => names.map(source_names).transpose()?.flatten(),
+        // Kept, so that switching the recordings of a radargram not
+        // processed yet does not forget what it is to be called. Compared
+        // against `expected` with the rest when it is written.
+        None => raw::read_source(project.documents(), &id)
+            .map_err(|e| ApiError::internal("source_read_failed", e))?
+            .and_then(|(source, _)| source.names),
+    };
     let dem = body
         .dem
         .as_deref()
@@ -281,6 +330,7 @@ pub async fn put_source(
                     bundles,
                     crs: crs.clone(),
                     dem,
+                    names,
                 },
                 records,
             ))

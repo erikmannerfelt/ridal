@@ -209,6 +209,48 @@ A batch applies each radargram without review; `picks_not_carried` names
 whose picks did not come across whole. **DEMs** are uploaded once for the
 project with `add_dem`, and each radargram linked to one with `link_dem`.
 
+**Many recordings at once.** `plan_ingest` groups uploaded recordings into
+the radargrams they would make, in time order, merging those less than
+`merge_threshold_seconds` apart whose headers allow it, and names them with
+the same id and display name patterns as `ridal batch-process`. It creates
+nothing, and reports what would stop the plan, such as an id that already
+exists:
+
+```python
+from ridal.client import SourceNames
+
+stored = [
+    [client.upload_raw(path) for path in sorted(Path("raw").glob(f"{stem}.*"))]
+    for stem in ("DAT_0140_A1", "DAT_0141_A1", "DAT_0142_A1")
+]
+plan = client.plan_ingest(
+    stored,
+    merge_threshold_seconds=600,
+    id_pattern="{group}-{freq}mhz-{n:02, from=next}",
+    group_name="Drønbreen",
+)
+for problem in plan.problems:
+    print(problem.kind, problem.message)
+
+if plan.ok:
+    headers = {recording.key: recording.name for recording in plan.recordings}
+    by_name = {file.name: files for files in stored for file in files}
+    for output in plan.outputs:
+        client.set_source(
+            output.radargram_id,
+            [by_name[headers[key]] for key in output.recordings],
+            names=SourceNames(output.display_name, "Drønbreen"),
+            only_new=True,
+        )
+```
+
+Recordings are named by `key`, a hash of their files' contents, in
+`excluded`, `joins` (keep with the one before, whatever the gap), `splits`,
+and in `ids` and `display_names`, which type over what the patterns give
+for the output that recording starts. `only_new` refuses an id that got raw
+data since the plan rather than replacing it. The names a source carries are
+what the radargram is called once it is processed.
+
 ## When something is refused
 
 Every refusal is an exception with the server's stable `code` and a `message`

@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::error::Error;
 /// Functions to process GPR data
 use std::path::{Path, PathBuf};
@@ -90,6 +91,7 @@ impl GPRMeta {
     ///
     /// # Arguments
     /// - `projected_crs`: The CRS to project coordinates into
+    #[cfg(test)]
     pub fn find_cor(&self, projected_crs: Option<&String>) -> Result<GPRLocation, Box<dyn Error>> {
         let cor = crate::formats::find_neighbor_case_insensitive(&self.data_filepath, "cor")
             .unwrap_or_else(|| self.data_filepath.with_extension("cor"));
@@ -414,6 +416,7 @@ impl GPRLocation {
         dists.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
     }
 
+    #[cfg(test)]
     pub fn duration_since(&self, other: &GPRLocation) -> f64 {
         let self_times = Array1::from_iter(self.cor_points.iter().map(|p| p.time_seconds));
         let other_times = Array1::from_iter(other.cor_points.iter().map(|p| p.time_seconds));
@@ -2434,30 +2437,10 @@ impl GPR {
     /// velocity.
     pub fn merge(&mut self, other: &GPR) -> Result<(), String> {
         let start_time = SystemTime::now();
-        if self.location.crs != other.location.crs {
-            Err(format!(
-                "CRS are different: {} vs {}",
-                self.location.crs, other.location.crs
-            ))
-        } else if self.metadata.antenna_mhz != other.metadata.antenna_mhz {
-            Err(format!(
-                "Antenna frequencies are different: {} vs {}",
-                self.metadata.antenna_mhz, other.metadata.antenna_mhz
-            ))
-        } else if self.metadata.time_window != other.metadata.time_window {
-            Err(format!(
-                "Time windows are different: {} vs {}",
-                self.metadata.time_window, other.metadata.time_window
-            ))
-        // The checks below do not stop the arrays concatenating; they stop
-        // the result declaring one value for the whole file that is true of
-        // only part of it (#151). Per-trace offsets (`crop_ns`,
-        // `time_zero_ns`) concatenate and need no check.
-        } else if self.metadata.antenna_separation != other.metadata.antenna_separation {
-            Err(format!(
-                "Antenna separations are different: {} m vs {} m",
-                self.metadata.antenna_separation, other.metadata.antenna_separation
-            ))
+        if let Some(refusal) = MergeKey::of(&self.metadata, &self.location)
+            .refusal(&MergeKey::of(&other.metadata, &other.location))
+        {
+            Err(refusal)
         } else if self.antenna_separation_effective != other.antenna_separation_effective {
             // Unlike the others this is recoverable, so say how.
             Err(format!(
@@ -2465,11 +2448,6 @@ impl GPR {
                  has had correct_antenna_separation applied and the other has not; apply it \
                  to both before merging",
                 self.antenna_separation_effective, other.antenna_separation_effective
-            ))
-        } else if self.metadata.medium_velocity != other.metadata.medium_velocity {
-            Err(format!(
-                "Medium velocities are different: {} m/ns vs {} m/ns",
-                self.metadata.medium_velocity, other.metadata.medium_velocity
             ))
         } else {
             self.location
@@ -3384,6 +3362,7 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
 /// Why an output of a merging batch starts a new radargram instead of
 /// continuing the one before it, in time order (#382 phase 2).
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Split {
     /// From the end of the previous output to the start of this one.
     pub gap_seconds: f64,
@@ -3391,7 +3370,11 @@ pub struct Split {
     pub over_threshold: bool,
     /// Why the two cannot be one radargram, when they cannot: the first
     /// thing `GPR::merge` refused.
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub incompatible: Option<String>,
+    /// Whether a person asked for a new radargram here, in the ingest
+    /// planner (#382); never in `batch-process`.
+    pub manual: bool,
 }
 
 /// One output of a batch, as it would be written.
@@ -3421,10 +3404,6 @@ pub struct BatchPlan {
     pub outputs: Vec<PlannedOutput>,
 }
 
-/// The inputs that make one output, in merge order, and why they are not
-/// part of the output before.
-type InputGroup = (Vec<PathBuf>, Option<Split>);
-
 pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     let expanded_filepaths = expand_cli_inputs(&params.filepaths)?;
     let threshold = params
@@ -3436,30 +3415,50 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
                 .map_err(|e| format!("Failed to parse merge duration '{merge}': {e}"))
         })
         .transpose()?;
+    if params.display_name_pattern.is_some() && params.id_pattern.is_none() {
+        return Err(
+            "--display-name-pattern needs --id-pattern too: each output's display name \
+             is rendered beside its id"
+                .to_string(),
+        );
+    }
 
-    let groups: Vec<InputGroup> = match threshold {
-        Some(threshold) => group_batch_inputs_chronologically(
-            &expanded_filepaths,
-            threshold,
-            params.medium_velocity,
-            params.cor_path.clone(),
-            params.dem_path.clone(),
-            params.crs.clone(),
-            params.override_antenna_mhz,
-            params.override_antenna_separation,
-        )?,
-        None => expanded_filepaths
-            .into_iter()
-            .map(|p| (vec![p], None))
+    // Merging orders the inputs by time, and a pattern renders from what
+    // the headers say: either way each header and its positions are read,
+    // once, and the data is not.
+    let read = (threshold.is_some() || params.id_pattern.is_some())
+        .then(|| {
+            expanded_filepaths
+                .iter()
+                .map(|path| read_for_grouping(path, params))
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?;
+
+    let groups: Vec<(Vec<usize>, Option<Split>)> = match (threshold, &read) {
+        (Some(threshold), Some(read)) => {
+            group_chronologically(read, Some(threshold), &GroupingEdits::default())
+                .groups
+                .into_iter()
+                .map(|group| (group.members, group.split))
+                .collect()
+        }
+        _ => (0..expanded_filepaths.len())
+            .map(|i| (vec![i], None))
             .collect(),
     };
-    let groups: Vec<InputGroup> = groups.into_iter().filter(|(g, _)| !g.is_empty()).collect();
-    let inputs: Vec<Vec<PathBuf>> = groups.iter().map(|(g, _)| g.clone()).collect();
-    let names = batch_names(params, &inputs)?;
+    let names = match &read {
+        Some(read) => batch_names(params, &groups, &expanded_filepaths, read)?,
+        None => None,
+    };
 
     let mut outputs = Vec::with_capacity(groups.len());
     let mut written = std::collections::HashMap::<PathBuf, PathBuf>::new();
-    for (index, (group, split)) in groups.into_iter().enumerate() {
+    for (index, (members, split)) in groups.into_iter().enumerate() {
+        let group: Vec<PathBuf> = members
+            .iter()
+            .map(|i| expanded_filepaths[*i].clone())
+            .collect();
         let first = &group[0];
         let file_stem = first
             .file_stem()
@@ -3506,17 +3505,70 @@ pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     })
 }
 
+/// A raw recording's header and positions, without its data, with
+/// positions in `crs` and elevations from `dem`: what the ingest planner
+/// reads of each recording (#382 phase 7).
+pub fn read_header_and_positions(
+    resolved: &ResolvedInput,
+    crs: Option<&String>,
+    dem: Option<&PathBuf>,
+) -> Result<(GPRMeta, GPRLocation), String> {
+    load_meta_and_location(resolved, 0.168, crs, None, dem, None, None).map_err(|e| e.to_string())
+}
+
+/// One input's header and positions, as planning a batch reads them.
+fn read_for_grouping(path: &Path, params: &BatchRunParams) -> Result<GroupingRecording, String> {
+    let resolved = formats::resolve_input(path)
+        .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
+    let (meta, location) = load_meta_and_location(
+        &resolved,
+        params.medium_velocity,
+        params.crs.as_ref(),
+        params.cor_path.as_ref(),
+        None,
+        params.override_antenna_mhz,
+        params.override_antenna_separation,
+    )
+    .map_err(|e| format!("{}: {e}", path.display()))?;
+    GroupingRecording::of(&meta, &location)
+        .ok_or_else(|| format!("No location points found in '{}'", path.display()))
+}
+
+/// What a pattern is rendered from, for an output made of `members`, the
+/// first of which is `first` and reads as `recording`.
+pub fn output_facts(
+    first: &Path,
+    recording: &GroupingRecording,
+    n_files: usize,
+) -> crate::id_pattern::OutputFacts {
+    crate::id_pattern::OutputFacts {
+        label: first
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        stem: first
+            .file_stem()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        start_seconds: recording.start_seconds,
+        antenna_mhz: recording.key.antenna_mhz,
+        n_files,
+    }
+}
+
 /// The ids and display names the patterns give each output of a batch, in
 /// output order, or `None` without an id pattern (#368).
 ///
-/// Reads each output's first header and positions, which is what a pattern
-/// can refer to: the start time orders `{n}` and gives `{date}`, and the
-/// antenna gives `{freq}`. `from=next` continues after the ids of the
-/// processed files already in the output directory.
+/// Rendered from each output's first input as `read` has it: the start time
+/// orders `{n}` and gives `{date}`, and the antenna gives `{freq}`.
+/// `from=next` continues after the ids of the processed files already in
+/// the output directory.
 #[allow(clippy::type_complexity)]
 fn batch_names(
     params: &BatchRunParams,
-    groups: &[Vec<PathBuf>],
+    groups: &[(Vec<usize>, Option<Split>)],
+    paths: &[PathBuf],
+    read: &[GroupingRecording],
 ) -> Result<
     Option<(
         Vec<crate::identity::RadargramId>,
@@ -3524,19 +3576,12 @@ fn batch_names(
     )>,
     String,
 > {
-    use crate::id_pattern::{BatchFacts, OutputFacts, Pattern, PatternKind};
+    use crate::id_pattern::{BatchFacts, Pattern, PatternKind};
 
     let parse = |text: &str, kind: PatternKind, flag: &str| {
         Pattern::parse(text, kind).map_err(|e| format!("--{flag}: {}", e.render(text)))
     };
     let Some(id_text) = params.id_pattern.as_deref() else {
-        if params.display_name_pattern.is_some() {
-            return Err(
-                "--display-name-pattern needs --id-pattern too: each output's display name \
-                 is rendered beside its id"
-                    .to_string(),
-            );
-        }
         return Ok(None);
     };
     let id_pattern = parse(id_text, PatternKind::Id, "id-pattern")?;
@@ -3560,40 +3605,10 @@ fn batch_names(
         None => BatchFacts::default(),
     };
 
-    let outputs = groups
+    let outputs: Vec<_> = groups
         .iter()
-        .map(|group| {
-            let first = &group[0];
-            let resolved = formats::resolve_input(first)?;
-            let (meta, location) = load_meta_and_location(
-                &resolved,
-                params.medium_velocity,
-                params.crs.as_ref(),
-                params.cor_path.as_ref(),
-                None,
-                params.override_antenna_mhz,
-                params.override_antenna_separation,
-            )
-            .map_err(|e| format!("{}: {e}", first.display()))?;
-            Ok(OutputFacts {
-                label: first
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-                stem: first
-                    .file_stem()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default(),
-                start_seconds: location
-                    .cor_points
-                    .first()
-                    .map(|p| p.time_seconds)
-                    .ok_or_else(|| format!("No location points found in '{}'", first.display()))?,
-                antenna_mhz: meta.antenna_mhz,
-                n_files: group.len(),
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+        .map(|(members, _)| output_facts(&paths[members[0]], &read[members[0]], members.len()))
+        .collect();
 
     let existing = if id_pattern.needs_existing_ids() {
         existing_radargram_ids(&params.output_dir)
@@ -3664,171 +3679,184 @@ fn expand_cli_inputs(inputs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
     Ok(out)
 }
 
-fn load_single_gpr_for_grouping(
-    path: &Path,
-    medium_velocity: f32,
-    cor_path: Option<PathBuf>,
-    dem_path: Option<PathBuf>,
-    crs: Option<String>,
-    override_antenna_mhz: Option<f32>,
-    override_antenna_separation: Option<f32>,
-) -> Result<GPR, String> {
-    // Resolve input using the same format machinery as normal processing.
-    let resolved = formats::resolve_input(path)
-        .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
-
-    let metadata = match resolved.kind {
-        FormatKind::Ramac => io::load_rad(
-            &resolved.header,
-            medium_velocity,
-            override_antenna_mhz,
-            override_antenna_separation,
-        )
-        .map_err(|e| {
-            format!(
-                "Failed to load RAMAC header '{}': {e}",
-                resolved.header.display()
-            )
-        })?,
-        FormatKind::PulseEkko => io::load_pe_hd(
-            &resolved.header,
-            medium_velocity,
-            override_antenna_mhz,
-            override_antenna_separation,
-        )
-        .map_err(|e| {
-            format!(
-                "Failed to load pulseEKKO header '{}': {e}",
-                resolved.header.display()
-            )
-        })?,
-        FormatKind::Gssi => io::load_gssi_dzt(
-            &resolved.header,
-            medium_velocity,
-            override_antenna_mhz,
-            override_antenna_separation,
-        )
-        .map_err(|e| {
-            format!(
-                "Failed to load GSSI header '{}': {e}",
-                resolved.header.display()
-            )
-        })?,
-    };
-
-    let mut location = if let Some(cor_override) = &cor_path {
-        io::load_cor(cor_override, crs.as_ref()).map_err(|e| {
-            format!(
-                "Failed to load overridden .cor '{}': {e}",
-                cor_override.display()
-            )
-        })?
-    } else {
-        match resolved.kind {
-            FormatKind::Ramac => metadata.find_cor(crs.as_ref()).map_err(|e| {
-                format!(
-                    "Failed to find/load .cor for '{}': {e}",
-                    metadata.data_filepath.display()
-                )
-            })?,
-            FormatKind::PulseEkko => {
-                let gp2 = &resolved.coordinates;
-                io::load_pe_gp2(gp2, crs.as_ref())
-                    .map_err(|e| format!("Failed to load .gp2 '{}': {e}", gp2.display()))?
-            }
-            FormatKind::Gssi => {
-                let dzg = &resolved.coordinates;
-                io::load_gssi_dzg(dzg, crs.as_ref())
-                    .map_err(|e| format!("Failed to load .dzg '{}': {e}", dzg.display()))?
-            }
-        }
-    };
-
-    if let Some(dem_path) = &dem_path {
-        location.get_dem_elevations(dem_path)?;
-    }
-
-    let mut gpr = GPR::from_meta_and_loc(location, metadata)
-        .map_err(|e| format!("Failed to build GPR for '{}': {e}", path.display()))?;
-    gpr.user_metadata = user_metadata::UserMetadata::new();
-    Ok(gpr)
+/// What decides whether two recordings can be one radargram, read from
+/// their headers and positions: the checks [`GPR::merge`] makes before it
+/// touches the data, which it makes through this, so the two cannot drift.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergeKey {
+    pub crs: String,
+    pub antenna_mhz: f32,
+    pub time_window: f32,
+    pub antenna_separation: f32,
+    pub medium_velocity: f32,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn group_batch_inputs_chronologically(
-    filepaths: &[PathBuf],
-    threshold: f64,
-    medium_velocity: f32,
-    cor_path: Option<PathBuf>,
-    dem_path: Option<PathBuf>,
-    crs: Option<String>,
-    override_antenna_mhz: Option<f32>,
-    override_antenna_separation: Option<f32>,
-) -> Result<Vec<InputGroup>, String> {
-    let mut loaded = filepaths
-        .iter()
-        .map(|path| {
-            let gpr = load_single_gpr_for_grouping(
-                path,
-                medium_velocity,
-                cor_path.clone(),
-                dem_path.clone(),
-                crs.clone(),
-                override_antenna_mhz,
-                override_antenna_separation,
-            )?;
-            let start_time = gpr
-                .location
-                .cor_points
-                .first()
-                .map(|p| p.time_seconds)
-                .ok_or_else(|| format!("No location points found in '{}'", path.display()))?;
-            Ok::<_, String>((path.clone(), start_time, gpr))
+impl MergeKey {
+    pub fn of(meta: &GPRMeta, location: &GPRLocation) -> Self {
+        Self {
+            crs: location.crs.clone(),
+            antenna_mhz: meta.antenna_mhz,
+            time_window: meta.time_window,
+            antenna_separation: meta.antenna_separation,
+            medium_velocity: meta.medium_velocity,
+        }
+    }
+
+    /// Why a recording with `other` cannot follow one with `self`, or
+    /// `None` when it can.
+    pub fn refusal(&self, other: &MergeKey) -> Option<String> {
+        if self.crs != other.crs {
+            Some(format!("CRS are different: {} vs {}", self.crs, other.crs))
+        } else if self.antenna_mhz != other.antenna_mhz {
+            Some(format!(
+                "Antenna frequencies are different: {} vs {}",
+                self.antenna_mhz, other.antenna_mhz
+            ))
+        } else if self.time_window != other.time_window {
+            Some(format!(
+                "Time windows are different: {} vs {}",
+                self.time_window, other.time_window
+            ))
+        // The checks below do not stop the arrays concatenating; they stop
+        // the result declaring one value for the whole file that is true of
+        // only part of it (#151).
+        } else if self.antenna_separation != other.antenna_separation {
+            Some(format!(
+                "Antenna separations are different: {} m vs {} m",
+                self.antenna_separation, other.antenna_separation
+            ))
+        } else if self.medium_velocity != other.medium_velocity {
+            Some(format!(
+                "Medium velocities are different: {} m/ns vs {} m/ns",
+                self.medium_velocity, other.medium_velocity
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+/// One recording as grouping sees it: when it ran, and what decides what
+/// it can be merged with. Read from the header and positions, not the data,
+/// so a few hundred recordings are cheap (#382).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupingRecording {
+    /// The first and last position's time, seconds since the Unix epoch.
+    pub start_seconds: f64,
+    pub stop_seconds: f64,
+    pub key: MergeKey,
+}
+
+impl GroupingRecording {
+    /// `None` when the recording has no positions to give it a time.
+    pub fn of(meta: &GPRMeta, location: &GPRLocation) -> Option<Self> {
+        let times = location.cor_points.iter().map(|p| p.time_seconds);
+        let start_seconds = times.clone().fold(f64::INFINITY, f64::min);
+        let stop_seconds = times.fold(f64::NEG_INFINITY, f64::max);
+        start_seconds.is_finite().then(|| Self {
+            start_seconds,
+            stop_seconds,
+            key: MergeKey::of(meta, location),
         })
-        .collect::<Result<Vec<_>, _>>()?;
+    }
+}
 
-    // Chronological grouping for batch --merge
-    loaded.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+/// A person's changes to where a merging batch splits, by index into the
+/// recordings grouped (#382 phase 7).
+#[derive(Debug, Clone, Default)]
+pub struct GroupingEdits {
+    /// Recordings to keep with the one before them in time, whatever the
+    /// gap. A join the headers refuse is not made, and is reported.
+    pub joins: HashSet<usize>,
+    /// Recordings that start a new output although they would merge. A
+    /// recording in both is split.
+    pub splits: HashSet<usize>,
+}
 
-    let mut groups = Vec::<InputGroup>::new();
-    let mut current = Vec::<PathBuf>::new();
-    let mut current_split: Option<Split> = None;
-    let mut current_gpr: Option<GPR> = None;
+/// One output: its recordings in merge order, and why it is not part of
+/// the output before it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grouped {
+    pub members: Vec<usize>,
+    pub split: Option<Split>,
+}
 
-    for (path, _start, gpr) in loaded {
-        match current_gpr.as_mut() {
-            None => {
-                current.push(path);
-                current_gpr = Some(gpr);
-            }
-            Some(existing) => {
-                let gap = existing.location.duration_since(&gpr.location).abs();
-                // Tried whatever the gap, so that a split can say both.
-                // When it succeeds, `existing` now holds the merge.
-                let incompatible = existing.merge(&gpr).err();
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grouping {
+    /// In time order.
+    pub groups: Vec<Grouped>,
+    /// Each join that was asked for and refused, with why.
+    pub refused_joins: Vec<(usize, String)>,
+}
 
-                if gap <= threshold && incompatible.is_none() {
-                    current.push(path);
-                } else {
-                    groups.push((std::mem::take(&mut current), current_split.take()));
-                    current = vec![path];
-                    current_split = Some(Split {
-                        gap_seconds: gap,
-                        over_threshold: gap > threshold,
-                        incompatible,
-                    });
-                    current_gpr = Some(gpr);
-                }
+/// Group `recordings` into outputs: in time order, a recording continues
+/// the output before it when the gap is at most `threshold` (never, with
+/// `None`) and the two can be merged, unless `edits` say otherwise.
+pub fn group_chronologically(
+    recordings: &[GroupingRecording],
+    threshold: Option<f64>,
+    edits: &GroupingEdits,
+) -> Grouping {
+    let mut order: Vec<usize> = (0..recordings.len()).collect();
+    order.sort_by(|a, b| {
+        recordings[*a]
+            .start_seconds
+            .total_cmp(&recordings[*b].start_seconds)
+            .then(a.cmp(b))
+    });
+
+    let mut groups = Vec::<Grouped>::new();
+    let mut refused_joins = Vec::new();
+    // The current output's key and the end of its last recording.
+    let mut current: Option<(&MergeKey, f64)> = None;
+    for index in order {
+        let recording = &recordings[index];
+        let Some((key, stop)) = current.as_mut() else {
+            groups.push(Grouped {
+                members: vec![index],
+                split: None,
+            });
+            current = Some((&recording.key, recording.stop_seconds));
+            continue;
+        };
+        let gap = (recording.start_seconds - *stop).abs();
+        // Asked whatever the gap, so that a split can say both.
+        let incompatible = key.refusal(&recording.key);
+        let over_threshold = threshold.is_none_or(|t| gap > t);
+        let manual = edits.splits.contains(&index);
+        let joined = !manual && edits.joins.contains(&index);
+        if joined {
+            if let Some(reason) = &incompatible {
+                refused_joins.push((index, reason.clone()));
             }
         }
+        let continues = incompatible.is_none() && !manual && (joined || !over_threshold);
+        if continues {
+            groups
+                .last_mut()
+                .expect("current is set")
+                .members
+                .push(index);
+            *stop = stop.max(recording.stop_seconds);
+        } else {
+            groups.push(Grouped {
+                members: vec![index],
+                split: Some(Split {
+                    gap_seconds: gap,
+                    over_threshold,
+                    incompatible,
+                    manual,
+                }),
+            });
+            current = Some((&recording.key, recording.stop_seconds));
+        }
     }
-
-    if !current.is_empty() {
-        groups.push((current, current_split));
+    Grouping {
+        groups,
+        refused_joins,
     }
-
-    Ok(groups)
 }
+
 pub fn all_available_steps() -> Vec<(String, String)> {
     crate::steps::descriptions()
 }
@@ -5241,6 +5269,70 @@ pub mod tests {
             "{names:?}"
         );
         assert_eq!(names.len(), 6);
+    }
+
+    fn timed(start: f64, stop: f64, mhz: f32) -> super::GroupingRecording {
+        super::GroupingRecording {
+            start_seconds: start,
+            stop_seconds: stop,
+            key: super::MergeKey {
+                crs: "EPSG:32633".to_string(),
+                antenna_mhz: mhz,
+                time_window: 500.,
+                antenna_separation: 4.,
+                medium_velocity: 0.168,
+            },
+        }
+    }
+
+    #[test]
+    fn grouping_follows_time_and_a_persons_joins_and_splits() {
+        use super::{group_chronologically, GroupingEdits};
+        // Given out of order: 0 and 2 are 50 s apart, 3 is an hour after
+        // 2, and 1 is another antenna right after 3.
+        let recordings = vec![
+            timed(0., 100., 100.),
+            timed(3900., 4000., 800.),
+            timed(150., 200., 100.),
+            timed(3800., 3850., 100.),
+        ];
+        let members = |grouping: &super::Grouping| -> Vec<Vec<usize>> {
+            grouping.groups.iter().map(|g| g.members.clone()).collect()
+        };
+
+        let grouping = group_chronologically(&recordings, Some(600.), &GroupingEdits::default());
+        assert_eq!(members(&grouping), [vec![0, 2], vec![3], vec![1]]);
+        let split = grouping.groups[1].split.as_ref().unwrap();
+        assert_eq!(split.gap_seconds, 3600.);
+        assert!(split.over_threshold && split.incompatible.is_none() && !split.manual);
+        let split = grouping.groups[2].split.as_ref().unwrap();
+        assert!(!split.over_threshold);
+        assert!(split
+            .incompatible
+            .as_deref()
+            .unwrap()
+            .contains("Antenna frequencies"));
+
+        // Joined whatever the gap; split however close; the other
+        // antenna cannot be joined, and says so.
+        let edits = GroupingEdits {
+            joins: [3, 1].into(),
+            splits: [2].into(),
+        };
+        let grouping = group_chronologically(&recordings, Some(600.), &edits);
+        assert_eq!(members(&grouping), [vec![0], vec![2, 3], vec![1]]);
+        assert!(grouping.groups[1].split.as_ref().unwrap().manual);
+        assert_eq!(grouping.refused_joins.len(), 1);
+        assert_eq!(grouping.refused_joins[0].0, 1);
+
+        // Never merging: only joins put two together.
+        let edits = GroupingEdits {
+            joins: [2].into(),
+            splits: Default::default(),
+        };
+        let grouping = group_chronologically(&recordings, None, &edits);
+        assert_eq!(members(&grouping), [vec![0, 2], vec![3], vec![1]]);
+        assert!(grouping.groups[1].split.as_ref().unwrap().over_threshold);
     }
 
     #[test]

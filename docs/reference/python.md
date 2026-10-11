@@ -130,6 +130,7 @@ What the server answers. Each mirrors a schema in
 .. autoclass:: ridal.client.HashedFile
 .. autoclass:: ridal.client.SourceView
 .. autoclass:: ridal.client.Source
+.. autoclass:: ridal.client.SourceNames
 .. autoclass:: ridal.client.Bundle
 .. autoclass:: ridal.client.BundleFile
 .. autoclass:: ridal.client.SourceDem
@@ -147,6 +148,12 @@ What the server answers. Each mirrors a schema in
    :members: finished
 .. autoclass:: ridal.client.BatchItem
 .. autoclass:: ridal.client.PicksNotCarried
+.. autoclass:: ridal.client.IngestPlan
+   :members: ok
+.. autoclass:: ridal.client.PlannedRecording
+.. autoclass:: ridal.client.PlannedOutput
+.. autoclass:: ridal.client.Split
+.. autoclass:: ridal.client.PlanProblem
 ```
 
 ### Exceptions

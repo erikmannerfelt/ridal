@@ -484,6 +484,52 @@ with no review (`server::batch_routes`).
   or dismissing it appends a `seen` entry to the ledger, so it is gone on
   every device, not just in one browser.
 
+## The ingest planner (#382)
+
+Many recordings in, the radargrams they would make out
+(`server::ingest_routes`, `POST /ingest/plan`).
+
+- **Stateless.** The browser sends the whole request on every edit:
+  every recording, the threshold, the exclusions, joins and splits, the
+  patterns and the typed ids and names. Nothing is kept between calls
+  but `AppState::ingest_reads`, what each recording's header and
+  positions say, keyed by its files, the CRS and the DEM, so re-planning
+  after a pattern edit reads nothing. There is no plan document to
+  expire, lock or clean up.
+- **Recordings are named by key**, a hash of their files' hashes, so an
+  edit sticks to its recording however the list around it changes. Not
+  the header's hash alone: two RAMAC recordings with the same settings and
+  length have byte-identical `.rad` files. The same files twice are one
+  recording twice, which is refused. An output is named by its first
+  recording's key, which is what typed ids and display names are keyed
+  by.
+- **One grouping.** `gpr::group_chronologically` groups headers already
+  read, applying joins, splits and exclusions; `batch-process` and the
+  planner both call it, and neither reads the data to group. Whether two
+  recordings merge is `MergeKey::refusal`, which `GPR::merge` asks too,
+  so the header check and the merge cannot drift. A join `MergeKey`
+  refuses is not made, and is a problem.
+- **Ids** render per output (`id_pattern::render_each_id`), so the plan
+  shows each problem where it is rather than stopping at the first:
+  a pattern that does not parse (with its character span), an invalid or
+  colliding id, and `id_taken` for an id that is served or already has raw
+  data (`served`, `has_source`). Taken ids count as existing for
+  `from=next`. A plan with problems is answered in full; creating is for
+  one with none.
+- **Creating has no route of its own.** The page creates each output
+  with `PUT /sources/{id}` and `If-None-Match: *`, so a source that
+  appeared since the plan is refused, not replaced; then the processing
+  assignment and batch routes. What was created before a refusal stays,
+  and the next plan reports it as `id_taken`.
+- **Names for a radargram not served yet** are in its source
+  (`Source::names`), which `draft_routes::prepare` uses when the catalog
+  has no entry for the id. Once served, the catalog's names win and
+  renaming is an override. A `PUT /sources` without `names` keeps the
+  ones the source had, so switching a recording does not forget them.
+- **The sweep.** Each plan refreshes its files' mtimes
+  (`raw::refresh`), since planned uploads are named by no source until
+  they are created.
+
 ## The Python client (#328)
 
 `ridal.client` is pure Python, in `python/ridal/client/`, beside the Rust

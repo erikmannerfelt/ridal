@@ -740,6 +740,7 @@ mod tests {
             bundles: vec![bundle(data)],
             crs: None,
             dem: None,
+            names: None,
         }
     }
 
