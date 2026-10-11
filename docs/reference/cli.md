@@ -1077,6 +1077,12 @@ Processing jobs one person may have waiting or running at once
 Default: `5`.
 ```
 
+```{option} --max-queued-per-project <MAX_QUEUED_PER_PROJECT>
+Processing jobs one project may have waiting or running at once, so one project's batch cannot keep the others waiting. A project can ask for fewer in its ridal.toml (`[processing] max_queued_jobs`)
+
+Default: `10`.
+```
+
 ```{option} --draft-ttl <DRAFT_TTL>
 How long a draft is kept after it was last looked at, e.g. "2 h" or "3 days". A draft is a radargram processed to look at before it is applied
 
@@ -1193,6 +1199,12 @@ Default: `30 min`.
 Processing jobs one person may have waiting or running at once
 
 Default: `5`.
+```
+
+```{option} --max-queued-per-project <MAX_QUEUED_PER_PROJECT>
+Processing jobs one project may have waiting or running at once, so one project's batch cannot keep the others waiting. A project can ask for fewer in its ridal.toml (`[processing] max_queued_jobs`)
+
+Default: `10`.
 ```
 
 ```{option} --draft-ttl <DRAFT_TTL>

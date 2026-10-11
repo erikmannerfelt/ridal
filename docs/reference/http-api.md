@@ -245,7 +245,7 @@ in the same way. A draft of a new id is installed as an upload.
 
 | Method | Path | Needs | Description |
 |---|---|---|---|
-| `POST` | `/api/v1/sources/{radargram_id}/drafts` | `operator` | Process the radargram's raw data: `steps`, and optionally `medium_velocity`, `antenna_mhz_override` and `antenna_separation_override`. Answers `202` with the draft's `job` number and state. Asking again for the same draft answers the same one. |
+| `POST` | `/api/v1/sources/{radargram_id}/drafts` | `operator` | Process the radargram's raw data: `steps`, and optionally `medium_velocity`, `antenna_mhz_override` and `antenna_separation_override`. Answers `202` with the draft's `job` number and state. Asking again for the same draft answers the same one. `429` when the caller already has as many jobs waiting or running as the server allows one person (`too_many_jobs`), or the project as many as it may have (`project_too_many_jobs`). |
 | `GET` | `/api/v1/drafts` | `operator` | The caller's drafts. |
 | `GET` | `/api/v1/drafts/{job}` | `operator`, own | One draft: its `state` (`queued`, `running`, `done`, `failed`, `cancelled` or `timed_out`), the step it is on (`step`), whether every step has run and the file is being written (`writing`), and the revision it was made against. |
 | `DELETE` | `/api/v1/drafts/{job}` | `operator`, own | Stop a draft, or throw a finished one away. |

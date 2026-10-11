@@ -517,9 +517,13 @@ async fn drive(state: Arc<AppState>, caller: Caller, id: String) {
                                 },
                             );
                         }
-                        Err(super::processing::SubmitError::TooMany { .. }) => {
-                            // The person's own drafts are using their share;
-                            // try again on the next tick.
+                        Err(
+                            super::processing::SubmitError::TooMany { .. }
+                            | super::processing::SubmitError::ProjectBusy { .. },
+                        ) => {
+                            // The person's own drafts, or the project's other
+                            // jobs, are using its share; try again on the
+                            // next tick.
                             let _ = std::fs::remove_dir_all(&work);
                             waiting.push_front(radargram);
                             break;

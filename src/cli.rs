@@ -481,6 +481,12 @@ pub struct ProcessingArgs {
     #[arg(long, default_value_t = crate::server::processing::DEFAULT_MAX_QUEUED_PER_USER)]
     pub max_queued_per_user: usize,
 
+    /// Processing jobs one project may have waiting or running at once, so
+    /// one project's batch cannot keep the others waiting. A project can
+    /// ask for fewer in its ridal.toml (`[processing] max_queued_jobs`).
+    #[arg(long, default_value_t = crate::server::processing::DEFAULT_MAX_QUEUED_PER_PROJECT)]
+    pub max_queued_per_project: usize,
+
     /// How long a draft is kept after it was last looked at, e.g. "2 h"
     /// or "3 days". A draft is a radargram processed to look at before
     /// it is applied.
@@ -508,6 +514,9 @@ impl ProcessingArgs {
         if self.max_queued_per_user == 0 {
             return Err("--max-queued-per-user must be at least 1".to_string());
         }
+        if self.max_queued_per_project == 0 {
+            return Err("--max-queued-per-project must be at least 1".to_string());
+        }
         let timeout = parse_duration::parse(&self.processing_timeout).map_err(|e| {
             format!(
                 "Invalid --processing-timeout '{}': {e}",
@@ -527,6 +536,7 @@ impl ProcessingArgs {
                 .unwrap_or((processors / self.processing_jobs).max(1)),
             timeout,
             max_queued_per_user: self.max_queued_per_user,
+            max_queued_per_project: self.max_queued_per_project,
             draft_ttl,
             draft_cache_bytes: self.draft_cache_mb * 1024 * 1024,
             ..crate::server::processing::ProcessingConfig::default()
@@ -2083,6 +2093,7 @@ mod tests {
         assert_eq!(config.memory_bytes, 4096 * 1024 * 1024);
         assert_eq!(config.draft_ttl, std::time::Duration::from_secs(86_400));
         assert_eq!(config.draft_cache_bytes, 4096 * 1024 * 1024);
+        assert_eq!(config.max_queued_per_project, 10);
 
         let config = parse(&["--draft-ttl", "90 min", "--draft-cache-mb", "10"]).unwrap();
         assert_eq!(config.draft_ttl, std::time::Duration::from_secs(5400));
@@ -2092,6 +2103,7 @@ mod tests {
             &["--processing-jobs", "0"][..],
             &["--processing-threads", "0"],
             &["--max-queued-per-user", "0"],
+            &["--max-queued-per-project", "0"],
             &["--processing-timeout", "soon"],
             &["--draft-ttl", "soon"],
         ] {

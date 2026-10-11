@@ -143,6 +143,9 @@ default_format = "geojson"
 [catalog]
 show_group_radargrams = false
 
+[processing]
+max_queued_jobs = 2
+
 [map]
 default_basemap = "local-orthophoto"
 built_in_basemap = true
@@ -236,6 +239,15 @@ name_field = "Stake"
   page opens. `false` opens the catalog on the group headings and maps, with
   each group's **Show all** button listing its radargrams. A person can
   override it in their own settings. Default: `true`.
+
+### `[processing]`
+
+`max_queued_jobs`
+: The most processing jobs this project may have waiting or running on the
+  server at once, so that a large batch leaves room for other projects on
+  the same server. It can only lower the server's own limit,
+  `--max-queued-per-project`; a larger value is read as the server's.
+  Default: the server's.
 
 ### `[map]`
 

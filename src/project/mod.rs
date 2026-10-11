@@ -241,6 +241,8 @@ pub struct ProjectConfig {
     pub export: ExportSection,
     #[serde(default)]
     pub catalog: CatalogSection,
+    #[serde(default)]
+    pub processing: ProcessingSection,
     /// Which basemap the GUI's maps draw on (#177). An array of tables --
     /// `[[basemaps]]` -- rather than a section, since a project offers a
     /// list and lets each reader pick from it.
@@ -373,6 +375,16 @@ pub struct ExportSection {
     /// means `geojson`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_format: Option<String>,
+}
+
+/// Processing on the server (#382).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ProcessingSection {
+    /// The most processing jobs this project may have waiting or running
+    /// at once. Bounded by the server's `--max-queued-per-project`: asking
+    /// for more gets the server's. Unset means the server's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_queued_jobs: Option<usize>,
 }
 
 /// How the radargram catalog opens (#314).
@@ -910,6 +922,7 @@ impl Project {
             render: RenderSection::default(),
             export: ExportSection::default(),
             catalog: CatalogSection::default(),
+            processing: ProcessingSection::default(),
             // No basemaps of its own: a new project draws on the built-in
             // one, and adding to that is a deliberate act.
             basemaps: Vec::new(),
@@ -1023,6 +1036,14 @@ impl Project {
              # Set it from Project settings in the browser. Left unset, they are\n\
              # shown; a person can override it in their own settings.\n\
              [catalog]\n\
+             \n\
+             # Processing raw data on the server. `max_queued_jobs = 2` keeps\n\
+             # this project to two processing jobs waiting or running at once,\n\
+             # leaving the rest to other projects on the same server. It can\n\
+             # only lower the server's own limit (`--max-queued-per-project`).\n\
+             #\n\
+             # [processing]\n\
+             # max_queued_jobs = 2\n\
              \n\
              # Vector overlays every map can draw, off until switched on in\n\
              # its layer control. `name_field` and `description_field` name\n\
@@ -1630,6 +1651,36 @@ mod tests {
         );
         let text = std::fs::read_to_string(dir.path().join(MARKER)).unwrap();
         assert!(text.contains("format_version = 1"), "{text}");
+    }
+
+    #[test]
+    fn a_project_may_ask_for_less_processing_than_the_server_allows() {
+        let dir = tempfile::tempdir().unwrap();
+        Project::init(dir.path(), None).unwrap();
+        let path = dir.path().join(MARKER);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# max_queued_jobs = 2"), "{text}");
+        assert_eq!(
+            Project::open(dir.path())
+                .unwrap()
+                .config()
+                .processing
+                .max_queued_jobs,
+            None
+        );
+        std::fs::write(
+            &path,
+            format!("{text}\n[processing]\nmax_queued_jobs = 2\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            Project::open(dir.path())
+                .unwrap()
+                .config()
+                .processing
+                .max_queued_jobs,
+            Some(2)
+        );
     }
 
     #[test]
