@@ -129,6 +129,9 @@ pub struct JobStatus {
     pub state: JobState,
     /// The step running now, or the last one that ran.
     pub step: Option<StepProgress>,
+    /// Every step has run and the file is being written, which for a long
+    /// radargram takes a while of its own.
+    pub writing: bool,
     /// The radargram the job processes.
     pub radargram_id: String,
     pub output: PathBuf,
@@ -245,6 +248,7 @@ impl ProcessingQueue {
                         priority: request.priority,
                         state: JobState::Queued,
                         step: None,
+                        writing: false,
                         radargram_id: request.spec.radargram_id.clone(),
                         output: request.spec.output.clone(),
                     },
@@ -430,6 +434,13 @@ impl ProcessingQueue {
         }
     }
 
+    fn writing(&self, id: u64) {
+        let mut inner = self.inner.lock().expect("the queue lock is not poisoned");
+        if let Some(job) = inner.jobs.get_mut(&id) {
+            job.status.writing = true;
+        }
+    }
+
     /// Run one job to its end, and say how it ended.
     async fn run(
         self: &Arc<Self>,
@@ -482,6 +493,7 @@ impl ProcessingQueue {
                     Ok(Event::Step { index, of, step }) => {
                         queue.progress(id, StepProgress { index, of, step })
                     }
+                    Ok(Event::Exporting) => queue.writing(id),
                     Ok(event) => last = Some(event),
                     // Anything else a step printed is not an event.
                     Err(_) => {}
@@ -636,6 +648,8 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
             }
         );
         assert_eq!(status.step.unwrap().index, 1);
+        // It said it was writing the file after its last step.
+        assert!(status.writing);
         // The spec file is gone with the job.
         assert_eq!(
             std::fs::read_dir(dir.path().join("work")).unwrap().count(),

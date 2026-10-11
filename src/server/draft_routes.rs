@@ -144,6 +144,8 @@ pub struct JobStatusView {
     #[serde(flatten)]
     pub state: JobState,
     pub step: Option<super::processing::StepProgress>,
+    /// Every step has run and the file is being written.
+    pub writing: bool,
 }
 
 impl From<JobStatus> for JobStatusView {
@@ -151,6 +153,7 @@ impl From<JobStatus> for JobStatusView {
         Self {
             state: status.state,
             step: status.step,
+            writing: status.writing,
         }
     }
 }
@@ -176,6 +179,7 @@ fn view_of(state: &AppState, job: u64, draft: &Draft) -> DraftView {
                 }
             },
             step: None,
+            writing: false,
         });
     DraftView {
         job,

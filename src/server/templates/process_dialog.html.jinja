@@ -41,18 +41,28 @@
   </section>
   <div id="process-error" class="warning" hidden></div>
   <figure id="process-result" class="process-result" hidden>
+    {#- The page's render profiles, starting at the one the page shows:
+        process.js copies them from its select. -#}
+    <label>Render profile
+      <select id="process-render"></select>
+    </label>
     <img id="process-image" alt="">
     <figcaption id="process-caption"></figcaption>
   </figure>
   <p id="process-headline"></p>
   <div id="process-detail"></div>
+  {#- What is happening now, beside the buttons that started it, both kept
+      in view at the foot of the dialog however long it has grown. -#}
+  <div class="process-footer">
+  <p id="process-progress" class="hint" aria-live="polite"></p>
   <p>
     <button type="button" id="process-upload" hidden disabled>Upload</button>
     <button type="button" id="process-cancel-upload" hidden>Cancel upload</button>
     <button type="button" id="process-run">Process</button>
     <button type="button" id="process-toggle" hidden>Show current</button>
-    <button type="button" id="process-commit" hidden>Apply this processing version</button>
-    <button type="button" id="process-confirm" class="danger" hidden>Replace</button>
+    <button type="button" id="process-commit" hidden>Apply</button>
+    <button type="button" id="process-confirm" class="danger" hidden>Apply and close</button>
     <button type="button" id="process-close">Close</button>
   </p>
+  </div>
 </dialog>

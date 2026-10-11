@@ -2653,49 +2653,74 @@ pub struct InfoRecord {
 /// data, so a mismatch can be refused before anything is processed (#382).
 /// Keep the two in step.
 ///
-/// Each record is compared with the first. The message names both files.
+/// The message counts the recordings with each value of the first property
+/// that differs, and names the files in every group but a clear majority,
+/// so that one odd file among many stands out.
 pub fn check_mergeable(records: &[InfoRecord]) -> Result<(), String> {
-    let Some(first) = records.first() else {
-        return Ok(());
-    };
+    type Property = (&'static str, &'static str, fn(&InfoRecord) -> String);
+    let properties: [Property; 4] = [
+        (
+            "their positions are in different CRSs",
+            "; give one CRS for all of them",
+            |r| r.location.crs.clone(),
+        ),
+        ("their antenna frequencies differ", "", |r| {
+            format!("{} MHz", r.metadata.antenna_mhz)
+        }),
+        ("their time windows differ", "", |r| {
+            format!("{} ns", r.metadata.time_window_ns)
+        }),
+        ("their antenna separations differ", "", |r| {
+            format!("{} m", r.metadata.antenna_separation_m)
+        }),
+    ];
     let name = |record: &InfoRecord| {
         Path::new(&record.input)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| record.input.clone())
     };
-    for other in &records[1..] {
-        let (a, b) = (&first.metadata, &other.metadata);
-        let differs = if first.location.crs != other.location.crs {
-            Some(format!(
-                "their positions are in different CRSs ({} and {}); give one CRS for both",
-                first.location.crs, other.location.crs
-            ))
-        } else if a.antenna_mhz != b.antenna_mhz {
-            Some(format!(
-                "their antenna frequencies differ ({} and {} MHz)",
-                a.antenna_mhz, b.antenna_mhz
-            ))
-        } else if a.time_window_ns != b.time_window_ns {
-            Some(format!(
-                "their time windows differ ({} and {} ns)",
-                a.time_window_ns, b.time_window_ns
-            ))
-        } else if a.antenna_separation_m != b.antenna_separation_m {
-            Some(format!(
-                "their antenna separations differ ({} and {} m)",
-                a.antenna_separation_m, b.antenna_separation_m
-            ))
-        } else {
-            None
-        };
-        if let Some(differs) = differs {
-            return Err(format!(
-                "{} and {} cannot be merged into one radargram: {differs}.",
-                name(first),
-                name(other)
-            ));
+    for (what, hint, value_of) in properties {
+        // Groups in order of first appearance, then largest first.
+        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+        for record in records {
+            let value = value_of(record);
+            match groups.iter_mut().find(|(v, _)| *v == value) {
+                Some((_, names)) => names.push(name(record)),
+                None => groups.push((value, vec![name(record)])),
+            }
         }
+        if groups.len() < 2 {
+            continue;
+        }
+        groups.sort_by_key(|(_, names)| std::cmp::Reverse(names.len()));
+        let clear_majority = groups[0].1.len() > groups[1].1.len();
+        let described: Vec<String> = groups
+            .iter()
+            .enumerate()
+            .map(|(i, (value, names))| {
+                let verb = if names.len() == 1 { "is" } else { "are" };
+                let count = format!("{} {verb} {value}", names.len());
+                if i == 0 && clear_majority {
+                    return count;
+                }
+                const SHOWN: usize = 3;
+                let mut listed = names
+                    .iter()
+                    .take(SHOWN)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if names.len() > SHOWN {
+                    listed.push_str(&format!(" and {} more", names.len() - SHOWN));
+                }
+                format!("{count} ({listed})")
+            })
+            .collect();
+        return Err(format!(
+            "These recordings cannot be merged into one radargram: {what}{hint}. {}.",
+            described.join("; ")
+        ));
     }
     Ok(())
 }
@@ -5612,5 +5637,76 @@ pub mod tests {
                 "{x:?}"
             );
         }
+    }
+
+    fn header(name: &str, antenna_mhz: f32) -> super::InfoRecord {
+        super::InfoRecord {
+            input: format!("/somewhere/{name}"),
+            format: super::NamedFormat {
+                name: "ramac",
+                description: "",
+            },
+            metadata: super::MetadataSummary {
+                samples: 500,
+                sampling_frequency_mhz: 1000.0,
+                frequency_steps: 1,
+                time_interval_s: 0.1,
+                antenna_name: String::new(),
+                antenna_mhz,
+                antenna_separation_m: 1.0,
+                time_window_ns: 500.0,
+                last_trace: 99,
+                medium_velocity_m_per_ns: 0.168,
+            },
+            location: super::LocationSummary {
+                n_points: 100,
+                crs: "EPSG:32633".to_string(),
+                start_time: String::new(),
+                stop_time: String::new(),
+                duration_s: 0.0,
+                track_length_m: 0.0,
+                altitude_min_m: 0.0,
+                altitude_max_m: 0.0,
+                centroid: super::CentroidSummary {
+                    easting: 0.0,
+                    northing: 0.0,
+                    altitude: 0.0,
+                },
+                correction: super::CorrectionSummary {
+                    kind: String::new(),
+                    source: None,
+                },
+            },
+            related_files: super::RelatedFiles {
+                header: String::new(),
+                data: String::new(),
+                coordinates: String::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn an_odd_recording_is_named_and_the_rest_counted() {
+        let mut records = vec![header("DAT_0001.rad", 100.0)];
+        for i in 2..=10 {
+            records.push(header(&format!("DAT_{i:04}.rad"), 25.0));
+        }
+        let message = super::check_mergeable(&records).unwrap_err();
+        assert_eq!(
+            message,
+            "These recordings cannot be merged into one radargram: their antenna \
+             frequencies differ. 9 are 25 MHz; 1 is 100 MHz (DAT_0001.rad)."
+        );
+    }
+
+    #[test]
+    fn without_a_majority_every_group_is_named() {
+        let records = [header("a.rad", 100.0), header("b.rad", 25.0)];
+        let message = super::check_mergeable(&records).unwrap_err();
+        assert!(
+            message.ends_with("1 is 100 MHz (a.rad); 1 is 25 MHz (b.rad)."),
+            "{message}"
+        );
+        assert!(super::check_mergeable(&[header("a.rad", 25.0), header("b.rad", 25.0)]).is_ok());
     }
 }

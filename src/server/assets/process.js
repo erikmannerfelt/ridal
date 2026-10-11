@@ -25,6 +25,12 @@
 
   const title = document.getElementById('process-title');
   const status = document.getElementById('process-status');
+  const progress = document.getElementById('process-progress');
+  const renderBox = document.getElementById('process-render');
+  // The page's own render profile select: the viewer's or the catalog's.
+  const pageRender =
+    document.getElementById('profile-select') ||
+    document.getElementById('index-profile-select');
   const rawStage = document.getElementById('process-raw');
   const draftStage = document.getElementById('process-draft');
   const idLabel = document.getElementById('process-id-label');
@@ -79,6 +85,7 @@
 
   function reset() {
     errorBox.hidden = true;
+    progress.textContent = '';
     result.hidden = true;
     toggle.hidden = true;
     commit.hidden = true;
@@ -276,21 +283,21 @@
             continue;
           }
           let lastPercent = -1;
-          const progress = (loaded, size) => {
+          const onProgress = (loaded, size) => {
             const percent = Math.round((loaded / size) * 100);
             if (percent === lastPercent) return;
             lastPercent = percent;
-            status.textContent = `Uploading ${done} of ${total}: ${file.name}… ${percent}%`;
+            progress.textContent = `Uploading ${done} of ${total}: ${file.name}… ${percent}%`;
           };
-          status.textContent = `Uploading ${done} of ${total}: ${file.name}…`;
+          progress.textContent = `Uploading ${done} of ${total}: ${file.name}…`;
           uploading = RIDAL.postFile(
             `${RIDAL.apiPath('raw')}?filename=${encodeURIComponent(file.name)}`,
             file,
-            progress,
+            onProgress,
           );
           const response = await uploading.promise;
           if (!response.ok) {
-            status.textContent = '';
+            progress.textContent = '';
             fail(response.json?.error?.message || RIDAL.upstreamMessage(response.status));
             return;
           }
@@ -303,7 +310,7 @@
       cancelUpload.hidden = true;
       uploading = null;
 
-      status.textContent = 'Reading the recordings…';
+      progress.textContent = 'Reading the recordings…';
       const crs = crsBox.value.trim();
       const source = await RIDAL.fetchJson(RIDAL.apiPath('sources', id), {
         method: 'PUT',
@@ -326,12 +333,13 @@
       title.textContent = `Process ${id}`;
       stage(false);
       describe(source.recordings);
+      progress.textContent = '';
       status.textContent =
         'The raw data is stored. Choose the steps and process; nothing is ' +
         (served ? 'replaced' : 'added to the catalog') +
-        ' until you apply the processing version.';
+        ' until you apply a draft.';
     } catch (error) {
-      status.textContent = '';
+      progress.textContent = '';
       // A refusal from the server is a sentence of its own: shown as it is.
       if (error.message === 'upload cancelled') fail('Upload cancelled.');
       else if (error.status) fail(error.message);
@@ -360,10 +368,22 @@
   }
 
   function overviewUrl(draft) {
-    return draft
-      ? `${RIDAL.apiPath('drafts', String(job), 'views', 'standard', 'overview')}`
-      : `${RIDAL.apiPath('datasets', radargramId, 'views', 'standard', 'overview')}`;
+    const path = draft
+      ? RIDAL.apiPath('drafts', String(job), 'views', 'standard', 'overview')
+      : RIDAL.apiPath('datasets', radargramId, 'views', 'standard', 'overview');
+    return `${path}?profile=${encodeURIComponent(renderBox.value || 'default')}`;
   }
+
+  /** The render profiles the page offers, starting at the one it shows,
+   * which is the person's own choice unless they changed it here. */
+  function copyRenderProfiles() {
+    if (!pageRender) return;
+    renderBox.replaceChildren(
+      ...[...pageRender.options].map((o) => new Option(o.text, o.value)),
+    );
+    renderBox.value = pageRender.value;
+  }
+  renderBox.addEventListener('change', () => show(showingDraft));
 
   function show(draft) {
     showingDraft = draft;
@@ -385,15 +405,18 @@
       return;
     }
     if (draft.state === 'queued') {
-      status.textContent = 'Waiting for the server to start it…';
+      progress.textContent = 'Waiting for the server to start it…';
     } else if (draft.state === 'running') {
-      status.textContent = draft.step
-        ? `Step ${draft.step.index + 1} of ${draft.step.of}: ${draft.step.step}`
-        : 'Starting…';
+      if (draft.writing) progress.textContent = 'Writing the processed file…';
+      else if (draft.step) {
+        progress.textContent = `Step ${draft.step.index + 1} of ${draft.step.of}: ${draft.step.step}`;
+      } else progress.textContent = 'Reading the raw data…';
     } else if (draft.state === 'done') {
       finishRun(true);
-      status.textContent = 'Done. Nothing has changed until you apply this processing version.';
+      progress.textContent = 'Done. Nothing changes until you apply it.';
       result.hidden = false;
+      // Served, applying shows what it would do first; new, it is added.
+      commit.textContent = served ? 'Apply…' : 'Apply and close';
       commit.hidden = false;
       // A radargram that is not served yet has nothing to compare with.
       toggle.hidden = draft.base_revision === null;
@@ -401,7 +424,7 @@
       return;
     } else {
       finishRun(false);
-      status.textContent = '';
+      progress.textContent = '';
       fail(draft.message || `The draft ended without a result (${draft.state}).`);
       return;
     }
@@ -505,6 +528,7 @@
 
   /** Open at the stage this radargram needs. */
   async function begin(raw) {
+    copyRenderProfiles();
     lastRun = null;
     updateRun();
     reset();
@@ -519,13 +543,13 @@
       title.textContent = served ? `Raw data for ${radargramId}` : 'New radargram from raw data';
       status.textContent = served
         ? 'Choose the raw files this radargram was processed from. It stays as ' +
-          'it is until you process them and apply the processing version.'
+          'it is until you process them and apply a draft.'
         : 'Choose the raw files of one radargram: several recordings are merged ' +
           'in name order.';
     } else {
       title.textContent = `Process ${radargramId}`;
       status.textContent =
-        'Change the steps and process. Nothing changes until you apply the processing version.';
+        'Change the steps and process. Nothing changes until you apply a draft.';
     }
     dialog.showModal();
     await loadAssignment();
@@ -551,7 +575,7 @@
     pendingKey = runKey();
     running = true;
     updateRun();
-    status.textContent = 'Sending…';
+    progress.textContent = 'Sending…';
     try {
       const draft = await RIDAL.fetchJson(
         RIDAL.apiPath('sources', radargramId, 'drafts'),
@@ -568,7 +592,7 @@
       poll();
     } catch (error) {
       finishRun(false);
-      status.textContent = '';
+      progress.textContent = '';
       fail(error.message);
     }
   });
@@ -622,7 +646,7 @@
     if (job === null) return;
     commit.disabled = true;
     errorBox.hidden = true;
-    status.textContent = 'Checking what this would do…';
+    progress.textContent = 'Checking what this would do…';
     let response;
     try {
       response = await fetch(RIDAL.apiPath('drafts', String(job), 'commit'), {
@@ -636,7 +660,7 @@
     const body = await response.json().catch(() => null);
     commit.disabled = false;
     if (!response.ok) {
-      status.textContent = '';
+      progress.textContent = '';
       fail(body?.error?.message || RIDAL.upstreamMessage(response.status));
       return;
     }
@@ -649,14 +673,14 @@
     }
     token = body.token;
     commit.hidden = true;
-    status.textContent = 'This is what making the draft the radargram would do:';
+    progress.textContent = 'What applying it would do is above. Nothing has changed yet.';
     render(body.report);
   });
 
   confirm.addEventListener('click', async () => {
     if (!token) return;
     confirm.disabled = true;
-    status.textContent = 'Replacing…';
+    progress.textContent = 'Applying…';
     try {
       const response = await fetch(
         `${RIDAL.apiPath('datasets', radargramId, 'replace')}/${token}`,
@@ -665,7 +689,7 @@
       if (!response.ok) {
         const body = await response.json().catch(() => null);
         confirm.disabled = false;
-        status.textContent = '';
+        progress.textContent = '';
         fail(body?.error?.message || RIDAL.upstreamMessage(response.status));
         return;
       }

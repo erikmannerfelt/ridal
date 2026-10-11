@@ -1450,7 +1450,8 @@ button.danger {
 
 /* Every dialog's actions, and the ones that share their shape.
  *
- * `dialog > p > button` is the row of actions each dialog ends with. Only
+ * `dialog > p > button` is the row of actions each dialog ends with (in the
+ * process dialog, inside its pinned `.process-footer`). Only
  * `.danger` was styled before, so the removal dialog put a styled Remove
  * next to a browser-default Cancel — two controls of visibly different
  * shape offering one choice, which reads as one of them being an
@@ -1463,6 +1464,7 @@ button.danger {
 #derived-actions button,
 .group-draft button,
 dialog > p > button,
+.process-footer > p > button,
 #token-result button,
 #pick-delete-cancel,
 button.danger {
@@ -1480,6 +1482,7 @@ button.danger {
 #derived-actions button:hover:not(:disabled),
 .group-draft button:hover:not(:disabled),
 dialog > p > button:hover:not(:disabled),
+.process-footer > p > button:hover:not(:disabled),
 #token-result button:hover:not(:disabled),
 #pick-delete-cancel:hover,
 button.danger:hover:not(:disabled) {
@@ -2771,6 +2774,23 @@ button.danger:disabled {
   font-size: 0.9em;
 }
 .process-files:empty {
+  display: none;
+}
+/* The progress line and the buttons stay at the foot of the dialog
+   however long it grows: the dialog scrolls, and these are what a person
+   is waiting on. Out to the dialog's edges, over its bottom padding. */
+.process-footer {
+  position: sticky;
+  bottom: calc(-1 * var(--space-4));
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
+  padding: 0 var(--space-4) var(--space-2);
+}
+.process-footer > p {
+  margin: var(--space-2) 0;
+}
+.process-footer > p:empty {
   display: none;
 }
 .process-remove {
