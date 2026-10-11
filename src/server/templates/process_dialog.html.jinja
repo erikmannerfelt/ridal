@@ -1,0 +1,54 @@
+{#- Processing on the server (#382), shared by the viewer and the catalog.
+    Two stages, driven by process.js: raw data in (a new radargram from the
+    catalog, or a served one that has none yet), then steps in and a draft
+    out. The viewer of a radargram with raw data starts at the second. -#}
+<dialog id="process-dialog" class="process-dialog">
+  <h2 id="process-title">Process</h2>
+  <p id="process-status" class="hint"></p>
+  <section id="process-raw" hidden>
+    <label id="process-id-label">Radargram id
+      <input type="text" id="process-id" autocomplete="off" spellcheck="false">
+    </label>
+    <p>
+      <button type="button" id="process-choose">Choose raw files&hellip;</button>
+      <input type="file" id="process-files" multiple hidden
+             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx">
+    </p>
+    <ul id="process-file-list" class="process-files"></ul>
+    <label>CRS for the positions, optional
+      <input type="text" id="process-crs" autocomplete="off" spellcheck="false"
+             placeholder="EPSG:32633">
+    </label>
+    <label>Processing profile
+      <select id="process-profile">
+        <option value="">None</option>
+      </select>
+    </label>
+  </section>
+  <section id="process-draft">
+    <ul id="process-recordings" class="process-files"></ul>
+    <label class="process-steps">Steps, one per line
+      <textarea id="process-steps" rows="8" spellcheck="false"
+                placeholder="As `ridal steps` lists them, e.g.&#10;zero_corr&#10;dewow&#10;bandpass(0.1 0.9)"></textarea>
+    </label>
+    <label>Medium velocity (m/ns)
+      <input type="number" id="process-velocity" step="0.001" min="0.01" value="0.168">
+    </label>
+  </section>
+  <div id="process-error" class="warning" hidden></div>
+  <figure id="process-result" class="process-result" hidden>
+    <img id="process-image" alt="">
+    <figcaption id="process-caption"></figcaption>
+  </figure>
+  <p id="process-headline"></p>
+  <div id="process-detail"></div>
+  <p>
+    <button type="button" id="process-upload" hidden disabled>Upload</button>
+    <button type="button" id="process-cancel-upload" hidden>Cancel upload</button>
+    <button type="button" id="process-run">Process</button>
+    <button type="button" id="process-toggle" hidden>Show current</button>
+    <button type="button" id="process-commit" hidden>Make this the radargram&hellip;</button>
+    <button type="button" id="process-confirm" class="danger" hidden>Replace</button>
+    <button type="button" id="process-close">Close</button>
+  </p>
+</dialog>

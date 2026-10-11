@@ -2762,6 +2762,14 @@ button.danger:disabled {
 .process-result {
   margin: 0.5rem 0;
 }
+.process-files {
+  margin: 0.25rem 0;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.process-files:empty {
+  display: none;
+}
 
 .replace-detail {
   display: grid;

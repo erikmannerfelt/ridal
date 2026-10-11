@@ -30,6 +30,11 @@ pub fn environment() -> Environment<'static> {
     )
     .expect("index template must parse");
     env.add_template(
+        "process_dialog.html.jinja",
+        include_str!("templates/process_dialog.html.jinja"),
+    )
+    .expect("process dialog template must parse");
+    env.add_template(
         "viewer.html.jinja",
         include_str!("templates/viewer.html.jinja"),
     )
@@ -82,6 +87,7 @@ mod tests {
         for name in [
             "base.html.jinja",
             "index.html.jinja",
+            "process_dialog.html.jinja",
             "viewer.html.jinja",
             "layers.html.jinja",
             "settings.html.jinja",
@@ -137,6 +143,10 @@ mod tests {
             (
                 "viewer.html.jinja",
                 include_str!("templates/viewer.html.jinja"),
+            ),
+            (
+                "process_dialog.html.jinja",
+                include_str!("templates/process_dialog.html.jinja"),
             ),
         ] {
             for (number, line) in html.lines().enumerate() {
