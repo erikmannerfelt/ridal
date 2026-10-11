@@ -1061,35 +1061,34 @@ document.querySelectorAll('.group-map').forEach((el) => {
       const word = s.state === 'stale' && s.custom ? 'custom' : s.state;
       by.set(s.radargram_id, { status: s, word, why: (s.reasons || []).join('; ') });
     }
+    // Who is processing what (#382), for everyone: someone's draft says
+    // only whose it is. A radargram in no profile gets a badge for it too.
+    const activity = await RIDAL.fetchJson(RIDAL.apiPath('processing', 'activity')).catch(
+      () => ({ activity: [] }),
+    );
+    for (const a of activity.activity) {
+      if (!by.has(a.radargram_id)) by.set(a.radargram_id, { status: null });
+      const known = by.get(a.radargram_id);
+      known.word = 'processing';
+      known.why = RIDAL.describeActivity(a);
+    }
     if (!operator) return by;
-    const [batches, drafts] = await Promise.all([
-      RIDAL.fetchJson(RIDAL.apiPath('processing', 'batches')).catch(() => ({ batches: [] })),
-      RIDAL.fetchJson(RIDAL.apiPath('drafts')).catch(() => ({ drafts: [] })),
-    ]);
-    // Newest batch first: the first word about a radargram is the latest.
+    // What the last batch to reach a radargram made of it, newest first.
+    const batches = await RIDAL.fetchJson(RIDAL.apiPath('processing', 'batches')).catch(() => ({
+      batches: [],
+    }));
     const said = new Set();
     for (const batch of batches.batches) {
       for (const item of batch.items) {
         const known = by.get(item.radargram_id);
-        if (!known || said.has(item.radargram_id)) continue;
-        if (item.outcome === 'waiting' || item.outcome === 'processing') {
-          known.word = 'processing';
-          known.why = `In a batch ${batch.started_by} started`;
-        } else if (item.outcome === 'failed' && outOfDate(known.status)) {
+        if (!known?.status || said.has(item.radargram_id)) continue;
+        // Says nothing new about the radargram; an older batch might.
+        if (item.outcome === 'skipped' && item.reason) continue;
+        if (item.outcome === 'failed' && outOfDate(known.status) && known.word !== 'processing') {
           known.word = 'failed';
           known.why = item.message || 'The last batch could not process it';
-        } else if (item.outcome === 'skipped' && item.reason) {
-          // Says nothing new about the radargram; an older batch might.
-          continue;
         }
         said.add(item.radargram_id);
-      }
-    }
-    for (const draft of drafts.drafts) {
-      const known = by.get(draft.radargram_id);
-      if (known && (draft.state === 'queued' || draft.state === 'running')) {
-        known.word = 'processing';
-        known.why = 'Your draft is being processed';
       }
     }
     return by;
@@ -1099,8 +1098,9 @@ document.querySelectorAll('.group-map').forEach((el) => {
     const link = document.createElement('a');
     link.className = `processing-state processing-state-${standing.word}`;
     link.textContent = WORDS[standing.word] || standing.word;
-    link.href = `${RIDAL.pagePath('processing')}#profile-${standing.status.profile}`;
-    link.title = standing.why || `Processing profile ${standing.status.profile}`;
+    const profile = standing.status?.profile;
+    link.href = `${RIDAL.pagePath('processing')}${profile ? `#profile-${profile}` : ''}`;
+    link.title = standing.why || `Processing profile ${profile}`;
     link.setAttribute('aria-label', `${link.textContent}: ${link.title}`);
     return link;
   }
@@ -1111,7 +1111,9 @@ document.querySelectorAll('.group-map').forEach((el) => {
     let count = 0;
     for (const card of section.querySelectorAll('li.card')) {
       const standing = by.get(card.id.replace(/^card-/, ''));
-      if (!standing || !outOfDate(standing.status) || standing.word === 'processing') continue;
+      if (!standing?.status || !outOfDate(standing.status) || standing.word === 'processing') {
+        continue;
+      }
       const profile = standing.status.profile;
       if (!byProfile.has(profile)) byProfile.set(profile, []);
       byProfile.get(profile).push(standing.status.radargram_id);

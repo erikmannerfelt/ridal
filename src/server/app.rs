@@ -999,6 +999,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::processing_routes::list_assignments),
         )
         .route(
+            "/api/v1/processing/activity",
+            get(super::processing_routes::processing_activity),
+        )
+        .route(
             "/api/v1/processing/status",
             get(super::processing_routes::processing_status),
         )

@@ -198,6 +198,33 @@ struct Live {
 }
 
 impl Batches {
+    /// Each radargram an unfinished batch item has, whether it is being
+    /// processed yet, and who started the batch.
+    pub fn active(&self) -> Vec<(RadargramId, bool, String)> {
+        let inner = self.inner.lock().expect("the batches lock is not poisoned");
+        inner
+            .values()
+            .flat_map(|live| {
+                live.batch
+                    .items
+                    .iter()
+                    .filter_map(|item| match item.outcome {
+                        Outcome::Waiting => Some((
+                            item.radargram_id.clone(),
+                            false,
+                            live.batch.started_by.clone(),
+                        )),
+                        Outcome::Processing { .. } => Some((
+                            item.radargram_id.clone(),
+                            true,
+                            live.batch.started_by.clone(),
+                        )),
+                        _ => None,
+                    })
+            })
+            .collect()
+    }
+
     /// The raw files a running batch item may still read.
     pub fn in_use(&self) -> HashSet<String> {
         let inner = self.inner.lock().expect("the batches lock is not poisoned");

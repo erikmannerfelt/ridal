@@ -387,6 +387,12 @@ source names, to look at before it becomes the radargram
   is anything its owner asks of it. Only finished drafts are forgotten, so
   forgetting costs a rerun, never work. Their laid-out raw files go as
   soon as they finish. A restart forgets them all.
+- **Who is processing what** is advice, not a lock:
+  `GET /processing/activity` lists each radargram with an unfinished draft
+  (`Drafts::active`) or batch item (`Batches::active`), and whose. A draft
+  gives away only that it exists and whose it is. The viewer says so above
+  the radargram, the Process dialog says applying may race it, and the
+  catalog's badge reads "Processing" from it, for everyone.
 - **The process dialog** (`templates/process_dialog.html.jinja`,
   `assets/process.js`) is one template included by the viewer, the catalog
   and the Processing page. It starts from the served file's
