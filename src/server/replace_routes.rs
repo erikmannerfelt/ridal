@@ -101,7 +101,7 @@ const STAGING_MAX_AGE_SECS: u64 = 6 * 60 * 60;
 #[derive(Debug, Deserialize)]
 pub struct ReplaceQuery {
     #[serde(default)]
-    filename: Option<String>,
+    pub filename: Option<String>,
 }
 
 /// What replacing this radargram would do to one interpretation.

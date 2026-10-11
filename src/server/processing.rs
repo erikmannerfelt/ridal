@@ -24,10 +24,6 @@
 //! There is no scheduler loop: [`ProcessingQueue::dispatch`] starts what can
 //! start, and runs whenever a job is submitted or finishes.
 
-// Nothing submits a job yet: the draft and batch routes of phase 5 (#382)
-// are its first callers. Remove this when they land.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::PathBuf;
@@ -83,6 +79,7 @@ pub enum Priority {
     /// Someone is waiting to look at it.
     Draft,
     /// One radargram of a batch.
+    #[allow(dead_code, reason = "batches are #382 phase 6")]
     Batch,
 }
 
@@ -132,6 +129,8 @@ pub struct JobStatus {
     pub state: JobState,
     /// The step running now, or the last one that ran.
     pub step: Option<StepProgress>,
+    /// The radargram the job processes.
+    pub radargram_id: String,
     pub output: PathBuf,
 }
 
@@ -246,6 +245,7 @@ impl ProcessingQueue {
                         priority: request.priority,
                         state: JobState::Queued,
                         step: None,
+                        radargram_id: request.spec.radargram_id.clone(),
                         output: request.spec.output.clone(),
                     },
                     estimate_bytes: request.estimate_bytes,
@@ -356,17 +356,27 @@ impl ProcessingQueue {
             job.status.state = JobState::Running;
             running += 1;
             running_bytes += job.estimate_bytes;
+            // Silent until a subscriber is installed (#282); then the
+            // record of what ran, for whom, and how it ended (#391).
+            tracing::info!(
+                job = id,
+                owner = job.status.owner.as_str(),
+                radargram = job.status.radargram_id.as_str(),
+                estimate_mb = job.estimate_bytes / (1024 * 1024),
+                "processing job started"
+            );
             let cancel = job.cancel.clone();
             let queue = Arc::clone(self);
             tokio::spawn(async move {
+                let started = std::time::Instant::now();
                 let state = queue.run(id, spec, cancel).await;
-                queue.finish(id, state);
+                queue.finish(id, state, started.elapsed());
                 queue.dispatch();
             });
         }
     }
 
-    fn finish(&self, id: u64, state: JobState) {
+    fn finish(&self, id: u64, state: JobState, took: Duration) {
         let mut inner = self.inner.lock().expect("the queue lock is not poisoned");
         if let Some(job) = inner.jobs.get_mut(&id) {
             job.status.state = if job.cancelled {
@@ -375,6 +385,41 @@ impl ProcessingQueue {
                 state
             };
             job.finished_at = Some(std::time::Instant::now());
+            let (owner, radargram) = (job.status.owner.as_str(), job.status.radargram_id.as_str());
+            let seconds = took.as_secs_f64();
+            match &job.status.state {
+                JobState::Done { revision_id } => tracing::info!(
+                    job = id,
+                    owner,
+                    radargram,
+                    seconds,
+                    revision = revision_id.as_str(),
+                    "processing job done"
+                ),
+                JobState::Failed { message } => tracing::warn!(
+                    job = id,
+                    owner,
+                    radargram,
+                    seconds,
+                    error = message.as_str(),
+                    "processing job failed"
+                ),
+                JobState::TimedOut => tracing::warn!(
+                    job = id,
+                    owner,
+                    radargram,
+                    seconds,
+                    "processing job stopped at its timeout"
+                ),
+                JobState::Cancelled => tracing::info!(
+                    job = id,
+                    owner,
+                    radargram,
+                    seconds,
+                    "processing job cancelled"
+                ),
+                JobState::Queued | JobState::Running => {}
+            }
         }
     }
 

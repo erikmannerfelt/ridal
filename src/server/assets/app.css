@@ -2722,6 +2722,32 @@ button.danger:disabled {
  * Two columns so the question and its answer line up down the page: an
  * operator reads this to find the one row that is not "carries cleanly",
  * and a paragraph would hide it. */
+/* The processing dialog (#382): the steps to edit, and the draft beside
+   what is served now. */
+.process-dialog {
+  width: min(56rem, 92vw);
+}
+.process-dialog label {
+  display: block;
+  margin: 0.5rem 0;
+}
+.process-steps textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 0.25rem;
+  font-family: monospace;
+}
+.process-result img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  image-rendering: auto;
+}
+.process-result {
+  margin: 0.5rem 0;
+}
+
 /* The processing page (#382): a profile per section, its radargrams with
    where each stands. Stale is the one that asks for something, so it is
    the only warning-coloured state. */

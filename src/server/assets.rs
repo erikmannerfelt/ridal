@@ -71,6 +71,7 @@ embedded_asset!(app_js, "app.js", "text/javascript");
 embedded_asset!(index_js, "index.js", "text/javascript");
 embedded_asset!(viewer_js, "viewer.js", "text/javascript");
 embedded_asset!(layers_js, "layers.js", "text/javascript");
+embedded_asset!(process_js, "process.js", "text/javascript");
 embedded_asset!(processing_js, "processing.js", "text/javascript");
 embedded_asset!(settings_js, "settings.js", "text/javascript");
 embedded_asset!(site_js, "site.js", "text/javascript");
@@ -266,6 +267,7 @@ mod tests {
             ("viewer.js", include_str!("assets/viewer.js")),
             ("picker.js", include_str!("assets/picker.js")),
             ("panel.js", include_str!("assets/panel.js")),
+            ("process.js", include_str!("assets/process.js")),
             ("layers.js", include_str!("assets/layers.js")),
             ("processing.js", include_str!("assets/processing.js")),
             ("settings.js", include_str!("assets/settings.js")),
@@ -567,6 +569,7 @@ mod tests {
                     ("viewer.js", include_str!("assets/viewer.js")),
                     ("picker.js", include_str!("assets/picker.js")),
                     ("panel.js", include_str!("assets/panel.js")),
+                    ("process.js", include_str!("assets/process.js")),
                 ],
             ),
             (
@@ -670,6 +673,7 @@ mod tests {
             ("viewer.js", include_str!("assets/viewer.js")),
             ("picker.js", include_str!("assets/picker.js")),
             ("panel.js", include_str!("assets/panel.js")),
+            ("process.js", include_str!("assets/process.js")),
             ("layers.js", include_str!("assets/layers.js")),
             ("processing.js", include_str!("assets/processing.js")),
             ("settings.js", include_str!("assets/settings.js")),

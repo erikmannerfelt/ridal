@@ -215,12 +215,25 @@ pub(super) fn write_people(root: &StdPath, set: &UserSet) {
 
 /// A server over the site at `root`, as `ridal server start` builds one.
 pub(super) fn site_router(root: &StdPath, access: AccessOptions) -> Router {
+    site_router_processing(
+        root,
+        access,
+        crate::server::processing::ProcessingConfig::default(),
+    )
+}
+
+/// [`site_router`], processing with `processing`.
+fn site_router_processing(
+    root: &StdPath,
+    access: AccessOptions,
+    processing: crate::server::processing::ProcessingConfig,
+) -> Router {
     let site = Site::open(root).unwrap();
     build_site_router(SiteState::new(
         site,
         access,
         RenderServiceConfig::default(),
-        crate::server::processing::ProcessingConfig::default(),
+        processing,
     ))
 }
 
@@ -6314,6 +6327,258 @@ async fn a_processing_profile_is_versioned_and_shared_by_its_radargrams() {
         get(
             &app,
             "/api/v1/processing/profiles/svalbard-100mhz",
+            Some(&erik)
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// A server whose processing jobs are `script`, standing in for `ridal
+/// process-job`: the test binary cannot be one. Each job installs the file
+/// prepared for its radargram id in `prepared/`, as a real job would write
+/// it, and says so.
+#[cfg(unix)]
+fn drafting_app(
+    users: Vec<User>,
+    prepared: &StdPath,
+) -> (tempfile::TempDir, tempfile::TempDir, Router) {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, archive, _) = lifecycle_app(users);
+    let script = dir.path().join("job.sh");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             out=$(sed -n 's/.*\"output\":\"\\([^\"]*\\)\".*/\\1/p' \"$2\")\n\
+             id=$(sed -n 's/.*\"radargram_id\":\"\\([^\"]*\\)\".*/\\1/p' \"$2\")\n\
+             cp {}/\"$id\".nc \"$out\"\n\
+             echo '{{\"event\":\"step\",\"index\":0,\"of\":1,\"step\":\"subset\"}}'\n\
+             echo \"{{\\\"event\\\":\\\"done\\\",\\\"output\\\":\\\"$out\\\",\\\"revision_id\\\":\\\"r\\\"}}\"\n",
+            prepared.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let app = site_router_processing(
+        dir.path(),
+        AccessOptions::default(),
+        crate::server::processing::ProcessingConfig {
+            program: script,
+            work_dir: dir.path().join("jobs"),
+            ..Default::default()
+        },
+    );
+    (dir, archive, app)
+}
+
+/// What a draft of `id` from the fixture recording processes to.
+#[cfg(unix)]
+fn prepare_draft(prepared: &StdPath, id: &str) {
+    let spec = crate::job::JobSpec {
+        inputs: vec!["assets/mala/dronbreen-20250327-DAT_0066_A1.rad".into()],
+        output: prepared.join(format!("{id}.nc")),
+        steps: vec!["subset(0 100 0 200)".to_string()],
+        medium_velocity: 0.168,
+        crs: None,
+        dem: None,
+        cor: None,
+        antenna_mhz_override: None,
+        antenna_separation_override: None,
+        radargram_id: id.to_string(),
+        display_name: None,
+        group_name: None,
+        group_id: None,
+    };
+    crate::job::run(&spec, &mut |_| {}).unwrap();
+}
+
+#[cfg(unix)]
+async fn draft_finished(app: &Router, job: &Value, session: &str) -> Value {
+    for _ in 0..200 {
+        let status = get(app, &format!("/api/v1/drafts/{job}"), Some(session)).await;
+        if status.body["state"] != "queued" && status.body["state"] != "running" {
+            return status.body;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("draft {job} did not finish");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_draft_is_processed_looked_at_and_committed() {
+    // #382 phase 5, end to end through the API: raw data, a draft, a look
+    // at it, and a commit -- as a new radargram, and as a replacement that
+    // answers the consequence report first.
+    let prepared = tempfile::tempdir().unwrap();
+    for id in ["line-new", "ours"] {
+        prepare_draft(prepared.path(), id);
+    }
+    let hash = password_hash();
+    let (_dir, _archive, app) = drafting_app(
+        vec![
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+            activated("olga", Role::Operator, DownloadScope::All, &hash),
+            activated("pia", Role::Picker, DownloadScope::All, &hash),
+        ],
+        prepared.path(),
+    );
+    let erik = sign_in(&app, "erik").await;
+    let olga = sign_in(&app, "olga").await;
+    let pia = sign_in(&app, "pia").await;
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    for id in ["line-new", "ours"] {
+        let set = put(
+            &app,
+            &format!("/api/v1/sources/{id}"),
+            &json!({"recordings": [recording]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    }
+    let steps = json!({"steps": ["subset(0 100 0 200)"]});
+
+    // Only an operator drafts, and only from raw data the project has.
+    let refused = post(&app, "/api/v1/sources/line-new/drafts", &steps, Some(&pia)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let none = post(&app, "/api/v1/sources/nowhere/drafts", &steps, Some(&erik)).await;
+    assert_eq!(none.status, StatusCode::NOT_FOUND);
+    let bad = post(
+        &app,
+        "/api/v1/sources/line-new/drafts",
+        &json!({"steps": ["dewoww"]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+
+    let made = post(&app, "/api/v1/sources/line-new/drafts", &steps, Some(&erik)).await;
+    assert_eq!(made.status, StatusCode::ACCEPTED, "{}", made.text);
+    assert_eq!(
+        made.body["base_revision"],
+        Value::Null,
+        "nothing is served yet"
+    );
+    let job = made.body["job"].clone();
+    // Asked for again, it is the same draft.
+    let again = post(&app, "/api/v1/sources/line-new/drafts", &steps, Some(&erik)).await;
+    assert_eq!(again.body["job"], job);
+
+    let done = draft_finished(&app, &job, &erik).await;
+    assert_eq!(done["state"], "done", "{done}");
+    assert_eq!(done["step"]["of"], 1);
+
+    // Private to whoever made it.
+    let hidden = get(&app, &format!("/api/v1/drafts/{job}"), Some(&olga)).await;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    let listed = get(&app, "/api/v1/drafts", Some(&olga)).await;
+    assert_eq!(listed.body["drafts"], json!([]));
+    let listed = get(&app, "/api/v1/drafts", Some(&erik)).await;
+    assert_eq!(listed.body["drafts"][0]["job"], job);
+
+    let overview = app
+        .clone()
+        .oneshot(
+            request(
+                "GET",
+                &format!("/api/v1/drafts/{job}/views/standard/overview"),
+                Some(&erik),
+            )
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(overview.status(), StatusCode::OK);
+    assert!(overview.headers()[header::CONTENT_TYPE]
+        .to_str()
+        .unwrap()
+        .starts_with("image/"));
+    let downloaded = get(&app, &format!("/api/v1/drafts/{job}/download"), Some(&erik)).await;
+    assert_eq!(downloaded.status, StatusCode::OK);
+
+    // A new id: committing installs it.
+    let committed = post(
+        &app,
+        &format!("/api/v1/drafts/{job}/commit"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(committed.status, StatusCode::CREATED, "{}", committed.text);
+    assert_eq!(
+        get(&app, "/api/v1/datasets/line-new", Some(&erik))
+            .await
+            .status,
+        StatusCode::OK
+    );
+
+    // A served id: two drafts against the same revision. The first commit
+    // is staged with its report, and committed as a replacement is.
+    let first = post(&app, "/api/v1/sources/ours/drafts", &steps, Some(&erik)).await;
+    assert!(first.body["base_revision"].is_string(), "{}", first.text);
+    let second = post(
+        &app,
+        "/api/v1/sources/ours/drafts",
+        &json!({"steps": ["subset(0 100 0 200)"], "medium_velocity": 0.17}),
+        Some(&erik),
+    )
+    .await;
+    assert_ne!(second.body["job"], first.body["job"]);
+    draft_finished(&app, &first.body["job"], &erik).await;
+    draft_finished(&app, &second.body["job"], &erik).await;
+
+    let staged = post(
+        &app,
+        &format!("/api/v1/drafts/{}/commit", first.body["job"]),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(staged.status, StatusCode::OK, "{}", staged.text);
+    assert!(
+        staged.body["report"]["headline"].is_string(),
+        "{}",
+        staged.text
+    );
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    let replaced = post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(replaced.status, StatusCode::OK, "{}", replaced.text);
+
+    // The second was made against the revision just replaced: refused,
+    // and it says why.
+    let moved = post(
+        &app,
+        &format!("/api/v1/drafts/{}/commit", second.body["job"]),
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(moved.status, StatusCode::CONFLICT, "{}", moved.text);
+    assert_eq!(moved.body["error"]["code"], "radargram_moved");
+
+    // Thrown away, it is gone.
+    let deleted = delete(
+        &app,
+        &format!("/api/v1/drafts/{}", second.body["job"]),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        get(
+            &app,
+            &format!("/api/v1/drafts/{}", second.body["job"]),
             Some(&erik)
         )
         .await
