@@ -2962,7 +2962,8 @@ a.processing-state:hover {
   color: var(--color-text-muted);
 }
 /* The project's DEMs: a table like a profile's, and the form under it. */
-.processing-dems {
+.processing-dems,
+.processing-unprocessed {
   margin: var(--space-5) 0;
 }
 .processing-dems td input[type="text"] {

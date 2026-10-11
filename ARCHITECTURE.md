@@ -357,6 +357,12 @@ a place or a year, and one profile (an antenna, a medium) spans many.
   any member: the page includes `process_dialog.html.jinja` and
   `process.js`, which handles `button[data-process-radargram]` by
   delegation, so rows drawn after load work as the catalog's cards do.
+- **Raw data not processed yet** is a section of its own on that page:
+  every source whose id is not served (`GET /sources` less the catalog),
+  with its profile if it has one, and a **Process…** that opens the dialog
+  at its steps. Processing is optional, so raw data uploaded and never
+  processed, in a profile or not, has to be findable somewhere; it has no
+  card in the catalog.
 
 ## Drafts (#382)
 

@@ -5,7 +5,8 @@
  * or without raw data. An operator can make and change profiles, put
  * radargrams that have raw data in them, reprocess a profile's stale
  * radargrams as a batch, and process any one of them through the same
- * dialog as the catalog (process.js).
+ * dialog as the catalog (process.js). Raw data that is not processed yet,
+ * in a profile or not, is listed on its own, so it is never out of sight.
  */
 (function setupProcessingPage() {
   const host = document.getElementById('processing-profiles');
@@ -529,6 +530,50 @@
     return section;
   }
 
+  /** The radargrams with raw data and no processed file, with the profile
+   * each is in, if any. Processing one opens the dialog at its steps, as
+   * for a member that is not processed yet. */
+  function renderUnprocessed(ids, assignments, profiles) {
+    const section = document.getElementById('raw-unprocessed');
+    if (!section) return;
+    section.hidden = ids.length === 0;
+    const names = Object.fromEntries(profiles.map((p) => [p.id, p.name]));
+    const rows = ids.map((id) => {
+      const profile = assignments[id]?.profile;
+      const cells = [
+        el('td', {}, el('span', { className: 'processing-id', textContent: id })),
+        el(
+          'td',
+          {},
+          profile
+            ? el('a', { href: `#profile-${profile}`, textContent: names[profile] || profile })
+            : el('span', { className: 'hint', textContent: 'none' }),
+        ),
+      ];
+      if (writable) {
+        const process = el('button', { type: 'button', textContent: 'Process…' });
+        process.dataset.processRadargram = id;
+        process.dataset.served = 'false';
+        cells.push(el('td', { className: 'processing-row-actions' }, process));
+      }
+      return el('tr', {}, ...cells);
+    });
+    const head = ['Radargram', 'Profile'];
+    if (writable) head.push('');
+    document.getElementById('raw-unprocessed-list').replaceChildren(
+      el(
+        'div',
+        { className: 'table-scroll' },
+        el(
+          'table',
+          { className: 'processing-members layers-table' },
+          el('thead', {}, el('tr', {}, ...head.map((h) => el('th', { scope: 'col', textContent: h })))),
+          el('tbody', {}, ...rows),
+        ),
+      ),
+    );
+  }
+
   function renderHistory(batches, profiles) {
     if (!historyList) return;
     const names = Object.fromEntries(profiles.map((p) => [p.id, p.name]));
@@ -795,6 +840,11 @@
       ...profiles.profiles.map((p) =>
         renderProfile(p, statuses, assigned, addable, served, running[p.id]),
       ),
+    );
+    renderUnprocessed(
+      (sources.radargram_ids || []).filter((id) => !served.has(id)),
+      assigned,
+      profiles.profiles,
     );
     renderHistory(batches.batches, profiles.profiles);
     // Links land on a profile (a catalog card's badge) or on `#dems` (the
