@@ -164,9 +164,10 @@ The raw recordings a radargram is made from, kept so that it can be
 processed on the server. Each file is stored once, by its blake3, however
 many radargrams use it, and counts toward the project's size limit. A
 radargram's **source** names its recordings, in the order they are merged,
-and optionally a CRS and a DEM. A source is keyed by radargram id, so it can
-be set before the radargram has been processed. Removing a radargram from
-the project removes its source too; ignoring one does not.
+and optionally a CRS and one of the project's DEMs. A source is keyed by
+radargram id, so it can be set before the radargram has been processed.
+Removing a radargram from the project removes its source too; ignoring one
+does not.
 
 | Method | Path | Needs | Description |
 |---|---|---|---|
@@ -174,8 +175,29 @@ the project removes its source too; ignoring one does not.
 | `GET` | `/api/v1/raw/{blake3}` | download `all` | A stored raw file. |
 | `GET` | `/api/v1/sources` | `viewer` | The ids of every radargram the project has raw data for, `radargram_ids`, whether or not it has been processed yet. |
 | `GET` | `/api/v1/sources/{radargram_id}` | `viewer` | What the radargram is made from, with an `ETag`. |
-| `PUT` | `/api/v1/sources/{radargram_id}` | `operator` | Set or switch what the radargram is made from: `recordings`, a list of recordings in merge order, each a list of `{name, blake3}` as the upload answered, and optionally `crs`, an EPSG code such as `EPSG:32633` (without it, the positions go in the UTM zone that suits them best), and `dem`. Which file is a recording's header, data and positions is read from the names. Every recording is read before anything is saved, and what its header and positions say is in the answer. Recordings that cannot be merged into one radargram (different CRS, antenna frequency, time window or antenna separation) are refused with `400 recordings_not_mergeable`. Takes `If-Match`. |
+| `PUT` | `/api/v1/sources/{radargram_id}` | `operator` | Set or switch what the radargram is made from: `recordings`, a list of recordings in merge order, each a list of `{name, blake3}` as the upload answered, and optionally `crs`, an EPSG code such as `EPSG:32633` (without it, the positions go in the UTM zone that suits them best), and `dem`, the id of one of the project's DEMs. Which file is a recording's header, data and positions is read from the names. Every recording is read before anything is saved, and what its header and positions say is in the answer. Recordings that cannot be merged into one radargram (different CRS, antenna frequency, time window or antenna separation) are refused with `400 recordings_not_mergeable`, and a DEM that does not cover them with `400 source_unreadable`. Takes `If-Match`. |
+| `PUT` | `/api/v1/sources/{radargram_id}/dem` | `operator` | Link the radargram to one of the project's DEMs, `{"dem": "<id>"}`, or unlink it, `{"dem": null}`, leaving its recordings as they are. The recordings are read with the DEM, as `PUT /api/v1/sources/{radargram_id}` reads them. A radargram processed before the change is stale afterwards. Takes `If-Match`. |
 | `DELETE` | `/api/v1/sources/{radargram_id}` | `operator` | Forget what the radargram is made from. Files no other source names are deleted after an hour. |
+
+## DEMs
+
+A **DEM** gives processing the surface elevation along each radargram. It is
+uploaded once for the whole project, as a raw file, and given a name and an
+id; each radargram's source links to one by id. A DEM is never part of a
+processing profile: which DEM covers a radargram depends on where it was
+recorded, not on how it is processed. Its file is downloaded as raw data,
+under download scope `all`.
+
+A DEM's file cannot be replaced, nor the DEM deleted, while any radargram
+links to it, so nobody's elevations change underneath them: to change the
+DEM of linked radargrams, add another and link them to that.
+
+| Method | Path | Needs | Description |
+|---|---|---|---|
+| `GET` | `/api/v1/dems` | `viewer` | Every DEM: `id`, `name`, `file` (`{name, blake3}`), its size in `bytes`, who uploaded it and when (`by`, `at`), and the `radargram_ids` linked to it. |
+| `GET` | `/api/v1/dems/{dem}` | `viewer` | One DEM, as the list gives it, with an `ETag`. |
+| `PUT` | `/api/v1/dems/{dem}` | `operator` | Add a DEM: `name`, and `file`, `{name, blake3}` of a file uploaded through `POST /api/v1/raw`, which GDAL must be able to read as a raster (`400 dem_unreadable` otherwise). For an existing DEM, `name` renames it and a different `file` replaces its file, refused with `409 dem_in_use` while any radargram links to it. Answers `201` when it is new. Takes `If-Match`, and `If-None-Match: *` to only create. |
+| `DELETE` | `/api/v1/dems/{dem}` | `operator` | Delete a DEM. Refused with `409 dem_in_use`, naming the radargrams, while any links to it. Takes `If-Match`. |
 
 ## Processing profiles
 

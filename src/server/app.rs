@@ -158,6 +158,11 @@ pub struct AppState {
     pub drafts: super::draft_routes::Drafts,
     /// The batches running in this project.
     pub batches: super::batch_routes::Batches,
+    /// Held while a DEM's links are checked and written
+    /// ([`super::dem_routes`]), so a DEM's file is never replaced or
+    /// deleted between "nothing links to it" and the write, nor linked in
+    /// between. Only ever held over document reads and writes.
+    dem_links: Mutex<()>,
 }
 
 /// Record a project's catalog size after a scan, for the site landing
@@ -394,6 +399,7 @@ impl AppState {
             processing: None,
             drafts: Default::default(),
             batches: Default::default(),
+            dem_links: Mutex::new(()),
         };
         // At startup too, not only on rediscovery. Most projects never
         // add or remove anything through the GUI, and those are exactly
@@ -465,6 +471,13 @@ impl AppState {
 
     /// Exclusive access for an operation that changes which radargrams
     /// exist. See [`AppState::lifecycle`].
+    pub fn dem_links(&self) -> std::sync::MutexGuard<'_, ()> {
+        // Nothing is left half-done under it that a panic could expose.
+        self.dem_links
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub async fn lifecycle_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.lifecycle.lock().await
     }
@@ -954,6 +967,17 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::raw_routes::download_raw_file),
         )
         .route("/api/v1/sources", get(super::raw_routes::list_sources))
+        .route(
+            "/api/v1/sources/{radargram_id}/dem",
+            axum::routing::put(super::dem_routes::link_dem),
+        )
+        .route("/api/v1/dems", get(super::dem_routes::list_dems))
+        .route(
+            "/api/v1/dems/{dem}",
+            get(super::dem_routes::get_dem)
+                .put(super::dem_routes::put_dem)
+                .delete(super::dem_routes::delete_dem),
+        )
         .route(
             "/api/v1/sources/{radargram_id}",
             get(super::raw_routes::get_source)

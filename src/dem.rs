@@ -140,10 +140,53 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &[Coord]) -> Result<Vec<f32>, S
     parse_elevations_from_output(&first_output, coords_wgs84)
 }
 
+/// Check that GDAL reads `dem_path` as a raster, so a DEM that is not one
+/// is refused when it is added rather than when the first radargram is
+/// processed with it.
+pub fn check_readable(dem_path: &Path) -> Result<(), String> {
+    let output = crate::tools::spawn_tool(
+        std::process::Command::new("gdalinfo")
+            .args(["-nomd", "-norat", "-noct"])
+            .arg(dem_path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped()),
+    )
+    .map_err(|e| spawn_error("gdalinfo", &e))?
+    .wait_with_output()
+    .map_err(|e| format!("Call process error: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        // GDAL's first line, from after the path: the path is a stored
+        // hash here, and means nothing to whoever uploaded the file.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let path = dem_path.to_string_lossy();
+        let reason = stderr
+            .lines()
+            .next()
+            .and_then(|line| line.split_once(&*path))
+            .map(|(_, after)| after.trim_start_matches(['\'', '`', ' ']).trim())
+            .filter(|reason| !reason.is_empty());
+        Err(match reason {
+            Some(reason) => format!("it is not a raster GDAL can read ({reason})"),
+            None => "it is not a raster GDAL can read".to_string(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_raster_is_readable_and_anything_else_is_not() {
+        super::check_readable(&get_dem_path()).unwrap();
+        let refused = super::check_readable(Path::new("assets/mala/README.md")).unwrap_err();
+        assert!(refused.contains("not a raster"), "{refused}");
+        assert!(!refused.contains("README"), "{refused}");
+    }
 
     use crate::coords::{Coord, Crs, UtmCrs};
 

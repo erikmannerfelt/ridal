@@ -41,7 +41,7 @@ use super::interp_routes::parse_radargram;
 use super::processing::{JobRequest, JobState, JobStatus, Priority};
 use super::routes::ApiError;
 use crate::identity::RadargramId;
-use crate::project::raw::{self, NamedFile};
+use crate::project::raw;
 use crate::project::roles::{DownloadScope, Role};
 
 /// One draft, as this project remembers it while the server runs.
@@ -367,27 +367,22 @@ pub(super) async fn prepare(
         .map_err(|e| ApiError::internal("job_failed", e.to_string()))?;
     let output = output_dir.join(format!("{name}.nc"));
 
-    let recordings: Vec<Vec<NamedFile>> = source
-        .bundles
-        .iter()
-        .map(|bundle| {
-            bundle
-                .files
-                .iter()
-                .map(|f| NamedFile {
-                    name: f.file.name.clone(),
-                    blake3: f.file.blake3.clone(),
-                })
-                .collect()
-        })
-        .collect();
-    let laid_out = {
+    let recordings = source.recordings();
+    let (laid_out, dem) = {
         let data_dir = data_dir.clone();
         let work = work.clone();
-        tokio::task::spawn_blocking(move || raw::materialize(&data_dir, &recordings, &work))
-            .await
-            .map_err(|e| ApiError::internal("job_failed", e.to_string()))?
-            .map_err(|e| ApiError::conflict("source_unavailable", e))?
+        let dem = source.dem.as_ref().map(|d| d.file.clone());
+        tokio::task::spawn_blocking(move || {
+            let laid_out = raw::materialize(&data_dir, &recordings, &work)?;
+            // Under its own name, which the processed file records.
+            let dem = dem
+                .map(|dem| raw::materialize_file(&data_dir, &dem, &work.join("dem")))
+                .transpose()?;
+            Ok::<_, String>((laid_out, dem))
+        })
+        .await
+        .map_err(|e| ApiError::internal("job_failed", e.to_string()))?
+        .map_err(|e| ApiError::conflict("source_unavailable", e))?
     };
     // A processing job holds the whole radargram and works on copies of
     // it: a generous multiple of the raw data is the estimate.
@@ -410,10 +405,7 @@ pub(super) async fn prepare(
         steps: processing.steps,
         medium_velocity: processing.medium_velocity,
         crs: source.crs.clone(),
-        dem: source
-            .dem
-            .as_ref()
-            .and_then(|dem| raw::file_path(&data_dir, &dem.blake3)),
+        dem,
         cor: None,
         antenna_mhz_override: processing.antenna_mhz_override,
         antenna_separation_override: processing.antenna_separation_override,

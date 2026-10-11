@@ -66,6 +66,49 @@
     </form>
   </details>
 
+  {% endif %}
+
+  {% if project %}
+  {#- DEMs are the project's, not a profile's: uploaded once here, and each
+      radargram linked to one in its Process dialog. `#dems` is where that
+      dialog's "Add a DEM" link lands. -#}
+  <section class="processing-dems" id="dems">
+    <h2>DEMs</h2>
+    <p class="hint">
+      A DEM gives processing the surface elevation along each radargram. Add
+      one here, then choose it in a radargram's <strong>Process&hellip;</strong>
+      dialog. A DEM that radargrams use cannot be deleted or given another
+      file; add the new one beside it and choose that instead.
+    </p>
+    <p id="dems-empty" class="hint" hidden>No DEMs yet.</p>
+    <div id="dems-list"></div>
+    {% if writable %}
+    <form id="dems-form">
+      <fieldset class="processing-add">
+        <legend>Add a DEM</legend>
+        <label>Name <input name="name" required placeholder="Svalbard DEM 2008"></label>
+        <label>ID (from the name)
+          <input name="id" pattern="[a-z0-9][a-z0-9_-]*" placeholder="svalbard-dem-2008"
+                 autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        <label>File, a raster such as a GeoTIFF
+          <input name="file" type="file" required accept=".tif,.tiff,.vrt,.img,.asc,.nc"></label>
+        <p>
+          <button type="submit" id="dems-add">Add</button>
+          <button type="button" id="dems-cancel" hidden>Cancel upload</button>
+        </p>
+        <p id="dems-progress" class="hint" aria-live="polite"></p>
+      </fieldset>
+    </form>
+    {% endif %}
+    <dialog id="dems-users" class="dems-users">
+      <h2 id="dems-users-title"></h2>
+      <ul id="dems-users-list"></ul>
+      <p><button type="button" id="dems-users-close">Close</button></p>
+    </dialog>
+  </section>
+  {% endif %}
+
+  {% if project and writable %}
   {#- Every batch that reprocessed a profile, newest first. -#}
   <details class="processing-history" id="processing-history">
     <summary>Recent batches</summary>

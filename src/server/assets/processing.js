@@ -534,8 +534,203 @@
     );
   }
 
+  /* --- DEMs ------------------------------------------------------------ */
+
+  const demsList = document.getElementById('dems-list');
+  const demsEmpty = document.getElementById('dems-empty');
+  const usersDialog = document.getElementById('dems-users');
+
+  /** Who links to `dem`, each a link to its viewer. */
+  function showUsers(dem) {
+    document.getElementById('dems-users-title').textContent =
+      `Radargrams using ${dem.name}`;
+    document.getElementById('dems-users-list').replaceChildren(
+      ...dem.radargram_ids.map((id) =>
+        el('li', {}, el('a', { href: RIDAL.pagePath('view', id), textContent: id })),
+      ),
+    );
+    usersDialog.showModal();
+  }
+  if (usersDialog) {
+    document
+      .getElementById('dems-users-close')
+      .addEventListener('click', () => usersDialog.close());
+  }
+
+  /** Rename `dem` in place: the name cell becomes a box until saved. */
+  function renameIn(cell, dem) {
+    const box = el('input', { type: 'text', value: dem.name, required: true });
+    const save = el('button', { type: 'button', textContent: 'Save' });
+    const cancel = el('button', { type: 'button', textContent: 'Cancel' });
+    cancel.addEventListener('click', loadDems);
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      try {
+        await send(RIDAL.apiPath('dems', dem.id), 'PUT', { name: box.value });
+        loadDems();
+      } catch (error) {
+        save.disabled = false;
+        fail(error.message);
+      }
+    });
+    cell.replaceChildren(box, ' ', save, ' ', cancel);
+    box.focus();
+  }
+
+  function demRow(dem) {
+    const used = dem.radargram_ids.length;
+    const usedCell = el('td', {});
+    if (used === 0) {
+      usedCell.textContent = 'none';
+    } else {
+      const open = el('button', {
+        type: 'button',
+        textContent: plural(used, 'radargram', 'radargrams'),
+      });
+      open.addEventListener('click', () => showUsers(dem));
+      usedCell.append(open);
+    }
+    const nameCell = el('td', { textContent: dem.name });
+    const at = new Date(dem.at);
+    const cells = [
+      nameCell,
+      el('td', {}, el('code', { textContent: dem.id })),
+      el('td', { textContent: RIDAL.formatBytes(dem.bytes) }),
+      el('td', {
+        textContent: `${dem.by}, ${Number.isNaN(at.getTime()) ? dem.at : at.toLocaleDateString()}`,
+        title: `${dem.file.name} (${dem.file.blake3})`,
+      }),
+      usedCell,
+    ];
+    if (writable) {
+      const rename = el('button', { type: 'button', textContent: 'Rename' });
+      rename.addEventListener('click', () => renameIn(nameCell, dem));
+      const actions = el('td', { className: 'processing-row-actions' }, rename);
+      if (used === 0) {
+        const remove = el('button', { type: 'button', textContent: 'Delete', className: 'danger' });
+        remove.addEventListener('click', async () => {
+          remove.disabled = true;
+          try {
+            await RIDAL.fetchJson(RIDAL.apiPath('dems', dem.id), { method: 'DELETE' });
+            loadDems();
+          } catch (error) {
+            remove.disabled = false;
+            fail(error.message);
+          }
+        });
+        actions.append(' ', remove);
+      }
+      cells.push(actions);
+    }
+    return el('tr', {}, ...cells);
+  }
+
+  async function loadDems() {
+    if (!demsList) return;
+    let dems;
+    try {
+      dems = (await RIDAL.fetchJson(RIDAL.apiPath('dems'))).dems;
+    } catch (error) {
+      fail(`Could not load the DEMs (${error.message}).`);
+      return;
+    }
+    demsEmpty.hidden = dems.length > 0;
+    if (dems.length === 0) {
+      demsList.replaceChildren();
+      return;
+    }
+    const heads = ['Name', 'ID', 'Size', 'Uploaded', 'Used by'];
+    if (writable) heads.push('');
+    demsList.replaceChildren(
+      el(
+        'table',
+        { className: 'processing-members layers-table' },
+        el('thead', {}, el('tr', {}, ...heads.map((h) => el('th', { textContent: h })))),
+        el('tbody', {}, ...dems.map(demRow)),
+      ),
+    );
+  }
+
+  const demsForm = document.getElementById('dems-form');
+  if (demsForm) {
+    const progressLine = document.getElementById('dems-progress');
+    const add = document.getElementById('dems-add');
+    const cancel = document.getElementById('dems-cancel');
+    let uploading = null;
+    const derive = () => {
+      demsForm.elements.id.placeholder =
+        RIDAL.slugify(demsForm.elements.name.value) || 'svalbard-dem-2008';
+    };
+    demsForm.elements.name.addEventListener('input', derive);
+    cancel.addEventListener('click', () => uploading?.abort());
+    demsForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorBox.hidden = true;
+      const name = demsForm.elements.name.value.trim();
+      const id = demsForm.elements.id.value.trim() || RIDAL.slugify(name);
+      const file = demsForm.elements.file.files[0];
+      if (!id) {
+        fail('Give the DEM a name with at least one letter or digit, or an id.');
+        return;
+      }
+      add.disabled = true;
+      cancel.hidden = false;
+      try {
+        let lastPercent = -1;
+        uploading = RIDAL.postFile(
+          `${RIDAL.apiPath('raw')}?filename=${encodeURIComponent(file.name)}`,
+          file,
+          (loaded, size) => {
+            const percent = Math.round((loaded / size) * 100);
+            if (percent === lastPercent) return;
+            lastPercent = percent;
+            progressLine.textContent = `Uploading ${file.name}… ${percent}%`;
+          },
+        );
+        const response = await uploading.promise;
+        uploading = null;
+        cancel.hidden = true;
+        if (!response.ok) {
+          throw new Error(response.json?.error?.message || RIDAL.upstreamMessage(response.status));
+        }
+        progressLine.textContent = 'Checking that it is a DEM…';
+        const body = {
+          name,
+          file: { name: response.json.name, blake3: response.json.blake3 },
+        };
+        try {
+          await send(RIDAL.apiPath('dems', id), 'PUT', body, 'new');
+        } catch (error) {
+          if (error.status !== 412) throw error;
+          // The id is taken. Its file may be replaced while nothing uses
+          // it; the server refuses, naming them, when something does.
+          const ok = window.confirm(
+            `There is already a DEM with the id '${id}'. Replace its file with ${file.name}?`,
+          );
+          if (!ok) {
+            progressLine.textContent = '';
+            return;
+          }
+          await send(RIDAL.apiPath('dems', id), 'PUT', body);
+        }
+        demsForm.reset();
+        derive();
+        progressLine.textContent = '';
+        loadDems();
+      } catch (error) {
+        progressLine.textContent = '';
+        fail(error.message === 'upload cancelled' ? 'Upload cancelled.' : error.message);
+      } finally {
+        add.disabled = false;
+        cancel.hidden = true;
+        uploading = null;
+      }
+    });
+  }
+
   async function load() {
     errorBox.hidden = true;
+    const demsLoaded = loadDems();
     let profiles, status, assignments, datasets, sources, batches;
     try {
       [profiles, status, assignments, datasets, sources, batches] = await Promise.all([
@@ -570,7 +765,15 @@
       ),
     );
     renderHistory(batches.batches, profiles.profiles);
+    // The process dialog's "Add a DEM" links to `#dems`, which the
+    // profiles drawn above it have moved since the browser looked.
+    await demsLoaded;
+    if (!landed && window.location.hash === '#dems') {
+      document.getElementById('dems')?.scrollIntoView();
+    }
+    landed = true;
   }
+  let landed = false;
 
   const newForm = document.getElementById('processing-new-form');
   if (newForm) {
