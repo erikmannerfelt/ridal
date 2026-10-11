@@ -428,6 +428,9 @@
           recordings: named,
           crs: crs === '' ? null : crs,
           dem: demBox.value === '' ? null : demBox.value,
+          // A new radargram takes over an upload nobody processed, and
+          // not the names that upload was to have (#382 phase 7).
+          ...(served ? {} : { names: null }),
         }),
       });
       linkedDem = source.source.dem?.id || '';

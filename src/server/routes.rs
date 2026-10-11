@@ -1467,6 +1467,31 @@ pub async fn processing_page(
     Ok(Html(html))
 }
 
+/// Adding raw data in bulk (#382 phase 7): many recordings planned into
+/// radargrams, named, and created. Everything on it comes from the API, as
+/// on the processing page.
+pub async fn ingest_page(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Query(query): Query<ProfileQuery>,
+) -> Result<impl IntoResponse, PageError> {
+    let active_profile = resolve_profile(&state, &caller, query.profile);
+    lookup_profile(&active_profile).map_err(PageError)?;
+    let env = templates::environment();
+    let tmpl = env
+        .get_template("ingest.html.jinja")
+        .expect("ingest template is always registered");
+    let html = tmpl
+        .render(minijinja::context! {
+            project => state.project.is_some(),
+            writable => caller.may(crate::project::roles::Role::Operator),
+            active_profile => active_profile,
+            ..caller_context(&state, &caller),
+        })
+        .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
+    Ok(Html(html))
+}
+
 pub async fn index_page(
     State(state): State<Arc<AppState>>,
     caller: Caller,

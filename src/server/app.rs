@@ -890,6 +890,7 @@ pub fn static_router() -> Router {
         .route("/static/layers.js", get(super::assets::layers_js))
         .route("/static/process.js", get(super::assets::process_js))
         .route("/static/processing.js", get(super::assets::processing_js))
+        .route("/static/ingest.js", get(super::assets::ingest_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -924,6 +925,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         )
         .route("/layers", get(super::routes::layers_page))
         .route("/processing", get(super::routes::processing_page))
+        .route("/ingest", get(super::routes::ingest_page))
         .route("/settings", get(super::routes::settings_page))
         .route(
             "/api/v1/settings",

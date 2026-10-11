@@ -526,6 +526,18 @@ Many recordings in, the radargrams they would make out
   has no entry for the id. Once served, the catalog's names win and
   renaming is an override. A `PUT /sources` without `names` keeps the
   ones the source had, so switching a recording does not forget them.
+- **The page** (`/ingest`, `assets/ingest.js`, linked from the catalog's
+  "Add raw data…" and the Processing page) groups dropped files into
+  recordings by stem, uploads them one at a time, and re-plans
+  (debounced, one request at a time) after each upload and each edit. It
+  asks for tracks only when a recording is new and keeps them by key.
+  The timeline is inline SVG, one row per output, gaps drawn as chips
+  rather than to scale, since a gap may be days: a gap inside a row
+  splits there, a row's leading chip joins it to the one before (not
+  when the headers refuse it). Typed ids and names are sent as
+  overrides; a box being typed in keeps its value while the plan
+  catches up. Create follows "Creating" above and stops at the first
+  refusal, saying what was stored before it.
 - **The sweep.** Each plan refreshes its files' mtimes
   (`raw::refresh`), since planned uploads are named by no source until
   they are created.

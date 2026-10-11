@@ -6380,6 +6380,9 @@ async fn an_ingest_plan_groups_and_names_uploaded_recordings() {
     assert_eq!(created.body["source"]["names"]["group_id"], "dronbreen");
     let again = create(erik.clone()).await;
     assert_eq!(again.status, StatusCode::PRECONDITION_FAILED);
+    // Listed with them, for the Processing page's raw data not processed.
+    let listed = get(&app, "/api/v1/sources", Some(&pia)).await;
+    assert_eq!(listed.body["names"][&id]["group_name"], "Drønbreen");
 
     // Planned again, the id is taken by raw data alone.
     let plan = post(&app, "/api/v1/ingest/plan", &body, Some(&erik)).await;

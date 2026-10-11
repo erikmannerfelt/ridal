@@ -533,15 +533,19 @@
   /** The radargrams with raw data and no processed file, with the profile
    * each is in, if any. Processing one opens the dialog at its steps, as
    * for a member that is not processed yet. */
-  function renderUnprocessed(ids, assignments, profiles) {
+  function renderUnprocessed(ids, assignments, profiles, sourceNames) {
     const section = document.getElementById('raw-unprocessed');
     if (!section) return;
     section.hidden = ids.length === 0;
     const names = Object.fromEntries(profiles.map((p) => [p.id, p.name]));
     const rows = ids.map((id) => {
       const profile = assignments[id]?.profile;
+      const named = sourceNames[id];
+      const what = named?.display_name || '';
+      const group = named?.group_name ? ` (${named.group_name})` : '';
       const cells = [
         el('td', {}, el('span', { className: 'processing-id', textContent: id })),
+        el('td', { textContent: `${what}${group}`.trim() }),
         el(
           'td',
           {},
@@ -558,7 +562,7 @@
       }
       return el('tr', {}, ...cells);
     });
-    const head = ['Radargram', 'Profile'];
+    const head = ['Radargram', 'Name', 'Profile'];
     if (writable) head.push('');
     document.getElementById('raw-unprocessed-list').replaceChildren(
       el(
@@ -845,6 +849,7 @@
       (sources.radargram_ids || []).filter((id) => !served.has(id)),
       assigned,
       profiles.profiles,
+      sources.names || {},
     );
     renderHistory(batches.batches, profiles.profiles);
     // Links land on a profile (a catalog card's badge) or on `#dems` (the
