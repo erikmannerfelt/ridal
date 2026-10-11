@@ -385,6 +385,11 @@ pub struct ProcessingSection {
     /// for more gets the server's. Unset means the server's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_queued_jobs: Option<usize>,
+    /// The CRS, as an EPSG code, that every radargram whose raw data names
+    /// none is processed in. Unset, each is processed in the UTM zone best
+    /// for its own track, so two either side of a zone boundary differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crs: Option<String>,
 }
 
 /// How the radargram catalog opens (#314).
@@ -1041,9 +1046,14 @@ impl Project {
              # this project to two processing jobs waiting or running at once,\n\
              # leaving the rest to other projects on the same server. It can\n\
              # only lower the server's own limit (`--max-queued-per-project`).\n\
+             # `crs = \"EPSG:32633\"` processes every radargram whose raw data\n\
+             # names no CRS in that one, instead of the UTM zone that suits\n\
+             # each track, so that radargrams either side of a zone boundary\n\
+             # share one.\n\
              #\n\
              # [processing]\n\
              # max_queued_jobs = 2\n\
+             # crs = \"EPSG:32633\"\n\
              \n\
              # Vector overlays every map can draw, off until switched on in\n\
              # its layer control. `name_field` and `description_field` name\n\
@@ -1534,6 +1544,21 @@ impl Project {
         Ok(removed)
     }
 
+    /// The CRS the project processes in when a radargram's raw data names
+    /// none (`[processing] crs`), as an EPSG code. An error names a setting
+    /// that is not one, rather than processing somewhere nobody chose.
+    pub fn processing_crs(&self) -> Result<Option<String>, String> {
+        match self.read_config().processing.crs.as_deref() {
+            None => Ok(None),
+            Some(text) => raw::epsg_code(text).map(Some).ok_or_else(|| {
+                format!(
+                    "the project's CRS (`[processing] crs` in ridal.toml) is '{text}', which \
+                     is not an EPSG code; write it as `EPSG:32633`"
+                )
+            }),
+        }
+    }
+
     /// How large this project may grow, in bytes.
     pub fn max_bytes(&self) -> u64 {
         self.read_config()
@@ -1680,6 +1705,31 @@ mod tests {
                 .processing
                 .max_queued_jobs,
             Some(2)
+        );
+        assert_eq!(
+            Project::open(dir.path()).unwrap().processing_crs(),
+            Ok(None)
+        );
+
+        // The CRS is read as an EPSG code, and anything else is named
+        // rather than processed somewhere nobody chose.
+        std::fs::write(
+            &path,
+            format!("{text}\n[processing]\ncrs = \"epsg:32634\"\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            Project::open(dir.path()).unwrap().processing_crs(),
+            Ok(Some("EPSG:32634".to_string()))
+        );
+        std::fs::write(&path, format!("{text}\n[processing]\ncrs = \"UTM 33\"\n")).unwrap();
+        let refused = Project::open(dir.path())
+            .unwrap()
+            .processing_crs()
+            .unwrap_err();
+        assert!(
+            refused.contains("'UTM 33', which is not an EPSG code"),
+            "{refused}"
         );
     }
 

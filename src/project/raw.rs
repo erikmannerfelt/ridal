@@ -114,6 +114,22 @@ pub struct Dem {
     pub at: String,
 }
 
+/// A CRS as an EPSG code, `EPSG:32633`, or `None` when `text` is not one.
+///
+/// Rebuilt from the number rather than passed on, because it ends up on
+/// the command line of the PROJ tools. The other forms `ridal process
+/// --crs` takes are for the command line, where the person typing them is
+/// the one running the tools.
+pub fn epsg_code(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    trimmed
+        .get(..5)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("epsg:"))
+        .and_then(|_| trimmed[5..].parse::<u32>().ok())
+        .filter(|code| *code > 0)
+        .map(|code| format!("EPSG:{code}"))
+}
+
 /// A blake3 digest as 64 lowercase hex characters, or `None`. Every path
 /// below is built from one, so this is what keeps them inside the store.
 pub fn valid_hash(text: &str) -> Option<&str> {
