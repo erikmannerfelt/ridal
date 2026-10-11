@@ -6407,6 +6407,16 @@ fn drafting_app(
     users: Vec<User>,
     prepared: &StdPath,
 ) -> (tempfile::TempDir, tempfile::TempDir, Router) {
+    drafting_app_processing(users, prepared, Default::default())
+}
+
+/// [`drafting_app`], with the rest of `processing` as given.
+#[cfg(unix)]
+fn drafting_app_processing(
+    users: Vec<User>,
+    prepared: &StdPath,
+    processing: crate::server::processing::ProcessingConfig,
+) -> (tempfile::TempDir, tempfile::TempDir, Router) {
     use std::os::unix::fs::PermissionsExt;
     let (dir, archive, _) = lifecycle_app(users);
     let script = dir.path().join("job.sh");
@@ -6430,7 +6440,7 @@ fn drafting_app(
         crate::server::processing::ProcessingConfig {
             program: script,
             work_dir: dir.path().join("jobs"),
-            ..Default::default()
+            ..processing
         },
     );
     (dir, archive, app)
@@ -6467,6 +6477,74 @@ async fn draft_finished(app: &Router, job: &Value, session: &str) -> Value {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("draft {job} did not finish");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn drafts_past_the_disk_cap_are_forgotten_least_recently_used_first() {
+    let prepared = tempfile::tempdir().unwrap();
+    for id in ["line-a", "line-b"] {
+        prepare_draft(prepared.path(), id);
+    }
+    let hash = password_hash();
+    let (dir, _archive, app) = drafting_app_processing(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        prepared.path(),
+        crate::server::processing::ProcessingConfig {
+            // Less than any one draft: only the most recently used stays.
+            draft_cache_bytes: 1,
+            ..Default::default()
+        },
+    );
+    let erik = sign_in(&app, "erik").await;
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    let steps = json!({"steps": ["subset(0 100 0 200)"]});
+    let mut jobs = Vec::new();
+    for id in ["line-a", "line-b"] {
+        let set = put(
+            &app,
+            &format!("/api/v1/sources/{id}"),
+            &json!({"recordings": [recording]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+        let made = post(
+            &app,
+            &format!("/api/v1/sources/{id}/drafts"),
+            &steps,
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(made.status, StatusCode::ACCEPTED, "{}", made.text);
+        let job = made.body["job"].clone();
+        assert_eq!(draft_finished(&app, &job, &erik).await["state"], "done");
+        jobs.push(job);
+    }
+    let drafts_on_disk = || {
+        walkdir::WalkDir::new(dir.path())
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path().extension().is_some_and(|x| x == "nc")
+                    && e.path()
+                        .parent()
+                        .is_some_and(|p| p.ends_with("cache/drafts"))
+            })
+            .count()
+    };
+    assert_eq!(drafts_on_disk(), 2);
+
+    // Looking at the first makes it the one kept when the list tidies.
+    let first = get(&app, &format!("/api/v1/drafts/{}", jobs[0]), Some(&erik)).await;
+    assert_eq!(first.status, StatusCode::OK);
+    let listed = get(&app, "/api/v1/drafts", Some(&erik)).await;
+    assert_eq!(listed.body["drafts"].as_array().unwrap().len(), 1);
+    assert_eq!(listed.body["drafts"][0]["job"], jobs[0]);
+    let second = get(&app, &format!("/api/v1/drafts/{}", jobs[1]), Some(&erik)).await;
+    assert_eq!(second.status, StatusCode::NOT_FOUND);
+    assert_eq!(drafts_on_disk(), 1);
 }
 
 #[cfg(unix)]

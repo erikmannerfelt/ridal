@@ -480,6 +480,18 @@ pub struct ProcessingArgs {
     /// Processing jobs one person may have waiting or running at once.
     #[arg(long, default_value_t = crate::server::processing::DEFAULT_MAX_QUEUED_PER_USER)]
     pub max_queued_per_user: usize,
+
+    /// How long a draft is kept after it was last looked at, e.g. "2 h"
+    /// or "3 days". A draft is a radargram processed to look at before
+    /// it is applied.
+    #[arg(long, default_value = "24 h")]
+    pub draft_ttl: String,
+
+    /// Disk space each project's finished drafts may take together, in
+    /// MB. Past it, the drafts least recently looked at are removed
+    /// first; asking for one again processes it again.
+    #[arg(long, default_value_t = crate::server::processing::DEFAULT_DRAFT_CACHE_MB)]
+    pub draft_cache_mb: u64,
 }
 
 #[cfg(feature = "server")]
@@ -502,6 +514,8 @@ impl ProcessingArgs {
                 self.processing_timeout
             )
         })?;
+        let draft_ttl = parse_duration::parse(&self.draft_ttl)
+            .map_err(|e| format!("Invalid --draft-ttl '{}': {e}", self.draft_ttl))?;
         let processors = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
@@ -513,6 +527,8 @@ impl ProcessingArgs {
                 .unwrap_or((processors / self.processing_jobs).max(1)),
             timeout,
             max_queued_per_user: self.max_queued_per_user,
+            draft_ttl,
+            draft_cache_bytes: self.draft_cache_mb * 1024 * 1024,
             ..crate::server::processing::ProcessingConfig::default()
         })
     }
@@ -2065,12 +2081,19 @@ mod tests {
         let processors = std::thread::available_parallelism().map_or(1, |n| n.get());
         assert_eq!(config.threads_per_job, (processors / 2).max(1));
         assert_eq!(config.memory_bytes, 4096 * 1024 * 1024);
+        assert_eq!(config.draft_ttl, std::time::Duration::from_secs(86_400));
+        assert_eq!(config.draft_cache_bytes, 4096 * 1024 * 1024);
+
+        let config = parse(&["--draft-ttl", "90 min", "--draft-cache-mb", "10"]).unwrap();
+        assert_eq!(config.draft_ttl, std::time::Duration::from_secs(5400));
+        assert_eq!(config.draft_cache_bytes, 10 * 1024 * 1024);
 
         for refused in [
             &["--processing-jobs", "0"][..],
             &["--processing-threads", "0"],
             &["--max-queued-per-user", "0"],
             &["--processing-timeout", "soon"],
+            &["--draft-ttl", "soon"],
         ] {
             assert!(parse(refused).is_err(), "{refused:?}");
         }

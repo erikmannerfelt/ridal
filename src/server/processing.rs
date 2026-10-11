@@ -48,12 +48,20 @@ pub struct ProcessingConfig {
     pub work_dir: PathBuf,
     /// How long a finished job's status is kept for its owner to read.
     pub keep_finished: Duration,
+    /// How long a draft nobody has looked at is kept
+    /// ([`super::draft_routes`]).
+    pub draft_ttl: Duration,
+    /// The most that one project's finished drafts may take on disk
+    /// together; past it, the least recently used go first.
+    pub draft_cache_bytes: u64,
 }
 
 pub const DEFAULT_PROCESSING_JOBS: usize = 1;
 pub const DEFAULT_PROCESSING_MEMORY_MB: u64 = 4096;
 pub const DEFAULT_PROCESSING_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_MAX_QUEUED_PER_USER: usize = 5;
+pub const DEFAULT_DRAFT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const DEFAULT_DRAFT_CACHE_MB: u64 = 4096;
 
 impl Default for ProcessingConfig {
     fn default() -> Self {
@@ -68,6 +76,8 @@ impl Default for ProcessingConfig {
             program: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ridal")),
             work_dir: std::env::temp_dir().join(format!("ridal-jobs-{}", std::process::id())),
             keep_finished: Duration::from_secs(60 * 60),
+            draft_ttl: DEFAULT_DRAFT_TTL,
+            draft_cache_bytes: DEFAULT_DRAFT_CACHE_MB * 1024 * 1024,
         }
     }
 }
@@ -204,6 +214,10 @@ impl ProcessingQueue {
             config,
             inner: Mutex::new(Inner::default()),
         })
+    }
+
+    pub fn config(&self) -> &ProcessingConfig {
+        &self.config
     }
 
     /// Queue a job, or join the unfinished one with the same key.

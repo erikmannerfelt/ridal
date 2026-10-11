@@ -1077,6 +1077,18 @@ Processing jobs one person may have waiting or running at once
 Default: `5`.
 ```
 
+```{option} --draft-ttl <DRAFT_TTL>
+How long a draft is kept after it was last looked at, e.g. "2 h" or "3 days". A draft is a radargram processed to look at before it is applied
+
+Default: `24 h`.
+```
+
+```{option} --draft-cache-mb <DRAFT_CACHE_MB>
+Disk space each project's finished drafts may take together, in MB. Past it, the drafts least recently looked at are removed first; asking for one again processes it again
+
+Default: `4096`.
+```
+
 ```{option} --read-only
 Serve a project without accepting any writes
 ```
@@ -1181,4 +1193,16 @@ Default: `30 min`.
 Processing jobs one person may have waiting or running at once
 
 Default: `5`.
+```
+
+```{option} --draft-ttl <DRAFT_TTL>
+How long a draft is kept after it was last looked at, e.g. "2 h" or "3 days". A draft is a radargram processed to look at before it is applied
+
+Default: `24 h`.
+```
+
+```{option} --draft-cache-mb <DRAFT_CACHE_MB>
+Disk space each project's finished drafts may take together, in MB. Past it, the drafts least recently looked at are removed first; asking for one again processes it again
+
+Default: `4096`.
 ```

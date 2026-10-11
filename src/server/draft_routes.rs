@@ -44,9 +44,6 @@ use crate::identity::RadargramId;
 use crate::project::raw::{self, NamedFile};
 use crate::project::roles::{DownloadScope, Role};
 
-/// How long a draft is kept after it was made.
-pub const DRAFT_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
-
 /// One draft, as this project remembers it while the server runs.
 struct Draft {
     owner: String,
@@ -59,7 +56,9 @@ struct Draft {
     work: PathBuf,
     /// Its raw files, kept from a sweep while it may still read them.
     hashes: Vec<String>,
-    created: std::time::Instant,
+    /// When it was made or its owner last used it: what `--draft-ttl` and
+    /// `--draft-cache-mb` go by.
+    last_used: std::time::Instant,
     /// Opened on first look.
     view: Option<Arc<OpenRadargram>>,
 }
@@ -196,31 +195,86 @@ fn revision_of(path: &std::path::Path) -> Option<crate::identity::RevisionId> {
     }
 }
 
-/// Forget drafts past [`DRAFT_TTL`], and remove what finished drafts no
-/// longer need laid out.
+/// A finished draft, as [`to_forget`] weighs it.
+#[derive(Debug, Clone, Copy)]
+struct FinishedDraft {
+    job: u64,
+    unused_for: std::time::Duration,
+    /// Its file's size; zero when it has none.
+    bytes: u64,
+}
+
+/// Which finished drafts to forget: those unused for longer than `ttl`,
+/// then the least recently used until the rest fit in `cap_bytes`. The
+/// most recently used one is kept whatever its size, so a draft larger
+/// than the cap can still be looked at.
+fn to_forget(
+    mut finished: Vec<FinishedDraft>,
+    ttl: std::time::Duration,
+    cap_bytes: u64,
+) -> HashSet<u64> {
+    let mut forget = HashSet::new();
+    finished.retain(|d| {
+        if d.unused_for > ttl {
+            forget.insert(d.job);
+            return false;
+        }
+        true
+    });
+    // Most recently used first; ties by the newer job, for a stable order.
+    finished.sort_by(|a, b| a.unused_for.cmp(&b.unused_for).then(b.job.cmp(&a.job)));
+    let mut total = 0u64;
+    for (i, d) in finished.iter().enumerate() {
+        total = total.saturating_add(d.bytes);
+        if i > 0 && total > cap_bytes {
+            forget.insert(d.job);
+            total -= d.bytes;
+        }
+    }
+    forget
+}
+
+/// Forget drafts that have gone unused too long or do not fit on disk
+/// (`--draft-ttl`, `--draft-cache-mb`), and remove what finished drafts no
+/// longer need laid out. Only finished drafts are forgotten: forgetting
+/// costs a rerun, never work in progress.
 fn tidy(state: &AppState) {
+    let config = state.processing.as_ref().map(|q| q.config());
+    let ttl = config.map_or(super::processing::DEFAULT_DRAFT_TTL, |c| c.draft_ttl);
+    let cap_bytes = config.map_or(
+        super::processing::DEFAULT_DRAFT_CACHE_MB * 1024 * 1024,
+        |c| c.draft_cache_bytes,
+    );
     let mut inner = state
         .drafts
         .inner
         .lock()
         .expect("the drafts lock is not poisoned");
-    let finished = |job: u64| {
+    let is_finished = |job: u64| {
         state
             .processing
             .as_ref()
             .and_then(|q| q.status(job))
             .is_none_or(|s| s.state.is_finished())
     };
-    inner.retain(|job, draft| {
-        if finished(*job) {
+    let mut finished = Vec::new();
+    for (job, draft) in inner.iter() {
+        if is_finished(*job) {
             let _ = std::fs::remove_dir_all(&draft.work);
-            if draft.created.elapsed() > DRAFT_TTL {
-                let _ = std::fs::remove_file(&draft.output);
-                return false;
-            }
+            finished.push(FinishedDraft {
+                job: *job,
+                unused_for: draft.last_used.elapsed(),
+                bytes: std::fs::metadata(&draft.output).map_or(0, |m| m.len()),
+            });
         }
-        true
-    });
+    }
+    for job in to_forget(finished, ttl, cap_bytes) {
+        if let Some(draft) = inner.remove(&job) {
+            // Its render service goes first, so nothing holds the file.
+            drop(draft.view);
+            let _ = std::fs::remove_file(&draft.output);
+        }
+    }
 }
 
 /// What to process a radargram's raw data with.
@@ -449,7 +503,7 @@ pub async fn create_draft(
                 output,
                 work,
                 hashes,
-                created: std::time::Instant::now(),
+                last_used: std::time::Instant::now(),
                 view: None,
             });
         }
@@ -497,7 +551,10 @@ fn with_draft<T>(
         .lock()
         .expect("the drafts lock is not poisoned");
     match inner.get_mut(&job) {
-        Some(draft) if draft.owner == caller.display_name() => Ok(f(draft)),
+        Some(draft) if draft.owner == caller.display_name() => {
+            draft.last_used = std::time::Instant::now();
+            Ok(f(draft))
+        }
         _ => Err(not_found()),
     }
 }
@@ -703,4 +760,70 @@ pub async fn commit_draft(
         .into_response(),
     };
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{to_forget, FinishedDraft};
+    use std::collections::HashSet;
+    use std::time::Duration;
+
+    fn draft(job: u64, unused_secs: u64, bytes: u64) -> FinishedDraft {
+        FinishedDraft {
+            job,
+            unused_for: Duration::from_secs(unused_secs),
+            bytes,
+        }
+    }
+
+    fn forgotten(drafts: Vec<FinishedDraft>, ttl_secs: u64, cap: u64) -> Vec<u64> {
+        let mut jobs: Vec<u64> = to_forget(drafts, Duration::from_secs(ttl_secs), cap)
+            .into_iter()
+            .collect();
+        jobs.sort();
+        jobs
+    }
+
+    #[test]
+    fn drafts_unused_past_the_ttl_are_forgotten() {
+        let drafts = vec![draft(1, 100, 1), draft(2, 50, 1), draft(3, 10, 1)];
+        assert_eq!(forgotten(drafts.clone(), 60, 1000), vec![1]);
+        // Exactly at the TTL is still kept.
+        assert_eq!(forgotten(drafts, 50, 1000), vec![1]);
+    }
+
+    #[test]
+    fn the_least_recently_used_go_first_past_the_cap() {
+        // Used 3, 2, 1 s ago (job 4 most recently); 10 bytes each.
+        let drafts = vec![
+            draft(1, 3, 10),
+            draft(2, 2, 10),
+            draft(3, 1, 10),
+            draft(4, 0, 10),
+        ];
+        assert_eq!(forgotten(drafts.clone(), 60, 40), Vec::<u64>::new());
+        assert_eq!(forgotten(drafts.clone(), 60, 39), vec![1]);
+        assert_eq!(forgotten(drafts.clone(), 60, 25), vec![1, 2]);
+        // Job number is not what decides: an older job used recently stays.
+        let drafts = vec![draft(1, 0, 10), draft(2, 5, 10), draft(3, 4, 10)];
+        assert_eq!(forgotten(drafts, 60, 20), vec![2]);
+    }
+
+    #[test]
+    fn a_smaller_draft_can_stay_after_a_larger_one_goes() {
+        // The 30-byte one does not fit beside the newest; the older 5-byte
+        // one still does.
+        let drafts = vec![draft(1, 0, 10), draft(2, 1, 30), draft(3, 2, 5)];
+        assert_eq!(forgotten(drafts, 60, 20), vec![2]);
+    }
+
+    #[test]
+    fn the_most_recently_used_draft_stays_even_over_the_cap() {
+        let drafts = vec![draft(1, 0, 100), draft(2, 1, 1)];
+        assert_eq!(forgotten(drafts, 60, 10), vec![2]);
+        assert_eq!(
+            to_forget(vec![draft(7, 0, 100)], Duration::from_secs(60), 0),
+            HashSet::new()
+        );
+    }
 }
