@@ -2815,6 +2815,41 @@ button.danger:disabled {
 .processing-state-not_processed {
   color: var(--color-text-muted);
 }
+/* Only the catalog's badges say these: steps changed for one radargram
+   are stale too, a failure is the one state that is an error, and one
+   being processed is on its way. */
+.processing-state-custom {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+}
+.processing-state-failed {
+  background: var(--color-danger-bg);
+  border-color: var(--color-danger-border);
+  color: var(--color-danger-text);
+}
+.processing-state-processing {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+/* A catalog card's badge, under its title, and a group's count. */
+.card-processing {
+  margin: 0;
+  padding: 0 var(--space-3);
+}
+a.processing-state {
+  text-decoration: none;
+}
+a.processing-state:hover {
+  text-decoration: underline;
+}
+.group-outdated {
+  font-size: var(--text-sm);
+  color: var(--color-warning-text);
+}
+.group-process-note {
+  margin: var(--space-1) 0 0;
+}
 /* Why a radargram is stale, one reason a line under its state. A minimum
    width, as the layers page's cells have, so a narrow screen scrolls the
    table instead of wrapping each reason a word to a line. */

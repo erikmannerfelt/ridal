@@ -1023,3 +1023,192 @@ document.querySelectorAll('.group-map').forEach((el) => {
   });
   window.addEventListener('pagehide', discard);
 })();
+
+/* --- Where each radargram stands against its processing profile (#382) ----
+ *
+ * One request for the whole catalog, not one per card: the status route
+ * already answers for every radargram in a profile. Radargrams in none get
+ * no badge. For an operator, what is being processed now and what failed
+ * come from the batches and their own drafts (drafts are private, so only
+ * their own), and each group's heading offers to process its out-of-date
+ * radargrams: one batch per profile involved.
+ */
+(function setupProcessingBadges() {
+  const operator = Boolean(document.getElementById('process-new'));
+  const WORDS = {
+    current: 'Current',
+    stale: 'Stale',
+    custom: 'Custom steps',
+    older_processing: 'Older processing',
+    not_processed: 'Not processed',
+    no_raw_data: 'No raw data',
+    processing: 'Processing',
+    failed: 'Failed',
+  };
+  const outOfDate = (status) => status.state === 'stale' || status.state === 'not_processed';
+
+  /** What each radargram's badge says, and why. */
+  async function standings() {
+    let status;
+    try {
+      status = await RIDAL.fetchJson(RIDAL.apiPath('processing', 'status'));
+    } catch {
+      // Not a project, or nothing to say.
+      return null;
+    }
+    const by = new Map();
+    for (const s of status.radargrams) {
+      const word = s.state === 'stale' && s.custom ? 'custom' : s.state;
+      by.set(s.radargram_id, { status: s, word, why: (s.reasons || []).join('; ') });
+    }
+    if (!operator) return by;
+    const [batches, drafts] = await Promise.all([
+      RIDAL.fetchJson(RIDAL.apiPath('processing', 'batches')).catch(() => ({ batches: [] })),
+      RIDAL.fetchJson(RIDAL.apiPath('drafts')).catch(() => ({ drafts: [] })),
+    ]);
+    // Newest batch first: the first word about a radargram is the latest.
+    const said = new Set();
+    for (const batch of batches.batches) {
+      for (const item of batch.items) {
+        const known = by.get(item.radargram_id);
+        if (!known || said.has(item.radargram_id)) continue;
+        if (item.outcome === 'waiting' || item.outcome === 'processing') {
+          known.word = 'processing';
+          known.why = `In a batch ${batch.started_by} started`;
+        } else if (item.outcome === 'failed' && outOfDate(known.status)) {
+          known.word = 'failed';
+          known.why = item.message || 'The last batch could not process it';
+        } else if (item.outcome === 'skipped' && item.reason) {
+          // Says nothing new about the radargram; an older batch might.
+          continue;
+        }
+        said.add(item.radargram_id);
+      }
+    }
+    for (const draft of drafts.drafts) {
+      const known = by.get(draft.radargram_id);
+      if (known && (draft.state === 'queued' || draft.state === 'running')) {
+        known.word = 'processing';
+        known.why = 'Your draft is being processed';
+      }
+    }
+    return by;
+  }
+
+  function badgeFor(standing) {
+    const link = document.createElement('a');
+    link.className = `processing-state processing-state-${standing.word}`;
+    link.textContent = WORDS[standing.word] || standing.word;
+    link.href = `${RIDAL.pagePath('processing')}#profile-${standing.status.profile}`;
+    link.title = standing.why || `Processing profile ${standing.status.profile}`;
+    link.setAttribute('aria-label', `${link.textContent}: ${link.title}`);
+    return link;
+  }
+
+  /** Each group's out-of-date radargrams, by processing profile. */
+  function groupOutOfDate(section, by) {
+    const byProfile = new Map();
+    let count = 0;
+    for (const card of section.querySelectorAll('li.card')) {
+      const standing = by.get(card.id.replace(/^card-/, ''));
+      if (!standing || !outOfDate(standing.status) || standing.word === 'processing') continue;
+      const profile = standing.status.profile;
+      if (!byProfile.has(profile)) byProfile.set(profile, []);
+      byProfile.get(profile).push(standing.status.radargram_id);
+      count += 1;
+    }
+    return { count, byProfile };
+  }
+
+  async function processGroup(section, label, byProfile, button, note) {
+    const count = [...byProfile.values()].reduce((n, ids) => n + ids.length, 0);
+    const profiles = byProfile.size;
+    const ok = window.confirm(
+      `Process ${count} out-of-date radargram${count === 1 ? '' : 's'} in ${label}` +
+        (profiles > 1 ? `, as ${profiles} batches, one for each processing profile,` : '') +
+        ' and apply each without review?',
+    );
+    if (!ok) return;
+    button.disabled = true;
+    const failures = [];
+    let started = 0;
+    for (const [profile, ids] of byProfile) {
+      try {
+        await RIDAL.fetchJson(RIDAL.apiPath('processing', 'profiles', profile, 'reprocess'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ radargram_ids: ids }),
+        });
+        started += 1;
+      } catch (error) {
+        failures.push(`${profile}: ${error.message}`);
+      }
+    }
+    note.replaceChildren();
+    if (started) {
+      const link = document.createElement('a');
+      link.href = RIDAL.pagePath('processing');
+      link.textContent = 'the Processing page';
+      note.append(
+        `Started ${started} batch${started === 1 ? '' : 'es'}; follow ${started === 1 ? 'it' : 'them'} on `,
+        link,
+        '.',
+      );
+    }
+    if (failures.length) note.append(` Not started: ${failures.join('; ')}`);
+    note.hidden = false;
+    refresh();
+  }
+
+  let polling = null;
+  async function refresh() {
+    if (polling) clearTimeout(polling);
+    polling = null;
+    const by = await standings();
+    if (!by) return;
+    for (const card of document.querySelectorAll('li.card')) {
+      card.querySelector('.card-processing')?.remove();
+      const standing = by.get(card.id.replace(/^card-/, ''));
+      if (!standing) continue;
+      const line = document.createElement('p');
+      line.className = 'card-processing';
+      line.append(badgeFor(standing));
+      card.querySelector('.card-heading')?.after(line);
+    }
+    for (const section of document.querySelectorAll('section.group')) {
+      const actions = section.querySelector('.group-actions');
+      if (!actions) continue;
+      actions.querySelector('.group-process')?.remove();
+      const { count, byProfile } = groupOutOfDate(section, by);
+      if (count === 0) continue;
+      const label = section.querySelector('h2')?.textContent.trim() || 'this catalog';
+      if (operator) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'group-toggle group-process';
+        button.textContent = `Process ${count} out-of-date…`;
+        let note = section.querySelector('.group-process-note');
+        if (!note) {
+          note = document.createElement('p');
+          note.className = 'group-process-note hint';
+          note.hidden = true;
+          section.querySelector('.group-heading').append(note);
+        }
+        button.addEventListener('click', () =>
+          processGroup(section, label, byProfile, button, note),
+        );
+        actions.append(button);
+      } else {
+        const text = document.createElement('span');
+        text.className = 'group-process group-outdated';
+        text.textContent = `${count} out of date`;
+        actions.append(text);
+      }
+    }
+    // While anything is being processed, look again now and then.
+    if ([...by.values()].some((s) => s.word === 'processing')) {
+      polling = setTimeout(refresh, 10000);
+    }
+  }
+  refresh();
+})();

@@ -356,6 +356,11 @@ pub enum ProcessingState {
     Stale {
         /// The profile version it was processed with, when it matches one.
         profile_version: Option<u32>,
+        /// Processed with steps or a velocity that match no version of the
+        /// profile: changed for this radargram, as opposed to left behind
+        /// by the profile. False for a file that records no recipe, which
+        /// cannot say.
+        custom: bool,
         reasons: Vec<String>,
     },
     /// Processed as the profile says, but by an older version of a step or
@@ -402,6 +407,7 @@ pub fn state_of(
     let Some(recipe) = recipe else {
         return ProcessingState::Stale {
             profile_version: None,
+            custom: false,
             reasons: vec![
                 "processed before Ridal recorded what a file was made from, so it \
                  cannot be compared"
@@ -449,6 +455,7 @@ pub fn state_of(
     if !reasons.is_empty() {
         return ProcessingState::Stale {
             profile_version: matched,
+            custom: matched.is_none(),
             reasons,
         };
     }
@@ -759,6 +766,7 @@ mod tests {
         match state(&v2, &source("aa")) {
             ProcessingState::Stale {
                 profile_version: Some(1),
+                custom: false,
                 reasons,
             } => {
                 assert!(
@@ -812,6 +820,7 @@ mod tests {
             state_of(&assignment, &profile, Some(&source("aa")), true, None),
             ProcessingState::Stale {
                 profile_version: None,
+                custom: false,
                 ..
             }
         ));
@@ -863,6 +872,7 @@ mod tests {
             ),
             ProcessingState::Stale {
                 profile_version: None,
+                custom: true,
                 ..
             }
         ));
