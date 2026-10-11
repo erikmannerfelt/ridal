@@ -3,6 +3,7 @@
 import concurrent.futures
 import os
 import threading
+import time
 from collections.abc import Callable, Collection, Iterable
 from os import PathLike
 from pathlib import Path
@@ -774,6 +775,527 @@ class Client:
             path, self._http.request("PUT", path, json=data, headers=headers)
         )
 
+    # -- Processing on the server (#382) -------------------------------------
+
+    def upload_raw(
+        self, path: str | PathLike[str], *, progress: Progress | None = None
+    ) -> models.StoredFile:
+        """Store one raw file in the project, such as a recording's ``.rd3``.
+        Needs ``operator``.
+
+        Its name says what it is to its recording, so the file is sent under
+        its own name. A file the project already has is not stored twice.
+        """
+        source = Path(path)
+        return models.StoredFile.from_json(
+            self._http.upload(
+                "POST",
+                self._project_path("raw"),
+                source,
+                params={"filename": source.name},
+                label=source.name,
+                progress=progress,
+            )
+        )
+
+    def download_raw(
+        self,
+        blake3: str,
+        destination: str | PathLike[str],
+        *,
+        progress: Progress | None = None,
+    ) -> Path:
+        """Download a stored raw file by its hash. Needs the ``all`` download
+        scope. ``destination`` is a file, or a directory to write it into
+        named by its hash."""
+        return self._http.download(
+            self._project_path("raw", blake3),
+            Path(destination),
+            label=blake3,
+            progress=progress,
+        )
+
+    def sources(self) -> tuple[str, ...]:
+        """The radargram ids the project has raw data for, processed yet or not."""
+        answer = self._http.json("GET", self._project_path("sources"))
+        return tuple(answer["radargram_ids"])
+
+    def source(self, radargram_id: str) -> models.SourceView:
+        """What a radargram is made from, with the version to change it at."""
+        response = self._http.request(
+            "GET", self._project_path("sources", radargram_id)
+        )
+        return models.SourceView.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def set_source(
+        self,
+        radargram_id: str,
+        recordings: Iterable[Iterable[models.StoredFile | models.HashedFile]],
+        *,
+        crs: str | None = None,
+        dem: str | None = None,
+        etag: str | None = None,
+    ) -> models.SourceView:
+        """Set or switch what a radargram is made from. Needs ``operator``.
+
+        Parameters
+        ----------
+        radargram_id : str
+            Need not be processed yet: this is where processing a new one
+            starts.
+        recordings : iterable of iterables of StoredFile
+            The recordings in the order they are merged, each the files it
+            is made of, as :meth:`upload_raw` answered. Which file is the
+            header, the data and the positions is read from their names.
+        crs : str, optional
+            An EPSG code such as ``"EPSG:32633"``. Without one, the project's
+            (``[processing] crs``), else the UTM zone that suits the track.
+        dem : str, optional
+            The id of one of the project's DEMs (:meth:`dems`).
+        etag : str, optional
+            The source's version from :meth:`source`: the change is refused
+            (:class:`~ridal.client.errors.PreconditionFailed`) if it has
+            changed since.
+
+        The server reads every recording before saving, and refuses
+        recordings that cannot be merged, or a DEM that does not cover them.
+        """
+        body = {
+            "recordings": [
+                [{"name": f.name, "blake3": f.blake3} for f in files]
+                for files in recordings
+            ],
+            "crs": crs,
+            "dem": dem,
+        }
+        response = self._http.request(
+            "PUT",
+            self._project_path("sources", radargram_id),
+            json=body,
+            headers={"If-Match": etag} if etag else {},
+        )
+        return models.SourceView.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def delete_source(self, radargram_id: str, *, etag: str | None = None) -> None:
+        """Forget what a radargram is made from. Needs ``operator``."""
+        self._http.request(
+            "DELETE",
+            self._project_path("sources", radargram_id),
+            headers={"If-Match": etag} if etag else {},
+        )
+
+    def link_dem(
+        self, radargram_id: str, dem: str | None, *, etag: str | None = None
+    ) -> models.SourceView:
+        """Link a radargram to one of the project's DEMs, or with ``None``
+        unlink it, leaving its recordings as they are. Needs ``operator``.
+
+        What is served was made otherwise, so it is stale afterwards.
+        """
+        response = self._http.request(
+            "PUT",
+            self._project_path("sources", radargram_id, "dem"),
+            json={"dem": dem},
+            headers={"If-Match": etag} if etag else {},
+        )
+        return models.SourceView.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def dems(self) -> tuple[models.Dem, ...]:
+        """The project's DEMs, and which radargrams use each."""
+        answer = self._http.json("GET", self._project_path("dems"))
+        return tuple(models.Dem.from_json(d) for d in answer["dems"])
+
+    def dem(self, dem_id: str) -> models.Dem:
+        """One of the project's DEMs."""
+        response = self._http.request("GET", self._project_path("dems", dem_id))
+        return models.Dem.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def add_dem(
+        self,
+        dem_id: str,
+        name: str,
+        path: str | PathLike[str],
+        *,
+        replace: bool = False,
+        progress: Progress | None = None,
+    ) -> models.Dem:
+        """Upload a DEM for the project. Needs ``operator``.
+
+        Refused if the project already has a DEM with this id, unless
+        ``replace`` is set; then its file is replaced, which the server
+        refuses while any radargram links to it. GDAL must be able to read
+        the file as a raster.
+        """
+        stored = self.upload_raw(path, progress=progress)
+        return self._put_dem(
+            dem_id,
+            {"name": name, "file": {"name": stored.name, "blake3": stored.blake3}},
+            headers={} if replace else {"If-None-Match": "*"},
+        )
+
+    def rename_dem(self, dem_id: str, name: str) -> models.Dem:
+        """Give a DEM another name. Needs ``operator``."""
+        return self._put_dem(dem_id, {"name": name}, headers={"If-Match": "*"})
+
+    def _put_dem(
+        self, dem_id: str, body: dict[str, Any], headers: dict[str, str]
+    ) -> models.Dem:
+        response = self._http.request(
+            "PUT", self._project_path("dems", dem_id), json=body, headers=headers
+        )
+        return models.Dem.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def delete_dem(self, dem_id: str) -> None:
+        """Delete a DEM nobody links to. Needs ``operator``."""
+        self._http.request("DELETE", self._project_path("dems", dem_id))
+
+    def create_draft(
+        self,
+        radargram_id: str,
+        steps: Iterable[str],
+        *,
+        medium_velocity: float | None = None,
+        antenna_mhz_override: float | None = None,
+        antenna_separation_override: float | None = None,
+    ) -> models.Draft:
+        """Process a radargram's raw data on the server, to look at before
+        it becomes the radargram. Needs ``operator``.
+
+        Answers at once, with the draft queued; :meth:`wait_for_draft`
+        follows it. The same request again answers the same draft. Refused
+        with :class:`~ridal.client.errors.TooManyRequests` while the caller
+        or the project has as many jobs as the server allows.
+        """
+        body: dict[str, Any] = {"steps": list(steps)}
+        for key, value in (
+            ("medium_velocity", medium_velocity),
+            ("antenna_mhz_override", antenna_mhz_override),
+            ("antenna_separation_override", antenna_separation_override),
+        ):
+            if value is not None:
+                body[key] = value
+        return models.Draft.from_json(
+            self._http.json(
+                "POST", self._project_path("sources", radargram_id, "drafts"), json=body
+            )
+        )
+
+    def drafts(self) -> tuple[models.Draft, ...]:
+        """The caller's drafts."""
+        answer = self._http.json("GET", self._project_path("drafts"))
+        return tuple(models.Draft.from_json(d) for d in answer["drafts"])
+
+    def draft(self, job: int) -> models.Draft:
+        """One of the caller's drafts, as far as it has got."""
+        return models.Draft.from_json(
+            self._http.json("GET", self._project_path("drafts", str(job)))
+        )
+
+    def wait_for_draft(
+        self,
+        job: int,
+        *,
+        on_update: Callable[[models.Draft], None] | None = None,
+        interval: float = 1.0,
+        timeout: float | None = None,
+    ) -> models.Draft:
+        """Follow a draft until it finishes, and return it as it ended.
+
+        Parameters
+        ----------
+        job : int
+        on_update : callable, optional
+            Called with the draft each time it is looked at, so a script can
+            report which step it is on (``draft.step``).
+        interval : float, default 1
+            Seconds between looks.
+        timeout : float, optional
+            Give up after this many seconds, with ``TimeoutError``. The draft
+            carries on; :meth:`delete_draft` stops it.
+
+        Returns
+        -------
+        Draft
+            Finished: ``done``, or ``failed``, ``timed_out`` or
+            ``cancelled``. Check ``state``; :meth:`process` raises instead.
+        """
+        return _follow(
+            lambda: self.draft(job),
+            lambda draft: draft.finished,
+            on_update,
+            interval,
+            timeout,
+            f"draft {job}",
+        )
+
+    def download_draft(
+        self,
+        job: int,
+        destination: str | PathLike[str],
+        *,
+        progress: Progress | None = None,
+    ) -> Path:
+        """Download a finished draft's NetCDF file. Needs the ``all`` download
+        scope."""
+        return self._http.download(
+            self._project_path("drafts", str(job), "download"),
+            Path(destination),
+            label=f"draft-{job}.nc",
+            progress=progress,
+        )
+
+    def commit_draft(self, job: int) -> models.Staged | models.Added:
+        """Make a finished draft the radargram.
+
+        For a radargram already served, the draft is staged as a replacement
+        and the answer is a :class:`~ridal.client.Staged`: read its report,
+        then :meth:`commit_replacement` or :meth:`discard_replacement` it.
+        For a new id the draft is added at once, and the answer is an
+        :class:`~ridal.client.Added`. Refused
+        (:class:`~ridal.client.errors.Conflict`, ``radargram_moved``) when
+        someone has changed the radargram since the draft was asked for.
+        """
+        response = self._http.request(
+            "POST", self._project_path("drafts", str(job), "commit"), json={}
+        )
+        body = _json_of(response)
+        if response.status_code == 201:
+            return models.Added.from_json(body)
+        return models.Staged.from_json(body)
+
+    def delete_draft(self, job: int) -> None:
+        """Stop a draft, or throw a finished one away."""
+        self._http.request("DELETE", self._project_path("drafts", str(job)))
+
+    def process(
+        self,
+        radargram_id: str,
+        recordings: Iterable[str | PathLike[str] | Iterable[str | PathLike[str]]],
+        steps: Iterable[str],
+        *,
+        crs: str | None = None,
+        dem: str | None = None,
+        medium_velocity: float | None = None,
+        allow: Collection[models.Severity] = planning.DEFAULT_ALLOW,
+        progress: Progress | None = None,
+        on_update: Callable[[models.Draft], None] | None = None,
+    ) -> models.Replaced | models.Added:
+        """Process raw recordings into a radargram on the server, as the
+        browser's "From raw data…" does: upload, set the source, draft, and
+        apply.
+
+        Parameters
+        ----------
+        radargram_id : str
+        recordings : iterable
+            The recordings in merge order. Each is a list of its files, or
+            any one of its files (such as its ``.rd3``), in which case the
+            files beside it with the same name and another extension are
+            taken too.
+        steps : iterable of str
+            As ``ridal steps`` lists them.
+        crs, dem : str, optional
+            As for :meth:`set_source`.
+        medium_velocity : float, optional
+            m/ns. The server's default is that of ice.
+        allow : collection of Severity
+            For a radargram already served: commit only if every
+            interpretation on it would be at most this affected, as for
+            :meth:`replace`. A refused replacement is discarded and
+            :class:`~ridal.client.errors.ReplacementRefused` raised.
+        progress : callable, optional
+            For the uploads.
+        on_update : callable, optional
+            Called with the draft as it is processed.
+
+        Raises
+        ------
+        ProcessingFailed
+            The draft did not finish. It is left for :meth:`draft` to read.
+        """
+        stored = [
+            [self.upload_raw(path, progress=progress) for path in files]
+            for files in (_recording_files(r) for r in recordings)
+        ]
+        self.set_source(radargram_id, stored, crs=crs, dem=dem)
+        draft = self.create_draft(radargram_id, steps, medium_velocity=medium_velocity)
+        draft = self.wait_for_draft(draft.job, on_update=on_update)
+        if draft.state != "done":
+            raise errors.ProcessingFailed(
+                f"the draft of {radargram_id} ended {draft.state}"
+                + (f": {draft.message}" if draft.message else ""),
+                draft,
+            )
+        committed = self.commit_draft(draft.job)
+        if isinstance(committed, models.Added):
+            return committed
+        reason = planning.acceptable(committed.report, allow)
+        if reason is not None:
+            self.discard_replacement(radargram_id, committed.token)
+            raise errors.ReplacementRefused(reason, committed.report)
+        return self.commit_replacement(radargram_id, committed.token)
+
+    def profiles(self) -> tuple[models.Profile, ...]:
+        """The project's processing profiles."""
+        answer = self._http.json("GET", self._project_path("processing", "profiles"))
+        return tuple(models.Profile.from_json(p) for p in answer["profiles"])
+
+    def profile(self, profile_id: str) -> models.Profile:
+        """One processing profile, every version of it, with its ``etag``."""
+        response = self._http.request(
+            "GET", self._project_path("processing", "profiles", profile_id)
+        )
+        return models.Profile.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def save_profile(
+        self,
+        profile_id: str,
+        *,
+        name: str,
+        steps: Iterable[str],
+        medium_velocity: float,
+        description: str = "",
+        etag: str | None = None,
+        overwrite: bool = False,
+    ) -> models.Profile:
+        """Create or change a processing profile. Needs ``operator``.
+
+        A change to the steps or the velocity is a new version; a new name
+        or description alone is not. ``etag`` and ``overwrite`` work as for
+        :meth:`save_layers`: without an ``etag`` only a new profile is
+        created, unless ``overwrite`` is set.
+        """
+        response = self._http.request(
+            "PUT",
+            self._project_path("processing", "profiles", profile_id),
+            json={
+                "name": name,
+                "description": description,
+                "steps": list(steps),
+                "medium_velocity": medium_velocity,
+            },
+            headers=_preconditions(etag, overwrite),
+        )
+        return models.Profile.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def delete_profile(self, profile_id: str) -> None:
+        """Delete a processing profile no radargram is in. Needs ``operator``."""
+        self._http.request(
+            "DELETE", self._project_path("processing", "profiles", profile_id)
+        )
+
+    def assignments(self) -> dict[str, models.Assignment]:
+        """Which processing profile each radargram is in, by radargram id."""
+        answer = self._http.json("GET", self._project_path("processing", "assignments"))
+        return {
+            radargram_id: models.Assignment.from_json(assignment)
+            for radargram_id, assignment in answer["radargrams"].items()
+        }
+
+    def assign(
+        self, radargram_id: str, profile_id: str, *, pre_steps: Iterable[str] = ()
+    ) -> models.Assignment:
+        """Put a radargram in a processing profile, with steps of its own to
+        run first (``subset`` and ``remove_traces`` only). Needs
+        ``operator``, and raw data for the radargram."""
+        return models.Assignment.from_json(
+            self._http.json(
+                "PUT",
+                self._project_path("processing", "assignments", radargram_id),
+                json={"profile": profile_id, "pre_steps": list(pre_steps)},
+            )
+        )
+
+    def unassign(self, radargram_id: str) -> None:
+        """Take a radargram out of its processing profile. Needs ``operator``."""
+        self._http.request(
+            "DELETE", self._project_path("processing", "assignments", radargram_id)
+        )
+
+    def processing_status(
+        self, radargram_id: str | None = None
+    ) -> tuple[models.RadargramStatus, ...]:
+        """Where every radargram in a profile stands, or only ``radargram_id``."""
+        params = {"radargram_id": radargram_id} if radargram_id is not None else None
+        answer = self._http.json(
+            "GET", self._project_path("processing", "status"), params=params
+        )
+        return tuple(models.RadargramStatus.from_json(r) for r in answer["radargrams"])
+
+    def reprocess(
+        self,
+        profile_id: str,
+        *,
+        include_older: bool = False,
+        radargram_ids: Iterable[str] | None = None,
+    ) -> models.Batch:
+        """Start a batch: process a profile's stale and not-processed
+        radargrams at its current version, and apply each without review.
+        Needs ``operator``.
+
+        ``include_older`` takes those processed as the profile says by an
+        older Ridal too; ``radargram_ids`` limits it to those of the
+        profile's radargrams. Refused
+        (:class:`~ridal.client.errors.Conflict`, ``nothing_to_reprocess``)
+        when there is nothing to do. :meth:`wait_for_batch` follows it.
+        """
+        body: dict[str, Any] = {"include_older": include_older}
+        if radargram_ids is not None:
+            body["radargram_ids"] = list(radargram_ids)
+        return models.Batch.from_json(
+            self._http.json(
+                "POST",
+                self._project_path("processing", "profiles", profile_id, "reprocess"),
+                json=body,
+            )
+        )
+
+    def batches(self) -> tuple[models.Batch, ...]:
+        """The 50 most recent batches, newest first. Needs ``operator``."""
+        answer = self._http.json("GET", self._project_path("processing", "batches"))
+        return tuple(models.Batch.from_json(b) for b in answer["batches"])
+
+    def batch(self, batch_id: str) -> models.Batch:
+        """One batch, item by item. Needs ``operator``."""
+        return models.Batch.from_json(
+            self._http.json(
+                "GET", self._project_path("processing", "batches", batch_id)
+            )
+        )
+
+    def wait_for_batch(
+        self,
+        batch_id: str,
+        *,
+        on_update: Callable[[models.Batch], None] | None = None,
+        interval: float = 5.0,
+        timeout: float | None = None,
+    ) -> models.Batch:
+        """Follow a batch until it has ended, as :meth:`wait_for_draft`
+        follows a draft, and return it."""
+        return _follow(
+            lambda: self.batch(batch_id),
+            lambda batch: batch.finished,
+            on_update,
+            interval,
+            timeout,
+            f"batch {batch_id}",
+        )
+
     def _caller_name(self) -> str:
         user = self.me().user
         if user is None:
@@ -861,3 +1383,54 @@ def _as_document(path: str, response: Any) -> models.Document:
     except ValueError as error:
         raise errors.ProtocolError(f"{path} did not answer with JSON") from error
     return models.Document(data=data, etag=response.headers.get("ETag") or None)
+
+
+def _json_of(response: Any) -> Any:
+    try:
+        return response.json()
+    except ValueError as error:
+        raise errors.ProtocolError(
+            f"{response.request.method} {response.request.url.path} did not answer with JSON"
+        ) from error
+
+
+def _follow(
+    look: Callable[[], _T],
+    done: Callable[[_T], bool],
+    on_update: Callable[[_T], None] | None,
+    interval: float,
+    timeout: float | None,
+    what: str,
+) -> _T:
+    """Look at something until ``done`` says it is, and return it."""
+    deadline = None if timeout is None else time.monotonic() + timeout
+    while True:
+        current = look()
+        if on_update is not None:
+            on_update(current)
+        if done(current):
+            return current
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError(f"{what} had not finished after {timeout} s")
+        time.sleep(interval)
+
+
+def _recording_files(recording: Any) -> list[Path]:
+    """A recording's files: those given, or, for one file, it and the files
+    beside it with the same name and another extension.
+
+    >>> import tempfile
+    >>> with tempfile.TemporaryDirectory() as d:
+    ...     for name in ("a.rad", "a.rd3", "a.cor", "b.rd3"):
+    ...         _ = (Path(d) / name).write_bytes(b"")
+    ...     [p.name for p in _recording_files(Path(d) / "a.rd3")]
+    ['a.cor', 'a.rad', 'a.rd3']
+    """
+    if isinstance(recording, (str, PathLike)):
+        path = Path(recording)
+        return sorted(
+            sibling
+            for sibling in path.parent.iterdir()
+            if sibling.is_file() and sibling.stem == path.stem
+        )
+    return [Path(p) for p in recording]

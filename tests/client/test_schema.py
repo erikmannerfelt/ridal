@@ -33,7 +33,36 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.InterpretationList: ("InterpretationList", {}),
     models.Grant: ("Grant", {}),
     models.TokenSummary: ("TokenSummary", {}),
+    # Processing on the server (#382).
+    models.HashedFile: ("HashedFile", {}),
+    models.StoredFile: ("StoredFile", {}),
+    models.BundleFile: ("BundleFile", {}),
+    models.Bundle: ("Bundle", {}),
+    models.SourceDem: ("SourceDem", {}),
+    models.Source: ("RawSource", {}),
+    models.NamedFormat: ("NamedFormat", {}),
+    models.MetadataSummary: ("MetadataSummary", {}),
+    models.CentroidSummary: ("CentroidSummary", {}),
+    models.CorrectionSummary: ("CorrectionSummary", {}),
+    models.LocationSummary: ("LocationSummary", {}),
+    models.RelatedFiles: ("RelatedFiles", {}),
+    models.Recording: ("InfoRecord", {}),
+    models.SourceView: ("SourceView", {}),
+    models.Dem: ("DemView", {}),
+    models.StepProgress: ("StepProgress", {}),
+    models.Draft: ("DraftView", {}),
+    models.ProfileVersion: ("ProfileVersion", {}),
+    models.Profile: ("ProfileView", {}),
+    models.Assignment: ("Assignment", {}),
+    models.RadargramStatus: ("RadargramStatus", {}),
+    models.PicksNotCarried: ("PicksNotCarried", {}),
+    models.BatchItem: ("Item", {}),
+    models.Batch: ("Batch", {}),
 }
+
+#: Fields a record has that the server does not send in the body: the
+#: version from the ``ETag`` header, for a conditional change.
+CLIENT_ONLY: Final = frozenset({"etag"})
 
 
 def schemas() -> dict[str, Any]:
@@ -45,22 +74,47 @@ def nullable(annotation: Any) -> bool:
     return is_union and type(None) in typing.get_args(annotation)
 
 
+def properties(schema: dict[str, Any]) -> dict[str, bool]:
+    """Every property an object of ``schema`` may have, and whether it may
+    be null or missing.
+
+    A flattened field makes an ``allOf``, whose parts are all there; a
+    tagged enum makes a ``oneOf``, of which one is, so a property only some
+    of its variants have may be missing, which the client reads as ``None``.
+    """
+    if "$ref" in schema:
+        return properties(schemas()[schema["$ref"].rsplit("/", 1)[1]])
+    if "allOf" in schema:
+        merged: dict[str, bool] = {}
+        for part in schema["allOf"]:
+            merged.update(properties(part))
+        return merged
+    if "oneOf" in schema:
+        variants = [properties(v) for v in schema["oneOf"]]
+        names = set().union(*variants)
+        return {name: any(name not in v or v[name] for v in variants) for name in names}
+    required = set(schema.get("required", []))
+    return {
+        name: server_nullable(prop) or name not in required
+        for name, prop in schema.get("properties", {}).items()
+    }
+
+
 @pytest.mark.parametrize("record", list(RECORDS), ids=lambda record: record.__name__)
 def test_a_record_has_exactly_the_schemas_fields(record: type) -> None:
     name, renamed = RECORDS[record]
-    schema = schemas()[name]
+    server = properties(schemas()[name])
     hints = typing.get_type_hints(record)
-    fields = {
-        renamed.get(field.name, field.name) for field in dataclasses.fields(record)
-    }
-    assert fields == set(schema["properties"]), name
+    fields = [f for f in dataclasses.fields(record) if f.name not in CLIENT_ONLY]
+    assert {renamed.get(f.name, f.name) for f in fields} == set(server), name
 
-    # A field the server may send as null is optional here, and only then.
-    for field in dataclasses.fields(record):
+    # A field the server may send as null, or leave out, is optional here,
+    # and only then.
+    for field in fields:
         server_name = renamed.get(field.name, field.name)
-        assert nullable(hints[field.name]) == server_nullable(
-            schema["properties"][server_name]
-        ), f"{record.__name__}.{field.name}"
+        assert nullable(hints[field.name]) == server[server_name], (
+            f"{record.__name__}.{field.name}"
+        )
 
 
 def server_nullable(property: dict[str, Any]) -> bool:

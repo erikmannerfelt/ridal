@@ -66,7 +66,7 @@ fn writable_project<'a>(
 }
 
 /// A profile, as the list and the single view give it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ProfileView {
     #[serde(flatten)]
     pub profile: Profile,
@@ -76,7 +76,7 @@ pub struct ProfileView {
     pub members: Vec<RadargramId>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ProfileList {
     pub profiles: Vec<ProfileView>,
 }
@@ -256,7 +256,7 @@ pub async fn delete_assignment(
 }
 
 /// One radargram in a profile, and where it stands.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RadargramStatus {
     pub radargram_id: RadargramId,
     pub profile: ProfileId,
@@ -264,7 +264,7 @@ pub struct RadargramStatus {
     pub state: processing::ProcessingState,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StatusList {
     pub radargrams: Vec<RadargramStatus>,
 }

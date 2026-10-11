@@ -17,7 +17,10 @@ use axum::http::header;
 use axum::response::IntoResponse;
 use utoipa::OpenApi;
 
-use super::{interp_routes, lifecycle_routes, replace_routes, routes, site};
+use super::{
+    batch_routes, dem_routes, draft_routes, interp_routes, lifecycle_routes, processing_routes,
+    raw_routes, replace_routes, routes, site,
+};
 use crate::interp::carry::{CarryReport, Displacement, Dropped, Severity};
 use crate::interp::source::RevisionDeclarations;
 use crate::project::roles::{DownloadScope, Role};
@@ -75,6 +78,21 @@ use crate::site::tokens;
         tokens::Grant,
         Role,
         DownloadScope,
+        // Processing on the server (#382): what the Python client's
+        // processing methods read.
+        raw_routes::StoredFile,
+        raw_routes::SourceList,
+        raw_routes::SourceView,
+        dem_routes::DemList,
+        dem_routes::DemView,
+        draft_routes::DraftList,
+        draft_routes::DraftView,
+        processing_routes::ProfileList,
+        processing_routes::ProfileView,
+        processing_routes::StatusList,
+        crate::project::processing::Assignments,
+        batch_routes::BatchList,
+        batch_routes::Batch,
     ))
 )]
 struct ApiDoc;

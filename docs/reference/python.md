@@ -123,6 +123,32 @@ What the server answers. Each mirrors a schema in
 .. autoclass:: ridal.client.Promoted
 ```
 
+### Processing records
+
+```{eval-rst}
+.. autoclass:: ridal.client.StoredFile
+.. autoclass:: ridal.client.HashedFile
+.. autoclass:: ridal.client.SourceView
+.. autoclass:: ridal.client.Source
+.. autoclass:: ridal.client.Bundle
+.. autoclass:: ridal.client.BundleFile
+.. autoclass:: ridal.client.SourceDem
+.. autoclass:: ridal.client.Recording
+.. autoclass:: ridal.client.Dem
+.. autoclass:: ridal.client.Draft
+   :members: finished
+.. autoclass:: ridal.client.StepProgress
+.. autoclass:: ridal.client.Profile
+   :members: current
+.. autoclass:: ridal.client.ProfileVersion
+.. autoclass:: ridal.client.Assignment
+.. autoclass:: ridal.client.RadargramStatus
+.. autoclass:: ridal.client.Batch
+   :members: finished
+.. autoclass:: ridal.client.BatchItem
+.. autoclass:: ridal.client.PicksNotCarried
+```
+
 ### Exceptions
 
 ```{eval-rst}
@@ -136,10 +162,12 @@ What the server answers. Each mirrors a schema in
 .. autoexception:: ridal.client.NotAProject
 .. autoexception:: ridal.client.PreconditionFailed
 .. autoexception:: ridal.client.PayloadTooLarge
+.. autoexception:: ridal.client.TooManyRequests
 .. autoexception:: ridal.client.Unavailable
 .. autoexception:: ridal.client.TransportError
 .. autoexception:: ridal.client.ProtocolError
 .. autoexception:: ridal.client.ReplacementRefused
+.. autoexception:: ridal.client.ProcessingFailed
 ```
 
 ## Removed

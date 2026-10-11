@@ -368,6 +368,17 @@ macro_rules! slug_newtype {
             }
         }
 
+        /// A string in the OpenAPI description (#330): what it serializes as.
+        #[cfg(feature = "server")]
+        impl utoipa::PartialSchema for $name {
+            fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+                <String as utoipa::PartialSchema>::schema()
+            }
+        }
+
+        #[cfg(feature = "server")]
+        impl utoipa::ToSchema for $name {}
+
         /// Deserializing runs the same validation `new` does, rather than
         /// trusting the file. These slugs are used as path components, so a
         /// hand-edited document must not be able to reintroduce a value the

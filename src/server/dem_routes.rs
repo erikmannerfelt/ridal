@@ -89,7 +89,7 @@ pub(super) fn link_to(
 }
 
 /// A DEM, as the list and the single view give it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DemView {
     #[serde(flatten)]
     pub dem: Dem,
@@ -117,7 +117,7 @@ fn users_of(project: &crate::project::Project, id: &DemId) -> Result<Vec<Radargr
         .unwrap_or_default())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DemList {
     pub dems: Vec<DemView>,
 }

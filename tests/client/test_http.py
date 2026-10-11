@@ -461,3 +461,87 @@ def test_anything_but_a_feature_collection_is_not_understood() -> None:
         pytest.raises(errors.ProtocolError),
     ):
         client.track("line-01")
+
+
+def draft(state: str, **extra: Any) -> dict[str, Any]:
+    """A draft as ``GET /drafts/{job}`` answers it."""
+    return {
+        "job": 7,
+        "radargram_id": "line-01",
+        "base_revision": None,
+        "state": state,
+        "step": None,
+        "writing": False,
+        **extra,
+    }
+
+
+def test_following_a_draft_reports_each_look_and_ends_when_it_does() -> None:
+    answers = iter(
+        [
+            draft("queued"),
+            draft("running", step={"index": 0, "of": 2, "step": "dewow"}),
+            draft("done", revision_id="r1"),
+        ]
+    )
+
+    def handler(request: Any) -> Any:
+        assert request.url.path == "/api/v1/projects/default/drafts/7"
+        return httpx.Response(200, json=next(answers))
+
+    seen: list[ridal_client.Draft] = []
+    with fake(handler) as client:
+        ended = client.wait_for_draft(7, on_update=seen.append, interval=0)
+    assert [d.state for d in seen] == ["queued", "running", "done"]
+    assert seen[1].step == ridal_client.StepProgress(0, 2, "dewow")
+    assert ended.revision_id == "r1" and ended.finished
+
+
+def test_a_draft_that_does_not_finish_in_time_is_given_up_on() -> None:
+    def handler(request: Any) -> Any:
+        return httpx.Response(200, json=draft("running"))
+
+    with fake(handler) as client, pytest.raises(TimeoutError):
+        client.wait_for_draft(7, interval=0.01, timeout=0.05)
+
+
+def test_processing_stops_at_a_draft_that_failed(tmp_path: Path) -> None:
+    recording = [tmp_path / "a.rad", tmp_path / "a.rd3"]
+    for path in recording:
+        path.write_bytes(b"x")
+    calls: list[str] = []
+
+    def handler(request: Any) -> Any:
+        calls.append(f"{request.method} {request.url.path.split('/default/')[1]}")
+        if request.url.path.endswith("/raw"):
+            name = request.url.params["filename"]
+            return httpx.Response(
+                201, json={"name": name, "blake3": "b" * 64, "bytes": 1}
+            )
+        if request.method == "PUT":
+            body = json.loads(request.content)
+            assert [f["name"] for f in body["recordings"][0]] == ["a.rad", "a.rd3"]
+            source = {"bundles": [], "crs": None, "dem": None}
+            return httpx.Response(
+                200,
+                json={"radargram_id": "line-01", "source": source, "recordings": []},
+            )
+        if request.method == "POST":
+            return httpx.Response(202, json=draft("queued"))
+        return httpx.Response(200, json=draft("failed", message="no positions"))
+
+    with fake(handler) as client, pytest.raises(errors.ProcessingFailed) as failed:
+        client.process("line-01", [recording], ["dewow"])
+    assert "no positions" in str(failed.value)
+    assert failed.value.draft.state == "failed"
+    # Nothing is applied after a failure.
+    assert not any("commit" in call for call in calls), calls
+
+
+def test_too_many_jobs_is_its_own_refusal() -> None:
+    def handler(request: Any) -> Any:
+        return refusal(429, "project_too_many_jobs")
+
+    with fake(handler) as client, pytest.raises(errors.TooManyRequests) as refused:
+        client.create_draft("line-01", ["dewow"])
+    assert refused.value.code == "project_too_many_jobs"
