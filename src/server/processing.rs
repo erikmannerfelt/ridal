@@ -918,21 +918,36 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
         // from two people, so it is the project's limit and not a person's.
         let mut ids = vec![];
         for (key, owner) in [("a", "anna"), ("b", "anna"), ("c", "bert")] {
-            ids.push(queue.submit(in_project(key, owner, "glac", Some(50))).unwrap());
+            ids.push(
+                queue
+                    .submit(in_project(key, owner, "glac", Some(50)))
+                    .unwrap(),
+            );
         }
         assert_eq!(
             queue.submit(in_project("d", "carl", "glac", Some(50))),
             Err(SubmitError::ProjectBusy { limit: 3 })
         );
         // Another project is not held to it, and one asking for less gets less.
-        ids.push(queue.submit(in_project("e", "carl", "other", Some(1))).unwrap());
+        ids.push(
+            queue
+                .submit(in_project("e", "carl", "other", Some(1)))
+                .unwrap(),
+        );
         let refused = queue
             .submit(in_project("f", "dora", "other", Some(1)))
             .unwrap_err();
         assert_eq!(refused, SubmitError::ProjectBusy { limit: 1 });
-        assert!(refused.to_string().contains("This project already has 1"), "{refused}");
+        assert!(
+            refused.to_string().contains("This project already has 1"),
+            "{refused}"
+        );
         // Zero is read as one, rather than a project that can never process.
-        ids.push(queue.submit(in_project("g", "erik", "third", Some(0))).unwrap());
+        ids.push(
+            queue
+                .submit(in_project("g", "erik", "third", Some(0)))
+                .unwrap(),
+        );
         for id in ids {
             queue.cancel(id);
         }

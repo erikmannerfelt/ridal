@@ -1668,7 +1668,11 @@ mod tests {
                 .max_queued_jobs,
             None
         );
-        std::fs::write(&path, format!("{text}\n[processing]\nmax_queued_jobs = 2\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("{text}\n[processing]\nmax_queued_jobs = 2\n"),
+        )
+        .unwrap();
         assert_eq!(
             Project::open(dir.path())
                 .unwrap()
