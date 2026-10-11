@@ -155,6 +155,14 @@
       leaving this page to render the error envelope as a document. -#}
   <div id="download-error"></div>
 
+  {#- Someone is processing this radargram (#382): advisory, so that two
+      people do not process the same one, not a lock. app.js fills it in
+      for everyone, as the catalog's badge does. -#}
+  {% if project %}
+  <p id="processing-activity" class="processing-activity" role="status"
+     data-radargram="{{ radargram_id }}" hidden></p>
+  {% endif %}
+
   {#- The picking toolbar. Rendered even when the catalog is not a writable
       project, in which case it explains why rather than vanishing: a missing
       control reads as a missing feature. -#}

@@ -1027,6 +1027,18 @@ const RIDAL = Object.freeze({
     return suffix ? `${RIDAL.pageBase}/${suffix}` : `${RIDAL.pageBase}/`;
   },
 
+  /** Who is processing a radargram, as `GET /processing/activity` says,
+   * in a sentence (#382). */
+  describeActivity(a) {
+    if (a.kind === "draft") {
+      return a.mine ? "Your draft of it is being processed" : `${a.by} is processing this`;
+    }
+    const whose = a.mine ? "you" : a.by;
+    return a.waiting
+      ? `Waiting in a batch ${whose} started`
+      : `Being processed by a batch ${whose} started`;
+  },
+
   /** A byte count as something a person reads. `null`/`undefined` is an
    * ellipsis rather than "NaN B". */
   formatBytes(bytes) {
@@ -1786,5 +1798,29 @@ const RIDAL = Object.freeze({
     lines[lines.length - 1].append(dismiss);
     banner.replaceChildren(...lines);
     banner.hidden = false;
+  })();
+})();
+
+/* Someone is processing the radargram in view (#382). Asked on load and
+ * then every half minute while it says something, so the line goes once
+ * they are done. A draft says only whose it is. */
+(function setupProcessingActivity() {
+  const line = document.getElementById("processing-activity");
+  if (!line) return;
+  const id = line.dataset.radargram;
+  (async function look() {
+    let activity;
+    try {
+      activity = (
+        await RIDAL.fetchJson(
+          `${RIDAL.apiPath("processing", "activity")}?radargram_id=${encodeURIComponent(id)}`,
+        )
+      ).activity;
+    } catch {
+      return;
+    }
+    line.textContent = activity.map((a) => `${RIDAL.describeActivity(a)}.`).join(" ");
+    line.hidden = activity.length === 0;
+    if (activity.length) setTimeout(look, 30000);
   })();
 })();

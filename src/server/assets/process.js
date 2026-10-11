@@ -754,6 +754,31 @@
       'it up to date.';
   });
 
+  /** Whether someone else is processing this radargram: a draft of
+   * theirs, or a batch. The caller's own drafts are this dialog's business
+   * already. Advice, so nothing waits on it. */
+  const activityLine = document.getElementById('process-activity');
+  async function showActivity() {
+    activityLine.hidden = true;
+    if (radargramId === null) return;
+    let activity = [];
+    try {
+      activity = (
+        await RIDAL.fetchJson(
+          `${RIDAL.apiPath('processing', 'activity')}?radargram_id=${encodeURIComponent(radargramId)}`,
+        )
+      ).activity;
+    } catch {
+      return;
+    }
+    const others = activity.filter((a) => !(a.mine && a.kind === 'draft'));
+    if (!others.length) return;
+    activityLine.textContent =
+      others.map((a) => `${RIDAL.describeActivity(a)}.`).join(' ') +
+      ' Applying a draft here may replace what that makes, or be replaced by it.';
+    activityLine.hidden = false;
+  }
+
   /** The profiles, and which one this radargram is in, if any. */
   async function loadAssignment() {
     await Promise.all([loadProfiles(), loadDems()]);
@@ -799,6 +824,7 @@
         'Change the steps and process. Nothing changes until you apply a draft.';
     }
     dialog.showModal();
+    showActivity();
     await loadAssignment();
     if (!raw) await prefill();
     showMain(true);

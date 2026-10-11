@@ -69,6 +69,24 @@ pub struct Drafts {
 }
 
 impl Drafts {
+    /// Each radargram with a draft queued or running, and whose it is.
+    /// Nothing else about a draft: they are private.
+    pub fn active(
+        &self,
+        queue: Option<&super::processing::ProcessingQueue>,
+    ) -> Vec<(RadargramId, String)> {
+        let inner = self.inner.lock().expect("the drafts lock is not poisoned");
+        inner
+            .iter()
+            .filter(|(id, _)| {
+                queue
+                    .and_then(|q| q.status(**id))
+                    .is_some_and(|s| !s.state.is_finished())
+            })
+            .map(|(_, d)| (d.radargram.clone(), d.owner.clone()))
+            .collect()
+    }
+
     /// The raw files a draft that is not finished may still read.
     pub fn in_use(&self, queue: Option<&super::processing::ProcessingQueue>) -> HashSet<String> {
         let inner = self.inner.lock().expect("the drafts lock is not poisoned");

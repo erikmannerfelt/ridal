@@ -2954,6 +2954,13 @@ a.processing-state:hover {
 .batch-banner button {
   margin-left: var(--space-2);
 }
+/* The viewer's "Anna is processing this": a note, not a warning. */
+.processing-activity {
+  margin: var(--space-2) 0;
+  padding: var(--space-1) var(--space-3);
+  border-left: 3px solid var(--color-accent);
+  color: var(--color-text-muted);
+}
 /* The project's DEMs: a table like a profile's, and the form under it. */
 .processing-dems {
   margin: var(--space-5) 0;

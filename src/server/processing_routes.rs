@@ -297,6 +297,71 @@ pub async fn processing_status(
     Ok(Json(StatusList { radargrams }))
 }
 
+/// Who is processing a radargram now (#382): an advisory marker, not a
+/// lock. Someone's draft says only that it exists and whose it is.
+#[derive(Debug, Serialize)]
+pub struct Activity {
+    pub radargram_id: RadargramId,
+    /// `draft` or `batch`.
+    pub kind: &'static str,
+    /// Whose draft, or who started the batch.
+    pub by: String,
+    /// The caller's own.
+    pub mine: bool,
+    /// A batch item that is waiting for its turn rather than running.
+    pub waiting: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivityList {
+    pub activity: Vec<Activity>,
+}
+
+/// `GET /api/v1/processing/activity`: every radargram being processed in
+/// the project, or with `?radargram_id=` the one.
+pub async fn processing_activity(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Query(query): Query<StatusQuery>,
+) -> Result<Json<ActivityList>, ApiError> {
+    caller.require(Role::Viewer, "see what is being processed")?;
+    let only = query
+        .radargram_id
+        .as_deref()
+        .map(parse_radargram)
+        .transpose()?;
+    let me = caller.display_name();
+    let audit = caller.audit_name();
+    let mut activity: Vec<Activity> = state
+        .drafts
+        .active(state.processing.as_deref())
+        .into_iter()
+        .map(|(radargram_id, by)| Activity {
+            mine: by == me,
+            radargram_id,
+            kind: "draft",
+            by,
+            waiting: false,
+        })
+        .chain(
+            state
+                .batches
+                .active()
+                .into_iter()
+                .map(|(radargram_id, running, by)| Activity {
+                    mine: by == audit,
+                    radargram_id,
+                    kind: "batch",
+                    by,
+                    waiting: !running,
+                }),
+        )
+        .filter(|a| only.as_ref().is_none_or(|only| &a.radargram_id == only))
+        .collect();
+    activity.sort_by(|a, b| a.radargram_id.cmp(&b.radargram_id).then(a.kind.cmp(b.kind)));
+    Ok(Json(ActivityList { activity }))
+}
+
 /// Where every radargram in a profile stands. Shared by the status route
 /// and by a batch deciding what to reprocess.
 pub(super) async fn statuses(

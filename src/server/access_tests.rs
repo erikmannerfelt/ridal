@@ -7393,6 +7393,84 @@ async fn a_batch_of_some_of_a_profile_leaves_the_rest_and_two_batches_never_shar
 #[cfg(unix)]
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn who_is_processing_what_is_shown_to_everyone_without_the_draft_itself() {
+    // No job ever starts, so the draft and the batch item stay unfinished.
+    let (_prepared, _dir, _archive, app, erik) = batch_app_processing(
+        &["line-a", "line-b"],
+        crate::server::processing::ProcessingConfig {
+            jobs: 0,
+            ..Default::default()
+        },
+    )
+    .await;
+    let pia = sign_in(&app, "pia").await;
+    let empty = get(&app, "/api/v1/processing/activity", Some(&pia)).await;
+    assert_eq!(empty.status, StatusCode::OK, "{}", empty.text);
+    assert_eq!(empty.body["activity"], json!([]));
+
+    let draft = post(
+        &app,
+        "/api/v1/sources/line-a/drafts",
+        &json!({"steps": ["subset(0 100 0 200)", "dewow"]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(draft.status, StatusCode::ACCEPTED, "{}", draft.text);
+    let batch = post(
+        &app,
+        "/api/v1/processing/profiles/p/reprocess",
+        &json!({"radargram_ids": ["line-b"]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(batch.status, StatusCode::ACCEPTED, "{}", batch.text);
+
+    // A picker sees who, and which kind; never the draft's steps or number.
+    // Whether the batch item is still waiting for its turn depends on how
+    // far the batch has got, so that is left out of the comparison.
+    let seen = get(&app, "/api/v1/processing/activity", Some(&pia)).await;
+    let mut activity = seen.body["activity"].clone();
+    for entry in activity.as_array_mut().unwrap() {
+        entry.as_object_mut().unwrap().remove("waiting");
+    }
+    assert_eq!(
+        activity,
+        json!([
+            {"radargram_id": "line-a", "kind": "draft", "by": "erik", "mine": false},
+            {"radargram_id": "line-b", "kind": "batch", "by": "erik", "mine": false},
+        ]),
+        "{}",
+        seen.text
+    );
+    let own = get(
+        &app,
+        "/api/v1/processing/activity?radargram_id=line-a",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(own.body["activity"].as_array().unwrap().len(), 1);
+    assert_eq!(own.body["activity"][0]["mine"], true);
+
+    // Thrown away, a draft is no longer anyone's activity.
+    let gone = delete(
+        &app,
+        &format!("/api/v1/drafts/{}", draft.body["job"]),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT);
+    let left = get(
+        &app,
+        "/api/v1/processing/activity?radargram_id=line-a",
+        Some(&pia),
+    )
+    .await;
+    assert_eq!(left.body["activity"], json!([]));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_newer_profile_version_supersedes_a_batch_s_unstarted_items() {
     // Three items, two in flight at a time: the third waits, and a change to
     // the profile before it starts skips it.
