@@ -225,6 +225,10 @@ impl CatalogRoot {
 /// regardless of the platform's directory-symlink conventions (#122: "do
 /// not follow directory symlinks by default; ignore hidden and cache
 /// directories where appropriate").
+/// The file that marks a cache directory (<https://bford.info/cachedir/>),
+/// as [`crate::project::Project::ensure_cache_dir`] writes it.
+const CACHE_TAG: &str = "CACHEDIR.TAG";
+
 fn is_excluded_dir_name(name: &str) -> bool {
     name == ".git" || name.starts_with('.')
 }
@@ -273,7 +277,12 @@ fn discover_candidates(root: &CatalogRoot, index: usize) -> Vec<Candidate> {
             }
             if entry.file_type().is_dir() {
                 let name = entry.file_name().to_string_lossy();
-                !is_excluded_dir_name(&name)
+                // A tagged cache holds what Ridal derives, among it the
+                // `.nc` a draft or a batch item is processed to before it
+                // is committed (#382). Served from the project root, a
+                // rescan would otherwise find that as a duplicate of the
+                // radargram it is a draft of.
+                !is_excluded_dir_name(&name) && !entry.path().join(CACHE_TAG).is_file()
             } else {
                 true
             }
@@ -1149,6 +1158,14 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".hidden")).unwrap();
         std::fs::write(dir.path().join(".git/pretend.nc"), b"garbage").unwrap();
         std::fs::write(dir.path().join(".hidden/pretend.nc"), b"garbage").unwrap();
+        // A tagged cache, as a project's is: where drafts are processed to.
+        std::fs::create_dir_all(dir.path().join("ridal_data/cache/drafts")).unwrap();
+        std::fs::write(dir.path().join("ridal_data/cache/CACHEDIR.TAG"), b"").unwrap();
+        std::fs::write(
+            dir.path().join("ridal_data/cache/drafts/pretend.nc"),
+            b"garbage",
+        )
+        .unwrap();
 
         let catalog = Catalog::discover(dir.path());
         // Nothing under excluded directories should even be attempted, so
