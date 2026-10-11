@@ -2175,7 +2175,7 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "The blake3 of its header file (of its first file, when which is the\nheader cannot be told)."
+            "description": "A hash of its files' contents ([`recording_key`])."
           },
           "name": {
             "type": "string",
