@@ -2586,12 +2586,14 @@ pub struct InfoParams {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct NamedFormat {
     pub name: &'static str,
     pub description: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct MetadataSummary {
     pub samples: u32,
     pub sampling_frequency_mhz: f32,
@@ -2606,6 +2608,7 @@ pub struct MetadataSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct CentroidSummary {
     pub easting: f64,
     pub northing: f64,
@@ -2613,12 +2616,15 @@ pub struct CentroidSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct CorrectionSummary {
     pub kind: String,
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct LocationSummary {
     pub n_points: usize,
     pub crs: String,
@@ -2633,6 +2639,7 @@ pub struct LocationSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct RelatedFiles {
     pub header: String,
     pub data: String,
@@ -2640,6 +2647,7 @@ pub struct RelatedFiles {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct InfoRecord {
     pub input: String,
     pub format: NamedFormat,

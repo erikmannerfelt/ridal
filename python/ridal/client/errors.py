@@ -7,7 +7,11 @@ catch :class:`Unauthorized` without knowing every code, and branch on
 ``code`` when it needs to.
 """
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    # `models` imports this module, so only for the annotations.
+    from ridal.client.models import Draft
 
 
 class RidalError(Exception):
@@ -38,6 +42,20 @@ class ReplacementRefused(RidalError):
     def __init__(self, reason: str, report: object | None) -> None:
         super().__init__(reason)
         self.report = report
+
+
+class ProcessingFailed(RidalError):
+    """A draft did not finish: it failed, timed out or was cancelled.
+
+    Attributes
+    ----------
+    draft : Draft
+        The draft as it ended, with the server's ``message`` when it failed.
+    """
+
+    def __init__(self, reason: str, draft: "Draft") -> None:
+        super().__init__(reason)
+        self.draft = draft
 
 
 class ServerError(RidalError):
@@ -94,6 +112,11 @@ class PayloadTooLarge(ServerError):
     """``413``: the upload would take the project over its size limit."""
 
 
+class TooManyRequests(ServerError):
+    """``429``: the caller, or the project, already has as many processing
+    jobs waiting or running as the server allows. Wait for one to finish."""
+
+
 class Unavailable(ServerError):
     """``502``, ``503`` or ``504``: the server, or a proxy in front of it,
     cannot answer now. Retrying later may work."""
@@ -107,6 +130,7 @@ _BY_STATUS: Final[dict[int, type[ServerError]]] = {
     409: Conflict,
     412: PreconditionFailed,
     413: PayloadTooLarge,
+    429: TooManyRequests,
     502: Unavailable,
     503: Unavailable,
     504: Unavailable,

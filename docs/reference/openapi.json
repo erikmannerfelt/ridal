@@ -125,6 +125,43 @@
         },
         "additionalProperties": {}
       },
+      "Assignment": {
+        "type": "object",
+        "description": "Which profile a radargram uses, and the steps of its own that run first.",
+        "required": [
+          "profile",
+          "pre_steps"
+        ],
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/ProfileId"
+          },
+          "pre_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Canonical; selection steps only."
+          }
+        }
+      },
+      "Assignments": {
+        "type": "object",
+        "required": [
+          "radargrams"
+        ],
+        "properties": {
+          "radargrams": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Assignment"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "Axes": {
         "type": "object",
         "properties": {
@@ -181,6 +218,111 @@
           }
         },
         "additionalProperties": {}
+      },
+      "Batch": {
+        "type": "object",
+        "required": [
+          "id",
+          "profile",
+          "version",
+          "started_by",
+          "started_at",
+          "finished_at",
+          "items",
+          "seen_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/ProfileId"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The profile version the batch processes with.",
+            "minimum": 0
+          },
+          "started_by": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            }
+          },
+          "seen_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When whoever started it dismissed its report, so it is no longer\nannounced to them."
+          }
+        }
+      },
+      "BatchList": {
+        "type": "object",
+        "required": [
+          "batches"
+        ],
+        "properties": {
+          "batches": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Batch"
+            }
+          }
+        }
+      },
+      "Bundle": {
+        "type": "object",
+        "description": "The files of one raw recording, as they were read.\n\n`coordinates` is the file the positions were actually read from: a\n`--cor` override when one was given, otherwise the recording's own.",
+        "required": [
+          "format",
+          "files"
+        ],
+        "properties": {
+          "format": {
+            "type": "string",
+            "description": "The format's name, as `ridal formats` lists it (`ramac`, ...)."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BundleFile"
+            }
+          }
+        }
+      },
+      "BundleFile": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/HashedFile"
+          },
+          {
+            "type": "object",
+            "required": [
+              "role"
+            ],
+            "properties": {
+              "role": {
+                "$ref": "#/components/schemas/FileRole"
+              }
+            }
+          }
+        ],
+        "description": "One file of a recording, by role and content."
       },
       "CarriedView": {
         "type": "object",
@@ -288,6 +430,28 @@
               "type": "string"
             },
             "description": "Reasons to check the carried picks against the data that the axes\ncannot see, such as one revision being migrated and the other not\n(#370). Empty when there are none."
+          }
+        }
+      },
+      "CentroidSummary": {
+        "type": "object",
+        "required": [
+          "easting",
+          "northing",
+          "altitude"
+        ],
+        "properties": {
+          "easting": {
+            "type": "number",
+            "format": "double"
+          },
+          "northing": {
+            "type": "number",
+            "format": "double"
+          },
+          "altitude": {
+            "type": "number",
+            "format": "double"
           }
         }
       },
@@ -416,6 +580,24 @@
           }
         },
         "additionalProperties": {}
+      },
+      "CorrectionSummary": {
+        "type": "object",
+        "required": [
+          "kind",
+          "source"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "CreateTokenBody": {
         "type": "object",
@@ -636,6 +818,83 @@
           }
         }
       },
+      "Dem": {
+        "type": "object",
+        "description": "A DEM uploaded once for the project.",
+        "required": [
+          "id",
+          "name",
+          "file",
+          "by",
+          "at"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/DemId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "file": {
+            "$ref": "#/components/schemas/HashedFile"
+          },
+          "by": {
+            "type": "string",
+            "description": "Who uploaded the file."
+          },
+          "at": {
+            "type": "string",
+            "description": "When the file was uploaded, RFC 3339."
+          }
+        }
+      },
+      "DemId": {
+        "type": "string"
+      },
+      "DemList": {
+        "type": "object",
+        "required": [
+          "dems"
+        ],
+        "properties": {
+          "dems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DemView"
+            }
+          }
+        }
+      },
+      "DemView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Dem"
+          },
+          {
+            "type": "object",
+            "required": [
+              "bytes",
+              "radargram_ids"
+            ],
+            "properties": {
+              "bytes": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The file's size.",
+                "minimum": 0
+              },
+              "radargram_ids": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RadargramId"
+                },
+                "description": "The radargrams linked to it, sorted."
+              }
+            }
+          }
+        ],
+        "description": "A DEM, as the list and the single view give it."
+      },
       "Displacement": {
         "type": "object",
         "description": "How far the carried coordinates moved, in index units.\n\nTraces and samples rather than metres or nanoseconds, because that is\nwhat the viewer draws in and what \"did this pick move\" means on screen.\nThe median says whether the revisions broadly agree; the worst says\nwhether any single vertex went somewhere else, which an average would\nhide behind a thousand that did not.",
@@ -765,6 +1024,51 @@
           "all"
         ]
       },
+      "DraftList": {
+        "type": "object",
+        "required": [
+          "drafts"
+        ],
+        "properties": {
+          "drafts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DraftView"
+            }
+          }
+        }
+      },
+      "DraftView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/JobStatusView"
+          },
+          {
+            "type": "object",
+            "required": [
+              "job",
+              "radargram_id"
+            ],
+            "properties": {
+              "job": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "radargram_id": {
+                "type": "string"
+              },
+              "base_revision": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "A draft as the API gives it."
+      },
       "Dropped": {
         "type": "object",
         "description": "A feature that could not be placed on the new revision.",
@@ -849,6 +1153,15 @@
           }
         },
         "additionalProperties": {}
+      },
+      "FileRole": {
+        "type": "string",
+        "description": "What a file is to the recording it belongs to.",
+        "enum": [
+          "header",
+          "data",
+          "coordinates"
+        ]
       },
       "Geometry": {
         "oneOf": [
@@ -1072,6 +1385,24 @@
           }
         }
       },
+      "HashedFile": {
+        "type": "object",
+        "description": "One file, by content.",
+        "required": [
+          "name",
+          "blake3"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The file name, for people reading the recipe. Not hashed."
+          },
+          "blake3": {
+            "type": "string",
+            "description": "blake3 of the file's bytes, as 64 hex characters."
+          }
+        }
+      },
       "Health": {
         "type": "object",
         "description": "`GET /api/v1/health`.",
@@ -1087,6 +1418,33 @@
           "version": {
             "type": "string",
             "description": "The Ridal version the server runs, such as `0.7.1`. Health needs no\nlogin, so a client can check what it is talking to before signing in."
+          }
+        }
+      },
+      "InfoRecord": {
+        "type": "object",
+        "required": [
+          "input",
+          "format",
+          "metadata",
+          "location",
+          "related_files"
+        ],
+        "properties": {
+          "input": {
+            "type": "string"
+          },
+          "format": {
+            "$ref": "#/components/schemas/NamedFormat"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/MetadataSummary"
+          },
+          "location": {
+            "$ref": "#/components/schemas/LocationSummary"
+          },
+          "related_files": {
+            "$ref": "#/components/schemas/RelatedFiles"
           }
         }
       },
@@ -1112,6 +1470,202 @@
           "writable": {
             "type": "boolean",
             "description": "Whether the caller may save picks here, which takes the `picker` role."
+          }
+        }
+      },
+      "Item": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Outcome"
+          },
+          {
+            "type": "object",
+            "required": [
+              "radargram_id"
+            ],
+            "properties": {
+              "radargram_id": {
+                "$ref": "#/components/schemas/RadargramId"
+              }
+            }
+          }
+        ]
+      },
+      "JobState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "queued"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "running"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "revision_id",
+              "state"
+            ],
+            "properties": {
+              "revision_id": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "done"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "message",
+              "state"
+            ],
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "cancelled"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "timed_out"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "JobStatusView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/JobState"
+          },
+          {
+            "type": "object",
+            "required": [
+              "writing"
+            ],
+            "properties": {
+              "step": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/StepProgress"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "writing": {
+                "type": "boolean",
+                "description": "Every step has run and the file is being written."
+              }
+            }
+          }
+        ],
+        "description": "[`JobStatus`] without what is the server's business: where its files\nare, and the key it was queued under."
+      },
+      "LocationSummary": {
+        "type": "object",
+        "required": [
+          "n_points",
+          "crs",
+          "start_time",
+          "stop_time",
+          "duration_s",
+          "track_length_m",
+          "altitude_min_m",
+          "altitude_max_m",
+          "centroid",
+          "correction"
+        ],
+        "properties": {
+          "n_points": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "crs": {
+            "type": "string"
+          },
+          "start_time": {
+            "type": "string"
+          },
+          "stop_time": {
+            "type": "string"
+          },
+          "duration_s": {
+            "type": "number",
+            "format": "double"
+          },
+          "track_length_m": {
+            "type": "number",
+            "format": "double"
+          },
+          "altitude_min_m": {
+            "type": "number",
+            "format": "double"
+          },
+          "altitude_max_m": {
+            "type": "number",
+            "format": "double"
+          },
+          "centroid": {
+            "$ref": "#/components/schemas/CentroidSummary"
+          },
+          "correction": {
+            "$ref": "#/components/schemas/CorrectionSummary"
           }
         }
       },
@@ -1173,6 +1727,80 @@
           }
         }
       },
+      "MetadataSummary": {
+        "type": "object",
+        "required": [
+          "samples",
+          "sampling_frequency_mhz",
+          "frequency_steps",
+          "time_interval_s",
+          "antenna_name",
+          "antenna_mhz",
+          "antenna_separation_m",
+          "time_window_ns",
+          "last_trace",
+          "medium_velocity_m_per_ns"
+        ],
+        "properties": {
+          "samples": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "sampling_frequency_mhz": {
+            "type": "number",
+            "format": "float"
+          },
+          "frequency_steps": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "time_interval_s": {
+            "type": "number",
+            "format": "float"
+          },
+          "antenna_name": {
+            "type": "string"
+          },
+          "antenna_mhz": {
+            "type": "number",
+            "format": "float"
+          },
+          "antenna_separation_m": {
+            "type": "number",
+            "format": "float"
+          },
+          "time_window_ns": {
+            "type": "number",
+            "format": "float"
+          },
+          "last_trace": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "medium_velocity_m_per_ns": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
+      "NamedFormat": {
+        "type": "object",
+        "required": [
+          "name",
+          "description"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
       "NewToken": {
         "type": "object",
         "description": "`POST /api/v1/tokens`: the token, shown this once, and its record.",
@@ -1187,6 +1815,160 @@
           },
           "info": {
             "$ref": "#/components/schemas/TokenInfo"
+          }
+        }
+      },
+      "Outcome": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "waiting"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "job",
+              "outcome"
+            ],
+            "properties": {
+              "job": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "processing"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "revision_id",
+              "picks_not_carried",
+              "outcome"
+            ],
+            "properties": {
+              "revision_id": {
+                "type": "string"
+              },
+              "picks_not_carried": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PicksNotCarried"
+                },
+                "description": "Whose picks did not come across whole: moved enough to matter,\npartly left out, or not carried at all. Empty when every\ninterpretation carried, or there were none."
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "committed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Processed to exactly what is served already.",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "already_current"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reason",
+              "outcome"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "skipped"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "message",
+              "outcome"
+            ],
+            "properties": {
+              "message": {
+                "type": "string"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "failed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The server stopped before it finished.",
+            "required": [
+              "outcome"
+            ],
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "interrupted"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "How one item of a batch ended, or where it is."
+      },
+      "PicksNotCarried": {
+        "type": "object",
+        "description": "One person's picks that a committed item did not carry whole, from the\nreplacement's consequence report.",
+        "required": [
+          "user",
+          "severity",
+          "dropped"
+        ],
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity",
+            "description": "`approximate`, `partial` or `refused`, as the report says."
+          },
+          "dropped": {
+            "type": "integer",
+            "description": "How many of their features were left out.",
+            "minimum": 0
           }
         }
       },
@@ -1215,6 +1997,240 @@
           }
         },
         "additionalProperties": {}
+      },
+      "ProcessingState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Processed as the profile says now, from the raw data its source names.",
+            "required": [
+              "profile_version",
+              "state"
+            ],
+            "properties": {
+              "profile_version": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "current"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Processed some other way than the profile and source say now.",
+            "required": [
+              "profile_version",
+              "custom",
+              "reasons",
+              "state"
+            ],
+            "properties": {
+              "profile_version": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "The profile version it was processed with, when it matches one.",
+                "minimum": 0
+              },
+              "custom": {
+                "type": "boolean",
+                "description": "Processed with steps or a velocity that match no version of the\nprofile: changed for this radargram, as opposed to left behind\nby the profile. False for a file that records no recipe, which\ncannot say."
+              },
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "stale"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Processed as the profile says, but by an older version of a step or\nof the rest of Ridal (#383). Not stale: the same request gives a\ndifferent file only because Ridal has changed since.",
+            "required": [
+              "profile_version",
+              "reasons",
+              "state"
+            ],
+            "properties": {
+              "profile_version": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              },
+              "reasons": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "older_processing"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Raw data and a profile, but nothing processed yet.",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "not_processed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "No raw data in the project, so nothing can be reprocessed. Never\ncounted as stale (#382).",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "no_raw_data"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Where a radargram stands against its processing profile."
+      },
+      "Profile": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "versions"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ProfileId"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileVersion"
+            },
+            "description": "Oldest first; the last is current. Never empty."
+          }
+        }
+      },
+      "ProfileId": {
+        "type": "string"
+      },
+      "ProfileList": {
+        "type": "object",
+        "required": [
+          "profiles"
+        ],
+        "properties": {
+          "profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProfileView"
+            }
+          }
+        }
+      },
+      "ProfileVersion": {
+        "type": "object",
+        "description": "One version of a profile.",
+        "required": [
+          "version",
+          "steps",
+          "medium_velocity",
+          "at",
+          "by"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "From 1, one more for every change to the steps or the velocity.",
+            "minimum": 0
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Canonical, with every argument written out, as a recipe records\nthem; so a changed default is not a silent change to the profile."
+          },
+          "medium_velocity": {
+            "type": "number",
+            "format": "float",
+            "description": "m/ns."
+          },
+          "at": {
+            "type": "string",
+            "description": "RFC 3339."
+          },
+          "by": {
+            "type": "string",
+            "description": "Who made this version."
+          }
+        }
+      },
+      "ProfileView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Profile"
+          },
+          {
+            "type": "object",
+            "required": [
+              "current_version",
+              "members"
+            ],
+            "properties": {
+              "current_version": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The version radargrams are processed with now.",
+                "minimum": 0
+              },
+              "members": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/RadargramId"
+                },
+                "description": "The radargrams that use it."
+              }
+            }
+          }
+        ],
+        "description": "A profile, as the list and the single view give it."
       },
       "ProjectEntry": {
         "type": "object",
@@ -1354,6 +2370,87 @@
               "null"
             ],
             "description": "Where the interpretation as it was drawn was kept, or `null` when\nnothing needed keeping."
+          }
+        }
+      },
+      "RadargramId": {
+        "type": "string"
+      },
+      "RadargramStatus": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ProcessingState"
+          },
+          {
+            "type": "object",
+            "required": [
+              "radargram_id",
+              "profile"
+            ],
+            "properties": {
+              "radargram_id": {
+                "$ref": "#/components/schemas/RadargramId"
+              },
+              "profile": {
+                "$ref": "#/components/schemas/ProfileId"
+              }
+            }
+          }
+        ],
+        "description": "One radargram in a profile, and where it stands."
+      },
+      "RawSource": {
+        "type": "object",
+        "description": "What one radargram is made from.",
+        "required": [
+          "bundles",
+          "crs",
+          "dem"
+        ],
+        "properties": {
+          "bundles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bundle"
+            },
+            "description": "The raw recordings, in the order they are merged."
+          },
+          "crs": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The CRS to project positions into; the project's default otherwise."
+          },
+          "dem": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceDem",
+                "description": "The project's DEM to take elevations from."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "RelatedFiles": {
+        "type": "object",
+        "required": [
+          "header",
+          "data",
+          "coordinates"
+        ],
+        "properties": {
+          "header": {
+            "type": "string"
+          },
+          "data": {
+            "type": "string"
+          },
+          "coordinates": {
+            "type": "string"
           }
         }
       },
@@ -1637,6 +2734,65 @@
         },
         "additionalProperties": {}
       },
+      "SourceDem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/HashedFile"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/components/schemas/DemId"
+              }
+            }
+          }
+        ],
+        "description": "A source's link to one of the project's [`Dem`]s: which, and its file\nwhen the link was made. A DEM's file cannot change while anything links\nto it, so the two agree."
+      },
+      "SourceList": {
+        "type": "object",
+        "description": "`GET /api/v1/sources`.",
+        "required": [
+          "radargram_ids"
+        ],
+        "properties": {
+          "radargram_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sorted. Served or not: raw data uploaded for a radargram that has\nnot been processed yet is listed too."
+          }
+        }
+      },
+      "SourceView": {
+        "type": "object",
+        "description": "`GET`/`PUT /api/v1/sources/{radargram_id}`.",
+        "required": [
+          "radargram_id",
+          "source",
+          "recordings"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/RawSource"
+          },
+          "recordings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InfoRecord"
+            },
+            "description": "What each recording's header and positions say, in merge order.\nOnly `PUT` reads the recordings; `GET` leaves this empty."
+          }
+        }
+      },
       "Staged": {
         "type": "object",
         "description": "`POST /api/v1/datasets/{radargram_id}/replace`: the file is staged, and\nthis is what committing it would do.",
@@ -1658,6 +2814,64 @@
           },
           "report": {
             "$ref": "#/components/schemas/ConsequenceReport"
+          }
+        }
+      },
+      "StatusList": {
+        "type": "object",
+        "required": [
+          "radargrams"
+        ],
+        "properties": {
+          "radargrams": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RadargramStatus"
+            }
+          }
+        }
+      },
+      "StepProgress": {
+        "type": "object",
+        "required": [
+          "index",
+          "of",
+          "step"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "From 0.",
+            "minimum": 0
+          },
+          "of": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step": {
+            "type": "string"
+          }
+        }
+      },
+      "StoredFile": {
+        "type": "object",
+        "description": "`POST /api/v1/raw`: the file was stored, or was already.",
+        "required": [
+          "name",
+          "blake3",
+          "bytes"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "blake3": {
+            "type": "string"
+          },
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

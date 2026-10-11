@@ -53,7 +53,7 @@ pub const IN_FLIGHT: usize = 2;
 const TICK: Duration = Duration::from_millis(500);
 
 /// How one item of a batch ended, or where it is.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
 pub enum Outcome {
     Waiting,
@@ -65,7 +65,8 @@ pub enum Outcome {
         /// Whose picks did not come across whole: moved enough to matter,
         /// partly left out, or not carried at all. Empty when every
         /// interpretation carried, or there were none.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
+        #[schema(required = true)]
         picks_not_carried: Vec<PicksNotCarried>,
     },
     /// Processed to exactly what is served already.
@@ -88,13 +89,14 @@ impl Outcome {
 
 /// One person's picks that a committed item did not carry whole, from the
 /// replacement's consequence report.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct PicksNotCarried {
     pub user: String,
     /// `approximate`, `partial` or `refused`, as the report says.
     pub severity: crate::interp::carry::Severity,
     /// How many of their features were left out.
     #[serde(default)]
+    #[schema(required = true)]
     pub dropped: usize,
 }
 
@@ -122,14 +124,14 @@ impl PicksNotCarried {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Item {
     pub radargram_id: RadargramId,
     #[serde(flatten)]
     pub outcome: Outcome,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Batch {
     pub id: String,
     pub profile: ProfileId,
@@ -137,11 +139,13 @@ pub struct Batch {
     pub version: u32,
     pub started_by: String,
     pub started_at: String,
+    #[schema(required = true)]
     pub finished_at: Option<String>,
     pub items: Vec<Item>,
     /// When whoever started it dismissed its report, so it is no longer
     /// announced to them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[schema(required = true)]
     pub seen_at: Option<String>,
 }
 
@@ -790,7 +794,7 @@ async fn json_of(response: axum::response::Response) -> Option<serde_json::Value
     serde_json::from_slice(&bytes).ok()
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct BatchList {
     pub batches: Vec<Batch>,
 }

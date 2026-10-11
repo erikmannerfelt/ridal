@@ -156,6 +156,59 @@ After a radargram is replaced, picks drawn on the earlier revision are shown
 carried onto the new one. `client.carried("line-07")` shows how, and
 `client.promote("line-07")` adopts them as picks on the new revision.
 
+## Processing raw data on the server
+
+A project can keep the raw recordings its radargrams are made from, and the
+server can process them. Everything here needs the `operator` role.
+
+`process` does what the browser's "From raw data…" does: it uploads the
+recordings, sets them as the radargram's source, processes a draft, waits
+for it, and applies it.
+
+```python
+added = client.process(
+    "line-07",
+    ["raw/DAT_0066_A1.rd3"],  # the other files of the recording are found beside it
+    ["zero_corr", "dewow", "bandpass(0.1 0.9)"],
+    on_update=lambda draft: print(draft.state, draft.step),
+)
+```
+
+For a radargram that is already served, the draft replaces it, as
+`replace` does: only if every interpretation on it would be at most as
+affected as `allow` permits. A draft that fails raises
+{py:class}`~ridal.client.ProcessingFailed`, with the draft and the server's
+message.
+
+The steps are there one by one, too: `upload_raw`, `set_source` (with an
+optional `crs` and one of the project's DEMs), `create_draft`,
+`wait_for_draft`, `download_draft` to look at the result locally, and
+`commit_draft`.
+
+**Processing profiles** keep radargrams processed alike. Put radargrams in
+one, and when its steps change, reprocess those that are out of date as a
+batch:
+
+```python
+profile = client.profile("svalbard-100mhz")
+client.save_profile(
+    "svalbard-100mhz",
+    name=profile.name,
+    steps=[*profile.current.steps, "auto_gain"],
+    medium_velocity=profile.current.medium_velocity,
+    etag=profile.etag,
+)
+stale = [s for s in client.processing_status() if s.state == "stale"]
+batch = client.reprocess("svalbard-100mhz")
+batch = client.wait_for_batch(batch.id)
+for item in batch.items:
+    print(item.radargram_id, item.outcome, item.picks_not_carried)
+```
+
+A batch applies each radargram without review; `picks_not_carried` names
+whose picks did not come across whole. **DEMs** are uploaded once for the
+project with `add_dem`, and each radargram linked to one with `link_dem`.
+
 ## When something is refused
 
 Every refusal is an exception with the server's stable `code` and a `message`

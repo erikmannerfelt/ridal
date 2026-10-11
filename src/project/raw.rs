@@ -47,14 +47,19 @@ pub const SWEEP_MIN_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// What one radargram is made from.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+// gprinterp's picks document has a `Source` schema of its own.
+#[cfg_attr(feature = "server", schema(as = RawSource))]
 pub struct Source {
     /// The raw recordings, in the order they are merged.
     pub bundles: Vec<Bundle>,
     /// The CRS to project positions into; the project's default otherwise.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub crs: Option<String>,
     /// The project's DEM to take elevations from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub dem: Option<SourceDem>,
 }
 
@@ -89,6 +94,7 @@ impl Source {
 /// when the link was made. A DEM's file cannot change while anything links
 /// to it, so the two agree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct SourceDem {
     pub id: DemId,
     #[serde(flatten)]
@@ -97,6 +103,7 @@ pub struct SourceDem {
 
 /// A DEM uploaded once for the project.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Dem {
     pub id: DemId,
     pub name: String,

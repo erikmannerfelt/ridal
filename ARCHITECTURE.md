@@ -504,7 +504,22 @@ two ends of that request are one type.
   mirrors a schema in `docs/reference/openapi.json`, and
   `tests/client/test_schema.py` checks field names and nullability against
   it, so a server change that the Rust test regenerates into the spec fails
-  the client's test rather than a user's script.
+  the client's test rather than a user's script. A flattened field is an
+  `allOf` there and a tagged enum (a draft's `state`, a batch item's
+  `outcome`) a `oneOf`; the test merges them, and a field only some
+  variants have is optional in the record. The `etag` a record carries for
+  a conditional change comes from the header, so the test lets it be. For
+  that to hold, a response never leaves a field out when it is empty: the
+  processing documents (a source's `crs` and `dem`, a profile's
+  `description`, an assignment's `pre_steps`, a batch's `seen_at`) are
+  written with `null` or `[]` too.
+- **Processing from a script** (#382) mirrors the browser: `upload_raw`,
+  `set_source`, `create_draft`, `wait_for_draft` (polling, with an
+  `on_update` callback for the step it is on), `commit_draft`, and
+  `process()` for all of it, which applies a replacement only within
+  `allow`, as `replace()` does. Profiles, assignments, status, batches and
+  DEMs each have their calls; `wait_for_batch` polls as `wait_for_draft`
+  does.
 - **`plan()` asks before it uploads.** Local files are sorted by identity
   against the catalog (`new`, `unchanged`, `safe`, `risky`, `legacy`);
   only a file that would replace a picked radargram is sent to the preflight.

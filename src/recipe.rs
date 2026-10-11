@@ -37,6 +37,7 @@ pub const RECIPE_FORMAT: u32 = 1;
 
 /// What a file is to the recording it belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FileRole {
     Header,
@@ -56,6 +57,7 @@ impl FileRole {
 
 /// One file, by content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct HashedFile {
     /// The file name, for people reading the recipe. Not hashed.
     pub name: String,
@@ -65,6 +67,7 @@ pub struct HashedFile {
 
 /// One file of a recording, by role and content.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct BundleFile {
     pub role: FileRole,
     #[serde(flatten)]
@@ -76,6 +79,7 @@ pub struct BundleFile {
 /// `coordinates` is the file the positions were actually read from: a
 /// `--cor` override when one was given, otherwise the recording's own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Bundle {
     /// The format's name, as `ridal formats` lists it (`ramac`, ...).
     pub format: String,

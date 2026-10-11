@@ -145,7 +145,7 @@ pub struct DraftBody {
 }
 
 /// A draft as the API gives it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DraftView {
     pub job: u64,
     pub radargram_id: String,
@@ -156,7 +156,7 @@ pub struct DraftView {
 
 /// [`JobStatus`] without what is the server's business: where its files
 /// are, and the key it was queued under.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct JobStatusView {
     #[serde(flatten)]
     pub state: JobState,
@@ -527,7 +527,7 @@ pub async fn create_draft(
     Ok((StatusCode::ACCEPTED, Json(view)).into_response())
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct DraftList {
     pub drafts: Vec<DraftView>,
 }

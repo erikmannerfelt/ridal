@@ -69,7 +69,7 @@ pub struct UploadQuery {
 }
 
 /// `POST /api/v1/raw`: the file was stored, or was already.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct StoredFile {
     pub name: String,
     pub blake3: String,
@@ -159,7 +159,7 @@ pub async fn download_raw_file(
 }
 
 /// `GET /api/v1/sources`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SourceList {
     /// Sorted. Served or not: raw data uploaded for a radargram that has
     /// not been processed yet is listed too.
@@ -179,7 +179,7 @@ pub async fn list_sources(
 }
 
 /// `GET`/`PUT /api/v1/sources/{radargram_id}`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SourceView {
     pub radargram_id: String,
     pub source: Source,

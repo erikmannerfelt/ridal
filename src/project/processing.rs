@@ -32,6 +32,7 @@ const ASSIGNMENTS: &str = "processing/assignments.json";
 
 /// One version of a profile.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct ProfileVersion {
     /// From 1, one more for every change to the steps or the velocity.
     pub version: u32,
@@ -47,10 +48,12 @@ pub struct ProfileVersion {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Profile {
     pub id: ProfileId,
     pub name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub description: String,
     /// Oldest first; the last is current. Never empty.
     pub versions: Vec<ProfileVersion>,
@@ -66,16 +69,20 @@ impl Profile {
 
 /// Which profile a radargram uses, and the steps of its own that run first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Assignment {
     pub profile: ProfileId,
     /// Canonical; selection steps only.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub pre_steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Assignments {
     #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
     pub radargrams: BTreeMap<RadargramId, Assignment>,
 }
 
@@ -348,6 +355,7 @@ pub fn assign(
 
 /// Where a radargram stands against its processing profile.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ProcessingState {
     /// Processed as the profile says now, from the raw data its source names.
@@ -355,6 +363,7 @@ pub enum ProcessingState {
     /// Processed some other way than the profile and source say now.
     Stale {
         /// The profile version it was processed with, when it matches one.
+        #[cfg_attr(feature = "server", schema(required = true))]
         profile_version: Option<u32>,
         /// Processed with steps or a velocity that match no version of the
         /// profile: changed for this radargram, as opposed to left behind

@@ -118,7 +118,7 @@ pub struct JobRequest {
     pub estimate_bytes: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum JobState {
     Queued,
@@ -135,7 +135,7 @@ impl JobState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct StepProgress {
     /// From 0.
     pub index: usize,
