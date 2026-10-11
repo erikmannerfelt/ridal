@@ -2722,6 +2722,50 @@ button.danger:disabled {
  * Two columns so the question and its answer line up down the page: an
  * operator reads this to find the one row that is not "carries cleanly",
  * and a paragraph would hide it. */
+/* The processing page (#382): a profile per section, its radargrams with
+   where each stands. Stale is the one that asks for something, so it is
+   the only warning-coloured state. */
+.processing-profile {
+  margin: var(--space-5) 0;
+}
+.processing-steps {
+  font-family: var(--font-mono);
+  background: var(--color-surface-sunken);
+  padding: 0.5rem;
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+}
+.processing-state {
+  display: inline-block;
+  padding: 0 0.4rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.processing-state-stale {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+}
+.processing-state-no_raw_data,
+.processing-state-not_processed {
+  color: var(--color-text-muted);
+}
+.processing-new label,
+.processing-edit label,
+.processing-add label {
+  display: block;
+  margin: 0.5rem 0;
+}
+.processing-new textarea,
+.processing-edit textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  font-family: var(--font-mono);
+}
+
 .replace-detail {
   display: grid;
   grid-template-columns: auto 1fr;

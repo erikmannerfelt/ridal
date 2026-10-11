@@ -6321,3 +6321,60 @@ async fn a_processing_profile_is_versioned_and_shared_by_its_radargrams() {
         StatusCode::NOT_FOUND
     );
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let made = put(
+        &app,
+        "/api/v1/processing/profiles/p",
+        &json!({"name": "P", "steps": ["dewow"], "medium_velocity": 0.168}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::OK, "{}", made.text);
+    for id in ["ours", "theirs"] {
+        put(
+            &app,
+            &format!("/api/v1/processing/assignments/{id}"),
+            &json!({"profile": "p"}),
+            Some(&erik),
+        )
+        .await;
+    }
+    // `ours` gets raw data; `theirs` has none.
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    let set = put(
+        &app,
+        "/api/v1/sources/ours",
+        &json!({"recordings": [recording]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+
+    let status = get(&app, "/api/v1/processing/status", Some(&erik)).await;
+    assert_eq!(status.status, StatusCode::OK, "{}", status.text);
+    let by_id: std::collections::HashMap<String, Value> = status.body["radargrams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["radargram_id"].as_str().unwrap().to_string(), r.clone()))
+        .collect();
+    assert_eq!(by_id["theirs"]["state"], "no_raw_data");
+    // Served from a file made before recipes: it cannot be compared, so it
+    // is stale, and says why.
+    assert_eq!(by_id["ours"]["state"], "stale");
+    assert!(by_id["ours"]["reasons"][0]
+        .as_str()
+        .unwrap()
+        .contains("before Ridal recorded"));
+}

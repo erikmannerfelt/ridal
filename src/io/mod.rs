@@ -28,8 +28,8 @@ pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd};
 // though keeping the path is the point.
 #[allow(unused_imports)]
 pub use ridal::{
-    export_locations, export_netcdf, inspect_ridal_netcdf, legacy_reason, RidalNetcdfKind,
-    RidalNetcdfMetadata,
+    export_locations, export_netcdf, inspect_ridal_netcdf, legacy_reason, read_recipe,
+    RidalNetcdfKind, RidalNetcdfMetadata,
 };
 
 use std::error::Error;

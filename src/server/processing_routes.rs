@@ -239,3 +239,78 @@ pub async fn delete_assignment(
     processing::assign(project.documents(), &radargram, None).map_err(processing_error)?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// One radargram in a profile, and where it stands.
+#[derive(Debug, Serialize)]
+pub struct RadargramStatus {
+    pub radargram_id: RadargramId,
+    pub profile: ProfileId,
+    #[serde(flatten)]
+    pub state: processing::ProcessingState,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StatusList {
+    pub radargrams: Vec<RadargramStatus>,
+}
+
+/// `GET /api/v1/processing/status`: every radargram in a profile, and
+/// whether it is processed as its profile and source say now (#382).
+///
+/// Reads each served file's recipe, so it opens every file once: off the
+/// async executor.
+pub async fn processing_status(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+) -> Result<Json<StatusList>, ApiError> {
+    caller.require(Role::Viewer, "see which radargrams are up to date")?;
+    let project = readable_project(&state)?;
+    let (assignments, _) =
+        processing::read_assignments(project.documents()).map_err(processing_error)?;
+    let profiles: std::collections::HashMap<ProfileId, Profile> =
+        processing::list_profiles(project.documents())
+            .map_err(processing_error)?
+            .into_iter()
+            .map(|p| (p.id.clone(), p))
+            .collect();
+
+    let catalog = state.catalog();
+    let mut work = Vec::new();
+    for (radargram, assignment) in assignments.radargrams {
+        let Some(profile) = profiles.get(&assignment.profile).cloned() else {
+            continue;
+        };
+        let source = crate::project::raw::read_source(project.documents(), &radargram)
+            .map_err(|e| ApiError::internal("source_read_failed", e))?
+            .map(|(source, _)| source);
+        let served = catalog
+            .find_entry(radargram.as_str())
+            .and_then(|entry| state.absolute_path(entry).ok());
+        work.push((radargram, assignment, profile, source, served));
+    }
+    drop(catalog);
+
+    let radargrams = tokio::task::spawn_blocking(move || {
+        work.into_iter()
+            .map(|(radargram, assignment, profile, source, served)| {
+                let recipe = served
+                    .as_ref()
+                    .and_then(|path| crate::io::read_recipe(path).ok().flatten());
+                RadargramStatus {
+                    state: processing::state_of(
+                        &assignment,
+                        &profile,
+                        source.as_ref(),
+                        served.is_some(),
+                        recipe.as_ref(),
+                    ),
+                    profile: assignment.profile,
+                    radargram_id: radargram,
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| ApiError::internal("status_failed", e.to_string()))?;
+    Ok(Json(StatusList { radargrams }))
+}

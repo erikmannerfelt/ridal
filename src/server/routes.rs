@@ -1426,6 +1426,31 @@ pub async fn layers_page(
     Ok(Html(html))
 }
 
+/// The processing page (#382): processing profiles, their radargrams and
+/// whether each is up to date. Everything on it comes from the API, so the
+/// page itself carries only who may change things.
+pub async fn processing_page(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Query(query): Query<ProfileQuery>,
+) -> Result<impl IntoResponse, PageError> {
+    let active_profile = resolve_profile(&state, &caller, query.profile);
+    lookup_profile(&active_profile).map_err(PageError)?;
+    let env = templates::environment();
+    let tmpl = env
+        .get_template("processing.html.jinja")
+        .expect("processing template is always registered");
+    let html = tmpl
+        .render(minijinja::context! {
+            project => state.project.is_some(),
+            writable => caller.may(crate::project::roles::Role::Operator),
+            active_profile => active_profile,
+            ..caller_context(&state, &caller),
+        })
+        .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
+    Ok(Html(html))
+}
+
 pub async fn index_page(
     State(state): State<Arc<AppState>>,
     caller: Caller,

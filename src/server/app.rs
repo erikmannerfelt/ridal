@@ -855,6 +855,7 @@ pub fn static_router() -> Router {
         .route("/static/settings.js", get(super::assets::settings_js))
         .route("/static/site.js", get(super::assets::site_js))
         .route("/static/layers.js", get(super::assets::layers_js))
+        .route("/static/processing.js", get(super::assets::processing_js))
         .route(
             "/static/images/marker-icon.png",
             get(super::assets::marker_icon),
@@ -888,6 +889,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
                 .put(super::preference_routes::put_preferences),
         )
         .route("/layers", get(super::routes::layers_page))
+        .route("/processing", get(super::routes::processing_page))
         .route("/settings", get(super::routes::settings_page))
         .route(
             "/api/v1/settings",
@@ -952,6 +954,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route(
             "/api/v1/processing/assignments",
             get(super::processing_routes::list_assignments),
+        )
+        .route(
+            "/api/v1/processing/status",
+            get(super::processing_routes::processing_status),
         )
         .route(
             "/api/v1/processing/assignments/{radargram_id}",

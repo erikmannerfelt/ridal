@@ -1,0 +1,66 @@
+{% extends "base.html.jinja" %}
+{% block title %}Processing - Ridal{% endblock %}
+{% block content %}
+  <h1>Processing</h1>
+  <p class="lede">
+    A <strong>processing profile</strong> is processing that many radargrams
+    share: a list of steps and a medium velocity. It is not a group, and its
+    radargrams may be in any number of groups. Each radargram in a profile is
+    marked <strong>stale</strong> when it was processed some other way than
+    the profile and its raw data say now.
+  </p>
+
+  {% if not project %}
+    <div class="warning">
+      <p>
+        This catalog is not a Ridal project, so it has no processing
+        profiles. Run <code>ridal project init</code> in the directory being
+        served and restart to make some.
+      </p>
+    </div>
+  {% elif not writable %}
+    {#- Shown and explained rather than hidden, as on the layers page. -#}
+    <div class="warning">
+      {% if read_only_server %}
+        <p>This server is read-only. Profiles are shown but cannot be changed.</p>
+      {% else %}
+        <p>
+          Changing processing profiles needs the <code>operator</code> role
+          &mdash; you are
+          {% if current_user %}
+            <code>{{ current_user }}</code> ({{ current_role }}).
+          {% else %}
+            not signed in.
+          {% endif %}
+        </p>
+      {% endif %}
+    </div>
+  {% endif %}
+
+  <div id="processing-error" class="warning" hidden></div>
+  <p id="processing-empty" class="hint" hidden>
+    No processing profiles yet.
+  </p>
+  <div id="processing-profiles"
+       data-writable="{% if writable %}true{% else %}false{% endif %}"></div>
+
+  {% if project and writable %}
+  <details class="processing-new" id="processing-new">
+    <summary>New processing profile</summary>
+    <form id="processing-new-form">
+      <label>Id <input name="id" required pattern="[a-z0-9][a-z0-9_-]*"
+             placeholder="svalbard-100mhz"></label>
+      <label>Name <input name="name" required placeholder="Svalbard, 100 MHz"></label>
+      <label class="process-steps">Steps, one per line
+        <textarea name="steps" rows="6" spellcheck="false"></textarea></label>
+      <label>Medium velocity (m/ns)
+        <input name="medium_velocity" type="number" step="0.001" min="0.01" value="0.168"></label>
+      <p><button type="submit">Create</button></p>
+    </form>
+  </details>
+  {% endif %}
+{% endblock %}
+
+{% block extrascript %}
+<script src="/static/processing.js"></script>
+{% endblock %}

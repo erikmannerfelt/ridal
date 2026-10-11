@@ -196,6 +196,7 @@ samples (`subset`, `remove_traces`).
 | `GET` | `/api/v1/processing/assignments` | `viewer` | Which radargram uses which processing profile, and the steps of its own. |
 | `PUT` | `/api/v1/processing/assignments/{radargram_id}` | `operator` | Put a radargram in a processing profile: `profile`, and optionally `pre_steps`, which may only be `subset` and `remove_traces`. |
 | `DELETE` | `/api/v1/processing/assignments/{radargram_id}` | `operator` | Take a radargram out of its processing profile. |
+| `GET` | `/api/v1/processing/status` | `viewer` | Every radargram in a processing profile, and where it stands: `current`; `stale`, with the `reasons` (an older version of the profile, other steps, switched raw data, a changed DEM or CRS, or a file from before Ridal recorded what it was made from); `older_processing`, meaning the same steps run by an older version of a step or of Ridal; `not_processed`; or `no_raw_data`, which is never counted as stale. `profile_version` is the version it matches, when it matches one. |
 
 ## Interpretations
 
