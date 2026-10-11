@@ -1465,6 +1465,7 @@ button.danger {
 .group-draft button,
 dialog > p > button,
 .process-footer > p > button,
+.process-steps-help > button,
 #token-result button,
 #pick-delete-cancel,
 button.danger {
@@ -1483,6 +1484,7 @@ button.danger {
 .group-draft button:hover:not(:disabled),
 dialog > p > button:hover:not(:disabled),
 .process-footer > p > button:hover:not(:disabled),
+.process-steps-help > button:hover:not(:disabled),
 #token-result button:hover:not(:disabled),
 #pick-delete-cancel:hover,
 button.danger:hover:not(:disabled) {
@@ -2792,6 +2794,16 @@ button.danger:disabled {
 }
 .process-footer > p:empty {
   display: none;
+}
+.process-steps-help {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+}
+.process-steps-help button {
+  margin-right: auto;
 }
 .process-remove {
   margin-left: var(--space-2);

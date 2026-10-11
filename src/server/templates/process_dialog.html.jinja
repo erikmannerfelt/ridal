@@ -31,6 +31,13 @@
   </label>
   <section id="process-draft">
     <ul id="process-recordings" class="process-files"></ul>
+    <p class="process-steps-help">
+      <button type="button" id="process-default-steps"
+              data-steps="{{ default_processing_steps | join('\n') }}">Replace with default steps</button>
+      <a href="{{ docs_base|safe }}reference/steps.html" target="_blank" rel="noopener">All processing steps</a>
+      &middot;
+      <a href="{{ docs_base|safe }}guide/processing.html" target="_blank" rel="noopener">Processing guide</a>
+    </p>
     <label class="process-steps">Steps, one per line
       <textarea id="process-steps" rows="8" spellcheck="false"
                 placeholder="As `ridal steps` lists them, e.g.&#10;zero_corr&#10;dewow&#10;bandpass(0.1 0.9)"></textarea>

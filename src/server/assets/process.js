@@ -21,7 +21,8 @@
   if (!dialog) return;
   const viewerOpen = document.getElementById('process-open');
   const catalogOpen = document.getElementById('process-new');
-  if (!viewerOpen && !catalogOpen) return;
+  const cardOpens = [...document.querySelectorAll('button[data-process-radargram]')];
+  if (!viewerOpen && !catalogOpen && cardOpens.length === 0) return;
 
   const title = document.getElementById('process-title');
   const status = document.getElementById('process-status');
@@ -242,7 +243,10 @@
     if (id === '') return 'Give the radargram an id.';
     try {
       await RIDAL.fetchJson(RIDAL.apiPath('datasets', id, 'attributes'));
-      return `'${id}' is a radargram already. Open it and attach raw data there.`;
+      return (
+        `The id '${id}' is taken by a radargram already. Choose another id.\n\n` +
+        'If these data belong to that radargram, open it and attach raw data there.'
+      );
     } catch (error) {
       if (error.status !== 404) return error.message;
     }
@@ -319,6 +323,7 @@
       });
       radargramId = id;
       hasSource = true;
+      sourceKnown.set(id, true);
 
       const profileId = profileBox.value;
       if (profileId !== (assignment?.profile || '')) {
@@ -557,6 +562,51 @@
   }
 
   if (viewerOpen) viewerOpen.addEventListener('click', () => begin(!hasSource));
+  /** A card's Edit menu: says what it would do once the menu is opened,
+   * rather than asking about every radargram when the page loads. */
+  const sourceKnown = new Map();
+  async function hasSourceFor(id) {
+    if (!sourceKnown.has(id)) {
+      try {
+        await RIDAL.fetchJson(RIDAL.apiPath('sources', id));
+        sourceKnown.set(id, true);
+      } catch (error) {
+        if (error.status !== 404) throw error;
+        sourceKnown.set(id, false);
+      }
+    }
+    return sourceKnown.get(id);
+  }
+  for (const button of cardOpens) {
+    const id = button.dataset.processRadargram;
+    const menu = button.closest('details');
+    menu?.addEventListener('toggle', async () => {
+      if (!menu.open) return;
+      try {
+        button.textContent = (await hasSourceFor(id)) ? 'Process…' : 'Attach raw data…';
+      } catch {
+        // Asked again on the click.
+      }
+    });
+    button.addEventListener('click', async () => {
+      if (menu) menu.open = false;
+      radargramId = id;
+      served = true;
+      stepsBox.value = '';
+      try {
+        hasSource = await hasSourceFor(id);
+      } catch (error) {
+        hasSource = false;
+      }
+      begin(!hasSource);
+    });
+  }
+
+  document.getElementById('process-default-steps').addEventListener('click', (event) => {
+    stepsBox.value = event.currentTarget.dataset.steps;
+    updateRun();
+  });
+
   if (catalogOpen) {
     catalogOpen.addEventListener('click', () => {
       radargramId = null;

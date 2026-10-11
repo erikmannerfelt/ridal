@@ -50,6 +50,14 @@
                     data-replace-radargram="{{ e.radargram_id }}"
                     data-replace-label="{{ e.effective_label }}">Replace with a new version&hellip;</button>
           </li>
+          {#- Processing on the server (#382). Applying a draft replaces the
+              file, so like Replace it is only for one the project owns.
+              process.js says "Attach raw data…" instead when the project
+              has none for it, once the menu is opened. -#}
+          <li>
+            <button type="button"
+                    data-process-radargram="{{ e.radargram_id }}">Process&hellip;</button>
+          </li>
           {% endif %}
           {#- Two different words for two different things. A radargram in
               the project is a file Ridal can delete; one in an external
