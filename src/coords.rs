@@ -195,6 +195,11 @@ fn parse_crs_utm(text: &str) -> Result<UtmCrs, String> {
 }
 
 fn proj_parse_crs(text: &str) -> Result<String, String> {
+    // An argument, not a shell word, so nothing can be injected; but one
+    // starting with `-` would be read as an option of `projinfo`.
+    if text.trim_start().starts_with('-') {
+        return Err(format!("'{text}' is not a CRS"));
+    }
     let child = crate::tools::spawn_tool(
         std::process::Command::new("projinfo")
             .arg(text)

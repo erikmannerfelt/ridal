@@ -92,6 +92,7 @@ pub mod migrate;
 pub mod overlays;
 pub mod overrides;
 pub mod preferences;
+pub mod raw;
 pub mod revisions;
 pub mod roles;
 pub mod store;

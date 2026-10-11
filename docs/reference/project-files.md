@@ -26,6 +26,9 @@ my_survey/
     audit.jsonl                   who added or removed radargrams, and when
     catalog-summary.json          how many radargrams the catalog holds
     radargrams/                   radargrams uploaded through the browser
+    raw/                          raw data, for processing on the server
+      files/<aa>/<blake3>         each raw file once, named by its content
+      sources/<radargram_id>.json what each radargram is made from
     cache/                        derived data; safe to delete
       overviews/<revision>/       whole-radargram thumbnails, kept across restarts
 ```
@@ -37,7 +40,9 @@ gui` never writes it, and ignores it when it is there.
 ## What to keep
 
 `interpretations/`, `layers/` and `derived/` are **authored**: people made
-them, and nothing can recreate them. Back them up, and keep them in version
+them, and nothing can recreate them. `raw/` holds raw recordings uploaded to
+the project; it may be the only copy of them on the server, so back it up
+too. Back them up, and keep them in version
 control if the project is in a git repository. The `.gitignore` that
 `ridal project init` writes already leaves them in.
 
