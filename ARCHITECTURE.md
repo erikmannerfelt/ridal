@@ -429,7 +429,8 @@ with no review (`server::batch_routes`).
   files and builds the `JobRequest` for both, so the two process alike.
   Items go to the queue `IN_FLIGHT` (two) at a time as `Priority::Batch`,
   which the queue runs after drafts, so a batch neither fills the queue
-  nor uses up the starter's per-person allowance; `TooMany` waits a tick.
+  nor uses up the starter's per-person allowance; `TooMany`, and
+  `ProjectBusy` when the project's share is in use, wait a tick.
 - **Applying is a commit as a person makes one**: the item's base revision
   must still be the catalog's (else `skipped`), then `stage_replacement` and
   `commit_replacement` (or `upload_dataset` for a radargram not served
@@ -829,8 +830,11 @@ normalize → colormap → encode.** Everything lives under
   that admits jobs by an estimate (one larger than the whole budget is
   refused at once rather than queued forever), `--processing-threads` as
   each child's `RAYON_NUM_THREADS`, a `--processing-timeout` after which
-  the child is killed, and `--max-queued-per-user`. Drafts go before
-  batch items, and one key (the revision a job would produce) is one job.
+  the child is killed, `--max-queued-per-user`, and
+  `--max-queued-per-project`, which a project's `[processing]
+  max_queued_jobs` can only lower (each `JobRequest` carries its project's
+  key and own limit; the smaller applies, never below one). Drafts go
+  before batch items, and one key (the revision a job would produce) is one job.
   There is no scheduler loop: `dispatch` starts what fits whenever a job is
   submitted or finishes. After a kill, the child's pipes are waited for for
   two seconds only, so a grandchild still holding them cannot keep a slot.

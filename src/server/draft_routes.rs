@@ -304,6 +304,9 @@ pub(super) fn submit_error(e: super::processing::SubmitError) -> ApiError {
         super::processing::SubmitError::TooMany { .. } => {
             ApiError::too_many_requests("too_many_jobs", e.to_string())
         }
+        super::processing::SubmitError::ProjectBusy { .. } => {
+            ApiError::too_many_requests("project_too_many_jobs", e.to_string())
+        }
         super::processing::SubmitError::TooLarge { .. } => {
             ApiError::bad_request("job_too_large", e.to_string())
         }
@@ -418,6 +421,8 @@ pub(super) async fn prepare(
         request: JobRequest {
             key,
             owner: owner.to_string(),
+            project: state.key.to_string(),
+            project_limit: project.config().processing.max_queued_jobs,
             priority,
             spec,
             estimate_bytes,

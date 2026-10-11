@@ -15,7 +15,10 @@
 //! - `threads_per_job` for each child's thread pool, so jobs × threads
 //!   fits the machine;
 //! - a timeout, after which the child is killed;
-//! - at most `max_queued_per_user` unfinished jobs per person.
+//! - at most `max_queued_per_user` unfinished jobs per person;
+//! - at most `max_queued_per_project` unfinished jobs per project, or fewer
+//!   when the project asks for fewer (`[processing] max_queued_jobs` in its
+//!   `ridal.toml`), so one project's batch cannot keep another's waiting.
 //!
 //! Drafts go before batch items, so a long batch never makes someone wait
 //! for a draft longer than the item already running. Two requests with one
@@ -42,6 +45,9 @@ pub struct ProcessingConfig {
     pub threads_per_job: usize,
     pub timeout: Duration,
     pub max_queued_per_user: usize,
+    /// The most unfinished jobs one project may have, site-wide. A project
+    /// may ask for fewer, never more.
+    pub max_queued_per_project: usize,
     /// What runs a job: this executable, as `<program> process-job <spec>`.
     pub program: PathBuf,
     /// Where job specs are written while their jobs run.
@@ -60,6 +66,8 @@ pub const DEFAULT_PROCESSING_JOBS: usize = 1;
 pub const DEFAULT_PROCESSING_MEMORY_MB: u64 = 4096;
 pub const DEFAULT_PROCESSING_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_MAX_QUEUED_PER_USER: usize = 5;
+/// Twice a person's: room for two people's drafts, or a batch beside one.
+pub const DEFAULT_MAX_QUEUED_PER_PROJECT: usize = 10;
 pub const DEFAULT_DRAFT_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 pub const DEFAULT_DRAFT_CACHE_MB: u64 = 4096;
 
@@ -73,6 +81,7 @@ impl Default for ProcessingConfig {
                 .unwrap_or(1),
             timeout: DEFAULT_PROCESSING_TIMEOUT,
             max_queued_per_user: DEFAULT_MAX_QUEUED_PER_USER,
+            max_queued_per_project: DEFAULT_MAX_QUEUED_PER_PROJECT,
             program: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ridal")),
             work_dir: std::env::temp_dir().join(format!("ridal-jobs-{}", std::process::id())),
             keep_finished: Duration::from_secs(60 * 60),
@@ -97,6 +106,12 @@ pub struct JobRequest {
     /// would produce, once there are drafts.
     pub key: String,
     pub owner: String,
+    /// The project's key: what [`ProcessingConfig::max_queued_per_project`]
+    /// counts by.
+    pub project: String,
+    /// What the project asks for as its own limit, if anything. Bounded by
+    /// the site's: the smaller of the two applies.
+    pub project_limit: Option<usize>,
     pub priority: Priority,
     pub spec: JobSpec,
     /// How much memory the job is expected to use, in bytes.
@@ -150,6 +165,8 @@ pub struct JobStatus {
 pub enum SubmitError {
     /// The owner already has this many unfinished jobs.
     TooMany { limit: usize },
+    /// The project already has this many unfinished jobs.
+    ProjectBusy { limit: usize },
     /// The job's estimate exceeds the whole memory budget.
     TooLarge {
         estimate_bytes: u64,
@@ -164,6 +181,11 @@ impl std::fmt::Display for SubmitError {
                 f,
                 "You already have {limit} processing jobs waiting or running; wait for \
                  one to finish or cancel one."
+            ),
+            SubmitError::ProjectBusy { limit } => write!(
+                f,
+                "This project already has {limit} processing jobs waiting or running, the \
+                 most it may have at once; wait for one to finish."
             ),
             SubmitError::TooLarge {
                 estimate_bytes,
@@ -189,6 +211,7 @@ pub struct QueueSnapshot {
 
 struct Job {
     status: JobStatus,
+    project: String,
     estimate_bytes: u64,
     /// Taken when the job starts.
     spec: Option<JobSpec>,
@@ -249,6 +272,22 @@ impl ProcessingQueue {
                     limit: self.config.max_queued_per_user,
                 });
             }
+            // A project's own limit counts only below the site's: a project
+            // asking for more simply gets the site's.
+            let limit = request
+                .project_limit
+                .map_or(self.config.max_queued_per_project, |own| {
+                    own.min(self.config.max_queued_per_project)
+                })
+                .max(1);
+            let unfinished = inner
+                .jobs
+                .values()
+                .filter(|job| job.project == request.project && !job.status.state.is_finished())
+                .count();
+            if unfinished >= limit {
+                return Err(SubmitError::ProjectBusy { limit });
+            }
             inner.next_id += 1;
             let id = inner.next_id;
             inner.jobs.insert(
@@ -265,6 +304,7 @@ impl ProcessingQueue {
                         radargram_id: request.spec.radargram_id.clone(),
                         output: request.spec.output.clone(),
                     },
+                    project: request.project,
                     estimate_bytes: request.estimate_bytes,
                     spec: Some(request.spec),
                     cancel: Arc::new(tokio::sync::Notify::new()),
@@ -609,6 +649,8 @@ mod tests {
         JobRequest {
             key: key.to_string(),
             owner: owner.to_string(),
+            project: "default".to_string(),
+            project_limit: None,
             priority,
             spec: JobSpec {
                 inputs: vec![],
@@ -851,6 +893,47 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
         let refused = queue.submit(huge).unwrap_err();
         assert!(refused.to_string().contains("more than"), "{refused}");
         for id in [a, b, d] {
+            queue.cancel(id);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_project_has_the_smaller_of_its_own_limit_and_the_site_s() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = queue(
+            dir.path(),
+            "exec sleep 30",
+            ProcessingConfig {
+                max_queued_per_project: 3,
+                ..ProcessingConfig::default()
+            },
+        );
+        let in_project = |key: &str, owner: &str, project: &str, own: Option<usize>| {
+            let mut r = request(key, owner, Priority::Batch);
+            r.project = project.to_string();
+            r.project_limit = own;
+            r
+        };
+        // Asking for more than the site allows gets the site's: three jobs,
+        // from two people, so it is the project's limit and not a person's.
+        let mut ids = vec![];
+        for (key, owner) in [("a", "anna"), ("b", "anna"), ("c", "bert")] {
+            ids.push(queue.submit(in_project(key, owner, "glac", Some(50))).unwrap());
+        }
+        assert_eq!(
+            queue.submit(in_project("d", "carl", "glac", Some(50))),
+            Err(SubmitError::ProjectBusy { limit: 3 })
+        );
+        // Another project is not held to it, and one asking for less gets less.
+        ids.push(queue.submit(in_project("e", "carl", "other", Some(1))).unwrap());
+        let refused = queue
+            .submit(in_project("f", "dora", "other", Some(1)))
+            .unwrap_err();
+        assert_eq!(refused, SubmitError::ProjectBusy { limit: 1 });
+        assert!(refused.to_string().contains("This project already has 1"), "{refused}");
+        // Zero is read as one, rather than a project that can never process.
+        ids.push(queue.submit(in_project("g", "erik", "third", Some(0))).unwrap());
+        for id in ids {
             queue.cancel(id);
         }
     }
