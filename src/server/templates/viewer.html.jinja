@@ -142,7 +142,7 @@
     {% endif %}
     {#- Processing on the server (#382), for an operator. Hidden until
         process.js has asked whether the project has this radargram's raw
-        data: without it there is nothing to process. -#}
+        data: with it the button processes, without it it attaches some. -#}
     {% if project and can_operate %}
     <button type="button" id="process-open" hidden>Process&hellip;</button>
     {% endif %}
@@ -418,30 +418,7 @@
       body on first open rather than templated here. -#}
 
   {% if project and can_operate %}
-  <dialog id="process-dialog" class="process-dialog">
-    <h2>Process {{ radargram_id }}</h2>
-    <p id="process-status" class="hint"></p>
-    <label class="process-steps">Steps, one per line
-      <textarea id="process-steps" rows="8" spellcheck="false"></textarea>
-    </label>
-    <label>Medium velocity (m/ns)
-      <input type="number" id="process-velocity" step="0.001" min="0.01" value="0.168">
-    </label>
-    <div id="process-error" class="warning" hidden></div>
-    <figure id="process-result" class="process-result" hidden>
-      <img id="process-image" alt="">
-      <figcaption id="process-caption"></figcaption>
-    </figure>
-    <p id="process-headline"></p>
-    <div id="process-detail"></div>
-    <p>
-      <button type="button" id="process-run">Process</button>
-      <button type="button" id="process-toggle" hidden>Show current</button>
-      <button type="button" id="process-commit" hidden>Make this the radargram&hellip;</button>
-      <button type="button" id="process-confirm" class="danger" hidden>Replace</button>
-      <button type="button" id="process-close">Close</button>
-    </p>
-  </dialog>
+  {% include "process_dialog.html.jinja" %}
   {% endif %}
 
   <dialog id="metadata-dialog">

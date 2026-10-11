@@ -173,7 +173,7 @@ the project removes its source too; ignoring one does not.
 | `POST` | `/api/v1/raw` | `operator` | Upload one raw file as the request body. Query: `filename`, required, since a file's name says what it is to its recording (`DAT_0001_A1.rd3`). Answers its `name`, `blake3` and size. Uploading a file the project already has stores nothing new. |
 | `GET` | `/api/v1/raw/{blake3}` | download `all` | A stored raw file. |
 | `GET` | `/api/v1/sources/{radargram_id}` | `viewer` | What the radargram is made from, with an `ETag`. |
-| `PUT` | `/api/v1/sources/{radargram_id}` | `operator` | Set or switch what the radargram is made from: `recordings`, a list of recordings in merge order, each a list of `{name, blake3}` as the upload answered, and optionally `crs`, an EPSG code such as `EPSG:32633`, and `dem`. Which file is a recording's header, data and positions is read from the names. Every recording is read before anything is saved, and what its header and positions say is in the answer. Takes `If-Match`. |
+| `PUT` | `/api/v1/sources/{radargram_id}` | `operator` | Set or switch what the radargram is made from: `recordings`, a list of recordings in merge order, each a list of `{name, blake3}` as the upload answered, and optionally `crs`, an EPSG code such as `EPSG:32633` (without it, the positions go in the UTM zone that suits them best), and `dem`. Which file is a recording's header, data and positions is read from the names. Every recording is read before anything is saved, and what its header and positions say is in the answer. Recordings that cannot be merged into one radargram (different CRS, antenna frequency, time window or antenna separation) are refused with `400 recordings_not_mergeable`. Takes `If-Match`. |
 | `DELETE` | `/api/v1/sources/{radargram_id}` | `operator` | Forget what the radargram is made from. Files no other source names are deleted after an hour. |
 
 ## Processing profiles
@@ -217,7 +217,7 @@ in the same way. A draft of a new id is installed as an upload.
 |---|---|---|---|
 | `POST` | `/api/v1/sources/{radargram_id}/drafts` | `operator` | Process the radargram's raw data: `steps`, and optionally `medium_velocity`, `antenna_mhz_override` and `antenna_separation_override`. Answers `202` with the draft's `job` number and state. Asking again for the same draft answers the same one. |
 | `GET` | `/api/v1/drafts` | `operator` | The caller's drafts. |
-| `GET` | `/api/v1/drafts/{job}` | `operator`, own | One draft: its `state` (`queued`, `running`, `done`, `failed`, `cancelled` or `timed_out`), the step it is on, and the revision it was made against. |
+| `GET` | `/api/v1/drafts/{job}` | `operator`, own | One draft: its `state` (`queued`, `running`, `done`, `failed`, `cancelled` or `timed_out`), the step it is on (`step`), whether every step has run and the file is being written (`writing`), and the revision it was made against. |
 | `DELETE` | `/api/v1/drafts/{job}` | `operator`, own | Stop a draft, or throw a finished one away. |
 | `GET` | `/api/v1/drafts/{job}/views/{view}/overview` | `operator`, own | A low-resolution image of a finished draft. Query: `profile`. |
 | `GET` | `/api/v1/drafts/{job}/download` | `operator`, own; download `all` | A finished draft's NetCDF file. |

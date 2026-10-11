@@ -281,6 +281,21 @@ code {
   margin-bottom: var(--space-3);
 }
 
+/* The text a message quotes, kept as written so a `^^^` underline lines
+ * up with what it points at (RIDAL.setMessage). */
+.warning > p:first-child {
+  margin-top: 0;
+}
+.warning > :last-child {
+  margin-bottom: 0;
+}
+.message-quote {
+  font-family: var(--font-mono);
+  margin: var(--space-1) 0 0;
+  white-space: pre;
+  overflow-x: auto;
+}
+
 /* A failed fetch used to leave a blank map, which reads as "no data
  * here" rather than "the request failed". RIDAL.reportError overlays
  * this on the element that would otherwise be mysteriously empty, so the
@@ -1435,7 +1450,8 @@ button.danger {
 
 /* Every dialog's actions, and the ones that share their shape.
  *
- * `dialog > p > button` is the row of actions each dialog ends with. Only
+ * `dialog > p > button` is the row of actions each dialog ends with (in the
+ * process dialog, inside its pinned `.process-footer`). Only
  * `.danger` was styled before, so the removal dialog put a styled Remove
  * next to a browser-default Cancel — two controls of visibly different
  * shape offering one choice, which reads as one of them being an
@@ -1448,6 +1464,8 @@ button.danger {
 #derived-actions button,
 .group-draft button,
 dialog > p > button,
+.process-footer > p > button,
+.process-steps-help > button,
 #token-result button,
 #pick-delete-cancel,
 button.danger {
@@ -1465,6 +1483,8 @@ button.danger {
 #derived-actions button:hover:not(:disabled),
 .group-draft button:hover:not(:disabled),
 dialog > p > button:hover:not(:disabled),
+.process-footer > p > button:hover:not(:disabled),
+.process-steps-help > button:hover:not(:disabled),
 #token-result button:hover:not(:disabled),
 #pick-delete-cancel:hover,
 button.danger:hover:not(:disabled) {
@@ -2731,6 +2751,9 @@ button.danger:disabled {
   display: block;
   margin: 0.5rem 0;
 }
+.process-dialog input[type="text"] {
+  width: min(24rem, 100%);
+}
 .process-steps textarea {
   display: block;
   box-sizing: border-box;
@@ -2746,6 +2769,46 @@ button.danger:disabled {
 }
 .process-result {
   margin: 0.5rem 0;
+}
+.process-files {
+  margin: 0.25rem 0;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.process-files:empty {
+  display: none;
+}
+/* The progress line and the buttons stay at the foot of the dialog
+   however long it grows: the dialog scrolls, and these are what a person
+   is waiting on. Out to the dialog's edges, over its bottom padding. */
+.process-footer {
+  position: sticky;
+  bottom: calc(-1 * var(--space-4));
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  margin: 0 calc(-1 * var(--space-4)) calc(-1 * var(--space-4));
+  padding: 0 var(--space-4) var(--space-2);
+}
+.process-footer > p {
+  margin: var(--space-2) 0;
+}
+.process-footer > p:empty {
+  display: none;
+}
+.process-steps-help {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+}
+.process-steps-help button {
+  margin-right: auto;
+}
+.process-remove {
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  line-height: 1.4;
 }
 
 /* The processing page (#382): a profile per section, its radargrams with

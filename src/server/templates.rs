@@ -22,6 +22,12 @@ pub fn environment() -> Environment<'static> {
     // `stable` rather than `latest`: a server serves a release, and its
     // help should describe the release it is.
     env.add_global("docs_base", "https://ridal.readthedocs.io/en/stable/");
+    // What "Replace with default steps" in the process dialog puts in the
+    // steps box: `ridal process --default`, without the topographic variant.
+    env.add_global(
+        "default_processing_steps",
+        minijinja::Value::from_serialize(crate::gpr::default_processing_profile()),
+    );
     env.add_template("base.html.jinja", include_str!("templates/base.html.jinja"))
         .expect("base template must parse");
     env.add_template(
@@ -29,6 +35,11 @@ pub fn environment() -> Environment<'static> {
         include_str!("templates/index.html.jinja"),
     )
     .expect("index template must parse");
+    env.add_template(
+        "process_dialog.html.jinja",
+        include_str!("templates/process_dialog.html.jinja"),
+    )
+    .expect("process dialog template must parse");
     env.add_template(
         "viewer.html.jinja",
         include_str!("templates/viewer.html.jinja"),
@@ -87,6 +98,7 @@ mod tests {
         for name in [
             "base.html.jinja",
             "index.html.jinja",
+            "process_dialog.html.jinja",
             "viewer.html.jinja",
             "layers.html.jinja",
             "processing.html.jinja",
@@ -147,6 +159,10 @@ mod tests {
             (
                 "viewer.html.jinja",
                 include_str!("templates/viewer.html.jinja"),
+            ),
+            (
+                "process_dialog.html.jinja",
+                include_str!("templates/process_dialog.html.jinja"),
             ),
         ] {
             for (number, line) in html.lines().enumerate() {
