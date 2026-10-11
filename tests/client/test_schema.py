@@ -39,6 +39,7 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.BundleFile: ("BundleFile", {}),
     models.Bundle: ("Bundle", {}),
     models.SourceDem: ("SourceDem", {}),
+    models.SourceNames: ("SourceNames", {}),
     models.Source: ("RawSource", {}),
     models.NamedFormat: ("NamedFormat", {}),
     models.MetadataSummary: ("MetadataSummary", {}),
@@ -58,6 +59,11 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.PicksNotCarried: ("PicksNotCarried", {}),
     models.BatchItem: ("Item", {}),
     models.Batch: ("Batch", {}),
+    models.Split: ("Split", {}),
+    models.PlannedRecording: ("PlannedRecording", {}),
+    models.PlannedOutput: ("PlannedOutput", {}),
+    models.PlanProblem: ("PlanProblem", {}),
+    models.IngestPlan: ("IngestPlan", {}),
 }
 
 #: Fields a record has that the server does not send in the body: the

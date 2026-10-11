@@ -158,6 +158,8 @@ pub struct AppState {
     pub drafts: super::draft_routes::Drafts,
     /// The batches running in this project.
     pub batches: super::batch_routes::Batches,
+    /// What the ingest planner has read of each recording.
+    pub ingest_reads: Arc<super::ingest_routes::ReadCache>,
     /// Held while a DEM's links are checked and written
     /// ([`super::dem_routes`]), so a DEM's file is never replaced or
     /// deleted between "nothing links to it" and the write, nor linked in
@@ -399,6 +401,7 @@ impl AppState {
             processing: None,
             drafts: Default::default(),
             batches: Default::default(),
+            ingest_reads: Default::default(),
             dem_links: Mutex::new(()),
         };
         // At startup too, not only on rediscovery. Most projects never
@@ -967,6 +970,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::raw_routes::download_raw_file),
         )
         .route("/api/v1/sources", get(super::raw_routes::list_sources))
+        .route(
+            "/api/v1/ingest/plan",
+            axum::routing::post(super::ingest_routes::plan_ingest),
+        )
         .route(
             "/api/v1/sources/{radargram_id}/dem",
             axum::routing::put(super::dem_routes::link_dem),

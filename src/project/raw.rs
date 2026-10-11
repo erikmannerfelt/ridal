@@ -61,6 +61,27 @@ pub struct Source {
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub dem: Option<SourceDem>,
+    /// What to call the radargram while it has none of its own: an id
+    /// with raw data and no processed file yet (#382 phase 7). Once it is
+    /// served, the catalog's names win and renaming is an override.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub names: Option<SourceNames>,
+}
+
+/// The names a source gives a radargram that is not served yet.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct SourceNames {
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub group_name: Option<String>,
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub group_id: Option<String>,
 }
 
 impl Source {
@@ -183,11 +204,7 @@ pub fn install(data_dir: &Path, written: &Path, name: &str) -> Result<HashedFile
         // Uploaded again, so young again: otherwise a file that sat
         // unreferenced for an hour could be swept between this upload and
         // the source that names it.
-        std::fs::File::options()
-            .write(true)
-            .open(&destination)
-            .and_then(|file| file.set_modified(std::time::SystemTime::now()))
-            .map_err(|e| format!("could not refresh {name}: {e}"))?;
+        refresh(&destination).map_err(|e| format!("could not refresh {name}: {e}"))?;
     } else {
         let parent = destination.parent().expect("has a parent");
         std::fs::create_dir_all(parent)
@@ -199,6 +216,16 @@ pub fn install(data_dir: &Path, written: &Path, name: &str) -> Result<HashedFile
         name: name.to_string(),
         blake3: hashed.blake3,
     })
+}
+
+/// Make a stored file young again, so that [`sweep`] leaves it for another
+/// [`SWEEP_MIN_AGE`]: for a file in use that no document names yet, such
+/// as one being planned (#382 phase 7).
+pub fn refresh(stored: &Path) -> std::io::Result<()> {
+    std::fs::File::options()
+        .write(true)
+        .open(stored)
+        .and_then(|file| file.set_modified(std::time::SystemTime::now()))
 }
 
 fn source_document(id: &RadargramId) -> PathBuf {
@@ -665,6 +692,7 @@ mod tests {
             bundles,
             crs: None,
             dem: None,
+            names: None,
         };
         write_source(&store, &id, &source, &Expectation::Absent).unwrap();
         let loose = upload(dir.path(), "assets/mala/README.md");
@@ -725,6 +753,7 @@ mod tests {
                 id: id.clone(),
                 file: dem.file.clone(),
             }),
+            names: None,
         };
         write_source(&store, &line, &source, &Expectation::Absent).unwrap();
         assert_eq!(dem_users(&store).unwrap()[&id], vec![line.clone()]);

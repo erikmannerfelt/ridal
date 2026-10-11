@@ -521,7 +521,7 @@ def test_processing_stops_at_a_draft_that_failed(tmp_path: Path) -> None:
         if request.method == "PUT":
             body = json.loads(request.content)
             assert [f["name"] for f in body["recordings"][0]] == ["a.rad", "a.rd3"]
-            source = {"bundles": [], "crs": None, "dem": None}
+            source = {"bundles": [], "crs": None, "dem": None, "names": None}
             return httpx.Response(
                 200,
                 json={"radargram_id": "line-01", "source": source, "recordings": []},
@@ -545,3 +545,102 @@ def test_too_many_jobs_is_its_own_refusal() -> None:
     with fake(handler) as client, pytest.raises(errors.TooManyRequests) as refused:
         client.create_draft("line-01", ["dewow"])
     assert refused.value.code == "project_too_many_jobs"
+
+
+def test_an_ingest_plan_sends_every_choice_and_reads_where_each_problem_is() -> None:
+    sent: list[Any] = []
+    output = {
+        "key": "k1",
+        "recordings": ["k1", "k2"],
+        "radargram_id": None,
+        "display_name": None,
+        "id_overridden": False,
+        "display_name_overridden": False,
+        "start_time": "2025-03-27T10:00:00+00:00",
+        "stop_time": "2025-03-27T10:05:00+00:00",
+        "antenna_mhz": 100.0,
+        "split": None,
+    }
+    recording = {
+        "key": "k1",
+        "name": "DAT_0001_A1.rad",
+        "files": ["DAT_0001_A1.rad", "DAT_0001_A1.rd3", "DAT_0001_A1.cor"],
+        "start_time": "2025-03-27T10:00:00+00:00",
+        "stop_time": "2025-03-27T10:02:00+00:00",
+        "antenna_mhz": 100.0,
+        "traces": 500,
+        "track": [[16.1, 78.0], [16.2, 78.1]],
+        "output": 0,
+        "excluded": False,
+        "unreadable": None,
+    }
+    problem = {
+        "kind": "invalid_pattern",
+        "message": "an id cannot contain uppercase letters; write `mhz`",
+        "output": None,
+        "recording": None,
+        "pattern": "id_pattern",
+        "span": [11, 14],
+        "served": None,
+        "has_source": None,
+    }
+
+    def handler(request: Any) -> Any:
+        assert request.url.path == "/api/v1/projects/default/ingest/plan"
+        sent.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "merge_threshold_seconds": 600.0,
+                "crs": None,
+                "recordings": [recording],
+                "outputs": [output],
+                "problems": [problem],
+            },
+        )
+
+    stored = ridal_client.StoredFile(name="DAT_0001_A1.rad", blake3="k1", bytes=1)
+    with fake(handler) as client:
+        plan = client.plan_ingest(
+            [[stored]],
+            merge_threshold_seconds=600,
+            joins=["k2"],
+            id_pattern="line-{freq}MHz",
+            ids={"k1": "line-01"},
+        )
+    (body,) = sent
+    assert body["recordings"] == [
+        {"files": [{"name": "DAT_0001_A1.rad", "blake3": "k1"}]}
+    ]
+    assert body["joins"] == ["k2"] and body["ids"] == {"k1": "line-01"}
+    assert body["include_tracks"] is True
+    assert not plan.ok
+    assert plan.problems[0].span == (11, 14)
+    assert plan.recordings[0].track == ((16.1, 78.0), (16.2, 78.1))
+    assert plan.outputs[0].recordings == ("k1", "k2")
+
+
+def test_a_source_keeps_its_names_unless_told_otherwise() -> None:
+    sent: list[Any] = []
+
+    def handler(request: Any) -> Any:
+        sent.append(json.loads(request.content))
+        names = sent[-1].get("names")
+        source = {"bundles": [], "crs": None, "dem": None, "names": names}
+        return httpx.Response(
+            200, json={"radargram_id": "line-01", "source": source, "recordings": []}
+        )
+
+    names = ridal_client.SourceNames(display_name="Line 1", group_name="Drønbreen")
+    with fake(handler) as client:
+        client.set_source("line-01", [])
+        cleared = client.set_source("line-01", [], names=None)
+        named = client.set_source("line-01", [], names=names)
+    assert "names" not in sent[0]
+    assert sent[1]["names"] is None and cleared.source.names is None
+    assert sent[2]["names"] == {
+        "display_name": "Line 1",
+        "group_name": "Drønbreen",
+        "group_id": None,
+    }
+    assert named.source.names == names

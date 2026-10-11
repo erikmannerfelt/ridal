@@ -1448,6 +1448,53 @@
           }
         }
       },
+      "IngestPlan": {
+        "type": "object",
+        "description": "`POST /api/v1/ingest/plan`.",
+        "required": [
+          "merge_threshold_seconds",
+          "crs",
+          "recordings",
+          "outputs",
+          "problems"
+        ],
+        "properties": {
+          "merge_threshold_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "crs": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The CRS positions were read in: the request's, else the project's\n`[processing] crs`, else `null`, each track in its own UTM zone."
+          },
+          "recordings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedRecording"
+            },
+            "description": "In time order; those that cannot be read last."
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedOutput"
+            },
+            "description": "In time order."
+          },
+          "problems": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlanProblem"
+            }
+          }
+        }
+      },
       "InterpretationList": {
         "type": "object",
         "description": "`GET /api/v1/datasets/{radargram_id}/interpretations`.",
@@ -1972,6 +2019,236 @@
           }
         }
       },
+      "PlanProblem": {
+        "type": "object",
+        "description": "Something that stops the plan being created, with where it is.",
+        "required": [
+          "kind",
+          "message",
+          "output",
+          "recording",
+          "pattern",
+          "span",
+          "served",
+          "has_source"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`invalid_pattern`, `invalid_group`, `invalid_id`, `id_collision`,\n`id_taken`, `join_refused` or `unreadable`."
+          },
+          "message": {
+            "type": "string"
+          },
+          "output": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The output it is about, by index.",
+            "minimum": 0
+          },
+          "recording": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The recording it is about, by key."
+          },
+          "pattern": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For `invalid_pattern`: `id_pattern` or `display_name_pattern`."
+          },
+          "span": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Where in the pattern, in characters, `[start, end)`, when the\nproblem is in one place of it."
+          },
+          "served": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "For `id_taken`: whether the id is a served radargram, and whether it\nhas raw data already. Either makes it taken."
+          },
+          "has_source": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "PlannedOutput": {
+        "type": "object",
+        "required": [
+          "key",
+          "recordings",
+          "radargram_id",
+          "display_name",
+          "id_overridden",
+          "display_name_overridden",
+          "start_time",
+          "stop_time",
+          "antenna_mhz",
+          "split"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Its first recording's key, which `ids` and `display_names` are keyed\nby."
+          },
+          "recordings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "In merge order."
+          },
+          "radargram_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` when the pattern or the override gives no valid id."
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id_overridden": {
+            "type": "boolean",
+            "description": "Whether the id and the display name were typed rather than rendered."
+          },
+          "display_name_overridden": {
+            "type": "boolean"
+          },
+          "start_time": {
+            "type": "string"
+          },
+          "stop_time": {
+            "type": "string"
+          },
+          "antenna_mhz": {
+            "type": "number",
+            "format": "float"
+          },
+          "split": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Split",
+                "description": "Why it is not part of the output before it; `null` for the first."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "PlannedRecording": {
+        "type": "object",
+        "required": [
+          "key",
+          "name",
+          "files",
+          "start_time",
+          "stop_time",
+          "antenna_mhz",
+          "traces",
+          "track",
+          "output",
+          "excluded",
+          "unreadable"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "A hash of its files' contents ([`recording_key`])."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its header file's name."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "start_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 3339; `null` when it cannot be read."
+          },
+          "stop_time": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "antenna_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "traces": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "minimum": 0
+          },
+          "track": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "description": "Simplified, WGS84 `[lon, lat]`; `null` when not asked for or not\nread."
+          },
+          "output": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Which output it is in; `null` when excluded or unreadable.",
+            "minimum": 0
+          },
+          "excluded": {
+            "type": "boolean"
+          },
+          "unreadable": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it cannot be read, when it cannot."
+          }
+        }
+      },
       "Position": {
         "type": "array",
         "items": {
@@ -2405,7 +2682,8 @@
         "required": [
           "bundles",
           "crs",
-          "dem"
+          "dem",
+          "names"
         ],
         "properties": {
           "bundles": {
@@ -2427,6 +2705,17 @@
               {
                 "$ref": "#/components/schemas/SourceDem",
                 "description": "The project's DEM to take elevations from."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "names": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceNames",
+                "description": "What to call the radargram while it has none of its own: an id\nwith raw data and no processed file yet (#382 phase 7). Once it is\nserved, the catalog's names win and renaming is an override."
               },
               {
                 "type": "null"
@@ -2769,6 +3058,35 @@
           }
         }
       },
+      "SourceNames": {
+        "type": "object",
+        "description": "The names a source gives a radargram that is not served yet.",
+        "required": [
+          "display_name",
+          "group_name",
+          "group_id"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
       "SourceView": {
         "type": "object",
         "description": "`GET`/`PUT /api/v1/sources/{radargram_id}`.",
@@ -2790,6 +3108,38 @@
               "$ref": "#/components/schemas/InfoRecord"
             },
             "description": "What each recording's header and positions say, in merge order.\nOnly `PUT` reads the recordings; `GET` leaves this empty."
+          }
+        }
+      },
+      "Split": {
+        "type": "object",
+        "description": "Why an output of a merging batch starts a new radargram instead of\ncontinuing the one before it, in time order (#382 phase 2).",
+        "required": [
+          "gap_seconds",
+          "over_threshold",
+          "incompatible",
+          "manual"
+        ],
+        "properties": {
+          "gap_seconds": {
+            "type": "number",
+            "format": "double",
+            "description": "From the end of the previous output to the start of this one."
+          },
+          "over_threshold": {
+            "type": "boolean",
+            "description": "Whether the gap alone is more than `--merge` allows."
+          },
+          "incompatible": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the two cannot be one radargram, when they cannot: the first\nthing `GPR::merge` refused."
+          },
+          "manual": {
+            "type": "boolean",
+            "description": "Whether a person asked for a new radargram here, in the ingest\nplanner (#382); never in `batch-process`."
           }
         }
       },

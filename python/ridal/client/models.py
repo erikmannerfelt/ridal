@@ -806,13 +806,31 @@ class SourceDem:
 
 
 @dataclass(frozen=True)
+class SourceNames:
+    """What to call a radargram that has raw data but is not served yet.
+    Once it is, the catalog's names win."""
+
+    display_name: str | None = None
+    group_name: str | None = None
+    group_id: str | None = None
+    """Derived from ``group_name`` when not given."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "SourceNames":
+        return _parse(
+            "source names", data, lambda d: cls(**{k: d[k] for k in _fields(cls)})
+        )
+
+
+@dataclass(frozen=True)
 class Source:
     """What a radargram is made from: its recordings in merge order, and
-    optionally a CRS and a DEM."""
+    optionally a CRS, a DEM and the names to give it until it is served."""
 
     bundles: tuple[Bundle, ...]
     crs: str | None
     dem: SourceDem | None
+    names: SourceNames | None
 
     @classmethod
     def from_json(cls, data: Any) -> "Source":
@@ -823,6 +841,7 @@ class Source:
                 bundles=tuple(Bundle.from_json(b) for b in d["bundles"]),
                 crs=d["crs"],
                 dem=None if d["dem"] is None else SourceDem.from_json(d["dem"]),
+                names=None if d["names"] is None else SourceNames.from_json(d["names"]),
             ),
         )
 
@@ -1276,6 +1295,151 @@ class Batch:
                 finished_at=d["finished_at"],
                 items=tuple(BatchItem.from_json(i) for i in d["items"]),
                 seen_at=d["seen_at"],
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class Split:
+    """Why an output of an ingest plan starts a new radargram rather than
+    continuing the one before it."""
+
+    gap_seconds: float
+    over_threshold: bool
+    """Whether the gap alone is more than the plan's threshold."""
+    incompatible: str | None
+    """Why the two cannot be one radargram, when they cannot."""
+    manual: bool
+    """Whether a split was asked for here."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Split":
+        return _parse("split", data, lambda d: cls(**{k: d[k] for k in _fields(cls)}))
+
+
+@dataclass(frozen=True)
+class PlannedRecording:
+    """One recording of an ingest plan, and the output it is in."""
+
+    key: str
+    """A hash of its files' contents: what ``excluded``, ``joins``,
+    ``splits``, ``ids`` and ``display_names`` name it by."""
+    name: str
+    files: tuple[str, ...]
+    start_time: str | None
+    stop_time: str | None
+    antenna_mhz: float | None
+    traces: int | None
+    track: tuple[tuple[float, float], ...] | None
+    """Simplified, WGS84 ``(lon, lat)``."""
+    output: int | None
+    excluded: bool
+    unreadable: str | None
+    """Why it cannot be read, when it cannot."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PlannedRecording":
+        def build(d: Mapping[str, Any]) -> "PlannedRecording":
+            plain = {k: d[k] for k in _fields(cls) if k not in ("files", "track")}
+            track = d["track"]
+            return cls(
+                **plain,
+                files=tuple(d["files"]),
+                track=None
+                if track is None
+                else tuple((float(lon), float(lat)) for lon, lat in track),
+            )
+
+        return _parse("planned recording", data, build)
+
+
+@dataclass(frozen=True)
+class PlannedOutput:
+    """One radargram an ingest plan would make."""
+
+    key: str
+    """Its first recording's key."""
+    recordings: tuple[str, ...]
+    """Their keys, in merge order."""
+    radargram_id: str | None
+    display_name: str | None
+    id_overridden: bool
+    display_name_overridden: bool
+    start_time: str
+    stop_time: str
+    antenna_mhz: float
+    split: Split | None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PlannedOutput":
+        def build(d: Mapping[str, Any]) -> "PlannedOutput":
+            plain = {k: d[k] for k in _fields(cls) if k not in ("recordings", "split")}
+            return cls(
+                **plain,
+                recordings=tuple(d["recordings"]),
+                split=None if d["split"] is None else Split.from_json(d["split"]),
+            )
+
+        return _parse("planned output", data, build)
+
+
+@dataclass(frozen=True)
+class PlanProblem:
+    """Something that stops an ingest plan being created, and where."""
+
+    kind: str
+    """``invalid_pattern``, ``invalid_group``, ``invalid_id``,
+    ``id_collision``, ``id_taken``, ``join_refused`` or ``unreadable``."""
+    message: str
+    output: int | None
+    recording: str | None
+    pattern: str | None
+    """``id_pattern`` or ``display_name_pattern``."""
+    span: tuple[int, int] | None
+    """Where in the pattern, in characters."""
+    served: bool | None
+    has_source: bool | None
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PlanProblem":
+        def build(d: Mapping[str, Any]) -> "PlanProblem":
+            plain = {k: d[k] for k in _fields(cls) if k != "span"}
+            span = d["span"]
+            return cls(**plain, span=None if span is None else (span[0], span[1]))
+
+        return _parse("plan problem", data, build)
+
+
+@dataclass(frozen=True)
+class IngestPlan:
+    """Many recordings grouped into the radargrams they would make, and
+    named (``POST /ingest/plan``)."""
+
+    merge_threshold_seconds: float | None
+    crs: str | None
+    """The CRS positions were read in; ``None`` is each track's UTM zone."""
+    recordings: tuple[PlannedRecording, ...]
+    outputs: tuple[PlannedOutput, ...]
+    problems: tuple[PlanProblem, ...]
+
+    @property
+    def ok(self) -> bool:
+        """Whether it can be created as it is."""
+        return not self.problems
+
+    @classmethod
+    def from_json(cls, data: Any) -> "IngestPlan":
+        return _parse(
+            "ingest plan",
+            data,
+            lambda d: cls(
+                merge_threshold_seconds=d["merge_threshold_seconds"],
+                crs=d["crs"],
+                recordings=tuple(
+                    PlannedRecording.from_json(r) for r in d["recordings"]
+                ),
+                outputs=tuple(PlannedOutput.from_json(o) for o in d["outputs"]),
+                problems=tuple(PlanProblem.from_json(p) for p in d["problems"]),
             ),
         )
 

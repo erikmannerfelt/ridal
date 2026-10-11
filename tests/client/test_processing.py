@@ -158,3 +158,38 @@ def test_a_dem_is_added_linked_and_kept_while_linked(
         assert client.dems() == ()
         client.delete_source("line-new")
         assert client.sources() == ()
+
+
+def test_an_ingest_plan_names_what_it_would_make(
+    empty_gui: Server, recording: list[Path]
+) -> None:
+    with ridal_client.Client(empty_gui.url) as client:
+        stored = [client.upload_raw(path) for path in recording]
+        plan = client.plan_ingest(
+            [stored],
+            merge_threshold_seconds=600,
+            id_pattern="{group}-{freq}mhz-{n:02}",
+            group_name="Drønbreen",
+        )
+        assert plan.ok, plan.problems
+        (output,) = plan.outputs
+        assert output.radargram_id == "dronbreen-25mhz-01"
+        (planned,) = plan.recordings
+        assert planned.output == 0 and planned.track is not None
+
+        # Created as a source with its names, the id is taken.
+        names = ridal_client.SourceNames(display_name="Line 1", group_name="Drønbreen")
+        view = client.set_source(
+            output.radargram_id, [stored], names=names, only_new=True
+        )
+        assert view.source.names == ridal_client.SourceNames(
+            "Line 1", "Drønbreen", "dronbreen"
+        )
+        again = client.plan_ingest(
+            [stored], id_pattern="{group}-{freq}mhz-{n:02}", group_name="Drønbreen"
+        )
+        with pytest.raises(errors.PreconditionFailed):
+            client.set_source(output.radargram_id, [stored], only_new=True)
+        (problem,) = again.problems
+        assert problem.kind == "id_taken"
+        assert (problem.served, problem.has_source) == (False, True)

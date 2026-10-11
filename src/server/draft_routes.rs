@@ -354,13 +354,22 @@ pub(super) async fn prepare(
         })?;
 
     // What it is made against, and what it is called: the served
-    // radargram's names, so a committed file keeps them.
+    // radargram's names, so a committed file keeps them, or, for an id not
+    // served yet, the names its source gives it.
     let catalog = state.catalog();
     let entry = catalog.find_entry(id.as_str());
     let base_revision = entry.map(|e| e.revision_id.to_string());
-    let display_name = entry.and_then(|e| e.display_name.as_ref().map(|n| n.to_string()));
-    let group_name = entry.and_then(|e| e.group_name.as_ref().map(|n| n.to_string()));
-    let group_id = entry.and_then(|e| e.group_id.as_ref().map(|g| g.to_string()));
+    let (display_name, group_name, group_id) = match entry {
+        Some(e) => (
+            e.display_name.as_ref().map(|n| n.to_string()),
+            e.group_name.as_ref().map(|n| n.to_string()),
+            e.group_id.as_ref().map(|g| g.to_string()),
+        ),
+        None => {
+            let names = source.names.clone().unwrap_or_default();
+            (names.display_name, names.group_name, names.group_id)
+        }
+    };
     drop(catalog);
 
     // One job for one person asking for one thing twice. The key is not

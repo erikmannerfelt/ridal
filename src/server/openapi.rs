@@ -18,8 +18,8 @@ use axum::response::IntoResponse;
 use utoipa::OpenApi;
 
 use super::{
-    batch_routes, dem_routes, draft_routes, interp_routes, lifecycle_routes, processing_routes,
-    raw_routes, replace_routes, routes, site,
+    batch_routes, dem_routes, draft_routes, ingest_routes, interp_routes, lifecycle_routes,
+    processing_routes, raw_routes, replace_routes, routes, site,
 };
 use crate::interp::carry::{CarryReport, Displacement, Dropped, Severity};
 use crate::interp::source::RevisionDeclarations;
@@ -93,6 +93,7 @@ use crate::site::tokens;
         crate::project::processing::Assignments,
         batch_routes::BatchList,
         batch_routes::Batch,
+        ingest_routes::IngestPlan,
     ))
 )]
 struct ApiDoc;

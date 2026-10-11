@@ -113,7 +113,7 @@ pub struct PreferencesBody {
 /// "was it set". Serde has no built-in for the distinction, and without it
 /// a partial update is indistinguishable from a request to clear whatever
 /// it left out.
-fn present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
+pub(super) fn present<'de, T, D>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     T: serde::Deserialize<'de>,
     D: serde::Deserializer<'de>,

@@ -207,6 +207,33 @@ impl Pattern {
         })
     }
 
+    /// That `batch` has what the pattern uses of it: a group, for
+    /// `{group}` and `{group_name}`. Said once for the pattern rather than
+    /// once per output.
+    fn check_batch(&self, batch: &BatchFacts) -> Result<(), String> {
+        for segment in &self.segments {
+            let Segment::Placeholder(p) = segment else {
+                continue;
+            };
+            let fields = std::iter::once(p.field).chain(p.per.iter().copied());
+            for field in fields {
+                if field == Field::Group && batch.group_id.is_none()
+                    || field == Field::GroupName && batch.group_name.is_none()
+                {
+                    return Err(format!(
+                        "the pattern uses `{{{}}}`, but no group was given",
+                        if field == Field::Group {
+                            "group"
+                        } else {
+                            "group_name"
+                        }
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Whether rendering needs the ids that already exist, for `from=next`.
     pub fn needs_existing_ids(&self) -> bool {
         self.counter().is_some_and(|p| p.from == Some(Start::Next))
@@ -573,24 +600,44 @@ pub fn render_ids(
     batch: &BatchFacts,
     existing: &[String],
 ) -> Result<Vec<RadargramId>, String> {
-    debug_assert_eq!(pattern.kind, PatternKind::Id);
-    let numbers = counters(pattern, outputs, batch, existing)?;
-    let mut ids = Vec::with_capacity(outputs.len());
-    let mut seen = HashMap::<String, &str>::new();
-    for (output, n) in outputs.iter().zip(numbers) {
-        let text = render_one(pattern, output, batch, n, None)?;
-        let id = RadargramId::new(&text)
-            .map_err(|e| format!("{}: the id pattern gives {e}", output.label))?;
-        if let Some(other) = seen.insert(text.clone(), &output.label) {
+    let ids = render_each_id(pattern, outputs, batch, existing)?
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut seen = HashMap::<&str, &str>::new();
+    for (output, id) in outputs.iter().zip(&ids) {
+        if let Some(other) = seen.insert(id.as_str(), &output.label) {
             return Err(format!(
-                "{other} and {} would both be '{text}'. Add something that tells them apart \
+                "{other} and {} would both be '{id}'. Add something that tells them apart \
                  to the id pattern, such as `{{n}}`, or a `per=` that matches what it shows.",
                 output.label
             ));
         }
-        ids.push(id);
     }
     Ok(ids)
+}
+
+/// Every output's id, in output order, each checked on its own but not
+/// against the others: for the ingest planner (#382), which shows each
+/// problem where it is rather than stopping at the first. The outer error
+/// is one the whole pattern has, such as `{group}` with no group.
+pub fn render_each_id(
+    pattern: &Pattern,
+    outputs: &[OutputFacts],
+    batch: &BatchFacts,
+    existing: &[String],
+) -> Result<Vec<Result<RadargramId, String>>, String> {
+    debug_assert_eq!(pattern.kind, PatternKind::Id);
+    pattern.check_batch(batch)?;
+    let numbers = counters(pattern, outputs, batch, existing)?;
+    Ok(outputs
+        .iter()
+        .zip(numbers)
+        .map(|(output, n)| {
+            let text = render_one(pattern, output, batch, n, None)?;
+            RadargramId::new(&text)
+                .map_err(|e| format!("{}: the id pattern gives {e}", output.label))
+        })
+        .collect())
 }
 
 /// Every output's display name, in output order, given the ids they got
@@ -607,6 +654,7 @@ pub fn render_display_names(
     existing: &[String],
 ) -> Result<Vec<Option<DisplayName>>, String> {
     debug_assert_eq!(pattern.kind, PatternKind::DisplayName);
+    pattern.check_batch(batch)?;
     let own = pattern
         .counter()
         .is_some_and(|n| n.from.is_some() || !n.per.is_empty());

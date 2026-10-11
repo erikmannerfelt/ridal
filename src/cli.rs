@@ -2140,6 +2140,7 @@ mod tests {
                         gap_seconds: 843.,
                         over_threshold: true,
                         incompatible: None,
+                        manual: false,
                     }),
                 ),
                 output(
@@ -2149,6 +2150,7 @@ mod tests {
                         gap_seconds: 1500.,
                         over_threshold: true,
                         incompatible: Some("Antenna frequencies are different: 100 vs 25".into()),
+                        manual: false,
                     }),
                 ),
             ],
