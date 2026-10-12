@@ -164,6 +164,9 @@ pub struct SourceList {
     /// Sorted. Served or not: raw data uploaded for a radargram that has
     /// not been processed yet is listed too.
     pub radargram_ids: Vec<String>,
+    /// The names each source gives its radargram until it is served, for
+    /// those that give any (#382 phase 7).
+    pub names: std::collections::BTreeMap<String, SourceNames>,
 }
 
 pub async fn list_sources(
@@ -175,7 +178,21 @@ pub async fn list_sources(
     let mut radargram_ids = raw::source_ids(project.documents())
         .map_err(|e| ApiError::internal("source_read_failed", e))?;
     radargram_ids.sort();
-    Ok(Json(SourceList { radargram_ids }))
+    let mut names = std::collections::BTreeMap::new();
+    for id in &radargram_ids {
+        let Ok(id) = crate::identity::RadargramId::new(id) else {
+            continue;
+        };
+        if let Some((Source { names: Some(n), .. }, _)) = raw::read_source(project.documents(), &id)
+            .map_err(|e| ApiError::internal("source_read_failed", e))?
+        {
+            names.insert(id.to_string(), n);
+        }
+    }
+    Ok(Json(SourceList {
+        radargram_ids,
+        names,
+    }))
 }
 
 /// `GET`/`PUT /api/v1/sources/{radargram_id}`.

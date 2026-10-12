@@ -2203,6 +2203,10 @@ async fn the_basemap_resolves_through_the_same_cascade() {
     // ...and all three are offered, so the layer control can switch.
     assert!(page.text.contains("OpenStreetMap"), "{}", page.text);
     assert!(page.text.contains("ESRI World Imagery"), "{}", page.text);
+    // The add raw data page's map is one of them, not a map of its own.
+    let page = get(&app, "/ingest", Some(&erik)).await;
+    assert!(opens_with(&page.text, "topo"), "{}", page.text);
+    assert!(page.text.contains("OpenStreetMap"), "{}", page.text);
 
     // One person's own wins, for them alone.
     let saved = put(
@@ -6291,6 +6295,38 @@ async fn recordings_that_cannot_be_merged_are_refused_as_a_source() {
 }
 
 #[tokio::test]
+async fn the_add_raw_data_page_is_an_operators_and_says_so_to_anyone_else() {
+    // #382 phase 7: shown and explained rather than hidden, as the
+    // processing page is, and linked from the catalog only for whoever can
+    // use it.
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("pia", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let pia = sign_in(&app, "pia").await;
+
+    let page = get(&app, "/ingest", Some(&erik)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text.contains(r#"id="ingest-drop""#), "{}", page.text);
+    assert!(page.text.contains("/static/ingest.js"));
+    let catalog = get(&app, "/", Some(&erik)).await;
+    assert!(catalog.text.contains("/ingest"), "the catalog links to it");
+
+    let page = get(&app, "/ingest", Some(&pia)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text.contains("needs the <code>operator</code> role"));
+    assert!(!page.text.contains(r#"id="ingest-drop""#));
+    assert!(!page.text.contains("/static/ingest.js"));
+    let catalog = get(&app, "/", Some(&pia)).await;
+    assert!(!catalog.text.contains("/ingest"));
+
+    let script = get(&app, "/static/ingest.js", None).await;
+    assert_eq!(script.status, StatusCode::OK);
+}
+
+#[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn an_ingest_plan_groups_and_names_uploaded_recordings() {
     // #382 phase 7: the plan route, and the source that a plan's output
@@ -6380,6 +6416,9 @@ async fn an_ingest_plan_groups_and_names_uploaded_recordings() {
     assert_eq!(created.body["source"]["names"]["group_id"], "dronbreen");
     let again = create(erik.clone()).await;
     assert_eq!(again.status, StatusCode::PRECONDITION_FAILED);
+    // Listed with them, for the Processing page's raw data not processed.
+    let listed = get(&app, "/api/v1/sources", Some(&pia)).await;
+    assert_eq!(listed.body["names"][&id]["group_name"], "Drønbreen");
 
     // Planned again, the id is taken by raw data alone.
     let plan = post(&app, "/api/v1/ingest/plan", &body, Some(&erik)).await;

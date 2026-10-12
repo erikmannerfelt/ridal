@@ -1336,7 +1336,8 @@ dialog th {
 
 /* The page-level actions that are plain buttons rather than menus. Sized
  * like the menus beside them so the row reads as one set of controls. */
-.controls button {
+.controls button,
+.controls .button-link {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
@@ -1348,7 +1349,14 @@ dialog th {
   cursor: pointer;
 }
 
-.controls button:hover:not(:disabled) {
+/* A page of its own ("Add raw data in bulk…") among the actions: a link, so it
+ * opens like one, drawn as the buttons beside it. */
+.controls .button-link {
+  text-decoration: none;
+}
+
+.controls button:hover:not(:disabled),
+.controls .button-link:hover {
   border-color: var(--color-accent);
 }
 
@@ -3404,4 +3412,205 @@ a.processing-state:hover {
 .token-grant-line,
 .token-date {
   white-space: nowrap;
+}
+
+/* Adding raw data in bulk (#382 phase 7): four steps down the page, a
+   timeline of the plan with one row per radargram, and its map. */
+.ingest-step {
+  margin: var(--space-5) 0;
+}
+.ingest-drop {
+  border: 2px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  cursor: pointer;
+}
+.ingest-drop:focus-visible,
+.ingest-drop-over {
+  border-color: var(--color-accent);
+  background: var(--color-surface-sunken);
+}
+.ingest-drop-off {
+  opacity: 0.6;
+  pointer-events: none;
+}
+.ingest-number {
+  width: 5em;
+}
+.ingest-inline {
+  margin-left: var(--space-4);
+}
+.ingest-timeline-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: var(--space-1) 0;
+}
+.ingest-timeline {
+  display: block;
+  font-size: 12px;
+}
+.ingest-timeline text {
+  fill: var(--color-text);
+}
+.ingest-row-label {
+  font-family: var(--font-mono);
+}
+.ingest-bar {
+  cursor: pointer;
+  stroke: transparent;
+  stroke-width: 2;
+}
+.ingest-bar:focus-visible,
+.ingest-bar-hover {
+  stroke: var(--color-text);
+  outline: none;
+}
+.ingest-bar-selected {
+  stroke: var(--color-text);
+  stroke-width: 3;
+}
+.ingest-chip {
+  cursor: pointer;
+}
+.ingest-chip rect {
+  fill: var(--color-surface-sunken);
+  stroke: var(--color-border-strong);
+}
+.ingest-chip text {
+  fill: var(--color-text-muted);
+  font-size: 11px;
+}
+.ingest-chip:hover rect,
+.ingest-chip:focus-visible rect {
+  stroke: var(--color-accent);
+  outline: none;
+}
+.ingest-chip-merged rect.ingest-hit {
+  fill: transparent;
+  stroke: transparent;
+}
+.ingest-chip-merged line {
+  stroke: var(--color-border-strong);
+  stroke-dasharray: 3 3;
+}
+.ingest-chip-merged:hover rect.ingest-hit,
+.ingest-chip-merged:focus-visible rect.ingest-hit {
+  stroke: var(--color-accent);
+}
+.ingest-chip-manual rect {
+  stroke: var(--color-accent);
+}
+/* A join you made, which holds whatever the threshold says. */
+.ingest-chip-joined line {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+  stroke-dasharray: none;
+}
+.ingest-chip-joined text {
+  fill: var(--color-accent);
+}
+.ingest-chip-incompatible {
+  cursor: default;
+}
+.ingest-chip-incompatible rect {
+  fill: var(--color-warning-bg);
+  stroke: var(--color-warning-border);
+}
+.ingest-selected {
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 4px solid var(--ingest-output-colour, var(--color-accent));
+  background: var(--color-surface-sunken);
+}
+.ingest-selected-title {
+  margin: 0 0 var(--space-2);
+}
+.ingest-selected-title .hint {
+  margin-left: var(--space-2);
+}
+/* What a recording is, as labelled facts rather than one sentence. */
+.ingest-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-2);
+}
+.ingest-facts dt {
+  color: var(--color-text-muted);
+}
+.ingest-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ingest-facts code + code {
+  margin-left: var(--space-1);
+}
+.ingest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+}
+/* Inset from both sides, so a touch screen has page to scroll by beside
+ * a map that would otherwise take every drag for itself. */
+.ingest-map {
+  height: min(540px, 70vh);
+  margin: var(--space-3) var(--space-6) 0;
+  border-radius: var(--radius-sm);
+}
+.ingest-problem {
+  color: var(--color-danger-text);
+}
+.ingest-problem mark {
+  background: var(--color-danger-bg);
+  color: inherit;
+  border-bottom: 2px solid var(--color-danger-border);
+}
+.ingest-row-problem {
+  background: var(--color-danger-bg);
+}
+.ingest-patterns label,
+.ingest-group label,
+.ingest-where label {
+  display: block;
+  margin: var(--space-2) 0;
+}
+.ingest-patterns input[type="text"] {
+  width: min(36rem, 100%);
+  font-family: var(--font-mono);
+}
+.ingest-group {
+  margin: var(--space-3) 0;
+}
+/* Unlike the layers table's, these boxes are what the step is for, so
+ * they look like boxes before the pointer finds them. */
+.ingest-outputs input[type="text"] {
+  min-width: 12rem;
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+.ingest-swatch {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 2px;
+  vertical-align: middle;
+}
+.ingest-reset {
+  padding: 0 var(--space-1);
+}
+.ingest-choices label {
+  display: block;
+  margin: var(--space-1) 0;
+}
+.ingest-blockers ul {
+  margin: var(--space-2) 0;
+  color: var(--color-text-muted);
+}
+.ingest-progress li {
+  margin: var(--space-1) 0;
 }

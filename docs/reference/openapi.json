@@ -3046,7 +3046,8 @@
         "type": "object",
         "description": "`GET /api/v1/sources`.",
         "required": [
-          "radargram_ids"
+          "radargram_ids",
+          "names"
         ],
         "properties": {
           "radargram_ids": {
@@ -3055,6 +3056,16 @@
               "type": "string"
             },
             "description": "Sorted. Served or not: raw data uploaded for a radargram that has\nnot been processed yet is listed too."
+          },
+          "names": {
+            "type": "object",
+            "description": "The names each source gives its radargram until it is served, for\nthose that give any (#382 phase 7).",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SourceNames"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },

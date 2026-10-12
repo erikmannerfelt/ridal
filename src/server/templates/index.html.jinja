@@ -205,7 +205,10 @@
     <input type="file" id="add-radargram-file" accept=".nc" hidden>
     {#- A new radargram processed on the server from its raw data (#382),
         through the same dialog the viewer processes with. -#}
-    <button type="button" id="process-new">From raw data&hellip;</button>
+    <button type="button" id="process-new">New radargram from raw data&hellip;</button>
+    {#- Many recordings at once, grouped and named (#382 phase 7): a page
+        of its own, since a survey's worth does not fit a dialog. -#}
+    <a class="button-link" href="{{ page_base|safe }}/ingest{{ profile_query }}">Add raw data in bulk&hellip;</a>
     {% endif %}
     <a class="docs-help" href="{{ docs_base|safe }}guide/gui.html"
        target="_blank" rel="noopener" title="The catalog in the documentation">?</a>

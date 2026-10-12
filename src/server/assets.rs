@@ -73,6 +73,7 @@ embedded_asset!(viewer_js, "viewer.js", "text/javascript");
 embedded_asset!(layers_js, "layers.js", "text/javascript");
 embedded_asset!(process_js, "process.js", "text/javascript");
 embedded_asset!(processing_js, "processing.js", "text/javascript");
+embedded_asset!(ingest_js, "ingest.js", "text/javascript");
 embedded_asset!(settings_js, "settings.js", "text/javascript");
 embedded_asset!(site_js, "site.js", "text/javascript");
 embedded_asset!(login_js, "login.js", "text/javascript");

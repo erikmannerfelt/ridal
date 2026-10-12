@@ -1,0 +1,214 @@
+{% extends "base.html.jinja" %}
+{% block title %}Add raw data - Ridal{% endblock %}
+{% block content %}
+  <h1>Add raw data</h1>
+  <p class="lede">
+    Add the raw recordings of a whole survey at once. They are grouped into
+    radargrams by time: recordings made close together, with the same
+    antenna and settings, are merged into one. Change where they are split,
+    name the radargrams, and choose whether to process them now, later, or
+    leave that to someone else. To add one radargram and look at it before
+    it goes in the catalog, use <strong>New radargram from raw data&hellip;</strong> in the
+    catalog instead.
+  </p>
+
+  {% if not project %}
+    <div class="warning">
+      <p>
+        This catalog is not a Ridal project, so there is nowhere to keep raw
+        data. Run <code>ridal project init</code> in the directory being
+        served and restart.
+      </p>
+    </div>
+  {% elif not writable %}
+    <div class="warning">
+      {% if read_only_server %}
+        <p>This server is read-only, so no raw data can be added.</p>
+      {% else %}
+        <p>
+          Adding raw data needs the <code>operator</code> role &mdash; you are
+          {% if current_user %}
+            <code>{{ current_user }}</code> ({{ current_role }}).
+          {% else %}
+            not signed in.
+          {% endif %}
+        </p>
+      {% endif %}
+    </div>
+  {% else %}
+  <div id="ingest-error" class="warning" hidden></div>
+
+  <section class="ingest-step" id="ingest-files">
+    <h2>1. Recordings</h2>
+    {#- A drop zone that is also a button: dropping is the quick way with
+        hundreds of files, choosing the one a keyboard can reach. -#}
+    <div id="ingest-drop" class="ingest-drop" tabindex="0" role="button"
+         aria-describedby="ingest-drop-hint">
+      <p><strong>Drop raw files here</strong>, or
+        <button type="button" id="ingest-choose">choose them&hellip;</button></p>
+      <p id="ingest-drop-hint" class="hint">
+        Every file of each recording: <code>.rad</code>, <code>.rd3</code>
+        and <code>.cor</code> for RAMAC, <code>.hd</code>, <code>.dt1</code>
+        and <code>.gp2</code> for pulseEKKO, <code>.dzt</code> and
+        <code>.dzg</code> for GSSI. Files are grouped into recordings by
+        their names without the extension, and uploaded one at a time.
+      </p>
+      <input type="file" id="ingest-input" multiple hidden
+             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx">
+    </div>
+    <p id="ingest-upload" class="hint" aria-live="polite"></p>
+    <p><button type="button" id="ingest-cancel" hidden>Stop uploading</button></p>
+  </section>
+
+  <section class="ingest-step" id="ingest-plan" hidden>
+    <h2>2. Radargrams</h2>
+    <p>
+      <label>Merge recordings less than
+        <input type="number" id="ingest-threshold" min="0" step="1" value="10"
+               class="ingest-number"> minutes apart</label>
+      <label class="ingest-inline"><input type="checkbox" id="ingest-never">
+        Never merge</label>
+    </p>
+    <p id="ingest-summary" class="hint" aria-live="polite"></p>
+    <div class="ingest-timeline-wrap">
+      <svg id="ingest-timeline" class="ingest-timeline" role="group"
+           aria-label="The recordings by time, one row per radargram"></svg>
+    </div>
+    <p class="hint">
+      Click a recording to see it and change where it goes. A gap inside a
+      row is merged; click it to split the radargram there. The chip at the
+      start of a row says why it is not part of the one before; click it to
+      join the two. A join you made is drawn solid.
+    </p>
+    <div id="ingest-selected" class="ingest-selected" hidden></div>
+    <div id="ingest-left-out"></div>
+    <div id="ingest-map" class="ingest-map"></div>
+  </section>
+
+  <section class="ingest-step" id="ingest-names" hidden>
+    <h2>3. Names</h2>
+    <div class="ingest-patterns">
+      <label>Id pattern
+        <input type="text" id="ingest-id-pattern" autocomplete="off" spellcheck="false"
+               autocapitalize="none" placeholder="Each first file's name">
+      </label>
+      <div id="ingest-id-pattern-problem" class="ingest-pattern-problem" hidden></div>
+      <label>Display name pattern
+        <input type="text" id="ingest-name-pattern" autocomplete="off" spellcheck="false"
+               placeholder="None">
+      </label>
+      <div id="ingest-name-pattern-problem" class="ingest-pattern-problem" hidden></div>
+      <details class="ingest-pattern-help">
+        <summary>What a pattern can say</summary>
+        <p>
+          Text with placeholders, rendered once per radargram:
+          <code>{stem}</code> the first file's name, <code>{n}</code> a
+          number in time order, <code>{freq}</code> the antenna in MHz,
+          <code>{nfiles}</code> how many recordings were merged,
+          <code>{date}</code> the start date as <code>YYYYMMDD</code>, and
+          <code>{group}</code> the group's id. A display name can also say
+          <code>{id}</code> and <code>{group_name}</code>.
+        </p>
+        <p>
+          <code>{n:02}</code> pads to two digits. <code>{n, from=15}</code>
+          starts at 15, <code>{n, from=next}</code> continues after the ids
+          already in the project, and <code>{n, per=freq}</code> counts
+          each antenna on its own. An id may hold only lowercase letters,
+          digits, <code>-</code> and <code>_</code>. For example
+          <code>{group}-2026-{freq}mhz-{n:02, per=freq}</code>.
+        </p>
+      </details>
+    </div>
+    <fieldset class="ingest-group">
+      <legend>Catalog group</legend>
+      <label>Every radargram goes in
+        <select id="ingest-group">
+          <option value="" selected>No group</option>
+          <option value="new">New group&hellip;</option>
+        </select>
+      </label>
+      <div id="ingest-group-new" hidden>
+        <label>Name <input type="text" id="ingest-group-name" placeholder="Drønbreen 2026"></label>
+        <label>ID (from the name)
+          <input type="text" id="ingest-group-id" pattern="[a-z0-9][a-z0-9_-]*"
+                 autocomplete="off" autocapitalize="none" spellcheck="false"
+                 placeholder="dronbreen-2026"></label>
+      </div>
+    </fieldset>
+    <div class="table-scroll">
+      <table class="layers-table ingest-outputs">
+        <thead>
+          <tr>
+            <th scope="col">#</th>
+            <th scope="col">Recordings</th>
+            <th scope="col">Start</th>
+            <th scope="col">Antenna</th>
+            <th scope="col">Id</th>
+            <th scope="col">Display name</th>
+          </tr>
+        </thead>
+        <tbody id="ingest-output-rows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="ingest-step" id="ingest-processing" hidden>
+    <h2>4. Processing</h2>
+    <fieldset class="ingest-choices">
+      <legend>When to process them</legend>
+      <label><input type="radio" name="ingest-when" value="now" checked>
+        <strong>Process now</strong>: with a processing profile, as one batch,
+        each applied without review</label>
+      <label><input type="radio" name="ingest-when" value="later">
+        <strong>Assign a profile, process later</strong>: they wait on the
+        Processing page as not processed yet</label>
+      <label><input type="radio" name="ingest-when" value="none">
+        <strong>No profile</strong>: raw data only, for someone to process
+        one by one</label>
+    </fieldset>
+    <div id="ingest-profile-field">
+      <label>Processing profile
+        <select id="ingest-profile">
+          <option value="" disabled selected>Choose a profile</option>
+          <option value="new">New profile&hellip;</option>
+        </select>
+      </label>
+      <fieldset id="ingest-new-profile" class="processing-add" hidden>
+        <legend>New processing profile</legend>
+        <label>Name <input type="text" id="ingest-profile-name" placeholder="Svalbard, 100 MHz"></label>
+        <label class="process-steps">Steps, one per line
+          <textarea id="ingest-profile-steps" rows="6" spellcheck="false">{{ default_processing_steps | join('\n') }}</textarea></label>
+        <label>Medium velocity (m/ns)
+          <input type="number" id="ingest-profile-velocity" step="0.001" min="0.01" value="0.168"></label>
+      </fieldset>
+    </div>
+    <div class="ingest-where">
+      <label>DEM
+        <select id="ingest-dem"><option value="">None</option></select>
+      </label>
+      <label>CRS for the positions
+        <input type="text" id="ingest-crs" autocomplete="off" spellcheck="false"
+               placeholder="Automatic: the best UTM zone for each track">
+      </label>
+      <p class="hint">
+        The DEM gives the surface elevation along each track;
+        <a href="{{ page_base|safe }}/processing#dems">add one</a> on the
+        Processing page. Changing either reads the recordings again.
+      </p>
+    </div>
+  </section>
+
+  <section class="ingest-step" id="ingest-create" hidden>
+    <p>
+      <button type="button" id="ingest-create-button" disabled>Create</button>
+    </p>
+    <div id="ingest-blockers" class="ingest-blockers" aria-live="polite"></div>
+    <ol id="ingest-progress" class="ingest-progress"></ol>
+    <div id="ingest-done" hidden></div>
+  </section>
+  {% endif %}
+{% endblock %}
+
+{% block extrascript %}
+{% if project and writable %}<script src="/static/ingest.js"></script>{% endif %}
+{% endblock %}
