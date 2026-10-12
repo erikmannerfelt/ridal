@@ -2203,6 +2203,10 @@ async fn the_basemap_resolves_through_the_same_cascade() {
     // ...and all three are offered, so the layer control can switch.
     assert!(page.text.contains("OpenStreetMap"), "{}", page.text);
     assert!(page.text.contains("ESRI World Imagery"), "{}", page.text);
+    // The add raw data page's map is one of them, not a map of its own.
+    let page = get(&app, "/ingest", Some(&erik)).await;
+    assert!(opens_with(&page.text, "topo"), "{}", page.text);
+    assert!(page.text.contains("OpenStreetMap"), "{}", page.text);
 
     // One person's own wins, for them alone.
     let saved = put(

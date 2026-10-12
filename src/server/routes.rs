@@ -1486,7 +1486,8 @@ pub async fn ingest_page(
             project => state.project.is_some(),
             writable => caller.may(crate::project::roles::Role::Operator),
             active_profile => active_profile,
-            ..caller_context(&state, &caller),
+            // The plan's map offers what every other map does (#177).
+            ..map_page_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
