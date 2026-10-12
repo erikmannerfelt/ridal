@@ -29,6 +29,7 @@
   const leftOut = $('ingest-left-out');
   const idPattern = $('ingest-id-pattern');
   const namePattern = $('ingest-name-pattern');
+  const groupChoice = $('ingest-group');
   const groupName = $('ingest-group-name');
   const groupId = $('ingest-group-id');
   const outputRows = $('ingest-output-rows');
@@ -235,6 +236,22 @@
 
   const uploaded = () => [...byStem.values()].filter((e) => e.stored);
 
+  /** The catalog's groups and those planned raw data names, id to name. */
+  const groups = new Map();
+  const GROUP = 'group:';
+
+  /** The group every output goes in, `{name, id}`, or `null` for none. A
+   * new group's id is left to the server to derive when it is not typed. */
+  function group() {
+    const value = groupChoice.value;
+    if (value.startsWith(GROUP)) {
+      const id = value.slice(GROUP.length);
+      return { name: groups.get(id), id };
+    }
+    const name = value === 'new' ? groupName.value.trim() : '';
+    return name ? { name, id: groupId.value.trim() || null } : null;
+  }
+
   function request() {
     const minutes = Number(threshold.value);
     const text = (box) => box.value.trim() || null;
@@ -248,8 +265,8 @@
       display_name_pattern: text(namePattern),
       ids: edits.ids,
       display_names: edits.displayNames,
-      group_name: text(groupName),
-      group_id: text(groupName) ? text(groupId) : null,
+      group_name: group()?.name ?? null,
+      group_id: group()?.id ?? null,
       crs: text(crsBox),
       dem: demBox.value || null,
       include_tracks: wantTracks,
@@ -311,6 +328,22 @@
       `${plural(outputs, 'radargram', 'radargrams')} from ` +
       `${plural(used, 'recording', 'recordings')}` +
       (plan.crs ? `, positions in ${plan.crs}.` : ', positions in the UTM zone of each track.');
+    // Joins and splits outlast a change of threshold, never merge
+    // included, so say they are there and offer to drop them.
+    const made = edits.joins.size + edits.splits.size;
+    if (made) {
+      const undo = el('button', { type: 'button', textContent: 'Undo them' });
+      undo.addEventListener('click', () => {
+        edits.joins.clear();
+        edits.splits.clear();
+        schedulePlan();
+      });
+      const yours = [
+        ...(edits.joins.size ? [plural(edits.joins.size, 'join', 'joins')] : []),
+        ...(edits.splits.size ? [plural(edits.splits.size, 'split', 'splits')] : []),
+      ].join(' and ');
+      summary.append(` Your ${yours} ${made === 1 ? 'applies' : 'apply'} whatever the threshold. `, undo);
+    }
     renderTimeline();
     renderSelected();
     renderLeftOut();
@@ -401,14 +434,25 @@
         if (i > 0) {
           const before = recordings.get(output.recordings[i - 1]);
           const gap = seconds(r.start_time) - seconds(before.stop_time);
-          const text = `${duration(gap)} gap, merged. Click to start a new radargram at ${r.name}.`;
+          // A join of yours holds whatever the threshold, even with never
+          // merge, so it must not look like a merge the threshold made.
+          const joined = edits.joins.has(key);
+          const text = joined
+            ? `${duration(gap)} gap, joined by you. Click to undo the join.`
+            : `${duration(gap)} gap, merged. Click to start a new radargram at ${r.name}.`;
           const chip = svg(
             'g',
-            { class: 'ingest-chip ingest-chip-merged', tabindex: 0, role: 'button', 'aria-label': text },
+            {
+              class: `ingest-chip ingest-chip-merged${joined ? ' ingest-chip-joined' : ''}`,
+              tabindex: 0,
+              role: 'button',
+              'aria-label': text,
+            },
             svg('title', {}, text),
             svg('line', { x1: x, x2: x + CHIP - 6, y1: y + ROW / 2, y2: y + ROW / 2 }),
             svg('rect', { x, y: y + 8, width: CHIP - 6, height: ROW - 16, rx: 4, class: 'ingest-hit' }),
-            svg('text', { x: x + (CHIP - 6) / 2, y: y + ROW / 2 - 3, 'text-anchor': 'middle' }, duration(gap)),
+            svg('text', { x: x + (CHIP - 6) / 2, y: y + ROW / 2 - 3, 'text-anchor': 'middle' },
+              duration(gap)),
           );
           onActivate(chip, () => split(key));
           row.push(chip);
@@ -474,6 +518,17 @@
     schedulePlan();
   }
 
+  /** When a recording was made: one date if it fits in one. */
+  function span(start, stop) {
+    const from = when(start);
+    const to = when(stop);
+    const length = duration(seconds(stop) - seconds(start));
+    if (from.slice(0, 10) === to.slice(0, 10)) {
+      return `${from.slice(0, 10)}, ${from.slice(11, 16)} to ${to.slice(11)} (${length})`;
+    }
+    return `${from} to ${to} (${length})`;
+  }
+
   function renderSelected() {
     const r = selected && recordingByKey().get(selected);
     if (!r || r.output === null) {
@@ -481,17 +536,19 @@
       return;
     }
     const output = plan.outputs[r.output];
+    const next = plan.outputs[r.output + 1];
     const first = output.recordings[0] === r.key;
+    const last = output.recordings.at(-1) === r.key;
     const actions = [];
     const button = (text, action, disabled = false, title = '') => {
       const b = el('button', { type: 'button', textContent: text, disabled, title });
       b.addEventListener('click', action);
-      actions.push(b, ' ');
+      actions.push(b);
     };
     if (first && output.split) {
       const why = output.split.incompatible;
       button(
-        edits.splits.has(r.key) ? 'Undo the split' : `Join to radargram ${r.output}`,
+        edits.splits.has(r.key) ? 'Undo the split before it' : `Join with radargram ${r.output} before`,
         () => join(r.key),
         Boolean(why),
         why ? `Cannot be joined: ${why}` : '',
@@ -502,28 +559,47 @@
         () => split(r.key),
       );
     }
-    button('Leave out', () => exclude(r.key, true));
+    // Joining the next radargram to this one: the same edit as that
+    // radargram's own "join with the one before".
+    if (last && next) {
+      const after = next.recordings[0];
+      const why = next.split.incompatible;
+      button(
+        edits.splits.has(after) ? 'Undo the split after it' : `Join with radargram ${r.output + 2} after`,
+        () => join(after),
+        Boolean(why),
+        why ? `Cannot be joined: ${why}` : '',
+      );
+    }
+    button("Don't use", () => exclude(r.key, true));
     const problems = problemsOf((p) => p.recording === r.key);
+    const fact = (term, ...value) => [el('dt', { textContent: term }), el('dd', {}, ...value)];
+    selectedBox.style.setProperty('--ingest-output-colour', colourOf(r.output));
     selectedBox.replaceChildren(
-      el('p', {}, el('strong', { textContent: r.name }),
-        ` in radargram ${r.output + 1}: ${when(r.start_time)} to ${when(r.stop_time)}, ` +
-        `${r.antenna_mhz} MHz, ${r.traces} traces. Files: ${r.files.join(', ')}.`),
+      el('p', { className: 'ingest-selected-title' },
+        el('strong', { textContent: r.name }),
+        el('span', { className: 'hint', textContent: `in radargram ${r.output + 1}${output.radargram_id ? `, ${output.radargram_id}` : ''}` })),
+      el('dl', { className: 'ingest-facts' },
+        ...fact('Recorded', span(r.start_time, r.stop_time)),
+        ...fact('Antenna', `${r.antenna_mhz} MHz`),
+        ...fact('Traces', r.traces.toLocaleString('en')),
+        ...fact('Files', ...r.files.map((f) => el('code', { textContent: f })))),
       ...problems.map((p) => el('p', { className: 'ingest-problem', textContent: p.message })),
-      el('p', {}, ...actions),
+      el('p', { className: 'ingest-actions' }, ...actions),
     );
     selectedBox.hidden = false;
   }
 
-  /** What is not in any radargram: left out, or not readable. */
+  /** What is not in any radargram: not used, or not readable. */
   function renderLeftOut() {
     const rows = plan.recordings
       .filter((r) => r.output === null)
       .map((r) => {
-        const action = el('button', { type: 'button', textContent: r.excluded ? 'Put back' : 'Leave out' });
+        const action = el('button', { type: 'button', textContent: r.excluded ? 'Use it' : "Don't use" });
         action.addEventListener('click', () => exclude(r.key, !r.excluded));
-        const why = r.unreadable ? `cannot be read: ${r.unreadable}` : 'left out';
+        const why = r.unreadable ? `cannot be read: ${r.unreadable}` : 'not used';
         return el('li', { className: r.unreadable && !r.excluded ? 'ingest-problem' : '' },
-          el('code', { textContent: r.name }), ` ${why}${r.unreadable && r.excluded ? ' (left out)' : ''}. `, action);
+          el('code', { textContent: r.name }), ` ${why}${r.unreadable && r.excluded ? ' (not used)' : ''}. `, action);
       });
     leftOut.replaceChildren(
       ...(rows.length ? [el('p', { textContent: 'Not in any radargram:' }), el('ul', {}, ...rows)] : []),
@@ -666,6 +742,11 @@
   for (const box of [idPattern, namePattern, groupName, groupId, crsBox]) {
     box.addEventListener('input', schedulePlan);
   }
+  groupChoice.addEventListener('change', () => {
+    $('ingest-group-new').hidden = groupChoice.value !== 'new';
+    schedulePlan();
+    updateCreate();
+  });
   groupName.addEventListener('input', () => {
     groupId.placeholder = RIDAL.slugify(groupName.value) || 'dronbreen-2026';
   });
@@ -696,11 +777,27 @@
 
   (async function loadChoices() {
     try {
-      const [profiles, dems, settings] = await Promise.all([
+      const [profiles, dems, settings, datasets, sources] = await Promise.all([
         RIDAL.fetchJson(RIDAL.apiPath('processing', 'profiles')),
         RIDAL.fetchJson(RIDAL.apiPath('dems')),
         RIDAL.fetchJson(RIDAL.apiPath('settings')),
+        RIDAL.fetchJson(RIDAL.apiPath('datasets')),
+        RIDAL.fetchJson(RIDAL.apiPath('sources')),
       ]);
+      // The catalog's groups, and those of raw data not processed yet,
+      // which are groups to be once it is.
+      for (const entry of datasets.entries) {
+        if (entry.group_id) groups.set(entry.group_id, entry.group_name || entry.group_id);
+      }
+      for (const names of Object.values(sources.names || {})) {
+        if (names.group_id && !groups.has(names.group_id)) {
+          groups.set(names.group_id, names.group_name || names.group_id);
+        }
+      }
+      const newGroup = groupChoice.querySelector('option[value="new"]');
+      for (const [id, name] of [...groups].sort((a, b) => a[1].localeCompare(b[1]))) {
+        groupChoice.insertBefore(new Option(name === id ? id : `${name} (${id})`, `${GROUP}${id}`), newGroup);
+      }
       const before = profileBox.querySelector('option[value="new"]');
       for (const p of profiles.profiles) {
         profileBox.insertBefore(new Option(`${p.name} (${p.id})`, p.id), before);
@@ -724,6 +821,9 @@
     if (waiting) out.push(`${plural(waiting, 'recording is', 'recordings are')} still uploading.`);
     if (plan) {
       for (const p of plan.problems) out.push(p.message);
+    }
+    if (groupChoice.value === 'new' && !groupName.value.trim()) {
+      out.push('Give the new group a name, or choose "No group".');
     }
     if (choice() !== 'none') {
       if (!profileBox.value) out.push('Choose a processing profile, or "No profile".');
@@ -774,7 +874,7 @@
     const byName = new Map();
     for (const entry of byStem.values()) for (const f of entry.stored || []) byName.set(f.name, entry.stored);
     const filesOf = new Map(plan.recordings.map((r) => [r.key, byName.get(r.name)]));
-    const groupText = groupName.value.trim();
+    const into = group();
     const crs = crsBox.value.trim() || null;
     const dem = demBox.value || null;
     const step = (text) => {
@@ -817,8 +917,8 @@
               dem,
               names: {
                 display_name: output.display_name,
-                group_name: groupText || null,
-                group_id: groupText ? groupId.value.trim() || null : null,
+                group_name: into?.name ?? null,
+                group_id: into?.id ?? null,
               },
             },
             { 'If-None-Match': '*' },

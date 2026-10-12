@@ -1349,7 +1349,7 @@ dialog th {
   cursor: pointer;
 }
 
-/* A page of its own ("Add raw data…") among the actions: a link, so it
+/* A page of its own ("Add raw data in bulk…") among the actions: a link, so it
  * opens like one, drawn as the buttons beside it. */
 .controls .button-link {
   text-decoration: none;
@@ -3503,6 +3503,15 @@ a.processing-state:hover {
 .ingest-chip-manual rect {
   stroke: var(--color-accent);
 }
+/* A join you made, which holds whatever the threshold says. */
+.ingest-chip-joined line {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+  stroke-dasharray: none;
+}
+.ingest-chip-joined text {
+  fill: var(--color-accent);
+}
 .ingest-chip-incompatible {
   cursor: default;
 }
@@ -3513,12 +3522,44 @@ a.processing-state:hover {
 .ingest-selected {
   margin: var(--space-3) 0;
   padding: var(--space-2) var(--space-3);
-  border-left: 3px solid var(--color-accent);
+  border-left: 4px solid var(--ingest-output-colour, var(--color-accent));
   background: var(--color-surface-sunken);
 }
+.ingest-selected-title {
+  margin: 0 0 var(--space-2);
+}
+.ingest-selected-title .hint {
+  margin-left: var(--space-2);
+}
+/* What a recording is, as labelled facts rather than one sentence. */
+.ingest-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-2);
+}
+.ingest-facts dt {
+  color: var(--color-text-muted);
+}
+.ingest-facts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ingest-facts code + code {
+  margin-left: var(--space-1);
+}
+.ingest-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+}
+/* Inset from both sides, so a touch screen has page to scroll by beside
+ * a map that would otherwise take every drag for itself. */
 .ingest-map {
-  height: 360px;
-  margin-top: var(--space-3);
+  height: min(540px, 70vh);
+  margin: var(--space-3) var(--space-6) 0;
   border-radius: var(--radius-sm);
 }
 .ingest-problem {

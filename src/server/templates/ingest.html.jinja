@@ -8,7 +8,7 @@
     antenna and settings, are merged into one. Change where they are split,
     name the radargrams, and choose whether to process them now, later, or
     leave that to someone else. To add one radargram and look at it before
-    it goes in the catalog, use <strong>From raw data&hellip;</strong> in the
+    it goes in the catalog, use <strong>New radargram from raw data&hellip;</strong> in the
     catalog instead.
   </p>
 
@@ -75,9 +75,10 @@
            aria-label="The recordings by time, one row per radargram"></svg>
     </div>
     <p class="hint">
-      Click a recording to change where it goes. A gap inside a row is
-      merged; click it to split the radargram there. A row's label says why
-      it is not part of the one before; click it to join the two.
+      Click a recording to see it and change where it goes. A gap inside a
+      row is merged; click it to split the radargram there. The chip at the
+      start of a row says why it is not part of the one before; click it to
+      join the two. A join you made is drawn solid.
     </p>
     <div id="ingest-selected" class="ingest-selected" hidden></div>
     <div id="ingest-left-out"></div>
@@ -119,12 +120,20 @@
       </details>
     </div>
     <fieldset class="ingest-group">
-      <legend>Catalog group (optional)</legend>
-      <label>Name <input type="text" id="ingest-group-name" placeholder="Drønbreen 2026"></label>
-      <label>ID (from the name)
-        <input type="text" id="ingest-group-id" pattern="[a-z0-9][a-z0-9_-]*"
-               autocomplete="off" autocapitalize="none" spellcheck="false"
-               placeholder="dronbreen-2026"></label>
+      <legend>Catalog group</legend>
+      <label>Every radargram goes in
+        <select id="ingest-group">
+          <option value="" selected>No group</option>
+          <option value="new">New group&hellip;</option>
+        </select>
+      </label>
+      <div id="ingest-group-new" hidden>
+        <label>Name <input type="text" id="ingest-group-name" placeholder="Drønbreen 2026"></label>
+        <label>ID (from the name)
+          <input type="text" id="ingest-group-id" pattern="[a-z0-9][a-z0-9_-]*"
+                 autocomplete="off" autocapitalize="none" spellcheck="false"
+                 placeholder="dronbreen-2026"></label>
+      </div>
     </fieldset>
     <div class="table-scroll">
       <table class="layers-table ingest-outputs">

@@ -527,7 +527,7 @@ Many recordings in, the radargrams they would make out
   renaming is an override. A `PUT /sources` without `names` keeps the
   ones the source had, so switching a recording does not forget them.
 - **The page** (`/ingest`, `assets/ingest.js`, linked from the catalog's
-  "Add raw data…" and the Processing page) groups dropped files into
+  "Add raw data in bulk…" and the Processing page) groups dropped files into
   recordings by stem, uploads them one at a time, and re-plans
   (debounced, one request at a time) after each upload and each edit. It
   asks for tracks only when a recording is new and keeps them by key.

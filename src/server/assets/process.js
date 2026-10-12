@@ -5,7 +5,7 @@
  * as a replace.
  *
  * Raw data comes first where the project has none: on the catalog, for a
- * radargram that does not exist yet ("From raw data…"), and in the viewer,
+ * radargram that does not exist yet ("New radargram from raw data…"), and in the viewer,
  * for a served one nobody has given raw data ("Attach raw data…"). The
  * files are uploaded one by one, grouped into recordings by their name
  * without its extension, which is how every supported format ties its

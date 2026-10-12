@@ -241,7 +241,7 @@
           className: 'hint',
           textContent:
             'Every radargram with raw data is in a profile already. Give one raw data ' +
-            'from the catalog ("From raw data…", or "Attach raw data…" in its Edit menu).',
+            'from the catalog ("New radargram from raw data…", or "Attach raw data…" in its Edit menu).',
         }),
       );
       return box;
