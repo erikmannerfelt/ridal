@@ -343,7 +343,9 @@ policy and invitations with `403` `archived`.
 | `GET` | `/api/v1/site/preferences` | signed in | The caller's own site-wide settings, currently the theme. |
 | `PUT` | `/api/v1/site/preferences` | signed in | Change them. Any role may. |
 | `GET` | `/api/v1/site/audit` | server administrator | The site's account, membership and project history, most recent first. |
-| `GET` | `/api/v1/site/processing` | server administrator | The processing queue: every job it still knows of, with its owner and state, and how many are queued and running and how much of the memory budget they use. |
+| `GET` | `/api/v1/site/status` | server administrator | What the server's heartbeat would report now: render workers busy and waiting, the render cache, requests and processing since the last heartbeat, and the process's memory and CPU time. Reading it does not reset the heartbeat's counts. |
+| `GET` | `/api/v1/site/processing` | server administrator | The processing queue: the configured limits, every job it still knows of with its project, owner, state and how long it waited and ran, and how many are queued and running and how much of the memory budget they use. |
+| `DELETE` | `/api/v1/site/processing/{job}` | server administrator | Cancel anyone's processing job: a queued one never starts, a running one is stopped. Recorded in the site's history. `404` when the job has already ended or does not exist. |
 | `GET` | `/api/v1/site/memberships` | server administrator | Every account and the projects it belongs to. |
 | `GET` | `/api/v1/accounts` | server administrator | Every account, without hashes or invite tokens. |
 | `POST` | `/api/v1/accounts` | server administrator | Create an account and mint its invite, optionally naming a project, role and download. It cannot create a server administrator. |

@@ -149,6 +149,22 @@ its project, the person who asked for it, the radargram and how long it
 took. A job that fails, or is stopped by `--processing-timeout`, is a
 warning, with the reason it failed.
 
+## In the browser
+
+A server administrator finds the same numbers under **Settings → Server**,
+updated every few seconds while the page is in view: the heartbeat's
+fields, and the processing queue. The queue lists the limits the server was
+started with, every job running or waiting (whose it is, which project and
+radargram, which step it is on, how long it has waited and run), and the
+jobs that ended in the last hour with how they ended. **Cancel** stops a job
+whoever it belongs to: a waiting one never starts, a running one is stopped
+where it is, and the draft or batch it belonged to records it as
+cancelled. Each cancellation is recorded in the site's history.
+
+Reading the page does not reset the heartbeat's counts, so the log stays
+the same whether anyone looks or not. With `--heartbeat-seconds 0`, the
+counts there are since the server started.
+
 ## Keeping it running
 
 Ridal is a foreground process; stopping it stops the server. On Ctrl+C or

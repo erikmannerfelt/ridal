@@ -284,6 +284,14 @@ impl RenderCache {
         self.lock().get(key)
     }
 
+    /// Hits and misses since [`Self::take_lookups`] last started the count.
+    pub fn lookups(&self) -> (u64, u64) {
+        (
+            self.0.hits.load(Ordering::Relaxed),
+            self.0.misses.load(Ordering::Relaxed),
+        )
+    }
+
     /// Hits and misses since the last call, which starts the count again.
     pub fn take_lookups(&self) -> (u64, u64) {
         (

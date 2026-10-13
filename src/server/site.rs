@@ -92,6 +92,10 @@ pub struct SiteState {
     session_key: Mutex<Option<SessionKey>>,
     /// Requests answered since the heartbeat last asked (#282).
     requests: std::sync::atomic::AtomicU64,
+    /// When the heartbeat last started its interval counts, and when the
+    /// server started (#282, #391).
+    interval_started: Mutex<std::time::Instant>,
+    started: std::time::Instant,
 }
 
 impl SiteState {
@@ -111,6 +115,8 @@ impl SiteState {
             projects: RwLock::new(HashMap::new()),
             session_key: Mutex::new(None),
             requests: Default::default(),
+            interval_started: Mutex::new(std::time::Instant::now()),
+            started: std::time::Instant::now(),
         })
     }
 
@@ -144,6 +150,8 @@ impl SiteState {
             projects: RwLock::new(HashMap::from([(key, runtime)])),
             session_key: Mutex::new(None),
             requests: Default::default(),
+            interval_started: Mutex::new(std::time::Instant::now()),
+            started: std::time::Instant::now(),
         })
     }
 
@@ -179,9 +187,35 @@ impl SiteState {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Requests answered since [`Self::take_requests`] last started the
+    /// count.
+    pub fn requests(&self) -> u64 {
+        self.requests.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Requests answered since the last call; the count starts again.
     pub fn take_requests(&self) -> u64 {
         self.requests.swap(0, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How long the current interval of counts has run, and, when `reset`,
+    /// start a new one now.
+    pub fn interval(&self, reset: bool) -> std::time::Duration {
+        let mut started = self
+            .interval_started
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = std::time::Instant::now();
+        let elapsed = now.saturating_duration_since(*started);
+        if reset {
+            *started = now;
+        }
+        elapsed
+    }
+
+    /// How long this server has been running.
+    pub fn uptime(&self) -> std::time::Duration {
+        self.started.elapsed()
     }
 
     /// The name shown in the browser.
@@ -689,7 +723,12 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         .route("/api/v1/openapi.json", get(super::openapi::openapi_json))
         .route("/api/v1/site", get(site_info))
         .route("/api/v1/site/audit", get(site_audit_log))
+        .route("/api/v1/site/status", get(site_status))
         .route("/api/v1/site/processing", get(site_processing))
+        .route(
+            "/api/v1/site/processing/{job}",
+            axum::routing::delete(cancel_site_job),
+        )
         .route("/api/v1/site/memberships", get(site_memberships))
         .route(
             "/api/v1/site/preferences",
@@ -1809,10 +1848,66 @@ async fn site_processing(
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "see the processing queue")?;
     site.site()?;
+    let config = site.processing.config();
+    const MB: u64 = 1024 * 1024;
     Ok(Json(serde_json::json!({
         "snapshot": site.processing.snapshot(),
-        "jobs": site.processing.list(),
+        // What the flags set, so the page shows them rather than knowing them.
+        "limits": {
+            "jobs": config.jobs,
+            "memory_mb": config.memory_bytes / MB,
+            "threads_per_job": config.threads_per_job,
+            "timeout_seconds": config.timeout.as_secs(),
+            "max_queued_per_user": config.max_queued_per_user,
+            "max_queued_per_project": config.max_queued_per_project,
+            "keep_finished_seconds": config.keep_finished.as_secs(),
+        },
+        "jobs": site.processing.details(),
     })))
+}
+
+/// `GET /api/v1/site/status` -- what the heartbeat would say now (#282,
+/// #391), for a server administrator. Read without starting the
+/// heartbeat's interval counts again, so looking does not change the log.
+async fn site_status(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+) -> Result<impl IntoResponse, ApiError> {
+    site.require_server_admin(&caller, "see the server's status")?;
+    Ok(Json(super::telemetry::Heartbeat::peek(&site)))
+}
+
+/// `DELETE /api/v1/site/processing/{job}` -- a server administrator stops
+/// anyone's job (#391): a queued one never starts, a running one is killed.
+/// The batch or draft it belonged to records it as cancelled.
+async fn cancel_site_job(
+    State(site): State<Arc<SiteState>>,
+    caller: SiteCaller,
+    Path(job): Path<u64>,
+) -> Result<impl IntoResponse, ApiError> {
+    site.require_server_admin(&caller, "cancel a processing job")?;
+    let gone = || {
+        ApiError::not_found(
+            "job_not_found",
+            format!("There is no queued or running processing job {job}."),
+        )
+    };
+    let detail = site.processing.detail(job).ok_or_else(gone)?;
+    if !site.processing.cancel(job) {
+        return Err(gone());
+    }
+    let mut entry = site_audit::Entry::new(
+        actor(&caller),
+        site_audit::Action::ProcessingJobCancelled,
+        detail.status.owner.as_str(),
+    )
+    .note(format!(
+        "job {job}, radargram {}",
+        detail.status.radargram_id
+    ));
+    entry.project = ProjectKey::new(&detail.project).ok();
+    audit(&site, entry);
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /api/v1/projects/{key}/audit` -- the history of one project, for the

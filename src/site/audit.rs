@@ -77,6 +77,8 @@ pub enum Action {
     TokenCreated,
     /// An API token was revoked (#194).
     TokenRevoked,
+    /// A server administrator cancelled someone's processing job (#391).
+    ProcessingJobCancelled,
 }
 
 /// One thing that happened.

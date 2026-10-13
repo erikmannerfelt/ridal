@@ -1375,6 +1375,168 @@ async fn the_processing_queue_is_for_a_server_admin_to_see() {
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
 }
 
+/// A server administrator cancels anyone's job, and the site's history
+/// says so (#391). A project administrator may not, even for a job in their
+/// own project: the queue is the server's, not the project's.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_server_admin_cancels_a_job_and_it_is_recorded() {
+    use std::os::unix::fs::PermissionsExt;
+
+    use crate::server::processing::tests::request;
+    use crate::server::processing::{JobState, Priority, ProcessingConfig};
+
+    let hash = password_hash();
+    let dir = tempfile::tempdir().unwrap();
+    let site = Site::init(dir.path(), Some("Test site")).unwrap();
+    accounts::update(site.store(), |set| {
+        set.users = vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ];
+        Ok(())
+    })
+    .unwrap();
+    site.create_project(&key("glac"), Some("glac"), None)
+        .unwrap();
+    let program = dir.path().join("job.sh");
+    std::fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let state = SiteState::new(
+        site,
+        AccessOptions::default(),
+        RenderServiceConfig::default(),
+        ProcessingConfig {
+            program,
+            work_dir: dir.path().join("work"),
+            ..ProcessingConfig::default()
+        },
+    );
+    let app = build_site_router(std::sync::Arc::clone(&state));
+    let anna = sign_in(&app, "anna").await;
+    let added = send(
+        &app,
+        post_json(
+            "/api/v1/projects/glac/members",
+            &json!({ "name": "bo", "role": "admin", "download": "all" }),
+            Some(&anna),
+        ),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
+    let bo = sign_in(&app, "bo").await;
+
+    let mut first = request("line-01", "bo", Priority::Draft);
+    first.project = "glac".to_string();
+    let mut second = request("line-02", "bo", Priority::Batch);
+    second.project = "glac".to_string();
+    let running = state.processing.submit(first).unwrap();
+    let queued = state.processing.submit(second).unwrap();
+
+    // What the page reads: the limits, and each job with its project.
+    let seen = send(&app, get("/api/v1/site/processing", Some(&anna))).await;
+    assert_eq!(seen.status, StatusCode::OK, "{}", seen.text);
+    assert_eq!(seen.body["limits"]["jobs"], 1);
+    assert_eq!(seen.body["limits"]["timeout_seconds"], 30 * 60);
+    let jobs = seen.body["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 2, "{}", seen.text);
+    assert_eq!(jobs[0]["state"], "running");
+    assert_eq!(jobs[0]["project"], "glac");
+    assert_eq!(jobs[1]["state"], "queued");
+
+    let cancel = |job: u64, who: &str| {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/v1/site/processing/{job}"))
+            .header(header::COOKIE, who)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let refused = send(&app, cancel(running, &bo)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    for job in [queued, running] {
+        let cancelled = send(&app, cancel(job, &anna)).await;
+        assert_eq!(
+            cancelled.status,
+            StatusCode::NO_CONTENT,
+            "{}",
+            cancelled.text
+        );
+    }
+    assert_eq!(
+        state.processing.status(queued).unwrap().state,
+        JobState::Cancelled
+    );
+    for _ in 0..200 {
+        if state
+            .processing
+            .status(running)
+            .unwrap()
+            .state
+            .is_finished()
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        state.processing.status(running).unwrap().state,
+        JobState::Cancelled
+    );
+
+    // Already ended, or never there: the same 404.
+    for job in [running, 999] {
+        let gone = send(&app, cancel(job, &anna)).await;
+        assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.text);
+        assert_eq!(gone.body["error"]["code"], "job_not_found");
+    }
+
+    let history = send(&app, get("/api/v1/site/audit", Some(&anna))).await;
+    let cancellations: Vec<&Value> = history.body["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|entry| entry["action"] == "processing_job_cancelled")
+        .collect();
+    assert_eq!(cancellations.len(), 2, "{}", history.text);
+    assert_eq!(cancellations[0]["actor"], "anna");
+    assert_eq!(cancellations[0]["subject"], "bo");
+    assert_eq!(cancellations[0]["project"], "glac");
+}
+
+/// What the heartbeat would say, for a server administrator only, and
+/// without taking the heartbeat's counts away from the log (#282, #391).
+#[tokio::test]
+async fn the_server_status_is_for_a_server_admin_and_leaves_the_log_its_counts() {
+    let hash = password_hash();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bo", false, &hash),
+        ],
+        &[],
+        AccessOptions::default(),
+    );
+    let anna = sign_in(&app, "anna").await;
+    let first = send(&app, get("/api/v1/site/status", Some(&anna))).await;
+    assert_eq!(first.status, StatusCode::OK, "{}", first.text);
+    assert!(first.body["render_permits"].as_u64().unwrap() >= 1);
+    assert!(first.body["cache_budget_mb"].as_f64().unwrap() > 0.0);
+    let second = send(&app, get("/api/v1/site/status", Some(&anna))).await;
+    // Counted on: the requests the first look made are still there.
+    assert!(
+        second.body["requests"].as_u64().unwrap() > first.body["requests"].as_u64().unwrap(),
+        "{} then {}",
+        first.text,
+        second.text
+    );
+
+    let bo = sign_in(&app, "bo").await;
+    let refused = send(&app, get("/api/v1/site/status", Some(&bo))).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}
+
 #[tokio::test]
 async fn the_memberships_overview_groups_accounts_by_project() {
     let hash = password_hash();
