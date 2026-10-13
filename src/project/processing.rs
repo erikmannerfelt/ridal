@@ -384,6 +384,10 @@ pub enum ProcessingState {
     /// No raw data in the project, so nothing can be reprocessed. Never
     /// counted as stale (#382).
     NoRawData,
+    /// Ignored in this project (#409). It keeps its profile, because
+    /// lifting the ignore brings it back; until then it is never counted
+    /// as stale or not processed, and never taken by a batch.
+    Hidden,
 }
 
 /// The steps a radargram in `profile` is processed with at `version`.
@@ -398,8 +402,9 @@ fn expected_steps(assignment: &Assignment, version: &ProfileVersion) -> Vec<Stri
 
 /// Where a radargram stands: `recipe` is what its served file records
 /// (`None` with no file, or one without a recipe), `source` what the
-/// project says it is made from, and `project_crs` the project's
-/// `[processing] crs`, if it sets one.
+/// project says it is made from, `project_crs` the project's
+/// `[processing] crs`, if it sets one, and `ignored` whether the project
+/// ignores it, which also leaves it with no served file.
 pub fn state_of(
     assignment: &Assignment,
     profile: &Profile,
@@ -407,10 +412,14 @@ pub fn state_of(
     served: bool,
     recipe: Option<&crate::recipe::Recipe>,
     project_crs: Option<&str>,
+    ignored: bool,
 ) -> ProcessingState {
     let Some(source) = source else {
         return ProcessingState::NoRawData;
     };
+    if ignored {
+        return ProcessingState::Hidden;
+    }
     if !served {
         return ProcessingState::NotProcessed;
     }
@@ -770,6 +779,7 @@ mod tests {
                 true,
                 Some(&processed),
                 None,
+                false,
             )
         };
         assert_eq!(
@@ -822,6 +832,7 @@ mod tests {
                 true,
                 Some(&processed),
                 project,
+                false,
             )
         };
         assert_eq!(
@@ -861,7 +872,7 @@ mod tests {
             pre_steps: vec![],
         };
         assert_eq!(
-            state_of(&assignment, &profile, None, true, None, None),
+            state_of(&assignment, &profile, None, true, None, None, false),
             ProcessingState::NoRawData
         );
         assert_eq!(
@@ -871,14 +882,36 @@ mod tests {
                 Some(&source("aa")),
                 false,
                 None,
-                None
+                None,
+                false,
             ),
             ProcessingState::NotProcessed
+        );
+        // Ignored: it keeps its profile, but nothing about it is waiting.
+        assert_eq!(
+            state_of(
+                &assignment,
+                &profile,
+                Some(&source("aa")),
+                false,
+                None,
+                None,
+                true,
+            ),
+            ProcessingState::Hidden
         );
         // Served, but from before recipes: it cannot be compared, so it is
         // reprocessed to be sure.
         assert!(matches!(
-            state_of(&assignment, &profile, Some(&source("aa")), true, None, None),
+            state_of(
+                &assignment,
+                &profile,
+                Some(&source("aa")),
+                true,
+                None,
+                None,
+                false,
+            ),
             ProcessingState::Stale {
                 profile_version: None,
                 custom: false,
@@ -913,6 +946,7 @@ mod tests {
             true,
             Some(&processed),
             None,
+            false,
         ) {
             ProcessingState::OlderProcessing {
                 profile_version: 1,
@@ -932,6 +966,7 @@ mod tests {
                 true,
                 Some(&other),
                 None,
+                false,
             ),
             ProcessingState::Stale {
                 profile_version: None,

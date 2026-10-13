@@ -7195,7 +7195,7 @@ async fn a_draft_is_processed_looked_at_and_committed() {
 #[serial_test::serial(netcdf)]
 async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
     let hash = password_hash();
-    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
         DownloadScope::All,
@@ -7211,7 +7211,8 @@ async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
     .await;
     assert_eq!(made.status, StatusCode::OK, "{}", made.text);
     // Both get raw data and join the profile; `theirs` then loses its raw
-    // data again.
+    // data again, by a hand that left the assignment (#409: the route
+    // takes it out of its profile too).
     let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
     for id in ["ours", "theirs"] {
         let set = put(
@@ -7231,8 +7232,7 @@ async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
         .await;
         assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
     }
-    let removed = delete(&app, "/api/v1/sources/theirs", Some(&erik)).await;
-    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    remove_source_leaving_assignment(dir.path(), "theirs");
 
     let status = get(&app, "/api/v1/processing/status", Some(&erik)).await;
     assert_eq!(status.status, StatusCode::OK, "{}", status.text);
@@ -7337,9 +7337,100 @@ async fn batch_app_processing(
         assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
     }
     // Raw data taken away after it joined: still in the profile, with none.
-    let removed = delete(&app, "/api/v1/sources/theirs", Some(&erik)).await;
-    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    remove_source_leaving_assignment(dir.path(), "theirs");
     (prepared, dir, archive, app, erik)
+}
+
+/// Remove `id`'s source document and nothing else, as a hand editing
+/// `ridal_data/` would: `DELETE /api/v1/sources/{id}` also takes it out of
+/// its profile, so it cannot leave a radargram in one with no raw data.
+fn remove_source_leaving_assignment(site: &StdPath, id: &str) {
+    let removed = crate::project::raw::remove_source(
+        open_project(site).documents(),
+        &crate::identity::RadargramId::new(id).unwrap(),
+        &crate::project::store::Expectation::Present,
+    )
+    .unwrap();
+    assert!(removed);
+}
+
+/// #409: a radargram whose file or raw data is deleted leaves its profile;
+/// one that is only ignored stays, as `hidden`, and no batch takes it.
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn deleting_a_radargram_takes_it_out_of_its_profile_and_ignoring_it_does_not() {
+    // `ours` is in the project's own store, so removing it deletes the
+    // file; `theirs` is served from outside it, so removing it ignores it.
+    let (_prepared, _dir, _archive, app, erik) = batch_app(&["ours"]).await;
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    for id in ["theirs", "spare"] {
+        let set = put(
+            &app,
+            &format!("/api/v1/sources/{id}"),
+            &json!({"recordings": [recording]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    }
+    let assigned = put(
+        &app,
+        "/api/v1/processing/assignments/spare",
+        &json!({"profile": "p"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
+    let assignments = || async {
+        get(&app, "/api/v1/processing/assignments", Some(&erik))
+            .await
+            .body["radargrams"]
+            .clone()
+    };
+
+    let ignored = delete(&app, "/api/v1/datasets/theirs", Some(&erik)).await;
+    assert_eq!(ignored.status, StatusCode::OK, "{}", ignored.text);
+    assert_eq!(ignored.body["outcome"], "ignored", "{}", ignored.text);
+    assert!(assignments().await.get("theirs").is_some());
+    let status = get(
+        &app,
+        "/api/v1/processing/status?radargram_id=theirs",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        status.body["radargrams"][0]["state"], "hidden",
+        "{}",
+        status.text
+    );
+    let started = post(
+        &app,
+        "/api/v1/processing/profiles/p/reprocess",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.text);
+    let items = outcomes(&started.body);
+    assert!(items.contains_key("ours"), "{}", started.text);
+    assert!(!items.contains_key("theirs"), "{}", started.text);
+    batch_finished(&app, &started.body["id"], &erik).await;
+
+    let removed = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
+    assert_eq!(removed.body["outcome"], "removed", "{}", removed.text);
+    assert!(assignments().await.get("ours").is_none());
+
+    let unsourced = delete(&app, "/api/v1/sources/spare", Some(&erik)).await;
+    assert_eq!(
+        unsourced.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        unsourced.text
+    );
+    assert!(assignments().await.get("spare").is_none());
+    assert!(assignments().await.get("theirs").is_some());
 }
 
 #[cfg(unix)]

@@ -399,6 +399,9 @@ pub(super) async fn statuses(
     // A setting that is not a CRS is refused when processing; here it is
     // read as none, so the page still says where everything stands.
     let project_crs = project.processing_crs().ok().flatten();
+    // Lenient, as the catalog is: a broken overrides file costs this page
+    // its "hidden", not the page.
+    let ignored = crate::project::overrides::read_lenient(project.documents()).ignored;
 
     tokio::task::spawn_blocking(move || {
         work.into_iter()
@@ -414,6 +417,7 @@ pub(super) async fn statuses(
                         served.is_some(),
                         recipe.as_ref(),
                         project_crs.as_deref(),
+                        ignored.contains_key(&radargram),
                     ),
                     profile: assignment.profile,
                     radargram_id: radargram,

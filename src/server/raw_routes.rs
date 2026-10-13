@@ -457,6 +457,8 @@ pub async fn delete_source(
             format!("'{id}' has no raw data in this project."),
         ));
     }
+    // With no raw data there is nothing to process it from.
+    super::lifecycle_routes::take_out_of_profile(project, &id);
     sweep(&state, project);
     Ok(StatusCode::NO_CONTENT)
 }

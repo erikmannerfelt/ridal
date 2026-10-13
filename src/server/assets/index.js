@@ -548,6 +548,21 @@ document.querySelectorAll('.group-map').forEach((el) => {
   });
 })();
 
+/* --- The "Add data" menu (#409) ------------------------------------------
+ *
+ * Choosing an item closes it, as the Edit menus do: left open behind the
+ * dialog or file picker the item opens, it is a second thing to dismiss.
+ * Each item's own behaviour is set up where it always was (below, and in
+ * process.js); this only knows they are in a menu.
+ */
+(function setupAddDataMenu() {
+  const menu = document.getElementById('add-data-menu');
+  if (!menu) return;
+  menu.querySelector('ul').addEventListener('click', (event) => {
+    if (event.target.closest('button, a')) menu.open = false;
+  });
+})();
+
 /* --- Add a radargram -----------------------------------------------------
  *
  * The raw file as the request body rather than a multipart form. A NetCDF
@@ -1042,6 +1057,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
     older_processing: 'Older processing',
     not_processed: 'Not processed',
     no_raw_data: 'No raw data',
+    hidden: 'Hidden',
     processing: 'Processing',
     failed: 'Failed',
   };

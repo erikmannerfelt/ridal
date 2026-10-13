@@ -706,7 +706,7 @@ JobStateName: TypeAlias = Literal[
     "queued", "running", "done", "failed", "cancelled", "timed_out"
 ]
 StandingName: TypeAlias = Literal[
-    "current", "stale", "older_processing", "not_processed", "no_raw_data"
+    "current", "stale", "older_processing", "not_processed", "no_raw_data", "hidden"
 ]
 OutcomeName: TypeAlias = Literal[
     "waiting",

@@ -161,7 +161,7 @@ carried onto the new one. `client.carried("line-07")` shows how, and
 A project can keep the raw recordings its radargrams are made from, and the
 server can process them. Everything here needs the `operator` role.
 
-`process` does what the browser's "New radargram from raw data…" does: it uploads the
+`process` does what the browser's "Add data → New radargram from raw data…" does: it uploads the
 recordings, sets them as the radargram's source, processes a draft, waits
 for it, and applies it.
 

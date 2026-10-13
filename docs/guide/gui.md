@@ -9,9 +9,10 @@
 ## Adding raw data in bulk
 
 An `operator` can add the raw recordings of a whole survey at once with
-**Add raw data in bulk…** in the catalog (or on the Processing page). It is
-for many recordings; **New radargram from raw data…** in the catalog is for
-one radargram, looked at before it is added.
+**Add data → Add raw data in bulk…** in the catalog (or **Add raw data in
+bulk…** on the Processing page). It is for many recordings; **Add data →
+New radargram from raw data…** in the catalog is for one radargram, looked
+at before it is added.
 
 1. **Drop the files**, every file of each recording (`.rad`, `.rd3` and
    `.cor` for RAMAC, for example). They are grouped into recordings by
@@ -33,7 +34,8 @@ one radargram, looked at before it is added.
 4. **Choose what happens next**: process them now with a processing
    profile, put them in a profile to process later, or keep only the raw
    data for someone to process one by one. Raw data that is not processed
-   yet is listed on the Processing page.
+   yet is listed on the Processing page, where it can be processed or
+   deleted.
 
 **Create** stores each radargram's raw data in turn. If it stops halfway,
 what was stored stays, listed on the Processing page as not processed yet,

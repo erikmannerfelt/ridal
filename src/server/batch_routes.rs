@@ -359,7 +359,9 @@ pub async fn reprocess(
             ProcessingState::NoRawData => Outcome::Skipped {
                 reason: "no raw data in the project".to_string(),
             },
-            ProcessingState::Current { .. } | ProcessingState::OlderProcessing { .. } => continue,
+            ProcessingState::Current { .. }
+            | ProcessingState::OlderProcessing { .. }
+            | ProcessingState::Hidden => continue,
         };
         items.push(Item {
             radargram_id: status.radargram_id,

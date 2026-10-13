@@ -378,9 +378,19 @@ const RIDAL = Object.freeze({
       throw new Error(`network request failed (${networkError.message})`);
     }
 
+    // 204/205 (a delete, a save that returns nothing) have no body, and
+    // parsing one would throw on a request that succeeded.
+    if (response.ok && (response.status === 204 || response.status === 205)) {
+      return null;
+    }
+
     let body = null;
     try {
-      body = await response.json();
+      const text = await response.text();
+      if (response.ok && text === '') {
+        return null;
+      }
+      body = JSON.parse(text);
     } catch {
       // A non-JSON body is itself the problem when the status is bad;
       // when the status is fine it means the route broke its contract.
