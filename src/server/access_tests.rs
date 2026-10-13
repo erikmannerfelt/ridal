@@ -6321,6 +6321,53 @@ async fn a_radargram_that_fits_exactly_is_added() {
     assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
 }
 
+/// Two replacements staged at once count against the project's size, as
+/// uploads do: of two that fit only alone, the first to arrive is staged and
+/// the other refused as a project that is full.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn of_two_replacements_that_fit_only_alone_the_first_to_arrive_is_staged() {
+    let hash = password_hash();
+    let bytes = staged_bytes("ours");
+    let size = bytes.len() as u64;
+    let used = {
+        let (dir, _archive, app) = lifecycle_app_with_cap(
+            vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            Some(99_999),
+        );
+        let erik = sign_in(&app, "erik").await;
+        get(&app, "/api/v1/datasets", Some(&erik)).await;
+        open_project(dir.path()).size_bytes()
+    };
+    let cap = used + size * 3 / 2;
+    assert_eq!(cap.to_string().len(), 5, "measured with a cap as long");
+    let (dir, _archive, app) = lifecycle_app_with_cap(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        Some(cap),
+    );
+    let erik = sign_in(&app, "erik").await;
+    get(&app, "/api/v1/datasets", Some(&erik)).await;
+
+    let (held, slow) = held_upload(&app, "/api/v1/datasets/ours/replace", &erik);
+    held.send(bytes[..512].to_vec()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let quick = promptly(post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        bytes.clone(),
+        Some(&erik),
+    ))
+    .await;
+    assert_eq!(quick.status, StatusCode::OK, "{}", quick.text);
+
+    held.send(bytes[512..].to_vec()).await.unwrap();
+    drop(held);
+    let slow = slow.await.unwrap();
+    assert_eq!(slow.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", slow.text);
+    assert_eq!(slow.body["error"]["code"], "project_full");
+    assert_eq!(staged_count(dir.path()), 1, "only the first is staged");
+}
+
 /// #414: staging a replacement does not hold the lifecycle lock while the
 /// file arrives, and a radargram replaced or removed meanwhile is refused
 /// rather than measured against a revision that has gone.
