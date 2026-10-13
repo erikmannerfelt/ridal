@@ -8,11 +8,12 @@
 //! themselves, which is what keeps adjacent chunks normalized identically
 //! (the seam problem M4's tests already guard against).
 
-// Cache introspection (RenderService::cache_len/cache_bytes,
-// ByteBoundedCache::len/current_bytes, RenderObjectKey::as_str) exists for
-// API completeness and for eventual cache metrics, and is currently only
-// reached from tests. This allowance came with the file when it moved out
-// of `render/mod.rs`, which carried it for the same reason.
+// Some of this is reached only from tests (`RenderService::new`,
+// `cache_len`/`cache_bytes`, `ReaderPool::len`, `RenderObjectKey::as_str`),
+// and `RenderServiceConfig::source_cache_mb` is reserved, as its doc says.
+// The heartbeat (#282) reads the shared `RenderCache` directly rather than
+// through a service. This allowance came with the file when it moved out of
+// `render/mod.rs`.
 #![allow(dead_code)]
 
 use std::collections::HashMap;
@@ -232,11 +233,23 @@ impl ByteBoundedCache {
 /// never while rendering, so radargrams contend on a hash lookup rather
 /// than on each other's renders.
 #[derive(Clone)]
-pub struct RenderCache(Arc<Mutex<ByteBoundedCache>>);
+pub struct RenderCache(Arc<SharedCache>);
+
+struct SharedCache {
+    cache: Mutex<ByteBoundedCache>,
+    /// Lookups since the heartbeat last read them (#282): what says
+    /// whether `--cache-memory-mb` is big enough for how people browse.
+    hits: AtomicU64,
+    misses: AtomicU64,
+}
 
 impl RenderCache {
     pub fn new(max_bytes: usize) -> Self {
-        Self(Arc::new(Mutex::new(ByteBoundedCache::new(max_bytes))))
+        Self(Arc::new(SharedCache {
+            cache: Mutex::new(ByteBoundedCache::new(max_bytes)),
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
+        }))
     }
 
     pub fn from_mb(megabytes: usize) -> Self {
@@ -249,12 +262,34 @@ impl RenderCache {
     /// server's life would be worse than using it.
     fn lock(&self) -> std::sync::MutexGuard<'_, ByteBoundedCache> {
         self.0
+            .cache
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn get(&self, key: &RenderObjectKey) -> Option<Vec<u8>> {
+        let found = self.lock().get(key);
+        let counter = if found.is_some() {
+            &self.0.hits
+        } else {
+            &self.0.misses
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+        found
+    }
+
+    /// [`Self::get`] without counting: for a second look by the same
+    /// request, which would otherwise count its one miss twice.
+    pub fn peek(&self, key: &RenderObjectKey) -> Option<Vec<u8>> {
         self.lock().get(key)
+    }
+
+    /// Hits and misses since the last call, which starts the count again.
+    pub fn take_lookups(&self) -> (u64, u64) {
+        (
+            self.0.hits.swap(0, Ordering::Relaxed),
+            self.0.misses.swap(0, Ordering::Relaxed),
+        )
     }
 
     pub fn insert(&self, key: RenderObjectKey, value: Vec<u8>) {
@@ -312,6 +347,9 @@ pub struct RenderServiceConfig {
     /// The radargrams with an open NetCDF handle, and how many may have one
     /// at a time (#306). Shared by every clone, like `cache`.
     pub open_readers: ReaderPool,
+    /// Requests waiting for one of the `--n-workers` render permits right
+    /// now, for the heartbeat (#282). Shared by every clone, like `cache`.
+    pub permit_waiters: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl RenderServiceConfig {
@@ -363,6 +401,7 @@ impl Default for RenderServiceConfig {
             n_workers,
             overview_builds: Arc::new(tokio::sync::Semaphore::new(1)),
             open_readers: ReaderPool::new(1),
+            permit_waiters: Arc::default(),
         }
         .with_n_workers(n_workers)
     }
@@ -798,8 +837,25 @@ impl RenderService {
         profile: &RenderProfile,
         range: ElevationRange,
     ) -> Option<Vec<u8>> {
+        self.stored_overview(spec, view, profile, range, true)
+    }
+
+    /// [`Self::cached_overview`], counted in the cache's hit ratio or not.
+    fn stored_overview(
+        &mut self,
+        spec: &OverviewSpec,
+        view: DatasetView,
+        profile: &RenderProfile,
+        range: ElevationRange,
+        counted: bool,
+    ) -> Option<Vec<u8>> {
         let (variant, key, disk) = self.overview_keys(spec, view, profile, range);
-        if let Some(bytes) = self.cache.get(&key) {
+        let in_memory = if counted {
+            self.cache.get(&key)
+        } else {
+            self.cache.peek(&key)
+        };
+        if let Some(bytes) = in_memory {
             return Some(bytes);
         }
         let (disk, stamp) = disk?;
@@ -822,7 +878,9 @@ impl RenderService {
         profile: &RenderProfile,
         range: ElevationRange,
     ) -> Result<Vec<u8>, String> {
-        if let Some(bytes) = self.cached_overview(spec, view, profile, range) {
+        // Not counted: the overview route has just looked, and is here
+        // because it missed. This look is for one built meanwhile.
+        if let Some(bytes) = self.stored_overview(spec, view, profile, range, false) {
             return Ok(bytes);
         }
         let (variant, key, disk) = self.overview_keys(spec, view, profile, range);

@@ -993,6 +993,9 @@ pub(super) async fn get_or_build_overview(
 pub(crate) async fn acquire_render_permit(
     state: &AppState,
 ) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+    // Counted for the heartbeat (#282) by a guard, so a request that times
+    // out or goes away while waiting stops counting either way.
+    let _waiting = super::telemetry::Waiting::on(state.render_permit_waiters());
     tokio::time::timeout(
         RENDER_PERMIT_TIMEOUT,
         state.render_permits.clone().acquire_owned(),

@@ -500,6 +500,25 @@ pub struct ProcessingArgs {
     pub draft_cache_mb: u64,
 }
 
+/// What a server writes to its log (#282). Shared by `ridal gui` and
+/// `ridal server start`; `RUST_LOG` chooses what else is written.
+#[cfg(feature = "server")]
+#[derive(Debug, clap::Args)]
+pub struct LogArgs {
+    /// Seconds between the log lines that report the server's load: render
+    /// workers busy and waiting, the render cache, requests served and the
+    /// processing queue. 0 turns them off.
+    #[arg(long, default_value_t = crate::server::telemetry::DEFAULT_HEARTBEAT_SECONDS)]
+    pub heartbeat_seconds: u64,
+}
+
+#[cfg(feature = "server")]
+impl LogArgs {
+    fn heartbeat(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.heartbeat_seconds)
+    }
+}
+
 #[cfg(feature = "server")]
 impl ProcessingArgs {
     fn config(&self) -> Result<crate::server::processing::ProcessingConfig, String> {
@@ -563,6 +582,9 @@ pub struct GuiArgs {
 
     #[command(flatten)]
     pub processing: ProcessingArgs,
+
+    #[command(flatten)]
+    pub log: LogArgs,
 
     /// Serve a project without accepting any writes.
     #[arg(long)]
@@ -641,6 +663,9 @@ pub struct ServerStartArgs {
 
     #[command(flatten)]
     pub processing: ProcessingArgs,
+
+    #[command(flatten)]
+    pub log: LogArgs,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1148,6 +1173,7 @@ fn gui_command(args: GuiArgs) -> Result<(), String> {
         args.port.unwrap_or(0),
         config,
         args.processing.config()?,
+        args.log.heartbeat(),
     )
 }
 
@@ -1193,6 +1219,7 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
                 start_args.allow_insecure_login,
                 config,
                 start_args.processing.config()?,
+                start_args.log.heartbeat(),
             )
         }
     }

@@ -85,15 +85,13 @@ pub struct SiteState {
     pub render_permits: Arc<Semaphore>,
     /// Every processing job on this server, whichever project it is for:
     /// `--processing-jobs` and the other limits are site-wide (#382).
-    #[allow(
-        dead_code,
-        reason = "read by the draft and batch routes of #382 phase 5"
-    )]
     pub processing: Arc<super::processing::ProcessingQueue>,
     /// The projects opened so far, keyed by their immutable key.
     projects: RwLock<HashMap<ProjectKey, Arc<ProjectRuntime>>>,
     /// The site-wide cookie-signing key, loaded on first use.
     session_key: Mutex<Option<SessionKey>>,
+    /// Requests answered since the heartbeat last asked (#282).
+    requests: std::sync::atomic::AtomicU64,
 }
 
 impl SiteState {
@@ -112,6 +110,7 @@ impl SiteState {
             render_config,
             projects: RwLock::new(HashMap::new()),
             session_key: Mutex::new(None),
+            requests: Default::default(),
         })
     }
 
@@ -144,6 +143,7 @@ impl SiteState {
             render_config: runtime.state.render_config(),
             projects: RwLock::new(HashMap::from([(key, runtime)])),
             session_key: Mutex::new(None),
+            requests: Default::default(),
         })
     }
 
@@ -165,6 +165,23 @@ impl SiteState {
     fn require_server_admin(&self, caller: &SiteCaller, action: &str) -> Result<(), ApiError> {
         self.site()?;
         caller.require_server_admin(action)
+    }
+
+    /// How every project's render services are configured: one cache,
+    /// one set of permits, for the whole server.
+    pub fn render_config(&self) -> &RenderServiceConfig {
+        &self.render_config
+    }
+
+    /// Count one answered request, for the heartbeat.
+    pub fn count_request(&self) {
+        self.requests
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Requests answered since the last call; the count starts again.
+    pub fn take_requests(&self) -> u64 {
+        self.requests.swap(0, std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The name shown in the browser.
@@ -658,6 +675,8 @@ async fn site_middleware(
 
 /// Build the site's Axum application.
 pub fn build_site_router(site: Arc<SiteState>) -> Router {
+    let access_log =
+        axum::middleware::from_fn_with_state(Arc::clone(&site), super::telemetry::access_log);
     Router::new()
         .route("/", get(landing))
         .route("/login", get(login_page))
@@ -750,6 +769,9 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         // Stateless, and merged last so assets are served without touching
         // `accounts.json`.
         .merge(super::app::static_router())
+        // Outermost and last, so every request is in the access log (#282),
+        // assets and refusals included.
+        .layer(access_log)
 }
 
 // ---------------------------------------------------------------------------
