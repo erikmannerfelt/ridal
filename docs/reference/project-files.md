@@ -224,7 +224,10 @@ name_field = "Stake"
 : The render profile used when a request does not name one.
 
 `default_xscale`
-: The horizontal stretch a radargram opens with. Default: `1.0`.
+: The horizontal stretch a radargram opens with. Default: `1.0`. A
+  person's own setting comes before it, and a radargram's own scale, set in
+  its Edit properties dialog and kept in `overrides.json`, before both. An
+  `?xscale=` in the viewer's address wins over all three for that page.
 
 ### `[export]`
 

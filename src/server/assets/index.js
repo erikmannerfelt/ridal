@@ -279,6 +279,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
   const unlisted = document.getElementById('properties-unlisted');
   const elevationMin = document.getElementById('properties-elevation-min');
   const elevationMax = document.getElementById('properties-elevation-max');
+  const xScale = document.getElementById('properties-x-scale');
   const save = document.getElementById('properties-save');
 
   /* The three fixed choices. Anything else in the list is a group id, which
@@ -362,6 +363,9 @@ document.querySelectorAll('.group-map').forEach((el) => {
     // field always shows the effective value rather than only-when-set.
     elevationMin.value = properties.effective.elevation_min ?? '';
     elevationMax.value = properties.effective.elevation_max ?? '';
+    // The options' values are the server's canonical text for each scale,
+    // which is what `String` gives for the number too (`2`, not `2.0`).
+    xScale.value = properties.overridden.x_scale ? String(properties.effective.x_scale) : '';
 
     syncGroupRow();
     dialog.showModal();
@@ -430,6 +434,7 @@ document.querySelectorAll('.group-map').forEach((el) => {
     }
     body.elevation_min = minValue;
     body.elevation_max = maxValue;
+    body.x_scale = xScale.value === '' ? null : Number(xScale.value);
 
     save.disabled = true;
     try {

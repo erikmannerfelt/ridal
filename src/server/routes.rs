@@ -406,6 +406,12 @@ pub fn is_offered_theme(value: &str) -> bool {
 ///    (this page only)     erik.json            [render]
 /// ```
 ///
+/// The horizontal scale has one more layer, between the request and the
+/// user: the radargram's own (#411), a project override that says how that
+/// line reads best. It is folded into the user layer by
+/// [`resolve_x_scale`] rather than given a parameter here, since no other
+/// preference has it.
+///
 /// A one-liner, and named anyway: writing the rule down once is what keeps
 /// every setting resolving the same way, and it makes adding the next
 /// preference a call rather than a fourth chance to get the order wrong.
@@ -442,11 +448,20 @@ fn my_preferences(state: &AppState, caller: &Caller) -> crate::project::preferen
 /// the viewer would otherwise open with a dropdown showing nothing selected
 /// and a stretch nobody could undo. Applied at every layer, so one stale
 /// value does not shadow a good one below it.
-fn resolve_x_scale(state: &AppState, caller: &Caller, requested: Option<f64>) -> f64 {
+///
+/// `radargram` is the scale a project override sets for the radargram
+/// being opened (#411), which outranks the user's default: it is a fact
+/// about how that line reads, where the user's is a general taste.
+fn resolve_x_scale(
+    state: &AppState,
+    caller: &Caller,
+    requested: Option<f64>,
+    radargram: Option<f64>,
+) -> f64 {
     let offered = |scale: Option<f64>| scale.filter(|s| is_offered_x_scale(*s));
     cascade(
         offered(requested),
-        offered(my_preferences(state, caller).x_scale),
+        offered(radargram).or_else(|| offered(my_preferences(state, caller).x_scale)),
         offered(state.project.as_ref().and_then(|p| p.default_xscale())),
         DEFAULT_X_SCALE,
     )
@@ -1646,6 +1661,8 @@ pub async fn index_page(
             formats => format_options(),
             active_spacing => export_defaults.0,
             active_format => export_defaults.1,
+            // The Edit properties dialog's horizontal scale (#411).
+            x_scales => x_scale_options(),
             // Whether each group's cards are listed when the page opens
             // (#314). Each group's button changes it from there without
             // saving.
@@ -1757,7 +1774,7 @@ pub async fn viewer_page(
             max_image_width => MAX_IMAGE_WIDTH,
             max_image_pixels => MAX_IMAGE_PIXELS,
             x_scales => x_scale_options(),
-            active_x_scale => resolve_x_scale(&state, &caller, query.xscale),
+            active_x_scale => resolve_x_scale(&state, &caller, query.xscale, entry.x_scale),
             spacings => spacing_options(),
             formats => format_options(),
             active_spacing => export_defaults.0,
