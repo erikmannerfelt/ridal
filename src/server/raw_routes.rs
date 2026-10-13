@@ -92,31 +92,53 @@ pub async fn upload_raw_file(
         )
     })?;
     // The same measure as a radargram upload, under the same lock, so that
-    // the two kinds of upload cannot each see room for one file.
-    let _lifecycle = state.lifecycle_lock().await;
+    // the two kinds of upload cannot each see room for one file. The lock is
+    // not held while the body streams (#396): a multi-GB file over a slow
+    // link would otherwise hold up every other upload, removal and replace
+    // in the project for as long as it takes. The room is checked again
+    // under the lock before the file is installed instead.
     let cap = project.max_bytes();
-    let room = cap.saturating_sub(project.size_bytes());
-    let declared = headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-    if declared.is_some_and(|declared| declared > room) {
-        return Err(super::lifecycle_routes::too_large(
-            declared.unwrap_or_default(),
-            room,
-            cap,
-        ));
-    }
+    let room = {
+        let _lifecycle = state.lifecycle_lock().await;
+        let room = cap.saturating_sub(project.size_bytes());
+        let declared = headers
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        if declared.is_some_and(|declared| declared > room) {
+            return Err(super::lifecycle_routes::too_large(
+                declared.unwrap_or_default(),
+                room,
+                cap,
+            ));
+        }
+        room
+    };
     let incoming = raw::incoming_path(project.data_dir())
         .map_err(|e| ApiError::internal("upload_failed", e))?;
     let cleanup = super::lifecycle_routes::TempFile(incoming.clone());
+    // Stops at `room`, so a wrong Content-Length cannot overfill.
     let bytes = super::lifecycle_routes::stream_to_file(body, &incoming, room, cap).await?;
+
+    let lifecycle = state.lifecycle_lock().await;
+    // The project's size includes this upload's own `.part` file, which is
+    // what is being asked about, so it is taken out rather than counted
+    // twice. Other uploads still streaming are counted: of two that each
+    // fit alone, the first to finish is installed.
+    let room = cap.saturating_sub(project.size_bytes().saturating_sub(bytes));
+    if bytes > room {
+        // Removed before the lock is let go, so the next upload to finish
+        // does not count this one's file too.
+        drop(cleanup);
+        return Err(super::lifecycle_routes::too_large(bytes, room, cap));
+    }
     let data_dir = project.data_dir().to_path_buf();
     let stored = tokio::task::spawn_blocking(move || raw::install(&data_dir, &incoming, &name))
         .await
         .map_err(|e| ApiError::internal("upload_failed", e.to_string()))?
         .map_err(|e| ApiError::internal("upload_failed", e))?;
     cleanup.installed();
+    drop(lifecycle);
     Ok((
         StatusCode::CREATED,
         Json(StoredFile {

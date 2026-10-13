@@ -5971,6 +5971,150 @@ async fn upload_recording(app: &Router, stem: &str, session: &str) -> Value {
     Value::Array(files)
 }
 
+/// `n` bytes no other call with another `seed` makes, so the raw store
+/// cannot take two of them for one file.
+fn distinct_bytes(n: u64, seed: u8) -> Vec<u8> {
+    (0..n)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed) ^ ((i >> 8) as u8))
+        .collect()
+}
+
+/// The `.part` files of raw uploads still in `ridal_data/raw/incoming/`.
+fn incoming_parts(site: &StdPath) -> usize {
+    std::fs::read_dir(
+        data(site)
+            .join(crate::project::raw::RAW_DIR)
+            .join("incoming"),
+    )
+    .map(|entries| entries.filter_map(Result::ok).count())
+    .unwrap_or(0)
+}
+
+/// A raw upload whose body is sent by the test, chunk by chunk, until the
+/// sender is dropped.
+fn held_raw_upload(
+    app: &Router,
+    name: &str,
+    session: &str,
+) -> (
+    tokio::sync::mpsc::Sender<Vec<u8>>,
+    tokio::task::JoinHandle<Response>,
+) {
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver
+            .recv()
+            .await
+            .map(|chunk| (Ok::<_, std::io::Error>(chunk), receiver))
+    });
+    let request = request(
+        "POST",
+        &format!("/api/v1/raw?filename={name}"),
+        Some(session),
+    )
+    .header(header::CONTENT_TYPE, "application/octet-stream")
+    .body(Body::from_stream(stream))
+    .unwrap();
+    let app = app.clone();
+    let handle = tokio::spawn(async move { send(&app, request).await });
+    (sender, handle)
+}
+
+/// #396 interim: a raw upload holds the lifecycle lock only to check for
+/// room and to install, not while its body arrives.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_raw_upload_in_progress_blocks_nothing_and_the_first_to_finish_gets_the_room() {
+    let hash = password_hash();
+    let cap = 4 * 1024 * 1024;
+    let (dir, _archive, app) = lifecycle_app_with_cap(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        Some(cap),
+    );
+    let erik = sign_in(&app, "erik").await;
+    let room = cap - open_project(dir.path()).size_bytes();
+    // Each fits alone; the two together do not.
+    let size = room * 6 / 10;
+
+    let (held, slow) = held_raw_upload(&app, "slow.rd3", &erik);
+    held.send(distinct_bytes(1024, 1)).await.unwrap();
+    // Long enough for it to be past its check and streaming.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(incoming_parts(dir.path()), 1);
+
+    let quick = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        post_bytes(
+            &app,
+            "/api/v1/raw?filename=quick.rd3",
+            distinct_bytes(size, 2),
+            Some(&erik),
+        ),
+    )
+    .await
+    .expect("an upload waited for another one to finish streaming");
+    assert_eq!(quick.status, StatusCode::CREATED, "{}", quick.text);
+    let removed = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        delete(&app, "/api/v1/datasets/ours", Some(&erik)),
+    )
+    .await
+    .expect("a removal waited for an upload to finish streaming");
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
+
+    // The rest of the slow one: it fitted when it began, and no longer does.
+    held.send(distinct_bytes(size - 1024, 3)).await.unwrap();
+    drop(held);
+    let slow = slow.await.unwrap();
+    assert_eq!(slow.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", slow.text);
+    assert_eq!(slow.body["error"]["code"], "project_full");
+    assert_eq!(incoming_parts(dir.path()), 0);
+}
+
+/// The room left is measured with the upload's own `.part` file in the
+/// project, so it must not be counted against itself.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_raw_file_that_fits_exactly_is_stored() {
+    let hash = password_hash();
+    let cap = 1024 * 1024;
+    let (dir, _archive, app) = lifecycle_app_with_cap(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        Some(cap),
+    );
+    let erik = sign_in(&app, "erik").await;
+    // A first upload, so that whatever the first one writes besides the
+    // file is already there when the room is measured.
+    let first = post_bytes(
+        &app,
+        "/api/v1/raw?filename=first.rd3",
+        distinct_bytes(10, 6),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.text);
+    let room = cap - open_project(dir.path()).size_bytes();
+    let stored = post_bytes(
+        &app,
+        "/api/v1/raw?filename=exact.rd3",
+        distinct_bytes(room, 4),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(stored.status, StatusCode::CREATED, "{}", stored.text);
+    assert_eq!(stored.body["bytes"], room);
+    // One byte more is refused, both up front and once it has arrived.
+    let over = post_bytes(
+        &app,
+        "/api/v1/raw?filename=over.rd3",
+        distinct_bytes(1, 5),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(over.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", over.text);
+    assert_eq!(incoming_parts(dir.path()), 0);
+}
+
 /// Upload a file as raw data, as `PUT /dems` takes it.
 async fn upload_file(app: &Router, path: &str, session: &str) -> Value {
     let name = StdPath::new(path).file_name().unwrap().to_string_lossy();
