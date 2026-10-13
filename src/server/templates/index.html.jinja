@@ -397,6 +397,21 @@
         higher ones are pulled down to it, so a GPS spike cannot stretch the
         view. Leave blank for no bound.
       </p>
+
+      {#- #411. How this line reads best, so it outranks a person's own
+          default; the viewer's dropdown still changes it for one visit. -#}
+      <label>Horizontal scale
+        <select id="properties-x-scale">
+          <option value="">Not set (uses your setting or the project&rsquo;s)</option>
+          {% for scale in x_scales %}
+          <option value="{{ scale.text }}">{{ scale.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <p class="hint">
+        What the viewer opens this radargram at, before anyone&rsquo;s own
+        setting or the project default.
+      </p>
     </div>
     <p>
       <button type="button" id="properties-save">Save</button>

@@ -1698,6 +1698,144 @@ async fn wanting_the_neutral_value_is_a_choice_rather_than_an_absence() {
 
 #[tokio::test]
 #[serial_test::serial(netcdf)]
+async fn a_radargrams_own_scale_sits_between_the_request_and_the_user() {
+    // #411: request -> radargram -> user -> project -> built-in.
+    let hash = password_hash();
+    let (_dir, app) = app_with_an_unlisted_radargram(UserSet {
+        users: vec![
+            activated("erik", Role::Operator, DownloadScope::All, &hash),
+            activated("student", Role::Picker, DownloadScope::All, &hash),
+        ],
+        ..UserSet::default()
+    });
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let viewer_uri = "/view/line-01";
+    let opens_at = |text: &str, scale: &str| text.contains(&format!("value=\"{scale}\" selected"));
+
+    put(
+        &app,
+        "/api/v1/settings",
+        &json!({"default_xscale": 2.0}),
+        Some(&erik),
+    )
+    .await;
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"x_scale": 4.0}),
+        Some(&student),
+    )
+    .await;
+    let page = get(&app, viewer_uri, Some(&student)).await;
+    assert!(opens_at(&page.text, "4"), "{}", page.text);
+
+    let before = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert!(
+        before.body["effective"]["x_scale"].is_null(),
+        "{}",
+        before.text
+    );
+    assert_eq!(before.body["overridden"]["x_scale"], false);
+
+    // A scale the viewer does not offer is refused, as it is for a
+    // preference, rather than stored and then silently skipped.
+    let invalid = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"x_scale": 7.25}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(invalid.status, StatusCode::BAD_REQUEST, "{}", invalid.text);
+    assert_eq!(invalid.body["error"]["code"], "unknown_xscale");
+
+    let saved = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"x_scale": 0.5}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{}", saved.text);
+    let after = get(&app, "/api/v1/datasets/line-01/properties", Some(&erik)).await;
+    assert_eq!(after.body["effective"]["x_scale"], 0.5);
+    assert_eq!(after.body["overridden"]["x_scale"], true);
+
+    // Over the user's own default and the project's, for everyone...
+    let page = get(&app, viewer_uri, Some(&student)).await;
+    assert!(opens_at(&page.text, "0.5"), "{}", page.text);
+    let page = get(&app, viewer_uri, Some(&erik)).await;
+    assert!(opens_at(&page.text, "0.5"), "{}", page.text);
+    // ...for this radargram alone...
+    let page = get(&app, "/view/line-02", Some(&student)).await;
+    assert!(opens_at(&page.text, "4"), "{}", page.text);
+    // ...and under the request parameter.
+    let page = get(&app, &format!("{viewer_uri}?xscale=8"), Some(&student)).await;
+    assert!(opens_at(&page.text, "8"), "{}", page.text);
+
+    // The body replaces the whole override, so leaving it out reverts it.
+    let reverted = put(
+        &app,
+        "/api/v1/datasets/line-01/properties",
+        &json!({"unlisted": false}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(reverted.status, StatusCode::NO_CONTENT, "{}", reverted.text);
+    let page = get(&app, viewer_uri, Some(&student)).await;
+    assert!(opens_at(&page.text, "4"), "{}", page.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_retired_scale_on_a_radargram_falls_through_to_the_user() {
+    // Written straight into the document, as an older build that offered
+    // the scale would have left it: skipped, like a stale preference.
+    use crate::project::overrides::{self, RadargramOverride};
+
+    let hash = password_hash();
+    let dir = new_site();
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
+    write_people(
+        dir.path(),
+        &UserSet {
+            users: vec![activated(
+                "student",
+                Role::Picker,
+                DownloadScope::All,
+                &hash,
+            )],
+            ..UserSet::default()
+        },
+    );
+    overrides::update(open_project(dir.path()).documents(), |o| {
+        o.radargrams.insert(
+            crate::identity::RadargramId::new(RADARGRAM).unwrap(),
+            RadargramOverride {
+                x_scale: Some(3.0),
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    let app = site_router(dir.path(), AccessOptions::default());
+    let student = sign_in(&app, "student").await;
+
+    put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"x_scale": 4.0}),
+        Some(&student),
+    )
+    .await;
+    let page = get(&app, &format!("/view/{RADARGRAM}"), Some(&student)).await;
+    assert!(page.text.contains("value=\"4\" selected"), "{}", page.text);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
 async fn a_preference_save_leaves_the_settings_it_does_not_mention_alone() {
     // Absent used to mean "clear it", which made the endpoint a trap for
     // anything but the one page that sends every field: `PUT

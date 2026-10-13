@@ -52,6 +52,10 @@ pub struct CatalogEntry {
     /// states about itself.
     pub elevation_min: Option<f64>,
     pub elevation_max: Option<f64>,
+    /// Set by a project override (#411): the horizontal stretch the viewer
+    /// opens this radargram at, above the user's and the project's
+    /// defaults. Like the elevation bounds, files never carry it.
+    pub x_scale: Option<f64>,
     /// The track's total length in metres, summed over its segments (#319).
     ///
     /// Read once here rather than per card on every page load, which would
@@ -476,6 +480,7 @@ impl Catalog {
                 unlisted: false,
                 elevation_min: None,
                 elevation_max: None,
+                x_scale: None,
                 track_length_m: super::track::read_track_from_netcdf(&candidate.path)
                     .ok()
                     .map(|track| track.segments.iter().map(|s| s.length_m).sum()),
@@ -749,6 +754,7 @@ fn apply_override(entry: &mut CatalogEntry, overrides: &CatalogOverrides) {
     entry.unlisted = over.unlisted;
     entry.elevation_min = over.elevation_min;
     entry.elevation_max = over.elevation_max;
+    entry.x_scale = over.x_scale;
 }
 
 /// The order groups are listed in, wherever they are listed: by the name a
@@ -1735,6 +1741,7 @@ mod tests {
             unlisted: false,
             elevation_min: None,
             elevation_max: None,
+            x_scale: None,
             track_length_m: None,
             from_file: FileMetadata::default(),
         };

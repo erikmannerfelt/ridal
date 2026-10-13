@@ -62,6 +62,9 @@ struct EffectiveProperties {
     unlisted: bool,
     elevation_min: Option<f64>,
     elevation_max: Option<f64>,
+    /// The radargram's own horizontal scale, or `null` when it inherits the
+    /// user's or the project's (#411).
+    x_scale: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,6 +79,7 @@ struct OverriddenFields {
     display_name: bool,
     group: bool,
     elevation: bool,
+    x_scale: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -112,6 +116,10 @@ pub struct PropertiesBody {
     elevation_min: Option<f64>,
     #[serde(default)]
     elevation_max: Option<f64>,
+    /// One of the offered scales, or `null` to inherit the user's or the
+    /// project's (#411).
+    #[serde(default)]
+    x_scale: Option<f64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -177,6 +185,7 @@ pub async fn get_properties(
             unlisted: entry.unlisted,
             elevation_min: entry.elevation_min,
             elevation_max: entry.elevation_max,
+            x_scale: entry.x_scale,
         },
         from_file: FileProperties {
             display_name: entry.from_file.display_name.as_ref().map(|n| n.to_string()),
@@ -187,6 +196,7 @@ pub async fn get_properties(
             display_name: over.display_name.is_some(),
             group: over.group.is_some(),
             elevation: over.elevation_min.is_some() || over.elevation_max.is_some(),
+            x_scale: over.x_scale.is_some(),
         },
         groups,
     }))
@@ -243,12 +253,22 @@ pub async fn put_properties(
         }
     }
 
+    if let Some(scale) = body.x_scale {
+        if !super::routes::is_offered_x_scale(scale) {
+            return Err(ApiError::bad_request(
+                "unknown_xscale",
+                format!("The viewer does not offer a horizontal scale of {scale}."),
+            ));
+        }
+    }
+
     let over = RadargramOverride {
         display_name,
         group,
         unlisted: body.unlisted,
         elevation_min: body.elevation_min,
         elevation_max: body.elevation_max,
+        x_scale: body.x_scale,
     };
 
     overrides::update(project.documents(), |stored| {

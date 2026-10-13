@@ -94,6 +94,10 @@
             <select id="my-xscale">
               <option value="">Loading&hellip;</option>
             </select>
+            <span class="hint">
+              A radargram given its own scale in its properties opens at
+              that one instead.
+            </span>
           </label>
           {#- #143. A starting state, not a lock: the viewer has its own
               toggle, and picking brings the lines back by itself. -#}
@@ -239,7 +243,9 @@
             How far radargrams are stretched horizontally when opened.
             Survey speed decides how much ground a trace covers, so a
             project whose lines are short or densely sampled often wants
-            more than 1&times;.
+            more than 1&times;. A person&rsquo;s own setting comes before
+            this, and a radargram&rsquo;s own scale (in its properties)
+            before both.
           </span>
         </label>
         {#- #166 at the project layer: a survey that always exports the same

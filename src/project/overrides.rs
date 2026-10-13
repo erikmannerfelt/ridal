@@ -112,6 +112,16 @@ pub struct RadargramOverride {
     pub elevation_min: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elevation_max: Option<f64>,
+    /// The horizontal stretch the viewer opens this radargram at (#411).
+    ///
+    /// Like the elevation bounds, a property of how this radargram reads
+    /// best -- a long line with dense traces wants compressing, a short one
+    /// stretching -- rather than of who is looking, so it sits above the
+    /// user's and the project's defaults and survives reprocessing. `None`
+    /// means inherit. Validated against the offered scales where it is
+    /// written; a value that is later retired is skipped when resolved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x_scale: Option<f64>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -377,6 +387,7 @@ mod tests {
                     unlisted: false,
                     elevation_min: None,
                     elevation_max: None,
+                    x_scale: Some(2.0),
                 },
             );
             o.groups.insert(
