@@ -566,10 +566,11 @@ class Client:
         ``unchanged``, so applying that plan carries on where this stopped.
         ``stop_on_outage=False`` tries every file regardless.
 
-        Unlike :meth:`plan`, this does not run files side by side. The
-        server takes uploads one at a time, because measuring the room left
-        and installing a file are one decision, so a second upload would
-        only wait, and on a slow link wait long enough to time out.
+        Unlike :meth:`plan`, this does not run files side by side. Uploads
+        to the server do not wait for each other, but the room left in the
+        project is measured again as each one finishes: several at once
+        could each pass the check made when they began and then be refused,
+        and staged replacements would pile up against the size limit.
         """
         outcomes = []
         outage: str | None = None

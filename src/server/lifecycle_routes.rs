@@ -135,27 +135,33 @@ pub async fn upload_dataset(
     body: axum::body::Body,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "add a radargram")?;
-    // Held until the catalog has been rebuilt. Measuring the project,
-    // checking for a colliding id and installing the file are one decision,
-    // and two uploads interleaving them each see room for one file and no
-    // collision, then the second rename replaces the first.
-    let _lifecycle = state.lifecycle_lock().await;
     let destination = writable_destination(project)?;
 
+    // Measuring the project, checking for a colliding id and installing the
+    // file are one decision, and two uploads interleaving them each see room
+    // for one file and no collision, then the second rename replaces the
+    // first. So they happen under the lifecycle lock -- but not the transfer
+    // (#414): a large file over a slow link would hold up every other
+    // upload, removal and replace in the project for as long as it takes,
+    // as raw uploads once did (#396). The room is measured once to refuse a
+    // `Content-Length` that cannot fit before a byte is written, and again,
+    // with the id, under the lock that installs.
     let cap = project.max_bytes();
-    let used = project.size_bytes();
-    let room = cap.saturating_sub(used);
+    let room = {
+        let _lifecycle = state.lifecycle_lock().await;
+        let room = cap.saturating_sub(project.size_bytes());
+        let declared = headers
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        if declared.is_some_and(|declared| declared > room) {
+            return Err(too_large(declared.unwrap_or_default(), room, cap));
+        }
+        room
+    };
 
-    // Refused before a byte is written where the client says how big it is.
-    // A `Content-Length` that would not fit never needs a temporary file.
-    let declared = headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-    if declared.is_some_and(|declared| declared > room) {
-        return Err(too_large(declared.unwrap_or_default(), room, cap));
-    }
-
+    // Discovery skips `upload-*.tmp.nc`, so the file is safe in the
+    // radargram directory while it arrives unlocked.
     let temporary = destination.join(format!("upload-{}.tmp.nc", uuid()));
     // Before the transfer rather than after it. The guard already covered
     // an interrupted upload, because the `?` came a line later -- but only
@@ -197,6 +203,21 @@ pub async fn upload_dataset(
             ));
         }
     };
+
+    // Held until the catalog has been rebuilt.
+    let _lifecycle = state.lifecycle_lock().await;
+    // Rebound after the lock, so that on every refusal below the temporary
+    // file is removed before the lock is let go, and the next upload to
+    // finish does not count it.
+    let cleanup = cleanup;
+    // The project's size includes this upload's own temporary file, which
+    // is what is being asked about, so it is taken out rather than counted
+    // twice. Other uploads still streaming are counted: of two that each
+    // fit alone, the first to finish is installed.
+    let room = cap.saturating_sub(project.size_bytes().saturating_sub(bytes));
+    if bytes > room {
+        return Err(too_large(bytes, room, cap));
+    }
 
     // Refused here rather than left to become a duplicate-id warning after
     // the fact. The operator is standing right there and can rename it.

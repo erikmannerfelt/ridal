@@ -6138,6 +6138,19 @@ fn held_raw_upload(
     tokio::sync::mpsc::Sender<Vec<u8>>,
     tokio::task::JoinHandle<Response>,
 ) {
+    held_upload(app, &format!("/api/v1/raw?filename={name}"), session)
+}
+
+/// A `POST` to `uri` whose body is sent by the test, chunk by chunk, until
+/// the sender is dropped: an upload over a slow link.
+fn held_upload(
+    app: &Router,
+    uri: &str,
+    session: &str,
+) -> (
+    tokio::sync::mpsc::Sender<Vec<u8>>,
+    tokio::task::JoinHandle<Response>,
+) {
     let (sender, receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
     let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
         receiver
@@ -6145,17 +6158,225 @@ fn held_raw_upload(
             .await
             .map(|chunk| (Ok::<_, std::io::Error>(chunk), receiver))
     });
-    let request = request(
-        "POST",
-        &format!("/api/v1/raw?filename={name}"),
-        Some(session),
-    )
-    .header(header::CONTENT_TYPE, "application/octet-stream")
-    .body(Body::from_stream(stream))
-    .unwrap();
+    let request = request("POST", uri, Some(session))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from_stream(stream))
+        .unwrap();
     let app = app.clone();
     let handle = tokio::spawn(async move { send(&app, request).await });
     (sender, handle)
+}
+
+/// A processed radargram called `id`, as an upload's bytes.
+fn radargram_bytes(id: &str) -> Vec<u8> {
+    let staging = tempfile::tempdir().unwrap();
+    let source = staging.path().join("upload.nc");
+    super::interp_routes_tests::write_test_nc_with_axes(&source, id, None);
+    std::fs::read(&source).unwrap()
+}
+
+/// Radargram uploads still arriving in the radargram directory.
+fn upload_temporaries(site: &StdPath) -> usize {
+    std::fs::read_dir(radargrams(site))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            name.starts_with("upload-") && name.ends_with(".tmp.nc")
+        })
+        .count()
+}
+
+/// Wait at most ten seconds for a request that must not queue behind an
+/// upload that is still streaming.
+async fn promptly(request: impl std::future::Future<Output = Response>) -> Response {
+    tokio::time::timeout(std::time::Duration::from_secs(10), request)
+        .await
+        .expect("a request waited for an upload to finish streaming")
+}
+
+/// #414: a radargram upload holds the lifecycle lock to check for room and
+/// to check its id and install, not while its body arrives. Of two with one
+/// id, the first to finish is added and the other refused.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_radargram_upload_in_progress_blocks_nothing_and_one_id_is_added_once() {
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let bytes = radargram_bytes("arrived");
+
+    let (held, slow) = held_upload(&app, "/api/v1/datasets?filename=slow.nc", &erik);
+    held.send(bytes[..512].to_vec()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(upload_temporaries(dir.path()), 1);
+    // Not served while it arrives.
+    let listed = get(&app, "/api/v1/datasets", Some(&erik)).await;
+    assert_eq!(listed.body["entries"].as_array().unwrap().len(), 2);
+
+    let removed = promptly(delete(&app, "/api/v1/datasets/ours", Some(&erik))).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
+    let quick = promptly(post_bytes(
+        &app,
+        "/api/v1/datasets?filename=quick.nc",
+        bytes.clone(),
+        Some(&erik),
+    ))
+    .await;
+    assert_eq!(quick.status, StatusCode::CREATED, "{}", quick.text);
+
+    held.send(bytes[512..].to_vec()).await.unwrap();
+    drop(held);
+    let slow = slow.await.unwrap();
+    assert_eq!(slow.status, StatusCode::CONFLICT, "{}", slow.text);
+    assert_eq!(slow.body["error"]["code"], "radargram_exists");
+    assert_eq!(upload_temporaries(dir.path()), 0);
+}
+
+/// Two radargram uploads that each fit alone but not together: the first to
+/// finish is added, the other refused as a project that is full.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn of_two_radargram_uploads_that_fit_only_alone_the_first_to_finish_is_added() {
+    let hash = password_hash();
+    let size = radargram_bytes("first").len() as u64;
+    let used = {
+        // What the project holds before any upload, measured on a copy of
+        // the fixture so the cap can be set from it.
+        let (dir, _archive, app) = lifecycle_app(vec![activated(
+            "erik",
+            Role::Operator,
+            DownloadScope::All,
+            &hash,
+        )]);
+        let erik = sign_in(&app, "erik").await;
+        get(&app, "/api/v1/datasets", Some(&erik)).await;
+        open_project(dir.path()).size_bytes()
+    };
+    let (dir, _archive, app) = lifecycle_app_with_cap(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        Some(used + size * 3 / 2),
+    );
+    let erik = sign_in(&app, "erik").await;
+
+    let first = radargram_bytes("first");
+    let (held, slow) = held_upload(&app, "/api/v1/datasets?filename=first.nc", &erik);
+    held.send(first[..512].to_vec()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let quick = promptly(post_bytes(
+        &app,
+        "/api/v1/datasets?filename=second.nc",
+        radargram_bytes("second"),
+        Some(&erik),
+    ))
+    .await;
+    assert_eq!(quick.status, StatusCode::CREATED, "{}", quick.text);
+
+    held.send(first[512..].to_vec()).await.unwrap();
+    drop(held);
+    let slow = slow.await.unwrap();
+    assert_eq!(slow.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", slow.text);
+    assert_eq!(slow.body["error"]["code"], "project_full");
+    assert_eq!(upload_temporaries(dir.path()), 0);
+}
+
+/// The room is measured with the upload's own temporary file in the
+/// project, so it must not be counted against itself.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_radargram_that_fits_exactly_is_added() {
+    let hash = password_hash();
+    let bytes = radargram_bytes("exact");
+    // Measured with a cap of as many digits as the real one will have:
+    // `ridal.toml` is in the project too, and its `max_bytes` line counts.
+    let used = {
+        let (dir, _archive, app) = lifecycle_app_with_cap(
+            vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            Some(99_999),
+        );
+        let erik = sign_in(&app, "erik").await;
+        get(&app, "/api/v1/datasets", Some(&erik)).await;
+        open_project(dir.path()).size_bytes()
+    };
+    assert_eq!((used + bytes.len() as u64).to_string().len(), 5);
+    let (_dir, _archive, app) = lifecycle_app_with_cap(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        Some(used + bytes.len() as u64),
+    );
+    let erik = sign_in(&app, "erik").await;
+    get(&app, "/api/v1/datasets", Some(&erik)).await;
+    let added = post_bytes(
+        &app,
+        "/api/v1/datasets?filename=exact.nc",
+        bytes,
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::CREATED, "{}", added.text);
+}
+
+/// #414: staging a replacement does not hold the lifecycle lock while the
+/// file arrives, and a radargram replaced or removed meanwhile is refused
+/// rather than measured against a revision that has gone.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_replacement_in_progress_blocks_nothing_and_notices_what_changed_meanwhile() {
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let bytes = staged_bytes("ours");
+
+    // Replaced by somebody else while it arrives.
+    let (held, slow) = held_upload(&app, "/api/v1/datasets/ours/replace", &erik);
+    held.send(bytes[..512].to_vec()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let staged = promptly(post_bytes(
+        &app,
+        "/api/v1/datasets/ours/replace",
+        bytes.clone(),
+        Some(&erik),
+    ))
+    .await;
+    assert_eq!(staged.status, StatusCode::OK, "{}", staged.text);
+    let token = staged.body["token"].as_str().unwrap().to_string();
+    let committed = promptly(post(
+        &app,
+        &format!("/api/v1/datasets/ours/replace/{token}"),
+        &json!({}),
+        Some(&erik),
+    ))
+    .await;
+    assert_eq!(committed.status, StatusCode::OK, "{}", committed.text);
+    held.send(bytes[512..].to_vec()).await.unwrap();
+    drop(held);
+    let slow = slow.await.unwrap();
+    assert_eq!(slow.status, StatusCode::CONFLICT, "{}", slow.text);
+    assert_eq!(slow.body["error"]["code"], "radargram_changed");
+
+    // Removed while it arrives: the same 404 as before it began.
+    let (held, slow) = held_upload(&app, "/api/v1/datasets/ours/replace", &erik);
+    held.send(bytes[..512].to_vec()).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let removed = promptly(delete(&app, "/api/v1/datasets/ours", Some(&erik))).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
+    held.send(bytes[512..].to_vec()).await.unwrap();
+    drop(held);
+    let slow = slow.await.unwrap();
+    assert_eq!(slow.status, StatusCode::NOT_FOUND, "{}", slow.text);
+
+    // Neither left a staged file behind.
+    assert_eq!(staged_count(dir.path()), 0);
 }
 
 /// #396 interim: a raw upload holds the lifecycle lock only to check for
