@@ -115,8 +115,9 @@ new revision (`partial`), or not be shown at all (`refused`). Nothing is
 rewritten either way; picks stay as they were drawn.
 
 `plan` looks at four files at a time (`workers=`). `apply` uploads the new
-files and replaces the others one at a time, since the server takes uploads
-one at a time, and by default only where every set of picks would still be
+files and replaces the others one at a time, so that files arriving together
+cannot each find room in the project and then be refused, and by default only
+where every set of picks would still be
 shown unmoved (`allow={"current", "carried"}`). Anything else is left alone and reported in
 its outcome. Replacing needs the `operator` role.
 

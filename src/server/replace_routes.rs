@@ -591,31 +591,44 @@ pub async fn stage_replacement(
     body: axum::body::Body,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "replace a radargram")?;
-    let _lifecycle = state.lifecycle_lock().await;
 
-    let catalog = state.catalog();
-    let entry = super::routes::lookup_dataset(&catalog, &radargram_id)?;
-    let radargram = entry.radargram_id.clone();
-    let from_revision = entry.revision_id.clone();
-    let from_path = replaceable_path(&state, entry)?;
-    drop(catalog);
-
-    let dir = staging_dir(project)?;
-    sweep_staging(&dir);
-
+    // The lifecycle lock is not held while the body streams (#414): a large
+    // file over a slow link would hold up every other upload, removal and
+    // replace in the project for as long as it takes. What the upload is
+    // measured against -- the radargram it replaces, and the room left -- is
+    // read under the lock first, and checked again under it once the file
+    // has arrived.
     let cap = project.max_bytes();
-    let room = cap.saturating_sub(project.size_bytes());
-    let declared = headers
-        .get(header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-    if declared.is_some_and(|d| d > room) {
-        return Err(super::lifecycle_routes::too_large(
-            declared.unwrap_or_default(),
+    let (radargram, from_revision, dir, room) = {
+        let _lifecycle = state.lifecycle_lock().await;
+        let catalog = state.catalog();
+        let entry = super::routes::lookup_dataset(&catalog, &radargram_id)?;
+        // Checked now as well as after, so a radargram that cannot be
+        // replaced is refused before its upload rather than after it.
+        replaceable_path(&state, entry)?;
+
+        let dir = staging_dir(project)?;
+        sweep_staging(&dir);
+
+        let room = cap.saturating_sub(project.size_bytes());
+        let declared = headers
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok());
+        if declared.is_some_and(|d| d > room) {
+            return Err(super::lifecycle_routes::too_large(
+                declared.unwrap_or_default(),
+                room,
+                cap,
+            ));
+        }
+        (
+            entry.radargram_id.clone(),
+            entry.revision_id.clone(),
+            dir,
             room,
-            cap,
-        ));
-    }
+        )
+    };
 
     let token = super::lifecycle_routes::uuid();
     let staged = staged_path(&dir, &token)?;
@@ -655,6 +668,38 @@ pub async fn stage_replacement(
     };
 
     same_radargram(meta.radargram_id.as_str(), &radargram)?;
+
+    let _lifecycle = state.lifecycle_lock().await;
+    // Rebound after the lock, so that on every refusal below the staged
+    // file is removed before the lock is let go, and the next upload to
+    // finish does not count it.
+    let cleanup = cleanup;
+    // The project's size includes this upload's own staged file, so it is
+    // taken out rather than counted twice.
+    let room = cap.saturating_sub(project.size_bytes().saturating_sub(bytes));
+    if bytes > room {
+        return Err(super::lifecycle_routes::too_large(bytes, room, cap));
+    }
+    // The radargram may have been replaced or removed while the file
+    // arrived. A report against the revision it had then would describe a
+    // transition that can no longer happen, so it is refused here, as a
+    // commit against a moved-on radargram is (`report_is_stale`).
+    // A removed one is the same 404 as before the upload began.
+    let from_path = {
+        let catalog = state.catalog();
+        let entry = super::routes::lookup_dataset(&catalog, radargram.as_str())?;
+        if entry.revision_id != from_revision {
+            return Err(ApiError::conflict(
+                "radargram_changed",
+                format!(
+                    "'{radargram}' was replaced by someone else while this file was \
+                     uploading, so what it would replace is no longer what you chose. \
+                     Look at it again, then upload the replacement again."
+                ),
+            ));
+        }
+        replaceable_path(&state, entry)?
+    };
 
     let to_revision = meta.revision_id();
     let to_declared = declarations_of(&staged, "uploaded", &radargram)?;
