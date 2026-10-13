@@ -1336,8 +1336,7 @@ dialog th {
 
 /* The page-level actions that are plain buttons rather than menus. Sized
  * like the menus beside them so the row reads as one set of controls. */
-.controls button,
-.controls .button-link {
+.controls button {
   padding: var(--space-1) var(--space-3);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
@@ -1349,14 +1348,7 @@ dialog th {
   cursor: pointer;
 }
 
-/* A page of its own ("Add raw data in bulk…") among the actions: a link, so it
- * opens like one, drawn as the buttons beside it. */
-.controls .button-link {
-  text-decoration: none;
-}
-
-.controls button:hover:not(:disabled),
-.controls .button-link:hover {
+.controls button:hover:not(:disabled) {
   border-color: var(--color-accent);
 }
 
@@ -2520,11 +2512,13 @@ button.danger:disabled {
   position: relative;
 }
 
-.download-menu {
+.download-menu,
+.add-menu {
   position: static;
 }
 
-.download-menu > ul {
+.download-menu > ul,
+.add-menu > ul {
   left: 0;
   right: auto;
   max-width: 100%;
@@ -2536,11 +2530,13 @@ button.danger:disabled {
  * block instead, and the panel hangs from it. Its `100%` would then be
  * the button's width, so the cap goes; `min-width` sizes it. */
 @media (width > 40rem) {
-  .download-menu {
+  .download-menu,
+  .add-menu {
     position: relative;
   }
 
-  .download-menu > ul {
+  .download-menu > ul,
+  .add-menu > ul {
     max-width: none;
   }
 }
@@ -2569,6 +2565,7 @@ button.danger:disabled {
 .card-menu > summary,
 .group-menu > summary,
 .download-menu > summary,
+.add-menu > summary,
 .display-menu > summary {
   font-size: var(--text-sm);
   padding: var(--space-1) var(--space-2);
@@ -2576,6 +2573,16 @@ button.danger:disabled {
 
 .download-menu > summary::before {
   content: "\2193"; /* downwards arrow, in place of the header's bars */
+}
+
+.add-menu > summary::before {
+  content: "+";
+}
+
+/* Its one link (a page of its own) sized as the buttons beside it, which
+ * are compact; the header menu's links keep the body size. */
+.add-menu > ul a {
+  font-size: var(--text-sm);
 }
 
 .display-menu > summary::before {
@@ -2824,6 +2831,7 @@ button.danger:disabled {
   color: var(--color-warning-text);
 }
 .processing-state-no_raw_data,
+.processing-state-hidden,
 .processing-state-not_processed {
   color: var(--color-text-muted);
 }

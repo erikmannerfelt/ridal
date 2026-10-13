@@ -2392,6 +2392,21 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "Ignored in this project (#409). It keeps its profile, because\nlifting the ignore brings it back; until then it is never counted\nas stale or not processed, and never taken by a batch.",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "hidden"
+                ]
+              }
+            }
           }
         ],
         "description": "Where a radargram stands against its processing profile."

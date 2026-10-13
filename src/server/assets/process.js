@@ -671,13 +671,13 @@
    * box when it joins again. */
   async function assign(profileId) {
     if (profileId === '') {
-      // `fetch` rather than `fetchJson`: a 204 has no body to read.
-      const response = await fetch(RIDAL.apiPath('processing', 'assignments', radargramId), {
-        method: 'DELETE',
-      });
-      if (!response.ok && response.status !== 404) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error?.message || RIDAL.upstreamMessage(response.status));
+      try {
+        await RIDAL.fetchJson(RIDAL.apiPath('processing', 'assignments', radargramId), {
+          method: 'DELETE',
+        });
+      } catch (error) {
+        // Already out of its profile is what was asked for.
+        if (error.status !== 404) throw error;
       }
       const own = preLines();
       keptPre = own;
@@ -741,10 +741,11 @@
       older_processing: `Processed as ${name} says, but by an older Ridal: ${why}.`,
       not_processed: `In ${name}, and not processed yet.`,
       no_raw_data: `In ${name}, but without raw data.`,
+      hidden: `In ${name}, but hidden in this project, so it is left alone.`,
     };
     standingText.textContent = says[status.state] || status.state;
     standing.classList.toggle('warning', status.state === 'stale');
-    useProfile.hidden = status.state === 'current' || status.state === 'no_raw_data';
+    useProfile.hidden = ['current', 'no_raw_data', 'hidden'].includes(status.state);
     standing.hidden = false;
   }
   useProfile.addEventListener('click', () => {

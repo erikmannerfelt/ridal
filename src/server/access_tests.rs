@@ -5971,6 +5971,150 @@ async fn upload_recording(app: &Router, stem: &str, session: &str) -> Value {
     Value::Array(files)
 }
 
+/// `n` bytes no other call with another `seed` makes, so the raw store
+/// cannot take two of them for one file.
+fn distinct_bytes(n: u64, seed: u8) -> Vec<u8> {
+    (0..n)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed) ^ ((i >> 8) as u8))
+        .collect()
+}
+
+/// The `.part` files of raw uploads still in `ridal_data/raw/incoming/`.
+fn incoming_parts(site: &StdPath) -> usize {
+    std::fs::read_dir(
+        data(site)
+            .join(crate::project::raw::RAW_DIR)
+            .join("incoming"),
+    )
+    .map(|entries| entries.filter_map(Result::ok).count())
+    .unwrap_or(0)
+}
+
+/// A raw upload whose body is sent by the test, chunk by chunk, until the
+/// sender is dropped.
+fn held_raw_upload(
+    app: &Router,
+    name: &str,
+    session: &str,
+) -> (
+    tokio::sync::mpsc::Sender<Vec<u8>>,
+    tokio::task::JoinHandle<Response>,
+) {
+    let (sender, receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+    let stream = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver
+            .recv()
+            .await
+            .map(|chunk| (Ok::<_, std::io::Error>(chunk), receiver))
+    });
+    let request = request(
+        "POST",
+        &format!("/api/v1/raw?filename={name}"),
+        Some(session),
+    )
+    .header(header::CONTENT_TYPE, "application/octet-stream")
+    .body(Body::from_stream(stream))
+    .unwrap();
+    let app = app.clone();
+    let handle = tokio::spawn(async move { send(&app, request).await });
+    (sender, handle)
+}
+
+/// #396 interim: a raw upload holds the lifecycle lock only to check for
+/// room and to install, not while its body arrives.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_raw_upload_in_progress_blocks_nothing_and_the_first_to_finish_gets_the_room() {
+    let hash = password_hash();
+    let cap = 4 * 1024 * 1024;
+    let (dir, _archive, app) = lifecycle_app_with_cap(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        Some(cap),
+    );
+    let erik = sign_in(&app, "erik").await;
+    let room = cap - open_project(dir.path()).size_bytes();
+    // Each fits alone; the two together do not.
+    let size = room * 6 / 10;
+
+    let (held, slow) = held_raw_upload(&app, "slow.rd3", &erik);
+    held.send(distinct_bytes(1024, 1)).await.unwrap();
+    // Long enough for it to be past its check and streaming.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(incoming_parts(dir.path()), 1);
+
+    let quick = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        post_bytes(
+            &app,
+            "/api/v1/raw?filename=quick.rd3",
+            distinct_bytes(size, 2),
+            Some(&erik),
+        ),
+    )
+    .await
+    .expect("an upload waited for another one to finish streaming");
+    assert_eq!(quick.status, StatusCode::CREATED, "{}", quick.text);
+    let removed = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        delete(&app, "/api/v1/datasets/ours", Some(&erik)),
+    )
+    .await
+    .expect("a removal waited for an upload to finish streaming");
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
+
+    // The rest of the slow one: it fitted when it began, and no longer does.
+    held.send(distinct_bytes(size - 1024, 3)).await.unwrap();
+    drop(held);
+    let slow = slow.await.unwrap();
+    assert_eq!(slow.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", slow.text);
+    assert_eq!(slow.body["error"]["code"], "project_full");
+    assert_eq!(incoming_parts(dir.path()), 0);
+}
+
+/// The room left is measured with the upload's own `.part` file in the
+/// project, so it must not be counted against itself.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_raw_file_that_fits_exactly_is_stored() {
+    let hash = password_hash();
+    let cap = 1024 * 1024;
+    let (dir, _archive, app) = lifecycle_app_with_cap(
+        vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+        Some(cap),
+    );
+    let erik = sign_in(&app, "erik").await;
+    // A first upload, so that whatever the first one writes besides the
+    // file is already there when the room is measured.
+    let first = post_bytes(
+        &app,
+        "/api/v1/raw?filename=first.rd3",
+        distinct_bytes(10, 6),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.text);
+    let room = cap - open_project(dir.path()).size_bytes();
+    let stored = post_bytes(
+        &app,
+        "/api/v1/raw?filename=exact.rd3",
+        distinct_bytes(room, 4),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(stored.status, StatusCode::CREATED, "{}", stored.text);
+    assert_eq!(stored.body["bytes"], room);
+    // One byte more is refused, both up front and once it has arrived.
+    let over = post_bytes(
+        &app,
+        "/api/v1/raw?filename=over.rd3",
+        distinct_bytes(1, 5),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(over.status, StatusCode::PAYLOAD_TOO_LARGE, "{}", over.text);
+    assert_eq!(incoming_parts(dir.path()), 0);
+}
+
 /// Upload a file as raw data, as `PUT /dems` takes it.
 async fn upload_file(app: &Router, path: &str, session: &str) -> Value {
     let name = StdPath::new(path).file_name().unwrap().to_string_lossy();
@@ -7195,7 +7339,7 @@ async fn a_draft_is_processed_looked_at_and_committed() {
 #[serial_test::serial(netcdf)]
 async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
     let hash = password_hash();
-    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
         "erik",
         Role::Operator,
         DownloadScope::All,
@@ -7211,7 +7355,8 @@ async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
     .await;
     assert_eq!(made.status, StatusCode::OK, "{}", made.text);
     // Both get raw data and join the profile; `theirs` then loses its raw
-    // data again.
+    // data again, by a hand that left the assignment (#409: the route
+    // takes it out of its profile too).
     let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
     for id in ["ours", "theirs"] {
         let set = put(
@@ -7231,8 +7376,7 @@ async fn the_status_of_a_profile_s_radargrams_says_which_are_stale() {
         .await;
         assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
     }
-    let removed = delete(&app, "/api/v1/sources/theirs", Some(&erik)).await;
-    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    remove_source_leaving_assignment(dir.path(), "theirs");
 
     let status = get(&app, "/api/v1/processing/status", Some(&erik)).await;
     assert_eq!(status.status, StatusCode::OK, "{}", status.text);
@@ -7337,9 +7481,100 @@ async fn batch_app_processing(
         assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
     }
     // Raw data taken away after it joined: still in the profile, with none.
-    let removed = delete(&app, "/api/v1/sources/theirs", Some(&erik)).await;
-    assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
+    remove_source_leaving_assignment(dir.path(), "theirs");
     (prepared, dir, archive, app, erik)
+}
+
+/// Remove `id`'s source document and nothing else, as a hand editing
+/// `ridal_data/` would: `DELETE /api/v1/sources/{id}` also takes it out of
+/// its profile, so it cannot leave a radargram in one with no raw data.
+fn remove_source_leaving_assignment(site: &StdPath, id: &str) {
+    let removed = crate::project::raw::remove_source(
+        open_project(site).documents(),
+        &crate::identity::RadargramId::new(id).unwrap(),
+        &crate::project::store::Expectation::Present,
+    )
+    .unwrap();
+    assert!(removed);
+}
+
+/// #409: a radargram whose file or raw data is deleted leaves its profile;
+/// one that is only ignored stays, as `hidden`, and no batch takes it.
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn deleting_a_radargram_takes_it_out_of_its_profile_and_ignoring_it_does_not() {
+    // `ours` is in the project's own store, so removing it deletes the
+    // file; `theirs` is served from outside it, so removing it ignores it.
+    let (_prepared, _dir, _archive, app, erik) = batch_app(&["ours"]).await;
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    for id in ["theirs", "spare"] {
+        let set = put(
+            &app,
+            &format!("/api/v1/sources/{id}"),
+            &json!({"recordings": [recording]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    }
+    let assigned = put(
+        &app,
+        "/api/v1/processing/assignments/spare",
+        &json!({"profile": "p"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(assigned.status, StatusCode::OK, "{}", assigned.text);
+    let assignments = || async {
+        get(&app, "/api/v1/processing/assignments", Some(&erik))
+            .await
+            .body["radargrams"]
+            .clone()
+    };
+
+    let ignored = delete(&app, "/api/v1/datasets/theirs", Some(&erik)).await;
+    assert_eq!(ignored.status, StatusCode::OK, "{}", ignored.text);
+    assert_eq!(ignored.body["outcome"], "ignored", "{}", ignored.text);
+    assert!(assignments().await.get("theirs").is_some());
+    let status = get(
+        &app,
+        "/api/v1/processing/status?radargram_id=theirs",
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        status.body["radargrams"][0]["state"], "hidden",
+        "{}",
+        status.text
+    );
+    let started = post(
+        &app,
+        "/api/v1/processing/profiles/p/reprocess",
+        &json!({}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.text);
+    let items = outcomes(&started.body);
+    assert!(items.contains_key("ours"), "{}", started.text);
+    assert!(!items.contains_key("theirs"), "{}", started.text);
+    batch_finished(&app, &started.body["id"], &erik).await;
+
+    let removed = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
+    assert_eq!(removed.body["outcome"], "removed", "{}", removed.text);
+    assert!(assignments().await.get("ours").is_none());
+
+    let unsourced = delete(&app, "/api/v1/sources/spare", Some(&erik)).await;
+    assert_eq!(
+        unsourced.status,
+        StatusCode::NO_CONTENT,
+        "{}",
+        unsourced.text
+    );
+    assert!(assignments().await.get("spare").is_none());
+    assert!(assignments().await.get("theirs").is_some());
 }
 
 #[cfg(unix)]

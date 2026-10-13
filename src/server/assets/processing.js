@@ -2,10 +2,10 @@
  *
  * Every processing profile, the radargrams in it and where each stands:
  * current, stale (and why), processed by an older Ridal, not processed yet,
- * or without raw data. An operator can make and change profiles, put
- * radargrams that have raw data in them, reprocess a profile's stale
- * radargrams as a batch, and process any one of them through the same
- * dialog as the catalog (process.js). Raw data that is not processed yet,
+ * without raw data, or hidden (ignored in the project, so left alone). An
+ * operator can make and change profiles, put radargrams that have raw data
+ * in them, reprocess a profile's stale radargrams as a batch, and process
+ * any one of them through the same dialog as the catalog (process.js). Raw data that is not processed yet,
  * in a profile or not, is listed on its own, so it is never out of sight.
  */
 (function setupProcessingPage() {
@@ -27,6 +27,7 @@
     older_processing: 'older processing',
     not_processed: 'not processed yet',
     no_raw_data: 'no raw data',
+    hidden: 'hidden',
   };
 
   const OUTCOME_WORDS = {
@@ -222,7 +223,10 @@
           fail(error.message);
         }
       });
-      cells.push(el('td', { className: 'processing-row-actions' }, process, ' ', remove));
+      // Hidden: a commit would install a file the catalog then hides, and
+      // lifting the ignore (on the catalog) is what brings it back.
+      const actions = state === 'hidden' ? [remove] : [process, ' ', remove];
+      cells.push(el('td', { className: 'processing-row-actions' }, ...actions));
     }
     return el('tr', {}, ...cells);
   }
@@ -241,7 +245,8 @@
           className: 'hint',
           textContent:
             'Every radargram with raw data is in a profile already. Give one raw data ' +
-            'from the catalog ("New radargram from raw data…", or "Attach raw data…" in its Edit menu).',
+            'from the catalog ("New radargram from raw data…" in its Add data menu, or ' +
+            '"Attach raw data…" in a radargram\'s Edit menu).',
         }),
       );
       return box;
@@ -558,7 +563,23 @@
         const process = el('button', { type: 'button', textContent: 'Process…' });
         process.dataset.processRadargram = id;
         process.dataset.served = 'false';
-        cells.push(el('td', { className: 'processing-row-actions' }, process));
+        // Raw data nobody processed: nothing else is lost with it.
+        const remove = el('button', { type: 'button', textContent: 'Delete', className: 'danger' });
+        remove.addEventListener('click', async () => {
+          if (!window.confirm(`Delete the raw data of '${id}'? Its raw files are deleted from the project.`)) {
+            return;
+          }
+          remove.disabled = true;
+          errorBox.hidden = true;
+          try {
+            await RIDAL.fetchJson(RIDAL.apiPath('sources', id), { method: 'DELETE' });
+            load();
+          } catch (error) {
+            remove.disabled = false;
+            fail(error.message);
+          }
+        });
+        cells.push(el('td', { className: 'processing-row-actions' }, process, ' ', remove));
       }
       return el('tr', {}, ...cells);
     });
@@ -812,9 +833,9 @@
   async function load() {
     errorBox.hidden = true;
     const demsLoaded = loadDems();
-    let profiles, status, assignments, datasets, sources, batches;
+    let profiles, status, assignments, datasets, sources, batches, ignored;
     try {
-      [profiles, status, assignments, datasets, sources, batches] = await Promise.all([
+      [profiles, status, assignments, datasets, sources, batches, ignored] = await Promise.all([
         RIDAL.fetchJson(RIDAL.apiPath('processing', 'profiles')),
         RIDAL.fetchJson(RIDAL.apiPath('processing', 'status')),
         RIDAL.fetchJson(RIDAL.apiPath('processing', 'assignments')),
@@ -824,6 +845,12 @@
         writable
           ? RIDAL.fetchJson(RIDAL.apiPath('processing', 'batches'))
           : Promise.resolve({ batches: [] }),
+        // And what the project ignores, which is not served either but is
+        // not waiting to be processed: its raw data is what lifting the
+        // ignore would bring back.
+        writable
+          ? RIDAL.fetchJson(RIDAL.apiPath('catalog', 'ignored'))
+          : Promise.resolve({ ignored: [] }),
       ]);
     } catch (error) {
       fail(`Could not load the processing profiles (${error.message}).`);
@@ -833,6 +860,11 @@
     for (const r of status.radargrams) statuses[r.radargram_id] = r;
     const assigned = assignments.radargrams || {};
     const served = new Set((datasets.entries || []).map((d) => d.radargram_id));
+    // A vestigial ignore (its file gone) still refuses a new file.
+    const hidden = new Set(
+      [...(ignored.ignored || []), ...(ignored.vestigial || [])].map((d) => d.radargram_id),
+    );
+    for (const r of status.radargrams) if (r.state === 'hidden') hidden.add(r.radargram_id);
     // Only what has raw data can be processed, so only that can join.
     const addable = (sources.radargram_ids || []).filter((id) => !assigned[id]);
     const running = {};
@@ -846,7 +878,7 @@
       ),
     );
     renderUnprocessed(
-      (sources.radargram_ids || []).filter((id) => !served.has(id)),
+      (sources.radargram_ids || []).filter((id) => !served.has(id) && !hidden.has(id)),
       assigned,
       profiles.profiles,
       sources.names || {},

@@ -363,6 +363,29 @@ pub async fn upload_dataset(
     ))
 }
 
+/// Take `id` out of its processing profile, if it is in one. Not fatal:
+/// what calls it has already removed what the assignment was about, and an
+/// assignment left behind only lists a radargram that is not there.
+pub(super) fn take_out_of_profile(project: &crate::project::Project, id: &RadargramId) {
+    use crate::project::processing;
+    // Read first, so a project that never used processing is not given an
+    // assignments document by a removal.
+    let result = processing::read_assignments(project.documents()).and_then(|(stored, _)| {
+        if stored.radargrams.contains_key(id) {
+            processing::assign(project.documents(), id, None).map(|_| ())
+        } else {
+            Ok(())
+        }
+    });
+    if let Err(e) = result {
+        tracing::warn!(
+            radargram = id.as_str(),
+            error = %e,
+            "left in its processing profile after its removal"
+        );
+    }
+}
+
 /// `DELETE /api/v1/datasets/{id}` — remove it, or stop serving it.
 pub async fn remove_dataset(
     State(state): State<Arc<AppState>>,
@@ -452,6 +475,10 @@ pub async fn remove_dataset(
                 "raw data left behind after removing the radargram"
             ),
         }
+        // And out of its profile, which would otherwise list a radargram
+        // that no longer exists (#409). Not when it is only ignored: that
+        // can be lifted, and it comes back in the profile it was in.
+        take_out_of_profile(project, &id);
         "removed"
     } else {
         // Outside the project, so the file is not Ridal's to delete. The

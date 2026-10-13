@@ -197,18 +197,26 @@
     </label>
     {{ download_menu("catalog", api_base ~ "/catalog", "all radargrams",
                      "Download" if only_ungrouped else "Download all", project) }}
-    {#- A plain button rather than a menu: one action, and hiding a single
-        item behind a disclosure is a click for nothing. -#}
+    {#- Every way of adding data, in one menu (#409): three buttons side by
+        side read as three unrelated things. Each item keeps the condition
+        it had as a button, and the menu goes when none applies. index.js
+        closes it when an item is chosen. -#}
     {% if can_edit_project %}
-    <button type="button" id="add-radargram">Add radargram&hellip;</button>
+    <details class="site-menu add-menu" id="add-data-menu">
+      <summary>Add data</summary>
+      <ul>
+        <li><button type="button" id="add-radargram">Add processed radargram&hellip;</button></li>
+        {#- A new radargram processed on the server from its raw data
+            (#382), through the same dialog the viewer processes with. -#}
+        <li><button type="button" id="process-new">New radargram from raw data&hellip;</button></li>
+        {#- Many recordings at once, grouped and named (#382 phase 7): a
+            page of its own, since a survey's worth does not fit a dialog. -#}
+        <li><a href="{{ page_base|safe }}/ingest{{ profile_query }}">Add raw data in bulk&hellip;</a></li>
+      </ul>
+    </details>
+    {#- Outside the menu: it has to stay in view while the upload runs. -#}
     <button type="button" id="add-radargram-cancel" hidden>Cancel upload</button>
     <input type="file" id="add-radargram-file" accept=".nc" hidden>
-    {#- A new radargram processed on the server from its raw data (#382),
-        through the same dialog the viewer processes with. -#}
-    <button type="button" id="process-new">New radargram from raw data&hellip;</button>
-    {#- Many recordings at once, grouped and named (#382 phase 7): a page
-        of its own, since a survey's worth does not fit a dialog. -#}
-    <a class="button-link" href="{{ page_base|safe }}/ingest{{ profile_query }}">Add raw data in bulk&hellip;</a>
     {% endif %}
     <a class="docs-help" href="{{ docs_base|safe }}guide/gui.html"
        target="_blank" rel="noopener" title="The catalog in the documentation">?</a>
