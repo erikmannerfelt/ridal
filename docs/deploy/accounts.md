@@ -42,7 +42,9 @@ made in the browser at **Settings → Accounts**; see below.
 The server-administrator flag on an account is not a project role. A server
 administrator creates projects and accounts, renames, archives and deletes
 projects, and has every project's `admin` rights without needing a
-membership.
+membership. Under **Settings → Server** they also see what the server is
+doing and its processing queue, and can cancel anyone's processing job; see
+{doc}`server`.
 
 Granting it is deliberately deliberate. The account must already have set a
 password — never an invite, whose link would otherwise hand the whole site

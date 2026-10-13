@@ -356,6 +356,58 @@
       </details>
     </section>
 
+    {#- What the server is doing now (#282, #391): the heartbeat's numbers
+        and the processing queue, refreshed while the page is in view.
+        Filled in by site.js; nothing here is known when the page renders. -#}
+    <section class="settings-section" id="server-section">
+      <h2>Server<a class="docs-help" href="{{ docs_base|safe }}deploy/server.html#logs"
+            target="_blank" rel="noopener" title="Logs and the heartbeat">?</a></h2>
+      <p class="hint">
+        What this server is doing now, updated every few seconds while this
+        page is in view. The same numbers are written to the server&rsquo;s
+        log as its heartbeat.
+      </p>
+      <dl id="server-status" class="card-meta settings-summary">
+        <dt>Status</dt><dd class="hint">Loading&hellip;</dd>
+      </dl>
+
+      <h3>Processing queue</h3>
+      <p class="hint" id="queue-limits"></p>
+      <div class="table-scroll">
+      <table id="queue-table" class="layers-table">
+        <thead>
+          <tr>
+            <th scope="col">Radargram</th>
+            <th scope="col">Project</th>
+            <th scope="col">Owner</th>
+            <th scope="col">Kind</th>
+            <th scope="col">State</th>
+            <th scope="col">Time</th>
+            <th scope="col"><span class="visually-hidden">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      </div>
+
+      <h3>Recently ended</h3>
+      <div class="table-scroll">
+      <table id="ended-table" class="layers-table">
+        <thead>
+          <tr>
+            <th scope="col">Radargram</th>
+            <th scope="col">Project</th>
+            <th scope="col">Owner</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Outcome</th>
+            <th scope="col">Time</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      </div>
+    </section>
+
     {#- The site's ledger: who created, removed or changed accounts,
         memberships and projects. Read-only, and honest about what it is:
         anyone who can edit the site directory can edit this file too. -#}

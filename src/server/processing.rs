@@ -217,11 +217,48 @@ struct Job {
     spec: Option<JobSpec>,
     cancel: Arc<tokio::sync::Notify>,
     cancelled: bool,
+    queued_at: std::time::Instant,
+    started_at: Option<std::time::Instant>,
     finished_at: Option<std::time::Instant>,
 }
 
+/// A job as a server administrator sees it (#391): its status, the project
+/// it is for, and how long it has waited and run.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct JobDetail {
+    #[serde(flatten)]
+    pub status: JobStatus,
+    pub project: String,
+    pub estimate_mb: u64,
+    /// From being queued to starting, or to now while it waits. A job
+    /// cancelled before it started waited until it was cancelled.
+    pub waited_seconds: f64,
+    /// From starting to ending, or to now while it runs. `None` for a job
+    /// that never started.
+    pub ran_seconds: Option<f64>,
+    /// How long ago it ended. `None` while it is queued or running.
+    pub ended_seconds_ago: Option<f64>,
+}
+
+impl Job {
+    fn detail(&self, now: std::time::Instant) -> JobDetail {
+        let seconds = |from: std::time::Instant, to: std::time::Instant| {
+            (to.saturating_duration_since(from).as_secs_f64() * 10.0).round() / 10.0
+        };
+        let end = self.finished_at.unwrap_or(now);
+        JobDetail {
+            status: self.status.clone(),
+            project: self.project.clone(),
+            estimate_mb: self.estimate_bytes / (1024 * 1024),
+            waited_seconds: seconds(self.queued_at, self.started_at.unwrap_or(end)),
+            ran_seconds: self.started_at.map(|started| seconds(started, end)),
+            ended_seconds_ago: self.finished_at.map(|ended| seconds(ended, now)),
+        }
+    }
+}
+
 /// How the jobs that ended since the heartbeat last asked ended (#282).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct FinishedCounts {
     pub done: u64,
     pub failed: u64,
@@ -331,6 +368,8 @@ impl ProcessingQueue {
                     spec: Some(request.spec),
                     cancel: Arc::new(tokio::sync::Notify::new()),
                     cancelled: false,
+                    queued_at: std::time::Instant::now(),
+                    started_at: None,
                     finished_at: None,
                 },
             );
@@ -345,10 +384,21 @@ impl ProcessingQueue {
         inner.jobs.get(&id).map(|job| job.status.clone())
     }
 
-    /// Every job the queue still knows of, oldest first.
-    pub fn list(&self) -> Vec<JobStatus> {
+    /// Every job the queue still knows of, oldest first, with its project
+    /// and timings.
+    pub fn details(&self) -> Vec<JobDetail> {
+        let now = std::time::Instant::now();
         let inner = self.inner.lock().expect("the queue lock is not poisoned");
-        inner.jobs.values().map(|job| job.status.clone()).collect()
+        inner.jobs.values().map(|job| job.detail(now)).collect()
+    }
+
+    /// One job, as [`Self::details`] gives it.
+    pub fn detail(&self, id: u64) -> Option<JobDetail> {
+        let inner = self.inner.lock().expect("the queue lock is not poisoned");
+        inner
+            .jobs
+            .get(&id)
+            .map(|job| job.detail(std::time::Instant::now()))
     }
 
     pub fn snapshot(&self) -> QueueSnapshot {
@@ -376,6 +426,14 @@ impl ProcessingQueue {
     pub fn take_finished(&self) -> FinishedCounts {
         let mut inner = self.inner.lock().expect("the queue lock is not poisoned");
         std::mem::take(&mut inner.finished)
+    }
+
+    /// [`Self::take_finished`] without starting the count again.
+    pub fn finished(&self) -> FinishedCounts {
+        self.inner
+            .lock()
+            .expect("the queue lock is not poisoned")
+            .finished
     }
 
     /// Cancel a job: a queued one never starts, a running one is killed.
@@ -451,6 +509,7 @@ impl ProcessingQueue {
                 continue;
             };
             job.status.state = JobState::Running;
+            job.started_at = Some(std::time::Instant::now());
             running += 1;
             running_bytes += job.estimate_bytes;
             // The record of what ran, for whom, and how it ended (#391).
@@ -675,13 +734,13 @@ impl ProcessingQueue {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A queue whose jobs are `script`, a shell script standing in for
     /// `ridal process-job`: what the queue does with a child does not
     /// depend on what the child is.
-    fn queue(
+    pub(crate) fn queue(
         dir: &std::path::Path,
         script: &str,
         config: ProcessingConfig,
@@ -697,7 +756,7 @@ mod tests {
         })
     }
 
-    fn request(key: &str, owner: &str, priority: Priority) -> JobRequest {
+    pub(crate) fn request(key: &str, owner: &str, priority: Priority) -> JobRequest {
         JobRequest {
             key: key.to_string(),
             owner: owner.to_string(),
@@ -850,6 +909,36 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
     }
 
     #[tokio::test]
+    async fn details_say_how_long_a_job_waited_and_ran() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = queue(dir.path(), "exec sleep 30", ProcessingConfig::default());
+        let running = queue.submit(request("a", "anna", Priority::Draft)).unwrap();
+        let queued = queue.submit(request("b", "anna", Priority::Batch)).unwrap();
+
+        let detail = queue.detail(running).unwrap();
+        assert_eq!(detail.project, "default");
+        assert!(detail.ran_seconds.is_some());
+        assert_eq!(detail.ended_seconds_ago, None);
+        let detail = queue.detail(queued).unwrap();
+        assert_eq!(detail.ran_seconds, None, "it never started");
+        assert_eq!(detail.ended_seconds_ago, None);
+
+        queue.cancel(queued);
+        let detail = queue.detail(queued).unwrap();
+        assert_eq!(detail.ran_seconds, None);
+        assert!(detail.ended_seconds_ago.is_some());
+
+        queue.cancel(running);
+        finished(&queue, running).await;
+        let ids: Vec<u64> = queue.details().iter().map(|d| d.status.id).collect();
+        assert_eq!(ids, [running, queued], "oldest first");
+        // Flattened, so the admin view is the owner's status plus more.
+        let json = serde_json::to_value(queue.detail(running).unwrap()).unwrap();
+        assert_eq!(json["state"], "cancelled");
+        assert_eq!(json["project"], "default");
+    }
+
+    #[tokio::test]
     async fn a_cancelled_job_stops_whether_queued_or_running() {
         let dir = tempfile::tempdir().unwrap();
         let queue = queue(dir.path(), "exec sleep 30", ProcessingConfig::default());
@@ -902,8 +991,8 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
 
         finished(&queue, first).await;
         finished(&queue, draft).await;
-        for status in queue.list() {
-            finished(&queue, status.id).await;
+        for job in queue.details() {
+            finished(&queue, job.status.id).await;
         }
         let order = std::fs::read_to_string(&log).unwrap();
         assert_eq!(

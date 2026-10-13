@@ -206,9 +206,16 @@ fn is_bulk(route: &str) -> bool {
 /// can check them against the state they came from.
 ///
 /// Counts marked "since the last" are read and reset by [`Heartbeat::take`],
-/// so each line covers one interval.
-#[derive(Debug, Clone, PartialEq)]
+/// so each line covers one interval. The site settings page reads the same
+/// numbers with [`Heartbeat::peek`], which leaves them for the next line
+/// (#391).
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Heartbeat {
+    /// How long the server has been running, in seconds.
+    pub uptime_seconds: u64,
+    /// How long the counts below marked "since the last" cover, in seconds:
+    /// since the last heartbeat, or since the start when there is none.
+    pub interval_seconds: f64,
     /// CPU time this process has used since it started, user and system,
     /// in seconds. `None` off Linux.
     pub cpu_seconds: Option<f64>,
@@ -245,13 +252,29 @@ const MB: f64 = 1024.0 * 1024.0;
 impl Heartbeat {
     /// Read the site's numbers, and start the interval counts again.
     pub fn take(site: &SiteState) -> Self {
+        Self::read(site, true)
+    }
+
+    /// Read the site's numbers, leaving the interval counts to the next
+    /// heartbeat.
+    pub fn peek(site: &SiteState) -> Self {
+        Self::read(site, false)
+    }
+
+    fn read(site: &SiteState, reset: bool) -> Self {
         let config = site.render_config();
         let render_permits = config.n_workers.max(1);
-        let (hits, misses) = config.cache.take_lookups();
+        let (hits, misses) = if reset {
+            config.cache.take_lookups()
+        } else {
+            config.cache.lookups()
+        };
         let lookups = hits + misses;
         let queue = site.processing.snapshot();
         let process = process_usage();
         Self {
+            uptime_seconds: site.uptime().as_secs(),
+            interval_seconds: round1(site.interval(reset).as_secs_f64()),
             cpu_seconds: process.map(|p| p.cpu_seconds),
             rss_mb: process.map(|p| round1(p.rss_bytes as f64 / MB)),
             render_permits,
@@ -262,12 +285,20 @@ impl Heartbeat {
             cache_budget_mb: round1(config.cache.max_bytes() as f64 / MB),
             cache_hit_ratio: (lookups > 0)
                 .then(|| (hits as f64 / lookups as f64 * 1000.0).round() / 1000.0),
-            requests: site.take_requests(),
+            requests: if reset {
+                site.take_requests()
+            } else {
+                site.requests()
+            },
             jobs_queued: queue.queued,
             jobs_running: queue.running,
             processing_mb: queue.running_bytes / (1024 * 1024),
             processing_budget_mb: site.processing.config().memory_bytes / (1024 * 1024),
-            jobs: site.processing.take_finished(),
+            jobs: if reset {
+                site.processing.take_finished()
+            } else {
+                site.processing.finished()
+            },
         }
     }
 

@@ -868,6 +868,233 @@
     });
   }
 
+  /* ---- Server status and the processing queue (#282, #391) ---------- */
+
+  /* Polled while the page is in view and not otherwise: a tab left open in
+   * the background would otherwise keep asking all day. */
+  const serverStatus = byId("server-status");
+  if (serverStatus) {
+    const POLL_MS = 5000;
+
+    /* "45 s", "12 min", "3 h 5 min". */
+    const duration = (seconds) => {
+      const s = Math.round(seconds);
+      if (s < 60) return `${s} s`;
+      const minutes = Math.round(s / 60);
+      if (minutes < 60) return `${minutes} min`;
+      const hours = Math.floor(minutes / 60);
+      return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`;
+    };
+    const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+    function renderStatus(status) {
+      const rows = [
+        ["Up for", duration(status.uptime_seconds)],
+        [
+          "Rendering",
+          `${status.render_in_use} of ${status.render_permits} workers busy` +
+            (status.render_waiting ? `, ${status.render_waiting} waiting` : ""),
+        ],
+        [
+          "Render cache",
+          `${status.cache_mb} of ${status.cache_budget_mb} MB, ` +
+            plural(status.cache_entries, "image", "images") +
+            (status.cache_hit_ratio == null
+              ? ""
+              : `; ${Math.round(status.cache_hit_ratio * 100)}% found in the last ${duration(status.interval_seconds)}`),
+        ],
+        [
+          "Requests",
+          `${status.requests} in the last ${duration(status.interval_seconds)}`,
+        ],
+        [
+          "Processing",
+          `${status.jobs_running} running, ${status.jobs_queued} queued; ` +
+            `${status.processing_mb} of ${status.processing_budget_mb} MB`,
+        ],
+        [
+          "Jobs ended",
+          `${status.jobs.done} done, ${status.jobs.failed} failed, ` +
+            `${status.jobs.timed_out} timed out, ${status.jobs.cancelled} cancelled ` +
+            `in the last ${duration(status.interval_seconds)}`,
+        ],
+      ];
+      // Linux only: the server leaves them out elsewhere.
+      if (status.rss_mb != null) {
+        rows.push(["Memory", `${status.rss_mb} MB`]);
+      }
+      if (status.cpu_seconds != null) {
+        rows.push(["CPU time", duration(status.cpu_seconds)]);
+      }
+      const nodes = [];
+      for (const [term, value] of rows) {
+        const dt = document.createElement("dt");
+        dt.textContent = term;
+        const dd = document.createElement("dd");
+        dd.textContent = value;
+        nodes.push(dt, dd);
+      }
+      serverStatus.replaceChildren(...nodes);
+    }
+
+    function renderLimits(limits) {
+      byId("queue-limits").textContent =
+        `At most ${plural(limits.jobs, "job", "jobs")} at once, ` +
+        `${limits.memory_mb} MB between them, ` +
+        `${plural(limits.threads_per_job, "thread", "threads")} each, ` +
+        `stopped after ${duration(limits.timeout_seconds)}. ` +
+        `Each person may have ${limits.max_queued_per_user} waiting or running, ` +
+        `each project ${limits.max_queued_per_project}. ` +
+        `Ended jobs are listed for ${duration(limits.keep_finished_seconds)}.`;
+    }
+
+    const OUTCOMES = {
+      done: "done",
+      failed: "failed",
+      timed_out: "timed out",
+      cancelled: "cancelled",
+    };
+
+    function jobCells(row, job) {
+      const cell = (text, title) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (title) td.title = title;
+        row.appendChild(td);
+        return td;
+      };
+      cell(job.radargram_id);
+      cell(job.project);
+      cell(job.owner);
+      cell(job.priority === "draft" ? "draft" : "batch");
+      return cell;
+    }
+
+    function queueRow(job) {
+      const row = document.createElement("tr");
+      const cell = jobCells(row, job);
+      let state = job.state;
+      if (job.state === "running") {
+        if (job.writing) state = "running: writing the file";
+        else if (job.step) state = `running: step ${job.step.index + 1} of ${job.step.of}`;
+      }
+      cell(state, job.step ? job.step.step : "");
+      cell(
+        job.state === "running"
+          ? `running ${duration(job.ran_seconds)}, waited ${duration(job.waited_seconds)}`
+          : `waiting ${duration(job.waited_seconds)}`,
+      );
+      const actions = cell("");
+      const group = document.createElement("div");
+      group.className = "row-actions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.className = "danger";
+      cancel.textContent = "Cancel";
+      cancel.addEventListener("click", () => cancelJob(job, cancel));
+      group.appendChild(cancel);
+      actions.appendChild(group);
+      return row;
+    }
+
+    function endedRow(job) {
+      const row = document.createElement("tr");
+      const cell = jobCells(row, job);
+      cell(OUTCOMES[job.state] || job.state, job.message || "");
+      cell(
+        (job.ran_seconds == null ? "never started" : `ran ${duration(job.ran_seconds)}`) +
+          `, ended ${duration(job.ended_seconds_ago)} ago`,
+      );
+      return row;
+    }
+
+    function fill(table, rows, columns, empty) {
+      const body = byId(table).tBodies[0];
+      if (rows.length) {
+        body.replaceChildren(...rows);
+        return;
+      }
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = columns;
+      cell.className = "hint";
+      cell.textContent = empty;
+      row.appendChild(cell);
+      body.replaceChildren(row);
+    }
+
+    function renderQueue(queue) {
+      renderLimits(queue.limits);
+      const jobs = queue.jobs || [];
+      // Running first, then queued, each oldest first as the server lists
+      // them; ended most recent first.
+      const live = [
+        ...jobs.filter((job) => job.state === "running"),
+        ...jobs.filter((job) => job.state === "queued"),
+      ];
+      const ended = jobs
+        .filter((job) => job.ended_seconds_ago != null)
+        .sort((a, b) => a.ended_seconds_ago - b.ended_seconds_ago);
+      fill("queue-table", live.map(queueRow), 7, "Nothing is waiting or running.");
+      fill("ended-table", ended.map(endedRow), 6, "No job has ended recently.");
+    }
+
+    async function cancelJob(job, button) {
+      const what = `${job.owner}'s ${job.priority === "draft" ? "draft" : "batch item"} ` +
+        `of ${job.radargram_id} in ${job.project}`;
+      if (!confirm(`Cancel ${what}? ${job.state === "running" ? "It is stopped where it is." : "It will not start."}`)) {
+        return;
+      }
+      clearError();
+      button.disabled = true;
+      try {
+        const response = await fetch(RIDAL.siteApiPath("site", "processing", String(job.id)), {
+          method: "DELETE",
+        });
+        if (!response.ok && response.status !== 404) {
+          const parsed = await response.json().catch(() => null);
+          throw new Error(parsed?.error?.message || RIDAL.upstreamMessage(response.status));
+        }
+        // A 404 means it ended meanwhile, which the refresh shows.
+      } catch (error) {
+        showError(`Could not cancel the job: ${error.message}`);
+      }
+      await refresh();
+    }
+
+    let timer = null;
+    async function refresh() {
+      try {
+        const [status, queue] = await Promise.all([
+          RIDAL.fetchJson(RIDAL.siteApiPath("site", "status")),
+          RIDAL.fetchJson(RIDAL.siteApiPath("site", "processing")),
+        ]);
+        renderStatus(status);
+        renderQueue(queue);
+      } catch (error) {
+        showError(`Could not read the server's status: ${error.message}`);
+      }
+    }
+
+    function schedule() {
+      clearTimeout(timer);
+      timer = null;
+      if (document.visibilityState !== "visible") return;
+      timer = setTimeout(async () => {
+        await refresh();
+        schedule();
+      }, POLL_MS);
+    }
+
+    document.addEventListener("visibilitychange", async () => {
+      if (document.visibilityState === "visible") {
+        await refresh();
+      }
+      schedule();
+    });
+    refresh().then(schedule);
+  }
+
   /* ---- History ------------------------------------------------------ */
 
   /* Loaded the first time the disclosure is opened, so the settings page
