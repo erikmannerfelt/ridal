@@ -34,6 +34,10 @@ mod site;
 /// with it: a chunk of a radargram is not a server concept.
 mod source;
 mod steps;
+/// Typical trace spacing and survey speed, for the viewer's metadata
+/// panel (#412); only the server shows them.
+#[cfg(feature = "server")]
+mod survey;
 mod tools;
 mod user_metadata;
 

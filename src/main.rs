@@ -31,6 +31,8 @@ mod server;
 mod site;
 mod source;
 mod steps;
+#[cfg(feature = "server")]
+mod survey;
 mod tools;
 mod user_metadata;
 

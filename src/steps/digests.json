@@ -1,7 +1,8 @@
 {
-  "core_version": 1,
+  "core_version": 2,
   "subset_version": 1,
   "core": {
+    "attr:antenna_frequency": {"n":1,"non_finite":0,"first":100.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},
     "attr:antenna_separation": {"n":1,"non_finite":0,"first":1.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},
     "attr:antenna_separation_effective": {"n":1,"non_finite":0,"first":1.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},
     "attr:frequency_steps": {"n":1,"non_finite":0,"first":20.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},
@@ -26,6 +27,7 @@
     "y": {"n":2024,"non_finite":0,"first":0.0,"sum":2047276.0,"sum_abs":2047276.0,"sum_sq":2761775324.0,"min":0.0,"max":2023.0,"p1":10389.858425523695,"p2":6367.3671823045115}
   },
   "base": {
+    "attr:antenna_frequency": {"n":1,"non_finite":0,"first":100.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},
     "attr:antenna_separation": {"n":1,"non_finite":0,"first":1.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},
     "attr:antenna_separation_effective": {"n":1,"non_finite":0,"first":1.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},
     "attr:frequency_steps": {"n":1,"non_finite":0,"first":20.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},

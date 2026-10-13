@@ -30,7 +30,9 @@ use serde::{Deserialize, Serialize};
 
 /// The version of everything outside the steps that determines a processed
 /// file's contents. See the module documentation for when to bump it.
-pub const CORE_PROCESSING_VERSION: u32 = 1;
+///
+/// - 2: `antenna_frequency` written (#412).
+pub const CORE_PROCESSING_VERSION: u32 = 2;
 
 /// The layout of [`Recipe`] as serialized into `ridal_recipe`.
 pub const RECIPE_FORMAT: u32 = 1;

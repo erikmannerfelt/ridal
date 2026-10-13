@@ -2425,9 +2425,10 @@ struct MetadataEntry {
 /// alphabetically by their prettified label -- the plan's "identity ->
 /// acquisition -> processing -> everything else alphabetically".
 ///
-/// `__revision_id`, `__start_stop_datetime` and `__shape` are synthetic
-/// keys for entries this function builds itself rather than reading
-/// verbatim from `raw`.
+/// `__revision_id`, `__start_stop_datetime`, `__shape`, `__trace_spacing`
+/// and `__survey_speed` are synthetic keys for entries
+/// [`build_metadata_entries`] builds itself rather than reading verbatim
+/// from `raw`.
 fn curated_priority(key: &str) -> (u8, usize) {
     const IDENTITY: &[&str] = &[
         "ridal_radargram_id",
@@ -2448,6 +2449,8 @@ fn curated_priority(key: &str) -> (u8, usize) {
         "crs",
         "elevation_correction",
         "total_distance",
+        "__trace_spacing",
+        "__survey_speed",
     ];
     const PROCESSING: &[&str] = &["ridal_processing_datetime", "ridal_version"];
 
@@ -2476,8 +2479,9 @@ fn curated_priority(key: &str) -> (u8, usize) {
 /// CF-1.7) to be recognized as `Supported` at all, so the row is never
 /// actionable; `ridal_recipe` is a JSON document of everything the file
 /// was made from (#382), for Ridal to compare rather than for a person to
-/// read, and its `ridal_recipe_hash` row already identifies it. `*_unit`
-/// keys are consumed by their base attribute, not skipped by name here.
+/// read, and its `ridal_recipe_hash` row already identifies it;
+/// `antenna_frequency` is shown in the "Antenna" row (#412). `*_unit` keys
+/// are consumed by their base attribute, not skipped by name here.
 const SKIP_FROM_ENTRIES: &[&str] = &[
     "start_datetime",
     "stop_datetime",
@@ -2487,12 +2491,57 @@ const SKIP_FROM_ENTRIES: &[&str] = &[
     "original_filepaths",
     "Conventions",
     "ridal_recipe",
+    "antenna_frequency",
 ];
+
+/// What a radargram's `distance` and `time` say of how it was surveyed
+/// (#412), worked out when it is asked for, so every file has them.
+#[derive(Debug, Clone, Copy, Default)]
+struct SurveyFacts {
+    /// m.
+    trace_spacing: Option<f64>,
+    /// m/s.
+    speed: Option<f64>,
+}
+
+impl SurveyFacts {
+    fn of(file: &netcdf::File) -> Self {
+        let distance = super::track::read_f64_variable(file, "distance").ok();
+        let time = super::track::read_f64_variable(file, "time").ok();
+        Self {
+            trace_spacing: distance
+                .as_deref()
+                .and_then(crate::survey::median_trace_spacing),
+            speed: distance
+                .as_deref()
+                .zip(time.as_deref())
+                .and_then(|(d, t)| crate::survey::median_survey_speed(d, t)),
+        }
+    }
+}
+
+/// The "Antenna" row: the antenna as the file names it, and the frequency
+/// it was processed as -- read from the name, or given in its place, which
+/// the recipe records. A file from before either says the name alone.
+fn antenna_value(name: &str, raw: &serde_json::Map<String, serde_json::Value>) -> String {
+    let overridden = raw
+        .get("ridal_recipe")
+        .and_then(|v| v.as_str())
+        .and_then(|text| serde_json::from_str::<crate::recipe::Recipe>(text).ok())
+        .and_then(|recipe| recipe.antenna_mhz_override);
+    let parsed = raw.get("antenna_frequency").and_then(|v| v.as_f64());
+    match (overridden, parsed) {
+        (Some(mhz), _) => format!("{name} (overridden: {} MHz)", format_rounded(mhz as f64)),
+        (None, Some(mhz)) => format!("{name} (parsed as {} MHz)", format_rounded(mhz)),
+        (None, None) => name.to_string(),
+    }
+}
 
 fn build_metadata_entries(
     raw: &serde_json::Map<String, serde_json::Value>,
     shape: (usize, usize),
     revision_id: &str,
+    survey: SurveyFacts,
 ) -> Vec<MetadataEntry> {
     struct Entry {
         key: String,
@@ -2533,6 +2582,22 @@ fn build_metadata_entries(
         value: format!("{} \u{d7} {}", shape.0, shape.1),
     });
 
+    // Medians, so stops and the odd fast stretch do not decide them.
+    if let Some(spacing) = survey.trace_spacing {
+        entries.push(Entry {
+            key: "__trace_spacing".to_string(),
+            label: "Median trace spacing".to_string(),
+            value: format!("{} (m)", format_rounded((spacing * 100.).round() / 100.)),
+        });
+    }
+    if let Some(speed) = survey.speed {
+        entries.push(Entry {
+            key: "__survey_speed".to_string(),
+            label: "Median survey speed".to_string(),
+            value: format!("{} (km/h)", format_rounded((speed * 36.).round() / 10.)),
+        });
+    }
+
     for (key, value) in raw {
         if SKIP_FROM_ENTRIES.contains(&key.as_str()) || key.ends_with("_unit") {
             continue;
@@ -2546,6 +2611,16 @@ fn build_metadata_entries(
                     key: key.clone(),
                     label: prettify_label(key),
                     value: format_datetime_for_display(raw_dt),
+                });
+                continue;
+            }
+        }
+        if key == "antenna" {
+            if let Some(name) = value.as_str() {
+                entries.push(Entry {
+                    key: key.clone(),
+                    label: prettify_label(key),
+                    value: antenna_value(name, raw),
                 });
                 continue;
             }
@@ -2625,7 +2700,8 @@ pub async fn dataset_attributes(
         })
         .unwrap_or_default();
 
-    let entries = build_metadata_entries(&raw, entry.shape, entry.revision_id.as_str());
+    let survey = SurveyFacts::of(&file);
+    let entries = build_metadata_entries(&raw, entry.shape, entry.revision_id.as_str(), survey);
 
     Ok(Json(serde_json::json!({
         "entries": entries,
@@ -2895,8 +2971,8 @@ pub async fn dataset_topo_geometry(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_metadata_entries, f32_to_f64_exact, format_datetime_for_display, format_rounded,
-        prettify_label, ApiError, RENDER_BUSY_RETRY_AFTER_SECS,
+        antenna_value, build_metadata_entries, f32_to_f64_exact, format_datetime_for_display,
+        format_rounded, prettify_label, ApiError, SurveyFacts, RENDER_BUSY_RETRY_AFTER_SECS,
     };
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
@@ -3000,12 +3076,19 @@ mod tests {
             "original_filepaths": ["a.rd3", "b.rd3"],
             "Conventions": "CF-1.7",
             "crs": "EPSG:32633",
+            "antenna": "25 MHz RTA=11",
+            "antenna_frequency": 25.0,
+            "antenna_frequency_unit": "MHz",
         })
         .as_object()
         .unwrap()
         .clone();
 
-        let entries = build_metadata_entries(&raw, (400, 1200), "0123456789abcdef");
+        let survey = SurveyFacts {
+            trace_spacing: Some(0.7372),
+            speed: Some(3.71),
+        };
+        let entries = build_metadata_entries(&raw, (400, 1200), "0123456789abcdef", survey);
         let by_label: std::collections::HashMap<&str, &str> = entries
             .iter()
             .map(|e| (e.label.as_str(), e.value.as_str()))
@@ -3042,6 +3125,11 @@ mod tests {
         // attributes get their own handling elsewhere, not a curated row.
         assert!(!by_label.contains_key("Original filepaths"));
         assert!(!by_label.contains_key("Conventions"));
+        // The frequency is in the antenna row, not one of its own (#412).
+        assert_eq!(by_label["Antenna"], "25 MHz RTA=11 (parsed as 25 MHz)");
+        assert!(!by_label.contains_key("Antenna frequency"));
+        assert_eq!(by_label["Median trace spacing"], "0.74 (m)");
+        assert_eq!(by_label["Median survey speed"], "13.4 (km/h)");
         // The recipe is for Ridal; its hash is the row a person needs.
         assert!(!by_label.contains_key("Recipe"));
         assert_eq!(by_label["Recipe hash"], "abc123");
@@ -3056,5 +3144,59 @@ mod tests {
         let crs_pos = entries.iter().position(|e| e.label == "CRS").unwrap();
         assert!(id_pos < revision_pos);
         assert!(revision_pos < crs_pos);
+        // The survey's medians close the acquisition tier.
+        let speed_pos = entries
+            .iter()
+            .position(|e| e.label == "Median survey speed")
+            .unwrap();
+        let version_pos = entries
+            .iter()
+            .position(|e| e.label == "Ridal version")
+            .unwrap();
+        assert!(crs_pos < speed_pos && speed_pos < version_pos);
+
+        // Without the survey's facts, no rows rather than empty ones.
+        let entries = build_metadata_entries(&raw, (400, 1200), "r", SurveyFacts::default());
+        assert!(!entries.iter().any(|e| e.label.starts_with("Median")));
+    }
+
+    #[test]
+    fn the_antenna_row_says_what_frequency_it_was_processed_as() {
+        let raw = |pairs: serde_json::Value| pairs.as_object().unwrap().clone();
+        let mut recipe = crate::recipe::Recipe {
+            format: 1,
+            core_version: crate::recipe::CORE_PROCESSING_VERSION,
+            bundles: vec![],
+            dem: None,
+            crs: "EPSG:32633".to_string(),
+            medium_velocity: 0.168,
+            antenna_mhz_override: None,
+            antenna_separation_override: None,
+            steps: vec![],
+        };
+        // Read from the name.
+        let parsed = raw(serde_json::json!({
+            "antenna_frequency": 100.0,
+            "ridal_recipe": recipe.to_json(),
+        }));
+        assert_eq!(
+            antenna_value("100 MHz unshielded", &parsed),
+            "100 MHz unshielded (parsed as 100 MHz)"
+        );
+        // Given in its place.
+        recipe.antenna_mhz_override = Some(50.);
+        let overridden = raw(serde_json::json!({
+            "antenna_frequency": 50.0,
+            "ridal_recipe": recipe.to_json(),
+        }));
+        assert_eq!(
+            antenna_value("RTA unshielded", &overridden),
+            "RTA unshielded (overridden: 50 MHz)"
+        );
+        // A file from before either.
+        assert_eq!(
+            antenna_value("100 MHz", &raw(serde_json::json!({}))),
+            "100 MHz"
+        );
     }
 }
