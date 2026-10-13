@@ -1095,6 +1095,12 @@ Disk space each project's finished drafts may take together, in MB. Past it, the
 Default: `4096`.
 ```
 
+```{option} --heartbeat-seconds <HEARTBEAT_SECONDS>
+Seconds between the log lines that report the server's load: render workers busy and waiting, the render cache, requests served and the processing queue. 0 turns them off
+
+Default: `60`.
+```
+
 ```{option} --read-only
 Serve a project without accepting any writes
 ```
@@ -1217,4 +1223,10 @@ Default: `24 h`.
 Disk space each project's finished drafts may take together, in MB. Past it, the drafts least recently looked at are removed first; asking for one again processes it again
 
 Default: `4096`.
+```
+
+```{option} --heartbeat-seconds <HEARTBEAT_SECONDS>
+Seconds between the log lines that report the server's load: render workers busy and waiting, the render cache, requests served and the processing queue. 0 turns them off
+
+Default: `60`.
 ```

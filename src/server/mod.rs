@@ -88,5 +88,6 @@ pub mod routes;
 pub mod site;
 #[cfg(test)]
 mod site_tests;
+pub mod telemetry;
 pub mod templates;
 pub mod track;

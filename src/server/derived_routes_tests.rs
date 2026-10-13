@@ -1147,6 +1147,62 @@ async fn one_unreadable_filename_does_not_hide_the_readable_ones() {
     assert!((value - depth(2.0)).abs() < 1e-6, "got {value}");
 }
 
+/// The skip above is also *said*, through the subscriber a server installs
+/// (#282): without one, every `tracing::warn!` was dropped. The same capture
+/// shows the access log naming the route template rather than the path.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_skipped_interpretation_reaches_the_servers_log() {
+    let hash = password_hash();
+    let (dir, app) = app_with_picks(
+        vec![activated("kari", Role::Operator, DownloadScope::All, &hash)],
+        &[("kari", 2.0)],
+    );
+    std::fs::write(
+        data(dir.path())
+            .join("interpretations")
+            .join(RADARGRAM)
+            .join("NotAUserId.gprinterp.json"),
+        format!(r#"{{"schema":"gprinterp","key":"{RADARGRAM}","features":[]}}"#),
+    )
+    .unwrap();
+    let kari = sign_in(&app, "kari").await;
+
+    let log = crate::server::telemetry::CapturedLog::default();
+    let response = {
+        let _installed = log.install();
+        get(
+            &app,
+            &format!("/api/v1/datasets/{RADARGRAM}/contributors"),
+            Some(&kari),
+        )
+        .await
+    };
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+
+    let text = log.text();
+    assert!(
+        text.contains("WARN")
+            && text.contains("not a valid user id")
+            && text.contains("NotAUserId"),
+        "{text}"
+    );
+    assert!(
+        text.contains("route=/api/v1/projects/{key}/datasets/{radargram_id}/contributors")
+            && text.contains("status=200"),
+        "{text}"
+    );
+    // A template, so neither the radargram nor the caller is in the line.
+    let access = text
+        .lines()
+        .find(|line| line.contains("ridal::access"))
+        .unwrap_or_default();
+    assert!(
+        !access.contains(RADARGRAM) && !access.contains("kari"),
+        "{access}"
+    );
+}
+
 /// Derived points are wide: every visible item -- layer or attribute -- is a
 /// property of one point per position, and an unlisted layer is left out
 /// unless `include_unlisted` brings it back.

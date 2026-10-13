@@ -8255,3 +8255,76 @@ async fn a_newer_profile_version_supersedes_a_batch_s_unstarted_items() {
         }
     }
 }
+
+/// The heartbeat's numbers are the site's own (#282): requests answered,
+/// render permits, the render cache and the processing queue, each interval
+/// counted once.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_heartbeat_reports_what_the_site_holds() {
+    use crate::server::telemetry::{spawn_heartbeat, Heartbeat};
+
+    let hash = password_hash();
+    let dir = new_site();
+    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
+    write_people(
+        dir.path(),
+        &UserSet {
+            users: vec![activated("erik", Role::Operator, DownloadScope::All, &hash)],
+            ..UserSet::default()
+        },
+    );
+    let state = SiteState::new(
+        Site::open(dir.path()).unwrap(),
+        AccessOptions::default(),
+        RenderServiceConfig::default().with_n_workers(3),
+        crate::server::processing::ProcessingConfig::default(),
+    );
+    let app = build_site_router(std::sync::Arc::clone(&state));
+    let erik = sign_in(&app, "erik").await;
+    // What signing in did is not this test's business.
+    Heartbeat::take(&state);
+
+    let overview = format!("/api/v1/datasets/{RADARGRAM}/views/standard/overview");
+    for _ in 0..2 {
+        let response = get(&app, &overview, Some(&erik)).await;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text);
+    }
+    let unmatched = get(&app, "/no/such/page", None).await;
+    assert_eq!(unmatched.status, StatusCode::NOT_FOUND);
+
+    let beat = Heartbeat::take(&state);
+    assert_eq!(beat.requests, 3, "{beat:?}");
+    assert_eq!(beat.render_permits, 3);
+    assert_eq!(beat.render_in_use, 0);
+    assert_eq!(beat.render_waiting, 0);
+    // The first overview was built and cached, the second found there.
+    assert_eq!(beat.cache_entries, 1, "{beat:?}");
+    assert!(beat.cache_mb >= 0.0);
+    assert_eq!(
+        beat.cache_budget_mb,
+        crate::server::render_service::DEFAULT_CACHE_MEMORY_MB as f64
+    );
+    assert_eq!(beat.cache_hit_ratio, Some(0.5), "{beat:?}");
+    assert_eq!((beat.jobs_queued, beat.jobs_running), (0, 0));
+    assert_eq!(
+        beat.processing_budget_mb,
+        crate::server::processing::DEFAULT_PROCESSING_MEMORY_MB
+    );
+    if cfg!(target_os = "linux") {
+        assert!(beat.rss_mb.is_some_and(|mb| mb > 0.0), "{beat:?}");
+    }
+
+    // The interval counts start again; what is held now is still reported.
+    let _held = state.render_permits.clone().try_acquire_owned().unwrap();
+    let beat = Heartbeat::take(&state);
+    assert_eq!(beat.requests, 0);
+    assert_eq!(beat.cache_hit_ratio, None);
+    assert_eq!(beat.cache_entries, 1);
+    assert_eq!(beat.render_in_use, 1);
+
+    // Off at zero; on otherwise.
+    assert!(spawn_heartbeat(std::sync::Arc::clone(&state), std::time::Duration::ZERO).is_none());
+    let running = spawn_heartbeat(state, std::time::Duration::from_secs(3600)).unwrap();
+    running.abort();
+}

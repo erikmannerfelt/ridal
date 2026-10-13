@@ -220,10 +220,32 @@ struct Job {
     finished_at: Option<std::time::Instant>,
 }
 
+/// How the jobs that ended since the heartbeat last asked ended (#282).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FinishedCounts {
+    pub done: u64,
+    pub failed: u64,
+    pub timed_out: u64,
+    pub cancelled: u64,
+}
+
+impl FinishedCounts {
+    fn count(&mut self, state: &JobState) {
+        match state {
+            JobState::Done { .. } => self.done += 1,
+            JobState::Failed { .. } => self.failed += 1,
+            JobState::TimedOut => self.timed_out += 1,
+            JobState::Cancelled => self.cancelled += 1,
+            JobState::Queued | JobState::Running => {}
+        }
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     next_id: u64,
     jobs: BTreeMap<u64, Job>,
+    finished: FinishedCounts,
 }
 
 pub struct ProcessingQueue {
@@ -349,10 +371,20 @@ impl ProcessingQueue {
         snapshot
     }
 
+    /// How the jobs that ended since the last call ended; the count starts
+    /// again from zero.
+    pub fn take_finished(&self) -> FinishedCounts {
+        let mut inner = self.inner.lock().expect("the queue lock is not poisoned");
+        std::mem::take(&mut inner.finished)
+    }
+
     /// Cancel a job: a queued one never starts, a running one is killed.
     /// `false` when it had already finished, or never existed.
     pub fn cancel(self: &Arc<Self>, id: u64) -> bool {
-        let mut inner = self.inner.lock().expect("the queue lock is not poisoned");
+        let mut guard = self.inner.lock().expect("the queue lock is not poisoned");
+        // Through a plain reference, so a job and the counts can be
+        // borrowed at once.
+        let inner = &mut *guard;
         let Some(job) = inner.jobs.get_mut(&id) else {
             return false;
         };
@@ -361,6 +393,14 @@ impl ProcessingQueue {
                 job.status.state = JobState::Cancelled;
                 job.spec = None;
                 job.finished_at = Some(std::time::Instant::now());
+                tracing::info!(
+                    job = id,
+                    project = job.project.as_str(),
+                    owner = job.status.owner.as_str(),
+                    radargram = job.status.radargram_id.as_str(),
+                    "processing job cancelled before it started"
+                );
+                inner.finished.count(&JobState::Cancelled);
                 true
             }
             JobState::Running => {
@@ -413,10 +453,10 @@ impl ProcessingQueue {
             job.status.state = JobState::Running;
             running += 1;
             running_bytes += job.estimate_bytes;
-            // Silent until a subscriber is installed (#282); then the
-            // record of what ran, for whom, and how it ended (#391).
+            // The record of what ran, for whom, and how it ended (#391).
             tracing::info!(
                 job = id,
+                project = job.project.as_str(),
                 owner = job.status.owner.as_str(),
                 radargram = job.status.radargram_id.as_str(),
                 estimate_mb = job.estimate_bytes / (1024 * 1024),
@@ -434,7 +474,10 @@ impl ProcessingQueue {
     }
 
     fn finish(&self, id: u64, state: JobState, took: Duration) {
-        let mut inner = self.inner.lock().expect("the queue lock is not poisoned");
+        let mut guard = self.inner.lock().expect("the queue lock is not poisoned");
+        // Through a plain reference, so a job and the counts can be
+        // borrowed at once.
+        let inner = &mut *guard;
         if let Some(job) = inner.jobs.get_mut(&id) {
             job.status.state = if job.cancelled {
                 JobState::Cancelled
@@ -442,11 +485,17 @@ impl ProcessingQueue {
                 state
             };
             job.finished_at = Some(std::time::Instant::now());
-            let (owner, radargram) = (job.status.owner.as_str(), job.status.radargram_id.as_str());
+            inner.finished.count(&job.status.state);
+            let (project, owner, radargram) = (
+                job.project.as_str(),
+                job.status.owner.as_str(),
+                job.status.radargram_id.as_str(),
+            );
             let seconds = took.as_secs_f64();
             match &job.status.state {
                 JobState::Done { revision_id } => tracing::info!(
                     job = id,
+                    project,
                     owner,
                     radargram,
                     seconds,
@@ -455,6 +504,7 @@ impl ProcessingQueue {
                 ),
                 JobState::Failed { message } => tracing::warn!(
                     job = id,
+                    project,
                     owner,
                     radargram,
                     seconds,
@@ -463,6 +513,7 @@ impl ProcessingQueue {
                 ),
                 JobState::TimedOut => tracing::warn!(
                     job = id,
+                    project,
                     owner,
                     radargram,
                     seconds,
@@ -470,6 +521,7 @@ impl ProcessingQueue {
                 ),
                 JobState::Cancelled => tracing::info!(
                     job = id,
+                    project,
                     owner,
                     radargram,
                     seconds,
@@ -703,6 +755,7 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
             }
         );
         assert_eq!(status.step.unwrap().index, 1);
+        assert_eq!(queue.take_finished().done, 1);
         // It said it was writing the file after its last step.
         assert!(status.writing);
         // The spec file is gone with the job.
@@ -752,6 +805,7 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
             finished(&lied, id).await.state,
             JobState::Failed { .. }
         ));
+        assert_eq!(said.take_finished().failed, 1);
     }
 
     #[tokio::test]
@@ -769,6 +823,7 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
         let id = queue.submit(request("a", "anna", Priority::Draft)).unwrap();
         assert_eq!(finished(&queue, id).await.state, JobState::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(queue.take_finished().timed_out, 1);
     }
 
     #[tokio::test]
@@ -808,6 +863,17 @@ echo '{"event":"done","output":"x.nc","revision_id":"abc"}'
         assert_eq!(finished(&queue, running).await.state, JobState::Cancelled);
         assert!(!queue.cancel(running), "already finished");
         assert!(!queue.cancel(999));
+
+        // Both counted for the heartbeat (#282), the one that never started
+        // too, and counted once.
+        assert_eq!(
+            queue.take_finished(),
+            FinishedCounts {
+                cancelled: 2,
+                ..FinishedCounts::default()
+            }
+        );
+        assert_eq!(queue.take_finished(), FinishedCounts::default());
     }
 
     #[tokio::test]

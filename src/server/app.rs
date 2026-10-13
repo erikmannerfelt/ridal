@@ -662,6 +662,11 @@ impl AppState {
         self.render_config.clone()
     }
 
+    /// How many requests are waiting for a render permit, server-wide.
+    pub fn render_permit_waiters(&self) -> &std::sync::atomic::AtomicUsize {
+        &self.render_config.permit_waiters
+    }
+
     /// The catalog and its services as they are right now.
     ///
     /// Every read goes through here rather than through a field, so there
@@ -1210,6 +1215,9 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         // was ever gated by it (`auth::is_public_path`), so this only saves
         // a `users.json` read per asset (#214).
         .merge(static_router())
+        // Last, so it covers every route above: hands the matched route back
+        // to the site's access log, which sees only the fallback (#282).
+        .layer(axum::middleware::from_fn(super::telemetry::record_route))
 }
 
 /// A radargram ID from the URL is validated the same way an explicit

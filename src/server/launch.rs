@@ -21,6 +21,7 @@ async fn serve_gui(
     port: u16,
     config: RenderServiceConfig,
     processing: super::processing::ProcessingConfig,
+    heartbeat: std::time::Duration,
 ) -> Result<(), String> {
     // A project is found by searching upwards, so pointing Ridal at a
     // subdirectory or at a single file inside a project still saves
@@ -70,7 +71,9 @@ async fn serve_gui(
         );
     }
 
-    let router = site::build_site_router(SiteState::local(state, processing));
+    let site = SiteState::local(state, processing);
+    super::telemetry::spawn_heartbeat(std::sync::Arc::clone(&site), heartbeat);
+    let router = site::build_site_router(site);
     let home = format!("/p/{}/", super::app::DEFAULT_PROJECT_KEY);
     serve(
         router,
@@ -142,6 +145,7 @@ async fn serve_site(
     allow_insecure_login: bool,
     config: RenderServiceConfig,
     processing: super::processing::ProcessingConfig,
+    heartbeat: std::time::Duration,
 ) -> Result<(), String> {
     // A project, found by walking upwards, is the one input that must be
     // refused rather than treated as a site. Checked before `Site::discover`,
@@ -219,6 +223,7 @@ async fn serve_site(
         println!("  read-only, no accounts");
     }
 
+    super::telemetry::spawn_heartbeat(std::sync::Arc::clone(&state), heartbeat);
     serve(
         site::build_site_router(state),
         host,
@@ -332,8 +337,10 @@ pub fn run_gui(
     port: u16,
     config: RenderServiceConfig,
     processing: super::processing::ProcessingConfig,
+    heartbeat: std::time::Duration,
 ) -> Result<(), String> {
     limit_malloc_arenas();
+    super::telemetry::install();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to start async runtime: {e}"))?;
     runtime.block_on(serve_gui(
@@ -343,6 +350,7 @@ pub fn run_gui(
         port,
         config,
         processing,
+        heartbeat,
     ))
 }
 
@@ -359,8 +367,10 @@ pub fn run_server_start(
     allow_insecure_login: bool,
     config: RenderServiceConfig,
     processing: super::processing::ProcessingConfig,
+    heartbeat: std::time::Duration,
 ) -> Result<(), String> {
     limit_malloc_arenas();
+    super::telemetry::install();
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to start async runtime: {e}"))?;
     runtime.block_on(serve_site(
@@ -372,6 +382,7 @@ pub fn run_server_start(
         allow_insecure_login,
         config,
         processing,
+        heartbeat,
     ))
 }
 
@@ -451,6 +462,7 @@ mod tests {
             false,
             crate::server::render_service::RenderServiceConfig::default(),
             crate::server::processing::ProcessingConfig::default(),
+            std::time::Duration::ZERO,
         )
         .await
         .unwrap_err()
