@@ -2474,8 +2474,10 @@ fn curated_priority(key: &str) -> (u8, usize) {
 /// otherwise render as one unreadable comma-joined row; `Conventions` is
 /// always `CF-1.7` -- a file has to already be Ridal-produced (and thus
 /// CF-1.7) to be recognized as `Supported` at all, so the row is never
-/// actionable. `*_unit` keys are consumed by their base attribute, not
-/// skipped by name here.
+/// actionable; `ridal_recipe` is a JSON document of everything the file
+/// was made from (#382), for Ridal to compare rather than for a person to
+/// read, and its `ridal_recipe_hash` row already identifies it. `*_unit`
+/// keys are consumed by their base attribute, not skipped by name here.
 const SKIP_FROM_ENTRIES: &[&str] = &[
     "start_datetime",
     "stop_datetime",
@@ -2484,6 +2486,7 @@ const SKIP_FROM_ENTRIES: &[&str] = &[
     "ridal_user_metadata_json",
     "original_filepaths",
     "Conventions",
+    "ridal_recipe",
 ];
 
 fn build_metadata_entries(
@@ -2985,6 +2988,8 @@ mod tests {
             "ridal_group_id": "dronbreen",
             "ridal_processing_datetime": "2026-08-26T20:57:41.407887786+00:00",
             "ridal_version": "ridal version 0.5.2 by Erik Schytt Mannerfelt",
+            "ridal_recipe": "{\"format\":1,\"steps\":[]}",
+            "ridal_recipe_hash": "abc123",
             "start_datetime": "2022-03-29T00:00:00Z",
             "stop_datetime": "2022-03-29T01:00:00Z",
             "time_interval": 0.3,
@@ -3037,6 +3042,9 @@ mod tests {
         // attributes get their own handling elsewhere, not a curated row.
         assert!(!by_label.contains_key("Original filepaths"));
         assert!(!by_label.contains_key("Conventions"));
+        // The recipe is for Ridal; its hash is the row a person needs.
+        assert!(!by_label.contains_key("Recipe"));
+        assert_eq!(by_label["Recipe hash"], "abc123");
 
         // Identity tier (radargram ID, revision) sorts ahead of
         // acquisition (CRS).
