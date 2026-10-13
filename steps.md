@@ -36,18 +36,21 @@ Recommended to be run as the first filter if required! The strength threshold (m
 ## remove_standstills
 Replace each stretch recorded while the radar stood still with its median trace.
 
-A time-triggered radar keeps recording when it stops, and in a standstill each trace repeats the one before it. This is found from the radar data alone, without the positions, by how coherent neighbouring traces are below the direct wave. Each stretch is scored as a robust z against the rest of the profile, and a stretch is a standstill when it reaches `strength` and lasts at least `min_duration`, given in seconds of recording (`5s`) or traces (`25`). Seconds use the trace interval in the file header, which `average_traces` keeps up to date.
+A time-triggered radar keeps recording when it stops, and in a standstill each trace repeats the one before it. By default this is found from the radar data alone, by how coherent neighbouring traces are below the direct wave. Each stretch is scored as a robust z against the rest of the profile, and a stretch is a standstill when it reaches `strength` and lasts at least `min_duration`, given in seconds of recording (`5s`) or traces (`25`). Seconds use the trace interval in the file header, which `average_traces` keeps up to date.
 
 The log lists every standstill with its traces, duration and strength, and the highest strength elsewhere, so the threshold can be judged against both. Each median trace keeps the time and position of the middle of its stretch, or of the first or last trace for a standstill at the start or end of the profile, so that interpretations made before this step still carry over.
 
-Run it early, before the filters. After a running `background_removal` it missed the longest standstills and found false ones, and after `dewow` it missed a weak one on 100 MHz data. Run it before `equidistant_traces` too, which it can replace when the positions are poor. Standstills that together make up more than half the profile are not found. Examples: `remove_standstills`, `remove_standstills(6)`, `remove_standstills(min_duration=20)`.
+Run it early, before the filters. After a running `background_removal` it missed the longest standstills and found false ones, and after `dewow` it missed a weak one on 100 MHz data. Run it before `equidistant_traces` too, which it can replace when the positions are poor. Standstills that together make up more than half the profile are not found.
 
-So far this has only been tested on Malå data (25, 100 and 800 MHz). With the defaults it found every standstill identified by eye there except one weak 100 MHz one, which `remove_standstills(7)` found. Check the result before relying on it for other instruments.
+The radar data alone also take driving for a standstill where the signal is lost or weak, and miss standstills that are only a little more coherent than the moving traces. With `gps_uncertainty`, the positions are used too, given how far off they may be in m: a stretch they show moving is not a standstill, however coherent, and one they show standing still is, even below `strength`, if it is more coherent than the moving traces. Each stretch is judged from its own fixes, so the worse the positions, the longer it has to be: a stretch has to last 3 s at 1 m and 30 s at 10 m (twice that to be kept below `strength`), and the log says so. A larger uncertainty than the real one makes the result more like the radar alone; a smaller one makes jumps and drift in the positions look like movement. Where a stretch has too few fixes, the radar decides. The log lists what the positions ruled out. Examples: `remove_standstills`, `remove_standstills(6)`, `remove_standstills(min_duration=20)`, `remove_standstills(gps_uncertainty=2)`.
+
+So far this has only been tested on Malå data (25, 100 and 800 MHz). With the defaults it found every standstill identified by eye there except one weak 100 MHz one, which `remove_standstills(7)` found. On 34 Austfonna radargrams (800 MHz, 2005 to 2026) with 27 stretches of driving that the radar alone took for standstills, `gps_uncertainty=1` ruled out 24 and the true parts of two others, kept every true standstill, and found seven that the radar alone missed. Check the result before relying on it for other instruments.
 
 | argument | default | description |
 |---|---|---|
 | `strength` | `8` | How far a standstill must stand out from the rest of the profile, as a robust z. Lower finds more |
 | `min_duration` | `5s` | The shortest standstill: seconds (`5s`) or traces (`25`) |
+| `gps_uncertainty` |  | Use the positions too, which may be this far off, in m. Left out, only the radar data are used |
 
 ## average_traces
 Average traces in a given window.
