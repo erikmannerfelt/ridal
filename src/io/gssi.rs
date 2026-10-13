@@ -112,8 +112,11 @@ pub fn load_gssi_dzt(
     let antenna_mhz = match override_antenna_mhz {
         Some(v) => v,
         None => gssi_antenna_mhz(&antenna).ok_or_else(|| {
-            format!(
-                "Could not read frequency from the GSSI antenna field ({antenna:?}). Try using the antenna MHz override"
+            super::UnknownAntennaFrequency::new(
+                antenna.as_str(),
+                format!(
+                    "Could not read frequency from the GSSI antenna field ({antenna:?}). Try using the antenna MHz override"
+                ),
             )
         })?,
     };

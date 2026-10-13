@@ -138,10 +138,6 @@ pub struct DraftBody {
     /// m/ns. Default: that of ice, as for `ridal process`.
     #[serde(default)]
     pub medium_velocity: Option<f32>,
-    #[serde(default)]
-    pub antenna_mhz_override: Option<f32>,
-    #[serde(default)]
-    pub antenna_separation_override: Option<f32>,
 }
 
 /// A draft as the API gives it.
@@ -295,13 +291,12 @@ fn tidy(state: &AppState) {
     }
 }
 
-/// What to process a radargram's raw data with.
+/// What to process a radargram's raw data with. What the recordings are
+/// (CRS, DEM, antenna overrides) is the source's, not this.
 pub(super) struct Processing {
     /// Canonical.
     pub steps: Vec<String>,
     pub medium_velocity: f32,
-    pub antenna_mhz_override: Option<f32>,
-    pub antenna_separation_override: Option<f32>,
 }
 
 /// A job ready to submit, and what its caller needs to keep about it.
@@ -374,7 +369,8 @@ pub(super) async fn prepare(
 
     // One job for one person asking for one thing twice. The key is not
     // the revision the job will produce: that is only known once the
-    // positions are projected, which is the job's work.
+    // positions are projected, which is the job's work. The source's
+    // version covers what it says, antenna overrides included.
     let mut hasher = blake3::Hasher::new();
     for part in [
         owner,
@@ -382,8 +378,6 @@ pub(super) async fn prepare(
         source_version.as_str(),
         &processing.steps.join("\n"),
         &processing.medium_velocity.to_string(),
-        &format!("{:?}", processing.antenna_mhz_override),
-        &format!("{:?}", processing.antenna_separation_override),
     ] {
         hasher.update(&(part.len() as u64).to_le_bytes());
         hasher.update(part.as_bytes());
@@ -444,8 +438,8 @@ pub(super) async fn prepare(
         },
         dem,
         cor: None,
-        antenna_mhz_override: processing.antenna_mhz_override,
-        antenna_separation_override: processing.antenna_separation_override,
+        antenna_mhz_override: source.antenna_mhz,
+        antenna_separation_override: source.antenna_separation,
         radargram_id: id.to_string(),
         display_name,
         group_name,
@@ -499,8 +493,6 @@ pub async fn create_draft(
         Processing {
             steps,
             medium_velocity: velocity,
-            antenna_mhz_override: body.antenna_mhz_override,
-            antenna_separation_override: body.antenna_separation_override,
         },
         caller.display_name(),
         Priority::Draft,

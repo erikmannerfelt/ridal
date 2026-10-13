@@ -53,7 +53,10 @@ pub fn load_rad(
             .trim()
             .parse::<f32>()
             .map_err(|e| {
-                format!("Could not read frequency from the antenna field ({e:?}). Try using the antenna MHz override")
+                super::UnknownAntennaFrequency::new(
+                    antenna.as_str(),
+                    format!("Could not read frequency from the antenna field ({e:?}). Try using the antenna MHz override"),
+                )
             })?
     };
 

@@ -1456,6 +1456,7 @@
           "crs",
           "recordings",
           "outputs",
+          "antennas",
           "problems"
         ],
         "properties": {
@@ -1486,6 +1487,13 @@
               "$ref": "#/components/schemas/PlannedOutput"
             },
             "description": "In time order."
+          },
+          "antennas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlannedAntenna"
+            },
+            "description": "Each antenna the recordings name, in name order."
           },
           "problems": {
             "type": "array",
@@ -2035,7 +2043,7 @@
         "properties": {
           "kind": {
             "type": "string",
-            "description": "`invalid_pattern`, `invalid_group`, `invalid_id`, `id_collision`,\n`id_taken`, `join_refused` or `unreadable`."
+            "description": "`invalid_pattern`, `invalid_group`, `invalid_id`, `id_collision`,\n`id_taken`, `join_refused`, `unreadable`, or\n`antenna_frequency_unknown`: a recording whose antenna gives no\nfrequency, kept out of the plan until `antennas` gives one."
           },
           "message": {
             "type": "string"
@@ -2088,6 +2096,68 @@
           }
         }
       },
+      "PlannedAntenna": {
+        "type": "object",
+        "description": "One antenna the recordings name, what their files say of it, and what\nthe request overrides.",
+        "required": [
+          "antenna",
+          "antenna_mhz",
+          "separation_min",
+          "separation_max",
+          "mhz_override",
+          "separation_override",
+          "recordings"
+        ],
+        "properties": {
+          "antenna": {
+            "type": "string",
+            "description": "As the headers name it, which `antennas` in the request is keyed by."
+          },
+          "antenna_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The frequency the name gives, in MHz; `null` when it gives none,\nand an override must."
+          },
+          "separation_min": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The smallest and largest separation its recordings' files give, in\nm; `null` when none of them could be read."
+          },
+          "separation_max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "mhz_override": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The request's overrides for it."
+          },
+          "separation_override": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float"
+          },
+          "recordings": {
+            "type": "integer",
+            "description": "How many recordings have it.",
+            "minimum": 0
+          }
+        }
+      },
       "PlannedOutput": {
         "type": "object",
         "required": [
@@ -2100,6 +2170,8 @@
           "start_time",
           "stop_time",
           "antenna_mhz",
+          "antenna_mhz_override",
+          "antenna_separation_override",
           "split"
         ],
         "properties": {
@@ -2142,6 +2214,22 @@
           },
           "antenna_mhz": {
             "type": "number",
+            "format": "float",
+            "description": "MHz, after any override."
+          },
+          "antenna_mhz_override": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "What its source is to say of the antenna: the overrides of its\nrecordings' antennas. Its recordings all have the same frequency\nand separation once overridden, or they would not be one output, so\none value holds for every one of them."
+          },
+          "antenna_separation_override": {
+            "type": [
+              "number",
+              "null"
+            ],
             "format": "float"
           },
           "split": {
@@ -2165,6 +2253,7 @@
           "files",
           "start_time",
           "stop_time",
+          "antenna",
           "antenna_mhz",
           "traces",
           "track",
@@ -2200,12 +2289,20 @@
               "null"
             ]
           },
+          "antenna": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The antenna as its header names it; `null` when it cannot be read."
+          },
           "antenna_mhz": {
             "type": [
               "number",
               "null"
             ],
-            "format": "float"
+            "format": "float",
+            "description": "MHz, after any override."
           },
           "traces": {
             "type": [
@@ -2698,6 +2795,8 @@
           "bundles",
           "crs",
           "dem",
+          "antenna_mhz",
+          "antenna_separation",
           "names"
         ],
         "properties": {
@@ -2725,6 +2824,22 @@
                 "type": "null"
               }
             ]
+          },
+          "antenna_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The antenna's frequency in MHz, where the files do not say it or say\nit wrongly; `None` reads it from the files (#409). It describes the\nrecording, as the CRS and DEM do, so every draft and batch made from\nthe source uses it."
+          },
+          "antenna_separation": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The distance between the antennas in m, likewise; `None` reads it\nfrom the files."
           },
           "names": {
             "oneOf": [

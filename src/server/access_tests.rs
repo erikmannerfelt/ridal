@@ -6526,6 +6526,15 @@ async fn an_ingest_plan_groups_and_names_uploaded_recordings() {
     )
     .await;
     assert_eq!(twice.body["error"]["code"], "duplicate_recording");
+    let bad_antenna = post(
+        &app,
+        "/api/v1/ingest/plan",
+        &json!({"recordings": [{"files": new}], "antennas": {"25 MHz RTA=11": {"mhz": -1.0}}}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(bad_antenna.status, StatusCode::BAD_REQUEST);
+    assert_eq!(bad_antenna.body["error"]["code"], "invalid_antenna_mhz");
 
     body["joins"] = json!([recordings[1]["key"]]);
     body["include_tracks"] = json!(false);
@@ -7496,6 +7505,191 @@ fn remove_source_leaving_assignment(site: &StdPath, id: &str) {
     )
     .unwrap();
     assert!(removed);
+}
+
+/// #409 item 4: the antenna overrides are the source's, so a draft and a
+/// batch both process with them, and changing them makes what was
+/// processed without them stale.
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn antenna_overrides_belong_to_the_source_and_every_job_uses_them() {
+    let (prepared, _dir, _archive, app, erik) = batch_app(&["ours"]).await;
+    let recording = upload_recording(&app, "dronbreen-20250327-DAT_0066_A1", &erik).await;
+    let spec = |id: &str| -> Value {
+        serde_json::from_str(
+            &std::fs::read_to_string(prepared.path().join(format!("{id}.spec.json"))).unwrap(),
+        )
+        .unwrap()
+    };
+    let state_of_ours = || async {
+        get(
+            &app,
+            "/api/v1/processing/status?radargram_id=ours",
+            Some(&erik),
+        )
+        .await
+        .body["radargrams"][0]
+            .clone()
+    };
+    let reprocess = || async {
+        let started = post(
+            &app,
+            "/api/v1/processing/profiles/p/reprocess",
+            &json!({"radargram_ids": ["ours"]}),
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(started.status, StatusCode::ACCEPTED, "{}", started.text);
+        let done = batch_finished(&app, &started.body["id"], &erik).await;
+        // The stand-in job writes the same file whatever it is asked, so a
+        // second run finds it already served; what it was asked is in its
+        // spec.
+        let outcome = &outcomes(&done)["ours"]["outcome"];
+        assert!(
+            outcome == "committed" || outcome == "already_current",
+            "{done}"
+        );
+    };
+
+    // Processed as the profile says, with no overrides: current.
+    reprocess().await;
+    assert_eq!(spec("ours")["antenna_mhz_override"], Value::Null);
+    assert_eq!(state_of_ours().await["state"], "current");
+
+    // An override on the source makes that stale, and says why.
+    let set = put(
+        &app,
+        "/api/v1/sources/ours",
+        &json!({"recordings": [recording], "antenna_mhz": 50.0, "antenna_separation": 4.0}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+    assert_eq!(set.body["source"]["antenna_mhz"], 50.0);
+    assert_eq!(set.body["source"]["antenna_separation"], 4.0);
+    // What the recordings say is read with them.
+    assert_eq!(set.body["recordings"][0]["metadata"]["antenna_mhz"], 50.0);
+    let stale = state_of_ours().await;
+    assert_eq!(stale["state"], "stale", "{stale}");
+    let reasons = stale["reasons"].to_string();
+    assert!(
+        reasons.contains("the antenna frequency override is now 50 MHz (processed with none)"),
+        "{reasons}"
+    );
+    assert!(
+        reasons.contains("the antenna separation override is now 4 m (processed with none)"),
+        "{reasons}"
+    );
+
+    // A batch and a draft both process with them.
+    reprocess().await;
+    assert_eq!(spec("ours")["antenna_mhz_override"], 50.0);
+    assert_eq!(spec("ours")["antenna_separation_override"], 4.0);
+    let made = post(
+        &app,
+        "/api/v1/sources/theirs/drafts",
+        &json!({"steps": ["subset(0 100 0 200)"]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        made.status,
+        StatusCode::NOT_FOUND,
+        "no source: {}",
+        made.text
+    );
+    std::fs::remove_file(prepared.path().join("ours.spec.json")).unwrap();
+    let made = post(
+        &app,
+        "/api/v1/sources/ours/drafts",
+        &json!({"steps": ["subset(0 100 0 200)"]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(made.status, StatusCode::ACCEPTED, "{}", made.text);
+    assert_eq!(
+        draft_finished(&app, &made.body["job"], &erik).await["state"],
+        "done"
+    );
+    assert_eq!(spec("ours")["antenna_mhz_override"], 50.0);
+    assert_eq!(spec("ours")["antenna_separation_override"], 4.0);
+}
+
+/// A source's antenna overrides are checked, and a frequency on the source
+/// lets the recordings be read where the files cannot give one.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_source_s_antenna_frequency_reads_a_recording_whose_header_cannot_say() {
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+    let stem = "dronbreen-20250327-DAT_0066_A1";
+    let mut files = Vec::new();
+    for ext in ["rad", "rd3", "cor"] {
+        let name = format!("{stem}.{ext}");
+        let mut bytes = std::fs::read(format!("assets/mala/{name}")).unwrap();
+        if ext == "rad" {
+            bytes = String::from_utf8(bytes)
+                .unwrap()
+                .replace("ANTENNAS:25 MHz RTA=11", "ANTENNAS:RTA unshielded")
+                .into_bytes();
+        }
+        let stored = post_bytes(
+            &app,
+            &format!("/api/v1/raw?filename={name}"),
+            bytes,
+            Some(&erik),
+        )
+        .await;
+        assert_eq!(stored.status, StatusCode::CREATED, "{}", stored.text);
+        files.push(json!({"name": name, "blake3": stored.body["blake3"]}));
+    }
+    let recording = Value::Array(files);
+
+    let unread = put(
+        &app,
+        "/api/v1/sources/line",
+        &json!({"recordings": [recording]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(unread.status, StatusCode::BAD_REQUEST, "{}", unread.text);
+    assert_eq!(unread.body["error"]["code"], "source_unreadable");
+    assert!(unread.text.contains("antenna"), "{}", unread.text);
+
+    for (body, code) in [
+        (json!({"antenna_mhz": 0.0}), "invalid_antenna_mhz"),
+        (json!({"antenna_mhz": -25.0}), "invalid_antenna_mhz"),
+        (
+            json!({"antenna_separation": 0.0}),
+            "invalid_antenna_separation",
+        ),
+    ] {
+        let mut body = body;
+        body["recordings"] = json!([recording]);
+        let refused = put(&app, "/api/v1/sources/line", &body, Some(&erik)).await;
+        assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.text);
+        assert_eq!(refused.body["error"]["code"], code, "{}", refused.text);
+    }
+
+    let read = put(
+        &app,
+        "/api/v1/sources/line",
+        &json!({"recordings": [recording], "antenna_mhz": 25.0}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    assert_eq!(read.body["recordings"][0]["metadata"]["antenna_mhz"], 25.0);
+    let kept = get(&app, "/api/v1/sources/line", Some(&erik)).await;
+    assert_eq!(kept.body["source"]["antenna_mhz"], 25.0);
+    assert_eq!(kept.body["source"]["antenna_separation"], Value::Null);
 }
 
 /// #409: a radargram whose file or raw data is deleted leaves its profile;

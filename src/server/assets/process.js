@@ -42,6 +42,10 @@
   const demField = document.getElementById('process-dem-field');
   const demBox = document.getElementById('process-dem');
   const demSlot = document.getElementById('process-dem-slot');
+  const antennaField = document.getElementById('process-antenna-field');
+  const mhzBox = document.getElementById('process-antenna-mhz');
+  const separationBox = document.getElementById('process-antenna-separation');
+  const antennaSlot = document.getElementById('process-antenna-slot');
   const upload = document.getElementById('process-upload');
   const cancelUpload = document.getElementById('process-cancel-upload');
   const stepsBox = document.getElementById('process-steps');
@@ -114,7 +118,41 @@
     (raw ? rawStage : profileSlot).appendChild(profileLabel);
     // The DEM likewise: with the upload, or above the recordings.
     (raw ? rawStage : demSlot).appendChild(demField);
+    // And the antenna overrides, after it.
+    (raw ? rawStage : antennaSlot).appendChild(antennaField);
   }
+
+  /** An antenna override as the source takes it: null when empty, and
+   * refused here when it is not a positive number. */
+  function antennaValue(box, what) {
+    const text = box.value.trim();
+    if (text === '') return null;
+    const value = Number(text);
+    if (!(Number.isFinite(value) && value > 0)) {
+      throw new Error(`The ${what} must be a positive number, or empty to read it from the files.`);
+    }
+    return value;
+  }
+  const antennaOverrides = () => ({
+    antenna_mhz: antennaValue(mhzBox, 'antenna frequency'),
+    antenna_separation: antennaValue(separationBox, 'antenna separation'),
+  });
+  /** What the source has, as the boxes show it. */
+  let savedAntenna = { antenna_mhz: null, antenna_separation: null };
+  function showAntenna(source) {
+    savedAntenna = {
+      antenna_mhz: source?.antenna_mhz ?? null,
+      antenna_separation: source?.antenna_separation ?? null,
+    };
+    mhzBox.value = savedAntenna.antenna_mhz ?? '';
+    separationBox.value = savedAntenna.antenna_separation ?? '';
+  }
+  /** A header whose antenna string is not a frequency (mala.rs) is read
+   * once the source gives one: say where. */
+  const antennaHint = (message) =>
+    /antenna field/.test(message)
+      ? `${message}\n\nGive the antenna frequency (MHz) below, and try again.`
+      : message;
 
   /** In the viewer, the button says what it will do: process, when the
    * project has this radargram's raw data, or attach some when it has
@@ -210,12 +248,14 @@
       dems = [];
     }
     linkedDem = '';
+    showAntenna(null);
     if (hasSource && radargramId !== null) {
       try {
         const source = await RIDAL.fetchJson(RIDAL.apiPath('sources', radargramId));
         linkedDem = source.source.dem?.id || '';
+        showAntenna(source.source);
       } catch {
-        // No source to read: no DEM.
+        // No source to read: no DEM, and no overrides.
       }
     }
     demBox.replaceChildren(new Option('None', ''));
@@ -259,6 +299,63 @@
       updateRun();
     }
   });
+
+  /** Like the DEM: before there is raw data the overrides go with the
+   * upload; after, a change is saved to the source at once, which reads
+   * the recordings again with it and makes what is served stale. */
+  async function saveAntenna() {
+    if (!hasSource || !rawStage.hidden) return;
+    errorBox.hidden = true;
+    let wanted;
+    try {
+      wanted = antennaOverrides();
+    } catch (error) {
+      fail(error.message);
+      return;
+    }
+    if (
+      wanted.antenna_mhz === savedAntenna.antenna_mhz &&
+      wanted.antenna_separation === savedAntenna.antenna_separation
+    ) {
+      return;
+    }
+    mhzBox.disabled = true;
+    separationBox.disabled = true;
+    progress.textContent = 'Reading the recordings with the antenna settings…';
+    try {
+      // The whole source goes back with only these changed: the route
+      // sets what a radargram is made from, and keeps the names unless told.
+      const { source } = await RIDAL.fetchJson(RIDAL.apiPath('sources', radargramId));
+      const answer = await RIDAL.fetchJson(RIDAL.apiPath('sources', radargramId), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recordings: source.bundles.map((b) =>
+            b.files.map((f) => ({ name: f.name, blake3: f.blake3 })),
+          ),
+          crs: source.crs,
+          dem: source.dem?.id ?? null,
+          ...wanted,
+        }),
+      });
+      showAntenna(answer.source);
+      if (answer.recordings.length) describe(answer.recordings);
+      status.textContent =
+        `The antenna settings of ${radargramId} are saved.` +
+        (served ? ' What is served was made otherwise, so it needs processing again.' : '');
+      await showStanding();
+    } catch (error) {
+      showAntenna(savedAntenna);
+      fail(`Could not change the antenna settings (${antennaHint(error.message)}).`);
+    } finally {
+      mhzBox.disabled = false;
+      separationBox.disabled = false;
+      progress.textContent = '';
+      updateRun();
+    }
+  }
+  mhzBox.addEventListener('change', saveAntenna);
+  separationBox.addEventListener('change', saveAntenna);
 
   const stemOf = (file) => {
     const dot = file.name.lastIndexOf('.');
@@ -366,6 +463,14 @@
 
   upload.addEventListener('click', async () => {
     reset();
+    // Checked before anything is sent, not after the upload it would waste.
+    let overrides;
+    try {
+      overrides = antennaOverrides();
+    } catch (error) {
+      fail(error.message);
+      return;
+    }
     const id = served ? radargramId : idBox.value.trim();
     upload.disabled = true;
     choose.disabled = true;
@@ -428,12 +533,14 @@
           recordings: named,
           crs: crs === '' ? null : crs,
           dem: demBox.value === '' ? null : demBox.value,
+          ...overrides,
           // A new radargram takes over an upload nobody processed, and
           // not the names that upload was to have (#382 phase 7).
           ...(served ? {} : { names: null }),
         }),
       });
       linkedDem = source.source.dem?.id || '';
+      showAntenna(source.source);
       radargramId = id;
       hasSource = true;
       sourceKnown.set(id, true);
@@ -461,7 +568,7 @@
       progress.textContent = '';
       // A refusal from the server is a sentence of its own: shown as it is.
       if (error.message === 'upload cancelled') fail('Upload cancelled.');
-      else if (error.status) fail(error.message);
+      else if (error.status) fail(antennaHint(error.message));
       else fail(`Could not store the raw data (${error.message}).`);
     } finally {
       upload.disabled = files.length === 0;

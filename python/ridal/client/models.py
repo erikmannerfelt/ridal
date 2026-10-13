@@ -825,11 +825,16 @@ class SourceNames:
 @dataclass(frozen=True)
 class Source:
     """What a radargram is made from: its recordings in merge order, and
-    optionally a CRS, a DEM and the names to give it until it is served."""
+    optionally a CRS, a DEM, antenna overrides and the names to give it
+    until it is served."""
 
     bundles: tuple[Bundle, ...]
     crs: str | None
     dem: SourceDem | None
+    antenna_mhz: float | None
+    """MHz, overriding what the files say; ``None`` reads it from them."""
+    antenna_separation: float | None
+    """m, overriding what the files say; ``None`` reads it from them."""
     names: SourceNames | None
 
     @classmethod
@@ -841,6 +846,8 @@ class Source:
                 bundles=tuple(Bundle.from_json(b) for b in d["bundles"]),
                 crs=d["crs"],
                 dem=None if d["dem"] is None else SourceDem.from_json(d["dem"]),
+                antenna_mhz=d["antenna_mhz"],
+                antenna_separation=d["antenna_separation"],
                 names=None if d["names"] is None else SourceNames.from_json(d["names"]),
             ),
         )
@@ -1328,7 +1335,10 @@ class PlannedRecording:
     files: tuple[str, ...]
     start_time: str | None
     stop_time: str | None
+    antenna: str | None
+    """The antenna as its header names it."""
     antenna_mhz: float | None
+    """MHz, after any override."""
     traces: int | None
     track: tuple[tuple[float, float], ...] | None
     """Simplified, WGS84 ``(lon, lat)``."""
@@ -1368,6 +1378,11 @@ class PlannedOutput:
     start_time: str
     stop_time: str
     antenna_mhz: float
+    """MHz, after any override."""
+    antenna_mhz_override: float | None
+    """What its source is to say, as :meth:`~ridal.client.Client.set_source`
+    takes it."""
+    antenna_separation_override: float | None
     split: Split | None
 
     @classmethod
@@ -1389,7 +1404,9 @@ class PlanProblem:
 
     kind: str
     """``invalid_pattern``, ``invalid_group``, ``invalid_id``,
-    ``id_collision``, ``id_taken``, ``join_refused`` or ``unreadable``."""
+    ``id_collision``, ``id_taken``, ``join_refused``, ``unreadable`` or
+    ``antenna_frequency_unknown`` (an antenna whose name gives no frequency,
+    which ``antennas`` must)."""
     message: str
     output: int | None
     recording: str | None
@@ -1411,6 +1428,38 @@ class PlanProblem:
 
 
 @dataclass(frozen=True)
+class AntennaOverride:
+    """What to take one antenna to be, where its files do not say or are
+    wrong. ``None`` leaves it to the files."""
+
+    mhz: float | None = None
+    separation: float | None = None
+    """m."""
+
+
+@dataclass(frozen=True)
+class PlannedAntenna:
+    """One antenna an ingest plan's recordings name."""
+
+    antenna: str
+    """As the headers name it: what ``antennas`` is keyed by."""
+    antenna_mhz: float | None
+    """The frequency the name gives; ``None`` when an override must."""
+    separation_min: float | None
+    separation_max: float | None
+    """The range of separations its recordings' files give, in m."""
+    mhz_override: float | None
+    separation_override: float | None
+    recordings: int
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PlannedAntenna":
+        return _parse(
+            "planned antenna", data, lambda d: cls(**{k: d[k] for k in _fields(cls)})
+        )
+
+
+@dataclass(frozen=True)
 class IngestPlan:
     """Many recordings grouped into the radargrams they would make, and
     named (``POST /ingest/plan``)."""
@@ -1420,6 +1469,7 @@ class IngestPlan:
     """The CRS positions were read in; ``None`` is each track's UTM zone."""
     recordings: tuple[PlannedRecording, ...]
     outputs: tuple[PlannedOutput, ...]
+    antennas: tuple[PlannedAntenna, ...]
     problems: tuple[PlanProblem, ...]
 
     @property
@@ -1439,6 +1489,7 @@ class IngestPlan:
                     PlannedRecording.from_json(r) for r in d["recordings"]
                 ),
                 outputs=tuple(PlannedOutput.from_json(o) for o in d["outputs"]),
+                antennas=tuple(PlannedAntenna.from_json(a) for a in d["antennas"]),
                 problems=tuple(PlanProblem.from_json(p) for p in d["problems"]),
             ),
         )

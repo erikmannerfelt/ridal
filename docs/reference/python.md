@@ -152,6 +152,8 @@ What the server answers. Each mirrors a schema in
    :members: ok
 .. autoclass:: ridal.client.PlannedRecording
 .. autoclass:: ridal.client.PlannedOutput
+.. autoclass:: ridal.client.PlannedAntenna
+.. autoclass:: ridal.client.AntennaOverride
 .. autoclass:: ridal.client.Split
 .. autoclass:: ridal.client.PlanProblem
 ```

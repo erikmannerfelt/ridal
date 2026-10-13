@@ -36,6 +36,34 @@ use std::error::Error;
 
 use crate::gpr;
 
+/// A header whose antenna field gives no frequency, which an override
+/// supplies (#409). Its own type, so a caller that can ask for the
+/// override -- the ingest planner, for each antenna it finds -- knows this
+/// case from any other unreadable file without reading the message.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnknownAntennaFrequency {
+    /// The antenna field as the header has it.
+    pub antenna: String,
+    message: String,
+}
+
+impl UnknownAntennaFrequency {
+    fn new(antenna: impl Into<String>, message: String) -> Self {
+        Self {
+            antenna: antenna.into(),
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for UnknownAntennaFrequency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for UnknownAntennaFrequency {}
+
 /// Parse one NMEA `$GPGGA` sentence into an epoch time, a WGS84 coordinate and
 /// an elevation.
 ///

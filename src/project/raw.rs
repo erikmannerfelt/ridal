@@ -61,6 +61,18 @@ pub struct Source {
     #[serde(default)]
     #[cfg_attr(feature = "server", schema(required = true))]
     pub dem: Option<SourceDem>,
+    /// The antenna's frequency in MHz, where the files do not say it or say
+    /// it wrongly; `None` reads it from the files (#409). It describes the
+    /// recording, as the CRS and DEM do, so every draft and batch made from
+    /// the source uses it.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub antenna_mhz: Option<f32>,
+    /// The distance between the antennas in m, likewise; `None` reads it
+    /// from the files.
+    #[serde(default)]
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub antenna_separation: Option<f32>,
     /// What to call the radargram while it has none of its own: an id
     /// with raw data and no processed file yet (#382 phase 7). Once it is
     /// served, the catalog's names win and renaming is an override.
@@ -692,6 +704,8 @@ mod tests {
             bundles,
             crs: None,
             dem: None,
+            antenna_mhz: None,
+            antenna_separation: None,
             names: None,
         };
         write_source(&store, &id, &source, &Expectation::Absent).unwrap();
@@ -753,6 +767,8 @@ mod tests {
                 id: id.clone(),
                 file: dem.file.clone(),
             }),
+            antenna_mhz: None,
+            antenna_separation: None,
             names: None,
         };
         write_source(&store, &line, &source, &Expectation::Absent).unwrap();

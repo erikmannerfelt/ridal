@@ -662,8 +662,6 @@ async fn start(
         Processing {
             steps,
             medium_velocity: version.medium_velocity,
-            antenna_mhz_override: None,
-            antenna_separation_override: None,
         },
         caller.display_name(),
         Priority::Batch,

@@ -28,6 +28,7 @@ from ridal.client.errors import (
 )
 from ridal.client.models import (
     Added,
+    AntennaOverride,
     Assignment,
     Axes,
     Batch,
@@ -54,6 +55,7 @@ from ridal.client.models import (
     InterpretationList,
     Me,
     PicksNotCarried,
+    PlannedAntenna,
     PlannedOutput,
     PlannedRecording,
     PlanProblem,
@@ -84,6 +86,7 @@ __all__ = [
     "DEFAULT_PROJECT",
     "TOKEN_VARIABLE",
     "Added",
+    "AntennaOverride",
     "Assignment",
     "Axes",
     "BadRequest",
@@ -120,6 +123,7 @@ __all__ = [
     "PicksNotCarried",
     "Plan",
     "PlanProblem",
+    "PlannedAntenna",
     "PlannedOutput",
     "PlannedRecording",
     "PreconditionFailed",

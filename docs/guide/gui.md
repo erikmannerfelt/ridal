@@ -25,7 +25,13 @@ at before it is added.
    is, to join its radargram with the one before or after it, or to not
    use it. A join you make holds whatever the threshold, even with **Never
    merge**, and its gap is drawn solid rather than dashed; click it to undo
-   it. The map shows the tracks in the same colours.
+   it. The map shows the tracks in the same colours. Above the timeline,
+   each antenna the recordings name is listed with what its name is read
+   as. Give a frequency or separation there where the files do not say it,
+   or say it wrongly: it applies to every recording with that antenna,
+   before they are merged and named, and is kept with each radargram's raw
+   data, so processing it later uses it too. A recording whose antenna
+   gives no frequency is left out until one is given.
 3. **Name them** with an id pattern and a display name pattern, as
    `ridal batch-process --id-pattern` takes them (see
    {doc}`cli`), and type over any single one. An id that already exists in
