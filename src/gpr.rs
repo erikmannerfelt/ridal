@@ -2175,10 +2175,19 @@ impl GPR {
     /// Replace each stretch recorded while the radar stood still with its
     /// median trace. See [`filters::standstill`].
     ///
+    /// With `gps_uncertainty` (m), the positions are used as well
+    /// ([`filters::standstill::gps`]). Positions that cannot help (too few
+    /// fixes, or a track that never moves) are left out with a warning.
+    ///
     /// Never fails on the data: too little to measure, or a duration in
     /// seconds without a usable trace interval, leaves the data unchanged
     /// and the log says why.
-    pub fn remove_standstills(&mut self, strength: f32, min_duration: filters::balance::Span) {
+    pub fn remove_standstills(
+        &mut self,
+        strength: f32,
+        min_duration: filters::balance::Span,
+        gps_uncertainty: Option<f32>,
+    ) {
         let start_time = SystemTime::now();
         let seconds_per_trace = self.metadata.time_interval;
         let min_traces = match min_duration.traces(seconds_per_trace) {
@@ -2213,12 +2222,51 @@ impl GPR {
             first_sample: filters::standstill::below_direct_wave(self.data.view(), period),
         };
 
-        let detection = match filters::standstill::detect(self.data.view(), &settings) {
+        let seconds: Vec<f64> = self
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.time_seconds)
+            .collect();
+        let easting: Vec<f64> = self.location.cor_points.iter().map(|p| p.easting).collect();
+        let northing: Vec<f64> = self
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.northing)
+            .collect();
+        let track = filters::standstill::gps::Track {
+            seconds: &seconds,
+            easting: &easting,
+            northing: &northing,
+        };
+        let (gps, gps_note) = match gps_uncertainty {
+            None => (None, String::new()),
+            Some(uncertainty) => {
+                match filters::standstill::gps::Gps::new(track, uncertainty as f64) {
+                    Ok(gps) => {
+                        let note = format!(
+                        " GPS uncertainty {uncertainty} m: stretches of {:.1} s or more can be \
+                         judged.",
+                        gps.window_s
+                    );
+                        (Some(gps), note)
+                    }
+                    Err(reason) => (
+                        None,
+                        format!(" Warning: {reason}, so the GPS was not used."),
+                    ),
+                }
+            }
+        };
+
+        let detection = match filters::standstill::detect(self.data.view(), &settings, gps.as_ref())
+        {
             Ok(detection) => detection,
             Err(reason) => {
                 self.log_event(
                     "remove_standstills",
-                    &format!("Warning: {reason}; changed nothing.{no_frequency}"),
+                    &format!("Warning: {reason}; changed nothing.{no_frequency}{gps_note}"),
                     start_time,
                 );
                 return;
@@ -2242,7 +2290,48 @@ impl GPR {
             filters::balance::Span::Seconds(s) => format!("{s} s"),
             filters::balance::Span::Traces(n) => format!("{n} traces"),
         };
-        let threshold = format!("strength >= {strength}, >= {shortest}");
+        let threshold = match gps_uncertainty {
+            None => format!("strength >= {strength}, >= {shortest}"),
+            Some(u) => format!("strength >= {strength}, >= {shortest}, gps_uncertainty = {u} m"),
+        };
+        // What the GPS changed.
+        let mut gps_changes = String::new();
+        if !detection.ruled_out.is_empty() {
+            let listed: Vec<String> = detection
+                .ruled_out
+                .iter()
+                .map(|s| format!("{}-{} ({:.1})", s.start, s.end - 1, s.peak))
+                .collect();
+            gps_changes += &format!(
+                " The GPS showed movement through {} that reached the strength (traces \
+                 (strength): {}).",
+                listed.len(),
+                listed.join(", ")
+            );
+        }
+        if detection.cut > 0 {
+            gps_changes += &format!(
+                " The GPS showed movement in part of {}, which kept only the rest.",
+                detection.cut
+            );
+        }
+        if detection.unjudged > 0 {
+            gps_changes += &format!(
+                " {} had too few fixes for the GPS to judge.",
+                detection.unjudged
+            );
+        }
+        let vouched = detection
+            .standstills
+            .iter()
+            .filter(|s| s.peak < strength)
+            .count();
+        if vouched > 0 {
+            gps_changes += &format!(
+                " {vouched} below the strength {} kept because the GPS showed standing still.",
+                if vouched == 1 { "was" } else { "were" }
+            );
+        }
         let skipped = match detection.too_short.as_slice() {
             [] => String::new(),
             short => format!(
@@ -2257,7 +2346,10 @@ impl GPR {
         if detection.standstills.is_empty() {
             self.log_event(
                 "remove_standstills",
-                &format!("Found no standstills ({threshold}).{skipped}{elsewhere}{no_frequency}"),
+                &format!(
+                    "Found no standstills ({threshold}).{skipped}{elsewhere}{gps_changes}\
+                     {no_frequency}{gps_note}"
+                ),
                 start_time,
             );
             return;
@@ -2324,7 +2416,7 @@ impl GPR {
             "remove_standstills",
             &format!(
                 "Replaced {replaced} ({threshold}). Traces (duration, strength): {}. {width} -> {} \
-                 traces.{skipped}{elsewhere}{no_frequency}",
+                 traces.{skipped}{elsewhere}{gps_changes}{no_frequency}{gps_note}",
                 listed.join(", "),
                 self.width()
             ),
@@ -5657,6 +5749,73 @@ pub mod tests {
         // In traces it needs no interval.
         gpr.process("remove_standstills(min_duration=10)").unwrap();
         assert!(gpr.width() < width);
+    }
+
+    /// `make_gpr_with_standstills`, with positions that stand still only in
+    /// `still` and drive at 4 m/s elsewhere, at 0.1 s per trace.
+    fn make_gpr_with_positions(stops: &[(usize, usize)], still: &[(usize, usize)]) -> super::GPR {
+        let mut gpr = make_gpr_with_standstills(stops);
+        let (seconds, easting, northing) =
+            crate::filters::standstill::gps::tests::track(gpr.width(), still, 0.5);
+        gpr.metadata.time_interval =
+            crate::filters::standstill::gps::tests::SECONDS_PER_TRACE as f32;
+        for (i, point) in gpr.location.cor_points.iter_mut().enumerate() {
+            point.time_seconds = seconds[i];
+            point.easting = easting[i];
+            point.northing = northing[i];
+        }
+        gpr
+    }
+
+    #[test]
+    fn remove_standstills_with_gps_keeps_only_what_stood_still_and_logs_it() {
+        // 1200..1350 is coherent, as lost signal is, while driving.
+        let stops = [(500, 620), (1200, 1350)];
+        let mut radar = make_gpr_with_positions(&stops, &[(500, 620)]);
+        let mut gps = make_gpr_with_positions(&stops, &[(500, 620)]);
+        radar.process("remove_standstills").unwrap();
+        gps.process("remove_standstills(gps_uncertainty=1)")
+            .unwrap();
+        assert!(
+            gps.width() > radar.width() + 100,
+            "{}",
+            gps.log.last().unwrap()
+        );
+
+        let log = gps.log.last().unwrap();
+        assert!(log.contains("Replaced 1 standstill"), "{log}");
+        assert!(log.contains("gps_uncertainty = 1 m"), "{log}");
+        assert!(log.contains("The GPS showed movement through 1"), "{log}");
+        assert!(
+            log.contains("stretches of 3.0 s or more can be judged"),
+            "{log}"
+        );
+        assert_eq!(
+            gps.steps.last().unwrap(),
+            "remove_standstills(strength=8, min_duration=5s, gps_uncertainty=1)"
+        );
+    }
+
+    #[test]
+    fn remove_standstills_without_usable_positions_uses_the_radar() {
+        // `make_dummy_gpr` positions move one metre per trace; these do not.
+        let still = || {
+            let mut gpr = make_gpr_with_standstills(&[(500, 620)]);
+            for point in gpr.location.cor_points.iter_mut() {
+                point.easting = 0.;
+                point.northing = 0.;
+            }
+            gpr
+        };
+        let (mut gpr, mut radar) = (still(), still());
+        radar.process("remove_standstills").unwrap();
+        gpr.process("remove_standstills(gps_uncertainty=1)")
+            .unwrap();
+        assert_eq!(gpr.data, radar.data);
+        let log = gpr.log.last().unwrap();
+        // No bends in the track: no fixes, as without a GPS at all.
+        assert!(log.contains("Warning: there are only 2 fixes"), "{log}");
+        assert!(log.contains("so the GPS was not used"), "{log}");
     }
 
     /// Interpretations drawn before `remove_standstills` carry onto its

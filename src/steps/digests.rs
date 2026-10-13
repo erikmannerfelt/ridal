@@ -58,6 +58,7 @@ const RUNS: &[&str] = &[
     "remove_traces(0 5-9)",
     "remove_empty_traces",
     "remove_standstills",
+    "remove_standstills(gps_uncertainty=1)",
     "average_traces(3)",
     "zero_corr",
     "zero_corr(coppens, trace)",

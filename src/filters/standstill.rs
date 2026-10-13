@@ -1,5 +1,5 @@
 //! `remove_standstills`: find stretches recorded while the radar stood still
-//! (#327), from the radar data alone.
+//! (#327), from the radar data, and optionally the positions too ([`gps`]).
 //!
 //! A time-triggered radar keeps recording when it stops, and every trace in
 //! the stop repeats the one before it. Moving, even over a flat bed, the
@@ -44,11 +44,16 @@
 //! Developed on Malå data: 800 MHz from Austfonna, 25 MHz from Drønbreen and
 //! 100 MHz (unshielded) from Kroppbreen. With the defaults it found every
 //! standstill identified by eye and nothing else, except one weak 100 MHz
-//! standstill that scored 7.3.
+//! standstill that scored 7.3. Many more Austfonna radargrams later showed
+//! what the radar data alone cannot do: stretches where the signal is lost,
+//! or weak, while driving are as coherent as standstills. That is what the
+//! positions are for.
 
 use ndarray::{s, Array2, ArrayView2};
 
 use super::rolling::{self, Statistic};
+
+pub mod gps;
 
 /// Default threshold on the score (a robust z) that a standstill must reach.
 pub const DEFAULT_STRENGTH: f32 = 8.;
@@ -127,14 +132,24 @@ impl Standstill {
 /// What was found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Detection {
+    /// With positions, a standstill whose `peak` is below the strength is one
+    /// the positions vouched for.
     pub standstills: Vec<Standstill>,
     /// Stretches that reached the threshold but were shorter than the
     /// minimum duration, and so were left in place.
     pub too_short: Vec<Standstill>,
     /// The highest score outside every standstill and every stretch in
-    /// `too_short`, or `None` when nothing is left outside them. How close
-    /// the moving traces come to the threshold.
+    /// `too_short` and `ruled_out`, or `None` when nothing is left outside
+    /// them. How close the moving traces come to the threshold.
     pub highest_elsewhere: Option<f32>,
+    /// Stretches that reached the threshold but that the positions show
+    /// moving throughout. Always empty without positions.
+    pub ruled_out: Vec<Standstill>,
+    /// How many stretches the positions show moving in part, and so cut
+    /// short or split.
+    pub cut: usize,
+    /// How many stretches had too few fixes for the positions to judge.
+    pub unjudged: usize,
 }
 
 /// The first sample below the direct wave.
@@ -189,10 +204,20 @@ pub fn below_direct_wave(data: ArrayView2<f32>, period_samples: Option<usize>) -
 /// Find the standstills in `data` (samples along axis 0, traces along
 /// axis 1). See the module docs.
 ///
+/// With `gps`, the positions have their say ([`gps`]): what they show moving
+/// is not a standstill however coherent it is, and a stretch scoring above
+/// [`EXTEND_Z`] that they show standing still for more than twice their
+/// window is one, strength or not. Where they cannot tell, the radar decides
+/// alone.
+///
 /// Returns an error, and finds nothing, when there is too little to measure:
 /// fewer traces than two windows, no samples below the direct wave, or a
 /// profile so uniform that its scores have no spread.
-pub fn detect(data: ArrayView2<f32>, settings: &Settings) -> Result<Detection, String> {
+pub fn detect(
+    data: ArrayView2<f32>,
+    settings: &Settings,
+    gps: Option<&gps::Gps>,
+) -> Result<Detection, String> {
     let (height, width) = data.dim();
     if width < 2 * WINDOW {
         return Err(format!(
@@ -211,17 +236,81 @@ pub fn detect(data: ArrayView2<f32>, settings: &Settings) -> Result<Detection, S
     let scores = robust_z(&semblance(&prepared))
         .ok_or("the coherence does not vary along the profile, so nothing stands out")?;
 
-    let detected: Vec<Standstill> = runs_above(&scores, EXTEND_Z)
-        .into_iter()
-        .filter_map(|(start, end)| {
-            let peak = scores[start..end]
-                .iter()
-                .copied()
-                .fold(f32::NEG_INFINITY, f32::max);
-            (peak >= settings.strength).then_some(Standstill { start, end, peak })
-        })
-        .collect();
-    let mut standstills = merge(detected.iter().map(|&s| refine(&prepared, s)).collect());
+    let mut detected = Vec::new();
+    let mut found = Vec::new();
+    let mut ruled_out = Vec::new();
+    let mut cut = 0;
+    let mut unjudged = 0;
+    for (start, end) in runs_above(&scores, EXTEND_Z) {
+        let peak = scores[start..end]
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let run = Standstill { start, end, peak };
+        let strong = peak >= settings.strength;
+        let Some(gps) = gps else {
+            if strong {
+                detected.push(run);
+                found.push(refine(&prepared, run));
+            }
+            continue;
+        };
+
+        let refined = refine(&prepared, run);
+        let moved = gps.moved(refined.start, refined.end);
+        if !strong
+            && (moved != Some(false)
+                || gps.duration_s(refined.start, refined.end) < 2. * gps.window_s)
+        {
+            continue;
+        }
+        detected.push(run);
+        match moved {
+            None => {
+                unjudged += 1;
+                found.push(refined);
+            }
+            Some(false) => found.push(refined),
+            Some(true) => {
+                // Only what the positions show standing still is left. Its
+                // edges are at fixes; the radar's are finer, so each piece
+                // is widened to them unless that takes in movement again.
+                let (lo, hi) = (start.min(refined.start), end.max(refined.end));
+                let pieces = gps.still_pieces(lo, hi);
+                if pieces.is_empty() {
+                    ruled_out.push(refined);
+                } else {
+                    cut += 1;
+                }
+                for (piece_start, piece_end) in pieces {
+                    let piece = Standstill {
+                        start: piece_start,
+                        end: piece_end,
+                        peak,
+                    };
+                    // `refine` needs a middle half to take the median of.
+                    if piece.len() < 4 {
+                        found.push(piece);
+                        continue;
+                    }
+                    // Only widened: within it, the positions already show
+                    // standing still.
+                    let redrawn = refine(&prepared, piece);
+                    let wider = Standstill {
+                        start: piece.start.min(redrawn.start),
+                        end: piece.end.max(redrawn.end),
+                        peak,
+                    };
+                    found.push(if gps.moved(wider.start, wider.end) == Some(true) {
+                        piece
+                    } else {
+                        wider
+                    });
+                }
+            }
+        }
+    }
+    let mut standstills = merge(found);
     let too_short: Vec<Standstill> = standstills
         .iter()
         .filter(|s| s.len() < settings.min_traces)
@@ -235,7 +324,7 @@ pub fn detect(data: ArrayView2<f32>, settings: &Settings) -> Result<Detection, S
     // detection is left out too.
     let mut inside = vec![false; width];
     let overlaps = |a: &Standstill, b: &Standstill| a.start < b.end && b.start < a.end;
-    for s in standstills.iter().chain(&too_short) {
+    for s in standstills.iter().chain(&too_short).chain(&ruled_out) {
         inside[s.start..s.end].iter_mut().for_each(|v| *v = true);
         for d in detected.iter().filter(|d| overlaps(d, s)) {
             inside[d.start..d.end].iter_mut().for_each(|v| *v = true);
@@ -252,6 +341,9 @@ pub fn detect(data: ArrayView2<f32>, settings: &Settings) -> Result<Detection, S
         standstills,
         too_short,
         highest_elsewhere,
+        ruled_out,
+        cut,
+        unjudged,
     })
 }
 
@@ -519,7 +611,7 @@ pub(crate) mod tests {
     fn standstills_are_found_with_their_edges() {
         let stops = [(0, 80), (500, 620), (1300, 1340), (1900, 2000)];
         let data = radargram(&stops);
-        let found = detect(data.view(), &settings()).unwrap();
+        let found = detect(data.view(), &settings(), None).unwrap();
         let ranges: Vec<(usize, usize)> =
             found.standstills.iter().map(|s| (s.start, s.end)).collect();
         assert_eq!(ranges.len(), stops.len(), "{ranges:?}");
@@ -552,6 +644,7 @@ pub(crate) mod tests {
                     first_sample,
                     ..settings()
                 },
+                None,
             )
             .unwrap();
             (
@@ -572,7 +665,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_moving_profile_has_no_standstills() {
-        let found = detect(radargram(&[]).view(), &settings()).unwrap();
+        let found = detect(radargram(&[]).view(), &settings(), None).unwrap();
         assert!(found.standstills.is_empty(), "{:?}", found.standstills);
     }
 
@@ -581,7 +674,7 @@ pub(crate) mod tests {
         // 40 % of the profile. A running background, or a median one, would
         // make a stop this long its own background.
         let data = radargram(&[(400, 1200)]);
-        let found = detect(data.view(), &settings()).unwrap();
+        let found = detect(data.view(), &settings(), None).unwrap();
         assert_eq!(found.standstills.len(), 1, "{:?}", found.standstills);
         let s = found.standstills[0];
         assert!(
@@ -595,7 +688,7 @@ pub(crate) mod tests {
         // The documented limit: the median score is then the standstill's
         // own, so nothing about it stands out.
         let data = radargram(&[(400, 1500)]);
-        let found = detect(data.view(), &settings()).unwrap();
+        let found = detect(data.view(), &settings(), None).unwrap();
         assert!(
             !found.standstills.iter().any(|s| s.len() > 1000),
             "{:?}",
@@ -610,7 +703,7 @@ pub(crate) mod tests {
             min_traces: 200,
             ..settings()
         };
-        let found = detect(data.view(), &strict).unwrap();
+        let found = detect(data.view(), &strict, None).unwrap();
         assert!(found.standstills.is_empty());
         // Reported as skipped, and not counted as the moving profile.
         assert_eq!(found.too_short.len(), 1, "{:?}", found.too_short);
@@ -620,13 +713,16 @@ pub(crate) mod tests {
     #[test]
     fn a_higher_strength_finds_less() {
         let data = radargram(&[(500, 620)]);
-        let found = detect(data.view(), &settings()).unwrap();
+        let found = detect(data.view(), &settings(), None).unwrap();
         let peak = found.standstills[0].peak;
         let above = Settings {
             strength: peak + 1.,
             ..settings()
         };
-        assert!(detect(data.view(), &above).unwrap().standstills.is_empty());
+        assert!(detect(data.view(), &above, None)
+            .unwrap()
+            .standstills
+            .is_empty());
     }
 
     #[test]
@@ -637,12 +733,14 @@ pub(crate) mod tests {
         let only_the_stop = |found: &Detection| {
             found.standstills.len() == 1 && found.standstills[0].start.abs_diff(500) <= 5
         };
-        assert!(only_the_stop(&detect(data.view(), &settings()).unwrap()));
+        assert!(only_the_stop(
+            &detect(data.view(), &settings(), None).unwrap()
+        ));
         let with = Settings {
             first_sample: 0,
             ..settings()
         };
-        let found = detect(data.view(), &with).unwrap();
+        let found = detect(data.view(), &with, None).unwrap();
         assert!(!only_the_stop(&found), "{:?}", found.standstills);
     }
 
@@ -662,7 +760,7 @@ pub(crate) mod tests {
     #[test]
     fn too_few_traces_is_an_error_not_a_panic() {
         let data = Array2::<f32>::zeros((50, WINDOW));
-        assert!(detect(data.view(), &settings()).is_err());
+        assert!(detect(data.view(), &settings(), None).is_err());
     }
 
     #[test]
@@ -687,5 +785,113 @@ pub(crate) mod tests {
             merge(vec![s(50, 80, 12.), s(10, 30, 9.), s(25, 40, 20.)]),
             vec![s(10, 40, 20.), s(50, 80, 12.)]
         );
+    }
+
+    /// `radargram`, with extra noise in `stop` so that it is only a little
+    /// more coherent than the moving traces.
+    fn with_noise(stops: &[(usize, usize)], weak: (usize, usize), noise: f32) -> Array2<f32> {
+        let mut data = radargram(stops);
+        for j in weak.0..weak.1 {
+            for i in DIRECT_WAVE_END..HEIGHT {
+                data[[i, j]] += noise * hash(i, j, 3);
+            }
+        }
+        data
+    }
+
+    /// Positions for `radargram`, standing still in `stops` (traces) and
+    /// driving at 4 m/s elsewhere, with fixes off by up to half a metre.
+    fn positions(stops: &[(usize, usize)]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        gps::tests::track(WIDTH, stops, 0.5)
+    }
+
+    fn with_gps<'a>(track: &'a (Vec<f64>, Vec<f64>, Vec<f64>), uncertainty: f64) -> gps::Gps<'a> {
+        gps::Gps::new(
+            gps::Track {
+                seconds: &track.0,
+                easting: &track.1,
+                northing: &track.2,
+            },
+            uncertainty,
+        )
+        .unwrap()
+    }
+
+    fn ranges(found: &Detection) -> Vec<(usize, usize)> {
+        found.standstills.iter().map(|s| (s.start, s.end)).collect()
+    }
+
+    #[test]
+    fn the_gps_rules_out_coherent_driving() {
+        // 1200..1350 is as coherent as a stop, as lost signal is, but the
+        // positions show it driving.
+        let data = radargram(&[(500, 620), (1200, 1350)]);
+        let track = positions(&[(500, 620)]);
+        let radar = detect(data.view(), &settings(), None).unwrap();
+        assert_eq!(radar.standstills.len(), 2);
+
+        let found = detect(data.view(), &settings(), Some(&with_gps(&track, 1.))).unwrap();
+        assert_eq!(ranges(&found), ranges(&radar)[..1], "{found:?}");
+        assert_eq!(found.ruled_out.len(), 1, "{found:?}");
+        assert!(found.ruled_out[0].start.abs_diff(1200) <= 5);
+        // Ruled out, it does not count as the moving profile's strength.
+        assert!(found.highest_elsewhere.unwrap() < DEFAULT_STRENGTH);
+    }
+
+    #[test]
+    fn a_stop_run_together_with_coherent_driving_keeps_only_the_stop() {
+        // The radar sees one stretch, 1000..1300; the positions stand still
+        // only from 1150.
+        let data = radargram(&[(1000, 1300)]);
+        let track = positions(&[(1150, 1300)]);
+        let found = detect(data.view(), &settings(), Some(&with_gps(&track, 1.))).unwrap();
+        let [(start, end)] = ranges(&found)[..] else {
+            panic!("{found:?}")
+        };
+        // Fixes are ten traces apart.
+        assert!(
+            start.abs_diff(1150) <= 15 && end.abs_diff(1300) <= 5,
+            "{found:?}"
+        );
+        assert_eq!(found.cut, 1);
+    }
+
+    #[test]
+    fn the_gps_vouches_for_a_weak_stop() {
+        let data = with_noise(&[(500, 800)], (500, 800), 0.8);
+        assert!(detect(data.view(), &settings(), None)
+            .unwrap()
+            .standstills
+            .is_empty());
+
+        let track = positions(&[(500, 800)]);
+        let found = detect(data.view(), &settings(), Some(&with_gps(&track, 1.))).unwrap();
+        let [s] = found.standstills[..] else {
+            panic!("{found:?}")
+        };
+        assert!(s.peak < DEFAULT_STRENGTH);
+        assert!(
+            s.start.abs_diff(500) <= 10 && s.end.abs_diff(800) <= 10,
+            "{s:?}"
+        );
+
+        // Not when the positions show it moving, nor when they cannot see
+        // movement over it: at 50 m, a stretch has to last 300 s.
+        let moving = positions(&[]);
+        let found = detect(data.view(), &settings(), Some(&with_gps(&moving, 1.))).unwrap();
+        assert!(found.standstills.is_empty(), "{found:?}");
+        let found = detect(data.view(), &settings(), Some(&with_gps(&track, 50.))).unwrap();
+        assert!(found.standstills.is_empty(), "{found:?}");
+    }
+
+    #[test]
+    fn a_large_uncertainty_leaves_the_radar_to_decide() {
+        // At 50 m, the 15 s of coherent driving moved too little to tell.
+        let data = radargram(&[(500, 620), (1200, 1350)]);
+        let track = positions(&[(500, 620)]);
+        let radar = detect(data.view(), &settings(), None).unwrap();
+        let found = detect(data.view(), &settings(), Some(&with_gps(&track, 50.))).unwrap();
+        assert_eq!(ranges(&found), ranges(&radar));
+        assert!(found.ruled_out.is_empty());
     }
 }

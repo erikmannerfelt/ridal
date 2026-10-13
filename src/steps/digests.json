@@ -229,7 +229,8 @@
     "remove_standstills": {
       "version": 1,
       "runs": {
-        "remove_standstills": {}
+        "remove_standstills": {},
+        "remove_standstills(gps_uncertainty=1)": {}
       }
     },
     "remove_tones": {
