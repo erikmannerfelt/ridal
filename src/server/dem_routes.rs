@@ -344,10 +344,12 @@ pub async fn link_dem(
             let data_dir = project.data_dir().to_path_buf();
             let named = source.recordings();
             let crs = source.crs.clone();
+            let (mhz, separation) = (source.antenna_mhz, source.antenna_separation);
             let link = link.clone();
             tokio::task::spawn_blocking(move || {
                 let work = raw::incoming_path(&data_dir)?.with_extension("source");
-                let read = read_recordings(&data_dir, &named, &work, crs, Some(&link));
+                let read =
+                    read_recordings(&data_dir, &named, &work, crs, Some(&link), mhz, separation);
                 let _ = std::fs::remove_dir_all(&work);
                 read
             })

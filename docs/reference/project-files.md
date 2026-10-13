@@ -49,7 +49,10 @@ in version control if the project is in a git repository. The `.gitignore`
 that `ridal project init` writes already leaves them in.
 
 `raw/` holds the raw recordings uploaded to the project. It may be the only
-copy of them on the server, so back it up too.
+copy of them on the server, so back it up too. Each `sources/<radargram_id>.json`
+names the recordings a radargram is made from, in merge order, and optionally
+the CRS, the DEM and the antenna frequency and separation it is processed
+with where the files do not say them.
 
 `cache/` is **derived**. Deleting it is always safe; Ridal rebuilds it. It
 contains a `CACHEDIR.TAG`, so backup tools that honour the convention skip it.

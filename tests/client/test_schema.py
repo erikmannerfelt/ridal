@@ -63,6 +63,7 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.PlannedRecording: ("PlannedRecording", {}),
     models.PlannedOutput: ("PlannedOutput", {}),
     models.PlanProblem: ("PlanProblem", {}),
+    models.PlannedAntenna: ("PlannedAntenna", {}),
     models.IngestPlan: ("IngestPlan", {}),
 }
 

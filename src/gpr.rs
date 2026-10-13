@@ -3604,8 +3604,22 @@ pub fn read_header_and_positions(
     resolved: &ResolvedInput,
     crs: Option<&String>,
     dem: Option<&PathBuf>,
-) -> Result<(GPRMeta, GPRLocation), String> {
-    load_meta_and_location(resolved, 0.168, crs, None, dem, None, None).map_err(|e| e.to_string())
+    antenna_mhz: Option<f32>,
+) -> Result<(GPRMeta, GPRLocation), HeaderReadError> {
+    load_meta_and_location(resolved, 0.168, crs, None, dem, antenna_mhz, None).map_err(|e| {
+        match e.downcast::<crate::io::UnknownAntennaFrequency>() {
+            Ok(unknown) => HeaderReadError::UnknownFrequency(*unknown),
+            Err(other) => HeaderReadError::Other(other.to_string()),
+        }
+    })
+}
+
+/// Why [`read_header_and_positions`] could not read a recording.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HeaderReadError {
+    /// Readable but for its antenna frequency, which an override gives.
+    UnknownFrequency(crate::io::UnknownAntennaFrequency),
+    Other(String),
 }
 
 /// One input's header and positions, as planning a batch reads them.

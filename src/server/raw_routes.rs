@@ -266,6 +266,12 @@ pub struct SourceBody {
     /// One of the project's DEMs, by id (`GET /api/v1/dems`).
     #[serde(default)]
     pub dem: Option<String>,
+    /// The antenna's frequency in MHz, overriding what the files say.
+    #[serde(default)]
+    pub antenna_mhz: Option<f32>,
+    /// The antenna separation in m, overriding what the files say.
+    #[serde(default)]
+    pub antenna_separation: Option<f32>,
     /// What to call the radargram until it is served (#382 phase 7).
     /// Absent keeps what the source had; `null` removes it.
     #[serde(default, deserialize_with = "super::preference_routes::present")]
@@ -308,6 +314,22 @@ pub(super) fn source_names(names: SourceNames) -> Result<Option<SourceNames>, Ap
     }))
 }
 
+/// An antenna override: a positive number, or the files are read as
+/// though it were, and every draft from them fails or comes out wrong.
+pub(super) fn antenna_override(
+    value: Option<f32>,
+    code: &'static str,
+    what: &str,
+) -> Result<Option<f32>, ApiError> {
+    match value {
+        Some(v) if !(v.is_finite() && v > 0.) => Err(ApiError::bad_request(
+            code,
+            format!("The {what} must be a positive number, not {v}."),
+        )),
+        _ => Ok(value),
+    }
+}
+
 /// A source's CRS, as an EPSG code: `EPSG:32633` ([`raw::epsg_code`]).
 fn source_crs(text: &str) -> Result<String, ApiError> {
     raw::epsg_code(text).ok_or_else(|| {
@@ -336,6 +358,16 @@ pub async fn put_source(
     let expected = expectation_from(&headers);
     let data_dir = project.data_dir().to_path_buf();
     let crs = body.crs.as_deref().map(source_crs).transpose()?;
+    let antenna_mhz = antenna_override(
+        body.antenna_mhz,
+        "invalid_antenna_mhz",
+        "antenna frequency (MHz)",
+    )?;
+    let antenna_separation = antenna_override(
+        body.antenna_separation,
+        "invalid_antenna_separation",
+        "antenna separation (m)",
+    )?;
     let names = match body.names {
         Some(names) => names.map(source_names).transpose()?.flatten(),
         // Kept, so that switching the recordings of a radargram not
@@ -363,12 +395,16 @@ pub async fn put_source(
                 &work.join("read"),
                 crs.clone(),
                 dem.as_ref(),
+                antenna_mhz,
+                antenna_separation,
             )?;
             Ok((
                 Source {
                     bundles,
                     crs: crs.clone(),
                     dem,
+                    antenna_mhz,
+                    antenna_separation,
                     names,
                 },
                 records,
@@ -399,14 +435,18 @@ pub async fn put_source(
 }
 
 /// What each of `recordings` says, read as a draft would read them: with
-/// `crs` and `dem`, so a DEM that does not cover them is refused here.
-/// Lays them out under `work`, which the caller removes.
+/// `crs`, `dem` and the antenna overrides, so a DEM that does not cover
+/// them is refused here, and a frequency the files cannot give is accepted
+/// when the source gives it. Lays them out under `work`, which the caller
+/// removes.
 pub(super) fn read_recordings(
     data_dir: &std::path::Path,
     recordings: &[Vec<NamedFile>],
     work: &std::path::Path,
     crs: Option<String>,
     dem: Option<&raw::SourceDem>,
+    antenna_mhz: Option<f32>,
+    antenna_separation: Option<f32>,
 ) -> Result<Vec<crate::gpr::InfoRecord>, String> {
     let headers: Vec<std::path::PathBuf> = raw::materialize(data_dir, recordings, work)?
         .into_iter()
@@ -418,8 +458,8 @@ pub(super) fn read_recordings(
         cor_path: None,
         medium_velocity: 0.168,
         crs,
-        override_antenna_mhz: None,
-        override_antenna_separation: None,
+        override_antenna_mhz: antenna_mhz,
+        override_antenna_separation: antenna_separation,
     })
     .map_err(|e| match dem {
         Some(dem) => format!(

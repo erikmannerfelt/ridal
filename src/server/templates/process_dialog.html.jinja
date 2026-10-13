@@ -40,6 +40,25 @@
       on the Processing page.
     </p>
   </div>
+  {#- What the recordings are, where their files do not say it or say it
+      wrongly (#409). The source's, like the CRS and the DEM, so every
+      draft and batch uses them. Moved as the DEM is: into the upload's
+      choices, then above the recordings, where a change is saved at once.
+      Empty reads them from the files. -#}
+  <div id="process-antenna-field" class="process-antenna">
+    <label>Antenna frequency (MHz)
+      <input type="number" id="process-antenna-mhz" min="0" step="any"
+             placeholder="From the files">
+    </label>
+    <label>Antenna separation (m)
+      <input type="number" id="process-antenna-separation" min="0" step="any"
+             placeholder="From the files">
+    </label>
+    <p class="hint">
+      Only where the files do not say it, or say it wrongly. Empty reads it
+      from the files.
+    </p>
+  </div>
   {#- In both stages: a new radargram can start in a profile, and one being
       processed can be moved to another. process.js moves it to where each
       stage wants it: here for the upload, just above the steps after. -#}
@@ -56,6 +75,7 @@
       <button type="button" id="process-use-profile" hidden>Use the profile's steps</button>
     </div>
     <div id="process-dem-slot"></div>
+    <div id="process-antenna-slot"></div>
     <ul id="process-recordings" class="process-files"></ul>
     {#- In the order they run: the radargram's own steps (only while it is
         in a profile), the profile, then the profile's steps. -#}

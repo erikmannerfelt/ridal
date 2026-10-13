@@ -70,6 +70,30 @@
         Never merge</label>
     </p>
     <p id="ingest-summary" class="hint" aria-live="polite"></p>
+    {#- One row per antenna the headers name (#409): what its name is read
+        as, and a frequency or separation to take instead. Applied before
+        anything is merged or named, and saved with each radargram's raw
+        data, so processing it later uses them too. -#}
+    <div id="ingest-antennas" hidden>
+      <div class="table-scroll">
+        <table class="layers-table ingest-antennas">
+          <thead>
+            <tr>
+              <th scope="col">Antenna</th>
+              <th scope="col">Read as</th>
+              <th scope="col">Frequency override (MHz)</th>
+              <th scope="col">Separation override (m)</th>
+              <th scope="col">Recordings</th>
+            </tr>
+          </thead>
+          <tbody id="ingest-antenna-rows"></tbody>
+        </table>
+      </div>
+      <p class="hint">
+        Only where the files do not say it, or say it wrongly. Empty reads it
+        from the files.
+      </p>
+    </div>
     <div class="ingest-timeline-wrap">
       <svg id="ingest-timeline" class="ingest-timeline" role="group"
            aria-label="The recordings by time, one row per radargram"></svg>

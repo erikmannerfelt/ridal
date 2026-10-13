@@ -3079,6 +3079,22 @@ a.processing-state:hover {
 .process-dem .hint {
   margin: var(--space-1) 0 0;
 }
+.process-antenna {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-4);
+  margin: var(--space-2) 0;
+}
+.process-antenna label {
+  margin: 0;
+}
+.process-antenna input {
+  width: 8rem;
+}
+.process-antenna .hint {
+  flex-basis: 100%;
+  margin: var(--space-1) 0 0;
+}
 /* The offer to make applied steps the profile's next version: set apart
    from the report above it, as a question of its own. */
 .process-offer {
@@ -3596,10 +3612,15 @@ a.processing-state:hover {
 }
 /* Unlike the layers table's, these boxes are what the step is for, so
  * they look like boxes before the pointer finds them. */
-.ingest-outputs input[type="text"] {
+.ingest-outputs input[type="text"],
+.ingest-antennas input[type="number"] {
   min-width: 12rem;
   border-color: var(--color-border);
   background: var(--color-surface);
+}
+.ingest-antennas input[type="number"] {
+  min-width: 7rem;
+  width: 7rem;
 }
 .ingest-swatch {
   display: inline-block;

@@ -33,6 +33,7 @@
   const groupName = $('ingest-group-name');
   const groupId = $('ingest-group-id');
   const outputRows = $('ingest-output-rows');
+  const antennaRows = $('ingest-antenna-rows');
   const profileBox = $('ingest-profile');
   const newProfile = $('ingest-new-profile');
   const demBox = $('ingest-dem');
@@ -223,6 +224,9 @@
     splits: new Set(),
     ids: {},
     displayNames: {},
+    // By antenna as the headers name it: `{mhz, separation}`, the text
+    // typed, so a box being typed in is not rewritten under the cursor.
+    antennas: {},
   };
   /** Each recording's track, by key: asked for only when a recording is
    * new, and kept, since a track does not change with the plan. */
@@ -269,8 +273,24 @@
       group_id: group()?.id ?? null,
       crs: text(crsBox),
       dem: demBox.value || null,
+      antennas: antennaOverrides(),
       include_tracks: wantTracks,
     };
+  }
+
+  /** A typed override as the plan takes it: a positive number, else none. */
+  const overrideValue = (text) => {
+    const value = Number(text);
+    return text.trim() !== '' && Number.isFinite(value) && value > 0 ? value : null;
+  };
+  function antennaOverrides() {
+    const out = {};
+    for (const [antenna, typed] of Object.entries(edits.antennas)) {
+      const mhz = overrideValue(typed.mhz || '');
+      const separation = overrideValue(typed.separation || '');
+      if (mhz !== null || separation !== null) out[antenna] = { mhz, separation };
+    }
+    return out;
   }
 
   function schedulePlan() {
@@ -344,6 +364,7 @@
       ].join(' and ');
       summary.append(` Your ${yours} ${made === 1 ? 'applies' : 'apply'} whatever the threshold. `, undo);
     }
+    renderAntennas();
     renderTimeline();
     renderSelected();
     renderLeftOut();
@@ -352,6 +373,75 @@
     renderPatternProblem(namePattern, $('ingest-name-pattern-problem'), 'display_name_pattern');
     renderNames();
     updateCreate();
+  }
+
+  // --- The antennas -------------------------------------------------------
+
+  /** What the files say of each antenna, and the boxes to say otherwise.
+   * Rebuilt from the plan, keeping a box being typed in, as the names are. */
+  function renderAntennas() {
+    $('ingest-antennas').hidden = plan.antennas.length === 0;
+    const active = document.activeElement;
+    const focus = antennaRows.contains(active)
+      ? { antenna: active.dataset.antenna, field: active.dataset.field, value: active.value }
+      : null;
+    const metres = (v) => `${Number(v.toFixed(3))} m`;
+    antennaRows.replaceChildren(
+      ...plan.antennas.map((a) => {
+        const separation =
+          a.separation_min === null
+            ? ''
+            : a.separation_min === a.separation_max
+              ? `, ${metres(a.separation_min)}`
+              : `, ${metres(a.separation_min)} to ${metres(a.separation_max)}`;
+        const readAs = a.antenna_mhz === null
+          ? el('td', { className: 'ingest-problem', textContent: `no frequency${separation}` })
+          : el('td', { textContent: `${a.antenna_mhz} MHz${separation}` });
+        const box = (field, label) => {
+          const typed = edits.antennas[a.antenna]?.[field];
+          const given = field === 'mhz' ? a.mhz_override : a.separation_override;
+          const input = el('input', {
+            type: 'number',
+            min: '0',
+            step: 'any',
+            value: typed ?? (given === null ? '' : String(given)),
+            placeholder: 'From the files',
+          });
+          input.dataset.antenna = a.antenna;
+          input.dataset.field = field;
+          input.setAttribute('aria-label', `${label} for ${a.antenna}`);
+          input.addEventListener('input', () => {
+            edits.antennas[a.antenna] = { ...edits.antennas[a.antenna], [field]: input.value };
+            input.setCustomValidity(
+              input.value.trim() === '' || overrideValue(input.value) !== null
+                ? ''
+                : 'A positive number, or empty to read it from the files.',
+            );
+            wantTracks = true;
+            schedulePlan();
+          });
+          return el('td', {}, input);
+        };
+        return el(
+          'tr',
+          {},
+          el('td', {}, el('code', { textContent: a.antenna || '(none)' })),
+          readAs,
+          box('mhz', 'Frequency override (MHz)'),
+          box('separation', 'Separation override (m)'),
+          el('td', { textContent: String(a.recordings) }),
+        );
+      }),
+    );
+    if (focus) {
+      const box = antennaRows.querySelector(
+        `input[data-antenna="${CSS.escape(focus.antenna)}"][data-field="${focus.field}"]`,
+      );
+      if (box) {
+        box.value = focus.value;
+        box.focus();
+      }
+    }
   }
 
   // --- The timeline -------------------------------------------------------
@@ -581,7 +671,7 @@
         el('span', { className: 'hint', textContent: `in radargram ${r.output + 1}${output.radargram_id ? `, ${output.radargram_id}` : ''}` })),
       el('dl', { className: 'ingest-facts' },
         ...fact('Recorded', span(r.start_time, r.stop_time)),
-        ...fact('Antenna', `${r.antenna_mhz} MHz`),
+        ...fact('Antenna', `${r.antenna_mhz} MHz (${r.antenna})`),
         ...fact('Traces', r.traces.toLocaleString('en')),
         ...fact('Files', ...r.files.map((f) => el('code', { textContent: f })))),
       ...problems.map((p) => el('p', { className: 'ingest-problem', textContent: p.message })),
@@ -597,7 +687,11 @@
       .map((r) => {
         const action = el('button', { type: 'button', textContent: r.excluded ? 'Use it' : "Don't use" });
         action.addEventListener('click', () => exclude(r.key, !r.excluded));
-        const why = r.unreadable ? `cannot be read: ${r.unreadable}` : 'not used';
+        // An antenna that gives no frequency is read once one is given
+        // for it in the table above.
+        const why = r.unreadable && r.antenna !== null
+          ? `needs a frequency for its antenna, '${r.antenna}', above`
+          : r.unreadable ? `cannot be read: ${r.unreadable}` : 'not used';
         return el('li', { className: r.unreadable && !r.excluded ? 'ingest-problem' : '' },
           el('code', { textContent: r.name }), ` ${why}${r.unreadable && r.excluded ? ' (not used)' : ''}. `, action);
       });
@@ -915,6 +1009,8 @@
               recordings: output.recordings.map((key) => filesOf.get(key)),
               crs,
               dem,
+              antenna_mhz: output.antenna_mhz_override,
+              antenna_separation: output.antenna_separation_override,
               names: {
                 display_name: output.display_name,
                 group_name: into?.name ?? null,

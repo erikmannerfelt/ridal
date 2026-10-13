@@ -837,6 +837,8 @@ class Client:
         *,
         crs: str | None = None,
         dem: str | None = None,
+        antenna_mhz: float | None = None,
+        antenna_separation: float | None = None,
         names: models.SourceNames | None | Literal["keep"] = "keep",
         etag: str | None = None,
         only_new: bool = False,
@@ -857,6 +859,12 @@ class Client:
             (``[processing] crs``), else the UTM zone that suits the track.
         dem : str, optional
             The id of one of the project's DEMs (:meth:`dems`).
+        antenna_mhz : float, optional
+            The antenna's frequency in MHz, where the files do not say it or
+            say it wrongly. Without it, it is read from the files. Every
+            draft and batch made from the source uses it.
+        antenna_separation : float, optional
+            The distance between the antennas in m, likewise.
         names : SourceNames or None, optional
             What to call the radargram until it is served. ``"keep"`` (the
             default) keeps what the source had, and ``None`` removes it.
@@ -879,6 +887,8 @@ class Client:
             ],
             "crs": crs,
             "dem": dem,
+            "antenna_mhz": antenna_mhz,
+            "antenna_separation": antenna_separation,
         }
         if names != "keep":
             body["names"] = None if names is None else dataclasses.asdict(names)
@@ -912,12 +922,14 @@ class Client:
         group_id: str | None = None,
         crs: str | None = None,
         dem: str | None = None,
+        antennas: Mapping[str, models.AntennaOverride] | None = None,
         include_tracks: bool = True,
     ) -> models.IngestPlan:
         """Group uploaded recordings into the radargrams they would make, and
         name them. Needs ``operator``. Nothing is created: once
         :attr:`~ridal.client.IngestPlan.ok`, each output is a
-        :meth:`set_source` with ``only_new=True``.
+        :meth:`set_source` with ``only_new=True``, and with the output's
+        ``antenna_mhz_override`` and ``antenna_separation_override``.
 
         Parameters
         ----------
@@ -942,6 +954,12 @@ class Client:
             render.
         crs, dem : str, optional
             As for :meth:`set_source`.
+        antennas : mapping of str to AntennaOverride, optional
+            Overrides by antenna, as the headers name it
+            (:attr:`IngestPlan.antennas`): applied to every recording with
+            that antenna before grouping and naming. An antenna whose name
+            gives no frequency needs one here before its recordings can be
+            planned.
         include_tracks : bool
             Whether to send each recording's simplified track.
 
@@ -965,6 +983,10 @@ class Client:
             "group_id": group_id,
             "crs": crs,
             "dem": dem,
+            "antennas": {
+                name: dataclasses.asdict(given)
+                for name, given in (antennas or {}).items()
+            },
             "include_tracks": include_tracks,
         }
         return models.IngestPlan.from_json(
@@ -1056,8 +1078,6 @@ class Client:
         steps: Iterable[str],
         *,
         medium_velocity: float | None = None,
-        antenna_mhz_override: float | None = None,
-        antenna_separation_override: float | None = None,
     ) -> models.Draft:
         """Process a radargram's raw data on the server, to look at before
         it becomes the radargram. Needs ``operator``.
@@ -1066,15 +1086,13 @@ class Client:
         follows it. The same request again answers the same draft. Refused
         with :class:`~ridal.client.errors.TooManyRequests` while the caller
         or the project has as many jobs as the server allows.
+
+        What the recordings are (CRS, DEM, antenna overrides) is the
+        source's: see :meth:`set_source`.
         """
         body: dict[str, Any] = {"steps": list(steps)}
-        for key, value in (
-            ("medium_velocity", medium_velocity),
-            ("antenna_mhz_override", antenna_mhz_override),
-            ("antenna_separation_override", antenna_separation_override),
-        ):
-            if value is not None:
-                body[key] = value
+        if medium_velocity is not None:
+            body["medium_velocity"] = medium_velocity
         return models.Draft.from_json(
             self._http.json(
                 "POST", self._project_path("sources", radargram_id, "drafts"), json=body
@@ -1176,6 +1194,8 @@ class Client:
         *,
         crs: str | None = None,
         dem: str | None = None,
+        antenna_mhz: float | None = None,
+        antenna_separation: float | None = None,
         medium_velocity: float | None = None,
         allow: Collection[models.Severity] = planning.DEFAULT_ALLOW,
         progress: Progress | None = None,
@@ -1196,6 +1216,8 @@ class Client:
         steps : iterable of str
             As ``ridal steps`` lists them.
         crs, dem : str, optional
+            As for :meth:`set_source`.
+        antenna_mhz, antenna_separation : float, optional
             As for :meth:`set_source`.
         medium_velocity : float, optional
             m/ns. The server's default is that of ice.
@@ -1218,7 +1240,14 @@ class Client:
             [self.upload_raw(path, progress=progress) for path in files]
             for files in (_recording_files(r) for r in recordings)
         ]
-        self.set_source(radargram_id, stored, crs=crs, dem=dem)
+        self.set_source(
+            radargram_id,
+            stored,
+            crs=crs,
+            dem=dem,
+            antenna_mhz=antenna_mhz,
+            antenna_separation=antenna_separation,
+        )
         draft = self.create_draft(radargram_id, steps, medium_velocity=medium_velocity)
         draft = self.wait_for_draft(draft.job, on_update=on_update)
         if draft.state != "done":

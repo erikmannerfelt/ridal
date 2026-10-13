@@ -521,7 +521,14 @@ def test_processing_stops_at_a_draft_that_failed(tmp_path: Path) -> None:
         if request.method == "PUT":
             body = json.loads(request.content)
             assert [f["name"] for f in body["recordings"][0]] == ["a.rad", "a.rd3"]
-            source = {"bundles": [], "crs": None, "dem": None, "names": None}
+            source = {
+                "bundles": [],
+                "crs": None,
+                "dem": None,
+                "antenna_mhz": None,
+                "antenna_separation": None,
+                "names": None,
+            }
             return httpx.Response(
                 200,
                 json={"radargram_id": "line-01", "source": source, "recordings": []},
@@ -559,6 +566,8 @@ def test_an_ingest_plan_sends_every_choice_and_reads_where_each_problem_is() -> 
         "start_time": "2025-03-27T10:00:00+00:00",
         "stop_time": "2025-03-27T10:05:00+00:00",
         "antenna_mhz": 100.0,
+        "antenna_mhz_override": 100.0,
+        "antenna_separation_override": None,
         "split": None,
     }
     recording = {
@@ -567,6 +576,7 @@ def test_an_ingest_plan_sends_every_choice_and_reads_where_each_problem_is() -> 
         "files": ["DAT_0001_A1.rad", "DAT_0001_A1.rd3", "DAT_0001_A1.cor"],
         "start_time": "2025-03-27T10:00:00+00:00",
         "stop_time": "2025-03-27T10:02:00+00:00",
+        "antenna": "RTA unshielded",
         "antenna_mhz": 100.0,
         "traces": 500,
         "track": [[16.1, 78.0], [16.2, 78.1]],
@@ -595,6 +605,17 @@ def test_an_ingest_plan_sends_every_choice_and_reads_where_each_problem_is() -> 
                 "crs": None,
                 "recordings": [recording],
                 "outputs": [output],
+                "antennas": [
+                    {
+                        "antenna": "RTA unshielded",
+                        "antenna_mhz": None,
+                        "separation_min": 0.5,
+                        "separation_max": 0.5,
+                        "mhz_override": 100.0,
+                        "separation_override": None,
+                        "recordings": 1,
+                    }
+                ],
                 "problems": [problem],
             },
         )
@@ -607,6 +628,7 @@ def test_an_ingest_plan_sends_every_choice_and_reads_where_each_problem_is() -> 
             joins=["k2"],
             id_pattern="line-{freq}MHz",
             ids={"k1": "line-01"},
+            antennas={"RTA unshielded": ridal_client.AntennaOverride(mhz=100)},
         )
     (body,) = sent
     assert body["recordings"] == [
@@ -614,6 +636,10 @@ def test_an_ingest_plan_sends_every_choice_and_reads_where_each_problem_is() -> 
     ]
     assert body["joins"] == ["k2"] and body["ids"] == {"k1": "line-01"}
     assert body["include_tracks"] is True
+    assert body["antennas"] == {"RTA unshielded": {"mhz": 100, "separation": None}}
+    assert plan.antennas[0].antenna_mhz is None
+    assert plan.antennas[0].mhz_override == 100.0
+    assert plan.outputs[0].antenna_mhz_override == 100.0
     assert not plan.ok
     assert plan.problems[0].span == (11, 14)
     assert plan.recordings[0].track == ((16.1, 78.0), (16.2, 78.1))
@@ -626,7 +652,14 @@ def test_a_source_keeps_its_names_unless_told_otherwise() -> None:
     def handler(request: Any) -> Any:
         sent.append(json.loads(request.content))
         names = sent[-1].get("names")
-        source = {"bundles": [], "crs": None, "dem": None, "names": names}
+        source = {
+            "bundles": [],
+            "crs": None,
+            "dem": None,
+            "antenna_mhz": None,
+            "antenna_separation": None,
+            "names": names,
+        }
         return httpx.Response(
             200, json={"radargram_id": "line-01", "source": source, "recordings": []}
         )

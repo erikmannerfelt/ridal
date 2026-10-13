@@ -477,6 +477,29 @@ pub fn state_of(
         )),
         _ => {}
     }
+    // The antenna overrides, which the source now carries (#409).
+    let overridden = |now: Option<f32>, then: Option<f32>, what: &str, unit: &str| {
+        let say = |v: Option<f32>| v.map_or("none".to_string(), |v| format!("{v} {unit}"));
+        (now != then).then(|| {
+            format!(
+                "the {what} override is now {} (processed with {})",
+                say(now),
+                say(then)
+            )
+        })
+    };
+    reasons.extend(overridden(
+        source.antenna_mhz,
+        recipe.antenna_mhz_override,
+        "antenna frequency",
+        "MHz",
+    ));
+    reasons.extend(overridden(
+        source.antenna_separation,
+        recipe.antenna_separation_override,
+        "antenna separation",
+        "m",
+    ));
     if !reasons.is_empty() {
         return ProcessingState::Stale {
             profile_version: matched,
@@ -749,6 +772,8 @@ mod tests {
             bundles: vec![bundle(data)],
             crs: None,
             dem: None,
+            antenna_mhz: None,
+            antenna_separation: None,
             names: None,
         }
     }

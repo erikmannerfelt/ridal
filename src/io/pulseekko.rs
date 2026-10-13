@@ -92,7 +92,12 @@ pub fn load_pe_hd(
             .replace(' ', "")
             .parse()
             .map_err(|e| {
-                format!("Could not read frequency from the 'NOMINAL FREQUENCY' field ({e:?}). Try using the antenna MHz override")
+                super::UnknownAntennaFrequency::new(
+                    // As `antenna` below names it.
+                    data.get("NOMINAL FREQUENCY")
+                        .map_or(String::new(), |v| v.replace(' ', "") + " MHz"),
+                    format!("Could not read frequency from the 'NOMINAL FREQUENCY' field ({e:?}). Try using the antenna MHz override"),
+                )
             })?
     };
 
