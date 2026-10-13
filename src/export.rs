@@ -321,6 +321,16 @@ impl GPR {
             "antenna".into(),
             ExportAttr::String(self.metadata.antenna.clone()),
         );
+        // The frequency the file was processed as (#412): read from
+        // `antenna`, or given in place of it, which the recipe records.
+        attrs.insert(
+            "antenna_frequency".into(),
+            ExportAttr::F32(self.metadata.antenna_mhz),
+        );
+        attrs.insert(
+            "antenna_frequency_unit".into(),
+            ExportAttr::String("MHz".into()),
+        );
         attrs.insert(
             "antenna_separation".into(),
             ExportAttr::F32(self.metadata.antenna_separation),
