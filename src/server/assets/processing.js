@@ -91,6 +91,7 @@
       el('label', {}, 'Medium velocity (m/ns) ', velocity),
       el('p', {}, save, ' ', cancel),
     );
+    RIDAL.stepsEditor(steps);
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       save.disabled = true;
@@ -146,10 +147,12 @@
     // Folded too: most radargrams have none. The same steps the process
     // dialog shows in its first box, and editable here as there.
     const preCell = el('td', {});
-    const preText = el('pre', {
-      className: 'processing-steps',
-      textContent: member.pre_steps.join('\n') || 'none',
-    });
+    const preText = el('pre', { className: 'processing-steps' });
+    if (member.pre_steps.length) {
+      preText.innerHTML = RIDAL.stepsEditor.highlight(member.pre_steps.join('\n'), true);
+    } else {
+      preText.textContent = 'none';
+    }
     const pre = el(
       'details',
       { className: 'processing-pre' },
@@ -185,6 +188,7 @@
         }),
         el('p', {}, save),
       );
+      RIDAL.stepsEditor(box, { preProfile: true });
     } else {
       pre.append(preText);
     }
@@ -451,7 +455,12 @@
           textContent: ` ${profile.id}, version ${profile.current_version}`,
         }),
       ),
-      el('pre', { className: 'processing-steps', textContent: current.steps.join('\n') }),
+      // Coloured as in the boxes that edit them (#423). `highlight`
+      // escapes every token, so this is never markup from the steps.
+      el('pre', {
+        className: 'processing-steps',
+        innerHTML: RIDAL.stepsEditor.highlight(current.steps.join('\n')),
+      }),
       el('p', {
         className: 'hint',
         textContent:
@@ -897,6 +906,7 @@
 
   const newForm = document.getElementById('processing-new-form');
   if (newForm) {
+    RIDAL.stepsEditor(newForm.elements.steps);
     // The id is the name's unless one is typed, as on the settings page.
     const derive = () => {
       newForm.elements.id.placeholder =

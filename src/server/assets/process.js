@@ -49,6 +49,7 @@
   const upload = document.getElementById('process-upload');
   const cancelUpload = document.getElementById('process-cancel-upload');
   const stepsBox = document.getElementById('process-steps');
+  RIDAL.stepsEditor(stepsBox);
   const velocityBox = document.getElementById('process-velocity');
   const errorBox = document.getElementById('process-error');
   const result = document.getElementById('process-result');
@@ -666,6 +667,8 @@
    * own while it is in a profile, so which steps are whose is plain. */
   const preBox = document.getElementById('process-pre');
   const preSteps = document.getElementById('process-pre-steps');
+  // Marks a step that may not run before the profile's as it is typed.
+  RIDAL.stepsEditor(preSteps, { preProfile: true });
   const mainBox = document.getElementById('process-main');
   const mainSummary = document.getElementById('process-main-summary');
   const mainNote = document.getElementById('process-main-note');
@@ -956,7 +959,15 @@
     showMain(true);
   }
 
-  if (viewerOpen) viewerOpen.addEventListener('click', () => begin(!hasSource));
+  if (viewerOpen) {
+    viewerOpen.addEventListener('click', () => {
+      // In the viewer's Edit menu (#431), which would otherwise stay open
+      // behind the dialog.
+      const menu = viewerOpen.closest('details.site-menu');
+      if (menu) menu.open = false;
+      begin(!hasSource);
+    });
+  }
   /** A card's Edit menu: says what it would do once the menu is opened,
    * rather than asking about every radargram when the page loads. */
   const sourceKnown = new Map();

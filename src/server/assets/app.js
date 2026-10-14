@@ -1709,6 +1709,261 @@ const RIDAL = Object.freeze({
     // from it. It returns sanitised HTML (every token escaped).
     return { open, close, highlight };
   })(),
+
+  /** Step help in a steps box (#423): the steps coloured as they are
+   * typed, and under the box the step at the caret, with its arguments, a
+   * line about it and a link to its entry in the documentation.
+   *
+   * `RIDAL.stepsEditor(textarea, { preProfile })` turns a plain textarea
+   * into one, in place. With `preProfile`, the box holds a radargram's own
+   * steps, run before its profile's, and a step that may not run there is
+   * marked as it is typed rather than refused when the job is started.
+   *
+   * What it knows about steps is the registry's, written into the page by
+   * process_dialog.html.jinja; without it the box stays plain. It only
+   * colours and explains: the server still parses and checks the steps.
+   *
+   * `RIDAL.stepsEditor.highlight(text, preProfile)` gives the same colours
+   * as HTML, for steps that are shown rather than edited. */
+  stepsEditor: (function () {
+    let catalog = null;
+    function steps() {
+      if (catalog === null) {
+        const source = document.getElementById("step-catalog");
+        try {
+          catalog = source ? JSON.parse(source.dataset.steps) : [];
+        } catch (_) {
+          catalog = [];
+        }
+      }
+      return catalog;
+    }
+
+    /* The structure of a step list, as src/steps/parse.rs reads it: steps
+     * separated by commas or new lines, each a word with its arguments in
+     * parentheses, and the arguments separated by spaces or commas and
+     * optionally named (`q=0.5`). Enough to colour it and to tell which
+     * step and argument the caret is in, and no more. */
+    function scan(text) {
+      const tokens = [];
+      const list = [];
+      let depth = 0;
+      let step = null;
+      let i = 0;
+      while (i < text.length) {
+        const c = text[i];
+        if ("(),=".includes(c)) {
+          tokens.push({ kind: "punct", start: i, end: i + 1 });
+          if (c === "(") depth += 1;
+          if (c === ")") depth = Math.max(depth - 1, 0);
+          if (c === "," && depth === 0) step = null;
+          if (step && (depth > 0 || c === ")")) step.end = i + 1;
+          i += 1;
+          continue;
+        }
+        if (/\s/.test(c)) {
+          if (c === "\n" && depth === 0) step = null;
+          i += 1;
+          continue;
+        }
+        let j = i;
+        while (j < text.length && !/[\s(),=]/.test(text[j])) j += 1;
+        const word = text.slice(i, j);
+        if (depth === 0) {
+          step = { name: word, start: i, end: j, args: [] };
+          list.push(step);
+          tokens.push({ kind: "step", start: i, end: j, step });
+        } else if (text[j] === "=") {
+          tokens.push({ kind: "name", start: i, end: j, step });
+          if (step) step.args.push({ name: word, start: i, end: j });
+        } else {
+          let k = i - 1;
+          while (k >= 0 && /\s/.test(text[k])) k -= 1;
+          const named = text[k] === "=" && step && step.args.length > 0;
+          if (named) step.args[step.args.length - 1].end = j;
+          else if (step) step.args.push({ name: null, start: i, end: j });
+          tokens.push({ kind: /^-?\d/.test(word) ? "number" : "value", start: i, end: j });
+        }
+        if (step && depth > 0) step.end = j;
+        i = j;
+      }
+      return { tokens, list };
+    }
+
+    const preProfileNames = () =>
+      steps()
+        .filter((s) => s.pre_profile)
+        .map((s) => `<code>${RIDAL.escapeHtml(s.name)}</code>`)
+        .join(" and ");
+
+    /* What is wrong with a step as written, or null. HTML. */
+    function problem(step, info, preProfile) {
+      const name = `<code>${RIDAL.escapeHtml(step.name)}</code>`;
+      if (!info) {
+        const near = steps()
+          .filter((s) => s.name.startsWith(step.name))
+          .slice(0, 6)
+          .map((s) => `<code>${RIDAL.escapeHtml(s.name)}</code>`);
+        return near.length
+          ? `No step is called ${name}. Did you mean ${near.join(", ")}?`
+          : `No step is called ${name}.`;
+      }
+      if (preProfile && !info.pre_profile) {
+        return `${name} cannot run before the profile's steps: only ${preProfileNames()} can. Anything else goes in the steps below.`;
+      }
+      return null;
+    }
+
+    /* The argument the caret is on: named if it was written by name,
+     * otherwise by position, where a list argument takes every value after
+     * it. Past the end of one argument the caret is on the next. */
+    function currentArgument(step, info, caret) {
+      if (caret <= step.start + step.name.length) return null;
+      let positional = 0;
+      for (const arg of step.args) {
+        if (arg.start > caret) break;
+        if (caret <= arg.end) {
+          if (arg.name) return info.arguments.findIndex((a) => a.name === arg.name);
+          break;
+        }
+        if (!arg.name) positional += 1;
+      }
+      const last = info.arguments.length - 1;
+      if (last >= 0 && positional > last && info.arguments[last].many) return last;
+      return positional <= last ? positional : null;
+    }
+
+    function helpFor(step, info, caret, preProfile) {
+      const wrong = problem(step, info, preProfile);
+      if (wrong) return `<p class="steps-help-problem">${wrong}</p>`;
+      const current = currentArgument(step, info, caret);
+      const args = info.arguments
+        .map((arg, index) => {
+          const default_ = arg.default !== null
+            ? ` (default <code>${RIDAL.escapeHtml(arg.default)}</code>)`
+            : arg.required
+              ? " (required)"
+              : "";
+          const cls = index === current ? ' class="is-current"' : "";
+          return `<li${cls}><code>${RIDAL.escapeHtml(arg.name)}${arg.many ? "…" : ""}</code>${default_}: ${RIDAL.escapeHtml(arg.help)}</li>`;
+        })
+        .join("");
+      const docs = `${RIDAL.docsBase}reference/steps.html#step-${encodeURIComponent(info.name)}`;
+      // Clap keeps a doc comment's first line without its full stop.
+      const summary = /[.!?]$/.test(info.summary) || !info.summary ? info.summary : `${info.summary}.`;
+      return `<p><code class="steps-help-signature">${RIDAL.escapeHtml(info.signature)}</code> ${RIDAL.escapeHtml(summary)} <a href="${docs}" target="_blank" rel="noopener">More in the documentation</a></p>${args ? `<ul>${args}</ul>` : ""}`;
+    }
+
+    /* The steps as HTML, every token escaped and coloured, a step that does
+     * not exist or may not run here marked. Also `stepsEditor.highlight`,
+     * for steps shown rather than edited. */
+    function highlight(text, preProfile) {
+      const byName = new Map(steps().map((s) => [s.name, s]));
+      const { tokens } = scan(text);
+      let html = "";
+      let at = 0;
+      for (const token of tokens) {
+        html += RIDAL.escapeHtml(text.slice(at, token.start));
+        const word = RIDAL.escapeHtml(text.slice(token.start, token.end));
+        let kind = {
+          punct: "tok-op",
+          name: "tok-keyword",
+          number: "tok-number",
+          value: "tok-string",
+        }[token.kind];
+        // Without the catalog (a page for someone who cannot process, which
+        // has no process dialog) a step is coloured but not judged.
+        if (token.kind === "step") {
+          const info = byName.get(token.step.name);
+          const wrong = byName.size > 0 && problem(token.step, info, preProfile);
+          kind = wrong ? "tok-error" : "tok-builtin";
+        }
+        // An argument the step does not have, named. The step's help lists
+        // the ones it does.
+        if (token.kind === "name" && token.step) {
+          const info = byName.get(token.step.name);
+          const name = text.slice(token.start, token.end);
+          if (info && !info.arguments.some((a) => a.name === name)) kind = "tok-error";
+        }
+        html += `<span class="${kind}">${word}</span>`;
+        at = token.end;
+      }
+      return html + RIDAL.escapeHtml(text.slice(at));
+    }
+
+    let count = 0;
+
+    function attach(textarea, options = {}) {
+      if (!textarea || steps().length === 0) return;
+      const preProfile = Boolean(options.preProfile);
+      const byName = new Map(steps().map((s) => [s.name, s]));
+
+      const wrapper = document.createElement("div");
+      wrapper.className = "editor-input steps-editor";
+      const overlay = document.createElement("pre");
+      overlay.className = "steps-highlight";
+      overlay.setAttribute("aria-hidden", "true");
+      textarea.before(wrapper);
+      wrapper.append(overlay, textarea);
+      textarea.classList.add("steps-input");
+      const help = document.createElement("div");
+      count += 1;
+      help.id = `steps-help-${count}`;
+      help.className = "steps-help";
+      textarea.setAttribute("aria-describedby", help.id);
+      // After the label rather than in it: a label holds one control and its
+      // name, and the help is neither.
+      (textarea.closest("label") || wrapper).after(help);
+
+      function refresh() {
+        const text = textarea.value;
+        const { list } = scan(text);
+        // The trailing newline keeps a last empty line as tall as the
+        // textarea's, so the two stay aligned as it scrolls.
+        overlay.innerHTML = `${highlight(text, preProfile)}\n`;
+        overlay.scrollTop = textarea.scrollTop;
+
+        const caret = textarea.selectionStart;
+        const here = list.find((s) => s.start <= caret && caret <= s.end);
+        if (here) {
+          help.innerHTML = helpFor(here, byName.get(here.name), caret, preProfile);
+          return;
+        }
+        // Not in a step: the first one that is wrong, if any, since that is
+        // what would stop the job; otherwise where to find them all.
+        const wrong = list.find((s) => problem(s, byName.get(s.name), preProfile));
+        help.innerHTML = wrong
+          ? `<p class="steps-help-problem">${problem(wrong, byName.get(wrong.name), preProfile)}</p>`
+          : `<p>Steps run in order, one per line. <a href="${RIDAL.docsBase}reference/steps.html" target="_blank" rel="noopener">Every step in the documentation</a></p>`;
+      }
+
+      // The pages also fill these boxes themselves (a profile's steps, the
+      // defaults), which fires no `input`. Hooking the setter keeps the
+      // colours from going stale without each of those places having to
+      // remember to say so.
+      const value = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+      Object.defineProperty(textarea, "value", {
+        configurable: true,
+        get() {
+          return value.get.call(this);
+        },
+        set(next) {
+          value.set.call(this, next);
+          refresh();
+        },
+      });
+      for (const type of ["input", "keyup", "click", "focus"]) {
+        textarea.addEventListener(type, refresh);
+      }
+      textarea.addEventListener("scroll", () => {
+        overlay.scrollTop = textarea.scrollTop;
+      });
+      refresh();
+    }
+
+    attach.highlight = highlight;
+    return attach;
+  })(),
 });
 
 /* Dismiss any menu on Escape or a click outside it.
@@ -1752,6 +2007,26 @@ const RIDAL = Object.freeze({
       menu.querySelector("summary").focus();
     }
   });
+
+  // A panel that hangs from its button runs off the right of the page when
+  // the button sits near that edge, as the viewer's Edit menu does at the
+  // end of its row (#431). Nudged back on screen as it opens, rather than
+  // given a per-menu side, which is right at one width and wrong at the
+  // next once the row wraps. Never past the left edge.
+  const GUTTER = 8;
+  for (const menu of menus) {
+    menu.addEventListener("toggle", () => {
+      const panel = menu.querySelector(":scope > ul");
+      if (!panel) return;
+      panel.style.translate = "";
+      if (!menu.open) return;
+      const box = panel.getBoundingClientRect();
+      const overflow = box.right + GUTTER - document.documentElement.clientWidth;
+      if (overflow > 0) {
+        panel.style.translate = `${-Math.min(overflow, Math.max(box.left - GUTTER, 0))}px 0`;
+      }
+    });
+  }
 })();
 
 /* A batch the visitor started has finished (#382). Told on the next page

@@ -2582,7 +2582,7 @@ async fn ridal_gui_serves_its_project_to_the_local_person_with_no_login() {
     );
     // No sign-in link, and no way back to a site there is not.
     assert!(!catalog.text.contains(">Sign in<"), "{}", catalog.text);
-    assert!(!catalog.text.contains(">Projects<"), "{}", catalog.text);
+    assert!(!catalog.text.contains(">All projects<"), "{}", catalog.text);
 
     let settings = get(&app, "/api/v1/projects/default/settings", None).await;
     assert_eq!(settings.body["user"], "default");
@@ -3804,6 +3804,71 @@ async fn a_radargram_from_an_external_root_says_it_is_not_in_the_project() {
     );
 }
 
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_viewer_offers_a_radargrams_edits_to_an_operator() {
+    // #431: the catalog card's Edit menu, in the viewer, without removal.
+    // Replacing and processing write the file, so as on the card they are
+    // only for a radargram the project owns.
+    let hash = password_hash();
+    let (_dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("vera", Role::Viewer, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let vera = sign_in(&app, "vera").await;
+
+    let ours = get(&app, "/view/ours", Some(&erik)).await;
+    assert_eq!(ours.status, StatusCode::OK, "{}", ours.text);
+    for needle in [
+        r#"id="edit-menu""#,
+        r#"data-edit-properties="ours""#,
+        r#"id="properties-dialog""#,
+        r#"data-replace-radargram="ours""#,
+        r#"id="replace-dialog""#,
+        r#"id="process-open""#,
+        "/static/radargram_edit.js",
+        // The step help's catalog (#423), escaped into an attribute.
+        r#"id="step-catalog" data-steps="[{&quot;name&quot;:&quot;subset&quot;"#,
+    ] {
+        assert!(ours.text.contains(needle), "{needle}: {}", ours.text);
+    }
+    assert!(
+        !ours.text.contains("data-remove-radargram"),
+        "{}",
+        ours.text
+    );
+
+    let theirs = get(&app, "/view/theirs", Some(&erik)).await;
+    assert_eq!(theirs.status, StatusCode::OK, "{}", theirs.text);
+    assert!(theirs.text.contains(r#"data-edit-properties="theirs""#));
+    for needle in ["data-replace-radargram", r#"id="process-open""#] {
+        assert!(!theirs.text.contains(needle), "{needle}: {}", theirs.text);
+    }
+
+    // The processing page has steps boxes of its own (#423), and renders the
+    // dialog that carries their help.
+    let processing = get(&app, "/processing", Some(&erik)).await;
+    assert_eq!(processing.status, StatusCode::OK, "{}", processing.text);
+    for needle in [r#"id="processing-new-form""#, r#"id="step-catalog""#] {
+        assert!(
+            processing.text.contains(needle),
+            "{needle}: {}",
+            processing.text
+        );
+    }
+
+    let read_only = get(&app, "/view/ours", Some(&vera)).await;
+    assert_eq!(read_only.status, StatusCode::OK, "{}", read_only.text);
+    for needle in [r#"id="edit-menu""#, r#"id="properties-dialog""#] {
+        assert!(
+            !read_only.text.contains(needle),
+            "{needle}: {}",
+            read_only.text
+        );
+    }
+}
+
 /// A writable project with one radargram in it and one in an external
 /// archive, plus the given accounts. Returns both directories so a test can
 /// check what actually happened on disk.
@@ -3918,7 +3983,12 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     // menu leads back to the site.
     assert!(page.text.contains(r#"id="site-theme""#), "{}", page.text);
     assert!(!page.text.contains(r#"id="my-theme""#), "{}", page.text);
-    assert!(page.text.contains(">Projects<"), "{}", page.text);
+    assert!(page.text.contains(">All projects<"), "{}", page.text);
+    assert!(
+        page.text.contains("<h1>Project settings</h1>"),
+        "{}",
+        page.text
+    );
 
     let saved = put(
         &app,

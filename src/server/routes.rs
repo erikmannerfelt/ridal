@@ -1746,6 +1746,10 @@ pub async fn viewer_page(
         .render(minijinja::context! {
             radargram_id => entry.radargram_id.to_string(),
             effective_label => entry.effective_label(),
+            // Whether the project owns the file, which replacing and
+            // processing it write (#431). Not `in_project`: base.html uses
+            // that for whether the page belongs to a project at all.
+            radargram_in_project => state.is_writable(entry),
             group_name => entry.group_name.as_ref().map(|g| g.to_string()),
             group_id => entry.group_id.as_ref().map(|g| g.to_string()),
             revision_id => entry.revision_id.to_string(),

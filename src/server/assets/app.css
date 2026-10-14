@@ -2633,11 +2633,13 @@ button.group-chip:hover,
 }
 
 .download-menu,
+.edit-menu,
 .add-menu {
   position: static;
 }
 
 .download-menu > ul,
+.edit-menu > ul,
 .add-menu > ul {
   left: 0;
   right: auto;
@@ -2651,11 +2653,13 @@ button.group-chip:hover,
  * the button's width, so the cap goes; `min-width` sizes it. */
 @media (width > 40rem) {
   .download-menu,
+  .edit-menu,
   .add-menu {
     position: relative;
   }
 
   .download-menu > ul,
+  .edit-menu > ul,
   .add-menu > ul {
     max-width: none;
   }
@@ -2678,11 +2682,13 @@ button.group-chip:hover,
   max-width: none;
 }
 
-/* The compact variants: a card's Edit menu and the download menus. Smaller
+/* The compact variants: the Edit menus (a card's and the viewer's) and the
+ * download menus. Smaller
  * than the header's because they sit inside content rather than in a bar of
  * their own, and identical to each other because there is no reason for a
  * reader to have to notice which one they are looking at. */
 .card-menu > summary,
+.edit-menu > summary,
 .group-menu > summary,
 .download-menu > summary,
 .add-menu > summary,
@@ -3308,7 +3314,9 @@ a.processing-state:hover {
 }
 
 #derived-expression,
-#derived-highlight {
+#derived-highlight,
+textarea.steps-input,
+pre.steps-highlight {
   box-sizing: border-box;
   width: 100%;
   min-height: 5.5rem;
@@ -3324,7 +3332,8 @@ a.processing-state:hover {
   tab-size: 2;
 }
 
-#derived-highlight {
+#derived-highlight,
+pre.steps-highlight {
   position: absolute;
   inset: 0;
   overflow: hidden;
@@ -3333,7 +3342,8 @@ a.processing-state:hover {
   color: var(--color-text);
 }
 
-#derived-expression {
+#derived-expression,
+textarea.steps-input {
   position: relative;
   z-index: 1;
   resize: vertical;
@@ -3342,7 +3352,8 @@ a.processing-state:hover {
   caret-color: var(--color-text);
 }
 
-#derived-expression:focus {
+#derived-expression:focus,
+textarea.steps-input:focus {
   outline: 2px solid var(--color-accent);
   outline-offset: -1px;
 }
@@ -3376,6 +3387,56 @@ a.processing-state:hover {
 
 .tok-op {
   color: var(--color-text-muted);
+}
+
+/* A step that does not exist, or may not run where it is written (#423).
+   Underlined as well as coloured, so it does not rest on colour alone. */
+.tok-error {
+  color: var(--color-danger-border);
+  text-decoration: underline wavy;
+  text-decoration-skip-ink: none;
+}
+
+/* A steps box is as tall as its rows say, not the expression editor's
+   minimum: the pre-profile box is two lines. */
+textarea.steps-input,
+pre.steps-highlight {
+  min-height: 0;
+}
+
+.steps-editor {
+  margin: var(--space-1) 0 0;
+}
+
+/* The step at the caret, under its box: its signature and summary, then
+   its arguments, the one being typed set apart. */
+.steps-help {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  margin: var(--space-1) 0 var(--space-2);
+  min-height: 1.4em;
+}
+
+.steps-help p {
+  margin: 0;
+}
+
+.steps-help ul {
+  margin: var(--space-1) 0 0;
+  padding-left: 1.2rem;
+}
+
+.steps-help li.is-current {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.steps-help-signature {
+  color: var(--color-text);
+}
+
+.steps-help-problem {
+  color: var(--color-danger-text);
 }
 
 .editor-legend {

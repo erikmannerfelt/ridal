@@ -28,6 +28,18 @@ pub fn environment() -> Environment<'static> {
         "default_processing_steps",
         minijinja::Value::from_serialize(crate::gpr::default_processing_profile()),
     );
+    // The step help in every steps box (#423): each step's signature,
+    // summary and arguments, from the registry `docs/reference/steps.md` is
+    // generated from too.
+    let step_catalog = crate::steps::catalog();
+    env.add_global(
+        "step_catalog_json",
+        serde_json::to_string(&step_catalog).expect("the step catalog serializes"),
+    );
+    env.add_global(
+        "step_catalog",
+        minijinja::Value::from_serialize(step_catalog),
+    );
     env.add_template("base.html.jinja", include_str!("templates/base.html.jinja"))
         .expect("base template must parse");
     env.add_template(
@@ -40,6 +52,11 @@ pub fn environment() -> Environment<'static> {
         include_str!("templates/process_dialog.html.jinja"),
     )
     .expect("process dialog template must parse");
+    env.add_template(
+        "radargram_dialogs.html.jinja",
+        include_str!("templates/radargram_dialogs.html.jinja"),
+    )
+    .expect("radargram dialogs template must parse");
     env.add_template(
         "viewer.html.jinja",
         include_str!("templates/viewer.html.jinja"),
@@ -104,6 +121,7 @@ mod tests {
             "base.html.jinja",
             "index.html.jinja",
             "process_dialog.html.jinja",
+            "radargram_dialogs.html.jinja",
             "viewer.html.jinja",
             "layers.html.jinja",
             "processing.html.jinja",
@@ -173,6 +191,10 @@ mod tests {
             (
                 "process_dialog.html.jinja",
                 include_str!("templates/process_dialog.html.jinja"),
+            ),
+            (
+                "radargram_dialogs.html.jinja",
+                include_str!("templates/radargram_dialogs.html.jinja"),
             ),
         ] {
             for (number, line) in html.lines().enumerate() {

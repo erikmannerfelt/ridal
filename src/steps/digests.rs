@@ -529,6 +529,21 @@ fn every_step_has_a_digest() {
     }
 }
 
+/// `PRE_PROFILE_STEPS` is what the step help marks as allowed before a
+/// profile (#423); `Step::selects_only` is what the server enforces. `RUNS`
+/// has a call for every step, so this compares the two for all of them.
+#[test]
+fn pre_profile_steps_are_the_ones_that_only_select() {
+    for call in RUNS {
+        let (name, step) = step_of(call);
+        assert_eq!(
+            super::PRE_PROFILE_STEPS.contains(&name.as_str()),
+            step.selects_only(),
+            "`{call}`: steps::PRE_PROFILE_STEPS and Step::selects_only disagree"
+        );
+    }
+}
+
 #[test]
 fn a_shift_moves_the_digest() {
     // The property the projections are for: the same values one place

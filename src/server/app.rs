@@ -895,6 +895,10 @@ pub fn static_router() -> Router {
         .route("/static/site.js", get(super::assets::site_js))
         .route("/static/layers.js", get(super::assets::layers_js))
         .route("/static/process.js", get(super::assets::process_js))
+        .route(
+            "/static/radargram_edit.js",
+            get(super::assets::radargram_edit_js),
+        )
         .route("/static/processing.js", get(super::assets::processing_js))
         .route("/static/ingest.js", get(super::assets::ingest_js))
         .route(

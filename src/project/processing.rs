@@ -181,9 +181,12 @@ pub fn canonical_pre_steps(steps: &[String]) -> Result<Vec<String>, ProcessingEr
             if !parsed.step.selects_only() {
                 return Err(ProcessingError::Steps(format!(
                     "`{}` cannot run before a profile's steps: a radargram's own steps \
-                     may only choose traces and samples (`subset`, `remove_traces`). \
+                     may only choose traces and samples ({}). \
                      For different processing, use another profile.",
-                    parsed.canonical
+                    parsed.canonical,
+                    crate::steps::PRE_PROFILE_STEPS
+                        .map(|name| format!("`{name}`"))
+                        .join(", ")
                 )));
             }
             Ok(parsed.canonical)

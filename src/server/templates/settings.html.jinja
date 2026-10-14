@@ -1,7 +1,7 @@
 {% extends "base.html.jinja" %}
-{% block title %}Settings - Ridal{% endblock %}
+{% block title %}Project settings - Ridal{% endblock %}
 {% block content %}
-  <h1>Settings</h1>
+  <h1>Project settings</h1>
 
   {% if not project %}
     <div class="warning">
@@ -76,7 +76,9 @@
         <p class="hint">
           Yours alone. They override the project defaults below for you, and
           for nobody else. An address with <code>?profile=</code> or
-          <code>?xscale=</code> in it still wins for that one page.
+          <code>?xscale=</code> in it still wins for that one page. Saving a
+          new render profile here drops the one in the address, so the menu
+          leads back to the catalog in the new one.
         </p>
         <form id="my-settings-form" class="settings-form" novalidate>
           <label class="settings-field">

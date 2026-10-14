@@ -54,6 +54,10 @@
   /* The project's vector overlays (#177). One list, unlike the basemaps:
    * there is no built-in to offer alongside them. */
   let overlays = [];
+  /* The two render profiles as the server last answered them, so a save can
+   * tell whether either one changed (#432). */
+  let storedMyProfile = null;
+  let storedDefaultProfile = null;
 
   /* Mark (or clear) a section as holding unsaved edits.
    *
@@ -82,6 +86,28 @@
     errorBox.hidden = true;
     errorBox.textContent = "";
   };
+  /* Take `?profile=` off this page's address and off the header's links
+   * (#432). The menu carries the page's profile through every link so that
+   * one chosen on the catalog survives a trip round the menu. After a
+   * profile is changed here, that same carrying would take the old one
+   * back to the catalog and shadow the new default, which looks as if the
+   * save did nothing. Changing the default is the clearer statement, so it
+   * wins. */
+  const dropProfileOverride = () => {
+    const strip = (href) => {
+      const url = new URL(href, location.href);
+      if (!url.searchParams.has("profile")) return null;
+      url.searchParams.delete("profile");
+      return url;
+    };
+    const page = strip(location.href);
+    if (page) window.history.replaceState(window.history.state, "", page);
+    for (const link of document.querySelectorAll("header a[href]")) {
+      const target = strip(link.getAttribute("href"));
+      if (target) link.href = target.pathname + target.search + target.hash;
+    }
+  };
+
   const setStatus = (id, message) => {
     const element = byId(id);
     if (element) element.textContent = message;
@@ -240,6 +266,8 @@
     formats = settings.formats || [];
 
     fillProfiles(byId("my-profile"), "Project default", settings.my_profile);
+    storedMyProfile = settings.my_profile || null;
+    storedDefaultProfile = settings.default_profile || null;
     fillScales(byId("my-xscale"), settings.my_xscale, "Project default");
     // Absent means shown, which is what the viewer did before the toggle
     // existed -- so only an explicit `false` unticks it.
@@ -361,6 +389,8 @@
       try {
         const saved = await send("PUT", RIDAL.apiPath("preferences"), body);
         byId("my-profile").value = saved.render_profile || "";
+        if ((saved.render_profile || null) !== storedMyProfile) dropProfileOverride();
+        storedMyProfile = saved.render_profile || null;
         // Read back as sent, including an explicit 1x -- and as "Project
         // default" when it was cleared.
         byId("my-xscale").value = saved.x_scale ? String(saved.x_scale) : "";
@@ -397,6 +427,8 @@
           ),
         });
         byId("default-profile").value = saved.default_profile || "";
+        if ((saved.default_profile || null) !== storedDefaultProfile) dropProfileOverride();
+        storedDefaultProfile = saved.default_profile || null;
         byId("default-xscale").value = String(saved.default_xscale || 1);
         // Both are stored as absent when they are the neutral answer, so
         // they read back as the "Ridal default" option rather than as the

@@ -72,6 +72,7 @@ embedded_asset!(index_js, "index.js", "text/javascript");
 embedded_asset!(viewer_js, "viewer.js", "text/javascript");
 embedded_asset!(layers_js, "layers.js", "text/javascript");
 embedded_asset!(process_js, "process.js", "text/javascript");
+embedded_asset!(radargram_edit_js, "radargram_edit.js", "text/javascript");
 embedded_asset!(processing_js, "processing.js", "text/javascript");
 embedded_asset!(ingest_js, "ingest.js", "text/javascript");
 embedded_asset!(settings_js, "settings.js", "text/javascript");
@@ -270,6 +271,10 @@ mod tests {
             ("picker.js", include_str!("assets/picker.js")),
             ("panel.js", include_str!("assets/panel.js")),
             ("process.js", include_str!("assets/process.js")),
+            (
+                "radargram_edit.js",
+                include_str!("assets/radargram_edit.js"),
+            ),
             ("figure.js", include_str!("assets/figure.js")),
             ("layers.js", include_str!("assets/layers.js")),
             ("processing.js", include_str!("assets/processing.js")),
@@ -563,7 +568,14 @@ mod tests {
         vec![
             (
                 "index",
-                vec![app, ("index.js", include_str!("assets/index.js"))],
+                vec![
+                    app,
+                    (
+                        "radargram_edit.js",
+                        include_str!("assets/radargram_edit.js"),
+                    ),
+                    ("index.js", include_str!("assets/index.js")),
+                ],
             ),
             (
                 "viewer",
@@ -573,6 +585,10 @@ mod tests {
                     ("picker.js", include_str!("assets/picker.js")),
                     ("panel.js", include_str!("assets/panel.js")),
                     ("process.js", include_str!("assets/process.js")),
+                    (
+                        "radargram_edit.js",
+                        include_str!("assets/radargram_edit.js"),
+                    ),
                     ("figure.js", include_str!("assets/figure.js")),
                 ],
             ),
@@ -678,6 +694,10 @@ mod tests {
             ("picker.js", include_str!("assets/picker.js")),
             ("panel.js", include_str!("assets/panel.js")),
             ("process.js", include_str!("assets/process.js")),
+            (
+                "radargram_edit.js",
+                include_str!("assets/radargram_edit.js"),
+            ),
             ("figure.js", include_str!("assets/figure.js")),
             ("layers.js", include_str!("assets/layers.js")),
             ("processing.js", include_str!("assets/processing.js")),

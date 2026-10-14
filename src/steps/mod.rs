@@ -1255,6 +1255,100 @@ pub fn split_step_list(text: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// The steps that may run before a processing profile's steps, as one
+/// radargram's own (#382): the ones whose [`Step::selects_only`] is true.
+/// That takes a parsed step, which a list of names cannot, so a test in
+/// `digests` checks every registered step's run against this list.
+pub const PRE_PROFILE_STEPS: [&str; 2] = ["subset", "remove_traces"];
+
+/// One step as the registry describes it, for help where steps are written
+/// (#423) and for the documentation page, so the two cannot disagree.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StepInfo {
+    pub name: String,
+    /// `name(arg, [optional], arg=default, many…)`, as the docs show it.
+    pub signature: String,
+    /// The first line of the description. The whole of it is long, so it
+    /// stays on the documentation site rather than going into every page
+    /// that shows help.
+    pub summary: String,
+    pub arguments: Vec<ArgumentInfo>,
+    /// Whether it may run before a profile's steps ([`PRE_PROFILE_STEPS`]).
+    pub pre_profile: bool,
+}
+
+/// One argument of a [`StepInfo`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ArgumentInfo {
+    pub name: String,
+    /// The default as written in a step, values separated by spaces.
+    pub default: Option<String>,
+    pub required: bool,
+    /// Takes any number of values (`remove_traces(0 1 5-9)`).
+    pub many: bool,
+    pub help: String,
+}
+
+/// Every registered step, in registry order.
+pub fn catalog() -> Vec<StepInfo> {
+    // Built, or clap has not yet worked out how many values each argument takes.
+    let mut steps = StepCommand::command();
+    steps.build();
+    steps
+        .get_subcommands()
+        .map(|command| {
+            let arguments: Vec<ArgumentInfo> = command
+                .get_arguments()
+                .map(|arg| {
+                    let default = match arg.get_default_values() {
+                        [] => None,
+                        values => Some(
+                            values
+                                .iter()
+                                .map(|v| v.to_string_lossy())
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                        ),
+                    };
+                    ArgumentInfo {
+                        name: arg.get_long().unwrap_or_default().to_string(),
+                        required: default.is_none() && arg.is_required_set(),
+                        default,
+                        many: matches!(arg.get_action(), clap::ArgAction::Append),
+                        help: arg.get_help().map(|h| h.to_string()).unwrap_or_default(),
+                    }
+                })
+                .collect();
+            let signature: Vec<String> = arguments
+                .iter()
+                .map(|arg| {
+                    let name = if arg.many {
+                        format!("{}…", arg.name)
+                    } else {
+                        arg.name.clone()
+                    };
+                    match &arg.default {
+                        Some(value) => format!("{name}={value}"),
+                        None if arg.required => name,
+                        None => format!("[{name}]"),
+                    }
+                })
+                .collect();
+            let name = command.get_name().to_string();
+            StepInfo {
+                signature: format!("{name}({})", signature.join(", ")),
+                summary: command
+                    .get_about()
+                    .map(|t| t.to_string().trim().to_string())
+                    .unwrap_or_default(),
+                arguments,
+                pre_profile: PRE_PROFILE_STEPS.contains(&name.as_str()),
+                name,
+            }
+        })
+        .collect()
+}
+
 /// Name and markdown description of every step, in registry order.
 pub fn descriptions() -> Vec<(String, String)> {
     StepCommand::command()
@@ -1294,64 +1388,22 @@ fn docs_markdown() -> String {
          `bandpass(0.1 0.9)` and `bandpass(low=0.1, high=0.9)` are the same step. \
          Arguments that are left out take the defaults shown.\n",
     );
-    // Built, or clap has not yet worked out how many values each argument takes.
-    let mut steps = StepCommand::command();
-    steps.build();
-    for command in steps.get_subcommands() {
-        let signature: Vec<String> = command
-            .get_arguments()
-            .map(|arg| {
-                let name = arg.get_long().unwrap_or_default();
-                // A `Vec` field, which takes any number of values.
-                let many = matches!(arg.get_action(), clap::ArgAction::Append);
-                let name = if many {
-                    format!("{name}…")
-                } else {
-                    name.to_string()
-                };
-                match arg.get_default_values() {
-                    [] if arg.is_required_set() => name,
-                    [] => format!("[{name}]"),
-                    values => format!(
-                        "{name}={}",
-                        values
-                            .iter()
-                            .map(|v| v.to_string_lossy())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    ),
-                }
-            })
-            .collect();
-        out.push_str(&format!(
-            "\n```{{step}} {}({})\n",
-            command.get_name(),
-            signature.join(", ")
-        ));
+    let mut commands = StepCommand::command();
+    commands.build();
+    for (step, command) in catalog().into_iter().zip(commands.get_subcommands()) {
+        out.push_str(&format!("\n```{{step}} {}\n", step.signature));
         if let Some(text) = command.get_long_about().or(command.get_about()) {
             out.push_str(&format!("{}\n", text.to_string().trim()));
         }
-        let args: Vec<_> = command.get_arguments().collect();
-        if !args.is_empty() {
+        if !step.arguments.is_empty() {
             out.push_str("\n**Arguments**\n\n");
-            for arg in args {
-                let default = match arg.get_default_values() {
-                    [] if arg.is_required_set() => " (required)".to_string(),
-                    [] => String::new(),
-                    values => format!(
-                        " (default `{}`)",
-                        values
-                            .iter()
-                            .map(|v| v.to_string_lossy())
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    ),
+            for arg in &step.arguments {
+                let default = match &arg.default {
+                    Some(value) => format!(" (default `{value}`)"),
+                    None if arg.required => " (required)".to_string(),
+                    None => String::new(),
                 };
-                out.push_str(&format!(
-                    "- `{}`{default}: {}\n",
-                    arg.get_long().unwrap_or_default(),
-                    arg.get_help().map(|h| h.to_string()).unwrap_or_default()
-                ));
+                out.push_str(&format!("- `{}`{default}: {}\n", arg.name, arg.help));
             }
         }
         out.push_str("```\n");
