@@ -125,6 +125,56 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
         self.render_overview_banded(spec, profile, limits, band)
     }
 
+    /// Render a window of the source to `out_w x out_h` RGBA pixels, the
+    /// way [`Renderer::render_overview`] renders the whole of it: each
+    /// sample coloured first, then the colours area-averaged.
+    ///
+    /// The raster an annotated figure (#142) embeds. Two differences from
+    /// an overview, both because a figure is composed onto a background
+    /// rather than shown as a tile:
+    ///
+    /// - `window` may be any part of the source, with fractional bounds,
+    ///   and an output pixel may be smaller than a sample (an excerpt drawn
+    ///   larger than its sample count). A sample is then repeated across
+    ///   the pixels it covers, never interpolated, so a figure shows the
+    ///   samples the data has.
+    /// - A pixel with no valid sample under it (a topographic wedge, or a
+    ///   window reaching past the data) is transparent, not padding grey,
+    ///   so the figure's background shows through.
+    pub fn render_window_rgba(
+        &self,
+        window: &SourceWindow,
+        out_w: usize,
+        out_h: usize,
+        profile: &RenderProfile,
+        limits: (f32, f32),
+    ) -> Result<image::RgbaImage, String> {
+        let (src_h, src_w) = self.reader.shape();
+        let clipped = SourceWindow {
+            row0: window.row0.max(0.0),
+            row1: window.row1.min(src_h as f64),
+            col0: window.col0.max(0.0),
+            col1: window.col1.min(src_w as f64),
+        };
+        let (out_w, out_h) = (out_w.max(1), out_h.max(1));
+        if clipped.row0 >= clipped.row1 || clipped.col0 >= clipped.col1 {
+            return Ok(image::RgbaImage::new(out_w as u32, out_h as u32));
+        }
+        let band = self.rows_per_band(clipped.col0 as usize, clipped.col1.ceil() as usize);
+        let accumulated = self.accumulate_colours(window, out_w, out_h, profile, limits, band)?;
+        Ok(image::RgbaImage::from_fn(
+            out_w as u32,
+            out_h as u32,
+            |x, y| {
+                let pixel = y as usize * out_w + x as usize;
+                match accumulated.colour(pixel) {
+                    Some([r, g, b]) => image::Rgba([r, g, b, 255]),
+                    None => image::Rgba([0, 0, 0, 0]),
+                }
+            },
+        ))
+    }
+
     /// Source rows per read, derived from [`OVERVIEW_READ_BUDGET_BYTES`].
     /// At least one, so a radargram whose single source row already
     /// exceeds the budget still renders (one row at a time) rather than
@@ -138,8 +188,14 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
     /// measured on a long profile with a few hundred metres of relief.
     fn overview_rows_per_band(&self) -> usize {
         let (_, src_w) = self.reader.shape();
-        let overhead = self.reader.vertical_read_overhead(0, src_w);
-        let bytes_per_source_row = src_w.max(1) * std::mem::size_of::<f32>();
+        self.rows_per_band(0, src_w)
+    }
+
+    /// [`Renderer::overview_rows_per_band`] for a read over the columns
+    /// `[col0, col1)` only.
+    fn rows_per_band(&self, col0: usize, col1: usize) -> usize {
+        let overhead = self.reader.vertical_read_overhead(col0, col1);
+        let bytes_per_source_row = col1.saturating_sub(col0).max(1) * std::mem::size_of::<f32>();
         (OVERVIEW_READ_BUDGET_BYTES / bytes_per_source_row)
             .saturating_sub(overhead)
             .max(1)
@@ -157,11 +213,59 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
     ) -> Result<Vec<u8>, String> {
         let (src_h, src_w) = self.reader.shape();
         let (out_h, out_w) = (spec.height.max(1), spec.width.max(1));
+        let whole = SourceWindow {
+            row0: 0.0,
+            row1: src_h as f64,
+            col0: 0.0,
+            col1: src_w as f64,
+        };
+        let accumulated =
+            self.accumulate_colours(&whole, out_w, out_h, profile, limits, source_rows_per_band)?;
+
+        if profile.colormap.is_some() {
+            let image = image::RgbImage::from_fn(out_w as u32, out_h as u32, |x, y| {
+                let pixel = y as usize * out_w + x as usize;
+                image::Rgb(accumulated.colour(pixel).unwrap_or(PAD_COLOR))
+            });
+            colormap::encode_rgb(&image, profile.format)
+        } else {
+            let image = image::GrayImage::from_fn(out_w as u32, out_h as u32, |x, y| {
+                let pixel = y as usize * out_w + x as usize;
+                image::Luma([accumulated.colour(pixel).map_or(PAD_VALUE, |c| c[0])])
+            });
+            colormap::encode(&image, profile.format)
+        }
+    }
+
+    /// Colour every source sample in `window` and area-average the colours
+    /// onto an `out_w x out_h` grid, reading `source_rows_per_band` rows at
+    /// a time. The shared core of overviews and figure rasters.
+    ///
+    /// Each source row adds its weighted colours to the output rows it
+    /// overlaps, so the result does not depend on where band boundaries
+    /// fall -- bit for bit -- and no band needs a halo.
+    fn accumulate_colours(
+        &self,
+        window: &SourceWindow,
+        out_w: usize,
+        out_h: usize,
+        profile: &RenderProfile,
+        limits: (f32, f32),
+        source_rows_per_band: usize,
+    ) -> Result<AccumulatedColours, String> {
+        let (src_h, src_w) = self.reader.shape();
         let lut = profile.colormap.as_ref().map(|cmap| cmap.lut());
         let channels = if lut.is_some() { 3 } else { 1 };
 
-        let col_taps = footprint_taps(src_w, out_w);
-        let row_taps = footprint_taps(src_h, out_h);
+        let (first_col, col_taps) = footprint_taps_window(window.col0, window.col1, out_w);
+        let (first_row, row_taps) = footprint_taps_window(window.row0, window.row1, out_h);
+        // Only the part of the window that lies on the source is read; the
+        // rest has no taps to add and stays at zero weight.
+        let col_lo = first_col.min(src_w);
+        let col_hi = (first_col + col_taps.len()).min(src_w);
+        let row_lo = first_row.min(src_h);
+        let row_hi = (first_row + row_taps.len()).min(src_h);
+
         // Weighted colour sums and the weight of the *valid* samples that
         // went into them. A NaN sample (no data, or a topographic wedge)
         // adds nothing, so a partly empty footprint is the mean of what it
@@ -169,13 +273,13 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
         let mut sums = vec![0.0_f32; out_h * out_w * channels];
         let mut weights = vec![0.0_f32; out_h * out_w];
 
-        let mut colours: Vec<Option<[u8; 3]>> = Vec::with_capacity(src_w);
+        let mut colours: Vec<Option<[u8; 3]>> = Vec::with_capacity(col_hi - col_lo);
 
         let band = source_rows_per_band.max(1);
-        let mut row0 = 0usize;
-        while row0 < src_h {
-            let row1 = (row0 + band).min(src_h);
-            let mut source = self.reader.read_window(row0, row1, 0, src_w)?;
+        let mut row0 = row_lo;
+        while row0 < row_hi {
+            let row1 = (row0 + band).min(row_hi);
+            let mut source = self.reader.read_window(row0, row1, col_lo, col_hi)?;
             apply_source_transform(&mut source, profile);
             for (local_row, row) in source.outer_iter().enumerate() {
                 // Coloured once per source row, however many output rows
@@ -187,12 +291,12 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
                         None => [byte; 3],
                     })
                 }));
-                for &(oy, wy) in &row_taps[row0 + local_row] {
-                    for (col, colour) in colours.iter().enumerate() {
+                for &(oy, wy) in &row_taps[row0 + local_row - first_row] {
+                    for (local_col, colour) in colours.iter().enumerate() {
                         let Some(colour) = colour else {
                             continue;
                         };
-                        for &(ox, wx) in &col_taps[col] {
+                        for &(ox, wx) in &col_taps[col_lo + local_col - first_col] {
                             let w = wy * wx;
                             let pixel = oy * out_w + ox;
                             weights[pixel] += w;
@@ -205,29 +309,11 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
             }
             row0 = row1;
         }
-
-        let channel = |pixel: usize, c: usize, pad: u8| -> u8 {
-            if weights[pixel] > 0.0 {
-                (sums[pixel * channels + c] / weights[pixel])
-                    .round()
-                    .clamp(0.0, 255.0) as u8
-            } else {
-                pad
-            }
-        };
-        if lut.is_some() {
-            let image = image::RgbImage::from_fn(out_w as u32, out_h as u32, |x, y| {
-                let pixel = y as usize * out_w + x as usize;
-                image::Rgb([0, 1, 2].map(|c| channel(pixel, c, PAD_COLOR[c])))
-            });
-            colormap::encode_rgb(&image, profile.format)
-        } else {
-            let image = image::GrayImage::from_fn(out_w as u32, out_h as u32, |x, y| {
-                let pixel = y as usize * out_w + x as usize;
-                image::Luma([channel(pixel, 0, PAD_VALUE)])
-            });
-            colormap::encode(&image, profile.format)
-        }
+        Ok(AccumulatedColours {
+            sums,
+            weights,
+            channels,
+        })
     }
 
     /// Read exactly the (integer-rounded) source region a window touches,
@@ -288,6 +374,37 @@ fn render_and_encode(
     }
 }
 
+/// Area-weighted colour sums from [`Renderer::accumulate_colours`], not yet
+/// divided out.
+struct AccumulatedColours {
+    sums: Vec<f32>,
+    weights: Vec<f32>,
+    /// 1 for a grayscale profile, 3 for a colormapped one.
+    channels: usize,
+}
+
+impl AccumulatedColours {
+    /// The mean colour of output pixel `pixel`, or `None` when no valid
+    /// sample fell in its footprint. A grayscale profile's one channel is
+    /// repeated into all three.
+    fn colour(&self, pixel: usize) -> Option<[u8; 3]> {
+        let weight = self.weights[pixel];
+        if weight <= 0.0 {
+            return None;
+        }
+        let channel = |c: usize| -> u8 {
+            (self.sums[pixel * self.channels + c] / weight)
+                .round()
+                .clamp(0.0, 255.0) as u8
+        };
+        Some(if self.channels == 3 {
+            [channel(0), channel(1), channel(2)]
+        } else {
+            [channel(0); 3]
+        })
+    }
+}
+
 /// For each of `source_len` source samples along one axis, the output
 /// samples (of `out_len`) its unit interval overlaps and by how much, in
 /// source units.
@@ -298,20 +415,42 @@ fn render_and_encode(
 /// summed per output pixel and divided out at the end, so they need not be
 /// normalised here.
 fn footprint_taps(source_len: usize, out_len: usize) -> Vec<Vec<(usize, f32)>> {
-    let step = source_len as f64 / out_len.max(1) as f64;
-    (0..source_len)
+    footprint_taps_window(0.0, source_len as f64, out_len).1
+}
+
+/// [`footprint_taps`] over the source interval `[start, end)` rather than
+/// the whole axis: `(first, taps)`, where `taps[i]` belongs to source
+/// sample `first + i`, and `first = floor(start)`.
+///
+/// Output sample `o` covers `[start + o * step, start + (o + 1) * step)`
+/// with `step = (end - start) / out_len`, and a source sample contributes
+/// only the part of its unit interval inside `[start, end)`. For
+/// `start = 0` and `end = source_len` this is exactly [`footprint_taps`],
+/// so the overview's bytes do not depend on which of the two built them.
+fn footprint_taps_window(start: f64, end: f64, out_len: usize) -> (usize, Vec<Vec<(usize, f32)>>) {
+    let out_len = out_len.max(1);
+    let first = start.floor().max(0.0) as usize;
+    let last = end.ceil().max(first as f64) as usize;
+    let step = (end - start) / out_len as f64;
+    let taps = (first..last)
         .map(|s| {
-            let (a, b) = (s as f64, s as f64 + 1.0);
-            let first = ((a / step).floor() as usize).min(out_len - 1);
-            let last = ((b / step).ceil() as usize).min(out_len);
-            (first..last)
+            let a = (s as f64).max(start);
+            let b = (s as f64 + 1.0).min(end);
+            if b <= a || step <= 0.0 {
+                return Vec::new();
+            }
+            let lo = (((a - start) / step).floor().max(0.0) as usize).min(out_len - 1);
+            let hi = (((b - start) / step).ceil() as usize).min(out_len);
+            (lo..hi)
                 .filter_map(|o| {
-                    let overlap = b.min((o + 1) as f64 * step) - a.max(o as f64 * step);
+                    let overlap =
+                        b.min(start + (o + 1) as f64 * step) - a.max(start + o as f64 * step);
                     (overlap > 1e-9).then_some((o, overlap as f32))
                 })
                 .collect()
         })
-        .collect()
+        .collect();
+    (first, taps)
 }
 
 /// Apply a profile's [`SourceTransform`] to a freshly read source window or
@@ -632,6 +771,78 @@ mod tests {
         let image = image::load_from_memory(&bytes).unwrap().to_luma8();
         assert_eq!(image.get_pixel(0, 0).0[0], 0, "half-valid footprint");
         assert_eq!(image.get_pixel(1, 0).0[0], PAD_VALUE, "empty footprint");
+    }
+
+    #[test]
+    fn a_window_at_one_pixel_per_sample_is_a_crop_of_the_whole() {
+        // A figure's raster (#142): any window rendered at its own sample
+        // count shows exactly those samples, transparent nowhere.
+        let data = ndarray::Array2::from_shape_fn((40, 60), |(r, c)| (r * 60 + c) as f32);
+        let source = crate::source::ArraySource::new(data.view());
+        let renderer = Renderer::new(&source);
+        let profile = png(RenderProfile::default_profile());
+        let limits = (0.0, 2400.0);
+        let whole = renderer
+            .render_window_rgba(
+                &SourceWindow {
+                    row0: 0.0,
+                    row1: 40.0,
+                    col0: 0.0,
+                    col1: 60.0,
+                },
+                60,
+                40,
+                &profile,
+                limits,
+            )
+            .unwrap();
+        let part = renderer
+            .render_window_rgba(
+                &SourceWindow {
+                    row0: 10.0,
+                    row1: 25.0,
+                    col0: 7.0,
+                    col1: 40.0,
+                },
+                33,
+                15,
+                &profile,
+                limits,
+            )
+            .unwrap();
+        for (x, y, pixel) in part.enumerate_pixels() {
+            assert_eq!(pixel, whole.get_pixel(x + 7, y + 10), "({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn a_window_drawn_larger_repeats_samples_and_is_transparent_past_the_data() {
+        let data = ndarray::Array2::from_shape_fn((4, 4), |(r, _)| r as f32);
+        let source = crate::source::ArraySource::new(data.view());
+        let renderer = Renderer::new(&source);
+        let profile = png(RenderProfile::default_profile());
+        // Rows 2 to 6 of a 4-row source, at two pixels a row: rows 2 and 3
+        // are drawn twice each, and the rows past the data are empty.
+        let image = renderer
+            .render_window_rgba(
+                &SourceWindow {
+                    row0: 2.0,
+                    row1: 6.0,
+                    col0: 0.0,
+                    col1: 4.0,
+                },
+                4,
+                8,
+                &profile,
+                (0.0, 3.0),
+            )
+            .unwrap();
+        assert_eq!(image.get_pixel(0, 0), image.get_pixel(0, 1));
+        assert_eq!(image.get_pixel(0, 2), image.get_pixel(0, 3));
+        assert_ne!(image.get_pixel(0, 1), image.get_pixel(0, 2));
+        assert_eq!(image.get_pixel(0, 0).0[3], 255);
+        assert_eq!(image.get_pixel(0, 4).0[3], 0);
+        assert_eq!(image.get_pixel(3, 7).0[3], 0);
     }
 
     #[test]

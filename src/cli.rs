@@ -54,8 +54,9 @@ pub struct RenderArgs {
     /// Processed .nc file to render.
     pub input: PathBuf,
 
-    /// Output image path. The extension picks the encoding (.png or .jpg);
-    /// if omitted, a sidecar beside the input is used.
+    /// Output image path. The extension picks the encoding (.png or .jpg,
+    /// or .png or .svg with --figure); if omitted, a sidecar beside the
+    /// input is used.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
@@ -78,6 +79,13 @@ pub struct RenderArgs {
     /// axes.
     #[arg(long)]
     pub topo: bool,
+
+    /// Render an annotated figure described by this JSON figure spec:
+    /// an excerpt with axes, ticks and labels, written as .svg or .png.
+    /// The spec sets the view, extent, size, profile and styling, so
+    /// --profile, --width, --quality and --topo are not used with it.
+    #[arg(long, value_name = "SPEC", conflicts_with_all = ["profile", "width", "quality", "topo"])]
+    pub figure: Option<PathBuf>,
 
     /// Suppress progress messages.
     #[arg(short, long)]
@@ -1432,6 +1440,22 @@ fn steps_command(args: StepsArgs) -> Result<(), String> {
 /// `render::oneshot`, so the two produce the same picture from the same
 /// file and profile.
 fn render_command(args: RenderArgs) -> Result<(), String> {
+    if let Some(spec_path) = &args.figure {
+        let spec = crate::render::figure::read_spec(spec_path)?;
+        let output = args.output.clone().unwrap_or_else(|| {
+            let stem = args.input.file_stem().unwrap_or_default().to_string_lossy();
+            args.input.with_file_name(format!("{stem}.figure.png"))
+        });
+        let (width, height) =
+            crate::render::figure::render_figure_path(&args.input, &output, &spec)?;
+        if !args.quiet {
+            println!(
+                "Rendered a {}x{} px figure with the '{}' profile to {:?}",
+                width, height, spec.profile, output
+            );
+        }
+        return Ok(());
+    }
     let profile = crate::render::profile::RenderProfile::resolve(&args.profile)?;
     let output = args
         .output

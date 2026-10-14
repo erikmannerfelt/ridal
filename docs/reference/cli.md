@@ -358,7 +358,7 @@ Required.
 **Options**
 
 ```{option} -o <OUTPUT>, --output <OUTPUT>
-Output image path. The extension picks the encoding (.png or .jpg); if omitted, a sidecar beside the input is used
+Output image path. The extension picks the encoding (.png or .jpg, or .png or .svg with --figure); if omitted, a sidecar beside the input is used
 ```
 
 ```{option} --profile <PROFILE>
@@ -377,6 +377,10 @@ JPEG quality, 1-100. Ignored for PNG
 
 ```{option} --topo
 Render the topographically corrected view instead of the standard one (#168). Fails with a clear reason rather than falling back to a standard render when the file lacks usable `elevation`/`depth` axes
+```
+
+```{option} --figure <SPEC>
+Render an annotated figure described by this JSON figure spec: an excerpt with axes, ticks and labels, written as .svg or .png. The spec sets the view, extent, size, profile and styling, so --profile, --width, --quality and --topo are not used with it
 ```
 
 ```{option} -q, --quiet

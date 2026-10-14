@@ -1011,18 +1011,32 @@ pub mod ridal {
     ///     does, rather than the standard one. Needs the file's `elevation`
     ///     and `depth` axes; without usable ones this raises rather than
     ///     falling back to a standard render.
+    /// figure : dict or path-like, optional
+    ///     Render an annotated figure instead: an excerpt with axes, ticks and
+    ///     labels, as `ridal render --figure` does. A figure spec, either as a
+    ///     dict or as the path to a JSON file holding one; see the rendering
+    ///     guide for its fields. The output's extension (`.svg` or `.png`)
+    ///     picks the format, and defaults to `<input stem>.figure.png`. The
+    ///     spec sets the view, extent, size and profile, so `profile`,
+    ///     `width`, `quality` and `topo` cannot be given with it. A spec with
+    ///     `"axes": false` also writes a `.json` sidecar beside the image.
     ///
     /// Returns
     /// -------
     /// dict
-    ///     `{"path": str, "width": int, "height": int, "profile": str}`.
+    ///     `{"path": str, "width": int, "height": int, "profile": str}`. For a
+    ///     figure without axes, also `"sidecar": str`, the sidecar's path.
     ///
     /// Raises
     /// ------
     /// RuntimeError
     ///     If the input cannot be read, the profile cannot be resolved, the
-    ///     image cannot be written, or `topo=True` and the file cannot be
-    ///     topographically corrected.
+    ///     image cannot be written, `topo=True` and the file cannot be
+    ///     topographically corrected, or the figure spec is invalid or does
+    ///     not suit the file.
+    /// ValueError
+    ///     If `figure` is given together with `profile`, `width`, `quality` or
+    ///     `topo`.
     ///
     /// Notes
     /// -----
@@ -1030,7 +1044,8 @@ pub mod ridal {
     /// `process()` or `batch_process()`; those accept the same `render_profile`,
     /// `render_width` and `render_topo` and go through this same pipeline.
     #[pyfunction]
-    #[pyo3(signature = (input, output=None, *, profile=None, width=None, quality=None, topo=false))]
+    #[pyo3(signature = (input, output=None, *, profile=None, width=None, quality=None, topo=false, figure=None))]
+    #[allow(clippy::too_many_arguments)]
     fn render(
         py: Python<'_>,
         input: Py<PyAny>,
@@ -1039,10 +1054,52 @@ pub mod ridal {
         width: Option<usize>,
         quality: Option<u8>,
         topo: bool,
+        figure: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        use pyo3::exceptions::PyRuntimeError;
+        use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
         let input = fspath(py, input.bind(py))?;
+        if let Some(figure) = figure {
+            if profile.is_some() || width.is_some() || quality.is_some() || topo {
+                return Err(PyValueError::new_err(
+                    "figure= sets the view, size and profile itself; do not also pass \
+                     profile, width, quality or topo",
+                ));
+            }
+            let figure = figure.bind(py);
+            let spec = if figure.is_instance_of::<pyo3::types::PyDict>() {
+                let text: String = py
+                    .import("json")?
+                    .call_method1("dumps", (figure,))?
+                    .extract()?;
+                crate::render::figure::spec::FigureSpec::from_json(&text)
+                    .map_err(PyRuntimeError::new_err)?
+            } else {
+                crate::render::figure::read_spec(&fspath(py, figure)?)
+                    .map_err(PyRuntimeError::new_err)?
+            };
+            let output = match output {
+                Some(value) => fspath(py, value.bind(py))?,
+                None => {
+                    let stem = input.file_stem().unwrap_or_default().to_string_lossy();
+                    input.with_file_name(format!("{stem}.figure.png"))
+                }
+            };
+            let (w, h) = crate::render::figure::render_figure_path(&input, &output, &spec)
+                .map_err(PyRuntimeError::new_err)?;
+            let out = pyo3::types::PyDict::new(py);
+            out.set_item("path", output.display().to_string())?;
+            out.set_item("width", w)?;
+            out.set_item("height", h)?;
+            out.set_item("profile", &spec.profile)?;
+            if !spec.axes {
+                out.set_item(
+                    "sidecar",
+                    output.with_extension("json").display().to_string(),
+                )?;
+            }
+            return Ok(out.into_any().unbind());
+        }
         let resolved =
             crate::render::profile::RenderProfile::resolve(profile.as_deref().unwrap_or("default"))
                 .map_err(PyRuntimeError::new_err)?;

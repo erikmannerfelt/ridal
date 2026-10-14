@@ -109,3 +109,37 @@ def test_batch_process_names_outputs_after_an_id_pattern(tmp_path):
             quiet=True,
             id_pattern="line-{freq}MHz",
         )
+
+
+@pytest.mark.skipif(
+    not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists(),
+    reason="processing the fixture's coordinates needs PROJ, and the fixture",
+)
+def test_render_figure_from_a_dict_or_a_spec_file(tmp_path):
+    # #142: `render(figure=...)` is `ridal render --figure`, with the spec
+    # given inline or as a file.
+    import json
+
+    output = tmp_path / "line.nc"
+    ridal.process(str(FIXTURE), str(output), steps=["zero_corr"], quiet=True)
+    spec = {
+        "extent": {"traces": [10, 60]},
+        "size": {"width": 400, "unit": "px", "dpi": 96},
+        "x_axis": {"unit": "trace", "spacing": 10},
+    }
+
+    svg = ridal.render(output, tmp_path / "figure.svg", figure=spec)
+    assert Path(svg["path"]).read_text().startswith("<svg")
+    assert svg["width"] == 400
+
+    spec_file = tmp_path / "spec.json"
+    spec_file.write_text(json.dumps({**spec, "axes": False}))
+    raw = ridal.render(output, tmp_path / "raw.png", figure=spec_file)
+    sidecar = json.loads(Path(raw["sidecar"]).read_text())
+    assert sidecar["traces"] == [10, 60]
+    assert sidecar["x"]["unit"] == "trace"
+
+    with pytest.raises(ValueError):
+        ridal.render(output, tmp_path / "x.png", figure=spec, topo=True)
+    with pytest.raises(RuntimeError, match="spaceing"):
+        ridal.render(output, tmp_path / "x.png", figure={"x_axis": {"spaceing": 1}})
