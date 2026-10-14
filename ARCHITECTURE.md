@@ -260,6 +260,35 @@ ledger (`revisions.json`) its history.
   superseded revision is gone. A difference in migration is a warning on
   the carry, never a refusal: migration moves reflections, not the grid.
 
+## The pick manager and the archive (#178, #162)
+
+`GET /api/v1/interpretations` summarizes every stored interpretation:
+live ones under `interpretations/<id>/`, and archived ones under
+`interpretations/_archived/<id>/<removal>/`. `pick_routes::scan_live` is
+also what `/layers/usage` counts from.
+
+- **Statistics, never geometry.** A row is counts, layers and coverage, so
+  an operator sees everyone's rows while reading the picks behind one is
+  still the `picks` download scope's decision. Anyone below operator gets
+  their own rows only.
+- **Coverage is of what the viewer shows.** It is the share of traces
+  under a line, measured in index space (`project::pick_summary`), with no
+  NetCDF opened for current picks. Picks on an earlier revision are carried
+  onto the current one first, through the same checked axes as the carried
+  view (`interp_routes::current_axes`). When a carry is refused they are
+  measured as stored, and `coverage_basis` says so.
+- **Nothing authored is destroyed by a routine action.** No one edits or
+  deletes another person's picks (#131). What an admin gets instead is
+  *archive*: `interpretations::archive_and_remove` copies the document into
+  `_archived/<id>/<time>/`, then removes it at exactly the version copied.
+  This is the same place a radargram's removal puts its picks, so archived
+  picks have one home and one way out.
+- **Purging is the only destructive step, and it is the admin's.** It
+  takes one archived document or a whole removal. `removal` is matched
+  against the directories that exist, never joined from the request.
+  Archiving and purging are audited (`Archived`, `Purged`) with whose
+  picks they were.
+
 ## Raw data and sources (#382)
 
 `project::raw` keeps raw files under `ridal_data/raw/files/<aa>/<blake3>`,

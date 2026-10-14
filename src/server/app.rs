@@ -946,6 +946,22 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::interp_routes::layer_usage),
         )
         .route(
+            "/api/v1/interpretations",
+            get(super::pick_routes::list_summaries),
+        )
+        .route(
+            "/api/v1/interpretations/archived/{radargram_id}/{removal}",
+            axum::routing::delete(super::pick_routes::purge_removal),
+        )
+        .route(
+            "/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}",
+            get(super::pick_routes::download_archived).delete(super::pick_routes::purge_one),
+        )
+        .route(
+            "/api/v1/datasets/{radargram_id}/interpretations/{user}/archive",
+            axum::routing::post(super::pick_routes::archive_interpretation),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/interpretations",
             get(super::interp_routes::list_interpretations),
         )

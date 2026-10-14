@@ -173,6 +173,16 @@ class Client:
             self._http.json("GET", self._dataset_path(radargram_id, "interpretations"))
         )
 
+    def interpretation_summaries(self) -> models.InterpretationSummaryList:
+        """Every stored interpretation in the project, as statistics.
+
+        An ``operator`` gets everyone's; anyone else only their own. No
+        picks are returned, only counts and coverage.
+        """
+        return models.InterpretationSummaryList.from_json(
+            self._http.json("GET", self._project_path("interpretations"))
+        )
+
     def interpretation(self, radargram_id: str, user: str) -> models.Interpretation:
         """One person's picks, as a gprinterp document.
 

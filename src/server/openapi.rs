@@ -19,7 +19,7 @@ use utoipa::OpenApi;
 
 use super::{
     batch_routes, dem_routes, draft_routes, ingest_routes, interp_routes, lifecycle_routes,
-    processing_routes, raw_routes, replace_routes, routes, site,
+    pick_routes, processing_routes, raw_routes, replace_routes, routes, site,
 };
 use crate::interp::carry::{CarryReport, Displacement, Dropped, Severity};
 use crate::interp::source::RevisionDeclarations;
@@ -50,6 +50,15 @@ use crate::site::tokens;
         interp_routes::Saved,
         interp_routes::Promoted,
         interp_routes::CarriedView,
+        // The pick manager (#178).
+        pick_routes::InterpretationSummaryList,
+        pick_routes::InterpretationSummary,
+        pick_routes::LayerSummary,
+        pick_routes::InterpretationState,
+        pick_routes::CoverageBasis,
+        pick_routes::UnreadableInterpretation,
+        pick_routes::ArchivedInterpretation,
+        pick_routes::Purged,
         lifecycle_routes::Added,
         RevisionDeclarations,
         replace_routes::Staged,

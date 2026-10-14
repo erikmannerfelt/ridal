@@ -275,6 +275,7 @@ pub async fn get_interpretation_carried(
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let axes = current_axes(project, &path, entry);
     drop(catalog);
 
     let stored = interpretations::read(project.documents(), &radargram, &user)
@@ -289,22 +290,6 @@ pub async fn get_interpretation_carried(
                 ),
             )
         })?;
-
-    // Checked against the checksum the ledger recorded for this revision,
-    // which is the only thing that can see a file edited in place and
-    // given back its old processing date.
-    let baseline = crate::project::revisions::ledger::read(project.documents())
-        .ok()
-        .and_then(|(l, _)| {
-            l.current(radargram.as_str())
-                .and_then(|r| r.axis_checksum.clone())
-        });
-    let axes = crate::interp::anchors::axes_for_revision_checked(
-        &path,
-        &radargram,
-        &revision,
-        baseline.as_deref(),
-    );
 
     let source = crate::interp::carry::with_kept_axes(project, &radargram, &stored.document);
     let mut carried = crate::interp::carry::carry(&source, &axes, revision.as_str());
@@ -325,6 +310,31 @@ pub async fn get_interpretation_carried(
             document: carried.document,
         }),
     ))
+}
+
+/// The anchor axes of the revision `entry` serves, from its file at `path`:
+/// what picks drawn on an earlier revision are carried onto.
+///
+/// Checked against the checksum the ledger recorded for this revision,
+/// which is the only thing that can see a file edited in place and given
+/// back its old processing date.
+pub(super) fn current_axes(
+    project: &Project,
+    path: &std::path::Path,
+    entry: &super::catalog::CatalogEntry,
+) -> crate::interp::anchors::Axes {
+    let baseline = crate::project::revisions::ledger::read(project.documents())
+        .ok()
+        .and_then(|(l, _)| {
+            l.current(entry.radargram_id.as_str())
+                .and_then(|r| r.axis_checksum.clone())
+        });
+    crate::interp::anchors::axes_for_revision_checked(
+        path,
+        &entry.radargram_id,
+        &entry.revision_id,
+        baseline.as_deref(),
+    )
 }
 
 /// `GET …/interpretations/{user}/carried`: the picks as they would be drawn
@@ -1841,38 +1851,21 @@ pub async fn layer_usage(
     // Every entry, unlisted ones included. These counts exist to answer
     // "what would deleting this layer orphan", and an unlisted radargram's
     // picks are still picks -- an undercount here would let someone delete
-    // a layer believing nothing used it.
-    let catalog = state.catalog();
-    for entry in &catalog.entries {
-        let radargram = &entry.radargram_id;
-        // Skip and report (#213) rather than skip in silence.
-        let (users, unreadable) =
-            interpretations::list_users_checked(project.documents(), radargram)
-                .map_err(interpretation_error)?;
-        for stem in &unreadable {
-            tracing::warn!(
-                radargram = radargram.as_str(),
-                stem = stem.as_str(),
-                "skipping an interpretation whose filename is not a valid user id"
-            );
-        }
-        for user_id in users {
-            let Some(stored) = interpretations::read(project.documents(), radargram, &user_id)
-                .map_err(interpretation_error)?
-            else {
+    // a layer believing nothing used it. The same scan as the pick manager
+    // (#178), so a file it cannot read is skipped and logged rather than
+    // failing the page (#213).
+    let scan = super::pick_routes::scan_live(&state, project)?;
+    for row in scan.rows.iter().filter(|row| row.is_on_catalog()) {
+        for (label, features) in row.layer_counts() {
+            let Some(label) = label else {
                 continue;
             };
-            for feature in &stored.document.features {
-                let Some(label) = feature.label() else {
-                    continue;
-                };
-                let target = if set.get(label).is_some() {
-                    &mut counts
-                } else {
-                    &mut undefined
-                };
-                *target.entry(label.to_string()).or_insert(0) += 1;
-            }
+            let target = if set.get(label).is_some() {
+                &mut counts
+            } else {
+                &mut undefined
+            };
+            *target.entry(label.to_string()).or_insert(0) += features;
         }
     }
 

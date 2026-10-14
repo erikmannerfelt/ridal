@@ -327,6 +327,145 @@ class InterpretationList:
         )
 
 
+InterpretationState: TypeAlias = Literal[
+    "live", "stale", "ignored", "orphaned", "archived"
+]
+CoverageBasis: TypeAlias = Literal["current", "carried", "drawn", "uncarried"]
+
+
+@dataclass(frozen=True)
+class LayerSummary:
+    """One layer's picks within an :class:`InterpretationSummary`."""
+
+    layer: str | None
+    """The layer id, or ``None`` for unlabelled lines."""
+    features: int
+    vertices: int
+    coverage: float | None
+    """Percent of the radargram's traces under this layer's lines."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "LayerSummary":
+        return _parse(
+            "layer summary",
+            data,
+            lambda d: cls(
+                layer=d["layer"],
+                features=d["features"],
+                vertices=d["vertices"],
+                coverage=d["coverage"],
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class InterpretationSummary:
+    """One stored interpretation, as statistics rather than picks."""
+
+    radargram_id: str
+    display_name: str | None
+    group_name: str | None
+    user: str
+    state: InterpretationState
+    """``live`` on the current revision, ``stale`` on an earlier one,
+    ``ignored`` or ``orphaned`` when the radargram is not served, and
+    ``archived`` when a removal archived it."""
+    removal: str | None
+    """For an archived interpretation, the removal that archived it."""
+    revision_id: str | None
+    features: int
+    vertices: int
+    coverage: float | None
+    """Percent of the radargram's traces under at least one line, or
+    ``None`` with no radargram to measure against."""
+    traces: int | None
+    coverage_basis: CoverageBasis | None
+    """``current`` for picks on the current revision, ``carried`` when they
+    were carried onto it from an earlier one, ``drawn`` when they could not
+    be and were measured on the revision they were drawn on, ``uncarried``
+    when that revision was not kept either and they were measured as
+    stored."""
+    layers: tuple[LayerSummary, ...]
+    date_modified: str | None
+    version: str | None
+    bytes: int
+
+    @classmethod
+    def from_json(cls, data: Any) -> "InterpretationSummary":
+        return _parse(
+            "interpretation summary",
+            data,
+            lambda d: cls(
+                radargram_id=d["radargram_id"],
+                display_name=d["display_name"],
+                group_name=d["group_name"],
+                user=d["user"],
+                state=d["state"],
+                removal=d["removal"],
+                revision_id=d["revision_id"],
+                features=d["features"],
+                vertices=d["vertices"],
+                coverage=d["coverage"],
+                traces=d["traces"],
+                coverage_basis=d["coverage_basis"],
+                layers=tuple(LayerSummary.from_json(layer) for layer in d["layers"]),
+                date_modified=d["date_modified"],
+                version=d["version"],
+                bytes=d["bytes"],
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class UnreadableInterpretation:
+    """A stored interpretation the server could not summarize."""
+
+    path: str
+    reason: str
+
+    @classmethod
+    def from_json(cls, data: Any) -> "UnreadableInterpretation":
+        return _parse(
+            "unreadable interpretation",
+            data,
+            lambda d: cls(path=d["path"], reason=d["reason"]),
+        )
+
+
+@dataclass(frozen=True)
+class InterpretationSummaryList:
+    """``GET …/interpretations``: every interpretation the caller may know of."""
+
+    interpretations: tuple[InterpretationSummary, ...]
+    everyone: bool
+    """Whether these are everyone's, which takes ``operator``, or only the
+    caller's."""
+    may_download: bool
+    """Whether the caller may download an interpretation as a file."""
+    may_archive: bool
+    """Whether the caller may archive someone else's interpretation and
+    purge the archive, which takes ``admin``."""
+    unreadable: tuple[UnreadableInterpretation, ...]
+
+    @classmethod
+    def from_json(cls, data: Any) -> "InterpretationSummaryList":
+        return _parse(
+            "interpretation summaries",
+            data,
+            lambda d: cls(
+                interpretations=tuple(
+                    InterpretationSummary.from_json(row) for row in d["interpretations"]
+                ),
+                everyone=d["everyone"],
+                may_download=d["may_download"],
+                may_archive=d["may_archive"],
+                unreadable=tuple(
+                    UnreadableInterpretation.from_json(u) for u in d["unreadable"]
+                ),
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class Interpretation:
     """One person's picks on one radargram, as a gprinterp document.

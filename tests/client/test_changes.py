@@ -93,6 +93,15 @@ def test_picks_are_saved_carried_across_a_replace_and_promoted(
         with pytest.raises(errors.PreconditionFailed):
             client.save_interpretation(radargram_id, stored.document, etag=stored.etag)
 
+        # The pick manager's summary counts them, without returning them.
+        (row,) = client.interpretation_summaries().interpretations
+        assert (row.radargram_id, row.user, row.state) == (
+            radargram_id,
+            saved.user,
+            "live",
+        )
+        assert row.features == 1 and row.coverage is not None and row.coverage > 0
+
         # The picks come back as level 2 points with coordinates.
         points = client.level2(radargram_id)
         assert points.data["features"], "a picked line has points"
@@ -121,6 +130,9 @@ def test_picks_are_saved_carried_across_a_replace_and_promoted(
 
         # The picks are still drawn on the first revision, shown carried, and
         # can be adopted onto the new one.
+        (row,) = client.interpretation_summaries().interpretations
+        assert row.state == "stale" and row.revision_id == added.revision_id
+        assert row.coverage_basis == "carried" and row.coverage
         view = client.carried(radargram_id)
         assert view.document is not None
         assert view.report.to_revision == client.dataset(radargram_id).revision_id

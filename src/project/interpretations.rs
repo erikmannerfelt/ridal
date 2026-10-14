@@ -36,11 +36,17 @@ use crate::project::store::{DocumentStore, Expectation, StoreError, Version};
 /// Filename suffix, chosen so the gprinterp extension stays visible.
 pub const SUFFIX: &str = ".gprinterp.json";
 
+/// The directory under `interpretations/` that holds removed radargrams'
+/// picks. See [`archive_all`].
+const ARCHIVE_DIR: &str = "_archived";
+
 /// The stored form of one user's interpretation of one radargram.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredInterpretation {
     pub document: Document,
     pub version: Version,
+    /// Size of the file as stored.
+    pub bytes: usize,
 }
 
 #[derive(Debug)]
@@ -136,19 +142,107 @@ pub fn read(
     radargram: &RadargramId,
     user: &UserId,
 ) -> Result<Option<StoredInterpretation>, InterpretationError> {
-    let relative = path_of(radargram, user);
-    let Some(stored) = store.read(&relative)? else {
+    read_at(store, &path_of(radargram, user))
+}
+
+fn read_at(
+    store: &DocumentStore,
+    relative: &std::path::Path,
+) -> Result<Option<StoredInterpretation>, InterpretationError> {
+    let Some(stored) = store.read(relative)? else {
         return Ok(None);
     };
     let document =
         Document::from_json(&stored.text).map_err(|e| InterpretationError::Malformed {
-            path: store.root().join(&relative),
+            path: store.root().join(relative),
             message: e.to_string(),
         })?;
     Ok(Some(StoredInterpretation {
         document,
         version: stored.version,
+        bytes: stored.text.len(),
     }))
+}
+
+/// Every directory of live interpretations, named by radargram id.
+///
+/// Read from the disk rather than the catalog, which is the point: a
+/// directory whose radargram is no longer served still holds picks, and the
+/// pick manager has to be able to say so (#178). Names that are not a valid
+/// [`RadargramId`] are returned in the second list, as
+/// [`list_users_checked`] does for file names (#213).
+pub fn list_radargrams(
+    store: &DocumentStore,
+) -> Result<(Vec<RadargramId>, Vec<String>), InterpretationError> {
+    let mut readable = Vec::new();
+    let mut unreadable = Vec::new();
+    for name in store.list_subdirectories(&PathBuf::from(crate::project::INTERPRETATIONS_DIR))? {
+        if name == ARCHIVE_DIR {
+            continue;
+        }
+        match RadargramId::new(name.as_str()) {
+            Ok(id) => readable.push(id),
+            Err(_) => unreadable.push(name),
+        }
+    }
+    Ok((readable, unreadable))
+}
+
+/// One archived interpretation: whose, of what, and from which removal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Archived {
+    pub radargram: RadargramId,
+    /// The removal's directory name: the removal timestamp with `:` written
+    /// as `-`, and a `-2`, `-3`... suffix when removals shared a second.
+    pub removal: String,
+    pub user: UserId,
+}
+
+/// Every interpretation in the archive (#162), and the paths, relative to
+/// the archive, of files that could not be named.
+pub fn list_archived(
+    store: &DocumentStore,
+) -> Result<(Vec<Archived>, Vec<String>), InterpretationError> {
+    let base = PathBuf::from(crate::project::INTERPRETATIONS_DIR).join(ARCHIVE_DIR);
+    let mut archived = Vec::new();
+    let mut unreadable = Vec::new();
+    for radargram_name in store.list_subdirectories(&base)? {
+        let Ok(radargram) = RadargramId::new(radargram_name.as_str()) else {
+            unreadable.push(radargram_name);
+            continue;
+        };
+        let radargram_dir = base.join(&radargram_name);
+        for removal in store.list_subdirectories(&radargram_dir)? {
+            for stem in store.list_stems(&radargram_dir.join(&removal), SUFFIX)? {
+                match UserId::new(stem.as_str()) {
+                    Ok(user) => archived.push(Archived {
+                        radargram: radargram.clone(),
+                        removal: removal.clone(),
+                        user,
+                    }),
+                    Err(_) => unreadable.push(format!("{radargram_name}/{removal}/{stem}{SUFFIX}")),
+                }
+            }
+        }
+    }
+    Ok((archived, unreadable))
+}
+
+/// Read one archived interpretation, or `None` if it is not there.
+pub fn read_archived(
+    store: &DocumentStore,
+    archived: &Archived,
+) -> Result<Option<StoredInterpretation>, InterpretationError> {
+    read_at(store, &archived_path(archived))
+}
+
+/// Where an archived interpretation is, relative to the store.
+pub fn archived_path(archived: &Archived) -> PathBuf {
+    PathBuf::from(crate::project::INTERPRETATIONS_DIR)
+        .join(ARCHIVE_DIR)
+        .join(archived.radargram.as_str())
+        .join(&archived.removal)
+        .join(format!("{}{SUFFIX}", archived.user.as_str()))
 }
 
 /// Write one user's interpretation.
@@ -192,7 +286,7 @@ pub fn write(
 /// first.
 fn archive_directory(radargram: &RadargramId, at: &str) -> PathBuf {
     PathBuf::from(crate::project::INTERPRETATIONS_DIR)
-        .join("_archived")
+        .join(ARCHIVE_DIR)
         .join(radargram.as_str())
         // ':' is not a filename character on Windows, and an RFC 3339
         // timestamp is full of them.
@@ -249,7 +343,7 @@ pub fn count_archived(
     radargram: &RadargramId,
 ) -> Result<usize, InterpretationError> {
     let base = PathBuf::from(crate::project::INTERPRETATIONS_DIR)
-        .join("_archived")
+        .join(ARCHIVE_DIR)
         .join(radargram.as_str());
     let mut total = 0;
     for removal in store.list_subdirectories(&base)? {
@@ -353,6 +447,91 @@ pub fn archive_all(
     })
 }
 
+/// Move one user's interpretation into the archive (#178), returning where
+/// it went, or `None` when there was nothing to move.
+///
+/// What an administrator does to someone else's picks instead of deleting
+/// them: the document leaves the radargram, so it is no longer drawn,
+/// counted or exported, and stays attributed in the archive, where only a
+/// purge (#162) destroys it. The same rule as [`archive_all`] for a removed
+/// radargram, applied to one document.
+///
+/// `expected` is checked against the document before anything is copied,
+/// and the original is removed only at the version that was copied, so the
+/// archive holds exactly what left the radargram.
+pub fn archive_and_remove(
+    store: &DocumentStore,
+    radargram: &RadargramId,
+    user: &UserId,
+    at: &str,
+    expected: &Expectation,
+) -> Result<Option<PathBuf>, InterpretationError> {
+    let source = path_of(radargram, user);
+    let Some(stored) = store.read(&source)? else {
+        return Ok(None);
+    };
+    if let Expectation::Version(wanted) = expected {
+        if *wanted != stored.version {
+            return Err(InterpretationError::Store(StoreError::Conflict {
+                expected: expected.clone(),
+                actual: Some(stored.version),
+            }));
+        }
+    }
+    let destination =
+        free_archive_directory(store, radargram, at)?.join(format!("{}{SUFFIX}", user.as_str()));
+    // Copied before the original is removed, as in `archive_all`: a failure
+    // between the two leaves a duplicate rather than nothing.
+    store.write(&destination, &stored.text, &Expectation::Any)?;
+    store.remove(&source, &Expectation::Version(stored.version))?;
+    Ok(Some(destination))
+}
+
+/// Destroy archived interpretations (#162): every document from one removal
+/// of `radargram`, or only `user`'s. Returns whose were destroyed, empty
+/// when the removal does not exist.
+///
+/// `removal` is matched against the removals that exist rather than joined
+/// into a path, so a name off the wire can only ever select one of them.
+/// Files whose names are not a valid [`UserId`] are left in place, and so is
+/// the directory holding them.
+pub fn purge_archived(
+    store: &DocumentStore,
+    radargram: &RadargramId,
+    removal: &str,
+    user: Option<&UserId>,
+) -> Result<Vec<UserId>, InterpretationError> {
+    let base = PathBuf::from(crate::project::INTERPRETATIONS_DIR)
+        .join(ARCHIVE_DIR)
+        .join(radargram.as_str());
+    let Some(removal) = store
+        .list_subdirectories(&base)?
+        .into_iter()
+        .find(|existing| existing == removal)
+    else {
+        return Ok(Vec::new());
+    };
+    let directory = base.join(&removal);
+    let mut purged = Vec::new();
+    for stem in store.list_stems(&directory, SUFFIX)? {
+        let Ok(owner) = UserId::new(stem.as_str()) else {
+            continue;
+        };
+        if user.is_some_and(|wanted| *wanted != owner) {
+            continue;
+        }
+        if store.remove(
+            &directory.join(format!("{stem}{SUFFIX}")),
+            &Expectation::Any,
+        )? {
+            purged.push(owner);
+        }
+    }
+    store.remove_empty_dir(&directory)?;
+    store.remove_empty_dir(&base)?;
+    Ok(purged)
+}
+
 /// Delete one user's interpretation. Returns whether it existed.
 pub fn remove(
     store: &DocumentStore,
@@ -414,6 +593,116 @@ mod tests {
             .unwrap();
         assert_eq!(stored.document, document);
         assert_eq!(stored.version, version);
+    }
+
+    #[test]
+    fn the_archive_lists_by_removal_and_is_not_a_live_directory() {
+        let (_dir, project) = project();
+        let store = project.documents();
+        let (radargram, erik) = ids("dronbreen-0237", "erik");
+        let other = RadargramId::new("dronbreen-0238").unwrap();
+        for id in [&radargram, &other] {
+            write(
+                store,
+                id,
+                &erik,
+                &document(id.as_str()),
+                &Expectation::Absent,
+            )
+            .unwrap();
+        }
+        archive_all(store, &radargram, "2026-10-14T10:00:00Z").unwrap();
+
+        // The emptied directory may stay behind; the archive is never
+        // listed as a radargram, valid id or not.
+        let (live, bad) = list_radargrams(store).unwrap();
+        assert!(live.contains(&other));
+        assert!(bad.is_empty(), "{bad:?}");
+
+        let (archived, bad) = list_archived(store).unwrap();
+        assert!(bad.is_empty());
+        assert_eq!(
+            archived,
+            vec![Archived {
+                radargram: radargram.clone(),
+                removal: "2026-10-14T10-00-00Z".to_string(),
+                user: erik,
+            }]
+        );
+        let stored = read_archived(store, &archived[0]).unwrap().unwrap();
+        assert_eq!(stored.document.key, "dronbreen-0237");
+        assert!(stored.bytes > 0);
+    }
+
+    #[test]
+    fn archiving_one_moves_it_and_purging_destroys_only_what_was_named() {
+        let (_dir, project) = project();
+        let store = project.documents();
+        let (radargram, erik) = ids("dronbreen-0237", "erik");
+        let anna = UserId::new("anna").unwrap();
+        let version = write(
+            store,
+            &radargram,
+            &erik,
+            &document("dronbreen-0237"),
+            &Expectation::Absent,
+        )
+        .unwrap();
+        write(
+            store,
+            &radargram,
+            &anna,
+            &document("dronbreen-0237"),
+            &Expectation::Absent,
+        )
+        .unwrap();
+
+        // A stale version refuses and moves nothing.
+        let stale = Expectation::Version(Version::from_header("not-it"));
+        assert!(matches!(
+            archive_and_remove(store, &radargram, &erik, "2026-10-14T10:00:00Z", &stale),
+            Err(InterpretationError::Store(StoreError::Conflict { .. }))
+        ));
+        assert!(read(store, &radargram, &erik).unwrap().is_some());
+
+        let at = "2026-10-14T10:00:00Z";
+        let moved =
+            archive_and_remove(store, &radargram, &erik, at, &Expectation::Version(version))
+                .unwrap();
+        assert!(moved.is_some());
+        archive_and_remove(store, &radargram, &anna, at, &Expectation::Any).unwrap();
+        assert!(read(store, &radargram, &erik).unwrap().is_none());
+        let (archived, _) = list_archived(store).unwrap();
+        // One removal directory each: two archive events in one second do
+        // not share a directory.
+        let removals: Vec<_> = archived.iter().map(|a| a.removal.as_str()).collect();
+        assert_eq!(
+            removals,
+            vec!["2026-10-14T10-00-00Z", "2026-10-14T10-00-00Z-2"]
+        );
+
+        // Only a removal that exists can be named.
+        assert!(purge_archived(store, &radargram, "../..", None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            purge_archived(store, &radargram, "2026-10-14T10-00-00Z", Some(&anna)).unwrap(),
+            Vec::<UserId>::new()
+        );
+        assert_eq!(
+            purge_archived(store, &radargram, "2026-10-14T10-00-00Z", None).unwrap(),
+            vec![erik]
+        );
+        let (archived, _) = list_archived(store).unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].user, anna);
+        // The emptied removal directory is gone; the other one stays.
+        assert_eq!(
+            store
+                .list_subdirectories(&PathBuf::from("interpretations/_archived/dronbreen-0237"))
+                .unwrap(),
+            vec!["2026-10-14T10-00-00Z-2"]
+        );
     }
 
     #[test]

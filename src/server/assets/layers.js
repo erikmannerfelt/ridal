@@ -634,6 +634,8 @@ async function load() {
   // A separate document with a separate save; a failure of one must not stop
   // the other from working.
   await loadDerived();
+  // After the layers, which give the chips their colours.
+  await loadPicks();
 }
 
 const form = document.getElementById("add-layer");
@@ -916,6 +918,559 @@ async function loadDerived() {
     derivedItems = [];
   }
   renderDerived();
+}
+
+// ---------------------------------------------------------------------------
+// Pick manager (#178)
+//
+// Every stored interpretation the caller may know about, as statistics. The
+// server decides whose rows these are (an operator's are everyone's) and
+// never sends a coordinate; the actions offered on a row are the existing
+// routes', so what one may open or download is decided where it always was.
+
+const picksSection = document.getElementById("picks-section");
+const picksTable = document.querySelector("#picks-table tbody");
+const picksEmpty = document.getElementById("picks-empty");
+const picksError = document.getElementById("picks-error");
+const picksSummary = document.getElementById("picks-summary");
+const picksContributors = document.getElementById("picks-contributors");
+const picksFilterUser = document.getElementById("picks-filter-user");
+const picksFilterLayer = document.getElementById("picks-filter-layer");
+const picksFilterState = document.getElementById("picks-filter-state");
+const picksFilterText = document.getElementById("picks-filter-text");
+
+const PICK_STATES = {
+  live: { label: "Current", title: "Drawn on the radargram as it is now." },
+  stale: {
+    label: "Older revision",
+    title:
+      "Drawn on an earlier revision of the radargram. The viewer shows it carried onto the current one.",
+  },
+  ignored: {
+    label: "Ignored",
+    title: "The radargram is ignored, so it is not served. Lifting the ignore brings these back.",
+  },
+  orphaned: {
+    label: "No radargram",
+    title:
+      "No radargram with this id is served, and these were not archived by a removal: the file was moved or deleted on the server.",
+  },
+  archived: {
+    label: "Archived",
+    title: "Kept when the radargram was removed.",
+  },
+};
+
+let picks = {
+  interpretations: [],
+  everyone: false,
+  may_download: false,
+  may_archive: false,
+  unreadable: [],
+};
+let picksSort = { key: "radargram", descending: false };
+
+function showPicksError(message) {
+  picksError.textContent = message;
+  picksError.hidden = false;
+}
+
+function clearPicksError() {
+  picksError.hidden = true;
+  picksError.textContent = "";
+}
+
+/** A removal's directory name, `2026-10-14T10-00-00Z` with perhaps a `-2`,
+ * read back as the time it names. */
+function removalTime(removal) {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})/.exec(removal || "");
+  return match ? `${match[1]} ${match[2]}:${match[3]}` : removal || "";
+}
+
+function radargramLabel(row) {
+  return row.display_name || row.radargram_id;
+}
+
+function rowKey(row) {
+  return `${row.radargram_id}/${row.removal || ""}/${row.user}`;
+}
+
+/** Whether `row` is something the caller drew. Without accounts everyone is
+ * the local `default` user, which the server reports as the current user. */
+function isOwn(row) {
+  const current = window.RIDAL_LAYERS.currentUser;
+  return current !== null && row.user === current;
+}
+
+/** Whether the radargram behind `row` can be opened and its picks fetched
+ * through the ordinary routes. */
+function isServed(row) {
+  return row.state === "live" || row.state === "stale";
+}
+
+function formatCoverage(value) {
+  if (value == null) return "—";
+  // One decimal below 10 %, where a whole number would round a short line
+  // to nothing; whole percent above.
+  return value < 10 && value > 0 ? `${value.toFixed(1)} %` : `${Math.round(value)} %`;
+}
+
+function sortValue(row, key) {
+  switch (key) {
+    case "user":
+      return row.user;
+    case "features":
+      return row.features;
+    case "coverage":
+      return row.coverage == null ? -1 : row.coverage;
+    case "modified":
+      return row.date_modified || "";
+    case "state":
+      return Object.keys(PICK_STATES).indexOf(row.state);
+    default:
+      return radargramLabel(row).toLowerCase();
+  }
+}
+
+function filteredPicks() {
+  const user = picksFilterUser.value;
+  const layer = picksFilterLayer.value;
+  const state = picksFilterState.value;
+  const text = picksFilterText.value.trim().toLowerCase();
+  const rows = picks.interpretations.filter(
+    (row) =>
+      (!user || row.user === user) &&
+      (!layer || row.layers.some((l) => (l.layer || "") === layer)) &&
+      (!state || row.state === state) &&
+      (!text ||
+        row.radargram_id.toLowerCase().includes(text) ||
+        (row.display_name || "").toLowerCase().includes(text)),
+  );
+  const direction = picksSort.descending ? -1 : 1;
+  return rows.sort((a, b) => {
+    const left = sortValue(a, picksSort.key);
+    const right = sortValue(b, picksSort.key);
+    if (left < right) return -direction;
+    if (left > right) return direction;
+    return rowKey(a).localeCompare(rowKey(b));
+  });
+}
+
+function layerChip(entry) {
+  const chip = document.createElement("span");
+  chip.className = "group-chip";
+  const defined = entry.layer ? layerById(entry.layer) : null;
+  const swatch = document.createElement("span");
+  swatch.className = "layer-swatch";
+  swatch.style.background = defined?.color || "#888888";
+  const name = entry.layer ? defined?.name || entry.layer : "unlabelled";
+  if (!defined) chip.classList.add("group-chip-unknown");
+  chip.append(swatch, document.createTextNode(`${name} ${entry.features}`));
+  const lines = entry.features === 1 ? "line" : "lines";
+  chip.title =
+    `${entry.layer || "No layer"}: ${entry.features} ${lines} (${entry.vertices} vertices)` +
+    (entry.coverage == null ? "" : `, ${formatCoverage(entry.coverage)} of traces`) +
+    (entry.layer && !defined ? ". This layer is not defined." : "");
+  return chip;
+}
+
+function coverageCell(row) {
+  const cell = document.createElement("td");
+  cell.className = "picks-nowrap";
+  if (row.coverage == null) {
+    cell.textContent = "—";
+    cell.title = isServed(row)
+      ? "The revision these were drawn on was not kept, so there is nothing to measure against."
+      : "There is no radargram to measure against.";
+    return cell;
+  }
+  const bar = document.createElement("span");
+  bar.className = "coverage-bar";
+  const fill = document.createElement("span");
+  fill.style.width = `${Math.min(100, row.coverage)}%`;
+  bar.appendChild(fill);
+  const text = document.createElement("span");
+  text.textContent = formatCoverage(row.coverage);
+  cell.append(bar, text);
+  cell.title = `${formatCoverage(row.coverage)} of ${row.traces} traces have a picked line over them.`;
+  // Picks drawn on an earlier revision are measured as the viewer draws
+  // them, carried onto the current one. When they cannot be carried, the
+  // number is of the picks as stored, and the cell says it was not carried.
+  const basis = {
+    carried: [
+      "carried",
+      "Measured after carrying these picks onto the current revision, as the viewer shows them.",
+    ],
+    drawn: [
+      "not carried",
+      "These picks cannot be carried onto the current revision, so this is measured against the earlier revision they were drawn on.",
+    ],
+    uncarried: [
+      "not carried",
+      "These picks cannot be carried onto the current revision, and the revision they were drawn on was not kept, so this is measured with the picks where they are stored. It is only right if reprocessing did not change which trace is which.",
+    ],
+  }[row.coverage_basis];
+  if (basis) {
+    const note = document.createElement("span");
+    note.className = "picks-coverage-basis";
+    note.textContent = ` (${basis[0]})`;
+    cell.appendChild(note);
+    cell.title += ` ${basis[1]}`;
+  }
+  return cell;
+}
+
+function renderPickRow(row) {
+  const tr = document.createElement("tr");
+
+  const radargramCell = document.createElement("td");
+  if (isServed(row)) {
+    const link = document.createElement("a");
+    link.href = RIDAL.pagePath("view", row.radargram_id);
+    link.textContent = radargramLabel(row);
+    radargramCell.appendChild(link);
+  } else {
+    radargramCell.textContent = radargramLabel(row);
+  }
+  if (row.display_name) radargramCell.title = row.radargram_id;
+  tr.appendChild(radargramCell);
+
+  if (picks.everyone) {
+    const userCell = document.createElement("td");
+    userCell.textContent = row.user;
+    tr.appendChild(userCell);
+  }
+
+  const layersCell = document.createElement("td");
+  const chips = document.createElement("span");
+  chips.className = "picks-layer-chips";
+  chips.append(...row.layers.map(layerChip));
+  layersCell.appendChild(chips);
+  tr.appendChild(layersCell);
+
+  const linesCell = document.createElement("td");
+  linesCell.className = "picks-nowrap";
+  linesCell.textContent = `${row.features} (${row.vertices})`;
+  tr.appendChild(linesCell);
+
+  tr.appendChild(coverageCell(row));
+
+  const modifiedCell = document.createElement("td");
+  modifiedCell.className = "picks-nowrap";
+  modifiedCell.textContent = row.date_modified ? row.date_modified.slice(0, 10) : "—";
+  if (row.date_modified) modifiedCell.title = row.date_modified;
+  tr.appendChild(modifiedCell);
+
+  const stateCell = document.createElement("td");
+  const badge = document.createElement("span");
+  badge.className = `picks-state picks-state-${row.state}`;
+  const state = PICK_STATES[row.state] || { label: row.state, title: "" };
+  badge.textContent =
+    row.state === "archived" ? `${state.label} ${removalTime(row.removal)}` : state.label;
+  badge.title = state.title;
+  stateCell.appendChild(badge);
+  tr.appendChild(stateCell);
+
+  const actionCell = document.createElement("td");
+  const actions = document.createElement("span");
+  actions.className = "row-actions";
+  const archived = row.state === "archived";
+  if (picks.may_download) {
+    // Live picks are stored under the radargram's id whether or not it is
+    // served, so the ordinary download reaches orphaned ones too.
+    const download = document.createElement("a");
+    download.className = "button";
+    download.href = archived
+      ? RIDAL.apiPath("interpretations", "archived", row.radargram_id, row.removal, row.user)
+      : RIDAL.apiPath("datasets", row.radargram_id, "interpretations", row.user, "raw");
+    download.download = archived
+      ? `${row.radargram_id}.${row.user}.archived-${row.removal}.gprinterp.json`
+      : `${row.radargram_id}.${row.user}.gprinterp.json`;
+    download.textContent = "Download";
+    actions.appendChild(download);
+  }
+  if (!archived && isOwn(row) && row.version) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "danger";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => confirmDeletePicks(row, actions));
+    actions.appendChild(remove);
+  }
+  // Someone else's picks are archived, never deleted (#178): no one edits
+  // another person's interpretation, and the archive keeps it attributed.
+  if (!archived && !isOwn(row) && picks.may_archive && row.version) {
+    const archive = document.createElement("button");
+    archive.type = "button";
+    archive.className = "danger";
+    archive.textContent = "Archive";
+    archive.addEventListener("click", () => confirmArchivePicks(row, actions));
+    actions.appendChild(archive);
+  }
+  if (archived && picks.may_archive) {
+    const purge = document.createElement("button");
+    purge.type = "button";
+    purge.className = "danger";
+    purge.textContent = "Purge";
+    purge.addEventListener("click", () => confirmPurge(row, actions));
+    actions.appendChild(purge);
+  }
+  actionCell.appendChild(actions);
+  tr.appendChild(actionCell);
+  return tr;
+}
+
+function confirmDeletePicks(row, actionCell) {
+  confirmInRow(
+    actionCell,
+    `Delete your ${linesOf(row.features)} on '${radargramLabel(row)}'? This cannot be undone.`,
+    [["Delete", () => deletePicks(row)]],
+  );
+}
+
+function deletePicks(row) {
+  // Conditional on the version this page listed, so picks saved in
+  // another tab since then are not deleted unseen.
+  return changePicks("delete", "deleted", () =>
+    fetch(RIDAL.apiPath("datasets", row.radargram_id, "interpretations", row.user), {
+      method: "DELETE",
+      headers: { "If-Match": `"${row.version}"` },
+    }),
+  );
+}
+
+/** Replace a row's actions with a question and its answers. `choices` are
+ * `[label, onClick]`; Cancel puts the row back. */
+function confirmInRow(actionCell, question, choices) {
+  actionCell.replaceChildren();
+  const prompt = document.createElement("span");
+  prompt.className = "layer-panel-confirm";
+  prompt.textContent = question;
+  for (const [label, onClick] of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "danger";
+    button.textContent = label;
+    button.addEventListener("click", onClick);
+    prompt.appendChild(button);
+  }
+  const no = document.createElement("button");
+  no.type = "button";
+  no.textContent = "Cancel";
+  no.addEventListener("click", renderPicks);
+  prompt.appendChild(no);
+  actionCell.appendChild(prompt);
+}
+
+function linesOf(count) {
+  return `${count} ${count === 1 ? "line" : "lines"}`;
+}
+
+function confirmArchivePicks(row, actionCell) {
+  confirmInRow(
+    actionCell,
+    `Archive ${row.user}'s ${linesOf(row.features)} on '${radargramLabel(row)}'? ` +
+      "They stop being shown, counted and exported, and are kept in the archive until purged.",
+    [["Archive", () => archivePicks(row)]],
+  );
+}
+
+/** Send `request` and reload the list, reporting a refusal in the
+ * section's error box. `verb` and `done` name the action ("delete",
+ * "deleted") for the message. */
+async function changePicks(verb, done, request) {
+  clearPicksError();
+  try {
+    const response = await request();
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      const message = body?.error?.message || RIDAL.upstreamMessage(response.status);
+      showPicksError(
+        response.status === 412
+          ? `These picks were changed after this page loaded, so nothing was ${done}. The list has been reloaded.`
+          : `Could not ${verb}: ${message}`,
+      );
+    }
+  } catch (error) {
+    showPicksError(`Could not ${verb}: ${error.message}`);
+  }
+  await loadPicks();
+}
+
+function archivePicks(row) {
+  return changePicks("archive", "archived", () =>
+    fetch(RIDAL.apiPath("datasets", row.radargram_id, "interpretations", row.user, "archive"), {
+      method: "POST",
+      headers: { "If-Match": `"${row.version}"` },
+    }),
+  );
+}
+
+function confirmPurge(row, actionCell) {
+  // Everything archived by the same removal, so a whole removal can go at
+  // once: "the picks from before we reprocessed it" (#162).
+  const siblings = picks.interpretations.filter(
+    (other) =>
+      other.state === "archived" &&
+      other.radargram_id === row.radargram_id &&
+      other.removal === row.removal,
+  );
+  const when = removalTime(row.removal);
+  const choices = [["Purge", () => purgeArchived(row, false)]];
+  if (siblings.length > 1) {
+    const users = siblings.map((other) => other.user).join(", ");
+    choices.push([
+      `Purge all ${siblings.length} (${users})`,
+      () => purgeArchived(row, true),
+    ]);
+  }
+  confirmInRow(
+    actionCell,
+    `Permanently delete ${row.user}'s ${linesOf(row.features)} on '${row.radargram_id}', archived ${when}? This cannot be undone.`,
+    choices,
+  );
+}
+
+function purgeArchived(row, wholeRemoval) {
+  const segments = ["interpretations", "archived", row.radargram_id, row.removal];
+  if (!wholeRemoval) segments.push(row.user);
+  return changePicks("purge", "purged", () => fetch(RIDAL.apiPath(...segments), { method: "DELETE" }));
+}
+
+function renderPicksSummary(rows) {
+  const all = picks.interpretations;
+  const radargrams = new Set(all.filter(isServed).map((r) => r.radargram_id));
+  const lines = all.filter(isServed).reduce((sum, r) => sum + r.features, 0);
+  if (all.length === 0) {
+    picksSummary.textContent = "";
+  } else {
+    const shown = rows.length === all.length ? "" : ` Showing ${rows.length} of ${all.length}.`;
+    picksSummary.textContent =
+      `${lines} ${lines === 1 ? "line" : "lines"} on ${radargrams.size} ` +
+      `${radargrams.size === 1 ? "radargram" : "radargrams"} in the catalog.${shown}`;
+  }
+
+  // How many radargrams each contributor has picked: the contribution count
+  // #178 asks for, at a glance. Clicking one filters to them.
+  picksContributors.replaceChildren();
+  picksContributors.hidden = !picks.everyone || all.length === 0;
+  if (picksContributors.hidden) return;
+  const perUser = new Map();
+  for (const row of all.filter(isServed)) {
+    if (!perUser.has(row.user)) perUser.set(row.user, new Set());
+    perUser.get(row.user).add(row.radargram_id);
+  }
+  for (const [user, ids] of [...perUser].sort((a, b) => b[1].size - a[1].size)) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "group-chip";
+    if (picksFilterUser.value === user) chip.classList.add("group-chip-active");
+    chip.textContent = `${user}: ${ids.size} ${ids.size === 1 ? "radargram" : "radargrams"}`;
+    chip.title = `${user} has picks on ${ids.size} ${ids.size === 1 ? "radargram" : "radargrams"} in the catalog`;
+    chip.addEventListener("click", () => {
+      picksFilterUser.value = picksFilterUser.value === user ? "" : user;
+      renderPicks();
+    });
+    picksContributors.appendChild(chip);
+  }
+}
+
+function fillSelect(select, values, labelOf) {
+  const current = select.value;
+  const first = select.options[0];
+  select.replaceChildren(first);
+  for (const value of values) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = labelOf(value);
+    select.appendChild(option);
+  }
+  // Keep the choice if it is still there.
+  select.value = values.includes(current) ? current : "";
+}
+
+function renderPicksFilters() {
+  const rows = picks.interpretations;
+  document.getElementById("picks-filter-user-label").hidden = !picks.everyone;
+  fillSelect(picksFilterUser, [...new Set(rows.map((r) => r.user))].sort(), (u) => u);
+  const layerIds = [...new Set(rows.flatMap((r) => r.layers.map((l) => l.layer || "")))].sort();
+  fillSelect(picksFilterLayer, layerIds, (id) =>
+    id === "" ? "unlabelled" : layerById(id)?.name || id,
+  );
+  const states = Object.keys(PICK_STATES).filter((s) => rows.some((r) => r.state === s));
+  fillSelect(picksFilterState, states, (s) => PICK_STATES[s].label);
+}
+
+function renderPicks() {
+  const rows = filteredPicks();
+  for (const column of document.querySelectorAll(".picks-user-column")) {
+    column.hidden = !picks.everyone;
+  }
+  for (const th of document.querySelectorAll("#picks-table th[data-sort]")) {
+    const sorted = th.dataset.sort === picksSort.key;
+    th.setAttribute(
+      "aria-sort",
+      sorted ? (picksSort.descending ? "descending" : "ascending") : "none",
+    );
+  }
+  picksTable.replaceChildren(...rows.map(renderPickRow));
+  picksEmpty.hidden = rows.length > 0;
+  picksEmpty.textContent =
+    picks.interpretations.length === 0
+      ? picks.everyone
+        ? "No one has picked anything yet."
+        : "You have not picked anything yet."
+      : "Nothing matches these filters.";
+  renderPicksSummary(rows);
+
+  const unreadable = document.getElementById("picks-unreadable");
+  unreadable.hidden = picks.unreadable.length === 0;
+  document.getElementById("picks-unreadable-list").replaceChildren(
+    ...picks.unreadable.map((item) => {
+      const li = document.createElement("li");
+      const code = document.createElement("code");
+      code.textContent = item.path;
+      li.append(code, document.createTextNode(`: ${item.reason}`));
+      return li;
+    }),
+  );
+}
+
+async function loadPicks() {
+  if (!picksSection) return;
+  clearPicksError();
+  try {
+    picks = await RIDAL.fetchJson(RIDAL.apiPath("interpretations"));
+  } catch (error) {
+    showPicksError(`Could not load picks: ${error.message}`);
+    picks = {
+      interpretations: [],
+      everyone: false,
+      may_download: false,
+      may_archive: false,
+      unreadable: [],
+    };
+  }
+  renderPicksFilters();
+  renderPicks();
+}
+
+if (picksSection) {
+  for (const control of [picksFilterUser, picksFilterLayer, picksFilterState]) {
+    control.addEventListener("change", renderPicks);
+  }
+  picksFilterText.addEventListener("input", renderPicks);
+  for (const th of document.querySelectorAll("#picks-table th[data-sort]")) {
+    th.querySelector("button").addEventListener("click", () => {
+      const key = th.dataset.sort;
+      picksSort =
+        picksSort.key === key
+          ? { key, descending: !picksSort.descending }
+          : // Numbers read best largest first; names alphabetically.
+            { key, descending: ["features", "coverage", "modified"].includes(key) };
+      renderPicks();
+    });
+  }
 }
 
 load();

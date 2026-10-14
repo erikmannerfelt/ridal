@@ -537,6 +537,27 @@ impl DocumentStore {
         names.sort();
         Ok(names)
     }
+
+    /// Remove the directory at `relative` if it is empty. Returns whether
+    /// it was removed: one still holding anything, or already gone, is left
+    /// as it is and is not an error, so a caller can tidy up after removing
+    /// documents without first checking what else is there.
+    pub fn remove_empty_dir(&self, relative: &Path) -> Result<bool, StoreError> {
+        let path = self.path_of(relative)?;
+        let _guard = self.write_lock.lock().map_err(|_| StoreError::Poisoned)?;
+        match std::fs::remove_dir(&path) {
+            Ok(()) => Ok(true),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) =>
+            {
+                Ok(false)
+            }
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
 }
 
 /// Write `text` to a new file, created with `mode` if one is given.

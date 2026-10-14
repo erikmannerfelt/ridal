@@ -3152,3 +3152,27 @@ async fn the_axes_for_a_new_interpretation_are_served() {
     let (status, _, _) = get(&app, "/api/v1/datasets/nope/axes/gprinterp").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_pick_summary_measures_carried_picks_on_the_current_revision() {
+    // #178: coverage of picks drawn on an earlier revision is what the
+    // viewer shows of them, carried onto this one -- not a blank.
+    let (_dir, app) = project_app_with_axes();
+    let uri = "/api/v1/datasets/line-01/interpretations/default";
+    let axes = offered_axes(&app).await;
+    let document = document_with_axes(&axes, &[[5.0, 2.0], [30.0, 3.0]], "rev-from-elsewhere");
+    let (status, _, body) = put(&app, uri, &document, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, _, body) = get(&app, "/api/v1/interpretations").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = &body["interpretations"][0];
+    assert_eq!(row["state"], "stale", "{body}");
+    assert_eq!(row["coverage_basis"], "carried", "{body}");
+    assert_eq!(row["traces"], 40);
+    // Traces 5..=30 of 40, the same axes on both sides.
+    assert_eq!(row["coverage"], 65.0);
+    assert_eq!(row["layers"][0]["coverage"], 65.0);
+    assert_eq!(row["features"], 1);
+}
