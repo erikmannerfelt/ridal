@@ -1020,12 +1020,19 @@ pub mod ridal {
     ///     spec sets the view, extent, size and profile, so `profile`,
     ///     `width`, `quality` and `topo` cannot be given with it. A spec with
     ///     `"axes": false` also writes a `.json` sidecar beside the image.
+    /// project : path-like, optional
+    ///     With `figure`: the project directory the radargram belongs to. A
+    ///     figure's picks and derived layers are read from it, all of them,
+    ///     and the topographic view uses the radargram's elevation window
+    ///     from it. Needed when the spec asks for picks or derived layers.
     ///
     /// Returns
     /// -------
     /// dict
-    ///     `{"path": str, "width": int, "height": int, "profile": str}`. For a
-    ///     figure without axes, also `"sidecar": str`, the sidecar's path.
+    ///     `{"path": str, "width": int, "height": int, "profile": str}`. A
+    ///     figure also has `"warnings"`, a list of what could not be drawn
+    ///     as stored (picks that could not be carried to this revision), and
+    ///     one without axes `"sidecar"`, the sidecar's path.
     ///
     /// Raises
     /// ------
@@ -1036,7 +1043,7 @@ pub mod ridal {
     ///     not suit the file.
     /// ValueError
     ///     If `figure` is given together with `profile`, `width`, `quality` or
-    ///     `topo`.
+    ///     `topo`, or `project` without `figure`.
     ///
     /// Notes
     /// -----
@@ -1044,7 +1051,7 @@ pub mod ridal {
     /// `process()` or `batch_process()`; those accept the same `render_profile`,
     /// `render_width` and `render_topo` and go through this same pipeline.
     #[pyfunction]
-    #[pyo3(signature = (input, output=None, *, profile=None, width=None, quality=None, topo=false, figure=None))]
+    #[pyo3(signature = (input, output=None, *, profile=None, width=None, quality=None, topo=false, figure=None, project=None))]
     #[allow(clippy::too_many_arguments)]
     fn render(
         py: Python<'_>,
@@ -1055,10 +1062,17 @@ pub mod ridal {
         quality: Option<u8>,
         topo: bool,
         figure: Option<Py<PyAny>>,
+        project: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
         let input = fspath(py, input.bind(py))?;
+        if figure.is_none() && project.is_some() {
+            return Err(PyValueError::new_err(
+                "project= is where a figure's picks and derived layers come from; it needs \
+                 figure=",
+            ));
+        }
         if let Some(figure) = figure {
             if profile.is_some() || width.is_some() || quality.is_some() || topo {
                 return Err(PyValueError::new_err(
@@ -1085,19 +1099,23 @@ pub mod ridal {
                     input.with_file_name(format!("{stem}.figure.png"))
                 }
             };
-            let (w, h) = crate::render::figure::render_figure_path(&input, &output, &spec)
-                .map_err(PyRuntimeError::new_err)?;
+            let project = project.map(|p| fspath(py, p.bind(py))).transpose()?;
+            let written = crate::render::figure::render_figure_path(
+                &input,
+                &output,
+                &spec,
+                project.as_deref(),
+            )
+            .map_err(PyRuntimeError::new_err)?;
             let out = pyo3::types::PyDict::new(py);
             out.set_item("path", output.display().to_string())?;
-            out.set_item("width", w)?;
-            out.set_item("height", h)?;
+            out.set_item("width", written.width)?;
+            out.set_item("height", written.height)?;
             out.set_item("profile", &spec.profile)?;
-            if !spec.axes {
-                out.set_item(
-                    "sidecar",
-                    output.with_extension("json").display().to_string(),
-                )?;
+            if let Some(sidecar) = &written.sidecar {
+                out.set_item("sidecar", sidecar.display().to_string())?;
             }
+            out.set_item("warnings", written.warnings)?;
             return Ok(out.into_any().unbind());
         }
         let resolved =

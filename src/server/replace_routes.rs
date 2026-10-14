@@ -385,7 +385,7 @@ fn consequences(
         else {
             continue;
         };
-        let source = super::interp_routes::with_kept_axes(project, radargram, &stored.document);
+        let source = crate::interp::carry::with_kept_axes(project, radargram, &stored.document);
         let mut carried = crate::interp::carry::carry(&source, &to_axes, to_revision.as_str());
         super::interp_routes::add_processing_warnings(
             &mut carried,

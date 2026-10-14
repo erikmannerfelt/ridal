@@ -143,3 +143,11 @@ def test_render_figure_from_a_dict_or_a_spec_file(tmp_path):
         ridal.render(output, tmp_path / "x.png", figure=spec, topo=True)
     with pytest.raises(RuntimeError, match="spaceing"):
         ridal.render(output, tmp_path / "x.png", figure={"x_axis": {"spaceing": 1}})
+
+    # Picks come from a project: asked for without one, the figure is
+    # refused rather than drawn without them, and a project needs a figure.
+    with pytest.raises(RuntimeError, match="project"):
+        ridal.render(output, tmp_path / "x.png", figure={"picks": {"items": [{}]}})
+    with pytest.raises(ValueError, match="figure="):
+        ridal.render(output, tmp_path / "x.png", project=tmp_path)
+    assert svg["warnings"] == []

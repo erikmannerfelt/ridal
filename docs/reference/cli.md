@@ -383,6 +383,10 @@ Render the topographically corrected view instead of the standard one (#168). Fa
 Render an annotated figure described by this JSON figure spec: an excerpt with axes, ticks and labels, written as .svg or .png. The spec sets the view, extent, size, profile and styling, so --profile, --width, --quality and --topo are not used with it
 ```
 
+```{option} --project <DIR>
+With --figure: the project the radargram belongs to, which picks and derived layers are read from (all of them, as the files are readable anyway) and whose elevation window the topographic view uses
+```
+
 ```{option} -q, --quiet
 Suppress progress messages
 ```
