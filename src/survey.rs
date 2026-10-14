@@ -2,8 +2,8 @@
 //! and speed along it (#412), from its `distance` and `time` per trace.
 //!
 //! Medians, not means: a survey stops, turns, loses its GPS and stands
-//! still, and a mean of those would describe none of the survey (D5 in the
-//! 0.9.0 plan). Both leave out the intervals where it did not move, so
+//! still, and a mean of those would describe none of the survey (see
+//! `ARCHITECTURE.md`). Both leave out the intervals where it did not move, so
 //! traces recorded at a stop, which `remove_standstills` does not always
 //! take away, cannot pull them to zero.
 

@@ -312,6 +312,18 @@ directly), plus an optional CRS and DEM. The routes are in
   every source's. A DEM is checked with `gdalinfo` when its file is set,
   and setting or linking a source reads the recordings with it, so one that
   does not cover them is refused there rather than by a draft.
+- **What a radargram says of its antenna and survey** (#412). The
+  frequency it was processed as, from its `antenna` or an override, is
+  written to the `.nc` as `antenna_frequency` (MHz), and the recipe says
+  whether it was overridden; the viewer shows which. Writing it changed
+  what processing writes, hence `CORE_PROCESSING_VERSION` 2. Trace spacing
+  and survey speed are not stored: `survey::median_trace_spacing` and
+  `median_survey_speed` compute them from `distance` and `time` per trace
+  when the metadata is shown. **Medians, not means**, over the intervals
+  where the survey moved: a survey stops, turns, loses its GPS and stands
+  still, and a mean of those would describe none of it. Speed is taken
+  interval by interval rather than over windows, since every format Ridal
+  reads gives times finer than the trace interval.
 
 ## Processing profiles (#382)
 
@@ -336,6 +348,13 @@ a place or a year, and one profile (an antenna, a medium) spans many.
   /processing/assignments/{id}` refuses `no_source` without a source, as
   there would be nothing to process. One whose source is removed later
   stays, as `no_raw_data`.
+- **Removing a radargram takes it out of its profile; ignoring one does
+  not** (#409). `DELETE /datasets/{id}` on a file in the project's own
+  store calls `lifecycle_routes::take_out_of_profile`, as removing its
+  source does, since the profile would otherwise list a radargram that is
+  not there. On a file outside the store it only records an ignore, which
+  `restore` can lift, and the radargram comes back in the profile it was
+  in.
 - **Staleness is computed, never stored.** `processing::state_of` compares
   what a served file's recipe records (`io::read_recipe`) with what the
   radargram's profile and source say now: the profile version whose steps
@@ -509,6 +528,16 @@ Many recordings in, the radargrams they would make out
   recordings merge is `MergeKey::refusal`, which `GPR::merge` asks too,
   so the header check and the merge cannot drift. A join `MergeKey`
   refuses is not made, and is a problem.
+- **Antenna overrides are per antenna, as the headers name it** (#409):
+  `PlanRequest::antennas` maps each distinct antenna string to a
+  frequency and a separation, and the plan lists every antenna the
+  recordings name (`PlannedAntenna`) with what their files say of it.
+  Not one override per upload, which would be wrong for an upload that
+  mixes antennas, and not one per recording, which would ask the same
+  question once per file. They apply before grouping, so `{freq}` in an id
+  pattern, `per=freq` and merging see the overridden frequency, and each
+  output's source carries them as its own overrides, since the source is
+  the only place they come from (#415).
 - **Ids** render per output (`id_pattern::render_each_id`), so the plan
   shows each problem where it is rather than stopping at the first:
   a pattern that does not parse (with its character span), an invalid or
@@ -935,6 +964,26 @@ normalize → colormap → encode.** Everything lives under
   tokio tuning lifts. Tests use `#[serial_test::serial(netcdf)]` plus
   retry; a residual ~6% `Netcdf(-101)` flake is a known, documented
   symptom of this.
+
+## Server logging (#282, #391)
+
+`server::telemetry` installs the `tracing` subscriber both server commands
+start with, and everything goes to stderr for whoever runs the server:
+events the code raises, an access log (target `ridal::access`) and a
+heartbeat every `--heartbeat-seconds`.
+
+- **The access log names nobody.** One line per request: method, route
+  template (`/api/v1/datasets/{radargram_id}`, never the path), status and
+  time. No user, and no flag to add one; that waits until someone asks for
+  it. The template keeps ids out as well, and keeps the line shape fixed.
+- **Processing job lines do name the owner.** Started, finished, failed and
+  cancelled each carry `job`, `project`, `owner` and `radargram`. Jobs are
+  rare and deliberate, and who ran one is what answers "why did this job
+  fail". The two rules are kept apart on purpose: the access log is every
+  request, the job log is a handful of deliberate acts.
+- The heartbeat's numbers (`Heartbeat::peek`, without resetting the
+  counters `take` reports) are also served to server administrators at
+  `GET /api/v1/site/status` and shown in site settings with the queue.
 
 ## What was measured, and what it settled
 
