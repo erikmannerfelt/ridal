@@ -55,6 +55,7 @@ use crate::site::tokens;
         pick_routes::InterpretationSummary,
         pick_routes::LayerSummary,
         pick_routes::InterpretationState,
+        pick_routes::CoverageBasis,
         pick_routes::UnreadableInterpretation,
         lifecycle_routes::Added,
         RevisionDeclarations,

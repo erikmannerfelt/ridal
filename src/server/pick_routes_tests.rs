@@ -138,6 +138,7 @@ async fn a_saved_interpretation_is_summarized_with_its_coverage() {
     assert_eq!(row["features"], 3);
     assert_eq!(row["vertices"], 7);
     assert_eq!(row["traces"], 40);
+    assert_eq!(row["coverage_basis"], "current");
     // 0..=14 and 16..=24 are under some line, trace 15 is not: 24 of 40.
     assert_eq!(row["coverage"], 60.0);
     assert_eq!(row["layers"][0]["layer"], "bed");
@@ -154,8 +155,8 @@ async fn a_saved_interpretation_is_summarized_with_its_coverage() {
 #[serial_test::serial(netcdf)]
 async fn picks_on_an_older_revision_are_stale_and_measured_against_it() {
     let (dir, app) = project_app();
-    // No snapshot of `older` was kept, so there is no trace count for it,
-    // and the current revision's would be the wrong one.
+    // These carry no axes of their own and no snapshot of `older` was
+    // kept, so they cannot be carried.
     place(
         dir.path(),
         "line-01/default.gprinterp.json",
@@ -166,13 +167,16 @@ async fn picks_on_an_older_revision_are_stale_and_measured_against_it() {
     let row = &body["interpretations"][0];
     assert_eq!(row["state"], "stale", "{body}");
     assert_eq!(row["revision_id"], "older");
-    assert_eq!(row["coverage"], Value::Null);
-    assert_eq!(row["traces"], Value::Null);
+    // Measured as stored, against the current 40 traces, which is where the
+    // viewer draws them, and said to be uncarried.
+    assert_eq!(row["coverage_basis"], "uncarried");
+    assert_eq!(row["traces"], 40);
+    assert_eq!(row["coverage"], 60.0);
     assert_eq!(row["features"], 3);
 
-    // With the older revision's axes kept, coverage is measured against
-    // its 20 traces: all but the gap at trace 15, since the second bed
-    // line runs past the end and is clamped to it.
+    // With the older revision's axes kept but no anchor to carry through,
+    // coverage is measured as drawn, against its 20 traces: all but the gap
+    // at trace 15, since the second bed line is clamped to the end.
     let project = Project::discover(dir.path()).unwrap().unwrap();
     crate::project::revisions::put(
         project.documents(),
@@ -191,6 +195,7 @@ async fn picks_on_an_older_revision_are_stale_and_measured_against_it() {
     let row = &body["interpretations"][0];
     assert_eq!(row["traces"], 20, "{body}");
     assert_eq!(row["coverage"], 95.0);
+    assert_eq!(row["coverage_basis"], "drawn");
 }
 
 #[tokio::test]

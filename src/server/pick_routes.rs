@@ -16,9 +16,10 @@ use axum::Json;
 
 use super::app::AppState;
 use super::auth::Caller;
-use super::interp_routes::readable_project;
+use super::interp_routes::{self, readable_project};
 use super::routes::ApiError;
 use crate::identity::{RadargramId, UserId};
+use crate::interp::carry;
 use crate::project::interpretations::{self, InterpretationError, StoredInterpretation};
 use crate::project::pick_summary::{self, DocumentStats};
 use crate::project::roles::{DownloadScope, Role};
@@ -44,6 +45,25 @@ pub(super) enum InterpretationState {
     Orphaned,
     /// Archived when the radargram was removed.
     Archived,
+}
+
+/// What an interpretation's coverage was measured against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum CoverageBasis {
+    /// The current revision, which the picks were drawn on.
+    Current,
+    /// The current revision, after carrying picks drawn on an earlier one
+    /// onto it, as the viewer draws them.
+    Carried,
+    /// The earlier revision the picks were drawn on, because they could not
+    /// be carried onto the current one.
+    Drawn,
+    /// The current revision, with the picks as stored: they could not be
+    /// carried and the revision they were drawn on was not kept. This is
+    /// where the viewer draws another contributor's picks, and it is only
+    /// right if reprocessing did not change which trace is which.
+    Uncarried,
 }
 
 /// `GET /api/v1/interpretations`: one interpretation, as numbers.
@@ -76,6 +96,9 @@ pub(super) struct InterpretationSummary {
     /// The trace count `coverage` is measured against.
     #[schema(required = true)]
     traces: Option<usize>,
+    /// What `coverage` was measured against, or `null` with no coverage.
+    #[schema(required = true)]
+    coverage_basis: Option<CoverageBasis>,
     /// One entry per layer in use, unlabelled lines last.
     layers: Vec<LayerSummary>,
     /// When the document says it was last modified.
@@ -170,6 +193,7 @@ fn summary_row(
         vertices: stats.vertices,
         coverage: stats.coverage,
         traces: traces.filter(|_| stats.coverage.is_some()),
+        coverage_basis: None,
         layers: stats
             .layers
             .into_iter()
@@ -184,6 +208,26 @@ fn summary_row(
         version: Some(stored.version.to_string()),
         bytes: stored.bytes,
     }
+}
+
+/// `drawn`'s counts with `carried`'s coverage.
+///
+/// Counts describe what was drawn, so they come from the stored document;
+/// coverage describes what the viewer shows on the current revision, so it
+/// comes from the carried one. A line carrying dropped covers nothing.
+fn with_coverage_of(mut drawn: DocumentStats, carried: DocumentStats) -> DocumentStats {
+    drawn.coverage = carried.coverage;
+    for layer in &mut drawn.layers {
+        layer.coverage = Some(
+            carried
+                .layers
+                .iter()
+                .find(|c| c.layer == layer.layer)
+                .and_then(|c| c.coverage)
+                .unwrap_or(0.0),
+        );
+    }
+    drawn
 }
 
 impl Scan {
@@ -243,7 +287,9 @@ pub(super) fn scan_live(state: &AppState, project: &Project) -> Result<Scan, Api
                 NOT_A_USER_ID,
             );
         }
-        // One snapshot read per older revision, not per document.
+        // One file read per radargram and one snapshot read per older
+        // revision, not one per document.
+        let mut current_axes: Option<crate::interp::anchors::Axes> = None;
         let mut snapshot_traces: BTreeMap<String, Option<usize>> = BTreeMap::new();
         for user in users {
             let path = format!(
@@ -261,32 +307,94 @@ pub(super) fn scan_live(state: &AppState, project: &Project) -> Result<Scan, Api
                 .source
                 .as_ref()
                 .and_then(|s| s.revision_id.as_deref());
-            let (row_state, traces) = match entry {
+            let (row_state, stats, traces, basis) = match entry {
                 Some(entry) => match drawn_on {
                     Some(revision) if revision != entry.revision_id.as_str() => {
-                        // Picks are in the index space of the revision they
-                        // were drawn on, so that is what they cover.
-                        let traces =
-                            *snapshot_traces
-                                .entry(revision.to_string())
-                                .or_insert_with(|| {
-                                    revisions::get(store, &radargram, revision)
-                                        .ok()
-                                        .flatten()
-                                        .map(|snapshot| snapshot.n_traces())
-                                });
-                        (InterpretationState::Stale, traces)
+                        // Carried onto the current revision and measured
+                        // there, which is what the viewer draws. Only when
+                        // that is refused are they measured in the index
+                        // space they were drawn in, against the old
+                        // revision's kept axes.
+                        let axes = current_axes.get_or_insert_with(|| {
+                            match state.absolute_path(entry) {
+                                Ok(path) => interp_routes::current_axes(project, &path, entry),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        radargram = radargram.as_str(),
+                                        error = e.as_str(),
+                                        "cannot carry picks for the pick manager"
+                                    );
+                                    crate::interp::anchors::Axes::default()
+                                }
+                            }
+                        });
+                        let source = carry::with_kept_axes(project, &radargram, &stored.document);
+                        let carried = carry::carry(&source, axes, entry.revision_id.as_str());
+                        match carried.document {
+                            Some(document) => {
+                                let traces = entry.shape.1;
+                                let stats = with_coverage_of(
+                                    pick_summary::summarize(&stored.document, None),
+                                    pick_summary::summarize(&document, Some(traces)),
+                                );
+                                (
+                                    InterpretationState::Stale,
+                                    stats,
+                                    Some(traces),
+                                    CoverageBasis::Carried,
+                                )
+                            }
+                            None => {
+                                let kept = *snapshot_traces
+                                    .entry(revision.to_string())
+                                    .or_insert_with(|| {
+                                        revisions::get(store, &radargram, revision)
+                                            .ok()
+                                            .flatten()
+                                            .map(|snapshot| snapshot.n_traces())
+                                    });
+                                // With no kept axes either, measured as the
+                                // viewer draws another contributor's picks:
+                                // as stored, on the current revision.
+                                let (traces, basis) = match kept {
+                                    Some(traces) => (traces, CoverageBasis::Drawn),
+                                    None => (entry.shape.1, CoverageBasis::Uncarried),
+                                };
+                                (
+                                    InterpretationState::Stale,
+                                    pick_summary::summarize(&stored.document, Some(traces)),
+                                    Some(traces),
+                                    basis,
+                                )
+                            }
+                        }
                     }
-                    _ => (InterpretationState::Live, Some(entry.shape.1)),
+                    _ => {
+                        let traces = entry.shape.1;
+                        (
+                            InterpretationState::Live,
+                            pick_summary::summarize(&stored.document, Some(traces)),
+                            Some(traces),
+                            CoverageBasis::Current,
+                        )
+                    }
                 },
-                None if stored_overrides.ignored.contains_key(&radargram) => {
-                    (InterpretationState::Ignored, None)
-                }
-                None => (InterpretationState::Orphaned, None),
+                None if stored_overrides.ignored.contains_key(&radargram) => (
+                    InterpretationState::Ignored,
+                    pick_summary::summarize(&stored.document, None),
+                    None,
+                    CoverageBasis::Current,
+                ),
+                None => (
+                    InterpretationState::Orphaned,
+                    pick_summary::summarize(&stored.document, None),
+                    None,
+                    CoverageBasis::Current,
+                ),
             };
-            let stats = pick_summary::summarize(&stored.document, traces);
             let mut row = summary_row(&radargram, &user, &stored, stats, traces);
             row.state = row_state;
+            row.coverage_basis = row.coverage.map(|_| basis);
             if let Some(entry) = entry {
                 row.display_name = entry.display_name.as_ref().map(|n| n.to_string());
                 row.group_name = entry.group_name.as_ref().map(|n| n.to_string());

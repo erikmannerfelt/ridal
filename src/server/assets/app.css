@@ -1548,7 +1548,9 @@ button.danger:disabled {
   gap: var(--space-2);
 }
 
-.row-actions button {
+/* A link styled as one of the buttons, for an action that is a download. */
+.row-actions button,
+.row-actions a.button {
   padding: var(--space-1) var(--space-2);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
@@ -1558,9 +1560,11 @@ button.danger:disabled {
   font-size: var(--text-sm);
   white-space: nowrap;
   cursor: pointer;
+  text-decoration: none;
 }
 
-.row-actions button:hover {
+.row-actions button:hover,
+.row-actions a.button:hover {
   border-color: var(--color-accent);
 }
 
@@ -1622,6 +1626,120 @@ button.danger:disabled {
 
 .group-chip-unknown {
   color: var(--color-warning-text);
+}
+
+/* The pick manager (#178). Contributor chips are buttons that filter. */
+button.group-chip {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+button.group-chip:hover,
+.group-chip-active {
+  border-color: var(--color-accent);
+}
+
+.group-chip-active {
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+}
+
+.picks-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: end;
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+}
+
+.picks-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+}
+
+/* The same small controls as the catalog's `.controls`. */
+.picks-filters select,
+.picks-filters input {
+  font: inherit;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* A date or a percentage broken over two lines reads as two values. */
+.picks-nowrap {
+  white-space: nowrap;
+}
+
+/* Sortable headers: the button is the header's text, not a control box. */
+.picks-table th[data-sort] button {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.picks-table th[aria-sort="ascending"] button::after {
+  content: " \25B2";
+}
+
+.picks-table th[aria-sort="descending"] button::after {
+  content: " \25BC";
+}
+
+.picks-layer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.picks-layer-chips .group-chip {
+  padding: 0 var(--space-2);
+}
+
+.coverage-bar {
+  display: inline-block;
+  width: 4rem;
+  height: 0.5rem;
+  margin-right: var(--space-2);
+  border-radius: 999px;
+  background: var(--color-surface-sunken);
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.coverage-bar span {
+  display: block;
+  height: 100%;
+  background: var(--color-accent);
+}
+
+.picks-coverage-basis {
+  color: var(--color-warning-text);
+  font-size: var(--text-sm);
+}
+
+.picks-state {
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.picks-state-stale,
+.picks-state-ignored,
+.picks-state-orphaned {
+  color: var(--color-warning-text);
+}
+
+.picks-state-archived {
+  color: var(--color-text-muted);
 }
 
 .group-chip-remove {

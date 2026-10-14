@@ -330,6 +330,7 @@ class InterpretationList:
 InterpretationState: TypeAlias = Literal[
     "live", "stale", "ignored", "orphaned", "archived"
 ]
+CoverageBasis: TypeAlias = Literal["current", "carried", "drawn", "uncarried"]
 
 
 @dataclass(frozen=True)
@@ -378,6 +379,12 @@ class InterpretationSummary:
     """Percent of the radargram's traces under at least one line, or
     ``None`` with no radargram to measure against."""
     traces: int | None
+    coverage_basis: CoverageBasis | None
+    """``current`` for picks on the current revision, ``carried`` when they
+    were carried onto it from an earlier one, ``drawn`` when they could not
+    be and were measured on the revision they were drawn on, ``uncarried``
+    when that revision was not kept either and they were measured as
+    stored."""
     layers: tuple[LayerSummary, ...]
     date_modified: str | None
     version: str | None
@@ -400,6 +407,7 @@ class InterpretationSummary:
                 vertices=d["vertices"],
                 coverage=d["coverage"],
                 traces=d["traces"],
+                coverage_basis=d["coverage_basis"],
                 layers=tuple(LayerSummary.from_json(layer) for layer in d["layers"]),
                 date_modified=d["date_modified"],
                 version=d["version"],

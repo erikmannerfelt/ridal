@@ -599,6 +599,16 @@
           }
         }
       },
+      "CoverageBasis": {
+        "type": "string",
+        "description": "What an interpretation's coverage was measured against.",
+        "enum": [
+          "current",
+          "carried",
+          "drawn",
+          "uncarried"
+        ]
+      },
       "CreateTokenBody": {
         "type": "object",
         "description": "The body of `POST /api/v1/tokens`.",
@@ -1642,6 +1652,7 @@
           "vertices",
           "coverage",
           "traces",
+          "coverage_basis",
           "layers",
           "date_modified",
           "version",
@@ -1709,6 +1720,17 @@
             ],
             "description": "The trace count `coverage` is measured against.",
             "minimum": 0
+          },
+          "coverage_basis": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CoverageBasis",
+                "description": "What `coverage` was measured against, or `null` with no coverage."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "layers": {
             "type": "array",

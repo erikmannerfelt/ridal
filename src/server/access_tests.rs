@@ -8658,3 +8658,25 @@ async fn the_pick_summary_shows_a_picker_their_own_and_an_operator_everyones() {
     assert_eq!(users_of(&anonymous.body), Vec::<String>::new());
     assert_eq!(anonymous.body["everyone"], false);
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_pick_manager_is_on_the_layers_page_for_anyone_who_can_pick() {
+    // A viewer has nothing of their own to manage and may not see anyone
+    // else's statistics, so the section is not drawn for them at all.
+    let hash = password_hash();
+    let (_dir, app) = app_with(vec![
+        activated("vera", Role::Viewer, DownloadScope::All, &hash),
+        activated("pia", Role::Picker, DownloadScope::None, &hash),
+    ]);
+    let vera = sign_in(&app, "vera").await;
+    let page = get(&app, "/layers", Some(&vera)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(!page.text.contains("picks-section"), "{}", page.text);
+
+    let pia = sign_in(&app, "pia").await;
+    let page = get(&app, "/layers", Some(&pia)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text.contains("id=\"picks-section\""));
+    assert!(page.text.contains("currentUser: \"pia\""));
+}

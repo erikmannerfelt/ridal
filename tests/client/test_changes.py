@@ -132,6 +132,7 @@ def test_picks_are_saved_carried_across_a_replace_and_promoted(
         # can be adopted onto the new one.
         (row,) = client.interpretation_summaries().interpretations
         assert row.state == "stale" and row.revision_id == added.revision_id
+        assert row.coverage_basis == "carried" and row.coverage
         view = client.carried(radargram_id)
         assert view.document is not None
         assert view.report.to_revision == client.dataset(radargram_id).revision_id

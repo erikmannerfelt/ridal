@@ -163,12 +163,79 @@
     </div>
     <p id="derived-empty" class="empty" hidden>No derived items defined yet.</p>
   </section>
+
+  {#- The pick manager (#178). Statistics about stored picks, never the picks
+      themselves: an operator sees everyone's rows, anyone else their own,
+      and opening or downloading the picks behind a row is still decided by
+      the download scope. Shown to anyone who can pick, so a picker has one
+      place to see what they have done. -#}
+  {% if project and can_pick %}
+  <section id="picks-section">
+    <h2>Pick manager<a class="docs-help" href="{{ docs_base|safe }}guide/interpretation.html#the-pick-manager"
+           target="_blank" rel="noopener" title="The pick manager in the documentation">?</a></h2>
+    <p class="lede" id="picks-lede">
+      {%- if writable %}
+        Every contributor's picks, as counts. <strong>Coverage</strong> is
+        the share of a radargram's traces with a picked line over them.
+      {%- else %}
+        Your picks, as counts. <strong>Coverage</strong> is the share of a
+        radargram's traces with a picked line over them.
+      {%- endif %}
+    </p>
+    <div id="picks-error" class="warning" hidden></div>
+    <p id="picks-summary" class="hint"></p>
+    <div id="picks-contributors" class="group-chips" hidden></div>
+    <div class="picks-filters" id="picks-filters">
+      <label id="picks-filter-user-label" hidden>Contributor
+        <select id="picks-filter-user"><option value="">Everyone</option></select>
+      </label>
+      <label>Layer
+        <select id="picks-filter-layer"><option value="">Any</option></select>
+      </label>
+      <label>State
+        <select id="picks-filter-state"><option value="">Any</option></select>
+      </label>
+      <label>Radargram
+        <input type="search" id="picks-filter-text" placeholder="Name or id" autocomplete="off">
+      </label>
+    </div>
+    <div class="table-scroll">
+    <table id="picks-table" class="layers-table picks-table">
+      <thead>
+        <tr>
+          <th scope="col" data-sort="radargram"><button type="button">Radargram</button></th>
+          <th scope="col" data-sort="user" class="picks-user-column" hidden><button type="button">Contributor</button></th>
+          <th scope="col">Layers</th>
+          <th scope="col" data-sort="features" title="Picked lines, and in brackets their vertices"><button type="button">Lines (vertices)</button></th>
+          <th scope="col" data-sort="coverage" title="The share of the radargram's traces with at least one picked line over them"><button type="button">Coverage</button></th>
+          <th scope="col" data-sort="modified"><button type="button">Modified</button></th>
+          <th scope="col" data-sort="state"><button type="button">State</button></th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <p id="picks-empty" class="empty" hidden></p>
+    <details id="picks-unreadable" hidden>
+      <summary>Files that could not be read</summary>
+      <p class="hint">
+        These are in the project's <code>interpretations/</code> directory
+        but are not counted above.
+      </p>
+      <ul id="picks-unreadable-list"></ul>
+    </details>
+  </section>
+  {% endif %}
 {% endblock %}
 {% block extrascript %}
   {#- The only inline JS on this page: a server-side value layers.js cannot
       know. Matches the viewer's convention so both pages read the same way. -#}
   <script>
-    window.RIDAL_LAYERS = { writable: {% if writable %}true{% else %}false{% endif %} };
+    window.RIDAL_LAYERS = {
+      writable: {% if writable %}true{% else %}false{% endif %},
+      currentUser: {% if current_user %}"{{ current_user }}"{% else %}null{% endif %},
+    };
   </script>
   <script src="/static/layers.js"></script>
 {% endblock %}
