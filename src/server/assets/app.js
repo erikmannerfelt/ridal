@@ -1721,7 +1721,10 @@ const RIDAL = Object.freeze({
    *
    * What it knows about steps is the registry's, written into the page by
    * process_dialog.html.jinja; without it the box stays plain. It only
-   * colours and explains: the server still parses and checks the steps. */
+   * colours and explains: the server still parses and checks the steps.
+   *
+   * `RIDAL.stepsEditor.highlight(text, preProfile)` gives the same colours
+   * as HTML, for steps that are shown rather than edited. */
   stepsEditor: (function () {
     let catalog = null;
     function steps() {
@@ -1771,7 +1774,7 @@ const RIDAL = Object.freeze({
           list.push(step);
           tokens.push({ kind: "step", start: i, end: j, step });
         } else if (text[j] === "=") {
-          tokens.push({ kind: "name", start: i, end: j });
+          tokens.push({ kind: "name", start: i, end: j, step });
           if (step) step.args.push({ name: word, start: i, end: j });
         } else {
           let k = i - 1;
@@ -1851,20 +1854,57 @@ const RIDAL = Object.freeze({
       return `<p><code class="steps-help-signature">${RIDAL.escapeHtml(info.signature)}</code> ${RIDAL.escapeHtml(summary)} <a href="${docs}" target="_blank" rel="noopener">More in the documentation</a></p>${args ? `<ul>${args}</ul>` : ""}`;
     }
 
+    /* The steps as HTML, every token escaped and coloured, a step that does
+     * not exist or may not run here marked. Also `stepsEditor.highlight`,
+     * for steps shown rather than edited. */
+    function highlight(text, preProfile) {
+      const byName = new Map(steps().map((s) => [s.name, s]));
+      const { tokens } = scan(text);
+      let html = "";
+      let at = 0;
+      for (const token of tokens) {
+        html += RIDAL.escapeHtml(text.slice(at, token.start));
+        const word = RIDAL.escapeHtml(text.slice(token.start, token.end));
+        let kind = {
+          punct: "tok-op",
+          name: "tok-keyword",
+          number: "tok-number",
+          value: "tok-string",
+        }[token.kind];
+        // Without the catalog (a page for someone who cannot process, which
+        // has no process dialog) a step is coloured but not judged.
+        if (token.kind === "step") {
+          const info = byName.get(token.step.name);
+          const wrong = byName.size > 0 && problem(token.step, info, preProfile);
+          kind = wrong ? "tok-error" : "tok-builtin";
+        }
+        // An argument the step does not have, named. The step's help lists
+        // the ones it does.
+        if (token.kind === "name" && token.step) {
+          const info = byName.get(token.step.name);
+          const name = text.slice(token.start, token.end);
+          if (info && !info.arguments.some((a) => a.name === name)) kind = "tok-error";
+        }
+        html += `<span class="${kind}">${word}</span>`;
+        at = token.end;
+      }
+      return html + RIDAL.escapeHtml(text.slice(at));
+    }
+
     let count = 0;
 
-    return function attach(textarea, options = {}) {
+    function attach(textarea, options = {}) {
       if (!textarea || steps().length === 0) return;
       const preProfile = Boolean(options.preProfile);
       const byName = new Map(steps().map((s) => [s.name, s]));
 
       const wrapper = document.createElement("div");
       wrapper.className = "editor-input steps-editor";
-      const highlight = document.createElement("pre");
-      highlight.className = "steps-highlight";
-      highlight.setAttribute("aria-hidden", "true");
+      const overlay = document.createElement("pre");
+      overlay.className = "steps-highlight";
+      overlay.setAttribute("aria-hidden", "true");
       textarea.before(wrapper);
-      wrapper.append(highlight, textarea);
+      wrapper.append(overlay, textarea);
       textarea.classList.add("steps-input");
       const help = document.createElement("div");
       count += 1;
@@ -1877,29 +1917,11 @@ const RIDAL = Object.freeze({
 
       function refresh() {
         const text = textarea.value;
-        const { tokens, list } = scan(text);
-        let html = "";
-        let at = 0;
-        for (const token of tokens) {
-          html += RIDAL.escapeHtml(text.slice(at, token.start));
-          const word = RIDAL.escapeHtml(text.slice(token.start, token.end));
-          let kind = {
-            punct: "tok-op",
-            name: "tok-keyword",
-            number: "tok-number",
-            value: "tok-string",
-          }[token.kind];
-          if (token.kind === "step") {
-            const info = byName.get(token.step.name);
-            kind = problem(token.step, info, preProfile) ? "tok-error" : "tok-builtin";
-          }
-          html += `<span class="${kind}">${word}</span>`;
-          at = token.end;
-        }
+        const { list } = scan(text);
         // The trailing newline keeps a last empty line as tall as the
         // textarea's, so the two stay aligned as it scrolls.
-        highlight.innerHTML = `${html}${RIDAL.escapeHtml(text.slice(at))}\n`;
-        highlight.scrollTop = textarea.scrollTop;
+        overlay.innerHTML = `${highlight(text, preProfile)}\n`;
+        overlay.scrollTop = textarea.scrollTop;
 
         const caret = textarea.selectionStart;
         const here = list.find((s) => s.start <= caret && caret <= s.end);
@@ -1934,10 +1956,13 @@ const RIDAL = Object.freeze({
         textarea.addEventListener(type, refresh);
       }
       textarea.addEventListener("scroll", () => {
-        highlight.scrollTop = textarea.scrollTop;
+        overlay.scrollTop = textarea.scrollTop;
       });
       refresh();
-    };
+    }
+
+    attach.highlight = highlight;
+    return attach;
   })(),
 });
 
