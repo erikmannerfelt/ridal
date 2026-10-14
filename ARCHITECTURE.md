@@ -1460,10 +1460,6 @@ registrations in `interp::derive`. The preview response also carries
 `contributors`, and the editor appends "over N contributors" to the preview
 line, so the count is visible where the expression is read.
 
-`scripts/panel_harness.py` drives these through headless Chromium and a
-same-origin iframe harness; see its module doc for the virtual-time and
-request-counting traps.
-
 ### Where derived items are managed, and why in two places
 
 The viewer's layer panel is the **main** place to create, edit and delete a
