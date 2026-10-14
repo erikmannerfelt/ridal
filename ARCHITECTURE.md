@@ -590,12 +590,13 @@ two ends of that request are one type.
   run several requests at once (`_client._map`, #346) without the layer
   changing; that is why `httpx` was chosen over `urllib`, at the cost of a
   dependency.
-- **Uploads stay one at a time.** The add and stage routes hold the
-  lifecycle lock while the body streams, because measuring the room left
-  and installing the file are one decision. Concurrent uploads would only
-  queue there, and a queued body sends nothing for long enough to hit the
-  client's timeout. Making them concurrent means reserving room under the
-  lock and streaming outside it, on the server.
+- **`apply` uploads one file at a time.** The server no longer makes
+  uploads wait for each other: the add and stage routes measure the room
+  under the lifecycle lock, stream the body outside it, and measure again
+  under the lock before installing (#413, #420). That second check is why
+  the client stays serial: several files sent at once could each pass the
+  first check and then be refused at the end, and staged replacements
+  would pile up against the project's size limit.
 - **Dependencies are extras.** `ridal[client]` is `httpx`; `ridal[geo]`
   is pandas and geopandas, imported only inside `to_pandas()` and
   `to_geopandas()`. The base install stays numpy only. Progress is a
@@ -961,9 +962,11 @@ normalize → colormap → encode.** Everything lives under
   two seconds only, so a grandchild still holding them cannot keep a slot.
 - **netcdf-c/HDF5 is not thread-safe.** A global lock serialises every
   netcdf call, which is a hard ceiling on read parallelism no amount of
-  tokio tuning lifts. Tests use `#[serial_test::serial(netcdf)]` plus
-  retry; a residual ~6% `Netcdf(-101)` flake is a known, documented
-  symptom of this.
+  tokio tuning lifts. Tests that open NetCDF files are
+  `#[serial_test::serial(netcdf)]`. A `Netcdf(-101)` is not a known flake:
+  the one that was, a child process inheriting HDF5's `flock` on an open
+  file, is fixed by starting every tool through `tools::spawn_tool` (#324),
+  so one now means something new is wrong.
 
 ## Server logging (#282, #391)
 
@@ -997,8 +1000,9 @@ catalog (12187×3678):
 - The one expensive request is a **cold overview at ~1.8 s** — this is
   index first-paint cost, not a viewer responsiveness problem.
 - The warm/cold ratio is **~9000×**, which is why persisting renders
-  across restarts (an on-disk cache) matters more than any further
-  rendering optimisation.
+  across restarts matters more than any further rendering optimisation.
+  Overviews are now kept on disk (`server::overview_cache`, #180); chunks
+  are not, being cheap and far too many.
 
 Measured again when the viewer cap was removed, on the same file: a
 cold overview costs 13.9 s, the full 720-chunk grid 37.7 s, and the
@@ -1148,25 +1152,12 @@ Durable, load-bearing decisions rather than oversights:
   It's reserved for a deferred HDF5-chunk-aligned source-read cache and
   is not even exposed as a CLI flag today — always its default value.
 
-Not yet implemented, in rough priority order given the measurements
-above:
-
-1. **On-disk render cache**, keyed on `RevisionId` so reprocessing
-   invalidates it correctly. Now the highest-value remaining item — see
-   [What was measured](#what-was-measured-and-what-it-settled).
-2. **Digitization** — picking, editing, and persisting interpreted
-   reflector layers in the viewer, with user-editable layer names and
-   colours (a fixed server-side vocabulary will not survive contact
-   with real interpretation work). This is the actual point of building
-   a viewer at all; everything above is scaffolding for it. Needs a
-   write path and a real persistence/authorship model, which nothing
-   built so far requires.
-3. **User-defined render profiles**, named/validated/persisted
-   server-side rather than accepted as free-form per-request
-   parameters — the latter is explicitly rejected, since
-   `?min=…&max=…&contrast=…` on every chunk request would make each one
-   a distinct, uncacheable render variant and let a client trivially
-   thrash the cache.
+Not yet implemented: **user-defined render profiles**, named, validated
+and persisted server-side beside the built-in ones (`RenderProfile::by_name`)
+rather than accepted as free-form per-request parameters. The latter is
+explicitly rejected, since `?min=…&max=…&contrast=…` on every chunk request
+would make each one a distinct, uncacheable render variant and let a client
+trivially thrash the cache.
 
 ## Topographic correction
 
