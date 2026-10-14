@@ -1003,6 +1003,7 @@ mod tests {
                     y_anchor: None,
                     kept: 0,
                     dropped: Vec::new(),
+                    clipped: Vec::new(),
                     moved: None,
                     refusal: None,
                     headline: String::new(),

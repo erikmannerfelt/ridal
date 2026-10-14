@@ -408,6 +408,7 @@ impl AppState {
         // add or remove anything through the GUI, and those are exactly
         // the ones whose history would otherwise stay empty forever.
         state.register_current_revisions(&state.catalog());
+        state.keep_new_axes(&state.catalog());
         Ok(state)
     }
 
@@ -570,6 +571,7 @@ impl AppState {
         }
 
         self.register_current_revisions(&catalog);
+        self.keep_new_axes(&catalog);
         self.replace_catalog(catalog, radargrams);
         Ok(())
     }
@@ -617,6 +619,77 @@ impl AppState {
             }
         }) {
             eprintln!("Warning: could not record the catalog's current revisions: {e}");
+        }
+    }
+
+    /// Keep the axes of every catalogued revision that has none kept yet
+    /// (#434).
+    ///
+    /// Ridal keeps a revision's axes when it supersedes or removes it, but a
+    /// radargram reprocessed and replaced on disk is never superseded: the
+    /// next discovery simply finds a new revision. A document that carries
+    /// no anchors of its own -- saved before the picker wrote them, or made
+    /// by `misc/convert_legacy_interpretations.py` -- is then drawn on a
+    /// revision whose mapping is gone, and can never be carried again.
+    /// Taking the snapshot when a revision is first seen closes that, for
+    /// every revision from now on.
+    ///
+    /// Once per revision: one file's axes read the first time it is
+    /// discovered, and a file check every time after. Done here rather than
+    /// in the background so that what discovery has seen is kept before a
+    /// removal can race it to the same snapshot.
+    ///
+    /// Best effort, like [`Self::register_current_revisions`]: a file that
+    /// cannot be read, or a store that cannot be written, is reported and
+    /// skipped rather than failing discovery.
+    fn keep_new_axes(&self, catalog: &Catalog) {
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let store = project.documents();
+        let mut kept = Vec::new();
+        for entry in &catalog.entries {
+            let (id, revision) = (&entry.radargram_id, entry.revision_id.as_str());
+            if crate::project::revisions::has(store, id, revision) {
+                continue;
+            }
+            let Ok(path) = self.absolute_path(entry) else {
+                continue;
+            };
+            // `None` is a file that declares no axes: nothing to keep, and
+            // nothing worth a line on every discovery.
+            let snapshot = match super::lifecycle_routes::read_axis_snapshot(id, &path, revision) {
+                Ok(Some(snapshot)) => snapshot,
+                Ok(None) => continue,
+                Err(problem) => {
+                    eprintln!("Warning: {problem}");
+                    continue;
+                }
+            };
+            let (snapshot, facts) = snapshot;
+            let checksum = snapshot.checksum();
+            if let Err(e) = crate::project::revisions::put(store, id, &snapshot) {
+                eprintln!("Warning: the axes of '{id}' could not be kept: {e}");
+                continue;
+            }
+            kept.push((
+                id.as_str().to_string(),
+                revision.to_string(),
+                checksum,
+                facts,
+            ));
+        }
+        if kept.is_empty() {
+            return;
+        }
+        use crate::project::revisions::ledger;
+        if let Err(e) = ledger::update(store, |l| {
+            for (id, revision, checksum, facts) in &kept {
+                ledger::note_current(l, id, revision, Some(checksum.clone()));
+                ledger::note_facts(l, id, revision, *facts);
+            }
+        }) {
+            eprintln!("Warning: could not record the kept axes' checksums: {e}");
         }
     }
 

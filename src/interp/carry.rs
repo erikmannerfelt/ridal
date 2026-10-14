@@ -66,10 +66,13 @@ pub enum Severity {
     /// matter — more than half an index unit, so a pick draws on a
     /// different trace or sample than it was put on.
     Approximate,
-    /// Carried, and some features fell outside the new revision. §8.1 is
-    /// explicit that these are dropped and counted, never clamped to the
+    /// Carried, and some of the picks fell outside the new revision. §8.1
+    /// is explicit that these are dropped and counted, never clamped to the
     /// edge: a pick pushed onto the boundary is a pick in a place nobody
-    /// put it.
+    /// put it. A line that crosses the edge is cut there rather than
+    /// dropped (#434), and counts here only when more than half an index
+    /// of it was cut away: a line drawn to the edge that ends a fraction of
+    /// a trace past it has lost nothing anybody picked.
     Partial,
     /// Not carried at all. There is no shared anchor axis, or the document
     /// carries no axes to carry it through.
@@ -124,6 +127,32 @@ pub struct Dropped {
     pub label: Option<String>,
 }
 
+/// A feature that ran past the edge of the new revision and was cut there
+/// (#434): the part inside is the line as drawn, the part outside is gone.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+pub struct Clipped {
+    /// Its position in the document's `features`.
+    pub index: usize,
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub id: Option<String>,
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub label: Option<String>,
+    /// How many of its vertices fell outside.
+    pub vertices_outside: usize,
+    /// How far past the edge it reached, in traces and samples of the new
+    /// revision.
+    pub beyond_traces: f64,
+    pub beyond_samples: f64,
+}
+
+impl Clipped {
+    /// Whether what was cut away is more than an overshoot of the edge.
+    pub fn lost_picks(&self) -> bool {
+        self.beyond_traces > SAME_PLACE || self.beyond_samples > SAME_PLACE
+    }
+}
+
 /// How far the carried coordinates moved, in index units.
 ///
 /// Traces and samples rather than metres or nanoseconds, because that is
@@ -159,8 +188,11 @@ pub struct CarryReport {
     /// How many features were placed on the new revision.
     pub kept: usize,
     pub dropped: Vec<Dropped>,
-    /// How far the placed features moved. `null` when nothing was carried,
-    /// or when any feature was dropped.
+    /// Features kept, but cut at the edge of the new revision.
+    pub clipped: Vec<Clipped>,
+    /// How far the placed features moved, leaving out those that were cut.
+    /// `null` when nothing was carried, when any feature was dropped, or
+    /// when every feature was cut.
     #[cfg_attr(feature = "server", schema(required = true))]
     pub moved: Option<Displacement>,
     /// Why it could not be carried. Set exactly when the severity is
@@ -427,7 +459,7 @@ fn without_stale_recording_clock(document: &gprinterp::Document) -> (gprinterp::
     }
 }
 
-/// Every `(x, y)` vertex of every feature, in order./// Every `(x, y)` vertex of every feature, in order.
+/// Every `(x, y)` vertex of every feature, in order.
 fn vertices(document: &gprinterp::Document) -> Vec<(f64, f64)> {
     let mut out = Vec::new();
     for feature in &document.features {
@@ -484,6 +516,17 @@ fn displacement(before: &gprinterp::Document, after: &gprinterp::Document) -> Op
         median_traces: median(dx),
         median_samples: median(dy),
     })
+}
+
+/// How far the farthest cut line reached past the edge, for a headline.
+fn farthest(cut: &[&Clipped]) -> String {
+    let traces = cut.iter().map(|c| c.beyond_traces).fold(0.0_f64, f64::max);
+    let samples = cut.iter().map(|c| c.beyond_samples).fold(0.0_f64, f64::max);
+    match (traces > SAME_PLACE, samples > SAME_PLACE) {
+        (true, true) => format!("{traces:.0} traces and {samples:.0} samples"),
+        (false, true) => format!("{samples:.0} samples"),
+        _ => format!("{traces:.0} traces"),
+    }
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
@@ -593,6 +636,7 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
             y_anchor: None,
             kept: 0,
             dropped: Vec::new(),
+            clipped: Vec::new(),
             moved: None,
             refusal: Some(reason),
             headline,
@@ -613,6 +657,7 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
                 y_anchor: None,
                 kept: total,
                 dropped: Vec::new(),
+                clipped: Vec::new(),
                 moved: None,
                 refusal: None,
                 headline: "These picks were drawn on the revision you are looking at.".to_string(),
@@ -670,11 +715,40 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
             label: d.label.clone(),
         })
         .collect();
+    let clipped: Vec<Clipped> = outcome
+        .clipped
+        .iter()
+        .map(|c| Clipped {
+            index: c.index,
+            id: c.id.clone(),
+            label: c.label.clone(),
+            vertices_outside: c.outside,
+            beyond_traces: c.beyond_x,
+            beyond_samples: c.beyond_y,
+        })
+        .collect();
     let kept = outcome.document.features.len();
+    // With nothing dropped, kept feature `i` is input feature `i`. A cut
+    // feature has vertices the input did not, so it is left out of the
+    // comparison rather than paired vertex by vertex with the wrong ones.
     let moved = dropped
         .is_empty()
-        .then(|| displacement(document, &outcome.document))
+        .then(|| {
+            let uncut = |doc: &gprinterp::Document| {
+                let mut doc = doc.clone();
+                doc.features = doc
+                    .features
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(i, _)| !clipped.iter().any(|c| c.index == *i))
+                    .map(|(_, f)| f)
+                    .collect();
+                doc
+            };
+            displacement(&uncut(document), &uncut(&outcome.document))
+        })
         .flatten();
+    let cut_short: Vec<&Clipped> = clipped.iter().filter(|c| c.lost_picks()).collect();
 
     // Worst first. A partial carry is more serious than one that merely
     // moved, because something is missing from the view rather than being
@@ -685,7 +759,7 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
     // does not distinguish between two carries. The displacement does.
     let moved_far =
         moved.is_some_and(|m| m.worst_traces > SAME_PLACE || m.worst_samples > SAME_PLACE);
-    let severity = if !dropped.is_empty() {
+    let severity = if !dropped.is_empty() || !cut_short.is_empty() {
         Severity::Partial
     } else if moved_far || moved.is_none() {
         // `None` means the vertex lists could not be compared, which on
@@ -698,12 +772,29 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
     };
 
     let headline = match severity {
+        Severity::Partial if dropped.is_empty() => format!(
+            "Carried from an earlier revision, and {} past the edge of this one \
+             and {} cut there, by up to {}. A pick outside the new revision is \
+             left out rather than pushed to the edge.",
+            plural(cut_short.len(), "line runs", "lines run"),
+            if cut_short.len() == 1 { "is" } else { "are" },
+            farthest(&cut_short),
+        ),
         Severity::Partial => format!(
             "Carried from an earlier revision, and {} did not fit on this one — \
-             {} shown. A pick outside the new revision is left out rather than \
+             {} shown{}. A pick outside the new revision is left out rather than \
              pushed to the edge.",
             plural(dropped.len(), "line", "lines"),
             plural(kept, "line is", "lines are"),
+            if cut_short.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    ", {} of them cut at the edge by up to {}",
+                    cut_short.len(),
+                    farthest(&cut_short)
+                )
+            },
         ),
         Severity::Approximate => format!(
             "Carried from an earlier revision through '{}' and '{}', and the picks \
@@ -738,6 +829,7 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
             y_anchor: Some(outcome.y_anchor),
             kept,
             dropped,
+            clipped,
             moved,
             refusal: None,
             headline,
@@ -1134,6 +1226,63 @@ mod tests {
              position would compare unrelated points"
         );
         assert!(carried.report.headline.contains("did not fit"));
+    }
+
+    #[test]
+    fn a_line_running_past_the_edge_is_cut_there_and_reported_as_partial() {
+        // #434: a line with one end past the edge used to be dropped whole,
+        // taking every pick inside the revision with it. Now the part
+        // inside is kept and the cut reported.
+        let drawn_on = Axes {
+            x: Some(tiepoints("trace_time", "s", 0.0, 40.0)),
+            y: Some(regular("twtt", "ns", 0.0, 1.0)),
+        };
+        // Starts 10 s later: old trace 5 is before it, old trace 30 is its 20.
+        let now = Axes {
+            x: Some(tiepoints("trace_time", "s", 10.0, 40.0)),
+            y: Some(regular("twtt", "ns", 0.0, 1.0)),
+        };
+        let doc = document("rev-a", &drawn_on, &[(5.0, 2.0), (30.0, 7.0)]);
+
+        let carried = carry(&doc, &now, "rev-b");
+        assert_eq!(carried.report.severity, Severity::Partial);
+        assert!(carried.report.dropped.is_empty());
+        assert_eq!(carried.report.kept, 1);
+        assert_eq!(carried.report.clipped.len(), 1);
+        assert!((carried.report.clipped[0].beyond_traces - 5.0).abs() < 1e-9);
+        let line = carried.document.unwrap().features[0]
+            .geometry
+            .positions()
+            .iter()
+            .map(|p| (p.x().unwrap(), p.y().unwrap()))
+            .collect::<Vec<_>>();
+        assert!((line[0].0 - 0.0).abs() < 1e-9 && (line[0].1 - 3.0).abs() < 1e-9);
+        assert!((line[1].0 - 20.0).abs() < 1e-9 && (line[1].1 - 7.0).abs() < 1e-9);
+        assert!(
+            carried.report.headline.contains("cut there"),
+            "{}",
+            carried.report.headline
+        );
+    }
+
+    #[test]
+    fn a_line_ending_a_fraction_of_a_trace_past_the_edge_has_lost_nothing() {
+        // The editor saves a vertex at 3547.8 on a radargram whose last
+        // trace is 3547. Cutting it there is not a loss worth a banner.
+        let drawn_on = Axes {
+            x: Some(tiepoints("trace_time", "s", 0.0, 40.0)),
+            y: Some(regular("twtt", "ns", 0.0, 1.0)),
+        };
+        let now = Axes {
+            x: Some(tiepoints("trace_time", "s", 0.0, 40.0)),
+            y: Some(regular("twtt", "ns", 0.0, 1.0)),
+        };
+        let doc = document("rev-a", &drawn_on, &[(10.0, 2.0), (40.4, 3.0)]);
+
+        let carried = carry(&doc, &now, "rev-b");
+        assert_eq!(carried.report.clipped.len(), 1);
+        assert!(!carried.report.clipped[0].lost_picks());
+        assert_ne!(carried.report.severity, Severity::Partial);
     }
 
     #[test]

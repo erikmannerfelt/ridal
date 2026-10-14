@@ -152,7 +152,8 @@ A misspelt field is an error rather than being ignored.
   revision are carried to this one. Picks that cannot be carried, including
   those that do not say which revision they were drawn on (imported from
   older tools), are drawn as stored, as the viewer's contributor overlay
-  draws them, with a warning.
+  draws them, with a warning. A line that runs past the edge of this
+  revision is cut where it crosses it, rather than left out.
 
 `derived`
 : Which derived layers to draw, by id, each in its own colour. With `fills`,

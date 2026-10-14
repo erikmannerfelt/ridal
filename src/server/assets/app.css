@@ -3288,6 +3288,18 @@ a.processing-state:hover {
   margin-top: 0;
 }
 
+/* Whose picks are not simply this revision's (#434). Wraps, unlike the
+ * layer rows: the headlines are sentences. */
+.layer-panel-carry {
+  margin-top: var(--space-2);
+  white-space: normal;
+}
+
+.layer-panel-carry ul {
+  margin: var(--space-1) 0 0;
+  padding-left: 1.2em;
+}
+
 .layer-panel-row {
   display: flex;
   align-items: center;

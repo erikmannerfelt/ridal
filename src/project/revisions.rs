@@ -473,6 +473,11 @@ pub fn get(
     Ok(Some(from_bytes(&bytes, store.root().join(&relative))?))
 }
 
+/// Whether a revision's axes have been kept, without reading them.
+pub fn has(store: &DocumentStore, radargram: &RadargramId, revision: &str) -> bool {
+    store.root().join(path_of(radargram, revision)).is_file()
+}
+
 /// Every revision of `radargram` that has a snapshot.
 #[cfg_attr(
     not(test),

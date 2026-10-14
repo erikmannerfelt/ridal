@@ -116,6 +116,7 @@ What the server answers. Each mirrors a schema in
 .. autoclass:: ridal.client.CarryReport
 .. autoclass:: ridal.client.Displacement
 .. autoclass:: ridal.client.Dropped
+.. autoclass:: ridal.client.Clipped
 .. autoclass:: ridal.client.ShapeChange
 .. autoclass:: ridal.client.Staged
 .. autoclass:: ridal.client.Replaced

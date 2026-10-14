@@ -32,12 +32,24 @@ the same interpolated positions the legacy code dropped. This converter
 *reports* out-of-grid vertices so the drop is visible, but preserves the
 geometry.
 
+Without ``--axes``, ``x`` is a bare trace index and ``y`` is anchored by the
+fixed ``twtt`` below, so the documents carry onto another revision only
+where that is right, which on a revision corrected for antenna separation
+it is not (#434). Pass ``--axes`` with what Ridal serves for the revision the
+picks were drawn on,
+
+    curl .../api/v1/projects/KEY/datasets/ID/axes/gprinterp > axes.json
+
+and both axes are anchored as Ridal anchors that revision, and the
+documents name it, so they carry onto any later revision of the recording.
+
 Usage
 -----
     python3 misc/convert_legacy_interpretations.py \
         --interpretations /tmp/interp_full \
         --radar-key dronbreen-20250327-DAT_0066_A1_1 \
         --n-samples 700 --n-traces 3548 \
+        [--axes axes.json] \
         --out assets/interp/dronbreen-20250327-DAT_0066_A1_1
 """
 
@@ -84,6 +96,41 @@ TWTT_DT_NS: Final[float] = 2129.150390625 / 699.0
 
 class ConversionError(SystemExit):
     """Raised for anything that must fail the run loudly."""
+
+
+def revision_axes(path: Path, n_traces: int) -> dict:
+    """Read the anchors Ridal serves for a revision (``GET .../axes/gprinterp``).
+
+    Parameters
+    ----------
+    path
+        That response, saved as JSON: ``radargram_id``, ``revision_id`` and
+        ``axes`` with an ``anchor`` list for ``x`` and for ``y``.
+    n_traces
+        The width the submissions declare. The ``x`` anchor must end on
+        trace ``n_traces - 1``, or the axes are of a different grid.
+
+    Returns
+    -------
+    dict
+        The response, checked.
+    """
+    body = json.loads(path.read_text())
+    axes = body.get("axes") or {}
+    x = (axes.get("x") or {}).get("anchor") or []
+    y = (axes.get("y") or {}).get("anchor") or []
+    if not body.get("revision_id") or not x or not y:
+        raise ConversionError(
+            f"{path}: needs a revision_id and an anchor for both axes; the "
+            "revision does not describe them, so they cannot be borrowed"
+        )
+    last_traces = {a["points"][-1]["trace"] for a in x if a.get("type") == "tiepoints"}
+    if last_traces and last_traces != {float(n_traces - 1)}:
+        raise ConversionError(
+            f"{path}: the x anchor ends on trace {sorted(last_traces)}, but the "
+            f"submissions are {n_traces} traces wide; these are another grid's axes"
+        )
+    return body
 
 
 def latest_submission_per_user(interpretations: Path, radar_key: str) -> dict[str, Path]:
@@ -202,6 +249,7 @@ def convert_submission(
     n_traces: int,
     out_of_grid: dict[tuple[str, str], int],
     source_label: str | None = None,
+    revision: dict | None = None,
 ) -> tuple[dict, int, int]:
     """Convert one submission. Returns ``(document, n_features, n_fallbacks)``."""
     document = json.loads(path.read_text())
@@ -273,6 +321,13 @@ def convert_submission(
             "converter_version": CONVERTER_VERSION,
         },
     }
+    if revision is not None:
+        # The revision's own anchors replace both defaults: the legacy grid
+        # is that revision's grid, so its mapping is the picks' mapping.
+        out["source"]["revision_id"] = revision["revision_id"]
+        axes = out["coordinates"]["axes"]
+        for axis in ("x", "y"):
+            axes[axis]["anchor"] = revision["axes"][axis]["anchor"]
     return out, len(converted_features), fallbacks
 
 
@@ -283,7 +338,13 @@ def main() -> None:
     parser.add_argument("--n-samples", type=int, required=True)
     parser.add_argument("--n-traces", type=int, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--axes",
+        type=Path,
+        help="the revision's anchors from GET .../axes/gprinterp, saved as JSON",
+    )
     args = parser.parse_args()
+    revision = revision_axes(args.axes, args.n_traces) if args.axes else None
 
     submissions = latest_submission_per_user(args.interpretations, args.radar_key)
     if not submissions:
@@ -300,7 +361,13 @@ def main() -> None:
         except ValueError:
             label = str(path)
         document, n_features, fallbacks = convert_submission(
-            path, args.radar_key, args.n_samples, args.n_traces, out_of_grid, label
+            path,
+            args.radar_key,
+            args.n_samples,
+            args.n_traces,
+            out_of_grid,
+            label,
+            revision,
         )
         destination = args.out / f"{user_id(user)}.gprinterp.json"
         destination.write_text(json.dumps(document, indent=2) + "\n")

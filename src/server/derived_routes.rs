@@ -458,6 +458,10 @@ pub async fn put_derived(
 /// `GET /api/v1/datasets/{id}/contributors` -- the interpretation documents
 /// the caller may see, for the layer panel's contributor overlay (#209).
 ///
+/// Each entry has the stored `document`, the `view` to draw on the revision
+/// being served (`null` when it cannot be carried), and the `carry` report
+/// that `GET .../carried` gives for the caller's own (#434).
+///
 /// The obvious route, `GET .../interpretations/{user}`, takes no `Caller` at
 /// all (#212) and therefore cannot decide what a caller may see, so the panel
 /// must not use it. This one returns the caller's own document always, and
@@ -492,6 +496,22 @@ pub async fn get_contributors(
         );
     }
 
+    // What every document is carried onto: the revision this catalog
+    // serves. Read once, since it is the same for every contributor.
+    // `None` when the radargram is not catalogued, where there is nothing
+    // to carry onto and the documents go back as they are.
+    let target = {
+        let catalog = state.catalog();
+        lookup_dataset(&catalog, radargram.as_str())
+            .ok()
+            .and_then(|entry| {
+                let path = state.absolute_path(entry).ok()?;
+                let axes = super::interp_routes::current_axes(project, &path, entry);
+                let declared = source::read_axis_declarations(&path).ok();
+                Some((entry.revision_id.clone(), axes, declared))
+            })
+    };
+
     let mut documents = Vec::new();
     for parsed in users {
         let user = parsed.as_str().to_string();
@@ -504,10 +524,37 @@ pub async fn get_contributors(
         {
             let document = serde_json::to_value(&stored.document)
                 .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+            // Carried exactly as `GET .../carried` carries the caller's own
+            // (#434). Drawing a stored document at its stored indices is
+            // only right on the revision it was drawn on; anywhere else the
+            // panel draws `view`, and when there is none it has the report
+            // to say why, rather than drawing an earlier revision's indices
+            // as if they were this one's (gprinterp SPEC §8.1).
+            let (view, carry) = match &target {
+                Some((revision, axes, declared)) => {
+                    let source =
+                        crate::interp::carry::with_kept_axes(project, &radargram, &stored.document);
+                    let mut carried = crate::interp::carry::carry(&source, axes, revision.as_str());
+                    super::interp_routes::add_processing_warnings(
+                        &mut carried,
+                        project,
+                        &radargram,
+                        &stored.document,
+                        declared.as_ref(),
+                    );
+                    (
+                        serde_json::to_value(&carried.document).unwrap_or_default(),
+                        serde_json::to_value(&carried.report).unwrap_or_default(),
+                    )
+                }
+                None => (document.clone(), serde_json::Value::Null),
+            };
             documents.push(serde_json::json!({
                 "user": user,
                 "own": is_own,
                 "document": document,
+                "view": view,
+                "carry": carry,
             }));
         }
     }

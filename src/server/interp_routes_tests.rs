@@ -3176,3 +3176,130 @@ async fn the_pick_summary_measures_carried_picks_on_the_current_revision() {
     assert_eq!(row["layers"][0]["coverage"], 65.0);
     assert_eq!(row["features"], 1);
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn contributors_are_carried_like_the_callers_own_picks() {
+    // #434: the contributor overlay drew every stored document at its stored
+    // indices, so picks from an earlier revision looked current whether or
+    // not they could be carried. Each entry now has the view to draw and
+    // the report `/carried` gives, and a document that cannot be carried
+    // says so instead of passing for this revision's.
+    let (dir, app) = project_app_with_axes();
+    let axes = offered_axes(&app).await;
+    let revision = revision_of(&app).await;
+    let folder = data(dir.path()).join("interpretations/line-01");
+    std::fs::create_dir_all(&folder).unwrap();
+    let current = document_with_axes(&axes, &[[5.0, 2.0], [30.0, 3.0]], revision);
+    std::fs::write(folder.join("anna.gprinterp.json"), current.to_string()).unwrap();
+    // No axes, and a revision nothing kept a snapshot of: §8.1 refuses.
+    let mut anchorless =
+        document_with_axes(&axes, &[[5.0, 2.0], [30.0, 3.0]], "rev-replaced-on-disk");
+    anchorless["coordinates"]
+        .as_object_mut()
+        .unwrap()
+        .remove("axes");
+    std::fs::write(folder.join("ben.gprinterp.json"), anchorless.to_string()).unwrap();
+
+    let (status, _, body) = send(
+        &app,
+        Request::builder()
+            .uri("/api/v1/datasets/line-01/contributors")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entry = |user: &str| {
+        body["documents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["user"] == user)
+            .unwrap_or_else(|| panic!("no entry for {user}: {body}"))
+            .clone()
+    };
+
+    let anna = entry("anna");
+    assert_eq!(anna["carry"]["severity"], "current");
+    assert_eq!(
+        anna["view"]["features"][0]["geometry"]["coordinates"],
+        serde_json::json!([[5.0, 2.0], [30.0, 3.0]])
+    );
+
+    let ben = entry("ben");
+    assert_eq!(ben["carry"]["severity"], "refused", "{ben}");
+    assert!(ben["view"].is_null(), "nothing to draw as carried: {ben}");
+    // The stored document is still there, for the panel to draw flagged.
+    assert_eq!(
+        ben["document"]["source"]["revision_id"],
+        "rev-replaced-on-disk"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn picks_without_anchors_survive_a_file_replaced_on_disk() {
+    // #434: a document with no anchors of its own carries only through the
+    // axes kept for the revision it names, and those used to be kept only
+    // when Ridal superseded a revision. A file reprocessed and replaced on
+    // disk is never superseded, so its picks became uncarryable for good.
+    // Discovery now keeps the axes of every revision it sees.
+    let dir = tempfile::tempdir().unwrap();
+    Project::init(dir.path(), Some("test")).unwrap();
+    let path = radargrams(dir.path()).join("line-01.nc");
+    write_test_nc_with_axes_at(&path, RADARGRAM, None, "2020-01-01T00:00:00Z");
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let state = Arc::new(
+        AppState::build_with_project(
+            dir.path(),
+            &RenderServiceConfig::default(),
+            Some(project),
+            AccessOptions::default(),
+        )
+        .unwrap(),
+    );
+    let app = build_router(state.clone());
+    let drawn_on = revision_of(&app).await;
+
+    let axes = offered_axes(&app).await;
+    let mut anchorless = document_with_axes(&axes, &[[5.0, 2.0], [30.0, 3.0]], drawn_on.clone());
+    anchorless["coordinates"]
+        .as_object_mut()
+        .unwrap()
+        .remove("axes");
+    let folder = data(dir.path()).join("interpretations/line-01");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("anna.gprinterp.json"), anchorless.to_string()).unwrap();
+
+    // Reprocessed outside Ridal: a new file renamed over the old one.
+    {
+        let staging = tempfile::tempdir().unwrap();
+        let replacement = staging.path().join("newer.nc");
+        write_test_nc_with_axes_at(&replacement, RADARGRAM, None, "2099-01-01T00:00:00Z");
+        std::fs::rename(&replacement, &path).unwrap();
+    }
+    state.rediscover().unwrap();
+    assert_ne!(
+        revision_of(&app).await,
+        drawn_on,
+        "a new revision is served"
+    );
+
+    let (status, _, body) = send(
+        &app,
+        Request::builder()
+            .uri("/api/v1/datasets/line-01/contributors")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let anna = &body["documents"][0];
+    assert_eq!(anna["user"], "anna");
+    assert_ne!(
+        anna["carry"]["severity"], "refused",
+        "the kept axes of the revision it names carry it: {anna}"
+    );
+    assert!(anna["view"]["features"][0].is_object(), "{anna}");
+}

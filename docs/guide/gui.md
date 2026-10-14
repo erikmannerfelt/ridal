@@ -73,7 +73,9 @@ scope, as the rendered image does.
   **Derived** lists the derived layers. Each group has its own line width
   and opacity, and picks are drawn over the derived layers. Picks that
   cannot be carried to this revision are drawn as stored, as the viewer
-  draws other contributors' picks, and the dialog says so.
+  draws other contributors' picks (dashed there), and the dialog says so.
+  Lines that run past the edge of this revision are cut where they cross
+  it.
 
 The preview is the figure itself, rendered smaller, and follows the
 controls as they change; for an extent of more than a few million samples

@@ -572,6 +572,7 @@ pub async fn promote_interpretation(
         "y_anchor": carried.report.y_anchor,
         "severity": carried.report.severity,
         "dropped": carried.report.dropped.len(),
+        "clipped": carried.report.clipped.len(),
         "edited_after_carry": edited,
         "note": "Coordinates were carried from an earlier revision and adopted here, \
                  not drawn on this one. gprinterp SPEC 8.3: a carried travel time is \
