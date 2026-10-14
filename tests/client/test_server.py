@@ -1,5 +1,6 @@
 """The client against real servers: ``ridal gui`` and a site with tokens."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,39 @@ def test_downloads_are_the_files_the_server_holds(
     assert events and events[-1].done == radargram.stat().st_size
     assert track.crs == "EPSG:4326"
     assert track.data["features"], "the fixture has a track"
+
+
+def test_a_figure_is_drawn_by_the_server(
+    gui: Server, radargram: Path, tmp_path: Path
+) -> None:
+    # #142: the same figure spec the command line takes, rendered by the
+    # server with what this account may see.
+    (local,) = ridal.info(radargram)
+    radargram_id = local["radargram_id"]
+    spec = {
+        "extent": {"traces": [100, 400]},
+        "size": {"width": 400, "unit": "px", "dpi": 96},
+        "x_axis": {"spacing": 50},
+    }
+    with ridal_client.Client(gui.url) as client:
+        svg = client.figure(radargram_id, tmp_path / "figure.svg", spec)
+        png = client.figure(radargram_id, tmp_path / "figure.png", spec)
+        raw = client.figure(radargram_id, tmp_path / "raw.png", {**spec, "axes": False})
+        with pytest.raises(errors.Conflict):
+            client.figure(radargram_id, tmp_path / "x.png", {"revision_id": "another"})
+        with pytest.raises(errors.BadRequest):
+            client.figure(radargram_id, tmp_path / "x.png", {"profile": "/etc/passwd"})
+        with pytest.raises(ValueError):
+            client.figure(radargram_id, tmp_path / "x.jpg", spec)
+    assert svg.read_text().startswith("<svg")
+    assert png.read_bytes().startswith(b"\x89PNG")
+    sidecar = json.loads(raw.with_suffix(".json").read_text())
+    assert sidecar["traces"] == [100, 400]
+    assert sidecar["width"] == 400
+    # The server's figure is the one the command line makes of the file.
+    local_svg = tmp_path / "local.svg"
+    ridal.render(radargram, local_svg, figure=spec)
+    assert local_svg.read_text() == svg.read_text()
 
 
 def test_a_token_reaches_its_projects_on_a_site(site: Site) -> None:

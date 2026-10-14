@@ -961,6 +961,47 @@ impl RenderService {
         (variant, key, disk)
     }
 
+    /// An annotated figure of this radargram (#142).
+    ///
+    /// Through the same open reader as everything else here, and with the
+    /// amplitude limits this service keeps per revision and profile, so a
+    /// figure has exactly the viewer's contrast and does not sample the
+    /// file again to find it. The figure's revision is this service's, which
+    /// is what a spec's `revision_id` is checked against. `overlays` are
+    /// gathered by the caller, outside this service's lock.
+    pub fn render_figure(
+        &mut self,
+        spec: &crate::render::figure::spec::FigureSpec,
+        profile: &RenderProfile,
+        format: crate::render::figure::FigureFormat,
+        overlays: Option<&crate::render::figure::overlays::Overlays>,
+        range: ElevationRange,
+    ) -> Result<crate::render::figure::RenderedFigure, crate::render::figure::FigureError> {
+        use crate::render::figure::FigureError;
+        let contrast = if spec.radargram && format != crate::render::figure::FigureFormat::Sidecar {
+            Some(self.resolve_limits(profile).map_err(FigureError::Render)?)
+        } else {
+            None
+        };
+        let revision_id = self.revision_id.to_string();
+        let reader = open_reader(&mut self.reader, self.source_path.as_deref())
+            .map_err(FigureError::Render)?;
+        let coordinates = crate::render::figure::Coordinates::read(reader);
+        crate::render::figure::render_figure(
+            &crate::render::figure::FigureSource {
+                source: reader,
+                coordinates: &coordinates,
+                revision_id: Some(revision_id),
+                elevation_range: range,
+                overlays,
+                contrast,
+            },
+            spec,
+            profile,
+            format,
+        )
+    }
+
     /// One source trace: the `data[:, trace]` column, as stored.
     ///
     /// The trace view plots this directly rather than a rendered image

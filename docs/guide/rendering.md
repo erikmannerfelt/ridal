@@ -39,6 +39,12 @@ ridal render ridal_data/radargrams/line.nc --figure spec.json --project . -o fig
 The project also supplies the radargram's elevation window for the
 topographic view.
 
+A server draws the same figures: `POST /api/v1/datasets/{radargram_id}/figure`
+takes the spec as its body (see {doc}`../reference/http-api`), and the Python
+client's `figure` method calls it (see {doc}`python-client`). There, the
+picks and derived layers are the ones the account may see, and the profile
+must be one the server knows by name.
+
 **SVG** keeps the labels as text and the radargram as one embedded image, so
 it can be edited in Inkscape or Illustrator and scales cleanly for print.
 PowerPoint and Word (2019 and later, and Microsoft 365) insert it directly.

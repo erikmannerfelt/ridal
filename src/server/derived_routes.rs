@@ -102,6 +102,25 @@ enum EvaluableUsers {
     Only(Option<UserId>),
 }
 
+/// [`evaluable_users`] as a figure's [`Readable`] (#142), so a figure's
+/// derived layers are evaluated by this module's rule rather than a copy.
+pub(super) fn readable_for(
+    caller: &Caller,
+    audience: Audience,
+) -> crate::render::figure::overlays::Readable {
+    use crate::render::figure::overlays::Readable;
+    match evaluable_users(caller, audience) {
+        EvaluableUsers::All => Readable::All,
+        EvaluableUsers::Only(user) => Readable::Only(user),
+    }
+}
+
+/// Whether `caller` may see other contributors' raw picks: the gate on the
+/// contributor overlay, and on another user's picks in a figure (#142).
+pub(super) fn may_see_others_picks(caller: &Caller) -> bool {
+    may_see_cross_user(caller) && caller.may_download(DownloadScope::Picks)
+}
+
 /// Read the picks that feed an item with this `audience`, for this caller.
 fn visible_documents(
     state: &AppState,
@@ -461,7 +480,7 @@ pub async fn get_contributors(
     // Role is still the first gate -- this only narrows what an operator may
     // have. The caller's own picks are never gated: they already have them,
     // and the viewer has always drawn them.
-    let can_see_others = may_see_cross_user(&caller) && caller.may_download(DownloadScope::Picks);
+    let can_see_others = may_see_others_picks(&caller);
     let project = readable_project(&state)?;
     let (users, unreadable) = interpretations::list_users_checked(project.documents(), &radargram)
         .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;

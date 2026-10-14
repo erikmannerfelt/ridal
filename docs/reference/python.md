@@ -177,6 +177,7 @@ What the server answers. Each mirrors a schema in
 .. autoexception:: ridal.client.ProtocolError
 .. autoexception:: ridal.client.ReplacementRefused
 .. autoexception:: ridal.client.ProcessingFailed
+.. autoexception:: ridal.client.FigureWarning
 ```
 
 ## Removed

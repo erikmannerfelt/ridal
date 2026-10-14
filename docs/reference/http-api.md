@@ -148,6 +148,7 @@ never require a login, since they are how one happens.
 | `GET` | `/api/v1/datasets/{radargram_id}/views/{view}/overview` | anyone | A low-resolution image of the whole radargram. Query: `profile`, `xscale`. |
 | `GET` | `/api/v1/datasets/{radargram_id}/views/{view}/chunks/{profile}/{x}/{y}` | anyone | One tile of the radargram at full resolution, as the viewer requests them. |
 | `GET` | `/api/v1/datasets/{radargram_id}/views/{view}/image` | download `derived` | The whole radargram as one image file. Query: `profile`, `width` (default: one pixel per trace), `format` (`png` or `jpeg`), `quality` (1–100, JPEG only). |
+| `POST` | `/api/v1/datasets/{radargram_id}/figure` | download `derived` | An annotated figure, from a figure spec sent as the JSON body (see {doc}`../guide/rendering`). Query: `format` (`png`, the default, `svg`, or `json` for the sidecar of a figure without axes). Picks other than the caller's own need what the contributor overlay needs, and derived layers download `results`; a spec asking for more is refused. `409 revision_mismatch` when the spec names another revision. Picks that could not be drawn as stored are listed in the `X-Ridal-Figure-Warnings` header, as a JSON list. |
 
 ## Downloads
 

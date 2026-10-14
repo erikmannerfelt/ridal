@@ -58,6 +58,7 @@ fn render(
             revision_id: None,
             elevation_range: topo::ElevationRange::NONE,
             overlays,
+            contrast: None,
         },
         spec,
         &RenderProfile {

@@ -94,6 +94,10 @@ use crate::site::tokens;
         batch_routes::BatchList,
         batch_routes::Batch,
         ingest_routes::IngestPlan,
+        // `POST …/figure?format=json` (#142): where a figure without axes is.
+        crate::render::figure::Sidecar,
+        crate::render::figure::SidecarAxis,
+        crate::render::figure::spec::View,
     ))
 )]
 struct ApiDoc;

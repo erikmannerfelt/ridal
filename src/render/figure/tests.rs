@@ -53,6 +53,7 @@ fn render(
             revision_id: Some("rev-a".into()),
             elevation_range: topo::ElevationRange::NONE,
             overlays: None,
+            contrast: None,
         },
         spec,
         &profile(data.nrows() as f32),

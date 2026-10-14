@@ -11,6 +11,7 @@ from ridal.client._client import DEFAULT_PROJECT, TOKEN_VARIABLE, Client
 from ridal.client.errors import (
     BadRequest,
     Conflict,
+    FigureWarning,
     Forbidden,
     NotAProject,
     NotFound,
@@ -108,6 +109,7 @@ __all__ = [
     "Draft",
     "Dropped",
     "FeatureCollection",
+    "FigureWarning",
     "Forbidden",
     "Grant",
     "HashedFile",

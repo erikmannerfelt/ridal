@@ -72,6 +72,8 @@ impl Default for FigureSpec {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureView))]
 #[serde(rename_all = "lowercase")]
 pub enum View {
     #[default]

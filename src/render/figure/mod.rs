@@ -103,6 +103,29 @@ impl From<FigureError> for String {
 pub enum FigureFormat {
     Svg,
     Png,
+    /// Only the [`Sidecar`] of a figure without axes, as JSON, with nothing
+    /// read or drawn: how the HTTP API hands it out beside the PNG.
+    Sidecar,
+}
+
+impl FigureFormat {
+    /// The media type of the encoded figure.
+    pub fn content_type(self) -> &'static str {
+        match self {
+            FigureFormat::Svg => "image/svg+xml",
+            FigureFormat::Png => "image/png",
+            FigureFormat::Sidecar => "application/json",
+        }
+    }
+
+    /// The file extension for it.
+    pub fn extension(self) -> &'static str {
+        match self {
+            FigureFormat::Svg => "svg",
+            FigureFormat::Png => "png",
+            FigureFormat::Sidecar => "json",
+        }
+    }
 }
 
 impl FigureFormat {
@@ -175,6 +198,10 @@ pub struct FigureSource<'a, S: AmplitudeSource> {
     /// [`overlays::gather`]. `None` when there is no project to read them
     /// from, which is an error only if the spec asks for any.
     pub overlays: Option<&'a overlays::Overlays>,
+    /// The profile pinned for this radargram and its amplitude limits, when
+    /// the caller has them already: the server's render service keeps them
+    /// per revision and profile. `None` estimates them here, the same way.
+    pub contrast: Option<(RenderProfile, (f32, f32))>,
 }
 
 /// A rendered figure.
@@ -195,6 +222,8 @@ pub struct RenderedFigure {
 /// an axis that is linear, or `pcolormesh` with the centres for one that is
 /// not (distance on a profile driven at varying speed).
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureSidecar))]
 pub struct Sidecar {
     pub view: View,
     pub width: usize,
@@ -208,6 +237,8 @@ pub struct Sidecar {
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureSidecarAxis))]
 pub struct SidecarAxis {
     pub unit: String,
     pub label: String,
@@ -242,7 +273,12 @@ pub fn render_figure<S: AmplitudeSource>(
                 .to_string(),
         ));
     }
-    if spec.has_overlays() && input.overlays.is_none() {
+    if format == FigureFormat::Sidecar && spec.axes {
+        return Err(FigureError::Spec(
+            "Only a figure without axes (\"axes\": false) has a sidecar.".to_string(),
+        ));
+    }
+    if spec.has_overlays() && input.overlays.is_none() && format != FigureFormat::Sidecar {
         return Err(FigureError::Spec(
             "Picks and derived layers are read from a project; give the project the \
              radargram belongs to."
@@ -405,9 +441,49 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
 
     // Without the radargram there is nothing to estimate contrast for, and
     // no reason to read a single sample.
+    let sidecar = (!spec.axes).then(|| {
+        let centres = |values: &AxisValues, [a, b]: [f64; 2], n: usize| -> Vec<f64> {
+            (0..n)
+                .map(|i| values.value_at(a + (i as f64 + 0.5) * (b - a) / n as f64))
+                .collect()
+        };
+        Sidecar {
+            view: spec.view,
+            width: layout.plot_w,
+            height: layout.plot_h,
+            traces,
+            rows,
+            x: SidecarAxis {
+                unit: unit_name(&x_unit),
+                label: x_label.clone(),
+                extent: [x_values.value_at(traces[0]), x_values.value_at(traces[1])],
+                centres: centres(&x_values, traces, layout.plot_w),
+            },
+            y: SidecarAxis {
+                unit: unit_name(&y_unit),
+                label: y_label.clone(),
+                extent: [y_values.value_at(rows[0]), y_values.value_at(rows[1])],
+                centres: centres(&y_values, rows, layout.plot_h),
+            },
+        }
+    });
+    if format == FigureFormat::Sidecar {
+        let bytes = serde_json::to_vec_pretty(&sidecar)
+            .map_err(|e| FigureError::Render(format!("Could not write the sidecar: {e}")))?;
+        return Ok(RenderedFigure {
+            bytes,
+            width: layout.plot_w,
+            height: layout.plot_h,
+            sidecar,
+        });
+    }
+
     let raster = if spec.radargram {
-        let (pinned, limits) =
-            crate::render::oneshot::resolve_limits(stats, profile).map_err(FigureError::Render)?;
+        let (pinned, limits) = match &input.contrast {
+            Some(resolved) => resolved.clone(),
+            None => crate::render::oneshot::resolve_limits(stats, profile)
+                .map_err(FigureError::Render)?,
+        };
         let window = SourceWindow {
             row0: rows[0],
             row1: rows[1],
@@ -449,33 +525,6 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
         })
         .unwrap_or_default();
 
-    let sidecar = (!spec.axes).then(|| {
-        let centres = |values: &AxisValues, [a, b]: [f64; 2], n: usize| -> Vec<f64> {
-            (0..n)
-                .map(|i| values.value_at(a + (i as f64 + 0.5) * (b - a) / n as f64))
-                .collect()
-        };
-        Sidecar {
-            view: spec.view,
-            width: layout.plot_w,
-            height: layout.plot_h,
-            traces,
-            rows,
-            x: SidecarAxis {
-                unit: unit_name(&x_unit),
-                label: x_label.clone(),
-                extent: [x_values.value_at(traces[0]), x_values.value_at(traces[1])],
-                centres: centres(&x_values, traces, layout.plot_w),
-            },
-            y: SidecarAxis {
-                unit: unit_name(&y_unit),
-                label: y_label.clone(),
-                extent: [y_values.value_at(rows[0]), y_values.value_at(rows[1])],
-                centres: centres(&y_values, rows, layout.plot_h),
-            },
-        }
-    });
-
     let annotations = Annotations {
         layout: &layout,
         traces,
@@ -515,6 +564,7 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
             let overlay = annotations.svg(None, None, None);
             compose_png(&layout, background.as_deref(), raster.as_ref(), &overlay)?
         }
+        FigureFormat::Sidecar => unreachable!("returned above, before anything is drawn"),
     };
     Ok(RenderedFigure {
         bytes,
@@ -1007,6 +1057,7 @@ pub fn render_figure_path(
             revision_id,
             elevation_range,
             overlays: overlays.as_ref(),
+            contrast: None,
         },
         spec,
         &profile,
