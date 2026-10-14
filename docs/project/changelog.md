@@ -3,6 +3,103 @@
 What changed in each release. {doc}`upgrading` says what to do about the
 changes that affect existing data, scripts or servers.
 
+## 0.9.0
+
+### Processing on the server
+
+- **A server processes raw data** (#382). A project keeps the raw
+  recordings each radargram is made from, and an operator processes them on
+  the server, looks at the result, and makes it the radargram. Each job runs
+  as a process of its own behind one site-wide queue, bounded by
+  `--processing-jobs`, `--processing-memory-mb`, `--processing-threads`,
+  `--processing-timeout`, `--max-queued-per-user` and
+  `--max-queued-per-project` (#387, #388, #392, #402). See
+  {doc}`../guide/gui` and {doc}`../guide/python-client`.
+- **Process… in the viewer** reprocesses a radargram from its raw data as a
+  draft, step by step, with its overview beside the one that is served, and
+  applies it with the same report of what happens to picks as a replace
+  (#392). **Attach raw data…** gives a served radargram its raw data (#394).
+- **Adding raw data.** The catalog's **Add data** menu holds "Add processed
+  radargram…", "New radargram from raw data…" for one radargram (#394), and
+  "Add raw data in bulk…" (#408, #413). The bulk page groups the files into
+  recordings, plans them as radargrams on a timeline where gaps can be split
+  and joined, and names them with id and display-name patterns before
+  anything is processed (#406). Raw data that is not processed yet is listed
+  on the Processing page, where it can be processed or deleted (#407, #413).
+- **Processing profiles**: named, versioned processing that many radargrams
+  share (#389). The **Processing page** and a badge on each catalog card say
+  which radargrams are current, stale (and why), on custom steps, or not
+  processed (#393, #399). **Process N out-of-date…**, for a profile or a
+  group, applies the profile as a batch (#395, #399); a batch report says
+  whose picks did not carry, and whoever started it is told when it ends
+  (#401). Applying a draft whose steps differ from its profile offers to make
+  them the profile's next version (#400).
+- **DEMs** are project resources, uploaded once and linked per radargram
+  (#398). A project may set the CRS its radargrams are processed in
+  (`[processing] crs`, #404).
+- Antenna frequency and separation overrides belong to a radargram's raw
+  data, so a batch keeps them, and they can be set in the browser, per
+  antenna in a bulk upload (#409, #415).
+- Who is processing a radargram is shown in the viewer, the Process dialog
+  and the catalog (#403).
+- Drafts are kept for `--draft-ttl` after they were last looked at, within
+  `--draft-cache-mb` per project (#397).
+- The Python client covers all of it: raw data, sources, DEMs, drafts,
+  profiles, batches, ingest plans, and `process()` for one radargram from
+  its files (#405, #406).
+
+### Processing
+
+- A processed file records what it was made from (`ridal_recipe`): the
+  hashes of its raw files, its steps with their versions, CRS, DEM,
+  velocity and overrides. Its revision id is derived from that, so
+  processing the same data the same way again gives the same revision
+  (#383). Files from earlier versions keep their ids.
+- `remove_standstills(gps_uncertainty=...)` uses the GPS to rule out
+  standstills the radar data alone would find, and to add the ones it misses
+  (#410). Without the argument the step is unchanged.
+- `correct_antenna_separation(slant)` resamples onto exactly the grid the
+  file's coordinates describe; depths were 0.32 % short before (#380).
+- Picks are carried correctly between a revision corrected for antenna
+  separation and one that is not, instead of shifting by a few samples
+  (#370, #381).
+- `batch-process` names its outputs with `--id-pattern` and
+  `--display-name-pattern` (#368, #385), and `--dry-run` shows what it
+  would do (#386). A bare `--render` or `--track` writes into the output
+  directory instead of being ignored, and `--no-export` no longer needs
+  `--output` (#384).
+- The `.nc` records the antenna frequency it was processed as, and the
+  viewer shows it with the trace spacing and survey speed (medians over the
+  track) (#412, #416).
+
+### Viewer and catalog
+
+- A radargram can have its own horizontal scale, set in its properties,
+  which comes before a person's own and the project's (#411, #417).
+- Tapping a vertex offers **Split here** and **Remove vertex**, and deleting
+  a line asks first (#371, #375, #378).
+- A clicked sibling track on the viewer's map turns orange (#366). Groups
+  stay shown or hidden across the catalog's own reloads (#367). A catalog
+  with no groups loses its redundant heading and menu (#369, #373, #374,
+  #377).
+- "Take out" and other deletes no longer report "response was not valid
+  JSON" (#409, #413).
+
+### Server
+
+- **Logging.** `ridal gui` and `ridal server start` write a log to stderr,
+  filtered by `RUST_LOG`: warnings that were dropped before, one line per
+  request naming its route but not the caller, processing jobs, and a
+  heartbeat every `--heartbeat-seconds` (#282, #418). See
+  {doc}`../deploy/server`.
+- Site settings has a **Server** section for server administrators: the
+  heartbeat's numbers, and the processing queue with a Cancel button for
+  any job (#391, #419).
+- Uploads no longer hold up the rest of a project while their body
+  arrives: raw data (#396, #413), radargrams and replacements (#414, #420).
+- GeoJSON exported in a projected CRS declares it, so GDAL, QGIS and
+  GeoPandas place it correctly (#372, #376).
+
 ## 0.8.1
 
 ### Python client

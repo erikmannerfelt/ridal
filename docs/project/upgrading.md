@@ -3,6 +3,33 @@
 What to do when moving an existing project, server or script to a new
 version. {doc}`changelog` lists everything that changed.
 
+## From 0.8 to 0.9
+
+Nothing needs migrating: projects, sites and processed files from 0.8 work
+as they are, and no radargram's revision id changes.
+
+- **Processing.** A file processed by 0.9 is named by what it was made from
+  (#383), so processing the same raw data with the same steps again gives
+  the same revision rather than a new one. Reprocessing a radargram corrected
+  with `correct_antenna_separation(slant)` gives a slightly different grid:
+  depths come out up to 0.32 % deeper than before, which was the error
+  (#380). Picks on such a radargram are carried onto the new revision
+  correctly (#381).
+- **Servers log.** `ridal gui` and `ridal server start` now write to stderr
+  while they run: a line per request, a heartbeat every minute, and
+  warnings. Under systemd it goes to the journal. Turn the heartbeat off
+  with `--heartbeat-seconds 0`, and the request lines with
+  `RUST_LOG=warn,ridal=info,ridal::access=warn`; see
+  {doc}`../deploy/server`. The startup banner is unchanged.
+- **Processing on a server is on by default** for operators of a writable
+  project. A server limits it with the `--processing-*` and
+  `--max-queued-*` flags (one job at a time and 4096 MB by default), and a
+  project with `[processing] max_queued_jobs`.
+- **GeoJSON** exported in a projected CRS now has a `crs` member (#376).
+  WGS84 output is unchanged.
+- **`batch-process`.** A bare `--render` or `--track` now writes into the
+  output directory; before, it was ignored (#384).
+
 ## From 0.8.0 to 0.8.1
 
 Nothing needs migrating. Two things in the Python client behave
