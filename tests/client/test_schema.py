@@ -31,6 +31,10 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.Catalog: ("DatasetList", {"datasets": "entries"}),
     models.Axes: ("DatasetAxes", {}),
     models.InterpretationList: ("InterpretationList", {}),
+    models.InterpretationSummaryList: ("InterpretationSummaryList", {}),
+    models.InterpretationSummary: ("InterpretationSummary", {}),
+    models.LayerSummary: ("LayerSummary", {}),
+    models.UnreadableInterpretation: ("UnreadableInterpretation", {}),
     models.Grant: ("Grant", {}),
     models.TokenSummary: ("TokenSummary", {}),
     # Processing on the server (#382).

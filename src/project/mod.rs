@@ -91,6 +91,7 @@ pub mod members;
 pub mod migrate;
 pub mod overlays;
 pub mod overrides;
+pub mod pick_summary;
 pub mod preferences;
 pub mod processing;
 pub mod raw;

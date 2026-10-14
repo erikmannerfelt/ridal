@@ -1616,6 +1616,162 @@
           }
         }
       },
+      "InterpretationState": {
+        "type": "string",
+        "description": "Where an interpretation stands relative to the radargram it was drawn on.",
+        "enum": [
+          "live",
+          "stale",
+          "ignored",
+          "orphaned",
+          "archived"
+        ]
+      },
+      "InterpretationSummary": {
+        "type": "object",
+        "description": "`GET /api/v1/interpretations`: one interpretation, as numbers.",
+        "required": [
+          "radargram_id",
+          "display_name",
+          "group_name",
+          "user",
+          "state",
+          "removal",
+          "revision_id",
+          "features",
+          "vertices",
+          "coverage",
+          "traces",
+          "layers",
+          "date_modified",
+          "version",
+          "bytes"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The catalog's name for the radargram, when it is in the catalog."
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "user": {
+            "type": "string",
+            "description": "The account that drew it."
+          },
+          "state": {
+            "$ref": "#/components/schemas/InterpretationState"
+          },
+          "removal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For an archived interpretation, the removal it was archived by: the\nremoval time with `:` written as `-`, suffixed `-2`, `-3`... when\nremovals shared a second."
+          },
+          "revision_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The revision the document says it was drawn on, if it says."
+          },
+          "features": {
+            "type": "integer",
+            "description": "Picked lines (features).",
+            "minimum": 0
+          },
+          "vertices": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "coverage": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Percent of the radargram's traces under at least one line, or `null`\nwith no radargram to measure against."
+          },
+          "traces": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The trace count `coverage` is measured against.",
+            "minimum": 0
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LayerSummary"
+            },
+            "description": "One entry per layer in use, unlabelled lines last."
+          },
+          "date_modified": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the document says it was last modified."
+          },
+          "version": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stored version, as sent in `ETag`. Absent for an archived\ninterpretation, which cannot be written to."
+          },
+          "bytes": {
+            "type": "integer",
+            "description": "Size of the stored file.",
+            "minimum": 0
+          }
+        }
+      },
+      "InterpretationSummaryList": {
+        "type": "object",
+        "description": "`GET /api/v1/interpretations`.",
+        "required": [
+          "interpretations",
+          "everyone",
+          "may_download",
+          "unreadable"
+        ],
+        "properties": {
+          "interpretations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InterpretationSummary"
+            },
+            "description": "Ordered by radargram, then state, then user."
+          },
+          "everyone": {
+            "type": "boolean",
+            "description": "`true` when these are everyone's interpretations, `false` when only\nthe caller's: everyone's takes the `operator` role."
+          },
+          "may_download": {
+            "type": "boolean",
+            "description": "Whether the caller may download a live interpretation as a file,\nwhich takes the `picks` download scope -- for their own as well."
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnreadableInterpretation"
+            },
+            "description": "Files that were skipped. Listed only to callers who see everyone's."
+          }
+        }
+      },
       "Item": {
         "allOf": [
           {
@@ -1759,6 +1915,40 @@
           }
         ],
         "description": "[`JobStatus`] without what is the server's business: where its files\nare, and the key it was queued under."
+      },
+      "LayerSummary": {
+        "type": "object",
+        "description": "One layer within an [`InterpretationSummary`].",
+        "required": [
+          "layer",
+          "features",
+          "vertices",
+          "coverage"
+        ],
+        "properties": {
+          "layer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The layer id the lines carry, or `null` for unlabelled lines."
+          },
+          "features": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "vertices": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "coverage": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
       },
       "LocationSummary": {
         "type": "object",
@@ -3564,6 +3754,23 @@
               "null"
             ],
             "description": "RFC 3339, or `null` for a token that never expires."
+          }
+        }
+      },
+      "UnreadableInterpretation": {
+        "type": "object",
+        "description": "A stored interpretation that could not be summarized.",
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file or directory, relative to `interpretations/`."
+          },
+          "reason": {
+            "type": "string"
           }
         }
       }

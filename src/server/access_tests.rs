@@ -8596,3 +8596,65 @@ async fn the_heartbeat_reports_what_the_site_holds() {
     let running = spawn_heartbeat(state, std::time::Duration::from_secs(3600)).unwrap();
     running.abort();
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_pick_summary_shows_a_picker_their_own_and_an_operator_everyones() {
+    // #178: the summary is statistics, so who sees everyone's rows is a
+    // curation question (operator), and nothing here returns a coordinate.
+    // Opening someone else's picks stays behind the `Picks` scope.
+    let hash = password_hash();
+    let (_dir, app) = app_with(vec![
+        activated("alice", Role::Picker, DownloadScope::None, &hash),
+        activated("bob", Role::Picker, DownloadScope::Picks, &hash),
+        activated("olga", Role::Operator, DownloadScope::None, &hash),
+    ]);
+    for name in ["alice", "bob"] {
+        let session = sign_in(&app, name).await;
+        let saved = put(
+            &app,
+            &interpretation_uri(name),
+            &document(RADARGRAM),
+            Some(&session),
+        )
+        .await;
+        assert!(saved.status.is_success(), "{}", saved.text);
+    }
+    let users_of = |body: &Value| -> Vec<String> {
+        body["interpretations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["user"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let alice = sign_in(&app, "alice").await;
+    let mine = get(&app, "/api/v1/interpretations", Some(&alice)).await;
+    assert_eq!(mine.status, StatusCode::OK, "{}", mine.text);
+    assert_eq!(users_of(&mine.body), vec!["alice"]);
+    assert_eq!(mine.body["everyone"], false);
+    assert_eq!(mine.body["may_download"], false);
+    assert!(!mine.text.contains("coordinates"), "{}", mine.text);
+
+    let bob = sign_in(&app, "bob").await;
+    let his = get(&app, "/api/v1/interpretations", Some(&bob)).await;
+    assert_eq!(users_of(&his.body), vec!["bob"]);
+    assert_eq!(his.body["may_download"], true);
+
+    let olga = sign_in(&app, "olga").await;
+    let all = get(&app, "/api/v1/interpretations", Some(&olga)).await;
+    assert_eq!(all.status, StatusCode::OK, "{}", all.text);
+    assert_eq!(users_of(&all.body), vec!["alice", "bob"]);
+    assert_eq!(all.body["everyone"], true);
+    assert!(!all.text.contains("coordinates"), "{}", all.text);
+    // Seeing the row is not reading the picks.
+    let refused = get(&app, &interpretation_uri("alice"), Some(&olga)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+
+    // An anonymous reader owns nothing, so sees nothing.
+    let anonymous = get(&app, "/api/v1/interpretations", None).await;
+    assert_eq!(anonymous.status, StatusCode::OK, "{}", anonymous.text);
+    assert_eq!(users_of(&anonymous.body), Vec::<String>::new());
+    assert_eq!(anonymous.body["everyone"], false);
+}

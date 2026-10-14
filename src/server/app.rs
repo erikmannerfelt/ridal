@@ -946,6 +946,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::interp_routes::layer_usage),
         )
         .route(
+            "/api/v1/interpretations",
+            get(super::pick_routes::list_summaries),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/interpretations",
             get(super::interp_routes::list_interpretations),
         )

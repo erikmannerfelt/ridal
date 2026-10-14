@@ -81,6 +81,9 @@ pub mod markdown;
 pub mod openapi;
 pub mod overrides_routes;
 pub mod overview_cache;
+pub mod pick_routes;
+#[cfg(test)]
+mod pick_routes_tests;
 pub mod preference_routes;
 pub mod processing;
 pub mod processing_routes;

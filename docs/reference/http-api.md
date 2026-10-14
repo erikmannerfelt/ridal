@@ -265,6 +265,7 @@ the viewer draws it; downloading it as a file (`/raw`) still needs `picks`.
 | Method | Path | Needs | Description |
 |---|---|---|---|
 | `GET` | `/api/v1/datasets/{radargram_id}/interpretations` | anyone | Who has interpreted this radargram. |
+| `GET` | `/api/v1/interpretations` | anyone; everyone's needs `operator` | Every stored interpretation as statistics: lines, vertices, layers and the percentage of traces covered, with whether it is on the current revision, an earlier one, or archived by a removal. A caller below `operator` gets only their own. No picks are returned, so no download scope is needed. |
 | `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | own, or download `picks` | One person's interpretation, with an `ETag`. |
 | `PUT` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | `picker`, own | Save an interpretation. Refused if a line breaks its layer's rules, such as an overhang on a layer that does not allow them. |
 | `DELETE` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | `picker`, own | Delete an interpretation. |

@@ -1841,38 +1841,21 @@ pub async fn layer_usage(
     // Every entry, unlisted ones included. These counts exist to answer
     // "what would deleting this layer orphan", and an unlisted radargram's
     // picks are still picks -- an undercount here would let someone delete
-    // a layer believing nothing used it.
-    let catalog = state.catalog();
-    for entry in &catalog.entries {
-        let radargram = &entry.radargram_id;
-        // Skip and report (#213) rather than skip in silence.
-        let (users, unreadable) =
-            interpretations::list_users_checked(project.documents(), radargram)
-                .map_err(interpretation_error)?;
-        for stem in &unreadable {
-            tracing::warn!(
-                radargram = radargram.as_str(),
-                stem = stem.as_str(),
-                "skipping an interpretation whose filename is not a valid user id"
-            );
-        }
-        for user_id in users {
-            let Some(stored) = interpretations::read(project.documents(), radargram, &user_id)
-                .map_err(interpretation_error)?
-            else {
+    // a layer believing nothing used it. The same scan as the pick manager
+    // (#178), so a file it cannot read is skipped and logged rather than
+    // failing the page (#213).
+    let scan = super::pick_routes::scan_live(&state, project)?;
+    for row in scan.rows.iter().filter(|row| row.is_on_catalog()) {
+        for (label, features) in row.layer_counts() {
+            let Some(label) = label else {
                 continue;
             };
-            for feature in &stored.document.features {
-                let Some(label) = feature.label() else {
-                    continue;
-                };
-                let target = if set.get(label).is_some() {
-                    &mut counts
-                } else {
-                    &mut undefined
-                };
-                *target.entry(label.to_string()).or_insert(0) += 1;
-            }
+            let target = if set.get(label).is_some() {
+                &mut counts
+            } else {
+                &mut undefined
+            };
+            *target.entry(label.to_string()).or_insert(0) += features;
         }
     }
 

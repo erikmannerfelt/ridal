@@ -54,6 +54,9 @@ from ridal.client.models import (
     IngestPlan,
     Interpretation,
     InterpretationList,
+    InterpretationSummary,
+    InterpretationSummaryList,
+    LayerSummary,
     Me,
     PicksNotCarried,
     PlannedAntenna,
@@ -79,6 +82,7 @@ from ridal.client.models import (
     StepProgress,
     StoredFile,
     TokenSummary,
+    UnreadableInterpretation,
 )
 from ridal.client.plan import Outcome, Plan, Record
 from ridal.client.progress import Progress, ProgressEvent, tqdm_progress
@@ -117,6 +121,9 @@ __all__ = [
     "IngestPlan",
     "Interpretation",
     "InterpretationList",
+    "InterpretationSummary",
+    "InterpretationSummaryList",
+    "LayerSummary",
     "Me",
     "NotAProject",
     "NotFound",
@@ -160,5 +167,6 @@ __all__ = [
     "TransportError",
     "Unauthorized",
     "Unavailable",
+    "UnreadableInterpretation",
     "tqdm_progress",
 ]
