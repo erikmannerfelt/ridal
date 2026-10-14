@@ -2,6 +2,11 @@
     Two stages, driven by process.js: raw data in (a new radargram from the
     catalog, or a served one that has none yet), then steps in and a draft
     out. The viewer of a radargram with raw data starts at the second. -#}
+{#- Read by `RIDAL.stepsEditor` (app.js) for the help under every steps box
+    on the page, this dialog's and the /processing page's (#423). Here
+    because every page with a steps box includes this dialog. An attribute,
+    as `data-basemaps` is, so the template's own escaping makes it safe. -#}
+<div id="step-catalog" data-steps="{{ step_catalog_json }}" hidden></div>
 <dialog id="process-dialog" class="process-dialog">
   <h2 id="process-title">Process</h2>
   <p id="process-status" class="hint"></p>
@@ -85,8 +90,11 @@
                   placeholder="subset(0 2000)"></textarea>
       </label>
       <p class="hint">
-        This radargram's own, run first. Only <code>subset</code> and
-        <code>remove_traces</code>.
+        This radargram's own, run first. Only
+        {% for step in step_catalog if step.pre_profile -%}
+          {%- if not loop.first %}{% if loop.last %} and {% else %}, {% endif %}{% endif -%}
+          <code>{{ step.name }}</code>
+        {%- endfor %}.
       </p>
     </div>
     <div id="process-profile-slot"></div>

@@ -91,6 +91,7 @@
       el('label', {}, 'Medium velocity (m/ns) ', velocity),
       el('p', {}, save, ' ', cancel),
     );
+    RIDAL.stepsEditor(steps);
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       save.disabled = true;
@@ -897,6 +898,7 @@
 
   const newForm = document.getElementById('processing-new-form');
   if (newForm) {
+    RIDAL.stepsEditor(newForm.elements.steps);
     // The id is the name's unless one is typed, as on the settings page.
     const derive = () => {
       newForm.elements.id.placeholder =

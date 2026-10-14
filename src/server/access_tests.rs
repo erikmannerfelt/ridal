@@ -3828,6 +3828,8 @@ async fn the_viewer_offers_a_radargrams_edits_to_an_operator() {
         r#"id="replace-dialog""#,
         r#"id="process-open""#,
         "/static/radargram_edit.js",
+        // The step help's catalog (#423), escaped into an attribute.
+        r#"id="step-catalog" data-steps="[{&quot;name&quot;:&quot;subset&quot;"#,
     ] {
         assert!(ours.text.contains(needle), "{needle}: {}", ours.text);
     }
@@ -3842,6 +3844,18 @@ async fn the_viewer_offers_a_radargrams_edits_to_an_operator() {
     assert!(theirs.text.contains(r#"data-edit-properties="theirs""#));
     for needle in ["data-replace-radargram", r#"id="process-open""#] {
         assert!(!theirs.text.contains(needle), "{needle}: {}", theirs.text);
+    }
+
+    // The processing page has steps boxes of its own (#423), and renders the
+    // dialog that carries their help.
+    let processing = get(&app, "/processing", Some(&erik)).await;
+    assert_eq!(processing.status, StatusCode::OK, "{}", processing.text);
+    for needle in [r#"id="processing-new-form""#, r#"id="step-catalog""#] {
+        assert!(
+            processing.text.contains(needle),
+            "{needle}: {}",
+            processing.text
+        );
     }
 
     let read_only = get(&app, "/view/ours", Some(&vera)).await;

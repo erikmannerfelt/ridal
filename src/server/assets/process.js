@@ -49,6 +49,7 @@
   const upload = document.getElementById('process-upload');
   const cancelUpload = document.getElementById('process-cancel-upload');
   const stepsBox = document.getElementById('process-steps');
+  RIDAL.stepsEditor(stepsBox);
   const velocityBox = document.getElementById('process-velocity');
   const errorBox = document.getElementById('process-error');
   const result = document.getElementById('process-result');
@@ -666,6 +667,8 @@
    * own while it is in a profile, so which steps are whose is plain. */
   const preBox = document.getElementById('process-pre');
   const preSteps = document.getElementById('process-pre-steps');
+  // Marks a step that may not run before the profile's as it is typed.
+  RIDAL.stepsEditor(preSteps, { preProfile: true });
   const mainBox = document.getElementById('process-main');
   const mainSummary = document.getElementById('process-main-summary');
   const mainNote = document.getElementById('process-main-note');
