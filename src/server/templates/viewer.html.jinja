@@ -344,7 +344,7 @@
               </select></label>
             <label>DPI <input type="number" id="fig-dpi" min="10" max="2400" step="1" value="300"></label>
             <label title="The viewer's horizontal scale: how many units wide each trace is for every row tall.">Horizontal scale
-              <input type="number" id="fig-xscale" min="0.001" step="any" value="1"></label>
+              <input type="number" id="fig-xscale" min="0" step="any" value="1"></label>
           </div>
           <p class="hint" id="fig-size-note"></p>
         </fieldset>
@@ -372,9 +372,9 @@
               <input type="number" id="fig-x-anchor" step="any" value="0"></label>
             <label title="Ticks are at anchor + k × spacing.">y anchor
               <input type="number" id="fig-y-anchor" step="any" value="0"></label>
-            <label title="Blank uses the unit's own title.">x title
+            <label title="Blank uses the unit's own label.">x label
               <input type="text" id="fig-x-label" placeholder="default"></label>
-            <label title="Blank uses the unit's own title.">y title
+            <label title="Blank uses the unit's own label.">y label
               <input type="text" id="fig-y-label" placeholder="default"></label>
           </div>
           <label class="figure-check"><input type="checkbox" id="fig-axes" checked> Axes and labels</label>
@@ -387,7 +387,7 @@
             <label>Background <input type="color" id="fig-background" value="#ffffff"></label>
             <label class="figure-check"><input type="checkbox" id="fig-transparent"> Transparent</label>
           </div>
-          <label class="figure-check"><input type="checkbox" id="fig-radargram" checked> Radargram</label>
+          <label class="figure-check"><input type="checkbox" id="fig-radargram" checked> Show radargram</label>
         </fieldset>
         <fieldset>
           <legend>Layers</legend>
@@ -413,7 +413,7 @@
       <div class="figure-preview-pane">
         <div class="figure-preview" id="fig-preview">
           <img id="fig-preview-image" alt="Figure preview" hidden>
-          <p class="hint" id="fig-preview-status">Choose an extent to preview the figure.</p>
+          <p class="figure-preview-status" id="fig-preview-status">Choose an extent to preview the figure.</p>
         </div>
         <p class="figure-buttons">
           <button type="button" id="fig-update">Update preview</button>

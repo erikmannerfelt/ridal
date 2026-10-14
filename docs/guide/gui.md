@@ -56,10 +56,11 @@ scope, as the rendered image does.
 
 - **Extent.** The dialog opens on what the viewer shows. **Current view**
   takes it again, **Draw rectangle** closes the dialog until you drag a box
-  on the radargram (Escape cancels), and **Whole radargram** takes all of
-  it. The four fields show the extent in the axis units and can be typed
-  into. In the topographic view the figure is of the corrected view, in
-  elevation.
+  on the radargram (a banner on the map says so; Escape or **Cancel**
+  stops), and **Whole radargram** takes all of it. The four fields show the
+  extent in the axis units and can be typed into. In the topographic view
+  the figure is of the corrected view, in elevation, and the top may be
+  typed above the highest surface to leave room above the radargram.
 - **Size.** The width is the whole figure's, labels included, in
   centimetres, inches or pixels, at the DPI given; the height follows from
   the extent and the horizontal scale, which starts at the viewer's.
@@ -67,8 +68,11 @@ scope, as the rendered image does.
   units, tick spacing and anchor, titles, font size, colours, and a
   transparent background. **Radargram** off draws only the layers.
 - **Layers.** **Picks** lists the contributors whose picks you may see,
-  with a box per layer they picked; **Derived** lists the derived layers.
-  Each group has its own line width and opacity.
+  with a box per layer they picked (and one for lines with no layer);
+  **Derived** lists the derived layers. Each group has its own line width
+  and opacity, and picks are drawn over the derived layers. Picks that
+  cannot be carried to this revision are drawn as stored, as the viewer
+  draws other contributors' picks, and the dialog says so.
 
 The preview is the figure itself, rendered smaller, and follows the
 controls as they change; for an extent of more than a few million samples

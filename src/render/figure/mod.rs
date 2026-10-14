@@ -399,7 +399,14 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
         }
     };
     let traces = clip(spec.extent.traces, n_traces, "trace")?;
-    let rows = clip(rows, n_rows, "row")?;
+    // In the topographic view the rows may reach past the data, to leave
+    // room above the highest surface or below the floor: elevation is
+    // defined there, and the raster is simply empty. A standard view's rows
+    // are samples, and there is no time before the first one to show.
+    let rows = match (spec.view, rows) {
+        (View::Topo, Some([a, b])) if b > 0.0 && a < n_rows as f64 => [a, b],
+        _ => clip(rows, n_rows, "row")?,
+    };
 
     let x_unit = match spec.x_axis.unit {
         Some(unit) => unit,
@@ -696,6 +703,15 @@ impl Layout {
         let plot_h =
             (plot_w * (rows[1] - rows[0]) / ((traces[1] - traces[0]) * spec.x_scale)).round();
         let plot_h = plot_h.max(1.0);
+        // The y label is centred on the plot and rotated, so on a short plot
+        // it is taller than the plot and would run off the figure. Enough
+        // margin above and below to hold it, then.
+        let (top, bottom) = if spec.axes && !y_label.is_empty() {
+            let overhang = (font::text_width(y_label, font_px) - plot_h) / 2.0 + pad_px;
+            (top.max(overhang.ceil()), bottom.max(overhang.ceil()))
+        } else {
+            (top, bottom)
+        };
         let width = (left + plot_w + right) as usize;
         let height = (top + plot_h + bottom) as usize;
         if width > MAX_FIGURE_SIDE

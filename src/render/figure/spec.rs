@@ -91,7 +91,8 @@ pub enum View {
 /// a spec meant to outlive that can give `elevation` instead.
 ///
 /// Omitted bounds mean the whole radargram. Bounds past the data are
-/// clipped to it.
+/// clipped to it, except the rows of the topographic view, which may reach
+/// above the highest surface or below the floor to leave empty space there.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Extent {
@@ -232,7 +233,8 @@ impl YUnit {
 /// Every pick whose user and layer match one of `items` is drawn, in its
 /// layer's colour. A selector that leaves out `user` matches everyone whose
 /// picks the caller may see, and one that leaves out `layer` matches every
-/// layer, so `[{}]` is all of them. No items, the default, draws none.
+/// layer, so `[{}]` is all of them; `"layer": ""` matches unlabelled lines.
+/// No items, the default, draws none.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PickOverlay {
@@ -261,9 +263,15 @@ pub struct PickSelector {
 
 impl PickSelector {
     /// Whether a pick by `user` on `layer` (`None` when unlabelled) matches.
+    /// A selector's `layer` of `""` asks for unlabelled lines, which a
+    /// project without a layer vocabulary has nothing but.
     pub fn matches(&self, user: &str, layer: Option<&str>) -> bool {
         self.user.as_deref().is_none_or(|u| u == user)
-            && self.layer.as_deref().is_none_or(|l| Some(l) == layer)
+            && match self.layer.as_deref() {
+                None => true,
+                Some("") => layer.is_none(),
+                Some(l) => Some(l) == layer,
+            }
     }
 }
 

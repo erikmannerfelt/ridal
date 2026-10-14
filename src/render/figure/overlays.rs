@@ -13,8 +13,9 @@
 //!
 //! What is drawn is what the viewer draws. Picks are carried to the
 //! revision being drawn, as `GET .../carried` carries them, so a pick lands
-//! where the viewer shows it. Picks that do not name a revision at all are
-//! drawn as stored, as the viewer's contributor overlay draws them. Derived
+//! where the viewer shows it. Picks that cannot be carried, including those
+//! that name no revision at all, are drawn as stored, as the viewer's
+//! contributor overlay draws them. Derived
 //! layers are evaluated over the stored picks per trace, as
 //! `GET .../derived/{item}` evaluates them, and a range fill is drawn only
 //! between two items that are both drawn.
@@ -324,12 +325,12 @@ fn gather_picks(
             &stored.document,
         );
         use crate::interp::carry::Severity;
-        let unanchored = stored
-            .document
-            .source
-            .as_ref()
-            .and_then(|s| s.revision_id.as_deref())
-            .is_none();
+        // Picks that cannot be carried to this revision -- they name no
+        // revision at all (imported from an older tool), or one that shares
+        // no axis with this one -- are drawn as stored, with a warning. That
+        // is how the viewer's contributor overlay shows them and how derived
+        // layers are evaluated over them, so a figure shows what the viewer
+        // does and its picks agree with its consensus.
         let document = match carried.document {
             Some(document) => {
                 if !matches!(
@@ -344,27 +345,28 @@ fn gather_picks(
                 }
                 document
             }
-            // Picks that do not say which revision they were drawn on
-            // (imported from an older tool) cannot be carried, and there is
-            // nothing to carry them from. They are drawn as stored, which is
-            // how the viewer's contributor overlay shows them and how derived
-            // layers are evaluated over them, so a figure's picks and its
-            // consensus agree.
-            None if unanchored => {
-                overlays.warnings.push(format!(
-                    "{}'s picks do not say which revision they were drawn on, so they are \
-                     drawn as stored.",
-                    user.as_str()
-                ));
-                stored.document
-            }
             None => {
-                overlays.warnings.push(format!(
-                    "{}'s picks are not drawn: {}",
-                    user.as_str(),
-                    carried.report.headline
-                ));
-                continue;
+                let named = stored
+                    .document
+                    .source
+                    .as_ref()
+                    .and_then(|s| s.revision_id.as_deref())
+                    .is_some();
+                overlays.warnings.push(if named {
+                    format!(
+                        "{}'s picks could not be carried to this revision, so they are drawn \
+                         as stored, as the viewer's contributor overlay draws them: {}",
+                        user.as_str(),
+                        carried.report.headline
+                    )
+                } else {
+                    format!(
+                        "{}'s picks do not say which revision they were drawn on, so they are \
+                         drawn as stored.",
+                        user.as_str()
+                    )
+                });
+                stored.document
             }
         };
         for feature in &document.features {
@@ -462,7 +464,7 @@ pub(super) struct OverlayStyle {
 }
 
 impl Overlays {
-    /// SVG for the overlays: fills, then picks, then derived lines, all
+    /// SVG for the overlays: fills, then derived lines, then picks, all
     /// clipped to the plot so nothing draws over the axes.
     ///
     /// Clipped here, in the geometry, rather than with an SVG `clipPath`,
@@ -513,20 +515,6 @@ impl Overlays {
             }
         };
 
-        for pick in &self.picks {
-            let points: Vec<[f64; 2]> = pick
-                .vertices
-                .iter()
-                .map(|&[trace, sample]| placement.to_px(trace, sample))
-                .collect();
-            line(
-                &mut s,
-                &points,
-                &pick.colour,
-                style.pick_width,
-                style.pick_opacity,
-            );
-        }
         for derived in &self.derived {
             // One run per stretch of finite values, so a gap stays a gap.
             for run in finite_runs(&derived.samples) {
@@ -541,6 +529,23 @@ impl Overlays {
                     style.derived_opacity,
                 );
             }
+        }
+        // Picks last, over the derived layers: a consensus of one
+        // contributor is their pick, and a wider derived line drawn over it
+        // hid it entirely.
+        for pick in &self.picks {
+            let points: Vec<[f64; 2]> = pick
+                .vertices
+                .iter()
+                .map(|&[trace, sample]| placement.to_px(trace, sample))
+                .collect();
+            line(
+                &mut s,
+                &points,
+                &pick.colour,
+                style.pick_width,
+                style.pick_opacity,
+            );
         }
         s
     }
@@ -800,6 +805,11 @@ mod tests {
         };
         assert!(bed.matches("anyone", Some("bed")));
         assert!(!bed.matches("anyone", Some("surface")) && !bed.matches("anyone", None));
+        let unlabelled = PickSelector {
+            user: None,
+            layer: Some(String::new()),
+        };
+        assert!(unlabelled.matches("anyone", None) && !unlabelled.matches("anyone", Some("bed")));
         let theirs = PickSelector {
             user: Some("erik".into()),
             layer: None,

@@ -376,3 +376,53 @@ fn output_formats_come_from_the_extension() {
     );
     assert!(FigureFormat::for_path(Path::new("b.jpg")).is_err());
 }
+
+#[test]
+fn the_topographic_view_can_leave_room_above_the_highest_surface() {
+    // The surface tops out at 500 m; asking for 510 m leaves 10 m of empty
+    // space above it, labelled, rather than being clipped to 500 m.
+    let data = ramp(200, 100);
+    let spec = FigureSpec {
+        view: View::Topo,
+        extent: Extent {
+            traces: None,
+            rows: None,
+            elevation: Some([510.0, 490.0]),
+        },
+        y_axis: AxisSpec {
+            spacing: Some(5.0),
+            ..AxisSpec::default()
+        },
+        ..px_spec()
+    };
+    let svg = render(&data, &coordinates(200, 100), &spec, FigureFormat::Svg).unwrap();
+    let svg = String::from_utf8(svg.bytes).unwrap();
+    assert!(svg.contains(">510</text>") && svg.contains(">505</text>"));
+
+    let raw = FigureSpec {
+        axes: false,
+        ..spec
+    };
+    let figure = render(&data, &coordinates(200, 100), &raw, FigureFormat::Png).unwrap();
+    let image = image::load_from_memory(&figure.bytes).unwrap().to_rgba8();
+    // The top half is above every surface: empty.
+    assert_eq!(image.get_pixel(5, 2).0[3], 0);
+    assert_eq!(image.get_pixel(5, image.height() - 2).0[3], 255);
+}
+
+#[test]
+fn a_short_plot_leaves_room_for_its_y_label() {
+    // 200 traces by 10 rows is a plot 30 px tall at 600 px wide, much less
+    // than "Two-way travel time (ns)" set at 10 pt: the figure grows above
+    // and below so the rotated label fits.
+    let spec = px_spec();
+    let label = "Two-way travel time (ns)";
+    let layout = Layout::new(&spec, [0.0, 200.0], [0.0, 10.0], &[], &[], "x", label).unwrap();
+    let label_px = font::text_width(label, layout.font_px);
+    let centre = layout.plot_y as f64 + layout.plot_h as f64 / 2.0;
+    assert!(centre - label_px / 2.0 >= 0.0, "runs off the top");
+    assert!(
+        centre + label_px / 2.0 <= layout.height as f64,
+        "runs off the bottom"
+    );
+}

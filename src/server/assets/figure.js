@@ -213,16 +213,22 @@
     return window.RIDAL_GEOMETRY.rasterHeight;
   }
 
-  /* Clip an extent to the raster and keep it ordered and non-empty. */
-  function setExtent(traces, rows) {
+  /* Clip an extent to the raster and keep it ordered and non-empty.
+   *
+   * Rows typed into the topographic view are left alone (`clipRows`
+   * false): there they may reach above the highest surface or below the
+   * floor, to leave empty space around the radargram, as the server allows.
+   * An extent taken from the map is always clipped, or zooming out would
+   * frame the whole canvas. */
+  function setExtent(traces, rows, clipRows = true) {
     const width = config.sourceWidth;
     const height = rasterHeight();
     const order = ([a, b]) => (a <= b ? [a, b] : [b, a]);
     const clip = ([a, b], n) => [Math.max(0, Math.min(a, n)), Math.max(0, Math.min(b, n))];
     let t = clip(order(traces), width);
-    let r = clip(order(rows), height);
+    let r = clipRows ? clip(order(rows), height) : order(rows);
     if (t[1] - t[0] < 1) t = [Math.max(0, t[0] - 0.5), Math.min(width, t[0] + 0.5)];
-    if (r[1] - r[0] < 1) r = [Math.max(0, r[0] - 0.5), Math.min(height, r[0] + 0.5)];
+    if (r[1] - r[0] < 1) r = [r[0] - 0.5, r[0] + 0.5];
     state.traces = t;
     state.rows = r;
     showExtent();
@@ -249,14 +255,32 @@
 
   // --- Drawing a rectangle -------------------------------------------------
 
+  /* Close the dialog and let a box be dragged on the radargram. A banner on
+   * the map says what is expected, as nothing else on the page would. */
   function drawRectangle() {
     const map = window.RIDAL_MAP;
     const container = map.getContainer();
     dialog.close();
     map.dragging.disable();
-    container.style.cursor = 'crosshair';
+    container.classList.add('figure-drawing');
     let start = null;
     let box = null;
+
+    const banner = document.createElement('div');
+    banner.className = 'figure-draw-banner';
+    const text = document.createElement('span');
+    text.textContent = 'Drag a rectangle over the part of the radargram to draw.';
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = 'Cancel';
+    banner.append(text, cancel);
+    container.append(banner);
+    // A press on the banner is not the start of a rectangle.
+    L.DomEvent.disableClickPropagation(banner);
+    cancel.addEventListener('click', () => {
+      start = null;
+      finish(null);
+    });
 
     const finish = (latlng) => {
       map.off('mousedown', down);
@@ -264,7 +288,8 @@
       map.off('mouseup', up);
       document.removeEventListener('keydown', key);
       map.dragging.enable();
-      container.style.cursor = '';
+      container.classList.remove('figure-drawing');
+      banner.remove();
       if (box) box.remove();
       if (start && latlng) {
         const [t0, r0] = toRaster(start);
@@ -278,9 +303,10 @@
       start = event.latlng;
       box = L.rectangle([start, start], {
         color: '#ff3b30',
-        weight: 1,
-        dashArray: '4 4',
-        fill: false,
+        weight: 2,
+        dashArray: '6 4',
+        fill: true,
+        fillOpacity: 0.12,
         interactive: false,
       }).addTo(map);
     };
@@ -331,10 +357,12 @@
     list.replaceChildren();
     const chosen = new Set((selected || []).map((s) => `${s.user}\u0000${s.layer || ''}`));
     state.documents.forEach(({ user, document: doc }) => {
+      // '' for lines with no layer, which a project without a layer
+      // vocabulary has nothing but; the spec's `"layer": ""` asks for them.
       const labels = new Set();
       ((doc && doc.features) || []).forEach((feature) => {
-        const label = feature.properties && feature.properties.label;
-        if (feature.geometry && feature.geometry.type === 'LineString' && label) labels.add(label);
+        const label = (feature.properties && feature.properties.label) || '';
+        if (feature.geometry && feature.geometry.type === 'LineString') labels.add(label);
       });
       if (!labels.size) return;
       const group = document.createElement('fieldset');
@@ -347,7 +375,7 @@
         const layer = layerFor(label);
         const box = checkbox(
           `${user}\u0000${label}`,
-          (layer && layer.name) || label,
+          label === '' ? 'Unlabelled' : (layer && layer.name) || label,
           layer && layer.color,
           all || chosen.has(`${user}\u0000${label}`),
         );
@@ -410,29 +438,35 @@
     $('fig-derived-summary').textContent = derived ? `${derived} selected` : 'none';
   }
 
-  async function loadOnce(prefs) {
-    if (state.loaded) return;
+  async function loadJson(url, fallback) {
+    try {
+      return await RIDAL.fetchJson(url);
+    } catch (error) {
+      console.warn(`Figure dialog: could not load ${url}: ${error.message}`);
+      return fallback;
+    }
+  }
+
+  /* What can be drawn, read on every open rather than once: picks saved, and
+   * layers or derived items defined, since the dialog was last open belong
+   * in its lists. What was ticked stays ticked. */
+  async function loadLayers(prefs) {
+    const first = !state.loaded;
     state.loaded = true;
-    const load = async (url, fallback) => {
-      try {
-        return await RIDAL.fetchJson(url);
-      } catch (error) {
-        console.warn(`Figure dialog: could not load ${url}: ${error.message}`);
-        return fallback;
-      }
-    };
+    const picked = first ? prefs && prefs.picks : selectedPicks();
+    const derivedPicked = first ? prefs && prefs.derived : selectedDerived();
     const [axes, layers, contributors, derived] = await Promise.all([
-      load(RIDAL.apiPath('datasets', radargramId, 'axes'), null),
-      load(RIDAL.apiPath('layers'), { layers: [] }),
-      load(RIDAL.apiPath('datasets', radargramId, 'contributors'), { documents: [] }),
-      load(RIDAL.apiPath('derived'), { items: [] }),
+      state.axes ? state.axes : loadJson(RIDAL.apiPath('datasets', radargramId, 'axes'), null),
+      loadJson(RIDAL.apiPath('layers'), { layers: [] }),
+      loadJson(RIDAL.apiPath('datasets', radargramId, 'contributors'), { documents: [] }),
+      loadJson(RIDAL.apiPath('derived'), { items: [] }),
     ]);
     state.axes = axes;
     state.layers = (layers && layers.layers) || [];
     state.documents = (contributors && contributors.documents) || [];
     state.derived = (derived && derived.items) || [];
-    renderPicks(prefs && prefs.picks);
-    renderDerived(prefs && prefs.derived);
+    renderPicks(picked);
+    renderDerived(derivedPicked);
   }
 
   async function loadTopo() {
@@ -598,6 +632,13 @@
     const controller = new AbortController();
     state.controller = controller;
     const status = $('fig-preview-status');
+    const pane = $('fig-preview');
+    // Shown over the previous preview, which stays in place, dimmed, until
+    // the next one arrives.
+    pane.classList.add('is-busy');
+    const done = () => {
+      if (controller === state.controller) pane.classList.remove('is-busy');
+    };
     status.hidden = false;
     status.textContent = 'Rendering…';
     $('fig-update').classList.remove('is-stale');
@@ -607,12 +648,14 @@
     } catch (error) {
       if (error.name === 'AbortError') return;
       status.textContent = `Could not reach the server: ${error.message}`;
+      done();
       return;
     }
     if (controller !== state.controller) return;
     clearMessages();
     if (!response.ok) {
       status.textContent = await errorText(response);
+      done();
       return;
     }
     showWarnings(warningsOf(response));
@@ -631,6 +674,7 @@
     image.src = state.previewUrl;
     image.hidden = false;
     status.hidden = true;
+    done();
   }
 
   function samples() {
@@ -647,6 +691,11 @@
     if (force || samples() <= AUTO_PREVIEW_SAMPLES) {
       state.timer = setTimeout(preview, force ? 0 : PREVIEW_DEBOUNCE_MS);
     } else {
+      // A preview already on its way is of the settings before this
+      // change: it must not arrive and hide that the picture is stale.
+      if (state.controller) state.controller.abort();
+      state.controller = null;
+      $('fig-preview').classList.remove('is-busy');
       $('fig-update').classList.add('is-stale');
       $('fig-preview-status').hidden = false;
       $('fig-preview-status').textContent = 'Update the preview to see the changes.';
@@ -721,11 +770,11 @@
     if (typeof radargramVisible === 'boolean') $('fig-radargram').checked = radargramVisible;
     offerUnits();
     dialog.showModal();
-    await Promise.all([loadOnce(prefs), loadTopo()]);
+    await Promise.all([loadLayers(prefs), loadTopo()]);
 
     const stored = readStore(sessionStorage, extentKey());
     if (stored && stored.revision === config.revisionId && stored.traces && stored.rows) {
-      setExtent(stored.traces, stored.rows);
+      setExtent(stored.traces, stored.rows, state.view !== 'topo');
     } else {
       extentFromView();
     }
@@ -741,9 +790,17 @@
   form.addEventListener('change', (event) => {
     const id = event.target.id;
     if (['fig-x0', 'fig-x1'].includes(id)) {
-      setExtent([fromXField(Number($('fig-x0').value)), fromXField(Number($('fig-x1').value))], state.rows);
+      setExtent(
+        [fromXField(Number($('fig-x0').value)), fromXField(Number($('fig-x1').value))],
+        state.rows,
+        state.view !== 'topo',
+      );
     } else if (['fig-y0', 'fig-y1'].includes(id)) {
-      setExtent(state.traces, [fromYField(Number($('fig-y0').value)), fromYField(Number($('fig-y1').value))]);
+      setExtent(
+        state.traces,
+        [fromYField(Number($('fig-y0').value)), fromYField(Number($('fig-y1').value))],
+        state.view !== 'topo',
+      );
     } else if (id === 'fig-x-unit' || id === 'fig-y-unit') {
       showExtent();
     }
