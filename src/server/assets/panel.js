@@ -195,15 +195,74 @@
     });
   }
 
+  /** Whether an entry's picks could not be carried onto this revision. */
+  function notCarried(entry) {
+    return Boolean(entry.carry) && entry.carry.severity === "refused";
+  }
+
+  /** What to draw for an entry, and how (#434).
+   *
+   * The server's carried `view` when there is one. A document that cannot
+   * be carried is still drawn where it was stored, as figures draw it, but
+   * dashed and saying so: its indices belong to an earlier revision, and
+   * gprinterp SPEC §8.1 allows that only when it is reported. An entry with
+   * no `carry` at all is on a radargram the catalog does not serve, which
+   * has no revision to carry onto. */
+  function drawEntry(entry, target, options) {
+    if (!notCarried(entry)) {
+      drawDocument(entry.view || entry.document, target, options);
+      return;
+    }
+    const tooltip = options.tooltip || ((label) => label || "unlabelled");
+    drawDocument(entry.document, target, {
+      ...options,
+      dashArray: "6 6",
+      className: `${options.className} pick-line-not-carried`,
+      tooltip: (label) =>
+        `${tooltip(label)} · not carried to this revision, drawn where it was stored`,
+    });
+  }
+
+  /** Say whose drawn picks are not simply this revision's (#434): refused,
+   * cut at the edge, or moved. Only entries the panel draws are listed, so
+   * an editing viewer leaves out the caller's own, whose banner picker.js
+   * shows. Folded, as figure.js folds its warnings, since one sentence per
+   * contributor would bury the layer list. */
+  function carryNote(body) {
+    const listed = state.documents.filter(
+      (entry) =>
+        entry.carry &&
+        !["current", "carried"].includes(entry.carry.severity) &&
+        (entry.own ? !CFG.writable : state.canSeeOthers),
+    );
+    if (!listed.length) return;
+    const details = document.createElement("details");
+    details.className = "layer-panel-carry";
+    const summary = document.createElement("summary");
+    summary.className = "hint";
+    const refused = listed.filter(notCarried).length;
+    summary.textContent =
+      refused > 0
+        ? `${refused === 1 ? "One set" : `${refused} sets`} of picks could not be carried to this revision, and ${refused === 1 ? "is" : "are"} drawn dashed where stored`
+        : "Some picks were carried from an earlier revision and moved or were cut";
+    const list = document.createElement("ul");
+    listed.forEach((entry) => {
+      const item = document.createElement("li");
+      item.className = "hint";
+      item.textContent = `${entry.own ? "Your picks" : entry.user}: ${entry.carry.headline}`;
+      list.append(item);
+    });
+    details.append(summary, list);
+    body.appendChild(details);
+  }
+
   /** The caller's own picks, for a viewer picker.js does not run for. */
   function drawOwn() {
     clearList(ownLines);
     if (CFG.writable) return;
     state.documents
       .filter((entry) => entry.own)
-      .forEach((entry) =>
-        drawDocument(entry.document, ownLines, { className: "own-pick-line" }),
-      );
+      .forEach((entry) => drawEntry(entry, ownLines, { className: "own-pick-line" }));
   }
 
   /** How many people have picked at least one line here, the caller
@@ -223,7 +282,7 @@
     state.documents
       .filter((entry) => !entry.own)
       .forEach((entry) => {
-        drawDocument(entry.document, contributorLines, {
+        drawEntry(entry, contributorLines, {
           weight: 2,
           opacity: 0.55,
           className: "contributor-pick-line",
@@ -730,6 +789,7 @@
         },
       });
     }
+    carryNote(body);
 
     const summary = document.getElementById("layer-panel-summary");
     if (summary) {

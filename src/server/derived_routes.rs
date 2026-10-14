@@ -121,14 +121,34 @@ pub(super) fn may_see_others_picks(caller: &Caller) -> bool {
     may_see_cross_user(caller) && caller.may_download(DownloadScope::Picks)
 }
 
-/// Read the picks that feed an item with this `audience`, for this caller.
+/// The picks that feed an evaluation, as it uses them.
+struct Visible {
+    /// Each user's document, carried onto the revision being served.
+    documents: Vec<(String, gprinterp::Document)>,
+    /// Users whose picks could not be carried there and are used as
+    /// stored (#434), sorted.
+    not_carried: Vec<String>,
+}
+
+/// Read the picks that feed an item with this `audience`, for this caller,
+/// carried onto the revision being served (#434): what the viewer draws.
 fn visible_documents(
     state: &AppState,
     caller: &Caller,
     radargram: &crate::identity::RadargramId,
     audience: Audience,
-) -> Result<Vec<(String, gprinterp::Document)>, ApiError> {
+) -> Result<Visible, ApiError> {
     let project = readable_project(state)?;
+    // Read once: every document is carried onto the same revision.
+    let target = {
+        let catalog = state.catalog();
+        let entry = lookup_dataset(&catalog, radargram.as_str())?;
+        let path = state
+            .absolute_path(entry)
+            .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+        let axes = super::interp_routes::current_axes(project, &path, entry);
+        (entry.revision_id.clone(), axes)
+    };
     // Skip and report (#213): a filename that is not a valid `UserId` used to
     // fail the whole request, so one bad name hid every good one.
     let (users, unreadable) =
@@ -143,6 +163,7 @@ fn visible_documents(
     }
 
     let mut documents = Vec::new();
+    let mut not_carried = Vec::new();
     for parsed in users {
         let permitted = match evaluable_users(caller, audience) {
             EvaluableUsers::All => true,
@@ -155,10 +176,29 @@ fn visible_documents(
         if let Some(stored) = interpretations::read(project.documents(), radargram, &parsed)
             .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?
         {
-            documents.push((parsed.as_str().to_string(), stored.document));
+            let (document, refused) = crate::interp::carry::for_evaluation(
+                project,
+                radargram,
+                &target.1,
+                target.0.as_str(),
+                stored.document,
+            );
+            if refused {
+                not_carried.push(parsed.as_str().to_string());
+            }
+            documents.push((parsed.as_str().to_string(), document));
         }
     }
-    Ok(documents)
+    Ok(Visible {
+        documents,
+        not_carried,
+    })
+}
+
+/// Picks reduced for an evaluation, and whose went in as stored.
+struct Reduced {
+    picks: ReducedPicks,
+    not_carried: Vec<String>,
 }
 
 /// Build the reduced picks for one radargram at per-trace spacing.
@@ -172,7 +212,7 @@ fn reduce_for(
     radargram: &crate::identity::RadargramId,
     geometry: &RadargramGeometry,
     audience: Audience,
-) -> Result<(ReducedPicks, crate::project::layers::LayerSet), ApiError> {
+) -> Result<Reduced, ApiError> {
     // The viewer draws derived items per native trace, so its routes stay on
     // the per-trace grid. The export evaluates on the radargram's arc grid
     // instead, so a derived point and a picked point coincide.
@@ -188,10 +228,10 @@ fn reduce_on(
     geometry: &RadargramGeometry,
     audience: Audience,
     grid: &[f64],
-) -> Result<(ReducedPicks, crate::project::layers::LayerSet), ApiError> {
+) -> Result<Reduced, ApiError> {
     let project = readable_project(state)?;
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
-    let documents = visible_documents(state, caller, radargram, audience)?;
+    let visible = visible_documents(state, caller, radargram, audience)?;
     let positions: Vec<GridPosition> = grid
         .iter()
         .map(|trace| GridPosition {
@@ -199,8 +239,11 @@ fn reduce_on(
             distance_m: level2::interpolate_index(&geometry.distance, *trace),
         })
         .collect();
-    let reduced = derive::reduce_picks(&documents, &layer_set, geometry, &positions, false);
-    Ok((reduced, layer_set))
+    let picks = derive::reduce_picks(&visible.documents, &layer_set, geometry, &positions, false);
+    Ok(Reduced {
+        picks,
+        not_carried: visible.not_carried,
+    })
 }
 
 /// Log the items an export or download leaves out because they failed.
@@ -210,6 +253,18 @@ fn log_failures(radargram: &crate::identity::RadargramId, evaluation: &derived::
             radargram = radargram.as_str(),
             item = id.as_str(),
             "skipping a derived item that cannot be evaluated: {error}"
+        );
+    }
+}
+
+/// Log whose picks a download evaluated as stored (#434). A file has nowhere
+/// to say it, so the server's log does.
+fn log_not_carried(radargram: &crate::identity::RadargramId, users: &[String]) {
+    if !users.is_empty() {
+        tracing::warn!(
+            radargram = radargram.as_str(),
+            users = users.join(", "),
+            "derived results use picks that could not be carried onto this revision, as stored"
         );
     }
 }
@@ -458,6 +513,10 @@ pub async fn put_derived(
 /// `GET /api/v1/datasets/{id}/contributors` -- the interpretation documents
 /// the caller may see, for the layer panel's contributor overlay (#209).
 ///
+/// Each entry has the stored `document`, the `view` to draw on the revision
+/// being served (`null` when it cannot be carried), and the `carry` report
+/// that `GET .../carried` gives for the caller's own (#434).
+///
 /// The obvious route, `GET .../interpretations/{user}`, takes no `Caller` at
 /// all (#212) and therefore cannot decide what a caller may see, so the panel
 /// must not use it. This one returns the caller's own document always, and
@@ -492,6 +551,22 @@ pub async fn get_contributors(
         );
     }
 
+    // What every document is carried onto: the revision this catalog
+    // serves. Read once, since it is the same for every contributor.
+    // `None` when the radargram is not catalogued, where there is nothing
+    // to carry onto and the documents go back as they are.
+    let target = {
+        let catalog = state.catalog();
+        lookup_dataset(&catalog, radargram.as_str())
+            .ok()
+            .and_then(|entry| {
+                let path = state.absolute_path(entry).ok()?;
+                let axes = super::interp_routes::current_axes(project, &path, entry);
+                let declared = source::read_axis_declarations(&path).ok();
+                Some((entry.revision_id.clone(), axes, declared))
+            })
+    };
+
     let mut documents = Vec::new();
     for parsed in users {
         let user = parsed.as_str().to_string();
@@ -504,10 +579,37 @@ pub async fn get_contributors(
         {
             let document = serde_json::to_value(&stored.document)
                 .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+            // Carried exactly as `GET .../carried` carries the caller's own
+            // (#434). Drawing a stored document at its stored indices is
+            // only right on the revision it was drawn on; anywhere else the
+            // panel draws `view`, and when there is none it has the report
+            // to say why, rather than drawing an earlier revision's indices
+            // as if they were this one's (gprinterp SPEC §8.1).
+            let (view, carry) = match &target {
+                Some((revision, axes, declared)) => {
+                    let source =
+                        crate::interp::carry::with_kept_axes(project, &radargram, &stored.document);
+                    let mut carried = crate::interp::carry::carry(&source, axes, revision.as_str());
+                    super::interp_routes::add_processing_warnings(
+                        &mut carried,
+                        project,
+                        &radargram,
+                        &stored.document,
+                        declared.as_ref(),
+                    );
+                    (
+                        serde_json::to_value(&carried.document).unwrap_or_default(),
+                        serde_json::to_value(&carried.report).unwrap_or_default(),
+                    )
+                }
+                None => (document.clone(), serde_json::Value::Null),
+            };
             documents.push(serde_json::json!({
                 "user": user,
                 "own": is_own,
                 "document": document,
+                "view": view,
+                "carry": carry,
             }));
         }
     }
@@ -556,7 +658,10 @@ pub async fn preview_derived(
     let (set, _) = load_set(&state)?;
     let geometry = geometry_for(&state, &radargram)?;
     // Never from the body -- see `PreviewBody`.
-    let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry, Audience::OwnPicks)?;
+    let Reduced {
+        picks: reduced,
+        not_carried,
+    } = reduce_for(&state, &caller, &radargram, &geometry, Audience::OwnPicks)?;
 
     let mut preview = set.clone();
     preview.items.retain(|item| item.id != "preview");
@@ -605,6 +710,9 @@ pub async fn preview_derived(
         // is visibly a different quantity from a per-contributor line.
         "contributors": reduced.users.len(),
         "unknown_users": unknown_users(&caller, &body.expression, &reduced.users),
+        // Whose picks could not be carried onto this revision and went in
+        // as stored (#434), so the editor can say the result leans on them.
+        "not_carried": not_carried,
     })))
 }
 
@@ -651,7 +759,10 @@ pub async fn get_derived_item(
         ));
     }
     let geometry = geometry_for(&state, &radargram)?;
-    let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry, item.audience)?;
+    let Reduced {
+        picks: reduced,
+        not_carried,
+    } = reduce_for(&state, &caller, &radargram, &geometry, item.audience)?;
     let evaluation = set
         .evaluate(&reduced, &geometry)
         .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
@@ -679,6 +790,7 @@ pub async fn get_derived_item(
         "unit": result.unit,
         "trace": (0..geometry.n_traces()).collect::<Vec<usize>>(),
         "values": values,
+        "not_carried": not_carried,
     })))
 }
 
@@ -712,7 +824,9 @@ pub async fn download_derived(
         {
             continue;
         }
-        let (reduced, _) = reduce_for(&state, &caller, &radargram, &geometry, audience)?;
+        let reduced = reduce_for(&state, &caller, &radargram, &geometry, audience)?;
+        log_not_carried(&radargram, &reduced.not_carried);
+        let reduced = reduced.picks;
         let evaluation = set
             .evaluate(&reduced, &geometry)
             .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;
@@ -811,7 +925,7 @@ pub(crate) fn export_derived_points(
         level2::Spacing::PerTrace | level2::Spacing::Vertices => None,
     };
     let (set, _) = load_set(state)?;
-    let (reduced, _) = reduce_on(
+    let reduced = reduce_on(
         state,
         caller,
         radargram,
@@ -819,6 +933,8 @@ pub(crate) fn export_derived_points(
         Audience::OwnPicks,
         &grid,
     )?;
+    log_not_carried(radargram, &reduced.not_carried);
+    let reduced = reduced.picks;
     let evaluation = set
         .evaluate(&reduced, geometry)
         .map_err(|e| ApiError::bad_request("derived_failed", e.to_string()))?;

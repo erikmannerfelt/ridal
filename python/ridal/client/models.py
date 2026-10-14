@@ -615,6 +615,37 @@ class Dropped:
 
 
 @dataclass(frozen=True)
+class Clipped:
+    """A feature cut where it ran past the edge of the new revision."""
+
+    index: int
+    """Its position in the document's ``features``."""
+    id: str | None
+    label: str | None
+    vertices_outside: int
+    """How many of its vertices fell outside."""
+    beyond_traces: float
+    """How far past the edge it reached, in traces of the new revision."""
+    beyond_samples: float
+    """The same, in samples."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "Clipped":
+        return _parse(
+            "clipped feature",
+            data,
+            lambda d: cls(
+                index=d["index"],
+                id=d["id"],
+                label=d["label"],
+                vertices_outside=d["vertices_outside"],
+                beyond_traces=d["beyond_traces"],
+                beyond_samples=d["beyond_samples"],
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class Displacement:
     """How far carried coordinates moved, in traces and samples."""
 
@@ -654,6 +685,9 @@ class CarryReport:
     #: What the axes cannot account for, such as one revision being
     #: migrated and the other not. Empty from servers that predate it.
     warnings: tuple[str, ...] = ()
+    #: Features kept but cut at the edge of the new revision. Empty from
+    #: servers that predate it.
+    clipped: tuple[Clipped, ...] = ()
 
     @classmethod
     def from_json(cls, data: Any) -> "CarryReport":
@@ -673,6 +707,7 @@ def _carry_fields(d: Mapping[str, Any]) -> CarryReport:
         refusal=d["refusal"],
         headline=d["headline"],
         warnings=tuple(d.get("warnings", ())),
+        clipped=tuple(Clipped.from_json(item) for item in d.get("clipped", ())),
     )
 
 

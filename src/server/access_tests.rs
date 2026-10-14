@@ -4639,12 +4639,12 @@ async fn removing_a_radargram_keeps_its_axes_so_the_picks_stay_carryable() {
     let before = get(&app, "/api/v1/datasets/ours/revisions", Some(&erik)).await;
     assert_eq!(before.status, StatusCode::OK, "{}", before.text);
     let revisions = before.body["revisions"].as_array().unwrap();
-    // Discovery registers the current revision, so there is a record --
-    // but nothing has superseded anything, and there are no axes kept yet.
+    // Discovery registers the current revision and keeps its axes (#434),
+    // but nothing has superseded anything.
     assert_eq!(revisions.len(), 1, "{revisions:?}");
     assert_eq!(revisions[0]["current"], true);
     assert!(revisions[0]["superseded_at"].is_null());
-    assert_eq!(revisions[0]["has_axes"], false);
+    assert_eq!(revisions[0]["has_axes"], true);
 
     let removed = delete(&app, "/api/v1/datasets/ours", Some(&erik)).await;
     assert_eq!(removed.status, StatusCode::OK, "{}", removed.text);
@@ -4732,9 +4732,12 @@ async fn a_radargram_that_has_never_been_removed_still_has_a_current_revision() 
     );
     assert_eq!(revisions[0]["current"], true);
     assert!(revisions[0]["superseded_at"].is_null());
+    // Kept at discovery, not first at supersession (#434): a file replaced
+    // on disk is never superseded, and its axes would otherwise be lost.
     assert_eq!(
-        revisions[0]["has_axes"], false,
-        "no snapshot yet: nothing has superseded it"
+        revisions[0]["has_axes"], true,
+        "discovery kept the axes: {}",
+        listed.text
     );
     assert!(data(dir.path()).join("revisions.json").exists());
 }

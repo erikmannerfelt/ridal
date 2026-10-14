@@ -731,6 +731,36 @@ fn snapshot_axes(
     path: &std::path::Path,
     revision: &str,
 ) -> Result<(), String> {
+    let Some((snapshot, facts)) = read_axis_snapshot(id, path, revision)? else {
+        eprintln!(
+            "Note: '{id}' does not declare its axes, so no snapshot was kept. \
+             Interpretations drawn on it cannot be carried onto a later revision."
+        );
+        return Ok(());
+    };
+    let checksum = snapshot.checksum();
+    revisions::put(project.documents(), id, &snapshot)
+        .map_err(|e| format!("'{id}' declares axes but they could not be kept: {e}"))?;
+    // The ledger is a record *of* the snapshot, which is now safely on
+    // disk, so a failure here is the audit log's kind of failure rather
+    // than the snapshot's: worth saying, not worth refusing over.
+    if let Err(e) = ledger::update(project.documents(), |l| {
+        ledger::note_current(l, id.as_str(), revision, Some(checksum.clone()));
+        ledger::note_facts(l, id.as_str(), revision, facts);
+    }) {
+        eprintln!("Warning: could not record the axis checksum of '{id}': {e}");
+    }
+    Ok(())
+}
+
+/// The axes of the revision `revision` of the file at `path`, ready to be
+/// kept, and what its processing was. `None` when the file declares no
+/// axes, which leaves nothing to keep.
+pub(super) fn read_axis_snapshot(
+    id: &RadargramId,
+    path: &std::path::Path,
+    revision: &str,
+) -> Result<Option<(revisions::AxisSnapshot, ledger::RevisionFacts)>, String> {
     let declared = crate::interp::source::read_axis_declarations(path).map_err(|e| {
         format!("'{id}' could not be read, so whether it declares axes is unknown: {e}")
     })?;
@@ -753,11 +783,7 @@ fn snapshot_axes(
     }
 
     let Some(values) = crate::interp::anchors::snapshot_values(&declared) else {
-        eprintln!(
-            "Note: '{id}' does not declare its axes, so no snapshot was kept. \
-             Interpretations drawn on it cannot be carried onto a later revision."
-        );
-        return Ok(());
+        return Ok(None);
     };
     let snapshot = revisions::AxisSnapshot {
         radargram_id: id.to_string(),
@@ -767,20 +793,7 @@ fn snapshot_axes(
         x_values: values.x_values,
         y_alternate: values.y_alternate,
     };
-    let checksum = snapshot.checksum();
-    revisions::put(project.documents(), id, &snapshot)
-        .map_err(|e| format!("'{id}' declares axes but they could not be kept: {e}"))?;
-    // The ledger is a record *of* the snapshot, which is now safely on
-    // disk, so a failure here is the audit log's kind of failure rather
-    // than the snapshot's: worth saying, not worth refusing over.
-    let facts = ledger::RevisionFacts::of(&declared);
-    if let Err(e) = ledger::update(project.documents(), |l| {
-        ledger::note_current(l, id.as_str(), revision, Some(checksum.clone()));
-        ledger::note_facts(l, id.as_str(), revision, facts);
-    }) {
-        eprintln!("Warning: could not record the axis checksum of '{id}': {e}");
-    }
-    Ok(())
+    Ok(Some((snapshot, ledger::RevisionFacts::of(&declared))))
 }
 
 pub(super) fn too_large(needed: u64, room: u64, cap: u64) -> ApiError {

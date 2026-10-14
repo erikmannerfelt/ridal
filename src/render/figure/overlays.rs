@@ -206,16 +206,40 @@ pub fn gather(
     // exactly the picks that audience permits: never over a wider set that
     // is filtered afterwards, which is how a cross-user value leaks.
     let mut evaluations: BTreeMap<Audience, derived::Evaluation> = BTreeMap::new();
+    let axes = crate::interp::carry::drawing_axes(project, radargram, path, revision);
+    let mut not_carried = std::collections::BTreeSet::new();
     for item in &items {
         if evaluations.contains_key(&item.audience) {
             continue;
         }
-        let documents = stored_documents(project, radargram, access.inputs(item.audience))?;
+        let documents = stored_documents(project, radargram, access.inputs(item.audience))?
+            .into_iter()
+            .map(|(user, document)| {
+                let (document, refused) = crate::interp::carry::for_evaluation(
+                    project,
+                    radargram,
+                    &axes,
+                    revision.as_str(),
+                    document,
+                );
+                if refused {
+                    not_carried.insert(user.clone());
+                }
+                (user, document)
+            })
+            .collect::<Vec<_>>();
         let reduced = derive::reduce_picks(&documents, &layer_set, &geometry, &grid, false);
         let evaluation = set.evaluate(&reduced, &geometry).map_err(|e| {
             FigureError::Spec(format!("The derived layers cannot be evaluated: {e}"))
         })?;
         evaluations.insert(item.audience, evaluation);
+    }
+    if !not_carried.is_empty() {
+        overlays.warnings.push(format!(
+            "The derived layers use picks by {} as stored, because they could not be \
+             carried to this revision.",
+            not_carried.into_iter().collect::<Vec<_>>().join(", ")
+        ));
     }
 
     let mut samples: BTreeMap<String, Vec<f64>> = BTreeMap::new();
@@ -395,8 +419,8 @@ fn gather_picks(
     Ok(())
 }
 
-/// The stored picks `readable` permits, as derived layers are evaluated
-/// over them.
+/// The stored picks `readable` permits, before they are carried for
+/// evaluation.
 fn stored_documents(
     project: &Project,
     radargram: &RadargramId,

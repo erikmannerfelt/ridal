@@ -380,6 +380,7 @@
           "y_anchor",
           "kept",
           "dropped",
+          "clipped",
           "moved",
           "refusal",
           "headline",
@@ -423,11 +424,18 @@
               "$ref": "#/components/schemas/Dropped"
             }
           },
+          "clipped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Clipped"
+            },
+            "description": "Features kept, but cut at the edge of the new revision."
+          },
           "moved": {
             "oneOf": [
               {
                 "$ref": "#/components/schemas/Displacement",
-                "description": "How far the placed features moved. `null` when nothing was carried,\nor when any feature was dropped."
+                "description": "How far the placed features moved, leaving out those that were cut.\n`null` when nothing was carried, when any feature was dropped, or\nwhen every feature was cut."
               },
               {
                 "type": "null"
@@ -471,6 +479,51 @@
             "format": "double"
           },
           "altitude": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "Clipped": {
+        "type": "object",
+        "description": "A feature that ran past the edge of the new revision and was cut there\n(#434): the part inside is the line as drawn, the part outside is gone.",
+        "required": [
+          "index",
+          "id",
+          "label",
+          "vertices_outside",
+          "beyond_traces",
+          "beyond_samples"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "description": "Its position in the document's `features`.",
+            "minimum": 0
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "vertices_outside": {
+            "type": "integer",
+            "description": "How many of its vertices fell outside.",
+            "minimum": 0
+          },
+          "beyond_traces": {
+            "type": "number",
+            "format": "double",
+            "description": "How far past the edge it reached, in traces and samples of the new\nrevision."
+          },
+          "beyond_samples": {
             "type": "number",
             "format": "double"
           }
