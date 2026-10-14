@@ -41,6 +41,11 @@ pub fn environment() -> Environment<'static> {
     )
     .expect("process dialog template must parse");
     env.add_template(
+        "radargram_dialogs.html.jinja",
+        include_str!("templates/radargram_dialogs.html.jinja"),
+    )
+    .expect("radargram dialogs template must parse");
+    env.add_template(
         "viewer.html.jinja",
         include_str!("templates/viewer.html.jinja"),
     )
@@ -104,6 +109,7 @@ mod tests {
             "base.html.jinja",
             "index.html.jinja",
             "process_dialog.html.jinja",
+            "radargram_dialogs.html.jinja",
             "viewer.html.jinja",
             "layers.html.jinja",
             "processing.html.jinja",
@@ -173,6 +179,10 @@ mod tests {
             (
                 "process_dialog.html.jinja",
                 include_str!("templates/process_dialog.html.jinja"),
+            ),
+            (
+                "radargram_dialogs.html.jinja",
+                include_str!("templates/radargram_dialogs.html.jinja"),
             ),
         ] {
             for (number, line) in html.lines().enumerate() {

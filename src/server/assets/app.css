@@ -2633,11 +2633,13 @@ button.group-chip:hover,
 }
 
 .download-menu,
+.edit-menu,
 .add-menu {
   position: static;
 }
 
 .download-menu > ul,
+.edit-menu > ul,
 .add-menu > ul {
   left: 0;
   right: auto;
@@ -2651,11 +2653,13 @@ button.group-chip:hover,
  * the button's width, so the cap goes; `min-width` sizes it. */
 @media (width > 40rem) {
   .download-menu,
+  .edit-menu,
   .add-menu {
     position: relative;
   }
 
   .download-menu > ul,
+  .edit-menu > ul,
   .add-menu > ul {
     max-width: none;
   }
@@ -2678,11 +2682,13 @@ button.group-chip:hover,
   max-width: none;
 }
 
-/* The compact variants: a card's Edit menu and the download menus. Smaller
+/* The compact variants: the Edit menus (a card's and the viewer's) and the
+ * download menus. Smaller
  * than the header's because they sit inside content rather than in a bar of
  * their own, and identical to each other because there is no reason for a
  * reader to have to notice which one they are looking at. */
 .card-menu > summary,
+.edit-menu > summary,
 .group-menu > summary,
 .download-menu > summary,
 .add-menu > summary,

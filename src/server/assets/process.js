@@ -956,7 +956,15 @@
     showMain(true);
   }
 
-  if (viewerOpen) viewerOpen.addEventListener('click', () => begin(!hasSource));
+  if (viewerOpen) {
+    viewerOpen.addEventListener('click', () => {
+      // In the viewer's Edit menu (#431), which would otherwise stay open
+      // behind the dialog.
+      const menu = viewerOpen.closest('details.site-menu');
+      if (menu) menu.open = false;
+      begin(!hasSource);
+    });
+  }
   /** A card's Edit menu: says what it would do once the menu is opened,
    * rather than asking about every radargram when the page loads. */
   const sourceKnown = new Map();

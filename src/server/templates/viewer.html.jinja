@@ -141,11 +141,34 @@
       </ul>
     </details>
     {% endif %}
-    {#- Processing on the server (#382), for an operator. Hidden until
-        process.js has asked whether the project has this radargram's raw
-        data: with it the button processes, without it it attaches some. -#}
+    {#- The same edits as a catalog card's Edit menu (#431), for the
+        radargram on screen, less removing it: that would leave this page
+        showing nothing. For an operator, as there; replacing and processing
+        only for a radargram the project owns, since both write its file. -#}
     {% if project and can_operate %}
-    <button type="button" id="process-open" hidden>Process&hellip;</button>
+    <details class="site-menu edit-menu" id="edit-menu">
+      <summary>Edit</summary>
+      <ul>
+        <li>
+          <button type="button"
+                  data-edit-properties="{{ radargram_id }}"
+                  data-edit-label="{{ effective_label }}">Edit properties</button>
+        </li>
+        {% if radargram_in_project %}
+        <li>
+          <button type="button"
+                  data-replace-radargram="{{ radargram_id }}"
+                  data-replace-label="{{ effective_label }}">Replace with a new version&hellip;</button>
+        </li>
+        {#- Processing on the server (#382). Hidden until process.js has
+            asked whether the project has this radargram's raw data: with
+            it the button processes, without it it attaches some. -#}
+        <li>
+          <button type="button" id="process-open" hidden>Process&hellip;</button>
+        </li>
+        {% endif %}
+      </ul>
+    </details>
     {% endif %}
     <a class="docs-help" href="{{ docs_base|safe }}guide/gui.html"
        target="_blank" rel="noopener" title="The viewer in the documentation">?</a>
@@ -562,7 +585,10 @@
       body on first open rather than templated here. -#}
 
   {% if project and can_operate %}
+  {% include "radargram_dialogs.html.jinja" %}
+  {% if radargram_in_project %}
   {% include "process_dialog.html.jinja" %}
+  {% endif %}
   {% endif %}
 
   <dialog id="metadata-dialog">
@@ -619,5 +645,6 @@
 <script src="/static/picker.js"></script>
 <script src="/static/panel.js"></script>
 <script src="/static/process.js"></script>
+<script src="/static/radargram_edit.js"></script>
 <script src="/static/figure.js"></script>
 {% endblock %}

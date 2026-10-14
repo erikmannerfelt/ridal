@@ -1752,6 +1752,26 @@ const RIDAL = Object.freeze({
       menu.querySelector("summary").focus();
     }
   });
+
+  // A panel that hangs from its button runs off the right of the page when
+  // the button sits near that edge, as the viewer's Edit menu does at the
+  // end of its row (#431). Nudged back on screen as it opens, rather than
+  // given a per-menu side, which is right at one width and wrong at the
+  // next once the row wraps. Never past the left edge.
+  const GUTTER = 8;
+  for (const menu of menus) {
+    menu.addEventListener("toggle", () => {
+      const panel = menu.querySelector(":scope > ul");
+      if (!panel) return;
+      panel.style.translate = "";
+      if (!menu.open) return;
+      const box = panel.getBoundingClientRect();
+      const overflow = box.right + GUTTER - document.documentElement.clientWidth;
+      if (overflow > 0) {
+        panel.style.translate = `${-Math.min(overflow, Math.max(box.left - GUTTER, 0))}px 0`;
+      }
+    });
+  }
 })();
 
 /* A batch the visitor started has finished (#382). Told on the next page

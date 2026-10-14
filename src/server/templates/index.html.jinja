@@ -330,94 +330,7 @@
   {% endfor %}
 
   {% if can_edit_project %}
-  {#- One dialog for every card, filled in from the API when it opens: the
-      values it shows include what each field would be *without* its
-      override, which the card does not know and which is what makes
-      "revert to the file" honest rather than a leap of faith. -#}
-  <dialog id="properties-dialog">
-    <h2 id="properties-title">Edit properties</h2>
-    <p class="hint">
-      These are the project's own labels. They sit over what the radargram
-      file says and never change the file, so reprocessing it does not lose
-      them — and reverting a field puts the file's own value back.
-    </p>
-    <div id="properties-error" class="warning" hidden></div>
-    <div class="properties-fields">
-      <label>Name
-        <input type="text" id="properties-display-name" autocomplete="off">
-      </label>
-      <p class="hint" id="properties-display-name-file"></p>
-
-      {#- Membership, and only membership. Picking an existing group joins
-          it; renaming one is the group's own dialog, reached from its
-          heading. The first version of this was a text box with a datalist,
-          where typing over a chosen name silently forked a new group
-          instead of renaming the old one -- two operations that looked
-          identical and were not. -#}
-      <label>Group
-        <select id="properties-group-choice">
-          <option value="inherit">Use the radargram's own</option>
-          <option value="ungrouped">No group</option>
-          <option value="new">New group&hellip;</option>
-        </select>
-      </label>
-      <label id="properties-group-row">New group's name
-        <input type="text" id="properties-group-name" autocomplete="off">
-      </label>
-      <p class="hint" id="properties-group-file"></p>
-
-      <label class="checkbox">
-        <input type="checkbox" id="properties-unlisted">
-        Unlisted
-      </label>
-      <p class="hint">
-        Leaves this radargram out of listings and out of merged downloads.
-        It is not private: anyone who knows the address can still open it.
-      </p>
-
-      {#- Bounds for the viewer's topographic correction. A property of the
-          survey's GPS track, not of whoever is looking at it, so it is
-          edited here rather than in the viewer -- which points back at
-          this dialog when a radargram's elevations look wrong. -#}
-      <fieldset class="field-group">
-        <legend>Topographic correction (m)</legend>
-        <div class="field-row">
-          <label>Floor
-            <input type="number" id="properties-elevation-min" step="any" autocomplete="off">
-          </label>
-          <label>Surface cap
-            <input type="number" id="properties-elevation-max" step="any" autocomplete="off">
-          </label>
-        </div>
-      </fieldset>
-      <p class="hint">
-        Bounds the corrected view in the viewer. <strong>Floor</strong> is the
-        lowest elevation it draws — anything below is cropped.
-        <strong>Surface cap</strong> is the highest a trace's surface may be;
-        higher ones are pulled down to it, so a GPS spike cannot stretch the
-        view. Leave blank for no bound.
-      </p>
-
-      {#- #411. How this line reads best, so it outranks a person's own
-          default; the viewer's dropdown still changes it for one visit. -#}
-      <label>Horizontal scale
-        <select id="properties-x-scale">
-          <option value="">Not set (uses your setting or the project&rsquo;s)</option>
-          {% for scale in x_scales %}
-          <option value="{{ scale.text }}">{{ scale.label }}</option>
-          {% endfor %}
-        </select>
-      </label>
-      <p class="hint">
-        What the viewer opens this radargram at, before anyone&rsquo;s own
-        setting or the project default.
-      </p>
-    </div>
-    <p>
-      <button type="button" id="properties-save">Save</button>
-      <button type="button" id="properties-close">Close</button>
-    </p>
-  </dialog>
+  {% include "radargram_dialogs.html.jinja" %}
   {% endif %}
 
   {% if can_edit_project %}
@@ -445,36 +358,10 @@
   {% endif %}
 
   {% if can_edit_project %}
-  {#- Removal asks first, and says what it will do, because the two cases
-      differ and the difference is not obvious from the button alone. -#}
-  {#- What replacing this radargram would do, before it does any of it.
-      The upload happens first -- what it costs cannot be known until the
-      new file has been read -- and this is where the operator decides
-      whether to keep it. Closing without confirming discards it. -#}
-  <dialog id="replace-dialog">
-    <h2 id="replace-title">Replace radargram</h2>
-    <p id="replace-status" class="hint"></p>
-    {#- An explicit control rather than only the automatic one that opens
-        with the dialog. Cancelling the operating system's file chooser
-        fires no `change` event, so without this the dialog sat there with
-        nothing chosen and no way back to the chooser except closing and
-        reopening it. -#}
-    <p>
-      <button type="button" id="replace-choose">Choose file&hellip;</button>
-    </p>
-    <p id="replace-headline"></p>
-    <div id="replace-detail"></div>
-    <div id="replace-error" class="warning" hidden></div>
-    <p>
-      <button type="button" id="replace-confirm" class="danger" disabled>Replace</button>
-      <button type="button" id="replace-close">Cancel</button>
-    </p>
-  </dialog>
-
-  <input type="file" id="replace-radargram-file" accept=".nc" hidden>
-
   {% include "process_dialog.html.jinja" %}
 
+  {#- Removal asks first, and says what it will do, because the two cases
+      differ and the difference is not obvious from the button alone. -#}
   <dialog id="remove-dialog">
     <h2 id="remove-title">Remove radargram</h2>
     <p id="remove-explain" class="hint"></p>
@@ -539,4 +426,5 @@
 {% block extrascript %}
 <script src="/static/index.js"></script>
 {% if can_edit_project %}<script src="/static/process.js"></script>{% endif %}
+{% if can_edit_project %}<script src="/static/radargram_edit.js"></script>{% endif %}
 {% endblock %}
