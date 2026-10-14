@@ -9,7 +9,7 @@
 //!   template, its status and how long it took ([`access_log`]). The route
 //!   is the template (`/api/v1/datasets/{radargram_id}`), never the path, so
 //!   the log neither grows a line shape per radargram nor carries ids, and
-//!   it does not name the caller (D6 of the 0.9.0 plan).
+//!   it does not name the caller (see "Server logging" in `ARCHITECTURE.md`).
 //! - **A heartbeat**: every `--heartbeat-seconds`, one line of what only
 //!   Ridal knows -- render permits, the render cache, requests served and
 //!   the processing queue -- beside the process's own CPU time and memory

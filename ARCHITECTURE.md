@@ -312,6 +312,18 @@ directly), plus an optional CRS and DEM. The routes are in
   every source's. A DEM is checked with `gdalinfo` when its file is set,
   and setting or linking a source reads the recordings with it, so one that
   does not cover them is refused there rather than by a draft.
+- **What a radargram says of its antenna and survey** (#412). The
+  frequency it was processed as, from its `antenna` or an override, is
+  written to the `.nc` as `antenna_frequency` (MHz), and the recipe says
+  whether it was overridden; the viewer shows which. Writing it changed
+  what processing writes, hence `CORE_PROCESSING_VERSION` 2. Trace spacing
+  and survey speed are not stored: `survey::median_trace_spacing` and
+  `median_survey_speed` compute them from `distance` and `time` per trace
+  when the metadata is shown. **Medians, not means**, over the intervals
+  where the survey moved: a survey stops, turns, loses its GPS and stands
+  still, and a mean of those would describe none of it. Speed is taken
+  interval by interval rather than over windows, since every format Ridal
+  reads gives times finer than the trace interval.
 
 ## Processing profiles (#382)
 
@@ -336,6 +348,13 @@ a place or a year, and one profile (an antenna, a medium) spans many.
   /processing/assignments/{id}` refuses `no_source` without a source, as
   there would be nothing to process. One whose source is removed later
   stays, as `no_raw_data`.
+- **Removing a radargram takes it out of its profile; ignoring one does
+  not** (#409). `DELETE /datasets/{id}` on a file in the project's own
+  store calls `lifecycle_routes::take_out_of_profile`, as removing its
+  source does, since the profile would otherwise list a radargram that is
+  not there. On a file outside the store it only records an ignore, which
+  `restore` can lift, and the radargram comes back in the profile it was
+  in.
 - **Staleness is computed, never stored.** `processing::state_of` compares
   what a served file's recipe records (`io::read_recipe`) with what the
   radargram's profile and source say now: the profile version whose steps
@@ -509,6 +528,16 @@ Many recordings in, the radargrams they would make out
   recordings merge is `MergeKey::refusal`, which `GPR::merge` asks too,
   so the header check and the merge cannot drift. A join `MergeKey`
   refuses is not made, and is a problem.
+- **Antenna overrides are per antenna, as the headers name it** (#409):
+  `PlanRequest::antennas` maps each distinct antenna string to a
+  frequency and a separation, and the plan lists every antenna the
+  recordings name (`PlannedAntenna`) with what their files say of it.
+  Not one override per upload, which would be wrong for an upload that
+  mixes antennas, and not one per recording, which would ask the same
+  question once per file. They apply before grouping, so `{freq}` in an id
+  pattern, `per=freq` and merging see the overridden frequency, and each
+  output's source carries them as its own overrides, since the source is
+  the only place they come from (#415).
 - **Ids** render per output (`id_pattern::render_each_id`), so the plan
   shows each problem where it is rather than stopping at the first:
   a pattern that does not parse (with its character span), an invalid or
@@ -561,12 +590,13 @@ two ends of that request are one type.
   run several requests at once (`_client._map`, #346) without the layer
   changing; that is why `httpx` was chosen over `urllib`, at the cost of a
   dependency.
-- **Uploads stay one at a time.** The add and stage routes hold the
-  lifecycle lock while the body streams, because measuring the room left
-  and installing the file are one decision. Concurrent uploads would only
-  queue there, and a queued body sends nothing for long enough to hit the
-  client's timeout. Making them concurrent means reserving room under the
-  lock and streaming outside it, on the server.
+- **`apply` uploads one file at a time.** The server no longer makes
+  uploads wait for each other: the add and stage routes measure the room
+  under the lifecycle lock, stream the body outside it, and measure again
+  under the lock before installing (#413, #420). That second check is why
+  the client stays serial: several files sent at once could each pass the
+  first check and then be refused at the end, and staged replacements
+  would pile up against the project's size limit.
 - **Dependencies are extras.** `ridal[client]` is `httpx`; `ridal[geo]`
   is pandas and geopandas, imported only inside `to_pandas()` and
   `to_geopandas()`. The base install stays numpy only. Progress is a
@@ -932,9 +962,31 @@ normalize → colormap → encode.** Everything lives under
   two seconds only, so a grandchild still holding them cannot keep a slot.
 - **netcdf-c/HDF5 is not thread-safe.** A global lock serialises every
   netcdf call, which is a hard ceiling on read parallelism no amount of
-  tokio tuning lifts. Tests use `#[serial_test::serial(netcdf)]` plus
-  retry; a residual ~6% `Netcdf(-101)` flake is a known, documented
-  symptom of this.
+  tokio tuning lifts. Tests that open NetCDF files are
+  `#[serial_test::serial(netcdf)]`. A `Netcdf(-101)` is not a known flake:
+  the one that was, a child process inheriting HDF5's `flock` on an open
+  file, is fixed by starting every tool through `tools::spawn_tool` (#324),
+  so one now means something new is wrong.
+
+## Server logging (#282, #391)
+
+`server::telemetry` installs the `tracing` subscriber both server commands
+start with, and everything goes to stderr for whoever runs the server:
+events the code raises, an access log (target `ridal::access`) and a
+heartbeat every `--heartbeat-seconds`.
+
+- **The access log names nobody.** One line per request: method, route
+  template (`/api/v1/datasets/{radargram_id}`, never the path), status and
+  time. No user, and no flag to add one; that waits until someone asks for
+  it. The template keeps ids out as well, and keeps the line shape fixed.
+- **Processing job lines do name the owner.** Started, finished, failed and
+  cancelled each carry `job`, `project`, `owner` and `radargram`. Jobs are
+  rare and deliberate, and who ran one is what answers "why did this job
+  fail". The two rules are kept apart on purpose: the access log is every
+  request, the job log is a handful of deliberate acts.
+- The heartbeat's numbers (`Heartbeat::peek`, without resetting the
+  counters `take` reports) are also served to server administrators at
+  `GET /api/v1/site/status` and shown in site settings with the queue.
 
 ## What was measured, and what it settled
 
@@ -948,8 +1000,9 @@ catalog (12187×3678):
 - The one expensive request is a **cold overview at ~1.8 s** — this is
   index first-paint cost, not a viewer responsiveness problem.
 - The warm/cold ratio is **~9000×**, which is why persisting renders
-  across restarts (an on-disk cache) matters more than any further
-  rendering optimisation.
+  across restarts matters more than any further rendering optimisation.
+  Overviews are now kept on disk (`server::overview_cache`, #180); chunks
+  are not, being cheap and far too many.
 
 Measured again when the viewer cap was removed, on the same file: a
 cold overview costs 13.9 s, the full 720-chunk grid 37.7 s, and the
@@ -1099,25 +1152,12 @@ Durable, load-bearing decisions rather than oversights:
   It's reserved for a deferred HDF5-chunk-aligned source-read cache and
   is not even exposed as a CLI flag today — always its default value.
 
-Not yet implemented, in rough priority order given the measurements
-above:
-
-1. **On-disk render cache**, keyed on `RevisionId` so reprocessing
-   invalidates it correctly. Now the highest-value remaining item — see
-   [What was measured](#what-was-measured-and-what-it-settled).
-2. **Digitization** — picking, editing, and persisting interpreted
-   reflector layers in the viewer, with user-editable layer names and
-   colours (a fixed server-side vocabulary will not survive contact
-   with real interpretation work). This is the actual point of building
-   a viewer at all; everything above is scaffolding for it. Needs a
-   write path and a real persistence/authorship model, which nothing
-   built so far requires.
-3. **User-defined render profiles**, named/validated/persisted
-   server-side rather than accepted as free-form per-request
-   parameters — the latter is explicitly rejected, since
-   `?min=…&max=…&contrast=…` on every chunk request would make each one
-   a distinct, uncacheable render variant and let a client trivially
-   thrash the cache.
+Not yet implemented: **user-defined render profiles**, named, validated
+and persisted server-side beside the built-in ones (`RenderProfile::by_name`)
+rather than accepted as free-form per-request parameters. The latter is
+explicitly rejected, since `?min=…&max=…&contrast=…` on every chunk request
+would make each one a distinct, uncacheable render variant and let a client
+trivially thrash the cache.
 
 ## Topographic correction
 
