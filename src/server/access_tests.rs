@@ -8680,3 +8680,115 @@ async fn the_pick_manager_is_on_the_layers_page_for_anyone_who_can_pick() {
     assert!(page.text.contains("id=\"picks-section\""));
     assert!(page.text.contains("currentUser: \"pia\""));
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn only_an_admin_archives_someone_elses_picks_and_purges_the_archive() {
+    // #178, #162. Archiving is what an admin gets instead of editing or
+    // deleting another person's picks; purging is the one destructive step,
+    // and both are audited with whose work it was.
+    let hash = password_hash();
+    let (dir, app) = app_with(vec![
+        activated("pia", Role::Picker, DownloadScope::Picks, &hash),
+        activated("olga", Role::Operator, DownloadScope::All, &hash),
+        activated("ada", Role::Admin, DownloadScope::None, &hash),
+        activated("nils", Role::Picker, DownloadScope::None, &hash),
+    ]);
+    let pia = sign_in(&app, "pia").await;
+    let saved = put(
+        &app,
+        &interpretation_uri("pia"),
+        &document(RADARGRAM),
+        Some(&pia),
+    )
+    .await;
+    assert!(saved.status.is_success(), "{}", saved.text);
+    let version = saved.etag.clone().expect("a save returns its version");
+    let archive_uri = format!("{}/archive", interpretation_uri("pia"));
+
+    // Not even the owner archives through this route, nor an operator.
+    for session in [&pia, &sign_in(&app, "olga").await] {
+        let refused = post(&app, &archive_uri, &json!({}), Some(session)).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    }
+
+    let ada = sign_in(&app, "ada").await;
+    // A version that has moved on is refused and moves nothing.
+    let stale = post_with_if_match(&app, &archive_uri, &json!({}), "\"not-it\"", Some(&ada)).await;
+    assert_eq!(
+        stale.status,
+        StatusCode::PRECONDITION_FAILED,
+        "{}",
+        stale.text
+    );
+    let archived = post_with_if_match(&app, &archive_uri, &json!({}), &version, Some(&ada)).await;
+    assert_eq!(archived.status, StatusCode::OK, "{}", archived.text);
+    let removal = archived.body["removal"].as_str().unwrap().to_string();
+    let again = post(&app, &archive_uri, &json!({}), Some(&ada)).await;
+    assert_eq!(again.status, StatusCode::NOT_FOUND, "{}", again.text);
+
+    // Pia's picks are gone from the radargram and listed as archived, to
+    // her as well.
+    let gone = get(&app, &interpretation_uri("pia"), Some(&pia)).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+    let summary = get(&app, "/api/v1/interpretations", Some(&pia)).await;
+    assert_eq!(summary.body["interpretations"][0]["state"], "archived");
+    assert_eq!(summary.body["interpretations"][0]["removal"], removal);
+    assert_eq!(summary.body["may_archive"], false);
+    assert_eq!(
+        get(&app, "/api/v1/interpretations", Some(&ada)).await.body["may_archive"],
+        true
+    );
+
+    // Downloading it is the picks scope's decision, as for live picks: a
+    // picker without it is refused, the picker with it gets the file.
+    let file_uri = format!("/api/v1/interpretations/archived/{RADARGRAM}/{removal}/pia");
+    let nils = sign_in(&app, "nils").await;
+    let refused = get(&app, &file_uri, Some(&nils)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let file = get(&app, &file_uri, Some(&pia)).await;
+    assert_eq!(file.status, StatusCode::OK, "{}", file.text);
+    assert_eq!(file.body["features"][0]["properties"]["label"], "bed");
+    let traversal = get(
+        &app,
+        &format!("/api/v1/interpretations/archived/{RADARGRAM}/..%2F..%2F/pia"),
+        Some(&pia),
+    )
+    .await;
+    assert_eq!(
+        traversal.status,
+        StatusCode::NOT_FOUND,
+        "{}",
+        traversal.text
+    );
+
+    // Purging: admin only, and only what exists.
+    let olga = sign_in(&app, "olga").await;
+    let refused = delete(&app, &file_uri, Some(&olga)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    let unknown = delete(
+        &app,
+        &format!("/api/v1/interpretations/archived/{RADARGRAM}/no-such-removal"),
+        Some(&ada),
+    )
+    .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.text);
+    let purged = delete(&app, &file_uri, Some(&ada)).await;
+    assert_eq!(purged.status, StatusCode::OK, "{}", purged.text);
+    assert_eq!(purged.body["users"], json!(["pia"]));
+    let summary = get(&app, "/api/v1/interpretations", Some(&ada)).await;
+    assert_eq!(summary.body["interpretations"], json!([]));
+
+    let entries = crate::project::audit::read(open_project(dir.path()).documents()).unwrap();
+    let actions: Vec<_> = entries
+        .iter()
+        .map(|e| (e.action.clone(), e.user.clone()))
+        .collect();
+    assert!(actions.contains(&(crate::project::audit::Action::Archived, "ada".to_string())));
+    assert!(actions.contains(&(crate::project::audit::Action::Purged, "ada".to_string())));
+    let purge = entries
+        .iter()
+        .find(|e| e.action == crate::project::audit::Action::Purged)
+        .unwrap();
+    assert!(purge.note.as_deref().unwrap().contains("pia"), "{purge:?}");
+}

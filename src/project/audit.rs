@@ -59,6 +59,12 @@ pub enum Action {
     /// Picks carried from an earlier revision were adopted as drawn on the
     /// current one.
     Adopted,
+    /// Someone's interpretation was moved into the archive by an
+    /// administrator (#178). Nothing is destroyed.
+    Archived,
+    /// Archived interpretations were destroyed (#162): the one action here
+    /// that cannot be undone.
+    Purged,
 }
 
 /// One thing that happened.

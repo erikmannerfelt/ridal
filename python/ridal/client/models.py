@@ -442,6 +442,9 @@ class InterpretationSummaryList:
     caller's."""
     may_download: bool
     """Whether the caller may download an interpretation as a file."""
+    may_archive: bool
+    """Whether the caller may archive someone else's interpretation and
+    purge the archive, which takes ``admin``."""
     unreadable: tuple[UnreadableInterpretation, ...]
 
     @classmethod
@@ -455,6 +458,7 @@ class InterpretationSummaryList:
                 ),
                 everyone=d["everyone"],
                 may_download=d["may_download"],
+                may_archive=d["may_archive"],
                 unreadable=tuple(
                     UnreadableInterpretation.from_json(u) for u in d["unreadable"]
                 ),

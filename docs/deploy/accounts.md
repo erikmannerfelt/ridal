@@ -62,10 +62,13 @@ above it can:
 | `viewer` | Browse the catalog, open radargrams, and set their own display preferences. |
 | `picker` | Pick and save their own interpretations, and make private derived items. |
 | `operator` | Upload, replace and remove radargrams, correct their metadata, define layers and project-wide derived items, change the project's settings, and see in the pick manager how much everyone has picked. |
-| `admin` | Manage this project's members and access settings, release derived results computed from everyone's picks, and set the project's size limit. |
+| `admin` | Manage this project's members and access settings, release derived results computed from everyone's picks, set the project's size limit, archive someone's picks, and permanently delete archived picks. |
 
 Nobody can change someone else's picks, not even an administrator. An
-interpretation belongs to the person who drew it.
+interpretation belongs to the person who drew it. What an administrator can
+do instead is *archive* it: the picks are no longer shown, counted or
+exported, and are kept, still attributed, until an administrator purges
+them. Purging is the only way picks are destroyed.
 
 What the pick manager shows an operator is counts and coverage, never the
 picks themselves: opening or downloading someone else's picks still needs the

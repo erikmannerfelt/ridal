@@ -40,10 +40,20 @@ radargrams each person has picked; clicking one filters to them. The table can
 also be filtered by layer, state and radargram, and sorted by any column with
 a heading button.
 
-**Download** fetches the stored picks file, and needs the `picks` download
-scope, for one's own picks as well (see {doc}`../deploy/accounts`).
-**Delete** removes one's own picks on a radargram, on its current or an older revision, and cannot be undone. It
-refuses if the picks were saved again after the page was loaded.
+**Download** fetches the stored picks file, archived ones included, and needs
+the `picks` download scope, for one's own picks as well (see
+{doc}`../deploy/accounts`). **Delete** removes one's own picks on a
+radargram and cannot be undone.
+
+An `admin` cannot delete someone else's picks, but can **Archive** them: they
+leave the radargram, so they are no longer shown, counted or exported, and are
+listed as *Archived* with the time. This is also where a radargram's picks go
+when the radargram is removed. **Purge** on an archived row permanently
+deletes it, or every row archived at the same time. Archiving and purging are
+both recorded in the project's audit log.
+
+Delete and Archive refuse if the picks were saved again after the page was
+loaded.
 
 Files in the project's `interpretations/` directory that cannot be read, such
 as a file whose name is not a valid account name, are listed under **Files

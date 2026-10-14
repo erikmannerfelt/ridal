@@ -10,20 +10,22 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, State};
+use axum::http::{header, HeaderMap};
 use axum::response::IntoResponse;
 use axum::Json;
 
 use super::app::AppState;
 use super::auth::Caller;
-use super::interp_routes::{self, readable_project};
+use super::interp_routes::{self, expectation_from, parse_radargram, parse_user, readable_project};
 use super::routes::ApiError;
 use crate::identity::{RadargramId, UserId};
 use crate::interp::carry;
 use crate::project::interpretations::{self, InterpretationError, StoredInterpretation};
 use crate::project::pick_summary::{self, DocumentStats};
 use crate::project::roles::{DownloadScope, Role};
-use crate::project::{overrides, revisions, Project};
+use crate::project::store::StoreError;
+use crate::project::{audit, overrides, revisions, Project};
 
 /// Where an interpretation stands relative to the radargram it was drawn on.
 #[derive(
@@ -143,6 +145,9 @@ pub(super) struct InterpretationSummaryList {
     /// Whether the caller may download a live interpretation as a file,
     /// which takes the `picks` download scope -- for their own as well.
     may_download: bool,
+    /// Whether the caller may archive someone else's interpretation and
+    /// purge the archive, which takes the `admin` role.
+    may_archive: bool,
     /// Files that were skipped. Listed only to callers who see everyone's.
     unreadable: Vec<UnreadableInterpretation>,
 }
@@ -315,8 +320,8 @@ pub(super) fn scan_live(state: &AppState, project: &Project) -> Result<Scan, Api
                         // that is refused are they measured in the index
                         // space they were drawn in, against the old
                         // revision's kept axes.
-                        let axes = current_axes.get_or_insert_with(|| {
-                            match state.absolute_path(entry) {
+                        let axes =
+                            current_axes.get_or_insert_with(|| match state.absolute_path(entry) {
                                 Ok(path) => interp_routes::current_axes(project, &path, entry),
                                 Err(e) => {
                                     tracing::warn!(
@@ -326,8 +331,7 @@ pub(super) fn scan_live(state: &AppState, project: &Project) -> Result<Scan, Api
                                     );
                                     crate::interp::anchors::Axes::default()
                                 }
-                            }
-                        });
+                            });
                         let source = carry::with_kept_axes(project, &radargram, &stored.document);
                         let carried = carry::carry(&source, axes, entry.revision_id.as_str());
                         match carried.document {
@@ -472,11 +476,265 @@ pub async fn list_summaries(
         interpretations: rows,
         everyone,
         may_download: caller.may_download(DownloadScope::Picks),
+        may_archive: caller.may(Role::Admin),
         // A path names its user, so these are everyone's too.
         unreadable: if everyone {
             scan.unreadable
         } else {
             Vec::new()
         },
+    }))
+}
+
+/// The project, if `caller` holds `role`; the same 401/403 split every
+/// write uses, then the "not a project" answer reads give.
+fn project_requiring<'a>(
+    state: &'a AppState,
+    caller: &Caller,
+    role: Role,
+    action: &str,
+) -> Result<&'a Project, ApiError> {
+    caller.require(role, action)?;
+    readable_project(state)
+}
+
+fn interpretation_failed(error: InterpretationError) -> ApiError {
+    match &error {
+        InterpretationError::Store(StoreError::Conflict { .. }) => ApiError::precondition_failed(
+            "version_conflict",
+            "These picks were saved again after you loaded them, so nothing was \
+             changed. Reload to see the current version.",
+        ),
+        _ => ApiError::internal("store_failed", error.to_string()),
+    }
+}
+
+/// `POST …/interpretations/{user}/archive`: the interpretation was archived.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ArchivedInterpretation {
+    radargram_id: String,
+    user: String,
+    /// The archive entry it is now under, as in a summary row's `removal`.
+    removal: String,
+}
+
+/// `POST /api/v1/datasets/{radargram_id}/interpretations/{user}/archive`
+///
+/// Move someone's interpretation into the archive (#178). This is what an
+/// administrator gets instead of deleting another person's picks, which no
+/// one may do (#131): the picks stop being drawn, counted and exported, and
+/// stay attributed in the archive until purged. Conditional on `If-Match`
+/// like a delete, so picks saved after the page loaded are not archived
+/// unseen.
+///
+/// Works whether or not the radargram is served, which is how picks left
+/// behind by a radargram that went away outside Ridal get archived too.
+pub async fn archive_interpretation(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, user)): Path<(String, String)>,
+    caller: Caller,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = project_requiring(&state, &caller, Role::Admin, "archive someone's picks")?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let user = parse_user(&user)?;
+    let at = chrono::Utc::now().to_rfc3339();
+
+    let Some(stored) = interpretations::read(project.documents(), &radargram, &user)
+        .map_err(interpretation_failed)?
+    else {
+        return Err(not_found(&radargram, &user));
+    };
+    let destination = interpretations::archive_and_remove(
+        project.documents(),
+        &radargram,
+        &user,
+        &at,
+        &expectation_from(&headers),
+    )
+    .map_err(interpretation_failed)?
+    .ok_or_else(|| not_found(&radargram, &user))?;
+    let removal = destination
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let lines = stored.document.features.len();
+    audit::record(
+        project.documents(),
+        audit::Entry {
+            at,
+            user: caller.audit_name(),
+            action: audit::Action::Archived,
+            radargram_id: radargram.to_string(),
+            revision_id: stored
+                .document
+                .source
+                .as_ref()
+                .and_then(|s| s.revision_id.clone()),
+            note: Some(format!(
+                "archived {}'s interpretation ({lines} {})",
+                user.as_str(),
+                if lines == 1 { "line" } else { "lines" }
+            )),
+        },
+    );
+
+    Ok(Json(ArchivedInterpretation {
+        radargram_id: radargram.to_string(),
+        user: user.to_string(),
+        removal,
+    }))
+}
+
+fn not_found(radargram: &RadargramId, user: &UserId) -> ApiError {
+    ApiError::not_found(
+        "interpretation_not_found",
+        format!(
+            "'{}' has no interpretation of '{}'.",
+            user.as_str(),
+            radargram.as_str()
+        ),
+    )
+}
+
+/// `GET /api/v1/interpretations/archived/{radargram_id}/{removal}/{user}`
+///
+/// One archived interpretation, byte for byte, as a download. Gated like
+/// `…/interpretations/{user}/raw`: archived picks are still raw picks.
+pub async fn download_archived(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, removal, user)): Path<(String, String, String)>,
+    caller: Caller,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_download(DownloadScope::Picks, "archived picks")?;
+    let project = readable_project(&state)?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let user = parse_user(&user)?;
+
+    // Looked up among what the archive lists rather than built from the
+    // path, so `removal` can only name an archive entry that exists.
+    let (archived, _) =
+        interpretations::list_archived(project.documents()).map_err(store_failed)?;
+    let item = archived
+        .into_iter()
+        .find(|a| a.radargram == radargram && a.removal == removal && a.user == user)
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "archived_interpretation_not_found",
+                format!(
+                    "There is no archived interpretation by '{}' of '{}' from '{removal}'.",
+                    user.as_str(),
+                    radargram.as_str()
+                ),
+            )
+        })?;
+    let bytes = project
+        .documents()
+        .read(&interpretations::archived_path(&item))
+        .map_err(|e| ApiError::internal("store_failed", e.to_string()))?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "archived_interpretation_not_found",
+                "It was purged just now.",
+            )
+        })?;
+
+    let filename = format!(
+        "{}-{}-archived-{}{}",
+        radargram.as_str(),
+        user.as_str(),
+        item.removal,
+        interpretations::SUFFIX
+    );
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/json".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        bytes.text,
+    ))
+}
+
+/// `DELETE /api/v1/interpretations/archived/…`: what was purged.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Purged {
+    radargram_id: String,
+    removal: String,
+    /// Whose archived interpretations were destroyed.
+    users: Vec<String>,
+}
+
+/// `DELETE /api/v1/interpretations/archived/{radargram_id}/{removal}`
+///
+/// Destroy every archived interpretation from one removal (#162).
+pub async fn purge_removal(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, removal)): Path<(String, String)>,
+    caller: Caller,
+) -> Result<impl IntoResponse, ApiError> {
+    purge(&state, &caller, &radargram_id, &removal, None)
+}
+
+/// `DELETE /api/v1/interpretations/archived/{radargram_id}/{removal}/{user}`
+///
+/// Destroy one archived interpretation (#162).
+pub async fn purge_one(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, removal, user)): Path<(String, String, String)>,
+    caller: Caller,
+) -> Result<impl IntoResponse, ApiError> {
+    let user = parse_user(&user)?;
+    purge(&state, &caller, &radargram_id, &removal, Some(&user))
+}
+
+/// Purging is the one operation on picks that destroys authored work, so it
+/// sits with the role that owns the project (#162), and is audited with
+/// whose work it was.
+fn purge(
+    state: &AppState,
+    caller: &Caller,
+    radargram_id: &str,
+    removal: &str,
+    user: Option<&UserId>,
+) -> Result<Json<Purged>, ApiError> {
+    let project = project_requiring(state, caller, Role::Admin, "purge archived picks")?;
+    let radargram = parse_radargram(radargram_id)?;
+    let purged = interpretations::purge_archived(project.documents(), &radargram, removal, user)
+        .map_err(interpretation_failed)?;
+    if purged.is_empty() {
+        return Err(ApiError::not_found(
+            "archived_interpretation_not_found",
+            format!(
+                "There is nothing archived {}of '{}' from '{removal}'.",
+                user.map(|u| format!("by '{}' ", u.as_str()))
+                    .unwrap_or_default(),
+                radargram.as_str()
+            ),
+        ));
+    }
+    let users: Vec<String> = purged.iter().map(|u| u.to_string()).collect();
+    audit::record(
+        project.documents(),
+        audit::Entry {
+            at: chrono::Utc::now().to_rfc3339(),
+            user: caller.audit_name(),
+            action: audit::Action::Purged,
+            radargram_id: radargram.to_string(),
+            revision_id: None,
+            note: Some(format!(
+                "purged the archived picks of {} (archived {removal})",
+                users.join(", ")
+            )),
+        },
+    );
+    Ok(Json(Purged {
+        radargram_id: radargram.to_string(),
+        removal: removal.to_string(),
+        users,
     }))
 }

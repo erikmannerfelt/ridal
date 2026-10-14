@@ -125,6 +125,27 @@
         },
         "additionalProperties": {}
       },
+      "ArchivedInterpretation": {
+        "type": "object",
+        "description": "`POST …/interpretations/{user}/archive`: the interpretation was archived.",
+        "required": [
+          "radargram_id",
+          "user",
+          "removal"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "removal": {
+            "type": "string",
+            "description": "The archive entry it is now under, as in a summary row's `removal`."
+          }
+        }
+      },
       "Assignment": {
         "type": "object",
         "description": "Which profile a radargram uses, and the steps of its own that run first.",
@@ -1767,6 +1788,7 @@
           "interpretations",
           "everyone",
           "may_download",
+          "may_archive",
           "unreadable"
         ],
         "properties": {
@@ -1784,6 +1806,10 @@
           "may_download": {
             "type": "boolean",
             "description": "Whether the caller may download a live interpretation as a file,\nwhich takes the `picks` download scope -- for their own as well."
+          },
+          "may_archive": {
+            "type": "boolean",
+            "description": "Whether the caller may archive someone else's interpretation and\npurge the archive, which takes the `admin` role."
           },
           "unreadable": {
             "type": "array",
@@ -3059,6 +3085,30 @@
               "null"
             ],
             "description": "Where the interpretation as it was drawn was kept, or `null` when\nnothing needed keeping."
+          }
+        }
+      },
+      "Purged": {
+        "type": "object",
+        "description": "`DELETE /api/v1/interpretations/archived/…`: what was purged.",
+        "required": [
+          "radargram_id",
+          "removal",
+          "users"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "removal": {
+            "type": "string"
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Whose archived interpretations were destroyed."
           }
         }
       },

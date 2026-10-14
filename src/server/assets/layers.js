@@ -961,7 +961,13 @@ const PICK_STATES = {
   },
 };
 
-let picks = { interpretations: [], everyone: false, may_download: false, unreadable: [] };
+let picks = {
+  interpretations: [],
+  everyone: false,
+  may_download: false,
+  may_archive: false,
+  unreadable: [],
+};
 let picksSort = { key: "radargram", descending: false };
 
 function showPicksError(message) {
@@ -1168,15 +1174,22 @@ function renderPickRow(row) {
   const actionCell = document.createElement("td");
   const actions = document.createElement("span");
   actions.className = "row-actions";
-  if (isServed(row) && picks.may_download) {
+  const archived = row.state === "archived";
+  if (picks.may_download) {
+    // Live picks are stored under the radargram's id whether or not it is
+    // served, so the ordinary download reaches orphaned ones too.
     const download = document.createElement("a");
     download.className = "button";
-    download.href = RIDAL.apiPath("datasets", row.radargram_id, "interpretations", row.user, "raw");
-    download.download = `${row.radargram_id}.${row.user}.gprinterp.json`;
+    download.href = archived
+      ? RIDAL.apiPath("interpretations", "archived", row.radargram_id, row.removal, row.user)
+      : RIDAL.apiPath("datasets", row.radargram_id, "interpretations", row.user, "raw");
+    download.download = archived
+      ? `${row.radargram_id}.${row.user}.archived-${row.removal}.gprinterp.json`
+      : `${row.radargram_id}.${row.user}.gprinterp.json`;
     download.textContent = "Download";
     actions.appendChild(download);
   }
-  if (isServed(row) && isOwn(row) && row.version) {
+  if (!archived && isOwn(row) && row.version) {
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "danger";
@@ -1184,52 +1197,144 @@ function renderPickRow(row) {
     remove.addEventListener("click", () => confirmDeletePicks(row, actions));
     actions.appendChild(remove);
   }
+  // Someone else's picks are archived, never deleted (#178): no one edits
+  // another person's interpretation, and the archive keeps it attributed.
+  if (!archived && !isOwn(row) && picks.may_archive && row.version) {
+    const archive = document.createElement("button");
+    archive.type = "button";
+    archive.className = "danger";
+    archive.textContent = "Archive";
+    archive.addEventListener("click", () => confirmArchivePicks(row, actions));
+    actions.appendChild(archive);
+  }
+  if (archived && picks.may_archive) {
+    const purge = document.createElement("button");
+    purge.type = "button";
+    purge.className = "danger";
+    purge.textContent = "Purge";
+    purge.addEventListener("click", () => confirmPurge(row, actions));
+    actions.appendChild(purge);
+  }
   actionCell.appendChild(actions);
   tr.appendChild(actionCell);
   return tr;
 }
 
 function confirmDeletePicks(row, actionCell) {
+  confirmInRow(
+    actionCell,
+    `Delete your ${linesOf(row.features)} on '${radargramLabel(row)}'? This cannot be undone.`,
+    [["Delete", () => deletePicks(row)]],
+  );
+}
+
+function deletePicks(row) {
+  // Conditional on the version this page listed, so picks saved in
+  // another tab since then are not deleted unseen.
+  return changePicks("delete", "deleted", () =>
+    fetch(RIDAL.apiPath("datasets", row.radargram_id, "interpretations", row.user), {
+      method: "DELETE",
+      headers: { "If-Match": `"${row.version}"` },
+    }),
+  );
+}
+
+/** Replace a row's actions with a question and its answers. `choices` are
+ * `[label, onClick]`; Cancel puts the row back. */
+function confirmInRow(actionCell, question, choices) {
   actionCell.replaceChildren();
   const prompt = document.createElement("span");
   prompt.className = "layer-panel-confirm";
-  const lines = row.features === 1 ? "line" : "lines";
-  prompt.textContent = `Delete your ${row.features} ${lines} on '${radargramLabel(row)}'? This cannot be undone.`;
-  const yes = document.createElement("button");
-  yes.type = "button";
-  yes.className = "danger";
-  yes.textContent = "Delete";
-  yes.addEventListener("click", () => deletePicks(row));
+  prompt.textContent = question;
+  for (const [label, onClick] of choices) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "danger";
+    button.textContent = label;
+    button.addEventListener("click", onClick);
+    prompt.appendChild(button);
+  }
   const no = document.createElement("button");
   no.type = "button";
   no.textContent = "Cancel";
   no.addEventListener("click", renderPicks);
-  prompt.append(yes, no);
+  prompt.appendChild(no);
   actionCell.appendChild(prompt);
 }
 
-async function deletePicks(row) {
+function linesOf(count) {
+  return `${count} ${count === 1 ? "line" : "lines"}`;
+}
+
+function confirmArchivePicks(row, actionCell) {
+  confirmInRow(
+    actionCell,
+    `Archive ${row.user}'s ${linesOf(row.features)} on '${radargramLabel(row)}'? ` +
+      "They stop being shown, counted and exported, and are kept in the archive until purged.",
+    [["Archive", () => archivePicks(row)]],
+  );
+}
+
+/** Send `request` and reload the list, reporting a refusal in the
+ * section's error box. `verb` and `done` name the action ("delete",
+ * "deleted") for the message. */
+async function changePicks(verb, done, request) {
   clearPicksError();
   try {
-    // Conditional on the version this page listed, so picks saved in
-    // another tab since then are not deleted unseen.
-    const response = await fetch(
-      RIDAL.apiPath("datasets", row.radargram_id, "interpretations", row.user),
-      { method: "DELETE", headers: { "If-Match": `"${row.version}"` } },
-    );
+    const response = await request();
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       const message = body?.error?.message || RIDAL.upstreamMessage(response.status);
       showPicksError(
         response.status === 412
-          ? "These picks were changed after this page loaded, so nothing was deleted. The list has been reloaded."
-          : `Could not delete: ${message}`,
+          ? `These picks were changed after this page loaded, so nothing was ${done}. The list has been reloaded.`
+          : `Could not ${verb}: ${message}`,
       );
     }
   } catch (error) {
-    showPicksError(`Could not delete: ${error.message}`);
+    showPicksError(`Could not ${verb}: ${error.message}`);
   }
   await loadPicks();
+}
+
+function archivePicks(row) {
+  return changePicks("archive", "archived", () =>
+    fetch(RIDAL.apiPath("datasets", row.radargram_id, "interpretations", row.user, "archive"), {
+      method: "POST",
+      headers: { "If-Match": `"${row.version}"` },
+    }),
+  );
+}
+
+function confirmPurge(row, actionCell) {
+  // Everything archived by the same removal, so a whole removal can go at
+  // once: "the picks from before we reprocessed it" (#162).
+  const siblings = picks.interpretations.filter(
+    (other) =>
+      other.state === "archived" &&
+      other.radargram_id === row.radargram_id &&
+      other.removal === row.removal,
+  );
+  const when = removalTime(row.removal);
+  const choices = [["Purge", () => purgeArchived(row, false)]];
+  if (siblings.length > 1) {
+    const users = siblings.map((other) => other.user).join(", ");
+    choices.push([
+      `Purge all ${siblings.length} (${users})`,
+      () => purgeArchived(row, true),
+    ]);
+  }
+  confirmInRow(
+    actionCell,
+    `Permanently delete ${row.user}'s ${linesOf(row.features)} on '${row.radargram_id}', archived ${when}? This cannot be undone.`,
+    choices,
+  );
+}
+
+function purgeArchived(row, wholeRemoval) {
+  const segments = ["interpretations", "archived", row.radargram_id, row.removal];
+  if (!wholeRemoval) segments.push(row.user);
+  return changePicks("purge", "purged", () => fetch(RIDAL.apiPath(...segments), { method: "DELETE" }));
 }
 
 function renderPicksSummary(rows) {
@@ -1338,7 +1443,13 @@ async function loadPicks() {
     picks = await RIDAL.fetchJson(RIDAL.apiPath("interpretations"));
   } catch (error) {
     showPicksError(`Could not load picks: ${error.message}`);
-    picks = { interpretations: [], everyone: false, may_download: false, unreadable: [] };
+    picks = {
+      interpretations: [],
+      everyone: false,
+      may_download: false,
+      may_archive: false,
+      unreadable: [],
+    };
   }
   renderPicksFilters();
   renderPicks();
