@@ -1475,6 +1475,7 @@ dialog > p > button,
 .processing-members button,
 #token-result button,
 #pick-delete-cancel,
+.figure-buttons button,
 button.danger {
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-strong);
@@ -1501,6 +1502,7 @@ dialog > p > button:hover:not(:disabled),
 .processing-members button:hover:not(:disabled),
 #token-result button:hover:not(:disabled),
 #pick-delete-cancel:hover,
+.figure-buttons button:hover:not(:disabled),
 button.danger:hover:not(:disabled) {
   border-color: var(--color-accent);
 }
@@ -3642,4 +3644,266 @@ a.processing-state:hover {
 }
 .ingest-progress li {
   margin: var(--space-1) 0;
+}
+
+/* --- Figure dialog (#142) -------------------------------------------------
+ *
+ * Controls beside a preview of the figure, stacked on a narrow screen. The
+ * preview sits on a checkerboard so a transparent background reads as one.
+ */
+.figure-dialog {
+  width: min(1200px, 96vw);
+  max-height: 94vh;
+}
+
+.figure-layout {
+  display: grid;
+  grid-template-columns: minmax(18rem, 24rem) 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .figure-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.figure-controls {
+  max-height: 72vh;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+}
+
+.figure-controls fieldset {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+
+.figure-controls legend {
+  font-weight: 600;
+  padding: 0 var(--space-1);
+}
+
+.figure-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.figure-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.figure-grid input,
+.figure-grid select {
+  width: 100%;
+  min-width: 0;
+}
+
+/* Not stretched like the other inputs, or a checkbox sits a column's
+ * width away from its own label. */
+.figure-grid input[type="checkbox"] {
+  width: auto;
+}
+
+.figure-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.figure-grid label.figure-check {
+  flex-direction: row;
+  align-self: end;
+}
+
+.figure-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin: var(--space-2) 0;
+}
+
+.figure-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+
+.figure-actions-spacer {
+  flex: 1;
+}
+
+/* Download spec: useful, but rarer than the figure itself, so smaller and
+ * away from the main actions. Two selectors for specificity over the
+ * `.figure-buttons button` rule above. */
+.figure-buttons button.figure-minor {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.figure-controls fieldset.figure-layer-controls {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.figure-layer-controls:disabled {
+  opacity: 0.5;
+}
+
+.figure-actions label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.figure-picker summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0;
+}
+
+.figure-picker-list {
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.figure-picker-group {
+  border: 0;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+}
+
+.figure-picker-group legend {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.figure-swatch {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 2px;
+  border: 1px solid var(--color-border-strong);
+}
+
+.figure-preview {
+  position: relative;
+  min-height: 12rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #e4e4e4 25%, transparent 25%),
+    linear-gradient(-45deg, #e4e4e4 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e4e4e4 75%),
+    linear-gradient(-45deg, transparent 75%, #e4e4e4 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  overflow: auto;
+  max-height: 68vh;
+}
+
+.figure-preview img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+/* Over the previous preview, not beside it: the picture stays in place,
+ * dimmed, while the next one renders. */
+.figure-preview-status {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  max-width: 80%;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 20%);
+}
+
+.figure-preview.is-busy img {
+  opacity: 0.5;
+}
+
+/* Drawing a figure's extent on the radargram (#142): the dialog is closed
+ * while it happens, so the map says what it is waiting for. */
+.figure-drawing {
+  outline: 3px solid var(--color-accent);
+  outline-offset: -3px;
+}
+
+.figure-drawing .leaflet-container,
+.figure-drawing.leaflet-container {
+  cursor: crosshair !important;
+}
+
+.figure-no-select {
+  user-select: none;
+}
+
+.figure-draw-banner {
+  position: absolute;
+  top: var(--space-3);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 30%);
+  font-size: var(--text-sm);
+  pointer-events: auto;
+}
+
+.figure-draw-banner button {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#fig-update.is-stale {
+  outline: 2px solid var(--color-warning-border);
+}
+
+.figure-messages .figure-error {
+  color: var(--color-danger-text);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
 }

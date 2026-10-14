@@ -910,8 +910,9 @@ normalize → colormap → encode.** Everything lives under
     command line passes `everything()`). Picks are carried as the viewer's
     `.../carried` route carries them (`interp::carry::carried_for_drawing`,
     with `with_kept_axes` and `drawn_on_facts` moved there from the server);
-    picks that name no revision are drawn as stored, the way the contributor
-    overlay and derived evaluation already use them. Derived items are
+    picks that cannot be carried (naming no revision, or one that shares no
+    axis with this one) are drawn as stored, the way the contributor overlay
+    and derived evaluation already use them. Derived items are
     evaluated per trace, once per audience over exactly the picks it permits.
     Overlays are clipped to the plot in geometry rather than with an SVG
     `clipPath`, and fills split where their bounds cross, as `fillRings` does.
@@ -925,6 +926,12 @@ normalize → colormap → encode.** Everything lives under
     (`may_see_others_picks`, `readable_for`), the rules the contributor
     overlay and derived routes already apply; a spec naming another user's
     picks the caller may not see is a 403, not a figure without them.
+  - The viewer's **Figure…** dialog (`assets/figure.js`) builds a spec and
+    asks that route for both the preview and the download. The preview is
+    the same spec at the preview's width with the dpi scaled by the same
+    factor, so it is the download in proportion. Its extent is kept in raster
+    trace/row and sent as elevation in the topographic view. Settings persist
+    in localStorage per project, the extent in sessionStorage per radargram.
 
 ## Concurrency and resource bounds
 

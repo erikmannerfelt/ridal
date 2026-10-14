@@ -130,11 +130,13 @@ fn an_svg_draws_picks_and_derived_lines_in_their_colours() {
     let svg = String::from_utf8(figure.bytes).unwrap();
     assert!(svg.contains(r##"stroke="#ff0000""##));
     assert!(svg.contains(r##"stroke="#00ff00""##));
-    // Over the radargram and under the frame.
+    // Over the radargram, picks over derived lines (a consensus of one
+    // contributor would otherwise hide their pick), and under the frame.
     let image = svg.find("<image").unwrap();
+    let derived = svg.find(r##"stroke="#00ff00""##).unwrap();
     let pick = svg.find(r##"stroke="#ff0000""##).unwrap();
     let frame = svg.find("<rect x=").unwrap();
-    assert!(image < pick && pick < frame);
+    assert!(image < derived && derived < pick && pick < frame);
 }
 
 #[test]
@@ -572,7 +574,7 @@ fn picks_that_name_no_revision_are_drawn_as_stored_with_a_warning() {
 
 #[test]
 #[serial_test::serial(netcdf)]
-fn picks_from_a_revision_they_cannot_be_carried_from_are_left_out_with_a_warning() {
+fn picks_from_a_revision_they_cannot_be_carried_from_are_drawn_as_stored_with_a_warning() {
     let (dir, nc) = project_with_picks(&[("ann", 2.0)]);
     // Point the stored picks at a revision the project knows nothing about.
     let radargram = crate::identity::RadargramId::new(RADARGRAM).unwrap();
@@ -600,10 +602,13 @@ fn picks_from_a_revision_they_cannot_be_carried_from_are_left_out_with_a_warning
         &LayerAccess::everything(),
     )
     .unwrap();
-    assert!(overlays.picks.is_empty());
+    // As the viewer's contributor overlay shows them, which is where the
+    // legacy study's picks are seen.
+    assert_eq!(overlays.picks.len(), 1);
+    assert_eq!(overlays.picks[0].vertices, vec![[0.0, 2.0], [39.0, 2.0]]);
     assert_eq!(overlays.warnings.len(), 1);
     assert!(
-        overlays.warnings[0].contains("not drawn"),
+        overlays.warnings[0].contains("drawn as stored"),
         "{:?}",
         overlays.warnings
     );

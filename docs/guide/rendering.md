@@ -99,7 +99,9 @@ A misspelt field is an error rather than being ignored.
   sample. In the topographic view it is a row of the corrected image, which
   moves when the radargram's elevation window is edited, so a spec for that
   view can give `elevation: [top, bottom]` in metres instead. Anything left
-  out is the whole radargram; bounds past the data are clipped to it.
+  out is the whole radargram; bounds past the data are clipped to it, except
+  the rows (or elevations) of the topographic view, which may reach above the
+  highest surface or below the floor to leave empty space there.
 
 `size`
 : `width` is the whole figure's, labels included, in `cm`, `in` or `px`.
@@ -113,11 +115,12 @@ A misspelt field is an error rather than being ignored.
 
   | Axis | Units |
   |---|---|
-  | x | `trace`, `distance` (m), `time` (UTC time of day) |
+  | x | `trace`, `distance` (m), `distance_km` (km), `time` (UTC time of day) |
   | y, standard view | `sample`, `twtt` (ns), `depth` (m) |
   | y, topographic view | `elevation` (m) |
 
-  `spacing` is the distance between ticks, in that unit (seconds for time);
+  `spacing` is the distance between ticks, in that unit (kilometres for
+  `distance_km`, seconds for time);
   without it, Ridal picks a round spacing that gives about six ticks. Ticks
   are at `anchor + k × spacing`: with the default anchor of 0, a 10 m spacing
   gives 10, 20, 30 m wherever the excerpt starts. `label` replaces the axis
@@ -140,14 +143,16 @@ A misspelt field is an error rather than being ignored.
 `picks`
 : Which picked lines to draw. Each entry in `items` selects by `user`,
   `layer`, both or neither: `{"layer": "bed"}` is everyone's bed picks,
-  `{"user": "erik"}` all of one person's, and `{}` all of them. With no
+  `{"user": "erik"}` all of one person's, `{"layer": ""}` the lines with no
+  layer, and `{}` all of them. With no
   items, the default, no picks are drawn. Each line is drawn in its layer's
   colour, `width` points wide.
 
   Picks are drawn where the viewer draws them: picks made on an earlier
-  revision are carried to this one, and are left out, with a warning, if
-  they cannot be. Picks that do not say which revision they were drawn on
-  (imported from older tools) are drawn as stored, also with a warning.
+  revision are carried to this one. Picks that cannot be carried, including
+  those that do not say which revision they were drawn on (imported from
+  older tools), are drawn as stored, as the viewer's contributor overlay
+  draws them, with a warning.
 
 `derived`
 : Which derived layers to draw, by id, each in its own colour. With `fills`,

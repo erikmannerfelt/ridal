@@ -79,6 +79,7 @@ embedded_asset!(site_js, "site.js", "text/javascript");
 embedded_asset!(login_js, "login.js", "text/javascript");
 embedded_asset!(picker_js, "picker.js", "text/javascript");
 embedded_asset!(panel_js, "panel.js", "text/javascript");
+embedded_asset!(figure_js, "figure.js", "text/javascript");
 
 // Repo-root, first-party. Shown beside the "Ridal" wordmark in the shared
 // header (base.html.jinja); logo.png doubles as the favicon.
@@ -269,6 +270,7 @@ mod tests {
             ("picker.js", include_str!("assets/picker.js")),
             ("panel.js", include_str!("assets/panel.js")),
             ("process.js", include_str!("assets/process.js")),
+            ("figure.js", include_str!("assets/figure.js")),
             ("layers.js", include_str!("assets/layers.js")),
             ("processing.js", include_str!("assets/processing.js")),
             ("settings.js", include_str!("assets/settings.js")),
@@ -571,6 +573,7 @@ mod tests {
                     ("picker.js", include_str!("assets/picker.js")),
                     ("panel.js", include_str!("assets/panel.js")),
                     ("process.js", include_str!("assets/process.js")),
+                    ("figure.js", include_str!("assets/figure.js")),
                 ],
             ),
             (
@@ -675,6 +678,7 @@ mod tests {
             ("picker.js", include_str!("assets/picker.js")),
             ("panel.js", include_str!("assets/panel.js")),
             ("process.js", include_str!("assets/process.js")),
+            ("figure.js", include_str!("assets/figure.js")),
             ("layers.js", include_str!("assets/layers.js")),
             ("processing.js", include_str!("assets/processing.js")),
             ("settings.js", include_str!("assets/settings.js")),

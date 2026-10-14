@@ -91,7 +91,8 @@ pub enum View {
 /// a spec meant to outlive that can give `elevation` instead.
 ///
 /// Omitted bounds mean the whole radargram. Bounds past the data are
-/// clipped to it.
+/// clipped to it, except the rows of the topographic view, which may reach
+/// above the highest surface or below the floor to leave empty space there.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct Extent {
@@ -183,12 +184,15 @@ impl<U> Default for AxisSpec<U> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum XUnit {
     /// Trace number.
     Trace,
-    /// Distance along the profile, from the file's `distance`.
+    /// Distance along the profile in metres, from the file's `distance`.
     Distance,
+    /// The same distance in kilometres, for a long profile; `spacing` and
+    /// `anchor` are in kilometres too.
+    DistanceKm,
     /// UTC time of day, from the file's `time`.
     Time,
 }
@@ -211,6 +215,7 @@ impl XUnit {
         match self {
             XUnit::Trace => "Trace",
             XUnit::Distance => "Distance (m)",
+            XUnit::DistanceKm => "Distance (km)",
             XUnit::Time => "Time (UTC)",
         }
     }
@@ -232,7 +237,8 @@ impl YUnit {
 /// Every pick whose user and layer match one of `items` is drawn, in its
 /// layer's colour. A selector that leaves out `user` matches everyone whose
 /// picks the caller may see, and one that leaves out `layer` matches every
-/// layer, so `[{}]` is all of them. No items, the default, draws none.
+/// layer, so `[{}]` is all of them; `"layer": ""` matches unlabelled lines.
+/// No items, the default, draws none.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct PickOverlay {
@@ -261,9 +267,15 @@ pub struct PickSelector {
 
 impl PickSelector {
     /// Whether a pick by `user` on `layer` (`None` when unlabelled) matches.
+    /// A selector's `layer` of `""` asks for unlabelled lines, which a
+    /// project without a layer vocabulary has nothing but.
     pub fn matches(&self, user: &str, layer: Option<&str>) -> bool {
         self.user.as_deref().is_none_or(|u| u == user)
-            && self.layer.as_deref().is_none_or(|l| Some(l) == layer)
+            && match self.layer.as_deref() {
+                None => true,
+                Some("") => layer.is_none(),
+                Some(l) => Some(l) == layer,
+            }
     }
 }
 
