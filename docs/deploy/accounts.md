@@ -239,7 +239,7 @@ treated as someone who is not signed in. Like a password, a token is refused
 by a server reachable over the network without HTTPS
 (see {doc}`reverse-proxy`).
 
-Make one from the **API tokens** section of the site's **Settings** page
+Make one from the **API tokens** section of the **Site settings** page
 (each project's settings page links to it), which lists your tokens and
 revokes them too. Each grant picks one of your
 projects, and its role and download scope start at your membership's and can

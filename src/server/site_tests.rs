@@ -596,6 +596,18 @@ async fn site_settings_require_a_login() {
     let response = send(&app, get("/settings", None)).await;
     assert_eq!(response.status, StatusCode::SEE_OTHER);
     assert_eq!(response.location.as_deref(), Some("/login"));
+
+    // #426: named as the site's, so it is not mistaken for a project's.
+    let cookie = sign_in(&app, "anna").await;
+    let page = send(&app, get("/settings", Some(&cookie))).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    assert!(
+        page.text.contains("<h1>Site settings</h1>"),
+        "{}",
+        page.text
+    );
+    assert!(page.text.contains(">Site settings</a>"), "{}", page.text);
+    assert!(page.text.contains(">Projects</a>"), "{}", page.text);
 }
 
 #[tokio::test]
@@ -899,14 +911,14 @@ async fn a_site_project_links_back_to_the_site_root() {
         "the project menu needs a way back to the site: {}",
         page.text
     );
-    assert!(page.text.contains(">Projects<"), "{}", page.text);
+    assert!(page.text.contains(">All projects<"), "{}", page.text);
     // #373: below the project's own pages and set apart, not first in the
     // menu where it was clicked by mistake.
     let menu_position = |needle: &str| page.text.find(needle).expect(needle);
-    assert!(menu_position(">Settings<") < menu_position(">Projects<"));
+    assert!(menu_position(">Project settings<") < menu_position(">All projects<"));
     assert!(
         page.text
-            .contains(r#"<li class="site-menu-separated"><a href="/">Projects</a></li>"#),
+            .contains(r#"<li class="site-menu-separated"><a href="/">All projects</a></li>"#),
         "{}",
         page.text
     );

@@ -2582,7 +2582,7 @@ async fn ridal_gui_serves_its_project_to_the_local_person_with_no_login() {
     );
     // No sign-in link, and no way back to a site there is not.
     assert!(!catalog.text.contains(">Sign in<"), "{}", catalog.text);
-    assert!(!catalog.text.contains(">Projects<"), "{}", catalog.text);
+    assert!(!catalog.text.contains(">All projects<"), "{}", catalog.text);
 
     let settings = get(&app, "/api/v1/projects/default/settings", None).await;
     assert_eq!(settings.body["user"], "default");
@@ -3918,7 +3918,12 @@ async fn only_an_admin_may_change_the_project_size_limit() {
     // menu leads back to the site.
     assert!(page.text.contains(r#"id="site-theme""#), "{}", page.text);
     assert!(!page.text.contains(r#"id="my-theme""#), "{}", page.text);
-    assert!(page.text.contains(">Projects<"), "{}", page.text);
+    assert!(page.text.contains(">All projects<"), "{}", page.text);
+    assert!(
+        page.text.contains("<h1>Project settings</h1>"),
+        "{}",
+        page.text
+    );
 
     let saved = put(
         &app,

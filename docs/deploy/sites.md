@@ -69,9 +69,10 @@ administrator, to the site:
   account; and a read-only **Memberships** overview of who belongs where.
 - **History** (server administrators) — the site ledger, see below.
 
-The top-right menu offers **Projects** and **Settings** on site pages, and
-**Radargram catalog**, **Layers**, **Settings** and **Projects** on a
-project's pages. The Ridal wordmark always opens the project you are in.
+The top-right menu offers **Projects** and **Site settings** on site pages,
+and **Radargram catalog**, **Layers**, **Processing**, **Project settings**
+and **All projects** on a project's pages. **All projects** leaves the project
+for the site's list of projects. The Ridal wordmark always opens the project you are in.
 
 ## Who may do what
 
