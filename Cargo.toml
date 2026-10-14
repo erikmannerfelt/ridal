@@ -45,6 +45,18 @@ num-complex = "0.4"
 enterpolation = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Annotated figures (#142): the SVG a figure is composed as is rasterized
+# to PNG by resvg, a pure-Rust renderer with no system libraries. Only the
+# "text" feature: fonts come from the one bundled with Ridal, never the
+# system's, so a PNG looks the same wherever it was rendered, and the only
+# raster a figure embeds is its own PNG, which needs no extra decoders.
+resvg = { version = "0.48", default-features = false, features = ["text"] }
+# Measuring tick labels with the bundled font to lay a figure out. Already
+# in the tree, at this version, through resvg's text stack.
+skrifa = "0.44"
+# The radargram is embedded in a figure's SVG as a `data:` URI. Already in
+# the tree, at this version, through resvg.
+base64 = "0.23"
 
 # The level 1 interpretation format (`ridal interp`). Developed alongside
 # ridal in its own repository; see github.com/erikmannerfelt/gprinterp.

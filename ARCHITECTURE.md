@@ -877,6 +877,33 @@ normalize → colormap → encode.** Everything lives under
   two projects on one site must not be able to reach each other's images
   through a matching id and processing time. A replaced service gets a
   new scope, so its predecessor's images age out rather than being served.
+- **Annotated figures** (`render/figure/`, #142) are an excerpt with axes,
+  as SVG or PNG, described by one JSON `FigureSpec`. `ridal render
+  --figure` and `ridal.render(figure=...)` call `render_figure`, and the
+  HTTP API and the GUI are to call the same function, so a spec renders
+  the same figure from any of them.
+  - The raster is `Renderer::render_window_rgba`: the overview's
+    colour-then-average accumulation (`accumulate_colours`, shared with
+    overviews, whose bytes it leaves unchanged) over any fractional window,
+    at the plot's pixel size, with no-data transparent. Drawn larger than
+    its sample count, a sample is repeated, never interpolated. Contrast is
+    the whole radargram's (`oneshot::resolve_limits`), as in the viewer.
+  - The plot's aspect is the viewer's: `traces * x_scale` wide for `rows`
+    tall. The extent is in the viewer's raster coordinates; a topographic
+    spec can give elevation instead, because its rows move when the
+    elevation window is edited, and a spec that names a `revision_id` is
+    refused by another revision.
+  - Ticks are `anchor + k * spacing` at their coordinate's true raster
+    position (`figure/axis.rs`), never resampled to an even spacing:
+    distance is uneven in trace number, and resampling would change the
+    samples shown. A coordinate value for index `i` sits at position `i`,
+    the viewer's convention for picks.
+  - SVG is the composition format (presentation attributes only, which
+    Office reads). PNG is resvg drawing the same SVG's lines and text over
+    the raster, composited directly rather than round-tripped through a
+    data URI, which also keeps resvg's image decoders out of the build.
+    Text is the bundled DejaVu Sans only, with no system fonts, so a PNG
+    is identical on every machine; `skrifa` measures labels for layout.
 
 ## Concurrency and resource bounds
 

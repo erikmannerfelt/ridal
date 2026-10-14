@@ -190,10 +190,39 @@ pub fn render_to_file_with_stats_source(
         }
     }
 
+    let (pinned, limits) = resolve_limits(stats_source, request.profile)?;
+
+    // The profile carries a format of its own, which `format_for` may have
+    // overridden from the output extension. The renderer must be told the
+    // resolved one, not the profile's.
+    let profile = RenderProfile { format, ..pinned };
+    let bytes = Renderer::new(source).render_overview(&spec, &profile, limits)?;
+
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
+        }
+    }
+    std::fs::write(output, &bytes)
+        .map_err(|e| format!("Could not write {}: {e}", output.display()))?;
+    Ok((spec.width, spec.height))
+}
+
+/// Pin `profile`'s adaptive settings and estimate its amplitude limits from
+/// `stats_source`, exactly as the server does once per revision+profile.
+///
+/// Shared by whole-radargram renders and annotated figures (#142), so a
+/// figure of an excerpt has the contrast of the whole radargram, the same
+/// as the viewer shows it, rather than a contrast stretched to the excerpt.
+pub fn resolve_limits(
+    stats_source: &impl AmplitudeSource,
+    profile: &RenderProfile,
+) -> Result<(RenderProfile, (f32, f32)), String> {
     // An adaptive siglog strength is resolved from the same source the
     // limits are, before them, so both see the strength the image is
     // drawn at.
-    let pinned = stats::pin_profile(stats_source, request.profile, SAMPLE_SEED)?;
+    let pinned = stats::pin_profile(stats_source, profile, SAMPLE_SEED)?;
 
     // Estimated once for the whole image, exactly as the server does per
     // revision+profile. An explicit-limits profile skips the sampling pass
@@ -212,22 +241,7 @@ pub fn render_to_file_with_stats_source(
         AmplitudeLimits::Explicit { .. } => None,
     };
     let limits = colormap::resolve_limits(&pinned, sampled)?;
-
-    // The profile carries a format of its own, which `format_for` may have
-    // overridden from the output extension. The renderer must be told the
-    // resolved one, not the profile's.
-    let profile = RenderProfile { format, ..pinned };
-    let bytes = Renderer::new(source).render_overview(&spec, &profile, limits)?;
-
-    if let Some(parent) = output.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("Could not create {}: {e}", parent.display()))?;
-        }
-    }
-    std::fs::write(output, &bytes)
-        .map_err(|e| format!("Could not write {}: {e}", output.display()))?;
-    Ok((spec.width, spec.height))
+    Ok((pinned, limits))
 }
 
 /// Default output path for an input, when none was given: the input with

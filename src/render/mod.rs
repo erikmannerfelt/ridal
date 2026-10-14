@@ -82,6 +82,7 @@
 #![allow(dead_code)]
 
 pub mod colormap;
+pub mod figure;
 pub mod grid;
 pub mod oneshot;
 pub mod profile;
