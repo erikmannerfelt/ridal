@@ -267,6 +267,15 @@ its history.
   through the snapshot of the revision it names. Discovery reads one
   file's axes per new revision and checks a file's existence after that.
   It runs synchronously, so a removal cannot race it to the same snapshot.
+  Discovery also marks the revision it replaced as superseded in the
+  ledger (`ledger::note_discovered`), which nothing did for an on-disk
+  replacement.
+- **Snapshots nothing needs are swept** (`revisions::sweep`): one is kept
+  while its revision is current, while any interpretation names it (live
+  or archived), and for 30 days after the ledger says it ended. When a
+  document cannot be read, nothing is removed. The sweep runs over every
+  radargram at startup, which also catches what a removal or purge left,
+  and on rediscovery for the radargrams whose revision changed.
 - **A line that runs past the edge of the target is cut there, not
   dropped (#434).** gprinterp 0.4 clips a line where it crosses the edge
   and reports each cut feature with how far past the edge it reached.
@@ -277,8 +286,13 @@ its history.
   `GET .../contributors` returns each document's carried `view` and
   `carry` report beside the stored `document`. The layer panel draws the
   view; a document that cannot be carried is drawn as stored, dashed, and
-  listed, which is what figures do too. Derived layers are still
-  evaluated over the stored documents.
+  listed, which is what figures do too.
+- **Derived layers are evaluated over carried picks** (`carry::for_evaluation`),
+  in the viewer's routes, exports and figures, so a consensus is computed
+  over the lines the viewer draws. Picks that cannot be carried count as
+  stored, which keeps existing results (legacy imports name no revision)
+  and matches the dashed lines; the preview and item responses list them
+  in `not_carried`, the editor and figures say so, and downloads log it.
 
 ## The pick manager and the archive (#178, #162)
 

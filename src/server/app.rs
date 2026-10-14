@@ -409,6 +409,7 @@ impl AppState {
         // the ones whose history would otherwise stay empty forever.
         state.register_current_revisions(&state.catalog());
         state.keep_new_axes(&state.catalog());
+        state.sweep_axes(&state.catalog(), None);
         Ok(state)
     }
 
@@ -571,7 +572,8 @@ impl AppState {
         }
 
         self.register_current_revisions(&catalog);
-        self.keep_new_axes(&catalog);
+        let changed = self.keep_new_axes(&catalog);
+        self.sweep_axes(&catalog, Some(&changed));
         self.replace_catalog(catalog, radargrams);
         Ok(())
     }
@@ -613,9 +615,10 @@ impl AppState {
                 )
             })
             .collect();
+        let at = chrono::Utc::now().to_rfc3339();
         if let Err(e) = crate::project::revisions::ledger::update(project.documents(), |l| {
             for (id, revision) in &known {
-                crate::project::revisions::ledger::note_current(l, id, revision, None);
+                crate::project::revisions::ledger::note_discovered(l, id, revision, &at);
             }
         }) {
             eprintln!("Warning: could not record the catalog's current revisions: {e}");
@@ -642,9 +645,12 @@ impl AppState {
     /// Best effort, like [`Self::register_current_revisions`]: a file that
     /// cannot be read, or a store that cannot be written, is reported and
     /// skipped rather than failing discovery.
-    fn keep_new_axes(&self, catalog: &Catalog) {
+    ///
+    /// Returns the radargrams whose axes were kept, which are the ones
+    /// whose revision changed.
+    fn keep_new_axes(&self, catalog: &Catalog) -> Vec<crate::identity::RadargramId> {
         let Some(project) = self.project.as_ref() else {
-            return;
+            return Vec::new();
         };
         let store = project.documents();
         let mut kept = Vec::new();
@@ -679,8 +685,12 @@ impl AppState {
                 facts,
             ));
         }
+        let changed = kept
+            .iter()
+            .filter_map(|(id, ..)| crate::identity::RadargramId::new(id.as_str()).ok())
+            .collect();
         if kept.is_empty() {
-            return;
+            return changed;
         }
         use crate::project::revisions::ledger;
         if let Err(e) = ledger::update(store, |l| {
@@ -690,6 +700,49 @@ impl AppState {
             }
         }) {
             eprintln!("Warning: could not record the kept axes' checksums: {e}");
+        }
+        changed
+    }
+
+    /// Remove kept axes nothing can need any more (#434): see
+    /// [`crate::project::revisions::sweep`] for what counts.
+    ///
+    /// `only` limits it to radargrams whose revision just changed, which is
+    /// when a snapshot can newly become unneeded on a rediscovery. `None`
+    /// sweeps every radargram with kept axes, catalogued or not, which is
+    /// done at startup and also catches what a removal or a purge left.
+    /// Best effort, as the rest of discovery's bookkeeping is.
+    fn sweep_axes(&self, catalog: &Catalog, only: Option<&[crate::identity::RadargramId]>) {
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let store = project.documents();
+        let radargrams = match only {
+            Some(only) => only.to_vec(),
+            None => match crate::project::revisions::radargrams(store) {
+                Ok(all) => all,
+                Err(e) => {
+                    eprintln!("Warning: could not list the kept axes: {e}");
+                    return;
+                }
+            },
+        };
+        let now = chrono::Utc::now();
+        for radargram in &radargrams {
+            let current = catalog
+                .entries
+                .iter()
+                .find(|entry| &entry.radargram_id == radargram)
+                .map(|entry| entry.revision_id.to_string());
+            match crate::project::revisions::sweep(store, radargram, current.as_deref(), now) {
+                Ok(removed) if !removed.is_empty() => tracing::info!(
+                    radargram = radargram.as_str(),
+                    revisions = removed.join(", "),
+                    "removed kept axes that no interpretation names"
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!("Warning: could not tidy the kept axes of '{radargram}': {e}"),
+            }
         }
     }
 

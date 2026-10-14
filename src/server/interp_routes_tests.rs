@@ -3303,3 +3303,69 @@ async fn picks_without_anchors_survive_a_file_replaced_on_disk() {
     );
     assert!(anna["view"]["features"][0].is_object(), "{anna}");
 }
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn derived_layers_are_evaluated_over_carried_picks() {
+    // #434: a consensus was evaluated over the stored indices, so picks
+    // from an earlier revision counted where they were drawn rather than
+    // where the viewer shows them. Now they are carried first, and picks
+    // that cannot be carried still count, as stored, and are named.
+    let (dir, app) = project_app_with_axes();
+    let project = Project::discover(dir.path()).unwrap().unwrap();
+    let vocabulary: crate::project::layers::LayerSet =
+        serde_json::from_value(serde_json::json!({"layers": [{"id": "bed", "name": "Bed"}]}))
+            .unwrap();
+    crate::project::layers::write(
+        project.documents(),
+        &vocabulary,
+        &crate::project::store::Expectation::Any,
+    )
+    .unwrap();
+
+    // Ben drew on a revision whose time zero was one sample later, so his
+    // sample 2 is this revision's sample 3.
+    let axes = offered_axes(&app).await;
+    let mut earlier = axes.clone();
+    let y = &mut earlier["y"]["anchor"][0];
+    let dt = y["dt"].as_f64().expect("a regular travel-time axis");
+    y["t0"] = serde_json::json!(y["t0"].as_f64().unwrap() + dt);
+    let ben = document_with_axes(&earlier, &[[0.0, 2.0], [39.0, 2.0]], "rev-earlier");
+    // Cleo's picks name a revision nothing describes: refused.
+    let mut cleo = document_with_axes(&axes, &[[0.0, 5.0], [39.0, 5.0]], "rev-vanished");
+    cleo["coordinates"].as_object_mut().unwrap().remove("axes");
+    let folder = data(dir.path()).join("interpretations/line-01");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("ben.gprinterp.json"), ben.to_string()).unwrap();
+    std::fs::write(folder.join("cleo.gprinterp.json"), cleo.to_string()).unwrap();
+
+    let preview = |expression: &'static str| {
+        let app = app.clone();
+        async move {
+            let (status, _, body) = send(
+                &app,
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/datasets/line-01/derived/preview")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"expression": expression, "unit": "samples"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body
+        }
+    };
+
+    let carried = preview("median(only(bed, \"ben\"))").await;
+    let value = carried["values"][10].as_f64().expect("a value at trace 10");
+    assert!((value - 3.0).abs() < 1e-6, "carried, not stored: {carried}");
+    assert_eq!(carried["not_carried"], serde_json::json!(["cleo"]));
+
+    let stored = preview("median(only(bed, \"cleo\"))").await;
+    let value = stored["values"][10].as_f64().expect("a value at trace 10");
+    assert!((value - 5.0).abs() < 1e-6, "used as stored: {stored}");
+}

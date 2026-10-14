@@ -492,6 +492,117 @@ pub fn list(store: &DocumentStore, radargram: &RadargramId) -> Result<Vec<String
     Ok(store.list_stems(&PathBuf::from(DIR).join(radargram.as_str()), ".axes")?)
 }
 
+/// How long the axes of a revision that has ended are kept when no
+/// interpretation names it (#434).
+///
+/// Long enough for the race the module comment describes: someone picking
+/// on a revision that is superseded under them, whose save arrives after
+/// it ended. The picker now writes its own anchors, so that save would
+/// carry anyway; the period is for a document that does not.
+pub const KEPT_AFTER_ENDING_DAYS: i64 = 30;
+
+/// Remove the kept axes of `radargram` that nothing can need any more, and
+/// say which revisions they were.
+///
+/// A snapshot is kept while any of these holds:
+///
+/// - its revision is `current`, the one being served;
+/// - an interpretation names it as its `source.revision_id`, live or
+///   archived, since an archived one can be looked at and its picks are
+///   only placeable through this;
+/// - the ledger does not say it ended, or says it ended within
+///   [`KEPT_AFTER_ENDING_DAYS`] of `now`.
+///
+/// Snapshots are taken on discovery (#434), so without this a radargram
+/// replaced over and over gathers one per replacement. Each is a couple of
+/// kilobytes, so this is tidiness rather than rescue, and it errs the same
+/// way: when the documents cannot all be read, nothing is removed.
+pub fn sweep(
+    store: &DocumentStore,
+    radargram: &RadargramId,
+    current: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<String>, SnapshotError> {
+    let kept = list(store, radargram)?;
+    if kept
+        .iter()
+        .all(|revision| Some(revision.as_str()) == current)
+    {
+        return Ok(Vec::new());
+    }
+
+    let mut needed: std::collections::BTreeSet<String> =
+        current.map(str::to_string).into_iter().collect();
+    let named = |document: &gprinterp::Document| {
+        document.source.as_ref().and_then(|s| s.revision_id.clone())
+    };
+    let Ok((users, unreadable)) = super::interpretations::list_users_checked(store, radargram)
+    else {
+        return Ok(Vec::new());
+    };
+    if !unreadable.is_empty() {
+        return Ok(Vec::new());
+    }
+    for user in &users {
+        match super::interpretations::read(store, radargram, user) {
+            Ok(Some(stored)) => needed.extend(named(&stored.document)),
+            Ok(None) => {}
+            Err(_) => return Ok(Vec::new()),
+        }
+    }
+    let Ok((archived, unreadable)) = super::interpretations::list_archived(store) else {
+        return Ok(Vec::new());
+    };
+    if !unreadable.is_empty() {
+        return Ok(Vec::new());
+    }
+    for entry in archived.iter().filter(|a| &a.radargram == radargram) {
+        match super::interpretations::read_archived(store, entry) {
+            Ok(Some(stored)) => needed.extend(named(&stored.document)),
+            Ok(None) => {}
+            Err(_) => return Ok(Vec::new()),
+        }
+    }
+
+    let (history, _) = ledger::read(store)?;
+    let records = history.radargrams.get(radargram.as_str());
+    let ended_long_ago = |revision: &str| {
+        records
+            .and_then(|records| records.iter().find(|r| r.revision_id == revision))
+            .and_then(|record| record.superseded_at.as_deref())
+            .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+            .is_some_and(|at| {
+                now.signed_duration_since(at) > chrono::Duration::days(KEPT_AFTER_ENDING_DAYS)
+            })
+    };
+
+    let mut removed = Vec::new();
+    for revision in kept {
+        if needed.contains(&revision) || !ended_long_ago(&revision) {
+            continue;
+        }
+        store.remove(&path_of(radargram, &revision), &Expectation::Any)?;
+        removed.push(revision);
+    }
+    if kept_none(store, radargram)? {
+        store.remove_empty_dir(&PathBuf::from(DIR).join(radargram.as_str()))?;
+    }
+    Ok(removed)
+}
+
+fn kept_none(store: &DocumentStore, radargram: &RadargramId) -> Result<bool, SnapshotError> {
+    Ok(list(store, radargram)?.is_empty())
+}
+
+/// Every radargram with kept axes, including ones no longer catalogued.
+pub fn radargrams(store: &DocumentStore) -> Result<Vec<RadargramId>, SnapshotError> {
+    Ok(store
+        .list_subdirectories(&PathBuf::from(DIR))?
+        .into_iter()
+        .filter_map(|name| RadargramId::new(name.as_str()).ok())
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,6 +624,89 @@ mod tests {
                 .collect(),
             y_alternate: None,
         }
+    }
+
+    fn picks_on(revision: &str) -> gprinterp::Document {
+        serde_json::from_value(serde_json::json!({
+            "key": "line-01",
+            "source": {"radargram_id": "line-01", "revision_id": revision},
+            "features": []
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_sweep_removes_only_axes_nothing_can_need() {
+        // #434: discovery keeps every revision's axes, so a radargram
+        // replaced over and over would gather them. What goes is a revision
+        // that is not served, is named by no interpretation, live or
+        // archived, and ended over a month ago.
+        let (_dir, store) = store();
+        let id = RadargramId::new("line-01").unwrap();
+        for revision in ["current", "live", "archived", "recent", "old", "unrecorded"] {
+            put(&store, &id, &snapshot(revision)).unwrap();
+        }
+        let user = crate::identity::UserId::new("anna").unwrap();
+        crate::project::interpretations::write(
+            &store,
+            &id,
+            &user,
+            &picks_on("archived"),
+            &Expectation::Any,
+        )
+        .unwrap();
+        crate::project::interpretations::archive_all(&store, &id, "2026-01-01T00:00:00Z").unwrap();
+        crate::project::interpretations::write(
+            &store,
+            &id,
+            &user,
+            &picks_on("live"),
+            &Expectation::Any,
+        )
+        .unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-14T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        ledger::update(&store, |l| {
+            for (revision, at) in [
+                ("live", "2026-01-01T00:00:00Z"),
+                ("archived", "2026-01-01T00:00:00Z"),
+                ("recent", "2026-10-01T00:00:00Z"),
+                ("old", "2026-01-01T00:00:00Z"),
+            ] {
+                ledger::supersede(l, "line-01", revision, Some("current"), at);
+            }
+        })
+        .unwrap();
+
+        let removed = sweep(&store, &id, Some("current"), now).unwrap();
+        assert_eq!(removed, vec!["old".to_string()]);
+        let mut left = list(&store, &id).unwrap();
+        left.sort();
+        assert_eq!(
+            left,
+            ["archived", "current", "live", "recent", "unrecorded"].map(String::from)
+        );
+    }
+
+    #[test]
+    fn the_sweep_removes_nothing_when_a_document_cannot_be_read() {
+        // Erring towards keeping: an unreadable document might name any
+        // revision.
+        let (dir, store) = store();
+        let id = RadargramId::new("line-01").unwrap();
+        put(&store, &id, &snapshot("old")).unwrap();
+        ledger::update(&store, |l| {
+            ledger::supersede(l, "line-01", "old", None, "2020-01-01T00:00:00Z")
+        })
+        .unwrap();
+        let folder = dir.path().join("interpretations/line-01");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("anna.gprinterp.json"), "not json").unwrap();
+
+        let removed = sweep(&store, &id, None, chrono::Utc::now()).unwrap();
+        assert!(removed.is_empty());
+        assert_eq!(list(&store, &id).unwrap(), vec!["old".to_string()]);
     }
 
     #[test]
@@ -1069,6 +1263,26 @@ pub mod ledger {
         }
     }
 
+    /// Record that discovery found `revision` behind `radargram` (#434).
+    ///
+    /// As [`note_current`], and any other revision the ledger still has as
+    /// current is marked superseded by this one. That is what happened: the
+    /// file was replaced outside Ridal, which never supersedes anything, so
+    /// without this the ledger kept two current revisions, `current`
+    /// answered with the older one, and nothing said when it ended.
+    pub fn note_discovered(ledger: &mut Ledger, radargram: &str, revision: &str, at: &str) {
+        note_current(ledger, radargram, revision, None);
+        if let Some(records) = ledger.radargrams.get_mut(radargram) {
+            for record in records
+                .iter_mut()
+                .filter(|r| r.revision_id != revision && r.superseded_at.is_none())
+            {
+                record.superseded_at = Some(at.to_string());
+                record.superseded_by = Some(revision.to_string());
+            }
+        }
+    }
+
     /// Record that `revision` is the id's current one, undoing a
     /// supersession if it had been marked as one.
     ///
@@ -1101,6 +1315,24 @@ pub mod ledger {
 mod ledger_tests {
     use super::ledger::*;
     use super::*;
+
+    #[test]
+    fn a_file_replaced_on_disk_supersedes_the_revision_before_it() {
+        // #434: Ridal never supersedes a file replaced outside it, so the
+        // ledger kept both as current and `current` named the older one.
+        let mut ledger = Ledger::default();
+        note_current(&mut ledger, "line-01", "rev-a", None);
+        note_discovered(&mut ledger, "line-01", "rev-b", "2026-10-14T00:00:00Z");
+        assert_eq!(ledger.current("line-01").unwrap().revision_id, "rev-b");
+        let a = &ledger.radargrams["line-01"][0];
+        assert_eq!(a.superseded_at.as_deref(), Some("2026-10-14T00:00:00Z"));
+        assert_eq!(a.superseded_by.as_deref(), Some("rev-b"));
+
+        // Discovering the same revision again changes nothing.
+        let before = ledger.clone();
+        note_discovered(&mut ledger, "line-01", "rev-b", "2026-10-15T00:00:00Z");
+        assert_eq!(ledger, before);
+    }
 
     fn store() -> (tempfile::TempDir, DocumentStore) {
         let dir = tempfile::tempdir().unwrap();

@@ -111,11 +111,25 @@ async fn an_operator_draws_everyones_picks_and_the_consensus() {
     assert_eq!(png.status, StatusCode::OK);
     assert_eq!(png.content_type, "image/png");
 
-    // The test picks name no revision, so they are drawn as stored, and the
-    // response says so.
+    // The test picks name no revision, so they are drawn as stored, the
+    // median is evaluated over them as stored (#434), and the response says
+    // both.
     let warnings = svg.warnings.expect("a warnings header");
-    assert_eq!(warnings.len(), 2, "{warnings:?}");
-    assert!(warnings.iter().all(|w| w.contains("drawn as stored")));
+    assert_eq!(warnings.len(), 3, "{warnings:?}");
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|w| w.contains("drawn as stored"))
+            .count(),
+        2,
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("derived layers use picks by alice, bob as stored")),
+        "{warnings:?}"
+    );
 }
 
 #[tokio::test]

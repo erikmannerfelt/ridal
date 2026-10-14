@@ -1506,7 +1506,14 @@ const RIDAL = Object.freeze({
       const unknownNote = unknown.length
         ? ` · no picks here from ${unknown.map((name) => `"${name}"`).join(", ")}`
         : "";
-      fields.status.textContent = `${kindLabel} · ${body.unit || "no unit"}${contributors}${unknownNote}`;
+      // Picks that could not be carried onto this revision still count, at
+      // the indices they were stored at (#434); the line under them is
+      // drawn dashed, and this says the result leans on them.
+      const stale = Array.isArray(body.not_carried) ? body.not_carried : [];
+      const staleNote = stale.length
+        ? ` · ${stale.join(", ")} used as stored, not carried to this revision`
+        : "";
+      fields.status.textContent = `${kindLabel} · ${body.unit || "no unit"}${contributors}${unknownNote}${staleNote}`;
     }
 
     function buildSuggestions() {

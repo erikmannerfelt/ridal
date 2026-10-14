@@ -600,6 +600,20 @@ pub fn carried_for_drawing(
     revision: &crate::identity::RevisionId,
     document: &gprinterp::Document,
 ) -> Carried {
+    let axes = drawing_axes(project, radargram, path, revision);
+    let source = with_kept_axes(project, radargram, document);
+    carry(&source, &axes, revision.as_str())
+}
+
+/// The axes of the revision `revision` of the file at `path`, which
+/// [`carried_for_drawing`] carries onto: read once, for callers that carry
+/// many documents onto the same revision.
+pub fn drawing_axes(
+    project: &crate::project::Project,
+    radargram: &crate::identity::RadargramId,
+    path: &std::path::Path,
+    revision: &crate::identity::RevisionId,
+) -> Axes {
     let baseline = crate::project::revisions::ledger::read(project.documents())
         .ok()
         .and_then(|(ledger, _)| {
@@ -608,14 +622,34 @@ pub fn carried_for_drawing(
                 .filter(|record| record.revision_id == revision.as_str())
                 .and_then(|record| record.axis_checksum.clone())
         });
-    let axes = crate::interp::anchors::axes_for_revision_checked(
+    crate::interp::anchors::axes_for_revision_checked(
         path,
         radargram,
         revision,
         baseline.as_deref(),
-    );
-    let source = with_kept_axes(project, radargram, document);
-    carry(&source, &axes, revision.as_str())
+    )
+}
+
+/// `document` as derived layers evaluate it on the revision `axes`
+/// describes (#434), and whether it could not be carried there.
+///
+/// The carried view when there is one, so a consensus is computed over the
+/// lines the viewer draws. A document that cannot be carried is used as it
+/// is stored, as the viewer and figures draw it: leaving it out would change
+/// every existing consensus that includes picks imported without a
+/// revision, and silently. The flag is for saying so.
+pub fn for_evaluation(
+    project: &crate::project::Project,
+    radargram: &crate::identity::RadargramId,
+    axes: &Axes,
+    revision: &str,
+    document: gprinterp::Document,
+) -> (gprinterp::Document, bool) {
+    let source = with_kept_axes(project, radargram, &document);
+    match carry(&source, axes, revision).document {
+        Some(carried) => (carried, false),
+        None => (document, true),
+    }
 }
 
 /// Show `document` on the revision `axes` describes.
