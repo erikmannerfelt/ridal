@@ -41,6 +41,13 @@ pub struct FigureSpec {
     pub x_axis: AxisSpec<XUnit>,
     pub y_axis: AxisSpec<YUnit>,
     pub style: Style,
+    /// `false` leaves the radargram out, so only the picks and derived
+    /// layers are drawn, over the background.
+    pub radargram: bool,
+    /// Picked lines to draw over the radargram.
+    pub picks: PickOverlay,
+    /// Derived layers to draw over the radargram.
+    pub derived: DerivedOverlay,
 }
 
 impl Default for FigureSpec {
@@ -57,6 +64,9 @@ impl Default for FigureSpec {
             x_axis: AxisSpec::default(),
             y_axis: AxisSpec::default(),
             style: Style::default(),
+            radargram: true,
+            picks: PickOverlay::default(),
+            derived: DerivedOverlay::default(),
         }
     }
 }
@@ -215,6 +225,74 @@ impl YUnit {
     }
 }
 
+/// Which picked lines to draw, and how.
+///
+/// Every pick whose user and layer match one of `items` is drawn, in its
+/// layer's colour. A selector that leaves out `user` matches everyone whose
+/// picks the caller may see, and one that leaves out `layer` matches every
+/// layer, so `[{}]` is all of them. No items, the default, draws none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PickOverlay {
+    pub items: Vec<PickSelector>,
+    /// Line width in points.
+    pub width: f64,
+    pub opacity: f64,
+}
+
+impl Default for PickOverlay {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            width: 1.0,
+            opacity: 0.85,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct PickSelector {
+    pub user: Option<String>,
+    pub layer: Option<String>,
+}
+
+impl PickSelector {
+    /// Whether a pick by `user` on `layer` (`None` when unlabelled) matches.
+    pub fn matches(&self, user: &str, layer: Option<&str>) -> bool {
+        self.user.as_deref().is_none_or(|u| u == user)
+            && self.layer.as_deref().is_none_or(|l| Some(l) == layer)
+    }
+}
+
+/// Which derived layers to draw, and how.
+///
+/// `items` are derived item ids. Each is drawn in its own colour, and an
+/// item whose range fill reaches another drawn item has the fill drawn
+/// under them, as in the viewer. Only items of kind `layer` are positions
+/// that can be drawn; an attribute is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct DerivedOverlay {
+    pub items: Vec<String>,
+    /// Line width in points.
+    pub width: f64,
+    pub opacity: f64,
+    /// Whether to draw range fills between drawn items.
+    pub fills: bool,
+}
+
+impl Default for DerivedOverlay {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            width: 1.5,
+            opacity: 0.9,
+            fills: true,
+        }
+    }
+}
+
 /// Text, line and background styling.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
@@ -267,6 +345,12 @@ impl FigureSpec {
             serde_json::from_str(text).map_err(|e| format!("Invalid figure spec: {e}"))?;
         spec.validate()?;
         Ok(spec)
+    }
+
+    /// Whether the spec asks for any picks or derived layers, which need a
+    /// project to come from.
+    pub fn has_overlays(&self) -> bool {
+        !self.picks.items.is_empty() || !self.derived.items.is_empty()
     }
 
     /// Checks that need no file: the ones serde cannot express.
@@ -346,6 +430,28 @@ impl FigureSpec {
             if !anchor.is_finite() {
                 return Err(format!("{name}.anchor must be finite."));
             }
+        }
+        for (name, width, opacity) in [
+            ("picks", self.picks.width, self.picks.opacity),
+            ("derived", self.derived.width, self.derived.opacity),
+        ] {
+            if !(width.is_finite() && width > 0.0 && width <= 20.0) {
+                return Err(format!(
+                    "{name}.width must be between 0 and 20 points, not {width}."
+                ));
+            }
+            if !(0.0..=1.0).contains(&opacity) {
+                return Err(format!(
+                    "{name}.opacity must be between 0 and 1, not {opacity}."
+                ));
+            }
+        }
+        if !self.radargram && !self.axes && !self.has_overlays() {
+            return Err(
+                "A figure without the radargram, axes or any picks or derived layers would be \
+                 empty."
+                    .to_string(),
+            );
         }
         match (self.view, self.y_axis.unit) {
             (View::Topo, Some(unit)) if unit != YUnit::Elevation => Err(format!(

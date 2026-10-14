@@ -87,6 +87,12 @@ pub struct RenderArgs {
     #[arg(long, value_name = "SPEC", conflicts_with_all = ["profile", "width", "quality", "topo"])]
     pub figure: Option<PathBuf>,
 
+    /// With --figure: the project the radargram belongs to, which picks and
+    /// derived layers are read from (all of them, as the files are readable
+    /// anyway) and whose elevation window the topographic view uses.
+    #[arg(long, value_name = "DIR", requires = "figure")]
+    pub project: Option<PathBuf>,
+
     /// Suppress progress messages.
     #[arg(short, long)]
     pub quiet: bool,
@@ -1446,12 +1452,19 @@ fn render_command(args: RenderArgs) -> Result<(), String> {
             let stem = args.input.file_stem().unwrap_or_default().to_string_lossy();
             args.input.with_file_name(format!("{stem}.figure.png"))
         });
-        let (width, height) =
-            crate::render::figure::render_figure_path(&args.input, &output, &spec)?;
+        let written = crate::render::figure::render_figure_path(
+            &args.input,
+            &output,
+            &spec,
+            args.project.as_deref(),
+        )?;
+        for warning in &written.warnings {
+            eprintln!("Warning: {warning}");
+        }
         if !args.quiet {
             println!(
                 "Rendered a {}x{} px figure with the '{}' profile to {:?}",
-                width, height, spec.profile, output
+                written.width, written.height, spec.profile, output
             );
         }
         return Ok(());

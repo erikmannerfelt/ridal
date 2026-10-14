@@ -52,6 +52,7 @@ fn render(
             coordinates: coords,
             revision_id: Some("rev-a".into()),
             elevation_range: topo::ElevationRange::NONE,
+            overlays: None,
         },
         spec,
         &profile(data.nrows() as f32),

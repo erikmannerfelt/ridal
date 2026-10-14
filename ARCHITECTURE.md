@@ -904,6 +904,17 @@ normalize → colormap → encode.** Everything lives under
     data URI, which also keeps resvg's image decoders out of the build.
     Text is the bundled DejaVu Sans only, with no system fonts, so a PNG
     is identical on every machine; `skrifa` measures labels for layout.
+  - Picks and derived layers (`figure/overlays.rs`) are gathered from a
+    project into plain `Overlays` by `gather`, which takes a `LayerAccess`
+    built by the caller, so the permission rules stay with their owner (the
+    command line passes `everything()`). Picks are carried as the viewer's
+    `.../carried` route carries them (`interp::carry::carried_for_drawing`,
+    with `with_kept_axes` and `drawn_on_facts` moved there from the server);
+    picks that name no revision are drawn as stored, the way the contributor
+    overlay and derived evaluation already use them. Derived items are
+    evaluated per trace, once per audience over exactly the picks it permits.
+    Overlays are clipped to the plot in geometry rather than with an SVG
+    `clipPath`, and fills split where their bounds cross, as `fillRings` does.
 
 ## Concurrency and resource bounds
 

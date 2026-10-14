@@ -35,6 +35,7 @@
 
 pub mod axis;
 pub mod font;
+pub mod overlays;
 pub mod spec;
 
 use std::path::Path;
@@ -170,6 +171,10 @@ pub struct FigureSource<'a, S: AmplitudeSource> {
     /// The radargram's configured elevation window, for the topographic
     /// view. [`topo::ElevationRange::NONE`] outside a project.
     pub elevation_range: topo::ElevationRange,
+    /// The picks and derived layers the spec asks for, gathered by
+    /// [`overlays::gather`]. `None` when there is no project to read them
+    /// from, which is an error only if the spec asks for any.
+    pub overlays: Option<&'a overlays::Overlays>,
 }
 
 /// A rendered figure.
@@ -237,6 +242,13 @@ pub fn render_figure<S: AmplitudeSource>(
                 .to_string(),
         ));
     }
+    if spec.has_overlays() && input.overlays.is_none() {
+        return Err(FigureError::Spec(
+            "Picks and derived layers are read from a project; give the project the \
+             radargram belongs to."
+                .to_string(),
+        ));
+    }
 
     match spec.view {
         View::Standard => {
@@ -260,6 +272,7 @@ pub fn render_figure<S: AmplitudeSource>(
                 format,
                 spec.extent.rows,
                 (y, y_values),
+                None,
             )
         }
         View::Topo => {
@@ -301,6 +314,7 @@ pub fn render_figure<S: AmplitudeSource>(
                 format,
                 rows,
                 (YUnit::Elevation, y_values),
+                Some(&geometry.shift),
             )
         }
     }
@@ -334,6 +348,7 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
     format: FigureFormat,
     rows: Option<[f64; 2]>,
     (y_unit, y_values): (YUnit, AxisValues),
+    shift: Option<&[f32]>,
 ) -> Result<RenderedFigure, FigureError> {
     let (n_rows, n_traces) = drawn.shape();
     let clip = |bounds: Option<[f64; 2]>, len: usize, name: &str| {
@@ -388,26 +403,59 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
 
     let layout = Layout::new(spec, traces, rows, &x_ticks, &y_ticks, &x_label, &y_label)?;
 
-    let (pinned, limits) =
-        crate::render::oneshot::resolve_limits(stats, profile).map_err(FigureError::Render)?;
-    let window = SourceWindow {
-        row0: rows[0],
-        row1: rows[1],
-        col0: traces[0],
-        col1: traces[1],
+    // Without the radargram there is nothing to estimate contrast for, and
+    // no reason to read a single sample.
+    let raster = if spec.radargram {
+        let (pinned, limits) =
+            crate::render::oneshot::resolve_limits(stats, profile).map_err(FigureError::Render)?;
+        let window = SourceWindow {
+            row0: rows[0],
+            row1: rows[1],
+            col0: traces[0],
+            col1: traces[1],
+        };
+        Some(
+            Renderer::new(drawn)
+                .render_window_rgba(&window, layout.plot_w, layout.plot_h, &pinned, limits)
+                .map_err(FigureError::Render)?,
+        )
+    } else {
+        None
     };
-    let raster = Renderer::new(drawn)
-        .render_window_rgba(&window, layout.plot_w, layout.plot_h, &pinned, limits)
-        .map_err(FigureError::Render)?;
 
-    if !spec.axes {
-        let bytes = encode_png(&raster)?;
+    let ppt = spec.size.px_per_pt();
+    let overlay_svg = input
+        .overlays
+        .map(|o| {
+            o.svg(
+                &overlays::Placement {
+                    plot: [
+                        layout.plot_x as f64,
+                        layout.plot_y as f64,
+                        (layout.plot_x + layout.plot_w) as f64,
+                        (layout.plot_y + layout.plot_h) as f64,
+                    ],
+                    traces,
+                    rows,
+                    shift,
+                },
+                &overlays::OverlayStyle {
+                    pick_width: spec.picks.width * ppt,
+                    pick_opacity: spec.picks.opacity,
+                    derived_width: spec.derived.width * ppt,
+                    derived_opacity: spec.derived.opacity,
+                },
+            )
+        })
+        .unwrap_or_default();
+
+    let sidecar = (!spec.axes).then(|| {
         let centres = |values: &AxisValues, [a, b]: [f64; 2], n: usize| -> Vec<f64> {
             (0..n)
                 .map(|i| values.value_at(a + (i as f64 + 0.5) * (b - a) / n as f64))
                 .collect()
         };
-        let sidecar = Sidecar {
+        Sidecar {
             view: spec.view,
             width: layout.plot_w,
             height: layout.plot_h,
@@ -415,63 +463,64 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
             rows,
             x: SidecarAxis {
                 unit: unit_name(&x_unit),
-                label: x_label,
+                label: x_label.clone(),
                 extent: [x_values.value_at(traces[0]), x_values.value_at(traces[1])],
                 centres: centres(&x_values, traces, layout.plot_w),
             },
             y: SidecarAxis {
                 unit: unit_name(&y_unit),
-                label: y_label,
+                label: y_label.clone(),
                 extent: [y_values.value_at(rows[0]), y_values.value_at(rows[1])],
                 centres: centres(&y_values, rows, layout.plot_h),
             },
-        };
-        return Ok(RenderedFigure {
-            bytes,
-            width: layout.plot_w,
-            height: layout.plot_h,
-            sidecar: Some(sidecar),
-        });
-    }
+        }
+    });
 
     let annotations = Annotations {
         layout: &layout,
         traces,
         rows,
+        axes: spec.axes,
         x_ticks: &x_ticks,
         y_ticks: &y_ticks,
         x_label: &x_label,
         y_label: &y_label,
         color: spec::parse_colour("style.color", &spec.style.color).map_err(FigureError::Spec)?,
+        overlays: &overlay_svg,
     };
-    let background = spec
-        .style
-        .background
-        .as_deref()
-        .map(|b| spec::parse_colour("style.background", b))
-        .transpose()
-        .map_err(FigureError::Spec)?;
+    // A figure without axes is the radargram as data, so it keeps the
+    // transparency of the places without any rather than a background.
+    let background = if spec.axes {
+        spec.style
+            .background
+            .as_deref()
+            .map(|b| spec::parse_colour("style.background", b))
+            .transpose()
+            .map_err(FigureError::Spec)?
+    } else {
+        None
+    };
 
     let bytes = match format {
         FigureFormat::Svg => {
-            let png = encode_png(&raster)?;
+            let png = raster.as_ref().map(encode_png).transpose()?;
             let svg = annotations.svg(
                 background.as_deref(),
-                Some(&png),
+                png.as_deref(),
                 Some((spec.size.unit, spec.size.dpi)),
             );
             svg.into_bytes()
         }
         FigureFormat::Png => {
             let overlay = annotations.svg(None, None, None);
-            compose_png(&layout, background.as_deref(), &raster, &overlay)?
+            compose_png(&layout, background.as_deref(), raster.as_ref(), &overlay)?
         }
     };
     Ok(RenderedFigure {
         bytes,
         width: layout.width,
         height: layout.height,
-        sidecar: None,
+        sidecar,
     })
 }
 
@@ -638,11 +687,15 @@ struct Annotations<'a> {
     layout: &'a Layout,
     traces: [f64; 2],
     rows: [f64; 2],
+    /// `false` draws no frame, ticks or labels: only the overlays.
+    axes: bool,
     x_ticks: &'a [Tick],
     y_ticks: &'a [Tick],
     x_label: &'a str,
     y_label: &'a str,
     color: String,
+    /// The picks and derived layers, already drawn as SVG elements.
+    overlays: &'a str,
 }
 
 impl Annotations<'_> {
@@ -691,6 +744,13 @@ impl Annotations<'_> {
                 r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" image-rendering="optimizeSpeed" xlink:href="data:image/png;base64,{data}"/>"#,
                 l.plot_x, l.plot_y, l.plot_w, l.plot_h
             );
+        }
+
+        // Picks and derived layers over the radargram, under the frame.
+        s.push_str(self.overlays);
+        if !self.axes {
+            s.push_str("</svg>\n");
+            return s;
         }
 
         // Frame and ticks, as one path each, outward from the plot.
@@ -813,7 +873,7 @@ fn font_database() -> Arc<resvg::usvg::fontdb::Database> {
 fn compose_png(
     layout: &Layout,
     background: Option<&str>,
-    raster: &image::RgbaImage,
+    raster: Option<&image::RgbaImage>,
     overlay: &str,
 ) -> Result<Vec<u8>, FigureError> {
     use resvg::tiny_skia;
@@ -826,24 +886,26 @@ fn compose_png(
         pixmap.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
     }
 
-    // Raster pixels are either opaque or fully transparent, so
-    // premultiplying them is zeroing the transparent ones.
-    let premultiplied: Vec<u8> = raster
-        .pixels()
-        .flat_map(|p| if p.0[3] == 0 { [0, 0, 0, 0] } else { p.0 })
-        .collect();
-    let size = tiny_skia::IntSize::from_wh(raster.width(), raster.height())
-        .ok_or_else(|| fail("an empty raster"))?;
-    let raster =
-        tiny_skia::Pixmap::from_vec(premultiplied, size).ok_or_else(|| fail("a bad raster"))?;
-    pixmap.draw_pixmap(
-        layout.plot_x as i32,
-        layout.plot_y as i32,
-        raster.as_ref(),
-        &tiny_skia::PixmapPaint::default(),
-        tiny_skia::Transform::identity(),
-        None,
-    );
+    if let Some(raster) = raster {
+        // Raster pixels are either opaque or fully transparent, so
+        // premultiplying them is zeroing the transparent ones.
+        let premultiplied: Vec<u8> = raster
+            .pixels()
+            .flat_map(|p| if p.0[3] == 0 { [0, 0, 0, 0] } else { p.0 })
+            .collect();
+        let size = tiny_skia::IntSize::from_wh(raster.width(), raster.height())
+            .ok_or_else(|| fail("an empty raster"))?;
+        let raster =
+            tiny_skia::Pixmap::from_vec(premultiplied, size).ok_or_else(|| fail("a bad raster"))?;
+        pixmap.draw_pixmap(
+            layout.plot_x as i32,
+            layout.plot_y as i32,
+            raster.as_ref(),
+            &tiny_skia::PixmapPaint::default(),
+            tiny_skia::Transform::identity(),
+            None,
+        );
+    }
 
     let options = resvg::usvg::Options {
         font_family: font::FONT_FAMILY.to_string(),
@@ -870,9 +932,25 @@ fn hex_rgb(colour: &str) -> [u8; 3] {
     [channel(0), channel(1), channel(2)]
 }
 
+/// What [`render_figure_path`] wrote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WrittenFigure {
+    pub width: usize,
+    pub height: usize,
+    /// The sidecar's path, for a figure without axes.
+    pub sidecar: Option<std::path::PathBuf>,
+    /// Picks that could not be drawn as stored; see [`overlays::Overlays`].
+    pub warnings: Vec<String>,
+}
+
 /// Render `spec` of the processed `.nc` at `input` to `output`, resolving
 /// the profile with [`RenderProfile::resolve`] (a built-in name or a TOML
-/// file). Returns the figure's size in pixels.
+/// file).
+///
+/// `project` is the project directory the radargram belongs to. It is where
+/// picks and derived layers are read from, with everything in it visible,
+/// as whoever runs this can read its files anyway, and where the
+/// radargram's elevation window for the topographic view comes from.
 ///
 /// The format comes from `output`'s extension. A figure without axes also
 /// writes its [`Sidecar`] beside `output`, with a `.json` extension.
@@ -880,13 +958,46 @@ pub fn render_figure_path(
     input: &Path,
     output: &Path,
     spec: &FigureSpec,
-) -> Result<(usize, usize), String> {
+    project: Option<&Path>,
+) -> Result<WrittenFigure, String> {
     let format = FigureFormat::for_path(output)?;
     let profile = RenderProfile::resolve(&spec.profile)?;
-    let revision_id = match crate::io::inspect_ridal_netcdf(input)? {
-        crate::io::RidalNetcdfKind::Supported(metadata) => Some(metadata.revision_id().to_string()),
+    let metadata = match crate::io::inspect_ridal_netcdf(input)? {
+        crate::io::RidalNetcdfKind::Supported(metadata) => Some(metadata),
         _ => None,
     };
+    let revision_id = metadata.as_ref().map(|m| m.revision_id().to_string());
+
+    let mut elevation_range = topo::ElevationRange::NONE;
+    let overlays = match project {
+        Some(dir) => {
+            let project = crate::project::Project::open(dir).map_err(|e| e.to_string())?;
+            let metadata = metadata.as_ref().ok_or_else(|| {
+                format!(
+                    "{} has no radargram id, so its picks cannot be found in a project.",
+                    input.display()
+                )
+            })?;
+            if let Ok((overrides, _)) = crate::project::overrides::read(project.documents()) {
+                if let Some(over) = overrides.radargrams.get(&metadata.radargram_id) {
+                    elevation_range = topo::ElevationRange {
+                        min: over.elevation_min,
+                        max: over.elevation_max,
+                    };
+                }
+            }
+            Some(overlays::gather(
+                &project,
+                &metadata.radargram_id,
+                input,
+                &metadata.revision_id(),
+                spec,
+                &overlays::LayerAccess::everything(),
+            )?)
+        }
+        None => None,
+    };
+
     let reader = SourceReader::open(input)?;
     let coordinates = Coordinates::read(&reader);
     let figure = render_figure(
@@ -894,7 +1005,8 @@ pub fn render_figure_path(
             source: &reader,
             coordinates: &coordinates,
             revision_id,
-            elevation_range: topo::ElevationRange::NONE,
+            elevation_range,
+            overlays: overlays.as_ref(),
         },
         spec,
         &profile,
@@ -909,13 +1021,22 @@ pub fn render_figure_path(
     }
     std::fs::write(output, &figure.bytes)
         .map_err(|e| format!("Could not write {}: {e}", output.display()))?;
-    if let Some(sidecar) = &figure.sidecar {
-        let path = output.with_extension("json");
-        let text = serde_json::to_string_pretty(sidecar).map_err(|e| e.to_string())?;
-        std::fs::write(&path, text)
-            .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
-    }
-    Ok((figure.width, figure.height))
+    let sidecar = match &figure.sidecar {
+        Some(sidecar) => {
+            let path = output.with_extension("json");
+            let text = serde_json::to_string_pretty(sidecar).map_err(|e| e.to_string())?;
+            std::fs::write(&path, text)
+                .map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+            Some(path)
+        }
+        None => None,
+    };
+    Ok(WrittenFigure {
+        width: figure.width,
+        height: figure.height,
+        sidecar,
+        warnings: overlays.map(|o| o.warnings).unwrap_or_default(),
+    })
 }
 
 /// Read a figure spec from a JSON file.
@@ -927,3 +1048,6 @@ pub fn read_spec(path: &Path) -> Result<FigureSpec, String> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod overlay_tests;

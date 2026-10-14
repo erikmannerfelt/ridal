@@ -494,6 +494,87 @@ fn plural(n: usize, one: &str, many: &str) -> String {
     }
 }
 
+/// A document with what the snapshot of the revision it was drawn on can
+/// add to its axes.
+///
+/// A document that carries no axes of its own is not necessarily
+/// unplaceable: #148 keeps the superseded revision's mapping precisely so
+/// picks drawn before the picker emitted axes can still be carried.
+/// Without this the snapshot was written, kept, listed — and never read by
+/// the one thing it was for. It is also where a document saved on a
+/// corrected revision before #370 gets the recording clock it should have
+/// had. Every path that carries a stored document goes through this, so
+/// the view, adopting and a replace's report agree on what can be placed.
+pub fn with_kept_axes(
+    project: &crate::project::Project,
+    radargram: &crate::identity::RadargramId,
+    document: &gprinterp::Document,
+) -> gprinterp::Document {
+    let Some(from) = document
+        .source
+        .as_ref()
+        .and_then(|s| s.revision_id.as_deref())
+    else {
+        return document.clone();
+    };
+    let document = if drawn_on_facts(project, radargram, from).separation_corrected == Some(true) {
+        without_regular_recording_clock(document)
+    } else {
+        document.clone()
+    };
+    crate::project::revisions::get(project.documents(), radargram, from)
+        .ok()
+        .flatten()
+        .map(|snapshot| with_snapshot_axes(&document, &snapshot))
+        .unwrap_or(document)
+}
+
+/// What the ledger recorded about a revision's processing.
+pub fn drawn_on_facts(
+    project: &crate::project::Project,
+    radargram: &crate::identity::RadargramId,
+    revision: &str,
+) -> crate::project::revisions::ledger::RevisionFacts {
+    crate::project::revisions::ledger::read(project.documents())
+        .map(|(ledger, _)| {
+            crate::project::revisions::ledger::facts(&ledger, radargram.as_str(), revision)
+        })
+        .unwrap_or_default()
+}
+
+/// `document`, stored for `radargram` in `project`, as it is drawn on the
+/// revision `revision` of the file at `path`: what the viewer's
+/// `GET .../carried` shows, and what a figure (#142) draws.
+///
+/// The axes are checked against the checksum the ledger recorded for the
+/// project's current revision, which is the only thing that can see a file
+/// edited in place and given back its old processing date. A file that is
+/// not the current revision has no such record and is read as it is.
+pub fn carried_for_drawing(
+    project: &crate::project::Project,
+    radargram: &crate::identity::RadargramId,
+    path: &std::path::Path,
+    revision: &crate::identity::RevisionId,
+    document: &gprinterp::Document,
+) -> Carried {
+    let baseline = crate::project::revisions::ledger::read(project.documents())
+        .ok()
+        .and_then(|(ledger, _)| {
+            ledger
+                .current(radargram.as_str())
+                .filter(|record| record.revision_id == revision.as_str())
+                .and_then(|record| record.axis_checksum.clone())
+        });
+    let axes = crate::interp::anchors::axes_for_revision_checked(
+        path,
+        radargram,
+        revision,
+        baseline.as_deref(),
+    );
+    let source = with_kept_axes(project, radargram, document);
+    carry(&source, &axes, revision.as_str())
+}
+
 /// Show `document` on the revision `axes` describes.
 ///
 /// `to_revision` is the revision those axes belong to, already checked

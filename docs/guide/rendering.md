@@ -29,6 +29,16 @@ ridal.render("processed.nc", "figure.png", figure={
 `figure=` takes a dict or the path to a JSON file. The output's extension
 picks the format.
 
+Picks and derived layers are read from the project the radargram belongs
+to, given with `--project DIR` (or `project=` in Python):
+
+```bash
+ridal render ridal_data/radargrams/line.nc --figure spec.json --project . -o figure.png
+```
+
+The project also supplies the radargram's elevation window for the
+topographic view.
+
 **SVG** keeps the labels as text and the radargram as one embedded image, so
 it can be edited in Inkscape or Illustrator and scales cleanly for print.
 PowerPoint and Word (2019 and later, and Microsoft 365) insert it directly.
@@ -55,6 +65,9 @@ with distance and travel-time axes when the file has them.
   "y_axis": {"unit": "twtt", "spacing": null, "anchor": 0, "label": null},
   "style": {"font_size": 10, "color": "#000000", "background": "#ffffff"},
   "axes": true,
+  "radargram": true,
+  "picks": {"items": [{"layer": "bed"}], "width": 1.0, "opacity": 0.85},
+  "derived": {"items": ["bed_median"], "width": 1.5, "opacity": 0.9, "fills": true},
   "revision_id": null
 }
 ```
@@ -113,6 +126,28 @@ A misspelt field is an error rather than being ignored.
   file beside it that says what it shows: the extent, and each axis's value at
   every pixel column and row. That is enough to draw it in matplotlib with
   `imshow(..., extent=...)` or `pcolormesh`.
+
+`radargram`
+: `false` leaves the radargram out, so only the picks and derived layers are
+  drawn, over the background.
+
+`picks`
+: Which picked lines to draw. Each entry in `items` selects by `user`,
+  `layer`, both or neither: `{"layer": "bed"}` is everyone's bed picks,
+  `{"user": "erik"}` all of one person's, and `{}` all of them. With no
+  items, the default, no picks are drawn. Each line is drawn in its layer's
+  colour, `width` points wide.
+
+  Picks are drawn where the viewer draws them: picks made on an earlier
+  revision are carried to this one, and are left out, with a warning, if
+  they cannot be. Picks that do not say which revision they were drawn on
+  (imported from older tools) are drawn as stored, also with a warning.
+
+`derived`
+: Which derived layers to draw, by id, each in its own colour. With `fills`,
+  a range fill between two drawn layers is drawn under them, as in the
+  viewer. A derived *attribute*, such as a count, is not a position and
+  cannot be drawn.
 
 `revision_id`
 : When set, the figure is only drawn from that revision of the radargram.

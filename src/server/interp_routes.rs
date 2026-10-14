@@ -306,7 +306,7 @@ pub async fn get_interpretation_carried(
         baseline.as_deref(),
     );
 
-    let source = with_kept_axes(project, &radargram, &stored.document);
+    let source = crate::interp::carry::with_kept_axes(project, &radargram, &stored.document);
     let mut carried = crate::interp::carry::carry(&source, &axes, revision.as_str());
     add_processing_warnings(
         &mut carried,
@@ -464,7 +464,7 @@ pub async fn promote_interpretation(
 
     let axes = crate::interp::anchors::axes_for_revision(&path, &radargram, &revision);
     // What the page showed, so adopting cannot refuse picks it displayed.
-    let source = with_kept_axes(project, &radargram, &stored.document);
+    let source = crate::interp::carry::with_kept_axes(project, &radargram, &stored.document);
     let mut carried = crate::interp::carry::carry(&source, &axes, revision.as_str());
     add_processing_warnings(
         &mut carried,
@@ -1947,54 +1947,6 @@ pub async fn put_layers(
     ))
 }
 
-/// A document with what the snapshot of the revision it was drawn on can
-/// add to its axes.
-///
-/// A document that carries no axes of its own is not necessarily
-/// unplaceable: #148 keeps the superseded revision's mapping precisely so
-/// picks drawn before the picker emitted axes can still be carried.
-/// Without this the snapshot was written, kept, listed — and never read by
-/// the one thing it was for. It is also where a document saved on a
-/// corrected revision before #370 gets the recording clock it should have
-/// had. Every path that carries a stored document goes through this, so
-/// the view, adopting and a replace's report agree on what can be placed.
-pub(crate) fn with_kept_axes(
-    project: &crate::project::Project,
-    radargram: &crate::identity::RadargramId,
-    document: &gprinterp::Document,
-) -> gprinterp::Document {
-    let Some(from) = document
-        .source
-        .as_ref()
-        .and_then(|s| s.revision_id.as_deref())
-    else {
-        return document.clone();
-    };
-    let document = if drawn_on_facts(project, radargram, from).separation_corrected == Some(true) {
-        crate::interp::carry::without_regular_recording_clock(document)
-    } else {
-        document.clone()
-    };
-    crate::project::revisions::get(project.documents(), radargram, from)
-        .ok()
-        .flatten()
-        .map(|snapshot| crate::interp::carry::with_snapshot_axes(&document, &snapshot))
-        .unwrap_or(document)
-}
-
-/// What the ledger recorded about a revision's processing.
-pub(crate) fn drawn_on_facts(
-    project: &crate::project::Project,
-    radargram: &crate::identity::RadargramId,
-    revision: &str,
-) -> crate::project::revisions::ledger::RevisionFacts {
-    crate::project::revisions::ledger::read(project.documents())
-        .map(|(ledger, _)| {
-            crate::project::revisions::ledger::facts(&ledger, radargram.as_str(), revision)
-        })
-        .unwrap_or_default()
-}
-
 /// Warn about what the axes cannot account for, from the ledger's record of
 /// the revision the picks were drawn on and the target's own declarations.
 pub(crate) fn add_processing_warnings(
@@ -2013,7 +1965,7 @@ pub(crate) fn add_processing_warnings(
     };
     crate::interp::carry::add_processing_warnings(
         carried,
-        drawn_on_facts(project, radargram, from),
+        crate::interp::carry::drawn_on_facts(project, radargram, from),
         target
             .map(crate::project::revisions::ledger::RevisionFacts::of)
             .unwrap_or_default(),
