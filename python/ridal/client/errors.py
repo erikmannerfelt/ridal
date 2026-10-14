@@ -122,6 +122,17 @@ class Unavailable(ServerError):
     cannot answer now. Retrying later may work."""
 
 
+class FigureWarning(UserWarning):
+    """Something a figure was asked to draw could not be drawn as stored:
+    picks that could not be carried to the radargram's current revision, or
+    that do not say which revision they were drawn on.
+
+    Issued by :meth:`ridal.client.Client.figure`, which draws the figure
+    anyway. Turn it into an error with ``warnings.simplefilter("error",
+    FigureWarning)``.
+    """
+
+
 _BY_STATUS: Final[dict[int, type[ServerError]]] = {
     400: BadRequest,
     401: Unauthorized,

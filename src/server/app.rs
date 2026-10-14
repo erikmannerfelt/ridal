@@ -1075,6 +1075,10 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::routes::dataset_image),
         )
         .route(
+            "/api/v1/datasets/{radargram_id}/figure",
+            axum::routing::post(super::figure_routes::render_figure),
+        )
+        .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}/raw",
             get(super::interp_routes::get_interpretation_raw),
         )

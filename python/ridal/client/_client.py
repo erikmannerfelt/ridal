@@ -2,9 +2,11 @@
 
 import concurrent.futures
 import dataclasses
+import json
 import os
 import threading
 import time
+import warnings
 from collections.abc import Callable, Collection, Iterable, Mapping
 from os import PathLike
 from pathlib import Path
@@ -391,6 +393,83 @@ class Client:
             label=f"{radargram_id}-derived.csv",
             progress=progress,
         )
+
+    def figure(
+        self,
+        radargram_id: str,
+        destination: str | PathLike[str],
+        spec: Mapping[str, Any] | str | PathLike[str] | None = None,
+    ) -> Path:
+        """Render an annotated figure of a radargram, as the server sees it.
+
+        The same figure ``ridal render --figure`` makes of the file, drawn by
+        the server: with the viewer's contrast, and with the picks and
+        derived layers this account may see.
+
+        Parameters
+        ----------
+        radargram_id : str
+        destination : path-like
+            The file to write. Its extension picks the format: ``.svg`` or
+            ``.png``. Written to a temporary file first and moved into place
+            when complete.
+        spec : mapping or path-like, optional
+            The figure spec, as a mapping or the path to a JSON file holding
+            one; see the rendering guide for its fields. Without one, the
+            whole radargram with the default axes.
+
+        Returns
+        -------
+        pathlib.Path
+            Where the figure was written. A spec with ``"axes": false`` also
+            writes its sidecar beside it, with a ``.json`` extension.
+
+        Raises
+        ------
+        ValueError
+            If ``destination`` is neither ``.svg`` nor ``.png``.
+        ridal.client.Forbidden
+            If the spec asks for picks or derived layers this account may
+            not see.
+        ridal.client.Conflict
+            If the spec names a revision the server no longer serves.
+
+        Warns
+        -----
+        ridal.client.FigureWarning
+            For picks that could not be drawn as stored.
+        """
+        target = Path(destination)
+        suffix = target.suffix.lower()
+        if suffix not in {".svg", ".png"}:
+            raise ValueError(
+                f"A figure is written as .svg or .png, not {target.name!r}."
+            )
+        if spec is None:
+            body: Any = {}
+        elif isinstance(spec, Mapping):
+            body = dict(spec)
+        else:
+            body = json.loads(Path(spec).read_text(encoding="utf-8"))
+        path = self._dataset_path(radargram_id, "figure")
+
+        response = self._http.request(
+            "POST", path, params={"format": suffix[1:]}, json=body
+        )
+        with _http.atomic_file(target) as file:
+            file.write(response.content)
+        for message in json.loads(
+            response.headers.get("X-Ridal-Figure-Warnings", "[]")
+        ):
+            warnings.warn(message, errors.FigureWarning, stacklevel=2)
+
+        if body.get("axes", True) is False:
+            sidecar = self._http.request(
+                "POST", path, params={"format": "json"}, json=body
+            )
+            with _http.atomic_file(target.with_suffix(".json")) as file:
+                file.write(sidecar.content)
+        return target
 
     # -- Changing the catalog ------------------------------------------------
 

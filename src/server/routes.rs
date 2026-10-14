@@ -1088,7 +1088,7 @@ where
 /// Every route that locks a service goes through here, so any of them that
 /// opens the file is counted against the cap and none leaves a handle open
 /// that the pool does not know about.
-fn with_locked_service<R>(
+pub(super) fn with_locked_service<R>(
     readers: &crate::server::render_service::ReaderPool,
     radargram: &super::app::OpenRadargram,
     f: impl FnOnce(&mut crate::server::render_service::RenderService) -> Result<R, ApiError>,

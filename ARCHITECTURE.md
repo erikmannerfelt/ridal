@@ -915,6 +915,16 @@ normalize → colormap → encode.** Everything lives under
     evaluated per trace, once per audience over exactly the picks it permits.
     Overlays are clipped to the plot in geometry rather than with an SVG
     `clipPath`, and fills split where their bounds cross, as `fillRings` does.
+  - Over HTTP (`server/figure_routes.rs`), `POST …/figure` takes the spec
+    as its body. The profile is looked up by name only, never as a file.
+    `RenderService::render_figure` draws through the service's open reader
+    with its cached limits, so a figure has the viewer's contrast exactly and
+    the server's SVG is byte-identical to `ridal render --figure` of the same
+    file. Overlays are gathered under the render permit but outside the
+    service's lock. The `LayerAccess` comes from `derived_routes`
+    (`may_see_others_picks`, `readable_for`), the rules the contributor
+    overlay and derived routes already apply; a spec naming another user's
+    picks the caller may not see is a 403, not a figure without them.
 
 ## Concurrency and resource bounds
 

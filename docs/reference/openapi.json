@@ -1154,6 +1154,94 @@
         },
         "additionalProperties": {}
       },
+      "FigureSidecar": {
+        "type": "object",
+        "description": "What a figure without axes needs beside it to be plotted elsewhere:\nthe extent it shows, and each axis's value at every pixel's centre.\n\nIn matplotlib, `imshow(img, extent=[*x.extent, *y.extent[::-1]])` for\nan axis that is linear, or `pcolormesh` with the centres for one that is\nnot (distance on a profile driven at varying speed).",
+        "required": [
+          "view",
+          "width",
+          "height",
+          "traces",
+          "rows",
+          "x",
+          "y"
+        ],
+        "properties": {
+          "view": {
+            "$ref": "#/components/schemas/FigureView"
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "traces": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "`[first, last]` trace position of the left and right edges."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "`[top, bottom]` row position of the top and bottom edges."
+          },
+          "x": {
+            "$ref": "#/components/schemas/FigureSidecarAxis"
+          },
+          "y": {
+            "$ref": "#/components/schemas/FigureSidecarAxis"
+          }
+        }
+      },
+      "FigureSidecarAxis": {
+        "type": "object",
+        "required": [
+          "unit",
+          "label",
+          "extent",
+          "centres"
+        ],
+        "properties": {
+          "unit": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "extent": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The value at the two edges: left and right, or top and bottom."
+          },
+          "centres": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "The value at the centre of each pixel column or row."
+          }
+        }
+      },
+      "FigureView": {
+        "type": "string",
+        "enum": [
+          "standard",
+          "topo"
+        ]
+      },
       "FileRole": {
         "type": "string",
         "description": "What a file is to the recording it belongs to.",

@@ -90,6 +90,26 @@ bed.plot(column="depth_m")
 Pass `progress=ridal.client.tqdm_progress()` for a progress bar (it needs
 tqdm), or any function that takes a {py:class}`ridal.client.ProgressEvent`.
 
+## Figures
+
+`figure` asks the server for an annotated figure, from the same figure spec
+`ridal render --figure` takes (see {doc}`rendering`). The server draws it with
+the viewer's contrast and with the picks and derived layers this account may
+see; asking for someone else's picks without that is refused.
+
+```python
+client.figure("line-07", "line-07.svg", {
+    "extent": {"traces": [1200, 2400]},
+    "y_axis": {"unit": "depth", "spacing": 20},
+    "picks": {"items": [{"layer": "bed"}]},
+    "derived": {"items": ["bed_median"]},
+})
+```
+
+The extension picks SVG or PNG. A spec with `"axes": false` also writes the
+sidecar beside the image. Picks that could not be drawn as stored are reported
+as a {py:class}`ridal.client.FigureWarning`, and the figure is drawn anyway.
+
 ## Uploading and replacing many files
 
 A folder of reprocessed radargrams is sorted against the project before

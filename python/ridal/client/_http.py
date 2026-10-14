@@ -127,7 +127,7 @@ class Http:
                     raise_for_status(response)
                 target = _resolve_destination(destination, response, label)
                 total = _content_length(response)
-                with _atomic_file(target) as file:
+                with atomic_file(target) as file:
                     done = 0
                     for chunk in response.iter_bytes(CHUNK_BYTES):
                         file.write(chunk)
@@ -225,7 +225,7 @@ def _attachment_name(disposition: str) -> str | None:
 
 
 @contextlib.contextmanager
-def _atomic_file(target: Path) -> Iterator[IO[bytes]]:
+def atomic_file(target: Path) -> Iterator[IO[bytes]]:
     """A file that appears at ``target`` only if the block completes.
 
     The temporary file is a sibling, so the final rename stays on one

@@ -31,7 +31,7 @@ use crate::project::interpretations;
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::Expectation;
 
-const RADARGRAM: &str = "line-01";
+pub(super) const RADARGRAM: &str = "line-01";
 
 fn radargram() -> RadargramId {
     RadargramId::new(RADARGRAM).unwrap()
@@ -83,7 +83,10 @@ fn write_geometry_nc(path: &StdPath, radargram_id: &str) {
 
 /// A project with one radargram, the given accounts, and one pick per named
 /// user at the given sample.
-fn app_with_picks(users: Vec<User>, picks: &[(&str, f64)]) -> (tempfile::TempDir, Router) {
+pub(super) fn app_with_picks(
+    users: Vec<User>,
+    picks: &[(&str, f64)],
+) -> (tempfile::TempDir, Router) {
     let dir = new_site();
     let nc = data(dir.path())
         .join(crate::project::DEFAULT_RADARGRAM_DIR)
@@ -131,15 +134,15 @@ fn app_with_picks(users: Vec<User>, picks: &[(&str, f64)]) -> (tempfile::TempDir
     (dir, router)
 }
 
-struct Response {
-    status: StatusCode,
-    cookie: Option<String>,
-    body: Value,
-    text: String,
-    disposition: Option<String>,
+pub(super) struct Response {
+    pub(super) status: StatusCode,
+    pub(super) cookie: Option<String>,
+    pub(super) body: Value,
+    pub(super) text: String,
+    pub(super) disposition: Option<String>,
 }
 
-async fn send(app: &Router, request: Request<Body>) -> Response {
+pub(super) async fn send(app: &Router, request: Request<Body>) -> Response {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let cookie = response
@@ -165,7 +168,11 @@ async fn send(app: &Router, request: Request<Body>) -> Response {
     }
 }
 
-fn request(method: &str, uri: &str, session: Option<&str>) -> axum::http::request::Builder {
+pub(super) fn request(
+    method: &str,
+    uri: &str,
+    session: Option<&str>,
+) -> axum::http::request::Builder {
     let mut builder = Request::builder().method(method).uri(scoped(uri));
     if let Some(session) = session {
         builder = builder.header(header::COOKIE, session);
@@ -181,7 +188,7 @@ async fn get(app: &Router, uri: &str, session: Option<&str>) -> Response {
     .await
 }
 
-async fn put(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
+pub(super) async fn put(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
     send(
         app,
         request("PUT", uri, session)
@@ -192,7 +199,7 @@ async fn put(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Re
     .await
 }
 
-async fn sign_in(app: &Router, name: &str) -> String {
+pub(super) async fn sign_in(app: &Router, name: &str) -> String {
     let response = send(
         app,
         request("POST", "/api/v1/auth/login", None)
@@ -213,7 +220,7 @@ async fn sign_in(app: &Router, name: &str) -> String {
         .to_string()
 }
 
-fn derived_set(items: Value) -> Value {
+pub(super) fn derived_set(items: Value) -> Value {
     json!({
         "schema": "ridal-derived",
         "schema_version": "1",
@@ -221,7 +228,7 @@ fn derived_set(items: Value) -> Value {
     })
 }
 
-fn item(id: &str, expression: &str, scope: Value) -> Value {
+pub(super) fn item(id: &str, expression: &str, scope: Value) -> Value {
     json!({
         "id": id,
         "name": id,
