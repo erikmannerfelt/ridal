@@ -46,3 +46,35 @@ at before it is added.
 **Create** stores each radargram's raw data in turn. If it stops halfway,
 what was stored stays, listed on the Processing page as not processed yet,
 and planning again reports those ids as taken.
+
+## Figures
+
+**Download → Figure…** in the viewer makes an annotated figure of the
+radargram: a part of it, with axes, ticks and labels, and the picks and
+derived layers you choose drawn over it. It needs the `derived` download
+scope, as the rendered image does.
+
+- **Extent.** The dialog opens on what the viewer shows. **Current view**
+  takes it again, **Draw rectangle** closes the dialog until you drag a box
+  on the radargram (Escape cancels), and **Whole radargram** takes all of
+  it. The four fields show the extent in the axis units and can be typed
+  into. In the topographic view the figure is of the corrected view, in
+  elevation.
+- **Size.** The width is the whole figure's, labels included, in
+  centimetres, inches or pixels, at the DPI given; the height follows from
+  the extent and the horizontal scale, which starts at the viewer's.
+- **Axes and style** are those of a figure spec (see {doc}`rendering`):
+  units, tick spacing and anchor, titles, font size, colours, and a
+  transparent background. **Radargram** off draws only the layers.
+- **Layers.** **Picks** lists the contributors whose picks you may see,
+  with a box per layer they picked; **Derived** lists the derived layers.
+  Each group has its own line width and opacity.
+
+The preview is the figure itself, rendered smaller, and follows the
+controls as they change; for an extent of more than a few million samples
+it waits for **Update preview**. **Download** writes PNG or SVG, and
+**Download spec** the figure spec as JSON, to draw the same figure again
+with `ridal render --figure`, `ridal.render` or the API.
+
+The dialog remembers its settings in this browser for the next figure in
+the project, and the extent for this radargram until the tab is closed.

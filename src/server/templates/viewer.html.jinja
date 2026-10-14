@@ -133,6 +133,7 @@
         {% endif %}
         {% if can_download_derived %}
           <li><button type="button" id="dl-image">Rendered image</button></li>
+          <li><button type="button" id="dl-figure">Figure&hellip;</button></li>
         {% endif %}
         {% if can_download_all %}
           <li><button type="button" id="dl-radargram">Radargram (NetCDF)</button></li>
@@ -303,6 +304,135 @@
       <button type="button" id="image-close">Close</button>
     </p>
   </dialog>
+
+  {#- Annotated figure export (#142). figure.js builds a figure spec from
+      these controls and asks `POST .../figure` for a preview and the
+      download, so what is previewed is what downloads. -#}
+  {% if can_download_derived %}
+  <dialog id="figure-dialog" class="figure-dialog">
+    <h2>Figure</h2>
+    <div class="figure-layout">
+      <form class="figure-controls" id="figure-form">
+        <fieldset>
+          <legend>Extent</legend>
+          <p class="figure-buttons">
+            <button type="button" id="fig-extent-view">Current view</button>
+            <button type="button" id="fig-extent-draw">Draw rectangle</button>
+            <button type="button" id="fig-extent-all">Whole radargram</button>
+          </p>
+          <div class="figure-grid">
+            <label><span id="fig-x-from-label">From</span>
+              <input type="number" id="fig-x0" step="any"></label>
+            <label><span id="fig-x-to-label">To</span>
+              <input type="number" id="fig-x1" step="any"></label>
+            <label><span id="fig-y-from-label">Top</span>
+              <input type="number" id="fig-y0" step="any"></label>
+            <label><span id="fig-y-to-label">Bottom</span>
+              <input type="number" id="fig-y1" step="any"></label>
+          </div>
+          <p class="hint" id="fig-extent-note"></p>
+        </fieldset>
+        <fieldset>
+          <legend>Size</legend>
+          <div class="figure-grid">
+            <label>Width <input type="number" id="fig-width" min="1" step="any" value="16"></label>
+            <label>Unit
+              <select id="fig-unit">
+                <option value="cm" selected>cm</option>
+                <option value="in">in</option>
+                <option value="px">px</option>
+              </select></label>
+            <label>DPI <input type="number" id="fig-dpi" min="10" max="2400" step="1" value="300"></label>
+            <label title="The viewer's horizontal scale: how many units wide each trace is for every row tall.">Horizontal scale
+              <input type="number" id="fig-xscale" min="0.001" step="any" value="1"></label>
+          </div>
+          <p class="hint" id="fig-size-note"></p>
+        </fieldset>
+        <fieldset>
+          <legend>Axes</legend>
+          <div class="figure-grid">
+            <label>x unit
+              <select id="fig-x-unit">
+                <option value="distance" selected>Distance (m)</option>
+                <option value="trace">Trace</option>
+                <option value="time">Time (UTC)</option>
+              </select></label>
+            <label>y unit
+              <select id="fig-y-unit">
+                <option value="twtt" selected>Two-way travel time (ns)</option>
+                <option value="depth">Depth (m)</option>
+                <option value="sample">Sample</option>
+                <option value="elevation">Elevation (m)</option>
+              </select></label>
+            <label title="Blank picks a round spacing.">x spacing
+              <input type="number" id="fig-x-spacing" min="0" step="any" placeholder="auto"></label>
+            <label title="Blank picks a round spacing.">y spacing
+              <input type="number" id="fig-y-spacing" min="0" step="any" placeholder="auto"></label>
+            <label title="Ticks are at anchor + k × spacing.">x anchor
+              <input type="number" id="fig-x-anchor" step="any" value="0"></label>
+            <label title="Ticks are at anchor + k × spacing.">y anchor
+              <input type="number" id="fig-y-anchor" step="any" value="0"></label>
+            <label title="Blank uses the unit's own title.">x title
+              <input type="text" id="fig-x-label" placeholder="default"></label>
+            <label title="Blank uses the unit's own title.">y title
+              <input type="text" id="fig-y-label" placeholder="default"></label>
+          </div>
+          <label class="figure-check"><input type="checkbox" id="fig-axes" checked> Axes and labels</label>
+        </fieldset>
+        <fieldset>
+          <legend>Style</legend>
+          <div class="figure-grid">
+            <label>Font size (pt) <input type="number" id="fig-font" min="1" max="200" step="0.5" value="10"></label>
+            <label>Text colour <input type="color" id="fig-color" value="#000000"></label>
+            <label>Background <input type="color" id="fig-background" value="#ffffff"></label>
+            <label class="figure-check"><input type="checkbox" id="fig-transparent"> Transparent</label>
+          </div>
+          <label class="figure-check"><input type="checkbox" id="fig-radargram" checked> Radargram</label>
+        </fieldset>
+        <fieldset>
+          <legend>Layers</legend>
+          <details class="figure-picker" id="fig-picks-picker">
+            <summary>Picks: <span id="fig-picks-summary">none</span></summary>
+            <div id="fig-picks-list" class="figure-picker-list"></div>
+          </details>
+          <div class="figure-grid">
+            <label>Pick width (pt) <input type="number" id="fig-picks-width" min="0.1" max="20" step="0.1" value="1"></label>
+            <label>Pick opacity <input type="number" id="fig-picks-opacity" min="0" max="1" step="0.05" value="0.85"></label>
+          </div>
+          <details class="figure-picker" id="fig-derived-picker">
+            <summary>Derived: <span id="fig-derived-summary">none</span></summary>
+            <div id="fig-derived-list" class="figure-picker-list"></div>
+          </details>
+          <div class="figure-grid">
+            <label>Derived width (pt) <input type="number" id="fig-derived-width" min="0.1" max="20" step="0.1" value="1.5"></label>
+            <label>Derived opacity <input type="number" id="fig-derived-opacity" min="0" max="1" step="0.05" value="0.9"></label>
+          </div>
+          <label class="figure-check"><input type="checkbox" id="fig-fills" checked> Range fills</label>
+        </fieldset>
+      </form>
+      <div class="figure-preview-pane">
+        <div class="figure-preview" id="fig-preview">
+          <img id="fig-preview-image" alt="Figure preview" hidden>
+          <p class="hint" id="fig-preview-status">Choose an extent to preview the figure.</p>
+        </div>
+        <p class="figure-buttons">
+          <button type="button" id="fig-update">Update preview</button>
+        </p>
+        <div id="fig-messages" class="figure-messages" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+    <p class="figure-buttons figure-actions">
+      <label>Format
+        <select id="fig-format">
+          <option value="png" selected>PNG</option>
+          <option value="svg">SVG</option>
+        </select></label>
+      <button type="button" id="fig-download">Download</button>
+      <button type="button" id="fig-download-spec" title="The figure spec as JSON: draw this figure again with ridal render --figure, ridal.render or the API.">Download spec</button>
+      <button type="button" id="fig-close">Close</button>
+    </p>
+  </dialog>
+  {% endif %}
 
   <dialog id="download-dialog">
     <h2>Download layer points</h2>
@@ -483,4 +613,5 @@
 <script src="/static/picker.js"></script>
 <script src="/static/panel.js"></script>
 <script src="/static/process.js"></script>
+<script src="/static/figure.js"></script>
 {% endblock %}

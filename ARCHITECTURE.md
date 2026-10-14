@@ -925,6 +925,12 @@ normalize → colormap → encode.** Everything lives under
     (`may_see_others_picks`, `readable_for`), the rules the contributor
     overlay and derived routes already apply; a spec naming another user's
     picks the caller may not see is a 403, not a figure without them.
+  - The viewer's **Figure…** dialog (`assets/figure.js`) builds a spec and
+    asks that route for both the preview and the download. The preview is
+    the same spec at the preview's width with the dpi scaled by the same
+    factor, so it is the download in proportion. Its extent is kept in raster
+    trace/row and sent as elevation in the topographic view. Settings persist
+    in localStorage per project, the extent in sessionStorage per radargram.
 
 ## Concurrency and resource bounds
 

@@ -1475,6 +1475,7 @@ dialog > p > button,
 .processing-members button,
 #token-result button,
 #pick-delete-cancel,
+.figure-buttons button,
 button.danger {
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-strong);
@@ -1501,6 +1502,7 @@ dialog > p > button:hover:not(:disabled),
 .processing-members button:hover:not(:disabled),
 #token-result button:hover:not(:disabled),
 #pick-delete-cancel:hover,
+.figure-buttons button:hover:not(:disabled),
 button.danger:hover:not(:disabled) {
   border-color: var(--color-accent);
 }
@@ -3642,4 +3644,175 @@ a.processing-state:hover {
 }
 .ingest-progress li {
   margin: var(--space-1) 0;
+}
+
+/* --- Figure dialog (#142) -------------------------------------------------
+ *
+ * Controls beside a preview of the figure, stacked on a narrow screen. The
+ * preview sits on a checkerboard so a transparent background reads as one.
+ */
+.figure-dialog {
+  width: min(1200px, 96vw);
+  max-height: 94vh;
+}
+
+.figure-layout {
+  display: grid;
+  grid-template-columns: minmax(18rem, 24rem) 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .figure-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.figure-controls {
+  max-height: 72vh;
+  overflow-y: auto;
+  padding-right: var(--space-2);
+}
+
+.figure-controls fieldset {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+
+.figure-controls legend {
+  font-weight: 600;
+  padding: 0 var(--space-1);
+}
+
+.figure-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2) var(--space-3);
+  margin: var(--space-2) 0;
+}
+
+.figure-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.figure-grid input,
+.figure-grid select {
+  width: 100%;
+  min-width: 0;
+}
+
+.figure-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+
+.figure-grid label.figure-check {
+  flex-direction: row;
+  align-self: end;
+}
+
+.figure-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  margin: var(--space-2) 0;
+}
+
+.figure-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+
+.figure-actions label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.figure-picker summary {
+  cursor: pointer;
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0;
+}
+
+.figure-picker-list {
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.figure-picker-group {
+  border: 0;
+  margin: 0 0 var(--space-2);
+  padding: 0;
+}
+
+.figure-picker-group legend {
+  font-weight: 600;
+  font-size: var(--text-sm);
+}
+
+.figure-swatch {
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  border-radius: 2px;
+  border: 1px solid var(--color-border-strong);
+}
+
+.figure-preview {
+  min-height: 12rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #e4e4e4 25%, transparent 25%),
+    linear-gradient(-45deg, #e4e4e4 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e4e4e4 75%),
+    linear-gradient(-45deg, transparent 75%, #e4e4e4 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  overflow: auto;
+  max-height: 68vh;
+}
+
+.figure-preview img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.figure-preview .hint {
+  background: var(--color-surface);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+
+#fig-update.is-stale {
+  outline: 2px solid var(--color-warning-border);
+}
+
+.figure-messages .figure-error {
+  color: var(--color-danger-text);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
 }

@@ -889,6 +889,7 @@ pub fn static_router() -> Router {
         .route("/static/viewer.js", get(super::assets::viewer_js))
         .route("/static/picker.js", get(super::assets::picker_js))
         .route("/static/panel.js", get(super::assets::panel_js))
+        .route("/static/figure.js", get(super::assets::figure_js))
         .route("/static/login.js", get(super::assets::login_js))
         .route("/static/settings.js", get(super::assets::settings_js))
         .route("/static/site.js", get(super::assets::site_js))
