@@ -115,11 +115,12 @@ A misspelt field is an error rather than being ignored.
 
   | Axis | Units |
   |---|---|
-  | x | `trace`, `distance` (m), `time` (UTC time of day) |
+  | x | `trace`, `distance` (m), `distance_km` (km), `time` (UTC time of day) |
   | y, standard view | `sample`, `twtt` (ns), `depth` (m) |
   | y, topographic view | `elevation` (m) |
 
-  `spacing` is the distance between ticks, in that unit (seconds for time);
+  `spacing` is the distance between ticks, in that unit (kilometres for
+  `distance_km`, seconds for time);
   without it, Ridal picks a round spacing that gives about six ticks. Ticks
   are at `anchor + k × spacing`: with the default anchor of 0, a 10 m spacing
   gives 10, 20, 30 m wherever the excerpt starts. `label` replaces the axis

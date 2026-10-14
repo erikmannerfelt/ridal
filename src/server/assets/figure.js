@@ -82,7 +82,7 @@
     'fig-x-label', 'fig-y-label', 'fig-axes', 'fig-font', 'fig-color',
     'fig-background', 'fig-transparent', 'fig-picks-width',
     'fig-picks-opacity', 'fig-derived-width', 'fig-derived-opacity',
-    'fig-fills', 'fig-format',
+    'fig-fills', 'fig-format', 'fig-layers',
   ];
 
   function savePrefs() {
@@ -147,7 +147,9 @@
   /* The units the extent fields are shown in: the axis's own when it can be
    * converted here, otherwise trace or row numbers. */
   function xFieldUnit() {
-    return $('fig-x-unit').value === 'distance' && hasAxis('distance') ? 'distance' : 'trace';
+    const unit = $('fig-x-unit').value;
+    if ((unit === 'distance' || unit === 'distance_km') && hasAxis('distance')) return unit;
+    return 'trace';
   }
 
   function yFieldUnit() {
@@ -158,15 +160,20 @@
   }
 
   const UNIT_TEXT = {
-    distance: 'm', trace: 'trace', twtt: 'ns', depth: 'm', elevation: 'm a.s.l.', row: 'row',
+    distance: 'm', distance_km: 'km', trace: 'trace', twtt: 'ns', depth: 'm', elevation: 'm a.s.l.', row: 'row',
   };
 
   function toXField(p) {
-    return xFieldUnit() === 'distance' ? interp(state.axes.distance, p) : p;
+    const unit = xFieldUnit();
+    if (unit === 'trace') return p;
+    const metres = interp(state.axes.distance, p);
+    return unit === 'distance_km' ? metres / 1000 : metres;
   }
 
   function fromXField(v) {
-    return xFieldUnit() === 'distance' ? invert(state.axes.distance, v) : v;
+    const unit = xFieldUnit();
+    if (unit === 'trace') return v;
+    return invert(state.axes.distance, unit === 'distance_km' ? v * 1000 : v);
   }
 
   function toYField(row) {
@@ -187,8 +194,10 @@
 
   function showExtent() {
     if (!state.traces || !state.rows) return;
-    $('fig-x0').value = round(toXField(state.traces[0]), 2);
-    $('fig-x1').value = round(toXField(state.traces[1]), 2);
+    // Kilometres to the metre, everything else to the hundredth.
+    const xDigits = xFieldUnit() === 'distance_km' ? 3 : 2;
+    $('fig-x0').value = round(toXField(state.traces[0]), xDigits);
+    $('fig-x1').value = round(toXField(state.traces[1]), xDigits);
     $('fig-y0').value = round(toYField(state.rows[0]), 2);
     $('fig-y1').value = round(toYField(state.rows[1]), 2);
     const xu = UNIT_TEXT[xFieldUnit()];
@@ -263,6 +272,8 @@
     dialog.close();
     map.dragging.disable();
     container.classList.add('figure-drawing');
+    // A drag across the page otherwise selects its text as it goes.
+    document.body.classList.add('figure-no-select');
     let start = null;
     let box = null;
 
@@ -289,6 +300,7 @@
       document.removeEventListener('keydown', key);
       map.dragging.enable();
       container.classList.remove('figure-drawing');
+      document.body.classList.remove('figure-no-select');
       banner.remove();
       if (box) box.remove();
       if (start && latlng) {
@@ -300,8 +312,13 @@
       if (start && latlng) changed(true);
     };
     const down = (event) => {
+      L.DomEvent.preventDefault(event.originalEvent);
       start = event.latlng;
+      // Its own pane above the radargram's, or the box is drawn under the
+      // tiles and shows only past their edge.
+      if (!map.getPane('figure-draw')) map.createPane('figure-draw').style.zIndex = 450;
       box = L.rectangle([start, start], {
+        pane: 'figure-draw',
         color: '#ff3b30',
         weight: 2,
         dashArray: '6 4',
@@ -431,6 +448,16 @@
     );
   }
 
+  function layersShown() {
+    return $('fig-layers').checked;
+  }
+
+  /* The layer controls follow "Show layers": greyed out, as a whole, while
+   * no layer is drawn. */
+  function syncLayerControls() {
+    $('fig-layer-controls').disabled = !layersShown();
+  }
+
   function summarise() {
     const picks = $('fig-picks-list').querySelectorAll('input[type=checkbox]:checked').length;
     const derived = selectedDerived().length;
@@ -536,13 +563,15 @@
         background: $('fig-transparent').checked ? null : $('fig-background').value,
       },
       radargram: $('fig-radargram').checked,
+      // "Show layers" off draws none, whatever the lists say, and keeps
+      // what is ticked there for when it is turned back on.
       picks: {
-        items: selectedPicks(),
+        items: layersShown() ? selectedPicks() : [],
         width: numberOr('fig-picks-width', 1),
         opacity: numberOr('fig-picks-opacity', 0.85),
       },
       derived: {
-        items: selectedDerived(),
+        items: layersShown() ? selectedDerived() : [],
         width: numberOr('fig-derived-width', 1.5),
         opacity: numberOr('fig-derived-opacity', 0.9),
         fills: $('fig-fills').checked,
@@ -685,6 +714,7 @@
   /* After any change: save the settings, and re-render the preview if the
    * extent is small enough to do it as the controls move. */
   function changed(force) {
+    syncLayerControls();
     savePrefs();
     summarise();
     clearTimeout(state.timer);
@@ -769,6 +799,7 @@
     $('fig-xscale').value = window.RIDAL_XSCALE || 1;
     if (typeof radargramVisible === 'boolean') $('fig-radargram').checked = radargramVisible;
     offerUnits();
+    syncLayerControls();
     dialog.showModal();
     await Promise.all([loadLayers(prefs), loadTopo()]);
 

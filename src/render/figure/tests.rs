@@ -426,3 +426,31 @@ fn a_short_plot_leaves_room_for_its_y_label() {
         "runs off the bottom"
     );
 }
+
+#[test]
+fn distance_can_be_in_kilometres() {
+    // 0 to 99.5 m is 0 to 0.0995 km; a 0.02 km spacing prints with the
+    // decimals it needs.
+    let data = ramp(200, 100);
+    let spec = FigureSpec {
+        x_axis: AxisSpec {
+            unit: Some(XUnit::DistanceKm),
+            spacing: Some(0.02),
+            ..AxisSpec::default()
+        },
+        ..px_spec()
+    };
+    let figure = render(&data, &coordinates(200, 100), &spec, FigureFormat::Svg).unwrap();
+    let svg = String::from_utf8(figure.bytes).unwrap();
+    assert!(svg.contains(">Distance (km)</text>"));
+    for label in ["0.00", "0.02", "0.04", "0.06", "0.08"] {
+        assert!(svg.contains(&format!(">{label}</text>")), "no {label}");
+    }
+    assert_eq!(
+        FigureSpec::from_json(r#"{"x_axis": {"unit": "distance_km"}}"#)
+            .unwrap()
+            .x_axis
+            .unit,
+        Some(XUnit::DistanceKm)
+    );
+}

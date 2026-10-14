@@ -416,6 +416,14 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
     let x_values = match x_unit {
         XUnit::Trace => AxisValues::Index,
         XUnit::Distance => table(&input.coordinates.distance, "distance", "distance")?,
+        XUnit::DistanceKm => {
+            let kilometres = input
+                .coordinates
+                .distance
+                .as_ref()
+                .map(|metres| metres.iter().map(|m| m / 1000.0).collect());
+            table(&kilometres, "distance", "distance")?
+        }
         XUnit::Time => table(&input.coordinates.time, "time", "time")?,
     };
 

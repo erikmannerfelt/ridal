@@ -3740,6 +3740,29 @@ a.processing-state:hover {
   padding-top: var(--space-3);
 }
 
+.figure-actions-spacer {
+  flex: 1;
+}
+
+/* Download spec: useful, but rarer than the figure itself, so smaller and
+ * away from the main actions. Two selectors for specificity over the
+ * `.figure-buttons button` rule above. */
+.figure-buttons button.figure-minor {
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.figure-controls fieldset.figure-layer-controls {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.figure-layer-controls:disabled {
+  opacity: 0.5;
+}
+
 .figure-actions label {
   display: flex;
   align-items: center;
@@ -3838,6 +3861,10 @@ a.processing-state:hover {
 .figure-drawing .leaflet-container,
 .figure-drawing.leaflet-container {
   cursor: crosshair !important;
+}
+
+.figure-no-select {
+  user-select: none;
 }
 
 .figure-draw-banner {

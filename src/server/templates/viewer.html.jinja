@@ -354,6 +354,7 @@
             <label>x unit
               <select id="fig-x-unit">
                 <option value="distance" selected>Distance (m)</option>
+                <option value="distance_km">Distance (km)</option>
                 <option value="trace">Trace</option>
                 <option value="time">Time (UTC)</option>
               </select></label>
@@ -391,6 +392,9 @@
         </fieldset>
         <fieldset>
           <legend>Layers</legend>
+          <label class="figure-check"><input type="checkbox" id="fig-layers"> Show layers</label>
+          {#- Disabled as a whole while "Show layers" is off. -#}
+          <fieldset class="figure-layer-controls" id="fig-layer-controls" disabled>
           <details class="figure-picker" id="fig-picks-picker">
             <summary>Picks: <span id="fig-picks-summary">none</span></summary>
             <div id="fig-picks-list" class="figure-picker-list"></div>
@@ -408,6 +412,7 @@
             <label>Derived opacity <input type="number" id="fig-derived-opacity" min="0" max="1" step="0.05" value="0.9"></label>
           </div>
           <label class="figure-check"><input type="checkbox" id="fig-fills" checked> Range fills</label>
+          </fieldset>
         </fieldset>
       </form>
       <div class="figure-preview-pane">
@@ -422,13 +427,14 @@
       </div>
     </div>
     <p class="figure-buttons figure-actions">
+      <button type="button" id="fig-download-spec" class="figure-minor" title="The figure spec as JSON: draw this figure again with ridal render --figure, ridal.render or the API.">Download spec</button>
+      <span class="figure-actions-spacer"></span>
       <label>Format
         <select id="fig-format">
           <option value="png" selected>PNG</option>
           <option value="svg">SVG</option>
         </select></label>
       <button type="button" id="fig-download">Download</button>
-      <button type="button" id="fig-download-spec" title="The figure spec as JSON: draw this figure again with ridal render --figure, ridal.render or the API.">Download spec</button>
       <button type="button" id="fig-close">Close</button>
     </p>
   </dialog>

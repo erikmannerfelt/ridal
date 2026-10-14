@@ -184,12 +184,15 @@ impl<U> Default for AxisSpec<U> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum XUnit {
     /// Trace number.
     Trace,
-    /// Distance along the profile, from the file's `distance`.
+    /// Distance along the profile in metres, from the file's `distance`.
     Distance,
+    /// The same distance in kilometres, for a long profile; `spacing` and
+    /// `anchor` are in kilometres too.
+    DistanceKm,
     /// UTC time of day, from the file's `time`.
     Time,
 }
@@ -212,6 +215,7 @@ impl XUnit {
         match self {
             XUnit::Trace => "Trace",
             XUnit::Distance => "Distance (m)",
+            XUnit::DistanceKm => "Distance (km)",
             XUnit::Time => "Time (UTC)",
         }
     }

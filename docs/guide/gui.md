@@ -67,7 +67,8 @@ scope, as the rendered image does.
 - **Axes and style** are those of a figure spec (see {doc}`rendering`):
   units, tick spacing and anchor, titles, font size, colours, and a
   transparent background. **Radargram** off draws only the layers.
-- **Layers.** **Picks** lists the contributors whose picks you may see,
+- **Layers.** Off until **Show layers** is ticked. **Picks** lists the
+  contributors whose picks you may see,
   with a box per layer they picked (and one for lines with no layer);
   **Derived** lists the derived layers. Each group has its own line width
   and opacity, and picks are drawn over the derived layers. Picks that
@@ -77,7 +78,7 @@ scope, as the rendered image does.
 The preview is the figure itself, rendered smaller, and follows the
 controls as they change; for an extent of more than a few million samples
 it waits for **Update preview**. **Download** writes PNG or SVG, and
-**Download spec** the figure spec as JSON, to draw the same figure again
+**Download spec**, at the left, the figure spec as JSON, to draw the same figure again
 with `ridal render --figure`, `ridal.render` or the API.
 
 The dialog remembers its settings in this browser for the next figure in
