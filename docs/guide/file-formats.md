@@ -141,7 +141,9 @@ ds["data"].plot(yincrease=False)
 
 `data_topocorr(y2, x)`, `elevation_topocorr(y2)`
 : Only present after `correct_topography`: a copy of `data` shifted so that
-  each row is one elevation, and the elevation of each row (in m).
+  each row is one elevation, and the elevation of each row (in m). The copy
+  spans the whole elevation range, so it is larger than `data` itself. Ridal
+  never reads it: its corrected views are drawn from `data`.
 
 ### Global attributes
 

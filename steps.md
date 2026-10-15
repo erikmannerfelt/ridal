@@ -229,13 +229,10 @@ The strength is `log10(noise) + offset`, where the noise floor is the median `lo
 |---|---|---|
 | `offset` | `-1.7` | Offset from the noise floor, in log10 units |
 
-## unphase
-Combine the positive and negative phases of the signal into one positive magntiude.
-
-The assumption is made that the positive magnitude of the signal comes first, followed by an offset negative component. The distance between the positive and negative peaks are found, and then the negative part is shifted accordingly.
-
 ## correct_topography
-Make a copy of the data and topographically correct it.
+Store a topographically corrected copy of the data in the file. Rarely needed: the viewer and `--render-topo` correct while drawing.
+
+The viewer's topographic correction, `ridal render --topo`, `ridal process --render-topo` and figures all draw the corrected view from `data` and the file's elevation and depth axes, so they do not need this step. It is for tools outside Ridal that should read a corrected array directly. The copy is taller than `data`, since it spans the whole elevation range, so the step more than doubles the size of the file.
 
 In the output, the corrected data are the variable `data_topocorr`, on the `y2` dimension, with its own `elevation_topocorr` axis. Note that the copying means any step run after this will not be reflected in `data_topocorr`. This is thus recommended to run last.
 

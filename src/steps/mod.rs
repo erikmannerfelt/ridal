@@ -531,16 +531,16 @@ pub enum Step {
         #[arg(long, default_value_t = crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET)]
         offset: f32,
     },
-    /// Combine the positive and negative phases of the signal into one
-    /// positive magntiude.
+    /// Store a topographically corrected copy of the data in the file. Rarely
+    /// needed: the viewer and `--render-topo` correct while drawing.
     ///
-    /// The assumption is made that the positive magnitude of the signal comes
-    /// first, followed by an offset negative component. The distance between
-    /// the positive and negative peaks are found, and then the negative part
-    /// is shifted accordingly.
-    #[command(rename_all = "snake_case")]
-    Unphase,
-    /// Make a copy of the data and topographically correct it.
+    /// The viewer's topographic correction, `ridal render --topo`,
+    /// `ridal process --render-topo` and figures all draw the corrected view
+    /// from `data` and the file's elevation and depth axes, so they do not
+    /// need this step. It is for tools outside Ridal that should read a
+    /// corrected array directly. The copy is taller than `data`, since it
+    /// spans the whole elevation range, so the step more than doubles the
+    /// size of the file.
     ///
     /// In the output, the corrected data are the variable `data_topocorr`,
     /// on the `y2` dimension, with its own `elevation_topocorr` axis. Note
@@ -739,10 +739,21 @@ impl fmt::Display for StepError {
 
 impl Error for StepError {}
 
-/// Step names that no longer exist, and what replaces them.
+/// Step names that no longer exist, and what to do instead.
 const RETIRED: &[(&str, &str)] = &[
-    ("zero_corr_max_peak", "zero_corr(max_peak, trace, peak)"),
-    ("normalize_horizontal_magnitudes", "dewow"),
+    (
+        "zero_corr_max_peak",
+        "use `zero_corr(max_peak, trace, peak)`",
+    ),
+    ("normalize_horizontal_magnitudes", "use `dewow`"),
+    // #437: it found the "negative peak" as the sample of least magnitude,
+    // after truncating magnitudes to integers, so the shift it applied was
+    // arbitrary, and the trace height on data scaled below one.
+    (
+        "unphase",
+        "it shifted the data by an arbitrary amount. For a display of the \
+         magnitude, render with the `abslog` profile",
+    ),
 ];
 
 /// Whether `name` is a registered step.
@@ -769,11 +780,8 @@ pub fn resolve(raw: &RawStep) -> Result<ParsedStep, StepError> {
     };
 
     let Some(command) = root.find_subcommand(&raw.name) else {
-        if let Some((_, replacement)) = RETIRED.iter().find(|(old, _)| *old == raw.name) {
-            return Err(at_step(format!(
-                "`{}` was retired; use `{replacement}`",
-                raw.name
-            )));
+        if let Some((_, instead)) = RETIRED.iter().find(|(old, _)| *old == raw.name) {
+            return Err(at_step(format!("`{}` was retired; {instead}", raw.name)));
         }
         // Hand the name to clap anyway, only for its "did you mean".
         let suggestion = StepCommand::try_parse_from([raw.name.as_str()])
@@ -999,7 +1007,6 @@ impl Step {
             Step::Abslog => 1,
             Step::Siglog { .. } => 1,
             Step::AdaptiveSiglog { .. } => 1,
-            Step::Unphase => 1,
             Step::CorrectTopography => 1,
             Step::CorrectAntennaSeparation { .. } => 1,
             Step::Multiply { .. } => 1,
@@ -1033,7 +1040,6 @@ impl Step {
             | Step::Abslog
             | Step::Siglog { .. }
             | Step::AdaptiveSiglog { .. }
-            | Step::Unphase
             | Step::CorrectTopography
             | Step::CorrectAntennaSeparation { .. }
             | Step::Multiply { .. } => false,
@@ -1207,7 +1213,6 @@ impl Step {
             Step::Abslog => gpr.abslog(),
             Step::Siglog { minval_log10 } => gpr.siglog(*minval_log10),
             Step::AdaptiveSiglog { offset } => gpr.adaptive_siglog(*offset)?,
-            Step::Unphase => gpr.unphase(),
             Step::CorrectTopography => gpr.correct_topography(),
             Step::CorrectAntennaSeparation {
                 method,
@@ -1551,6 +1556,21 @@ mod tests {
     }
 
     #[test]
+    fn unphase_is_retired_with_a_pointer_to_the_abslog_profile() {
+        // #437
+        assert!(!is_registered("unphase"));
+        for source in ["unphase", "unphase()"] {
+            let err = one(source).unwrap_err();
+            assert!(
+                err.message.contains("`unphase` was retired"),
+                "{}",
+                err.message
+            );
+            assert!(err.message.contains("`abslog` profile"), "{}", err.message);
+        }
+    }
+
+    #[test]
     fn errors_name_the_step_and_the_argument_in_step_terms() {
         for (source, fragments) in [
             (
@@ -1669,9 +1689,9 @@ mod tests {
 
     #[test]
     fn steps_without_arguments_reject_any() {
-        assert_eq!(one("unphase").unwrap().canonical, "unphase");
-        assert_eq!(one("unphase()").unwrap().step, Step::Unphase);
-        assert!(one("unphase(1)").unwrap_err().message.contains("at most 0"));
+        assert_eq!(one("abslog").unwrap().canonical, "abslog");
+        assert_eq!(one("abslog()").unwrap().step, Step::Abslog);
+        assert!(one("abslog(1)").unwrap_err().message.contains("at most 0"));
     }
 
     #[test]

@@ -53,7 +53,7 @@ Process with the default profile
 ```
 
 ```{option} --default-with-topo
-Process with the default profile plus topographic correction
+Process with the default profile plus `correct_topography`, which stores a corrected copy of the data and more than doubles the file. For a corrected image, `--render-topo` needs no stored copy
 ```
 
 ```{option} --steps <STEPS>
@@ -168,7 +168,7 @@ Process with the default profile
 ```
 
 ```{option} --default-with-topo
-Process with the default profile plus topographic correction
+Process with the default profile plus `correct_topography`, which stores a corrected copy of the data and more than doubles the file. For a corrected image, `--render-topo` needs no stored copy
 ```
 
 ```{option} --steps <STEPS>
