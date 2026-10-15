@@ -27,7 +27,7 @@ Required.
 **Options**
 
 ```{option} -v <VELOCITY>, --velocity <VELOCITY>
-Velocity of the medium in m/ns. Defaults to the typical velocity of ice
+Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice
 
 Default: `0.168`.
 ```
@@ -142,7 +142,7 @@ Output directory. Must already exist. Optional with --no-export, where it is onl
 ```
 
 ```{option} -v <VELOCITY>, --velocity <VELOCITY>
-Velocity of the medium in m/ns. Defaults to the typical velocity of ice
+Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice
 
 Default: `0.168`.
 ```
@@ -265,7 +265,7 @@ Emit JSON instead of human-readable text
 ```
 
 ```{option} -v <VELOCITY>, --velocity <VELOCITY>
-Velocity of the medium in m/ns. Defaults to the typical velocity of ice
+Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice
 
 Default: `0.168`.
 ```

@@ -40,7 +40,7 @@ Every processing step, CLI command, Python function and HTTP route.
 :link: examples/index
 :link-type: doc
 
-Worked examples with figures, runnable as scripts or notebooks.
+Worked examples, from raw data to results.
 :::
 ::::
 

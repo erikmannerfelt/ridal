@@ -693,7 +693,7 @@ pub struct ProcessArgs {
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
 
-    /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
+    /// Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice.
     #[arg(short, long, default_value = "0.168")]
     pub velocity: f32,
 
@@ -812,7 +812,7 @@ pub struct BatchProcessArgs {
     #[arg(short, long, required_unless_present = "no_export")]
     pub output: Option<PathBuf>,
 
-    /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
+    /// Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice.
     #[arg(short, long, default_value = "0.168")]
     pub velocity: f32,
 
@@ -946,7 +946,7 @@ pub struct InfoArgs {
     #[arg(long)]
     pub json: bool,
 
-    /// Velocity of the medium in m/ns. Defaults to the typical velocity of ice.
+    /// Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice.
     #[arg(short, long, default_value = "0.168")]
     pub velocity: f32,
 
