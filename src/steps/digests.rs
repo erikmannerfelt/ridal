@@ -85,7 +85,6 @@ const RUNS: &[&str] = &[
     "abslog",
     "siglog",
     "adaptive_siglog",
-    "unphase",
     "correct_topography",
     "correct_antenna_separation",
     "correct_antenna_separation(legacy)",

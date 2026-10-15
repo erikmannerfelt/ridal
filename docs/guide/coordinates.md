@@ -132,6 +132,11 @@ In the file
   copy, later steps do not affect it, so it should be run last.
   `--default-with-topo` is the default profile followed by this step.
 
+The first way is usually the right one. The stored copy spans the whole
+elevation range, so it more than doubles the size of the file, and nothing in
+Ridal reads it. It is there for tools outside Ridal that should read a
+corrected array without computing one.
+
 Elevations come from GNSS or from a DEM, and a single bad fix can lift a
 trace's surface far above its neighbors, which would stretch the corrected
 view. Two bounds in a radargram's **Edit properties** dialog guard against

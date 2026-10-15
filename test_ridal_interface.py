@@ -151,3 +151,33 @@ def test_render_figure_from_a_dict_or_a_spec_file(tmp_path):
     with pytest.raises(ValueError, match="figure="):
         ridal.render(output, tmp_path / "x.png", project=tmp_path)
     assert svg["warnings"] == []
+
+
+@pytest.mark.skipif(
+    not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists(),
+    reason="processing the fixture's coordinates needs PROJ, and the fixture",
+)
+def test_render_and_track_true_derive_paths_beside_the_output(tmp_path):
+    # #93: `True` means what `ridal process -r` and `--track` without a value
+    # mean, and `False` means leaving the argument out.
+    output = tmp_path / "line.nc"
+    ridal.process(
+        str(FIXTURE), output, steps=["zero_corr"], render=True, track=True, quiet=True
+    )
+    assert (tmp_path / "line.jpg").is_file()
+    assert (tmp_path / "line_track.csv").is_file()
+
+    other = tmp_path / "other.nc"
+    ridal.process(
+        str(FIXTURE), other, steps=["zero_corr"], render=False, track=False, quiet=True
+    )
+    assert sorted(p.name for p in tmp_path.iterdir() if p.stem.startswith("other")) == [
+        "other.nc"
+    ]
+
+
+def test_return_dataset_refuses_render_true_but_not_false():
+    with pytest.raises(ValueError, match="render"):
+        ridal.process(str(FIXTURE), return_dataset=True, render=True)
+    with pytest.raises(ValueError, match="track"):
+        ridal.process(str(FIXTURE), return_dataset=True, track=True)

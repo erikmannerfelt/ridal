@@ -89,7 +89,7 @@ pub mod ridal {
     use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
     use pyo3::ffi::c_str;
     use pyo3::prelude::*;
-    use pyo3::types::{PyAny, PyDict, PyList, PyTuple};
+    use pyo3::types::{PyAny, PyBool, PyDict, PyList, PyTuple};
 
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -157,6 +157,20 @@ pub mod ridal {
             }
             None => Ok(None),
         }
+    }
+
+    /// A side output's `path-like or bool` argument, as the CLI's optional
+    /// value: `True` is `Some(None)`, a path beside the output derived later,
+    /// and `False` is the same as leaving it out (#93).
+    fn path_or_flag(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<Option<Option<PathBuf>>> {
+        let Some(obj) = value else {
+            return Ok(None);
+        };
+        let bound = obj.bind(py);
+        if let Ok(flag) = bound.cast::<PyBool>() {
+            return Ok(flag.is_true().then_some(None));
+        }
+        Ok(Some(Some(fspath(py, bound)?)))
     }
 
     #[pymodule_init]
@@ -249,7 +263,9 @@ pub mod ridal {
     ///
     ///     Exactly one of `steps`, `default`, and `default_with_topo` may be given.
     /// default_with_topo : bool, default False
-    ///     Use the default processing profile and include topographic correction.
+    ///     Use the default processing profile followed by `correct_topography`,
+    ///     which stores a corrected copy of the data and more than doubles the
+    ///     size of the file. A corrected image needs only `render_topo=True`.
     ///
     ///     Exactly one of `steps`, `default`, and `default_with_topo` may be given.
     /// velocity : float, default 0.168
@@ -262,9 +278,11 @@ pub mod ridal {
     /// crs : str, optional
     ///     Coordinate reference system for interpreting or transforming coordinates.
     ///     If omitted, the most appropriate WGS84 UTM zone is used.
-    /// track : path-like, optional
-    ///     Output path for exported track data. Not allowed when
-    ///     `return_dataset=True`.
+    /// track : path-like or bool, optional
+    ///     Output path for exported track data, or `True` for
+    ///     `<output stem>_track.csv` beside the output, as `ridal process
+    ///     --track` without a value does. A directory gets that file name. Not
+    ///     allowed when `return_dataset=True`.
     /// quiet : bool, default False
     ///     Reduce logging and progress output.
     /// render_profile : str, optional
@@ -279,8 +297,10 @@ pub mod ridal {
     ///     `ridal.render(..., topo=True)` does. Processing fails with a
     ///     `RuntimeError` when the radargram has no usable elevation and depth
     ///     axes.
-    /// render : path-like, optional
-    ///     Output path for a rendered figure. Not allowed when
+    /// render : path-like or bool, optional
+    ///     Output path for a rendered figure, or `True` for the output path
+    ///     with a `.jpg` extension, as `ridal process -r` without a value does.
+    ///     A directory gets that file name. Not allowed when
     ///     `return_dataset=True`.
     /// no_export : bool, default False
     ///     Run processing without writing the main dataset output. Side outputs such
@@ -414,18 +434,21 @@ pub mod ridal {
             ));
         };
 
+        let track_path = path_or_flag(py, track)?;
+        let render_path = path_or_flag(py, render)?;
+
         if return_dataset {
             if output.is_some() {
                 return Err(PyValueError::new_err(
                     "return_dataset=True requires output=None",
                 ));
             }
-            if render.is_some() {
+            if render_path.is_some() {
                 return Err(PyValueError::new_err(
                     "return_dataset=True is incompatible with render=...",
                 ));
             }
-            if track.is_some() {
+            if track_path.is_some() {
                 return Err(PyValueError::new_err(
                     "return_dataset=True is incompatible with track=...",
                 ));
@@ -443,14 +466,6 @@ pub mod ridal {
         let output_path = optional_path(py, output)?;
         let cor_path = optional_path(py, cor)?;
         let dem_path = optional_path(py, dem)?;
-        let track_path = match track {
-            Some(obj) => Some(Some(fspath(py, obj.bind(py))?)),
-            None => None,
-        };
-        let render_path = match render {
-            Some(obj) => Some(Some(fspath(py, obj.bind(py))?)),
-            None => None,
-        };
 
         let steps_text = match steps {
             Some(step_obj) => {

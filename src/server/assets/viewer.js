@@ -1580,19 +1580,20 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
  * Deliberately not persisted: this is a momentary "let me see my lines"
  * action, and a viewer that opened with no radargram and no explanation
  * would read as a broken render.
+ *
+ * A checkbox in the Display menu since #439, revealed here so a page
+ * without JavaScript does not offer a dead control.
  */
 (function setupRadargramToggle() {
-  const toggle = document.getElementById('radargram-toggle');
+  const toggle = document.getElementById('radargram-visible');
   if (!toggle) return;
 
-  toggle.hidden = false;
-  toggle.addEventListener('click', () => {
+  toggle.closest('li').hidden = false;
+  toggle.addEventListener('change', () => {
     // `radargramVisible` is the one copy of this state, because
     // `addChunksInView` reads it too; a second flag here could disagree
     // with what a newly placed chunk is given.
-    setRadargramVisible(!radargramVisible);
-    toggle.textContent = radargramVisible ? 'Hide radargram' : 'Show radargram';
-    toggle.setAttribute('aria-pressed', String(radargramVisible));
+    setRadargramVisible(toggle.checked);
   });
 })();
 

@@ -49,7 +49,8 @@ auto_gain(100)
 The default profile is meant to give a readable radargram from most data
 without any choices, since every step in it either measures what it needs
 from the data or does nothing harmful when there is nothing to do.
-`--default-with-topo` adds `correct_topography` at the end.
+`--default-with-topo` adds `correct_topography` at the end, which is rarely
+needed (see below).
 
 The default is a starting point and not a recommendation for publication.
 Typical changes are to add `remove_standstills` and `equidistant_traces` for
@@ -116,7 +117,10 @@ The families are listed roughly in the order they are usually run.
 
 `correct_topography`
 : Writes a topographically corrected copy of the data into the file. The
-  viewer can show the same view without this step (see {doc}`coordinates`).
+  viewer, `ridal render --topo` and `--render-topo` show the same view
+  without this step (see {doc}`coordinates`), and the copy more than doubles
+  the size of the file, so it is only worth running for tools outside Ridal
+  that need a corrected array.
 
 ### Frequency filters
 
@@ -174,14 +178,14 @@ deep reflections are faint compared to shallow ones.
 
 ### Display transforms
 
-`siglog`, `adaptive_siglog`, `abslog`, `unphase`
-: Compress or fold the amplitude for viewing, as a signed logarithm, the
-  logarithm of the magnitude, or the two phases of a wavelet combined. They
-  change the values that are written to the file. The same compression is
-  available at render time instead (the `siglog-*` render profiles; see
-  {doc}`rendering`), which keeps the file's amplitudes and lets each viewer
-  choose, so that is usually the better option unless the data are meant to
-  be analyzed in their compressed form.
+`siglog`, `adaptive_siglog`, `abslog`
+: Compress the amplitude for viewing, as a signed logarithm or the logarithm
+  of the magnitude. They change the values that are written to the file.
+  The same compression is available at render time instead (the `siglog-*`
+  and `abslog` render profiles; see {doc}`rendering`), which keeps the
+  file's amplitudes and lets each viewer choose, so that is usually the
+  better option unless the data are meant to be analyzed in their compressed
+  form.
 
 ## Choosing a velocity
 

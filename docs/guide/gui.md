@@ -82,13 +82,15 @@ Smooth when zoomed in
   When it is off, each sample is drawn as a block, which shows whether an
   edge in the image comes from the data or from the drawing.
 
+Show radargram
+: Unticked, only the picks and derived layers are drawn, which helps to see
+  a pick in a colour close to the reflector it follows. It is ticked again
+  whenever the page loads.
+
 Topographic correction
 : Draws each trace at its elevation, so that the surface follows the terrain
   (see {doc}`coordinates`). **Recentre** fits the view to the traces on
   screen again if a pan has drifted into the empty space above or below.
-
-Hide radargram
-: Draws only the picks and derived layers.
 
 **Metadata** shows the file's attributes, including the processing steps and
 their log (see {doc}`processing`). The layer panel at the right of the

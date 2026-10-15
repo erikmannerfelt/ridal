@@ -717,7 +717,9 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub default: bool,
 
-    /// Process with the default profile plus topographic correction.
+    /// Process with the default profile plus `correct_topography`, which
+    /// stores a corrected copy of the data and more than doubles the file.
+    /// For a corrected image, `--render-topo` needs no stored copy.
     #[arg(long = "default-with-topo")]
     pub default_with_topo: bool,
 
@@ -837,7 +839,9 @@ pub struct BatchProcessArgs {
     #[arg(long)]
     pub default: bool,
 
-    /// Process with the default profile plus topographic correction.
+    /// Process with the default profile plus `correct_topography`, which
+    /// stores a corrected copy of the data and more than doubles the file.
+    /// For a corrected image, `--render-topo` needs no stored copy.
     #[arg(long = "default-with-topo")]
     pub default_with_topo: bool,
 
