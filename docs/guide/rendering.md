@@ -1,10 +1,87 @@
 # Rendering images
 
-:::{admonition} Not written yet
-:class: note
+Ridal draws radargrams with one renderer everywhere: `ridal render`,
+`ridal.render` in Python, `-r` while processing, and the GUI. The same file
+and render profile therefore give the same image wherever they are drawn.
 
-`ridal render`, render profiles and horizontal scales.
-:::
+## Plain images
+
+```bash
+ridal render processed.nc -o profile.png
+ridal render processed.nc -o profile.jpg --profile siglog-default --width 2000
+```
+
+The extension picks the format: `.png`, or `.jpg`, whose quality
+`--quality` sets (85 in the built-in profiles). Without `-o`, the image is
+written beside the input. The image is one pixel per trace and per sample
+unless `--width` makes it smaller, keeping its proportions; it is never made
+wider than the number of traces. `--topo` draws the topographically
+corrected view (see {doc}`coordinates`).
+
+A rendered image has no axes. For one with axes, ticks, labels and picks, use
+an [annotated figure](#annotated-figures).
+
+## Render profiles
+
+A **render profile** decides how amplitudes become grey levels or colours. It
+only changes the image, never the data, and is separate from the
+*processing* profile chosen with `--default` or `--steps`.
+
+| Profile | What it shows |
+|---|---|
+| `default` | Linear amplitude, stretched between the 1st and 99th percentiles. |
+| `high-contrast` | The same between the 5th and 95th percentiles, for faint data. |
+| `positive` | Biased towards positive amplitudes, with negative ones dark. |
+| `abslog` | The logarithm of the magnitude, regardless of sign. |
+| `seismic` | Signed amplitude on a blue–white–red scale, white at zero. |
+| `siglog-default`, `siglog-high-contrast`, `siglog-positive`, `siglog-seismic` | The profile of the same name after a signed logarithm, which brings weak reflections up next to strong ones. |
+
+The logarithm of the `siglog-*` profiles adapts to each radargram's noise
+level, as the `adaptive_siglog` step does, so the same profile suits
+radargrams of different amplitude scales. It is applied before the image is
+scaled down, so an overview of a long radargram stays as legible as a
+close-up.
+
+Trying the `siglog-*` profiles is usually a better first step than adding
+`siglog` to the processing: the result is the same, and the file keeps its
+amplitudes (see {doc}`processing`).
+
+In the GUI, the profile is chosen at the top of the catalog and in the
+viewer, and remembered per person. A project's default is `[render]
+default_profile` in `ridal.toml` (see {doc}`../reference/project-files`).
+
+### A profile of your own
+
+`ridal render --profile` and `ridal.render(profile=...)` also take the path
+to a TOML file, with every field given:
+
+```toml
+name = "my-profile"
+view = "Standard"                  # or "Topographic"
+source_transform = "AdaptiveSigLog" # "None", "SigLog" or "AdaptiveSigLog"
+siglog_noise_offset = -1.5         # AdaptiveSigLog: offset from the noise floor, log10 units
+transform = "Linear"               # "Linear", "AbsLog" or "Positive"
+limits = { Percentile = { low = 0.02, high = 0.98 } }  # or { Explicit = { min = -1e4, max = 1e4 } }
+resampling = "Mean"                # "Mean", "Lanczos", "LanczosRectified" or "Peak"
+format = "Png"                     # or { Jpeg = { quality = 90 } }
+contrast = 1.0
+black_level = 0.0
+stats_skip_first_samples = 0       # rows at the top left out of the percentiles
+```
+
+A server only offers its built-in profiles.
+
+## Horizontal scale
+
+A long radargram has many more traces than samples, so drawn at one pixel
+per trace and sample it is very wide and flat. The **horizontal scale**
+stretches or squeezes it, from 0.25× to 8×, and changes only the drawing.
+In the GUI it is a control in the viewer and a setting in **Edit
+properties**; a figure spec has `x_scale`.
+
+Which scale a radargram opens at is decided in this order: `?xscale=` in the
+viewer's address, the radargram's own scale (**Edit properties**), the
+person's own setting, the project's `[render] default_xscale`, and 1×.
 
 ## Annotated figures
 

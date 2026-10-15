@@ -262,7 +262,7 @@ The assumption is made that the positive magnitude of the signal comes first, fo
 ```{step} correct_topography()
 Make a copy of the data and topographically correct it.
 
-In the output, the data will be called "data_topographically_corrected". Note that the copying means any step run after this will not be reflected in "data_topographically_corrected". This is thus recommended to run last.
+In the output, the corrected data are the variable `data_topocorr`, on the `y2` dimension, with its own `elevation_topocorr` axis. Note that the copying means any step run after this will not be reflected in `data_topocorr`. This is thus recommended to run last.
 ```
 
 ```{step} correct_antenna_separation(method=slant, direct_velocity=0.2997)

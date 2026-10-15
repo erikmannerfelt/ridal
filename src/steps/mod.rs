@@ -542,11 +542,10 @@ pub enum Step {
     Unphase,
     /// Make a copy of the data and topographically correct it.
     ///
-    /// In the output, the data will be called
-    /// "data_topographically_corrected". Note that the copying means any step
-    /// run after this will not be reflected in
-    /// "data_topographically_corrected". This is thus recommended to run
-    /// last.
+    /// In the output, the corrected data are the variable `data_topocorr`,
+    /// on the `y2` dimension, with its own `elevation_topocorr` axis. Note
+    /// that the copying means any step run after this will not be reflected
+    /// in `data_topocorr`. This is thus recommended to run last.
     #[command(rename_all = "snake_case")]
     CorrectTopography,
     /// Correct for the separation between the antenna transmitter and
