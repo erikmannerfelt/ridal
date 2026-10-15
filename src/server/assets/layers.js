@@ -938,6 +938,7 @@ const picksFilterUser = document.getElementById("picks-filter-user");
 const picksFilterLayer = document.getElementById("picks-filter-layer");
 const picksFilterState = document.getElementById("picks-filter-state");
 const picksFilterText = document.getElementById("picks-filter-text");
+const picksDownloadShown = document.getElementById("picks-download-shown");
 
 const PICK_STATES = {
   live: { label: "Current", title: "Drawn on the radargram as it is now." },
@@ -1207,6 +1208,17 @@ function renderPickRow(row) {
     archive.addEventListener("click", () => confirmArchivePicks(row, actions));
     actions.appendChild(archive);
   }
+  // Back onto the radargram it was archived from (#435), when that is in
+  // the catalog and its contributor has not drawn on it since. Picks on an
+  // earlier revision come back as such, for the viewer to carry.
+  if (archived && picks.may_archive && row.restorable) {
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = "Restore";
+    restore.title = `Put ${row.user}'s picks back on '${radargramLabel(row)}'`;
+    restore.addEventListener("click", () => restoreArchived(row));
+    actions.appendChild(restore);
+  }
   if (archived && picks.may_archive) {
     const purge = document.createElement("button");
     purge.type = "button";
@@ -1337,6 +1349,63 @@ function purgeArchived(row, wholeRemoval) {
   return changePicks("purge", "purged", () => fetch(RIDAL.apiPath(...segments), { method: "DELETE" }));
 }
 
+function restoreArchived(row) {
+  return changePicks("restore", "restored", () =>
+    fetch(
+      RIDAL.apiPath(
+        "interpretations",
+        "archived",
+        row.radargram_id,
+        row.removal,
+        row.user,
+        "restore",
+      ),
+      { method: "POST" },
+    ),
+  );
+}
+
+/** Download the files behind the rows the filters show, as one zip. Which
+ * rows those are is this page's decision, so they are named rather than
+ * the filters sent. */
+async function downloadShown() {
+  clearPicksError();
+  const items = filteredPicks().map((row) => ({
+    radargram_id: row.radargram_id,
+    user: row.user,
+    removal: row.removal || null,
+  }));
+  picksDownloadShown.disabled = true;
+  try {
+    const response = await fetch(RIDAL.apiPath("interpretations", "download"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => null);
+      showPicksError(
+        `Could not download: ${body?.error?.message || RIDAL.upstreamMessage(response.status)}`,
+      );
+      return;
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const name = /filename="([^"]+)"/.exec(disposition)?.[1] || "picks.zip";
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = name;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (error) {
+    showPicksError(`Could not download: ${error.message}`);
+  } finally {
+    picksDownloadShown.disabled = false;
+  }
+}
+
 function renderPicksSummary(rows) {
   const all = picks.interpretations;
   const radargrams = new Set(all.filter(isServed).map((r) => r.radargram_id));
@@ -1422,6 +1491,11 @@ function renderPicks() {
         : "You have not picked anything yet."
       : "Nothing matches these filters.";
   renderPicksSummary(rows);
+  picksDownloadShown.hidden = !picks.may_download || rows.length === 0;
+  picksDownloadShown.textContent =
+    rows.length === picks.interpretations.length
+      ? `Download all ${rows.length}`
+      : `Download ${rows.length} shown`;
 
   const unreadable = document.getElementById("picks-unreadable");
   unreadable.hidden = picks.unreadable.length === 0;
@@ -1460,6 +1534,7 @@ if (picksSection) {
     control.addEventListener("change", renderPicks);
   }
   picksFilterText.addEventListener("input", renderPicks);
+  picksDownloadShown.addEventListener("click", downloadShown);
   for (const th of document.querySelectorAll("#picks-table th[data-sort]")) {
     th.querySelector("button").addEventListener("click", () => {
       const key = th.dataset.sort;

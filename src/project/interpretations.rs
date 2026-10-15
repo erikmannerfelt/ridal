@@ -95,7 +95,8 @@ fn directory_of(radargram: &RadargramId) -> PathBuf {
     PathBuf::from(crate::project::INTERPRETATIONS_DIR).join(radargram.as_str())
 }
 
-fn path_of(radargram: &RadargramId, user: &UserId) -> PathBuf {
+/// Where a live interpretation is, relative to the store.
+pub fn path_of(radargram: &RadargramId, user: &UserId) -> PathBuf {
     directory_of(radargram).join(format!("{}{SUFFIX}", user.as_str()))
 }
 
@@ -530,6 +531,52 @@ pub fn purge_archived(
     store.remove_empty_dir(&directory)?;
     store.remove_empty_dir(&base)?;
     Ok(purged)
+}
+
+/// What [`restore_archived`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Restore {
+    /// The document is back on its radargram, at this version.
+    Done(Version),
+    /// There is no such archived document.
+    NotArchived,
+    /// The user already has an interpretation of the radargram, so nothing
+    /// was moved: two documents are not merged into one.
+    Occupied,
+}
+
+/// Move one archived interpretation back onto its radargram (#435).
+///
+/// The document is restored byte for byte, still naming the revision it was
+/// drawn on, so when that is not the current one it is carried like any
+/// other stale interpretation and adopted by its owner as usual. Written
+/// only where there is nothing yet, then removed from the archive: a
+/// failure between the two leaves a duplicate rather than nothing.
+pub fn restore_archived(
+    store: &DocumentStore,
+    archived: &Archived,
+) -> Result<Restore, InterpretationError> {
+    let source = archived_path(archived);
+    // Parsed as well as read, so a document that would not load is not put
+    // where the viewer would trip over it.
+    let Some(stored) = store.read(&source)? else {
+        return Ok(Restore::NotArchived);
+    };
+    Document::from_json(&stored.text).map_err(|e| InterpretationError::Malformed {
+        path: store.root().join(&source),
+        message: e.to_string(),
+    })?;
+    let destination = path_of(&archived.radargram, &archived.user);
+    let version = match store.write(&destination, &stored.text, &Expectation::Absent) {
+        Ok(version) => version,
+        Err(StoreError::Conflict { .. }) => return Ok(Restore::Occupied),
+        Err(e) => return Err(e.into()),
+    };
+    store.remove(&source, &Expectation::Version(stored.version))?;
+    let removal = source.parent().expect("an archived path has a parent");
+    store.remove_empty_dir(removal)?;
+    store.remove_empty_dir(removal.parent().expect("a removal has a parent"))?;
+    Ok(Restore::Done(version))
 }
 
 /// Delete one user's interpretation. Returns whether it existed.
@@ -1066,6 +1113,85 @@ mod archive_tests {
         .unwrap();
         assert_eq!(report.moved, 0);
         assert!(report.skipped.is_empty());
+    }
+
+    fn only_archived(store: &DocumentStore) -> Archived {
+        let (mut archived, _) = list_archived(store).unwrap();
+        assert_eq!(archived.len(), 1);
+        archived.remove(0)
+    }
+
+    #[test]
+    fn restoring_puts_the_document_back_byte_for_byte_and_empties_the_archive() {
+        let (_dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+        write_picks(store, &id, "erik");
+        let before = store.read(&path_of(&id, &user("erik"))).unwrap().unwrap();
+        archive_all(store, &id, "2026-09-13T12:00:00Z").unwrap();
+
+        let item = only_archived(store);
+        let restored = restore_archived(store, &item).unwrap();
+
+        let after = store.read(&path_of(&id, &user("erik"))).unwrap().unwrap();
+        assert_eq!(restored, Restore::Done(after.version.clone()));
+        assert_eq!(after.text, before.text);
+        assert!(list_archived(store).unwrap().0.is_empty());
+        // Nothing is left to show as an empty removal.
+        assert!(!project
+            .data_dir()
+            .join("interpretations/_archived/line-01")
+            .exists());
+        assert_eq!(
+            restore_archived(store, &item).unwrap(),
+            Restore::NotArchived,
+            "and a second restore finds nothing"
+        );
+    }
+
+    #[test]
+    fn restoring_over_existing_picks_moves_nothing() {
+        // Two documents by one person on one radargram are not merged, and
+        // neither the picks drawn since nor the archived ones may be lost.
+        let (_dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+        write_picks(store, &id, "erik");
+        archive_all(store, &id, "2026-09-13T12:00:00Z").unwrap();
+        write_picks(store, &id, "erik");
+        let live = store.read(&path_of(&id, &user("erik"))).unwrap().unwrap();
+
+        let item = only_archived(store);
+        assert_eq!(restore_archived(store, &item).unwrap(), Restore::Occupied);
+        assert_eq!(
+            store
+                .read(&path_of(&id, &user("erik")))
+                .unwrap()
+                .unwrap()
+                .version,
+            live.version
+        );
+        assert_eq!(list_archived(store).unwrap().0, vec![item]);
+    }
+
+    #[test]
+    fn restoring_one_of_a_removal_leaves_the_others_archived() {
+        let (_dir, project) = project();
+        let store = project.documents();
+        let id = radargram("line-01");
+        write_picks(store, &id, "erik");
+        write_picks(store, &id, "student");
+        archive_all(store, &id, "2026-09-13T12:00:00Z").unwrap();
+
+        let (archived, _) = list_archived(store).unwrap();
+        let erik = archived.iter().find(|a| a.user.as_str() == "erik").unwrap();
+        restore_archived(store, erik).unwrap();
+
+        let (left, _) = list_archived(store).unwrap();
+        assert_eq!(
+            left.iter().map(|a| a.user.as_str()).collect::<Vec<_>>(),
+            vec!["student"]
+        );
     }
 
     /// A filename that is not a valid `UserId` is skipped and *named*, not

@@ -317,11 +317,28 @@ also what `/layers/usage` counts from.
   `_archived/<id>/<time>/`, then removes it at exactly the version copied.
   This is the same place a radargram's removal puts its picks, so archived
   picks have one home and one way out.
+- **Restoring copies the archived file back, unchanged (#435).**
+  `interpretations::restore_archived` writes it only where there is no
+  document (`Expectation::Absent`), then removes it from the archive, so a
+  failure between the two leaves a duplicate. The document still names the
+  revision it was drawn on, so on a reprocessed radargram it is simply
+  stale: the viewer carries it and its owner adopts it, and the snapshot
+  it needs survived because `revisions::sweep` keeps those an archived
+  document names. Admin only, as it undoes an archive; refused when the
+  radargram is not in the catalog or the user has picks on it, which are
+  never merged. It takes the lifecycle lock, so a removal cannot archive
+  the radargram between the check and the write.
+- **A bulk download names its rows** (#435). The pick manager filters in
+  the browser, so `POST /interpretations/download` takes the rows it shows
+  rather than repeating the filters on the server. It is gated like the
+  one-file downloads, by the `picks` scope; paths in the zip are built from
+  parsed ids and listed removals, never the request's strings, and anything
+  not found is listed in `manifest.json` rather than failing the zip.
 - **Purging is the only destructive step, and it is the admin's.** It
   takes one archived document or a whole removal. `removal` is matched
   against the directories that exist, never joined from the request.
-  Archiving and purging are audited (`Archived`, `Purged`) with whose
-  picks they were.
+  Archiving, restoring and purging are audited (`Archived`, `Restored`,
+  `Purged`) with whose picks they were.
 
 ## Raw data and sources (#382)
 

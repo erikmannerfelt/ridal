@@ -306,6 +306,44 @@
           }
         }
       },
+      "BulkDownloadItem": {
+        "type": "object",
+        "description": "One interpretation in a [`BulkDownloadRequest`]: a summary row's\n`radargram_id`, `user` and, for an archived one, `removal`.",
+        "required": [
+          "radargram_id",
+          "user"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "removal": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "BulkDownloadRequest": {
+        "type": "object",
+        "description": "`POST /api/v1/interpretations/download`.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BulkDownloadItem"
+            },
+            "description": "The interpretations to include, as the pick manager lists them."
+          }
+        }
+      },
       "Bundle": {
         "type": "object",
         "description": "The files of one raw recording, as they were read.\n\n`coordinates` is the file the positions were actually read from: a\n`--cor` override when one was given, otherwise the recording's own.",
@@ -1730,7 +1768,8 @@
           "layers",
           "date_modified",
           "version",
-          "bytes"
+          "bytes",
+          "restorable"
         ],
         "properties": {
           "radargram_id": {
@@ -1831,6 +1870,10 @@
             "type": "integer",
             "description": "Size of the stored file.",
             "minimum": 0
+          },
+          "restorable": {
+            "type": "boolean",
+            "description": "Whether this archived interpretation can be restored: its radargram\nis in the catalog and its user has no interpretation of it now.\nAlways `false` for one that is not archived."
           }
         }
       },
@@ -3293,6 +3336,45 @@
           },
           "to_revision": {
             "type": "string"
+          }
+        }
+      },
+      "RestoredInterpretation": {
+        "type": "object",
+        "description": "`POST …/archived/{radargram_id}/{removal}/{user}/restore`: the\ninterpretation is back on its radargram.",
+        "required": [
+          "radargram_id",
+          "user",
+          "removal",
+          "revision_id",
+          "current",
+          "version"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "user": {
+            "type": "string"
+          },
+          "removal": {
+            "type": "string",
+            "description": "The archive entry it came from."
+          },
+          "revision_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The revision the document says it was drawn on, if it says."
+          },
+          "current": {
+            "type": "boolean",
+            "description": "Whether that is the revision the catalog serves now. When it is not,\nthe picks are carried onto it like any other stale interpretation,\nand their owner adopts them as usual."
+          },
+          "version": {
+            "type": "string",
+            "description": "The restored document's version, as sent in `ETag`."
           }
         }
       },

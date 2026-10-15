@@ -268,15 +268,23 @@ a heading button.
 
 **Download** fetches the stored picks file, archived ones included, and needs
 the `picks` download scope, for one's own picks as well (see
-{doc}`../deploy/accounts`). **Delete** removes one's own picks on a
+{doc}`../deploy/accounts`). **Download all**, or **Download N shown** once
+the table is filtered, fetches the files behind every row the table shows as
+one zip, laid out as in the project's `interpretations/` directory, with a
+`manifest.json` that lists them. **Delete** removes one's own picks on a
 radargram and cannot be undone.
 
 An `admin` cannot delete someone else's picks, but can **Archive** them: they
 leave the radargram, so they are no longer shown, counted or exported, and are
 listed as *Archived* with the time. This is also where a radargram's picks go
 when the radargram is removed. **Purge** on an archived row permanently
-deletes it, or every row archived at the same time. Archiving and purging are
-both recorded in the project's audit log.
+deletes it, or every row archived at the same time. **Restore** puts archived
+picks back on their radargram once it is in the catalog again, as long as
+their contributor has not picked it since: the two are never merged. Picks
+drawn on an earlier revision come back as *Older revision*, so the viewer
+carries them onto the current one and their contributor can adopt them as
+usual. Archiving, restoring and purging are all recorded in the project's
+audit log.
 
 Delete and Archive refuse if the picks were saved again after the page was
 loaded.

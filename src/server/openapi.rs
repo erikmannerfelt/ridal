@@ -59,6 +59,9 @@ use crate::site::tokens;
         pick_routes::UnreadableInterpretation,
         pick_routes::ArchivedInterpretation,
         pick_routes::Purged,
+        pick_routes::RestoredInterpretation,
+        pick_routes::BulkDownloadRequest,
+        pick_routes::BulkDownloadItem,
         lifecycle_routes::Added,
         RevisionDeclarations,
         replace_routes::Staged,
@@ -159,7 +162,12 @@ mod tests {
 
     /// Request bodies, whose optional fields really are optional: a client
     /// may leave them out and gets the default.
-    const REQUEST_BODIES: [&str; 3] = ["LoginBody", "RevisionDeclarations", "CreateTokenBody"];
+    const REQUEST_BODIES: [&str; 4] = [
+        "LoginBody",
+        "RevisionDeclarations",
+        "CreateTokenBody",
+        "BulkDownloadItem",
+    ];
 
     /// Every field of a response is sent, including one that is `null`, so
     /// all are required.
