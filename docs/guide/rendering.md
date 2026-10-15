@@ -179,14 +179,14 @@ A misspelt field is an error rather than being ignored.
   where trace `t` covers `t` to `t + 1`. In the standard view a row is a
   sample. In the topographic view it is a row of the corrected image, which
   moves when the radargram's elevation window is edited, so a spec for that
-  view can give `elevation: [top, bottom]` in metres instead. Anything left
+  view can give `elevation: [top, bottom]` in meters instead. Anything left
   out is the whole radargram; bounds past the data are clipped to it, except
   the rows (or elevations) of the topographic view, which may reach above the
   highest surface or below the floor to leave empty space there.
 
 `size`
 : `width` is the whole figure's, labels included, in `cm`, `in` or `px`.
-  `dpi` converts centimetres and inches to pixels, and point sizes (the
+  `dpi` converts centimeters and inches to pixels, and point sizes (the
   font, lines) to pixels in every unit. An SVG is given its size in the same
   unit, so a word processor inserts it at the size it was made for. A figure
   can be at most 40 megapixels.
@@ -200,7 +200,7 @@ A misspelt field is an error rather than being ignored.
   | y, standard view | `sample`, `twtt` (ns), `depth` (m) |
   | y, topographic view | `elevation` (m) |
 
-  `spacing` is the distance between ticks, in that unit (kilometres for
+  `spacing` is the distance between ticks, in that unit (kilometers for
   `distance_km`, seconds for time);
   without it, Ridal picks a round spacing that gives about six ticks. Ticks
   are at `anchor + k × spacing`: with the default anchor of 0, a 10 m spacing
@@ -209,7 +209,7 @@ A misspelt field is an error rather than being ignored.
 
 `style`
 : `font_size` in points, `color` for text, ticks and the frame, and
-  `background`, or `null` for a transparent one. Colours are hex, `#rrggbb`.
+  `background`, or `null` for a transparent one. Colors are hex, `#rrggbb`.
 
 `axes`
 : `false` writes the radargram alone as PNG, with no margins, and a `.json`
@@ -227,7 +227,7 @@ A misspelt field is an error rather than being ignored.
   `{"user": "erik"}` all of one person's, `{"layer": ""}` the lines with no
   layer, and `{}` all of them. With no
   items, the default, no picks are drawn. Each line is drawn in its layer's
-  colour, `width` points wide.
+  color, `width` points wide.
 
   Picks are drawn where the viewer draws them: picks made on an earlier
   revision are carried to this one. Picks that cannot be carried, including
@@ -237,7 +237,7 @@ A misspelt field is an error rather than being ignored.
   revision is cut where it crosses it, rather than left out.
 
 `derived`
-: Which derived layers to draw, by id, each in its own colour. With `fills`,
+: Which derived layers to draw, by id, each in its own color. With `fills`,
   a range fill between two drawn layers is drawn under them, as in the
   viewer. A derived *attribute*, such as a count, is not a position and
   cannot be drawn.
@@ -251,7 +251,7 @@ A misspelt field is an error rather than being ignored.
 ### Ticks sit where their coordinate is
 
 Distance along a profile is not even in trace number: where the survey slowed
-down, more traces cover each metre. Ridal draws every trace as recorded and
+down, more traces cover each meter. Ridal draws every trace as recorded and
 puts each distance tick at the trace where that distance was reached, so 10 m
 ticks can be unevenly spaced on the page. A standstill, where the distance
 stands still for many traces, gets one tick, where it was first reached.

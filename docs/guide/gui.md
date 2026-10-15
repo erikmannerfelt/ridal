@@ -168,7 +168,7 @@ at before it is added.
    is, to join its radargram with the one before or after it, or to not
    use it. A join you make holds whatever the threshold, even with **Never
    merge**, and its gap is drawn solid rather than dashed; click it to undo
-   it. The map shows the tracks in the same colours. Above the timeline,
+   it. The map shows the tracks in the same colors. Above the timeline,
    each antenna the recordings name is listed with what its name is read
    as. Give a frequency or separation there where the files do not say it,
    or say it wrongly: it applies to every recording with that antenna,
@@ -205,10 +205,10 @@ scope, as the rendered image does.
   the figure is of the corrected view, in elevation, and the top may be
   typed above the highest surface to leave room above the radargram.
 - **Size.** The width is the whole figure's, labels included, in
-  centimetres, inches or pixels, at the DPI given; the height follows from
+  centimeters, inches or pixels, at the DPI given; the height follows from
   the extent and the horizontal scale, which starts at the viewer's.
 - **Axes and style** are those of a figure spec (see {doc}`rendering`):
-  units, tick spacing and anchor, titles, font size, colours, and a
+  units, tick spacing and anchor, titles, font size, colors, and a
   transparent background. **Radargram** off draws only the layers.
 - **Layers.** Off until **Show layers** is ticked. **Picks** lists the
   contributors whose picks you may see,
