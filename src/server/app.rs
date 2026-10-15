@@ -1080,6 +1080,14 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::pick_routes::list_summaries),
         )
         .route(
+            "/api/v1/interpretations/download",
+            axum::routing::post(super::pick_routes::download_bulk),
+        )
+        .route(
+            "/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}/restore",
+            axum::routing::post(super::pick_routes::restore_archived),
+        )
+        .route(
             "/api/v1/interpretations/archived/{radargram_id}/{removal}",
             axum::routing::delete(super::pick_routes::purge_removal),
         )

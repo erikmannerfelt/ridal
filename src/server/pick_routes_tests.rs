@@ -284,3 +284,98 @@ async fn layer_usage_still_counts_only_radargrams_in_the_catalog() {
     // Neither layer is defined in a fresh project.
     assert_eq!(body["undefined"], json!({"bed": 2, "surface": 1}));
 }
+
+/// `POST /api/v1/interpretations/download` with `items`, unzipped into
+/// `(name, contents)`.
+async fn download(app: &Router, items: Value) -> (StatusCode, Vec<(String, String)>) {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/interpretations/download")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(json!({ "items": items }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    if status != StatusCode::OK {
+        return (status, Vec::new());
+    }
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+    let mut files = Vec::new();
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut file, &mut text).unwrap();
+        files.push((file.name().unwrap().to_string(), text));
+    }
+    (status, files)
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_bulk_download_zips_live_and_archived_picks_as_they_are_stored() {
+    let (dir, app) = project_app();
+    save(&app, "default", &document(RADARGRAM, None)).await;
+    let archived = document("gone", Some("older")).to_string();
+    place(
+        dir.path(),
+        "_archived/gone/2026-01-01T00-00-00Z/erik.gprinterp.json",
+        &archived,
+    );
+
+    let (status, files) = download(
+        &app,
+        json!([
+            {"radargram_id": RADARGRAM, "user": "default"},
+            {"radargram_id": "gone", "user": "erik", "removal": "2026-01-01T00-00-00Z"},
+            // Named twice: in the zip once.
+            {"radargram_id": "gone", "user": "erik", "removal": "2026-01-01T00-00-00Z"},
+            // Not there, and not a removal that exists.
+            {"radargram_id": RADARGRAM, "user": "nobody"},
+            {"radargram_id": "gone", "user": "erik", "removal": "../.."}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec![
+            "_archived/gone/2026-01-01T00-00-00Z/erik.gprinterp.json",
+            "line-01/default.gprinterp.json",
+            "manifest.json",
+        ]
+    );
+    // Byte for byte, as the one-file downloads are.
+    assert_eq!(files[0].1, archived);
+    let live = std::fs::read_to_string(
+        data(dir.path()).join("interpretations/line-01/default.gprinterp.json"),
+    )
+    .unwrap();
+    assert_eq!(files[1].1, live);
+
+    let manifest: Value = serde_json::from_str(&files[2].1).unwrap();
+    assert_eq!(manifest["files"].as_array().unwrap().len(), 2, "{manifest}");
+    let missing = manifest["missing"].as_array().unwrap();
+    assert_eq!(missing.len(), 2, "{manifest}");
+    assert!(missing.iter().any(|m| m["user"] == "nobody"));
+    assert!(missing.iter().any(|m| m["removal"] == "../.."));
+    assert!(missing.iter().all(|m| m.get("path").is_none()));
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_bulk_download_refuses_nothing_and_bad_ids() {
+    let (_dir, app) = project_app();
+    let (status, _) = download(&app, json!([])).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = download(&app, json!([{"radargram_id": "../x", "user": "default"}])).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

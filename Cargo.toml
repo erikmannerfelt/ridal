@@ -125,6 +125,9 @@ toml = "0.8"
 toml_edit = "0.22"
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+# The pick manager's bulk download (#435). Deflate through the `flate2`
+# already in the tree, not zip's own default backends.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"], optional = true }
 
 # Only for `nc_set_chunk_cache` (see `source::limit_chunk_cache`), which the
 # `netcdf` crate does not wrap. Already in the tree through `netcdf`, at the
@@ -182,4 +185,5 @@ server = [
     "webbrowser",
     "tracing",
     "tracing-subscriber",
+    "zip",
 ]

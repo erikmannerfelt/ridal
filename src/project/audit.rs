@@ -65,6 +65,9 @@ pub enum Action {
     /// Archived interpretations were destroyed (#162): the one action here
     /// that cannot be undone.
     Purged,
+    /// An archived interpretation was moved back onto its radargram by an
+    /// administrator (#435).
+    Restored,
 }
 
 /// One thing that happened.

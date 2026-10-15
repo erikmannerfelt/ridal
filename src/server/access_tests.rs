@@ -8865,3 +8865,197 @@ async fn only_an_admin_archives_someone_elses_picks_and_purges_the_archive() {
         .unwrap();
     assert!(purge.note.as_deref().unwrap().contains("pia"), "{purge:?}");
 }
+
+/// Put an archived interpretation on disk, as a removal would have.
+fn place_archived(root: &StdPath, radargram: &str, removal: &str, user: &str, body: &Value) {
+    let path = data(root)
+        .join("interpretations/_archived")
+        .join(radargram)
+        .join(removal)
+        .join(format!("{user}.gprinterp.json"));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, body.to_string()).unwrap();
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn only_an_admin_restores_archived_picks_and_never_over_live_ones() {
+    // #435. Restoring undoes an archive, so it is the admin's as archiving
+    // is, and it never merges with or replaces picks drawn since.
+    let hash = password_hash();
+    let (dir, app) = app_with(vec![
+        activated("pia", Role::Picker, DownloadScope::Picks, &hash),
+        activated("olga", Role::Operator, DownloadScope::All, &hash),
+        activated("ada", Role::Admin, DownloadScope::None, &hash),
+    ]);
+    let pia = sign_in(&app, "pia").await;
+    let saved = put(
+        &app,
+        &interpretation_uri("pia"),
+        &document(RADARGRAM),
+        Some(&pia),
+    )
+    .await;
+    let version = saved.etag.clone().unwrap();
+    let ada = sign_in(&app, "ada").await;
+    let archived = post_with_if_match(
+        &app,
+        &format!("{}/archive", interpretation_uri("pia")),
+        &json!({}),
+        &version,
+        Some(&ada),
+    )
+    .await;
+    assert_eq!(archived.status, StatusCode::OK, "{}", archived.text);
+    let removal = archived.body["removal"].as_str().unwrap().to_string();
+    let restore_uri = format!("/api/v1/interpretations/archived/{RADARGRAM}/{removal}/pia/restore");
+
+    for session in [&pia, &sign_in(&app, "olga").await] {
+        let refused = post(&app, &restore_uri, &json!({}), Some(session)).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    }
+
+    // Pia has drawn again since: the archived picks cannot come back over
+    // those, and the pick manager says so before anyone tries.
+    let again = put(
+        &app,
+        &interpretation_uri("pia"),
+        &document(RADARGRAM),
+        Some(&pia),
+    )
+    .await;
+    assert!(again.status.is_success(), "{}", again.text);
+    let rows = get(&app, "/api/v1/interpretations", Some(&ada)).await.body;
+    let archived_row = rows["interpretations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["state"] == "archived")
+        .unwrap()
+        .clone();
+    assert_eq!(archived_row["restorable"], false, "{rows}");
+    let occupied = post(&app, &restore_uri, &json!({}), Some(&ada)).await;
+    assert_eq!(occupied.status, StatusCode::CONFLICT, "{}", occupied.text);
+    assert_eq!(occupied.body["error"]["code"], "interpretation_exists");
+
+    let removed = delete(&app, &interpretation_uri("pia"), Some(&pia)).await;
+    assert!(removed.status.is_success(), "{}", removed.text);
+    let rows = get(&app, "/api/v1/interpretations", Some(&ada)).await.body;
+    assert_eq!(rows["interpretations"][0]["restorable"], true, "{rows}");
+
+    let restored = post(&app, &restore_uri, &json!({}), Some(&ada)).await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text);
+    assert_eq!(restored.body["current"], true, "{}", restored.text);
+    let back = get(&app, &interpretation_uri("pia"), Some(&pia)).await;
+    assert_eq!(back.status, StatusCode::OK, "{}", back.text);
+    assert_eq!(back.body["features"][0]["properties"]["label"], "bed");
+    let rows = get(&app, "/api/v1/interpretations", Some(&ada)).await.body;
+    assert_eq!(
+        rows["interpretations"].as_array().unwrap().len(),
+        1,
+        "{rows}"
+    );
+    assert_eq!(rows["interpretations"][0]["state"], "live");
+    let twice = post(&app, &restore_uri, &json!({}), Some(&ada)).await;
+    assert_eq!(twice.status, StatusCode::NOT_FOUND, "{}", twice.text);
+
+    // Drawn on an earlier revision: restored as it was, and so stale, for
+    // the viewer to carry and Olga to adopt, not rewritten here.
+    let mut older = document(RADARGRAM);
+    older["source"] = json!({"revision_id": "older"});
+    place_archived(
+        dir.path(),
+        RADARGRAM,
+        "2026-01-01T00-00-00Z",
+        "olga",
+        &older,
+    );
+    let restored = post(
+        &app,
+        &format!("/api/v1/interpretations/archived/{RADARGRAM}/2026-01-01T00-00-00Z/olga/restore"),
+        &json!({}),
+        Some(&ada),
+    )
+    .await;
+    assert_eq!(restored.status, StatusCode::OK, "{}", restored.text);
+    assert_eq!(restored.body["current"], false);
+    assert_eq!(restored.body["revision_id"], "older");
+    let rows = get(&app, "/api/v1/interpretations", Some(&ada)).await.body;
+    let olga_row = rows["interpretations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["user"] == "olga")
+        .unwrap()
+        .clone();
+    assert_eq!(olga_row["state"], "stale", "{rows}");
+
+    // Nothing to restore onto.
+    place_archived(
+        dir.path(),
+        "gone",
+        "2026-01-01T00-00-00Z",
+        "pia",
+        &document("gone"),
+    );
+    let rows = get(&app, "/api/v1/interpretations", Some(&ada)).await.body;
+    let gone_row = rows["interpretations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["radargram_id"] == "gone")
+        .unwrap()
+        .clone();
+    assert_eq!(gone_row["restorable"], false, "{rows}");
+    let refused = post(
+        &app,
+        "/api/v1/interpretations/archived/gone/2026-01-01T00-00-00Z/pia/restore",
+        &json!({}),
+        Some(&ada),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.text);
+    assert_eq!(refused.body["error"]["code"], "not_in_catalog");
+
+    let entries = crate::project::audit::read(open_project(dir.path()).documents()).unwrap();
+    let restores: Vec<_> = entries
+        .iter()
+        .filter(|e| e.action == crate::project::audit::Action::Restored)
+        .collect();
+    assert_eq!(restores.len(), 2, "{entries:?}");
+    assert!(restores.iter().all(|e| e.user == "ada"));
+    assert!(restores[0].note.as_deref().unwrap().contains("pia"));
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_bulk_download_takes_the_picks_scope() {
+    // #435. The same gate as one file, for live and archived picks alike.
+    let hash = password_hash();
+    let (_dir, app) = app_with(vec![
+        activated("pia", Role::Picker, DownloadScope::Picks, &hash),
+        activated("nils", Role::Picker, DownloadScope::None, &hash),
+    ]);
+    let pia = sign_in(&app, "pia").await;
+    let saved = put(
+        &app,
+        &interpretation_uri("pia"),
+        &document(RADARGRAM),
+        Some(&pia),
+    )
+    .await;
+    assert!(saved.status.is_success(), "{}", saved.text);
+    let body = json!({"items": [{"radargram_id": RADARGRAM, "user": "pia"}]});
+
+    let nils = sign_in(&app, "nils").await;
+    let refused = post(&app, "/api/v1/interpretations/download", &body, Some(&nils)).await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.text);
+    // Whatever the site's policy gives an anonymous reader for one file,
+    // it gives for many.
+    let one = get(&app, &format!("{}/raw", interpretation_uri("pia")), None).await;
+    let anonymous = post(&app, "/api/v1/interpretations/download", &body, None).await;
+    assert_eq!(anonymous.status, one.status, "{}", anonymous.text);
+
+    let zip = post(&app, "/api/v1/interpretations/download", &body, Some(&pia)).await;
+    assert_eq!(zip.status, StatusCode::OK, "{}", zip.text);
+}

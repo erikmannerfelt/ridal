@@ -389,6 +389,11 @@ class InterpretationSummary:
     date_modified: str | None
     version: str | None
     bytes: int
+    restorable: bool
+    """Whether an administrator can restore this archived interpretation:
+    its radargram is in the catalog and its user has no picks on it now.
+    Always ``False`` for one that is not archived, and from a server that
+    cannot restore."""
 
     @classmethod
     def from_json(cls, data: Any) -> "InterpretationSummary":
@@ -412,6 +417,7 @@ class InterpretationSummary:
                 date_modified=d["date_modified"],
                 version=d["version"],
                 bytes=d["bytes"],
+                restorable=d.get("restorable", False),
             ),
         )
 

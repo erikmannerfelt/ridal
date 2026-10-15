@@ -7,7 +7,7 @@
 //! admin everyone's. Reading the picks behind a row is still the existing
 //! routes' decision, under the `Picks` download scope.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
@@ -112,6 +112,10 @@ pub(super) struct InterpretationSummary {
     version: Option<String>,
     /// Size of the stored file.
     bytes: usize,
+    /// Whether this archived interpretation can be restored: its radargram
+    /// is in the catalog and its user has no interpretation of it now.
+    /// Always `false` for one that is not archived.
+    restorable: bool,
 }
 
 /// One layer within an [`InterpretationSummary`].
@@ -212,6 +216,7 @@ fn summary_row(
         date_modified: stored.document.date_modified.clone(),
         version: Some(stored.version.to_string()),
         bytes: stored.bytes,
+        restorable: false,
     }
 }
 
@@ -455,6 +460,7 @@ pub async fn list_summaries(
     let project = readable_project(&state)?;
     let mut scan = scan_live(&state, project)?;
     scan_archived(project, &mut scan)?;
+    mark_restorable(&state, &mut scan.rows);
 
     // Statistics only, so seeing everyone's is a curation question, which
     // is the operator's; reading the picks behind a row is not decided here.
@@ -484,6 +490,28 @@ pub async fn list_summaries(
             Vec::new()
         },
     }))
+}
+
+/// Mark the archived rows that [`restore_archived`] would accept, and name
+/// their radargram as the catalog does.
+fn mark_restorable(state: &AppState, rows: &mut [InterpretationSummary]) {
+    let occupied: BTreeSet<(String, String)> = rows
+        .iter()
+        .filter(|row| row.state != InterpretationState::Archived)
+        .map(|row| (row.radargram_id.clone(), row.user.clone()))
+        .collect();
+    let catalog = state.catalog();
+    for row in rows
+        .iter_mut()
+        .filter(|row| row.state == InterpretationState::Archived)
+    {
+        let Some(entry) = catalog.find_entry(&row.radargram_id) else {
+            continue;
+        };
+        row.display_name = entry.display_name.as_ref().map(|n| n.to_string());
+        row.group_name = entry.group_name.as_ref().map(|n| n.to_string());
+        row.restorable = !occupied.contains(&(row.radargram_id.clone(), row.user.clone()));
+    }
 }
 
 /// The project, if `caller` holds `role`; the same 401/403 split every
@@ -599,6 +627,34 @@ fn not_found(radargram: &RadargramId, user: &UserId) -> ApiError {
     )
 }
 
+/// One archived interpretation, looked up among what the archive lists
+/// rather than built from the path, so `removal` can only name an archive
+/// entry that exists.
+fn find_archived(
+    project: &Project,
+    radargram: &RadargramId,
+    removal: &str,
+    user: &UserId,
+) -> Result<interpretations::Archived, ApiError> {
+    let (archived, _) =
+        interpretations::list_archived(project.documents()).map_err(store_failed)?;
+    archived
+        .into_iter()
+        .find(|a| a.radargram == *radargram && a.removal == removal && a.user == *user)
+        .ok_or_else(|| archived_not_found(radargram, removal, user))
+}
+
+fn archived_not_found(radargram: &RadargramId, removal: &str, user: &UserId) -> ApiError {
+    ApiError::not_found(
+        "archived_interpretation_not_found",
+        format!(
+            "There is no archived interpretation by '{}' of '{}' from '{removal}'.",
+            user.as_str(),
+            radargram.as_str()
+        ),
+    )
+}
+
 /// `GET /api/v1/interpretations/archived/{radargram_id}/{removal}/{user}`
 ///
 /// One archived interpretation, byte for byte, as a download. Gated like
@@ -613,23 +669,7 @@ pub async fn download_archived(
     let radargram = parse_radargram(&radargram_id)?;
     let user = parse_user(&user)?;
 
-    // Looked up among what the archive lists rather than built from the
-    // path, so `removal` can only name an archive entry that exists.
-    let (archived, _) =
-        interpretations::list_archived(project.documents()).map_err(store_failed)?;
-    let item = archived
-        .into_iter()
-        .find(|a| a.radargram == radargram && a.removal == removal && a.user == user)
-        .ok_or_else(|| {
-            ApiError::not_found(
-                "archived_interpretation_not_found",
-                format!(
-                    "There is no archived interpretation by '{}' of '{}' from '{removal}'.",
-                    user.as_str(),
-                    radargram.as_str()
-                ),
-            )
-        })?;
+    let item = find_archived(project, &radargram, &removal, &user)?;
     let bytes = project
         .documents()
         .read(&interpretations::archived_path(&item))
@@ -737,4 +777,285 @@ fn purge(
         removal: removal.to_string(),
         users,
     }))
+}
+
+/// `POST …/archived/{radargram_id}/{removal}/{user}/restore`: the
+/// interpretation is back on its radargram.
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub(super) struct RestoredInterpretation {
+    radargram_id: String,
+    user: String,
+    /// The archive entry it came from.
+    removal: String,
+    /// The revision the document says it was drawn on, if it says.
+    #[schema(required = true)]
+    revision_id: Option<String>,
+    /// Whether that is the revision the catalog serves now. When it is not,
+    /// the picks are carried onto it like any other stale interpretation,
+    /// and their owner adopts them as usual.
+    current: bool,
+    /// The restored document's version, as sent in `ETag`.
+    version: String,
+}
+
+/// `POST /api/v1/interpretations/archived/{radargram_id}/{removal}/{user}/restore`
+///
+/// Move an archived interpretation back onto its radargram (#435): what
+/// #178's "modify orphaned picks" comes to once the radargram has been
+/// added back. The document is restored as it was archived, so picks drawn
+/// on an earlier revision go through the carry machinery (#148, #370) in
+/// the viewer and are adopted by their owner, not rewritten here.
+///
+/// The administrator's, as archiving is: it undoes an archive. Refused when
+/// the radargram is not in the catalog, and when the user has picks on it
+/// already, which are never merged with or replaced by archived ones.
+pub async fn restore_archived(
+    State(state): State<Arc<AppState>>,
+    Path((radargram_id, removal, user)): Path<(String, String, String)>,
+    caller: Caller,
+) -> Result<impl IntoResponse, ApiError> {
+    let project = project_requiring(&state, &caller, Role::Admin, "restore archived picks")?;
+    let radargram = parse_radargram(&radargram_id)?;
+    let user = parse_user(&user)?;
+
+    // So a removal of the same radargram cannot archive between the check
+    // that it is served and the restore.
+    let _lifecycle = state.lifecycle_lock().await;
+    let current = {
+        let catalog = state.catalog();
+        let entry = catalog.find_entry(radargram.as_str()).ok_or_else(|| {
+            ApiError::conflict(
+                "not_in_catalog",
+                format!(
+                    "'{}' is not in the catalog, so there is nothing to restore its picks \
+                     onto. Add the radargram back first.",
+                    radargram.as_str()
+                ),
+            )
+        })?;
+        entry.revision_id.as_str().to_string()
+    };
+
+    let item = find_archived(project, &radargram, &removal, &user)?;
+    let stored = interpretations::read_archived(project.documents(), &item)
+        .map_err(store_failed)?
+        .ok_or_else(|| archived_not_found(&radargram, &removal, &user))?;
+    let version = match interpretations::restore_archived(project.documents(), &item)
+        .map_err(store_failed)?
+    {
+        interpretations::Restore::Done(version) => version,
+        interpretations::Restore::NotArchived => {
+            return Err(archived_not_found(&radargram, &removal, &user))
+        }
+        interpretations::Restore::Occupied => {
+            return Err(ApiError::conflict(
+                "interpretation_exists",
+                format!(
+                    "'{}' has picks on '{}' now, and archived picks are not merged \
+                     into them. Nothing was restored.",
+                    user.as_str(),
+                    radargram.as_str()
+                ),
+            ))
+        }
+    };
+
+    let revision_id = stored
+        .document
+        .source
+        .as_ref()
+        .and_then(|s| s.revision_id.clone());
+    let lines = stored.document.features.len();
+    audit::record(
+        project.documents(),
+        audit::Entry {
+            at: chrono::Utc::now().to_rfc3339(),
+            user: caller.audit_name(),
+            action: audit::Action::Restored,
+            radargram_id: radargram.to_string(),
+            revision_id: revision_id.clone(),
+            note: Some(format!(
+                "restored {}'s interpretation ({lines} {}), archived {removal}",
+                user.as_str(),
+                if lines == 1 { "line" } else { "lines" }
+            )),
+        },
+    );
+
+    Ok(Json(RestoredInterpretation {
+        radargram_id: radargram.to_string(),
+        user: user.to_string(),
+        removal: item.removal,
+        // A document that does not say is drawn as if it were current.
+        current: revision_id.as_deref().is_none_or(|r| r == current),
+        revision_id,
+        version: version.to_string(),
+    }))
+}
+
+/// The most files one bulk download takes. Far more than a project's
+/// interpretations today; it bounds the work a single request can ask for.
+const MAX_BULK_FILES: usize = 10_000;
+
+/// `POST /api/v1/interpretations/download`.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub(super) struct BulkDownloadRequest {
+    /// The interpretations to include, as the pick manager lists them.
+    items: Vec<BulkDownloadItem>,
+}
+
+/// One interpretation in a [`BulkDownloadRequest`]: a summary row's
+/// `radargram_id`, `user` and, for an archived one, `removal`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Deserialize, utoipa::ToSchema)]
+pub(super) struct BulkDownloadItem {
+    radargram_id: String,
+    user: String,
+    #[serde(default)]
+    removal: Option<String>,
+}
+
+/// `POST /api/v1/interpretations/download`
+///
+/// Several interpretations, live or archived, byte for byte in one zip
+/// (#435): the rows the pick manager's filters show. Which rows those are
+/// is the page's to decide, so the request names them rather than the
+/// server repeating the filters.
+///
+/// Gated like the one-file downloads, under the `picks` download scope.
+/// The zip mirrors the layout under `interpretations/`, so it can be put
+/// back into a project as it is, and `manifest.json` lists what it holds
+/// and anything named that was not there, such as picks purged or archived
+/// since the page loaded.
+pub(super) async fn download_bulk(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Json(request): Json<BulkDownloadRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    caller.require_download(DownloadScope::Picks, "picks")?;
+    readable_project(&state)?;
+    if request.items.is_empty() {
+        return Err(ApiError::bad_request(
+            "nothing_selected",
+            "No interpretations were named, so there is nothing to download.",
+        ));
+    }
+    if request.items.len() > MAX_BULK_FILES {
+        return Err(ApiError::payload_too_large(
+            "too_many_files",
+            format!(
+                "{} interpretations were named; one download takes at most {MAX_BULK_FILES}.",
+                request.items.len()
+            ),
+        ));
+    }
+    let items: BTreeSet<BulkDownloadItem> = request.items.into_iter().collect();
+    for item in &items {
+        parse_radargram(&item.radargram_id)?;
+        parse_user(&item.user)?;
+    }
+
+    let bytes = tokio::task::spawn_blocking(move || {
+        let project = readable_project(&state)?;
+        bulk_zip(project, &items)
+    })
+    .await
+    .map_err(|e| ApiError::internal("download_task_failed", e.to_string()))??;
+
+    let filename = format!("picks-{}.zip", chrono::Utc::now().format("%Y-%m-%d"));
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{filename}\""),
+            ),
+        ],
+        bytes,
+    ))
+}
+
+/// One entry of a bulk download's `manifest.json`.
+#[derive(serde::Serialize)]
+struct ManifestEntry<'a> {
+    radargram_id: &'a str,
+    user: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    removal: Option<&'a str>,
+    /// The file's path in the zip, absent for one that was not found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+}
+
+fn bulk_zip(project: &Project, items: &BTreeSet<BulkDownloadItem>) -> Result<Vec<u8>, ApiError> {
+    use std::io::Write;
+
+    let store = project.documents();
+    let (archived, _) = interpretations::list_archived(store).map_err(store_failed)?;
+    let zip_failed = |e: zip::result::ZipError| ApiError::internal("zip_failed", e.to_string());
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut files = Vec::new();
+    let mut missing = Vec::new();
+    for item in items {
+        // Both checked by the caller.
+        let radargram = parse_radargram(&item.radargram_id)?;
+        let user = parse_user(&item.user)?;
+        // Paths in the zip are made from the parsed ids and from removals
+        // the archive lists, never from the request's strings.
+        let path = match &item.removal {
+            None => Some(interpretations::path_of(&radargram, &user)),
+            Some(removal) => archived
+                .iter()
+                .find(|a| a.radargram == radargram && &a.removal == removal && a.user == user)
+                .map(interpretations::archived_path),
+        };
+        let text = match &path {
+            Some(path) => store
+                .read(path)
+                .map_err(|e| ApiError::internal("store_failed", e.to_string()))?
+                .map(|stored| stored.text),
+            None => None,
+        };
+        let entry = ManifestEntry {
+            radargram_id: &item.radargram_id,
+            user: &item.user,
+            removal: item.removal.as_deref(),
+            path: None,
+        };
+        let (Some(path), Some(text)) = (path, text) else {
+            missing.push(entry);
+            continue;
+        };
+        let name = path
+            .strip_prefix(crate::project::INTERPRETATIONS_DIR)
+            .unwrap_or(&path)
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        zip.start_file(name.as_str(), options).map_err(zip_failed)?;
+        zip.write_all(text.as_bytes())
+            .map_err(|e| ApiError::internal("zip_failed", e.to_string()))?;
+        files.push(ManifestEntry {
+            path: Some(name),
+            ..entry
+        });
+    }
+
+    let manifest = serde_json::json!({
+        "exported_at": chrono::Utc::now().to_rfc3339(),
+        "files": files,
+        "missing": missing,
+    });
+    zip.start_file("manifest.json", options)
+        .map_err(zip_failed)?;
+    zip.write_all(
+        serde_json::to_string_pretty(&manifest)
+            .expect("a manifest serializes")
+            .as_bytes(),
+    )
+    .map_err(|e| ApiError::internal("zip_failed", e.to_string()))?;
+    Ok(zip.finish().map_err(zip_failed)?.into_inner())
 }
