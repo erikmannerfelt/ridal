@@ -1,213 +1,214 @@
 # Interpretation and layers
 
-Interpretation in Ridal is drawing lines along reflectors in the viewer:
-**picks**. Each line belongs to a **layer**, such as `bed` or `surface`, and
-each person's picks are kept apart, so that several people can interpret the
-same radargram independently and their picks can be combined afterwards.
+Interpretation in Ridal means drawing lines along reflectors in the viewer,
+which are called **picks**. Each line belongs to a **layer**, such as `bed`
+or `surface`, and each person's picks are kept apart, so that several people
+can interpret the same radargram independently and their picks can be
+combined afterward.
 
 ## Picking in the viewer
 
-Picking needs a project (see {doc}`../getting-started/quickstart`), and on a
-server an account with the `picker` role or above (see
-{doc}`../deploy/accounts`).
+Picking needs a project (see {doc}`../getting-started/quickstart`) and, on a
+server, an account with the `picker` role or above (see
+{doc}`../deploy/accounts`). A line is drawn in four steps:
 
 1. Choose the **Layer** in the toolbar above the radargram.
-2. **Add line**, then click along the reflector. Each click adds a vertex;
-   **Undo vertex** removes the last one, and clicking a vertex of the line
-   being drawn removes it.
-3. Finish the line with **Finish line** or a double-click on the last point.
-   Escape abandons it.
-4. **Save**. Nothing is stored until then, and the viewer warns before
+2. Click **Add line** and then click along the reflector, where each click
+   adds a vertex. **Undo vertex** removes the last vertex, and clicking a
+   vertex of the line being drawn removes that vertex.
+3. Finish the line with **Finish line** or with a double-click on the last
+   point, or abandon it with Escape.
+4. Click **Save**. Nothing is stored until then, and the viewer warns before
    leaving a page with unsaved picks.
 
-Click a saved line to select it. Then drag a vertex to move it, or onto its
-neighbour to remove it; click a vertex to split the line there or remove the
-vertex; click the small handle between two vertices to add one; click the
-line elsewhere to split it; and drop an end onto the end of another line in
-the same layer to join them. **Delete line** removes it and the **Layer**
-beside it moves it to another layer. **Editing help** repeats this, and turns
-the tooltips on vertices off.
+Clicking a saved line selects it, after which its vertices can be dragged,
+or dragged onto a neighbor to remove them. Clicking a vertex offers to split
+the line there or to remove the vertex, clicking the small handle between two
+vertices adds one, clicking the line elsewhere splits it, and dropping an end
+onto the end of another line in the same layer joins the two. **Delete line**
+removes the selected line, and the **Layer** menu beside it moves the line to
+another layer. **Editing help** repeats these instructions and can turn off
+the tooltips on vertices.
 
-**Hide picks** hides the lines to look at the radargram underneath. The layer
-panel at the right toggles each layer, and the derived layers.
+**Hide picks** hides the lines to show the radargram underneath, and the
+layer panel at the right toggles each layer and each derived layer.
 
-Picks are stored in the radargram's own trace and sample numbers, not as
-depths or coordinates. They are drawn in the right place in the
+Picks are stored in the radargram's own trace and sample numbers rather than
+as depths or coordinates. They are therefore drawn in the right place in the
 topographically corrected view and at any horizontal scale, and they follow
 the radargram when it is processed again (see
 [Reprocessing](#reprocessing-and-picks)).
 
 ## Projects and whose picks are shown
 
-A project keeps one file of picks per person per radargram, in
-`ridal_data/interpretations/` (see {doc}`../reference/project-files`).
-Picks belong to the person who drew them: nobody can change another's, not
-even an administrator.
+A project keeps one file of picks per person per radargram in
+`ridal_data/interpretations/` (see {doc}`../reference/project-files`). Picks
+belong to the person who drew them, and nobody can change someone else's
+picks, not even an administrator.
 
 With `ridal gui` on your own computer, there are no accounts and everything
 is saved as the user `default`. On a server with accounts, each person picks
-under their own name. A `picker` sees only their own picks, so that each
-interpretation is independent of the others. An `operator` or `admin` with
-the `picks` download scope can also show everyone else's with the layer
-panel's contributor toggle.
+under their own name, and a `picker` only sees their own picks, so that each
+interpretation stays independent of the others. An `operator` or `admin`
+with the `picks` download scope can also show everyone else's picks with the
+contributor toggle in the layer panel.
 
 ## Layers
 
 A project's layers are defined on the **Layers** page by an `operator`, and
-stored in `layers.json` (see {doc}`../reference/project-files`). A layer has:
+stored in `layers.json` (see {doc}`../reference/project-files`). A layer
+has:
 
-- an **ID**, written into every pick drawn in it. It cannot be changed once
-  picks use it, and must be a valid name in expressions: lowercase letters,
-  digits and `_`, starting with a letter.
-- a **Name** and **Description**, for display only, which can be changed at
-  any time.
-- a **Colour**.
+- an **ID**, which is written into every pick drawn in the layer. It cannot
+  be changed once picks use it, and it must be a valid name in expressions,
+  i.e. lowercase letters, digits and `_`, starting with a letter;
+- a **Name** and a **Description**, which are only for display and can be
+  changed at any time;
+- a **Colour**;
 - whether it allows **Overhangs**, its **reducer**, and whether it warns of
-  **duplicates**, described below.
+  **duplicates**, which are all described below.
 
-Picks with a layer that is not defined, such as picks imported from another
-project, are listed under **Labels in use with no definition** and drawn
-without a colour. Defining a layer with that id adopts them.
+Picks with a layer that is not defined (such as picks imported from another
+project) are listed under **Labels in use with no definition** and drawn
+without a color, and defining a layer with the same id adopts them.
 
-Choose layers for what the interpreters should decide, not only for what
-is there. A layer for "bed, clearly visible" and one for "bed, uncertain"
-records the confidence of each pick, and a derived item can combine them
-afterwards.
+Layers can record what the interpreters decided as well as what is there.
+For example, separate layers for "bed, clearly visible" and "bed, uncertain"
+record the confidence of each pick, and a derived item can combine the two
+afterward.
 
 ### One depth per position
 
-A layer is a function of position: for each person, it has one depth at each
-trace. That is what lets a layer be exported at even spacing, compared
-between people and combined into a consensus. Three rules keep it so, both
-while drawing, where the viewer marks the problem, and when saving, which is
-refused until it is resolved:
-
-- a line may not double back, to an earlier trace (an **overhang**);
-- two lines in one layer may not cover the same traces, beyond the one trace
-  where one ends and the next begins;
-- a person may not pick two different depths in one layer at one trace (a
-  **duplicate**).
-
-A line drawn from right to left is not an overhang; only a change of
-direction is.
+A layer is a function of position, meaning that each person has one depth
+in the layer at each trace. This is what allows a layer to be exported at an
+even spacing, compared between people and combined into a consensus. Three
+rules keep it that way, both while drawing (where the viewer marks the
+problem) and when saving (which is refused until the problem is resolved):
+1) a line may not double back to an earlier trace (an **overhang**), 2) two
+lines in one layer may not cover the same traces beyond the single trace
+where one ends and the next begins, and 3) a person may not pick two
+different depths in one layer at one trace (a **duplicate**). A line drawn
+from right to left is not an overhang, since only a change of direction is.
 
 ### Overhangs
 
-Some features do double back: a crevasse wall, the outline of a water body,
-an overturned fold. **Allow overhangs** on a layer lets its lines double
-back. Such a layer has no single depth at a position, so it cannot be
-resampled to even spacing: it is always exported as the vertices as picked,
-whatever spacing is asked for, and the export says so.
+Some features do double back, such as a crevasse wall, the outline of a water
+body or an overturned fold. **Allow overhangs** on a layer lets its lines
+double back, but such a layer has no single depth at a position and cannot
+be resampled to an even spacing. It is therefore always exported as the
+vertices as picked, regardless of the spacing that is asked for, and the
+export says so.
 
 ### Duplicates and reducers
 
-Turning off `warn_on_duplicates` (in `layers.json`) declares a layer
-multi-valued: one person may pick it at several depths at one position, for
-example where a reflector is drawn in overlapping pieces. Such values, and
-those of a layer that allows overhangs, are reduced to one per person per
-position by the layer's **reducer** whenever the layer is used in a derived
-item:
+Turning off `warn_on_duplicates` (in `layers.json`) declares a layer as
+multi-valued, so that one person may pick it at several depths at one
+position, for example where a reflector is drawn in overlapping pieces. These
+values, and those of a layer that allows overhangs, are reduced to one value
+per person per position by the layer's **reducer** whenever the layer is
+used in a derived item:
 
 `shallowest`
-: The shallowest value. The default, because stray picks on multiples and
-  antenna ringing lie below the true reflector. For a fold,
+: The shallowest value. This is the default, because stray picks on
+  multiples and antenna ringing lie below the true reflector, and for a fold
   it keeps the upper limb.
 
 `deepest`, `median`, `mean`
-: The deepest value, or the median or mean of them.
+: The deepest value, or the median or mean of the values.
 
-The project's `default_reducer` applies to layers that do not name their
-own. Reducers apply when the picks are used; the stored picks are never
-changed, so changing a reducer can always be undone.
+The project's `default_reducer` applies to layers that do not name their own
+reducer. Reducers are applied when the picks are used, and the stored picks
+are never changed, so changing a reducer can always be undone.
 
 ### Exclusivity groups
 
 Some layers cannot both be present at one position for one person, such as
-"bed, cold ice above" and "bed, temperate ice above": a person who picked
-the bed decided which it is. An **exclusivity group**, defined on the
-**Layers** page, says so. While drawing, the viewer marks and refuses a line
-in one layer of a group over traces that a line in another layer of the same
-group already covers, and saving refuses it too.
+"bed, cold ice above" and "bed, temperate ice above", since a person who
+picked the bed has decided which of the two it is. An **exclusivity group**,
+defined on the **Layers** page, states this. While drawing, the viewer marks
+and refuses a line in one layer of a group over traces that a line in
+another layer of the same group already covers, and saving refuses it too.
 
 Picks that conflict anyway, such as picks drawn before the group was
-defined, are not guessed between: at a position where one person has values
+defined, are not guessed between. At a position where one person has values
 in two layers of a group, every one of those layers is `NaN` for that person
-there. A layer can be in several groups, and only layers that share a group
-conflict.
+at that position. A layer can be in several groups, and only layers that
+share a group conflict.
 
 ## Derived items
 
-A **derived item** is a named expression over the layers, evaluated over
-everyone's picks at each position. `median(bed)` is the median bed depth
-over all contributors, a consensus line; `count(bed)` is how many of them
-picked the bed there; `median(bed) - median(surface)` is a thickness. The
-language and every function are in {doc}`../reference/expressions`.
+A **derived item** is a named expression over the layers that is evaluated
+over everyone's picks at each position. For example, `median(bed)` is the
+median bed depth over all contributors (a consensus line), `count(bed)` is
+how many of them picked the bed there, and
+`median(bed) - median(surface)` is a thickness. The language and all its
+functions are described in {doc}`../reference/expressions`.
 
-What an expression gives decides what the item is:
+What an expression returns decides what kind of item it is:
 
 Derived layer
 : A position, such as `median(bed)`. It is drawn on the radargram as a line,
   in depth, travel time and sample number, and exported like a picked layer.
 
 Derived attribute
-: Any other number, such as a count or a spread. It is not drawn, but its
-  value under the cursor is shown in the viewer's readout, and it is
+: Any other number, such as a count or a measure of spread. It is not drawn,
+  but its value under the cursor is shown in the viewer's readout, and it is
   exported in its own unit beside the derived layers.
 
 Derived items are made and edited in the viewer's layer panel, where the
-expression is previewed on the radargram as it is typed, and on the
-**Layers** page. A project-wide item needs the `operator` role; anyone who
-can pick can keep private items of their own. An item can be **shown** when
-the viewer opens or not, and **listed** in the layer panel or not, which
-keeps intermediate items out of the way. A derived layer can be filled
-towards another, to shade the range between two lines.
+expression is previewed on the radargram while it is typed, and on the
+**Layers** page. A project-wide item needs the `operator` role, while anyone
+who can pick can keep private items of their own. An item can be **shown**
+or not when the viewer opens, and **listed** or not in the layer panel,
+which keeps intermediate items out of the way. A derived layer can also be
+filled toward another to shade the range between two lines.
 
 ### Who sees a result computed from other people's picks
 
-A consensus is computed from other people's picks, so it is a way to see
-them. Three rules decide who sees what:
+A consensus is computed from other people's picks, so seeing it is a way of
+seeing their picks. Three rules therefore decide who sees what:
 
-1. Anyone may see an item computed from their own picks. That is how a
+1. Anyone may see an item computed from their own picks. This is how a
    project-wide item is evaluated for a `picker`, and its label then says
    "(your picks)".
 2. An `operator` or `admin` sees an item computed from everyone's picks, so
-   that a consensus can be defined and followed while picking is still
-   going on, without the pickers seeing each other's work.
-3. An `admin` can **release** an item, so that everyone sees it computed from
-   everyone's picks. Releasing publishes everyone's work in aggregate, which
-   is why it needs the `admin` role.
+   that a consensus can be defined and followed while picking is still going
+   on, without the pickers seeing each other's work.
+3. An `admin` can **release** an item, so that everyone sees it computed
+   from everyone's picks. Releasing publishes everyone's work in aggregate,
+   which is why it needs the `admin` role.
 
-The `results` download scope lets a person download released results
-without being able to download anyone's individual picks (see
+The `results` download scope lets a person download released results without
+being able to download anyone's individual picks (see
 {doc}`../deploy/accounts`).
 
 ## Exporting
 
 Picks are stored as lines in trace and sample numbers, which is the
-interpretation itself (level 1). Exported, they become **points** along the
-ground track, with positions and depths (level 2):
+interpretation itself (level 1). When exported, they become **points** along
+the ground track with positions and depths (level 2). There are two kinds of
+export: **Picked layer points** give one point per picked line per position,
+each tagged with its layer and user (and an `admin` can export every
+contributor's picks in one file), while **Derived layer points** give one
+point per position with every visible derived layer and attribute as a
+column.
 
-- **Picked layer points**: one point per picked line per position, each
-  tagged with its layer and user. An `admin` can export every contributor's
-  in one file.
-- **Derived layer points**: one point per position, with every visible
-  derived layer and attribute as a column.
-
-Both are in the viewer's **Download** menu, for one radargram, and in the
-catalog for a group or the whole project. The spacing of the points is:
+Both are in the viewer's **Download** menu for one radargram, and in the
+catalog for a group or for the whole project. The spacing of the points can
+be:
 
 | Spacing | Points |
 |---|---|
 | Auto | Evenly spaced, from the radargram's own trace spacing. |
-| 1, 5, 10, 25 m | Evenly spaced, in metres along the track, at 0, 5, 10 m … from the start of the radargram, the same for every layer and person. |
-| Every trace | One per trace. |
+| 1, 5, 10, 25 m | Evenly spaced in meters along the track, at 0, 5, 10 m, and so on, from the start of the radargram, which is the same for every layer and person. |
+| Every trace | One point per trace. |
 | Picked vertices only | The vertices as drawn. |
 
-Spacing is always measured along the ground, not in traces, because trace
-spacing varies with the survey speed.
+The spacing is always measured along the ground rather than in traces,
+because the trace spacing varies with the speed of the survey.
 
 The format is GeoJSON in WGS84, GeoJSON in the radargram's own CRS (which
-most GIS software reads, but which strict GeoJSON readers will take for
+most GIS software reads, but which strict GeoJSON readers interpret as
 degrees), or CSV. Every point has its radargram and revision, layer, user,
 trace and sample, distance along the track, two-way travel time, depth,
 easting and northing, and longitude and latitude. A CSV has the columns:
@@ -228,16 +229,17 @@ See {doc}`../reference/cli` for its options.
 
 ## Reprocessing and picks
 
-Picks are tied to a radargram's id, and drawn on one revision of it: one
-processing. When the radargram is processed again, they are **carried** to
-the new revision through the clock and positions they share: across a new
-zero correction, a `subset`, removed standstills or a different correction
-for the antenna separation. A banner in the viewer says when picks had to be
-moved or could not be carried exactly, and what moved. Picks that cannot be
-carried at all are drawn where they were stored.
+Picks are tied to a radargram's id and drawn on one revision of it, i.e. one
+processing. When the radargram is processed again, the picks are **carried**
+to the new revision through the clock and positions that the two revisions
+share, for example across a new zero correction, a `subset`, removed
+standstills or a different antenna separation correction. A banner in the
+viewer says when picks had to be moved or could not be carried exactly, and
+what moved, while picks that cannot be carried at all are drawn where they
+were stored.
 
-The stored picks stay as drawn until they are saved on the new revision, and
-the version that saving replaces is kept.
+The stored picks stay as they were drawn until they are saved on the new
+revision, and the version that saving replaces is kept.
 
 ## The pick manager
 

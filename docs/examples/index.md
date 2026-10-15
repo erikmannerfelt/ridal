@@ -1,21 +1,21 @@
 # Examples
 
-Worked examples, from raw data to results. Each uses only Ridal and, for the
-Python ones, xarray and matplotlib.
+These are worked examples that go from raw data to results, using only Ridal
+and, in the Python examples, xarray and matplotlib.
 
 ## A survey, from raw files to points
 
-A day of 100 MHz profiles in `raw/`, recorded as many files with short
-breaks between them, to be picked by a team.
-
-Look at one file first, to check that the antenna, separation and positions
-are read as expected:
+This example starts from a day of 100 MHz profiles in `raw/`, recorded as
+many files with short breaks between them, which a team will pick. It is
+worth looking at one file first, to check that the antenna, the separation
+and the positions are read as expected:
 
 ```bash
 ridal info raw/DAT_0140_A1.rd3
 ```
 
-Check how the files will be merged and named, without processing anything:
+With `--dry-run`, the batch shows how the files will be merged and named
+without processing anything:
 
 ```bash
 ridal batch-process "raw/*.rd3" --merge "10 min" -o survey/ \
@@ -25,8 +25,8 @@ ridal batch-process "raw/*.rd3" --merge "10 min" -o survey/ \
   --dry-run
 ```
 
-Then make the project and process into it, with the default profile plus
-standstill removal, which time-triggered data usually need:
+The project is then made and the files processed into it, with the default
+profile plus standstill removal, which time-triggered data usually need:
 
 ```bash
 ridal project init survey
@@ -38,9 +38,10 @@ ridal batch-process "raw/*.rd3" --merge "10 min" -o survey/ridal_data/radargrams
 ridal gui survey
 ```
 
-In the browser, define the layers on the **Layers** page, such as `surface`
-and `bed`, and pick. To share the picking with others, serve the project
-from a server with accounts instead (see {doc}`../deploy/index`).
+In the browser, the layers (such as `surface` and `bed`) are defined on the
+**Layers** page before picking starts. To share the picking with others, the
+project is instead served from a server with accounts (see
+{doc}`../deploy/index`).
 
 When the picking is done, **Download all → Picked layer points** in the
 catalog gives the picks on every radargram as points in one file, at an even
@@ -48,8 +49,8 @@ spacing along the track; an `admin` can include everyone's. See {doc}`../guide/i
 
 ## A radargram in matplotlib, against elevation
 
-Process a file in memory and draw it against elevation, the topographic
-correction done by xarray from the file's own axes:
+This example processes a file in memory and draws it against elevation, with
+the topographic correction done by xarray from the file's own axes:
 
 ```python
 import matplotlib.pyplot as plt
@@ -75,15 +76,15 @@ ax.set_title(ds.attrs["ridal_radargram_id"])
 fig.savefig("line66.png", dpi=200)
 ```
 
-The same works on a processed file opened with `xarray.open_dataset`. For a
-figure with picks drawn on it, see the annotated figures in
+The same code works on a processed file opened with `xarray.open_dataset`.
+For a figure with picks drawn on it, see the annotated figures in
 {doc}`../guide/rendering`.
 
 ## A consensus from several interpreters
 
-Several people picked the bed of the same radargrams, each independently.
-Some of the bed is hard to see, so the project has two layers for it, which
-cannot both be picked at one place by one person:
+In this example, several people have picked the bed of the same radargrams
+independently. Parts of the bed are hard to see, so the project has two
+layers for it, which one person cannot both pick at the same place:
 
 ```json
 {
@@ -100,7 +101,7 @@ cannot both be picked at one place by one person:
 }
 ```
 
-On the **Layers** page, an `operator` then adds derived items:
+An `operator` then adds derived items on the **Layers** page:
 
 | ID | Expression | Unit | What it is |
 |---|---|---|---|
@@ -109,9 +110,9 @@ On the **Layers** page, an `operator` then adds derived items:
 | `bed_spread` | `nmad(concatenate(bed, bed_unclear))` | meters | How much they disagree. |
 | `bed_clear_share` | `count(bed) / max(count(concatenate(bed, bed_unclear)), 1.0)` | dimensionless | The share of the picks that were clear. |
 
-`bed_consensus` is drawn on the radargram as a line; the others are numbers,
-shown under the cursor when they are listed. All four are exported together with **Derived layer
-points**, one row per position. While picking is still going on, only an
-`operator` sees the consensus; an `admin` releases it to everyone when the
-picking is done. See {doc}`../guide/interpretation` and
-{doc}`../reference/expressions`.
+`bed_consensus` is drawn on the radargram as a line, while the others are
+numbers that are shown under the cursor when they are listed. All four are
+exported together with **Derived layer points**, with one row per position.
+While picking is still going on, only an `operator` sees the consensus, and
+an `admin` releases it to everyone once the picking is done (see
+{doc}`../guide/interpretation` and {doc}`../reference/expressions`).

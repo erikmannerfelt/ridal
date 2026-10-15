@@ -1,10 +1,10 @@
 # Quickstart
 
-This page goes from a raw recording to a processed radargram open in the
-browser. It assumes the `ridal` command is installed (see
+This page goes from a raw recording to a processed radargram that is open in
+the browser, and assumes that the `ridal` command is installed (see
 {doc}`installation`). The examples use a Malå recording, `DAT_0066_A1.rad`
-with its `.rd3` and `.cor` beside it; any supported format works the same way
-(see {doc}`../guide/file-formats`).
+with its `.rd3` and `.cor` files beside it, but any supported format works
+the same way (see {doc}`../guide/file-formats`).
 
 ## 1. Look at the file
 
@@ -23,10 +23,10 @@ CRS:		EPSG:32633
 Track length:	2532.382 m
 ```
 
-`info` reads the header and the positions without processing anything. It is
-the quickest way to see whether Ridal reads a file as you expect: the antenna
-frequency and separation, the time window, and where and when it was
-recorded.
+`ridal info` reads the header and the positions without processing anything,
+which makes it the quickest way to check that Ridal reads the antenna
+frequency and separation, the time window, and where and when the file was
+recorded as you expect.
 
 ## 2. Process it
 
@@ -34,15 +34,15 @@ recorded.
 ridal process DAT_0066_A1.rad --default
 ```
 
-`--default` runs the default processing profile: it removes empty traces,
+`--default` runs the default processing profile, which removes empty traces,
 moves time zero to the direct wave, corrects for the antenna separation,
 removes slow drift (dewow) and horizontal banding (background removal), and
-applies a gain. The result is `DAT_0066_A1.nc`, a NetCDF file beside the
-input. {doc}`../guide/processing` explains each step and when to choose
-others.
+finally applies a gain. The result is `DAT_0066_A1.nc`, a NetCDF file beside
+the input. {doc}`../guide/processing` explains each step and when other
+steps may be a better choice.
 
-Add `-r` to also write a JPEG of the radargram beside it, for a first look
-without a browser:
+Adding `-r` also writes a JPEG of the radargram beside the output, which is
+useful for a first look without a browser:
 
 ```bash
 ridal process DAT_0066_A1.rad --default -r
@@ -51,16 +51,16 @@ ridal process DAT_0066_A1.rad --default -r
 ## 3. Make a project
 
 A project is a directory where Ridal keeps what it adds to your data, such as
-picks and layer definitions. Make one, and put the processed file in it:
+picks and layer definitions. Make one and process the file into it:
 
 ```bash
 ridal project init my_survey
 ridal process DAT_0066_A1.rad --default -o my_survey/ridal_data/radargrams/
 ```
 
-Processed files can be anywhere below the project directory; the
-`ridal_data/radargrams/` directory is where files uploaded through the browser
-go.
+Processed files can be anywhere below the project directory, so this is only
+one option; `ridal_data/radargrams/` is where files uploaded through the
+browser end up.
 
 ## 4. Open it in the browser
 
@@ -69,13 +69,14 @@ ridal gui my_survey
 ```
 
 Ridal prints the address it serves on, such as
-`http://127.0.0.1:37951/p/default/`; open it, or add `--open-browser` to have
-Ridal open it for you. The port is any free one unless `--port` names one.
+`http://127.0.0.1:37951/p/default/`, which you can open yourself or have
+Ridal open with `--open-browser`. The port is any free one unless `--port`
+names one.
 
-The catalog lists the radargram with a map of where it was recorded. Click it
-to open the viewer, where you can zoom and pan, see the trace, travel time
-and depth under the cursor, and pick reflectors. Stop the server with
-Ctrl+C.
+The catalog lists the radargram together with a map of where it was
+recorded. Clicking it opens the viewer, where you can zoom and pan, read the
+trace, travel time and depth under the cursor, and pick reflectors. Ctrl+C
+stops the server.
 
 ## Where next
 

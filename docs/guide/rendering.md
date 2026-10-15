@@ -1,8 +1,9 @@
 # Rendering images
 
-Ridal draws radargrams with one renderer everywhere: `ridal render`,
-`ridal.render` in Python, `-r` while processing, and the GUI. The same file
-and render profile therefore give the same image wherever they are drawn.
+Ridal draws radargrams with the same renderer everywhere, i.e. in
+`ridal render`, in `ridal.render` in Python, with `-r` while processing, and
+in the GUI. The same file and render profile therefore give the same image
+regardless of where they are drawn.
 
 ## Plain images
 
@@ -11,49 +12,50 @@ ridal render processed.nc -o profile.png
 ridal render processed.nc -o profile.jpg --profile siglog-default --width 2000
 ```
 
-The extension picks the format: `.png`, or `.jpg`, whose quality
-`--quality` sets (85 in the built-in profiles). Without `-o`, the image is
-written beside the input. The image is one pixel per trace and per sample
-unless `--width` makes it smaller, keeping its proportions; it is never made
-wider than the number of traces. `--topo` draws the topographically
-corrected view (see {doc}`coordinates`).
+The extension decides the format, which is either `.png` or `.jpg`, and the
+JPEG quality is set with `--quality` (85 in the built-in profiles). Without
+`-o`, the image is written beside the input. The image has one pixel per
+trace and per sample unless `--width` makes it smaller while keeping its
+proportions, and it is never made wider than the number of traces. `--topo`
+draws the topographically corrected view (see {doc}`coordinates`).
 
-A rendered image has no axes. For one with axes, ticks, labels and picks, use
-an [annotated figure](#annotated-figures).
+A rendered image has no axes, so for an image with axes, ticks, labels and
+picks, use an [annotated figure](#annotated-figures) instead.
 
 ## Render profiles
 
-A **render profile** decides how amplitudes become grey levels or colours. It
-only changes the image, never the data, and is separate from the
-*processing* profile chosen with `--default` or `--steps`.
+A **render profile** decides how amplitudes become gray levels or colors. It
+only changes the image and never the data, and it is separate from the
+*processing* profile that is chosen with `--default` or `--steps`.
 
 | Profile | What it shows |
 |---|---|
 | `default` | Linear amplitude, stretched between the 1st and 99th percentiles. |
-| `high-contrast` | The same between the 5th and 95th percentiles, for faint data. |
-| `positive` | Biased towards positive amplitudes, with negative ones dark. |
+| `high-contrast` | The same, stretched between the 5th and 95th percentiles, for faint data. |
+| `positive` | Biased toward positive amplitudes, with negative ones dark. |
 | `abslog` | The logarithm of the magnitude, regardless of sign. |
-| `seismic` | Signed amplitude on a blue–white–red scale, white at zero. |
+| `seismic` | Signed amplitude on a blue–white–red scale, with white at zero. |
 | `siglog-default`, `siglog-high-contrast`, `siglog-positive`, `siglog-seismic` | The profile of the same name after a signed logarithm, which brings weak reflections up next to strong ones. |
 
 The logarithm of the `siglog-*` profiles adapts to each radargram's noise
-level, as the `adaptive_siglog` step does, so the same profile suits
-radargrams of different amplitude scales. It is applied before the image is
-scaled down, so an overview of a long radargram stays as legible as a
-close-up.
+level (as the `adaptive_siglog` step does), so the same profile suits
+radargrams with different amplitude scales. It is also applied before the
+image is scaled down, so an overview of a long radargram stays about as
+legible as a close-up.
 
 Trying the `siglog-*` profiles is usually a better first step than adding
-`siglog` to the processing: the result is the same, and the file keeps its
-amplitudes (see {doc}`processing`).
+`siglog` to the processing, since the result looks the same while the file
+keeps its amplitudes (see {doc}`processing`).
 
-In the GUI, the profile is chosen at the top of the catalog and in the
-viewer, and remembered per person. A project's default is `[render]
-default_profile` in `ridal.toml` (see {doc}`../reference/project-files`).
+In the GUI, the render profile is chosen at the top of the catalog and in the
+viewer, and it is remembered for each person. A project's default is
+`[render] default_profile` in `ridal.toml` (see
+{doc}`../reference/project-files`).
 
 ### A profile of your own
 
 `ridal render --profile` and `ridal.render(profile=...)` also take the path
-to a TOML file, with every field given:
+to a TOML file in which every field is given:
 
 ```toml
 name = "my-profile"
@@ -69,19 +71,21 @@ black_level = 0.0
 stats_skip_first_samples = 0       # rows at the top left out of the percentiles
 ```
 
-A server only offers its built-in profiles.
+A server only offers its built-in profiles, so a profile file is for the
+command line and Python only.
 
 ## Horizontal scale
 
 A long radargram has many more traces than samples, so drawn at one pixel
-per trace and sample it is very wide and flat. The **horizontal scale**
-stretches or squeezes it, from 0.25× to 8×, and changes only the drawing.
-In the GUI it is a control in the viewer and a setting in **Edit
-properties**; a figure spec has `x_scale`.
+per trace and sample it becomes very wide and flat. The **horizontal scale**
+stretches or squeezes it (from 0.25× to 8×) and changes only how it is
+drawn. In the GUI, the scale is a control in the viewer and a setting in
+**Edit properties**, and a figure spec has `x_scale` for the same purpose.
 
-Which scale a radargram opens at is decided in this order: `?xscale=` in the
-viewer's address, the radargram's own scale (**Edit properties**), the
-person's own setting, the project's `[render] default_xscale`, and 1×.
+The scale that a radargram opens at is decided in this order: 1) `?xscale=`
+in the viewer's address, 2) the radargram's own scale (in **Edit
+properties**), 3) the person's own setting, 4) the project's `[render]
+default_xscale`, and finally 5) 1×.
 
 ## Annotated figures
 

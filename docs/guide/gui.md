@@ -1,9 +1,9 @@
 # The browser GUI
 
-Ridal has a web interface for looking at processed radargrams, picking
-reflectors in them and, on a server, processing and managing them. It is the
-same interface whether it runs on your own computer with `ridal gui` or for a
-team with `ridal server` (see {doc}`../deploy/index`).
+Ridal has a web interface for looking at processed radargrams, for picking
+reflectors in them and, on a server, for processing and managing them. The
+interface is the same whether it runs on your own computer with `ridal gui`
+or for a team with `ridal server` (see {doc}`../deploy/index`).
 
 ## Starting it
 
@@ -11,60 +11,61 @@ team with `ridal server` (see {doc}`../deploy/index`).
 ridal gui path/to/project
 ```
 
-`ridal gui` serves one directory, or one `.nc` file, on your own computer
-only, and stops when you press Ctrl+C. It prints the address to open.
-Without a path, it serves the project it finds by searching upwards from the
-current directory, or the current directory itself.
+`ridal gui` serves one directory (or one `.nc` file) on your own computer
+only, prints the address to open, and stops when you press Ctrl+C. Without a
+path, it serves the project it finds by searching upward from the current
+directory, or the current directory itself if there is none.
 
 Every processed Ridal `.nc` file below the directory is found and listed.
-Picks need somewhere to be saved, a **project**, which `ridal project init`
-makes (see {doc}`../getting-started/quickstart`). Without one, radargrams
-can be looked at but not picked.
+Picks need somewhere to be saved, which is a **project** made with
+`ridal project init` (see {doc}`../getting-started/quickstart`), so without
+one, radargrams can be looked at but not picked.
 
-Radargrams are rendered by the server, in tiles, and only the parts being
-looked at, so a radargram larger than the browser could hold is no problem.
-Files processed by a Ridal old enough to predate radargram ids are listed
-as needing reprocessing.
+Radargrams are rendered by the server in tiles, and only the parts that are
+being looked at, so a radargram that is larger than what the browser could
+hold is no problem. Files processed by a Ridal old enough to predate
+radargram ids are listed as needing reprocessing.
 
-The menu at the top left leads to the pages below and to this documentation,
-and the **?** beside a heading opens the part of the documentation that
-describes it.
+The menu at the top left leads to the pages described below and to this
+documentation, and the **?** beside a heading opens the part of the
+documentation that describes it.
 
 ## The catalog
 
-The first page lists every radargram, in its **group**: the survey,
-campaign or site given with `--group-name` when it was processed, or in the
-GUI. Each group has a map of where its radargrams were recorded. Click a
-radargram to open it in the viewer.
+The first page lists every radargram in its **group**, which is the survey,
+campaign or site given with `--group-name` when it was processed (or later
+in the GUI). Each group has a map of where its radargrams were recorded, and
+clicking a radargram opens it in the viewer.
 
-- **Render profile**, at the top, is how every image on the page, and the
-  viewer, is drawn (see {doc}`rendering`).
+- **Render profile**, at the top, decides how every image on the page and in
+  the viewer is drawn (see {doc}`rendering`).
 - **More info** under a radargram shows its id, size, track length, file and
-  when it was processed, and how many picks it has.
+  processing date, and whether it has been picked.
 - **Download** on a group, or **Download all**, gives the picked and derived
   layer points of every radargram in it as one file, and their tracks as
   GeoJSON.
-- **Edit → Edit properties** gives a radargram a name and group of the
-  project's own, without changing its file, so reprocessing does not lose
-  them; marks it **Unlisted**, to leave it out of listings and merged
-  downloads (it is still reachable by its address); and sets its horizontal
-  scale and the bounds of its topographic correction. **Edit group** renames
-  a group.
+- **Edit → Edit properties** gives a radargram a name and a group of the
+  project's own without changing its file, so that reprocessing does not lose
+  them. The same dialog marks a radargram as **Unlisted**, which leaves it
+  out of listings and merged downloads (although it can still be opened by
+  anyone who knows its address), and sets its horizontal scale and the
+  bounds of its topographic correction. **Edit group** renames a group.
 - **Add data**, for an `operator`, uploads a processed radargram, makes a new
   one from raw data, or adds the raw data of a whole survey at once (see
   [below](#adding-raw-data-in-bulk)).
 
 ## The viewer
 
-The viewer shows one radargram, with a map of where it was recorded below it.
-Scroll or pinch to zoom, and drag to pan.
+The viewer shows one radargram with a map of where it was recorded below it.
+Scrolling or pinching zooms, and dragging pans.
 
 The line under the controls reports what is under the cursor: the trace
 number, the distance along the profile, the two-way travel time, the depth,
-and the elevation of that point (the surface elevation of the trace minus
-the depth). Listed derived attributes are added to it.
+and the elevation of that point (i.e. the surface elevation of the trace
+minus the depth). The values of listed derived attributes are added to the
+same line.
 
-The display controls change only how the radargram is drawn:
+The display controls only change how the radargram is drawn:
 
 Render profile
 : As in the catalog (see {doc}`rendering`).
@@ -73,61 +74,61 @@ Horizontal scale
 : Stretches or squeezes the radargram horizontally, from 0.25× to 8×.
 
 Contrast, Brightness
-: Adjust the image on screen only; downloads use the render profile as it
-  is.
+: Adjust the image on screen only, while downloads use the render profile as
+  it is.
 
 Smooth when zoomed in
 : Blends between samples when zoomed in past one screen pixel per sample.
-  Off, each sample is drawn as a block, which shows whether an edge in the
-  image is in the data or in the drawing.
+  When it is off, each sample is drawn as a block, which shows whether an
+  edge in the image comes from the data or from the drawing.
 
 Topographic correction
-: Draws each trace at its elevation, so that the surface follows the
-  terrain (see {doc}`coordinates`). **Recentre** fits the view to the traces
-  on screen again if a pan has drifted into the empty space above or below.
+: Draws each trace at its elevation, so that the surface follows the terrain
+  (see {doc}`coordinates`). **Recentre** fits the view to the traces on
+  screen again if a pan has drifted into the empty space above or below.
 
 Hide radargram
 : Draws only the picks and derived layers.
 
 **Metadata** shows the file's attributes, including the processing steps and
-their log (see {doc}`processing`). The layer panel, at the right of the
-radargram, lists the layers, and toggles each of them and the other
-contributors' picks; see {doc}`interpretation`.
+their log (see {doc}`processing`). The layer panel at the right of the
+radargram lists the layers and toggles each of them, as well as other
+contributors' picks (see {doc}`interpretation`).
 
 ### The map
 
-The map follows the cursor: a marker shows where on the ground the trace
-under the cursor was recorded. It shows the radargram's track and the other
-radargrams of its group, on satellite imagery or on a project's own basemaps,
-with any overlays the project defines (see
+The map follows the cursor, with a marker showing where on the ground the
+trace under the cursor was recorded. It shows the radargram's track and the
+other radargrams of its group, on satellite imagery or on a project's own
+basemaps, together with any overlays the project defines (see
 {doc}`../reference/project-files`). The bars between the radargram, the map
 and the trace view can be dragged to resize them.
 
 ### The trace view
 
 **Trace view** opens a panel beside the radargram with one trace drawn as a
-wiggle, at the same height as the radargram. Click the radargram to choose
-the trace. **+** and **−** change how wide the wiggle is drawn.
+wiggle, at the same height as the radargram. Clicking the radargram chooses
+the trace, and **+** and **−** change how wide the wiggle is drawn.
 
 ### Downloads
 
 The viewer's **Download** menu has:
 
-- **Picked layer points** and **Derived layer points**: the layers as
-  points, as GeoJSON or CSV (see {doc}`interpretation`).
-- **Raw picks (gprinterp)**: your picks as stored.
-- **Track (GeoJSON)**: the positions of the traces.
-- **Rendered image**: the whole radargram as PNG or JPEG, in the current
-  render profile.
-- **Figure…**: an annotated figure (see [Figures](#figures)).
-- **Radargram (NetCDF)**: the processed file.
+- **Picked layer points** and **Derived layer points**, i.e. the layers as
+  points in GeoJSON or CSV (see {doc}`interpretation`);
+- **Raw picks (gprinterp)**, which are your picks as stored;
+- **Track (GeoJSON)**, which holds the positions of the traces;
+- **Rendered image**, which is the whole radargram as PNG or JPEG in the
+  current render profile;
+- **Figure…**, an annotated figure (see [Figures](#figures));
+- **Radargram (NetCDF)**, which is the processed file itself.
 
-What each account may download is set by its download scope (see
+What each account may download is decided by its download scope (see
 {doc}`../deploy/accounts`).
 
 ### Edit
 
-**Edit properties** is the dialog from the catalog. For an `operator`,
+**Edit properties** is the same dialog as in the catalog. For an `operator`,
 **Replace with a new version…** uploads a reprocessed file for the
 radargram, and **Process…** processes it again from its raw data (see
 {doc}`processing`). Picks follow to the new version in both cases.
@@ -135,16 +136,16 @@ radargram, and **Process…** processes it again from its raw data (see
 ## Other pages
 
 **Layers**
-: The layers picks are drawn in, exclusivity groups, derived items and the
-  pick manager. See {doc}`interpretation`.
+: The layers that picks are drawn in, exclusivity groups, derived items and
+  the pick manager (see {doc}`interpretation`).
 
 **Processing**
-: Processing profiles, raw data not processed yet, DEMs and recent batches.
-  See {doc}`processing`.
+: Processing profiles, raw data that are not processed yet, DEMs and recent
+  batches (see {doc}`processing`).
 
 **Project settings**
-: Your own preferences, such as the render profile and horizontal scale you
-  open radargrams with, and, for an `admin`, the project's description,
+: Your own preferences, such as the render profile and horizontal scale that
+  radargrams open with, and, for an `admin`, the project's description,
   basemaps, overlays, members, access and history (see
   {doc}`../deploy/accounts`).
 
