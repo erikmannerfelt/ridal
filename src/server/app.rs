@@ -17,6 +17,7 @@ use crate::identity::{ProjectKey, RadargramId};
 use crate::project::store::DocumentStore;
 use crate::server::overview_cache::OverviewDiskCache;
 use crate::server::render_service::{RenderService, RenderServiceConfig};
+use crate::server::track_cache::TrackCache;
 
 /// One open radargram: its render service plus the metadata needed to
 /// answer dataset-detail and viewer-page requests without re-inspecting
@@ -160,6 +161,9 @@ pub struct AppState {
     pub batches: super::batch_routes::Batches,
     /// What the ingest planner has read of each recording.
     pub ingest_reads: Arc<super::ingest_routes::ReadCache>,
+    /// Every radargram's track, read once per version of its file. Kept
+    /// across rediscoveries, which then read only the files that changed.
+    pub tracks: TrackCache,
     /// Held while a DEM's links are checked and written
     /// ([`super::dem_routes`]), so a DEM's file is never replaced or
     /// deleted between "nothing links to it" and the write, nor linked in
@@ -208,6 +212,35 @@ fn overview_disk_cache(
         .collect();
     cache.harvest(&live);
     Some(cache)
+}
+
+/// The project's track store, on disk under its cache directory. Only in
+/// memory without a project, or when that directory cannot be made.
+fn track_cache(project: Option<&crate::project::Project>) -> TrackCache {
+    let Some(project) = project else {
+        return TrackCache::in_memory();
+    };
+    match project.ensure_cache_dir() {
+        Ok(dir) => TrackCache::on_disk(&dir),
+        Err(e) => {
+            eprintln!("Warning: tracks will not be kept on disk: {e}");
+            TrackCache::in_memory()
+        }
+    }
+}
+
+/// Where each of the catalog's radargrams is, for
+/// [`TrackCache::retain`]. An entry whose path cannot be resolved is left
+/// out, and its track forgotten: it cannot be served either.
+fn live_paths(roots: &[CatalogRoot], catalog: &Catalog) -> Vec<PathBuf> {
+    catalog
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let root = roots.get(entry.root)?;
+            AppState::resolve_absolute_path(root, entry).ok()
+        })
+        .collect()
 }
 
 fn with_overview_disk_cache(
@@ -341,7 +374,9 @@ impl AppState {
             }
         }
 
-        let catalog = Catalog::discover_roots(&roots, &overrides);
+        let tracks = track_cache(project.as_ref());
+        let catalog = Catalog::discover_roots(&roots, &overrides, &tracks);
+        tracks.retain(&live_paths(&roots, &catalog));
         record_catalog_summary(project.as_ref(), &catalog);
         let overview_disk = overview_disk_cache(project.as_ref(), &catalog);
         let mut radargrams = HashMap::new();
@@ -402,6 +437,7 @@ impl AppState {
             drafts: Default::default(),
             batches: Default::default(),
             ingest_reads: Default::default(),
+            tracks,
             dem_links: Mutex::new(()),
         };
         // At startup too, not only on rediscovery. Most projects never
@@ -527,7 +563,8 @@ impl AppState {
             .as_ref()
             .map(|p| crate::project::overrides::read_lenient(p.documents()))
             .unwrap_or_default();
-        let catalog = Catalog::discover_roots(&self.roots, &overrides);
+        let catalog = Catalog::discover_roots(&self.roots, &overrides, &self.tracks);
+        self.tracks.retain(&live_paths(&self.roots, &catalog));
         record_catalog_summary(self.project.as_ref(), &catalog);
         let overview_disk = overview_disk_cache(self.project.as_ref(), &catalog);
 
@@ -1046,6 +1083,7 @@ pub fn static_router() -> Router {
         )
         .route("/static/images/logo.svg", get(super::assets::logo_svg))
         .route("/favicon.ico", get(super::assets::favicon))
+        .layer(axum::middleware::from_fn(super::assets::not_modified))
 }
 
 /// Build the complete Axum application over `state`.

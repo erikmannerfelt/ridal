@@ -2238,6 +2238,81 @@ async fn hiding_group_radargrams_cascades_from_the_project_to_the_person() {
 }
 
 #[tokio::test]
+async fn hiding_group_maps_cascades_from_the_project_to_the_person() {
+    // The map's counterpart of #314, on the same terms. A hidden map is
+    // marked `hidden` in the page itself, so it is never created.
+    let hash = password_hash();
+    let (dir, app) = app_with(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("student", Role::Picker, DownloadScope::All, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let student = sign_in(&app, "student").await;
+    let shown = |text: &str| {
+        text.contains(">Hide map</button>")
+            && !text.contains(">Show map<")
+            && !text.contains("data-group=\"_none\" hidden")
+    };
+    let hidden = |text: &str| {
+        text.contains(">Show map</button>")
+            && !text.contains(">Hide map<")
+            && text.contains("data-group=\"_none\" hidden")
+    };
+
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(shown(&page.text), "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/settings",
+        &json!({"default_show_group_maps": false}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["default_show_group_maps"], false);
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(hidden(&page.text), "{}", page.text);
+    // The radargrams' setting is its own: hiding maps leaves them listed.
+    assert!(page.text.contains(">Hide all</button>"), "{}", page.text);
+
+    // One person's own wins over it, for them alone.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_group_maps": true}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["show_group_maps"], true);
+    let page = get(&app, "/", Some(&student)).await;
+    assert!(shown(&page.text), "{}", page.text);
+    let page = get(&app, "/", Some(&erik)).await;
+    assert!(hidden(&page.text), "{}", page.text);
+    let settings = get(&app, "/api/v1/settings", Some(&student)).await;
+    assert_eq!(settings.body["default_show_group_maps"], false);
+    assert_eq!(settings.body["my_show_group_maps"], true);
+
+    // At the project layer, shown is the neutral answer and stores nothing.
+    put(
+        &app,
+        "/api/v1/settings",
+        &json!({"default_show_group_maps": true}),
+        Some(&erik),
+    )
+    .await;
+    let marker = std::fs::read_to_string(project_root(dir.path()).join("ridal.toml")).unwrap();
+    let live = marker
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .any(|l| l.contains("show_group_maps"));
+    assert!(!live, "{marker}");
+    let page = get(&app, "/", Some(&erik)).await;
+    assert!(shown(&page.text), "{}", page.text);
+}
+
+#[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn the_download_defaults_cascade_from_the_project_to_the_person() {
     // #166, through the same cascade as every other setting: the project

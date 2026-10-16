@@ -234,6 +234,44 @@ async fn serve_site(
     .await
 }
 
+/// Content types the server gzips, when the client accepts it.
+///
+/// An allow-list of its own text rather than everything: images and
+/// archives are compressed already, and a radargram's `.nc` is too large to
+/// recompress on every download for what it would save.
+const COMPRESSED_TYPES: &[&str] = &[
+    "text/html",
+    "text/css",
+    "text/javascript",
+    "application/json",
+    "application/geo+json",
+    "image/svg+xml",
+];
+
+/// Gzip for pages, JSON and scripts (see [`COMPRESSED_TYPES`]).
+///
+/// A download (`Content-Disposition: attachment`) is left alone whatever
+/// its type: it is a file, and its `Content-Length` is what shows the
+/// download's progress. So is anything too small to gain from it.
+fn compression(
+) -> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
+    use tower_http::compression::predicate::{Predicate, SizeAbove};
+    let wanted = |_: axum::http::StatusCode,
+                  _: axum::http::Version,
+                  headers: &axum::http::HeaderMap,
+                  _: &axum::http::Extensions| {
+        let text = headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                let essence = v.split(';').next().unwrap_or("").trim();
+                COMPRESSED_TYPES.contains(&essence)
+            });
+        text && !headers.contains_key(axum::http::header::CONTENT_DISPOSITION)
+    };
+    tower_http::compression::CompressionLayer::new().compress_when(SizeAbove::new(1024).and(wanted))
+}
+
 /// Bind, print where, optionally open a browser there, and serve until
 /// Ctrl-C.
 async fn serve(
@@ -259,7 +297,7 @@ async fn serve(
         }
     }
 
-    axum::serve(listener, router)
+    axum::serve(listener, router.layer(compression()))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(|e| format!("Server error: {e}"))
@@ -423,6 +461,86 @@ fn check_bind_safety(
 mod tests {
     use super::check_bind_safety;
     use std::net::IpAddr;
+
+    /// What encoding the server answers `path` with, to a client that
+    /// accepts gzip.
+    async fn encoding_of(router: axum::Router, path: &str) -> Option<String> {
+        use tower::ServiceExt;
+        let request = axum::http::Request::get(path)
+            .header(axum::http::header::ACCEPT_ENCODING, "gzip")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router
+            .layer(super::compression())
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "{path}: {}",
+            response.status()
+        );
+        response
+            .headers()
+            .get(axum::http::header::CONTENT_ENCODING)
+            .map(|v| v.to_str().unwrap().to_string())
+    }
+
+    #[tokio::test]
+    async fn text_is_gzipped_and_images_and_downloads_are_not() {
+        use axum::http::header;
+        let assets = crate::server::app::static_router();
+        assert_eq!(
+            encoding_of(assets.clone(), "/static/app.js")
+                .await
+                .as_deref(),
+            Some("gzip")
+        );
+        assert_eq!(
+            encoding_of(assets.clone(), "/static/app.css")
+                .await
+                .as_deref(),
+            Some("gzip")
+        );
+        assert_eq!(encoding_of(assets, "/favicon.ico").await, None);
+
+        let json = "[0]".repeat(2000);
+        let routes = axum::Router::new()
+            .route(
+                "/json",
+                axum::routing::get({
+                    let json = json.clone();
+                    move || async move { ([(header::CONTENT_TYPE, "application/json")], json) }
+                }),
+            )
+            .route(
+                "/download",
+                axum::routing::get(move || async move {
+                    (
+                        [
+                            (header::CONTENT_TYPE, "application/json"),
+                            (
+                                header::CONTENT_DISPOSITION,
+                                "attachment; filename=\"x.json\"",
+                            ),
+                        ],
+                        json,
+                    )
+                }),
+            )
+            .route(
+                "/small",
+                axum::routing::get(|| async {
+                    ([(header::CONTENT_TYPE, "application/json")], "{}")
+                }),
+            );
+        assert_eq!(
+            encoding_of(routes.clone(), "/json").await.as_deref(),
+            Some("gzip")
+        );
+        assert_eq!(encoding_of(routes.clone(), "/download").await, None);
+        assert_eq!(encoding_of(routes, "/small").await, None);
+    }
 
     fn ip(text: &str) -> IpAddr {
         text.parse().unwrap()

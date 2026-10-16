@@ -70,6 +70,14 @@ impl FileStamp {
             modified_nanos,
         })
     }
+
+    /// The stamp as bytes, for a cache key.
+    pub fn to_bytes(self) -> [u8; 24] {
+        let mut bytes = [0; 24];
+        bytes[..8].copy_from_slice(&self.len.to_le_bytes());
+        bytes[8..].copy_from_slice(&self.modified_nanos.to_le_bytes());
+        bytes
+    }
 }
 
 impl OverviewDiskCache {
@@ -102,8 +110,7 @@ impl OverviewDiskCache {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"ridal-overview-file-v1");
         hasher.update(variant.as_str().as_bytes());
-        hasher.update(&stamp.len.to_le_bytes());
-        hasher.update(&stamp.modified_nanos.to_le_bytes());
+        hasher.update(&stamp.to_bytes());
         hasher.update(&(width as u64).to_le_bytes());
         hasher.update(&(height as u64).to_le_bytes());
         let name = &hasher.finalize().to_hex()[..32];
@@ -204,11 +211,11 @@ impl OverviewDiskCache {
 /// The temporary name keeps the image extension last
 /// (`<key>.tmp-<pid>-<n>.png`) and is unique per process and call, so two
 /// requests or two servers writing the same overview never share one.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(super) fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = path
         .parent()
-        .ok_or_else(|| std::io::Error::other("overview path has no parent"))?;
+        .ok_or_else(|| std::io::Error::other("cache path has no parent"))?;
     std::fs::create_dir_all(parent)?;
     let stem = path
         .file_stem()

@@ -33,8 +33,31 @@ const BREAK_DISTANCE_JUMP_M: f64 = 100.0;
 /// per-trace time gap.
 const BREAK_TIME_GAP_MULTIPLE: f64 = 50.0;
 
+/// Mean length of a degree of latitude. Only [`Track::for_map`] uses it,
+/// to measure a tolerance far coarser than its error.
+const METRES_PER_DEGREE_LAT: f64 = 111_195.0;
+
+/// What [`Track::from_location`] produces, as a number. The track cache
+/// keeps tracks on disk across restarts and keys them on this, so a
+/// change to how a track is built -- the breaks, the tolerances, the
+/// simplification -- must bump it, or a server serves the old tracks
+/// until each file changes.
+pub const TRACK_VERSION: u32 = 1;
+
+/// Douglas-Peucker tolerance, in metres, of the tracks the overview maps
+/// draw ([`Track::for_map`]). A pixel is a metre or more until a map is
+/// zoomed past what its basemaps resolve, so nothing finer shows, and at
+/// [`DEFAULT_TOLERANCE_M`] a catalog of 700 radargrams sent 15 MB of
+/// vertices to draw lines a few hundred pixels long.
+pub const MAP_TOLERANCE_M: f64 = 5.0;
+
+/// Decimal places kept of a map track's longitude and latitude: 1e-6
+/// degrees is at most 0.11 m, well inside [`MAP_TOLERANCE_M`], and
+/// stops each coordinate from being sent as 17 digits.
+const MAP_DECIMALS: i32 = 6;
+
 /// One retained track vertex: a source trace index and its WGS84 position.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TrackVertex {
     pub trace_index: u32,
     pub lon: f64,
@@ -46,7 +69,7 @@ pub struct TrackVertex {
 /// trace_end]` belongs to exactly one segment -- unlike PFA_website, no
 /// segment is dropped for being short, so every trace has a defined
 /// position.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TrackSegment {
     pub segment_index: usize,
     pub trace_start: u32,
@@ -57,7 +80,7 @@ pub struct TrackSegment {
 }
 
 /// A full radargram track: an ordered set of segments covering every trace.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct Track {
     pub segments: Vec<TrackSegment>,
 }
@@ -176,6 +199,62 @@ impl Track {
         }
 
         Ok(Track { segments })
+    }
+
+    /// The track as an overview map draws it: each segment simplified in
+    /// 2D to [`MAP_TOLERANCE_M`] and its coordinates rounded to
+    /// [`MAP_DECIMALS`].
+    ///
+    /// Shape only, unlike [`Track::from_location`]: a map of many tracks
+    /// draws lines and never looks a trace up, so a standstill needs no
+    /// vertex of its own here. The vertices kept are a subset of this
+    /// track's, so each still carries its true trace index.
+    ///
+    /// The simplification runs in metres on a local equirectangular
+    /// projection about each segment's first vertex, which over a
+    /// segment's few kilometres is far more accurate than the tolerance.
+    pub fn for_map(&self) -> Track {
+        let round = |v: f64| {
+            let scale = 10f64.powi(MAP_DECIMALS);
+            (v * scale).round() / scale
+        };
+        let segments = self
+            .segments
+            .iter()
+            .map(|segment| {
+                let Some(origin) = segment.vertices.first() else {
+                    return segment.clone();
+                };
+                let metres_per_lon = origin.lat.to_radians().cos() * METRES_PER_DEGREE_LAT;
+                let points: Vec<[f64; 3]> = segment
+                    .vertices
+                    .iter()
+                    .map(|v| {
+                        [
+                            0.0,
+                            (v.lon - origin.lon) * metres_per_lon,
+                            (v.lat - origin.lat) * METRES_PER_DEGREE_LAT,
+                        ]
+                    })
+                    .collect();
+                let vertices = simplify_with_indices(&points, MAP_TOLERANCE_M, usize::MAX)
+                    .into_iter()
+                    .map(|i| {
+                        let v = &segment.vertices[i];
+                        TrackVertex {
+                            trace_index: v.trace_index,
+                            lon: round(v.lon),
+                            lat: round(v.lat),
+                        }
+                    })
+                    .collect();
+                TrackSegment {
+                    vertices,
+                    ..segment.clone()
+                }
+            })
+            .collect();
+        Track { segments }
     }
 
     /// Interpolate the WGS84 position of a (possibly fractional)
@@ -534,6 +613,92 @@ mod tests {
                 expected.y
             );
         }
+    }
+
+    #[test]
+    fn a_map_track_keeps_the_shape_and_drops_what_only_lookup_needs() {
+        // A 1 km line with a 40 m bend and, halfway, a standstill: the full
+        // track keeps vertices for the standstill (trace lookup needs them)
+        // and for the 2 m wobble (it is above 1 m); a map needs neither.
+        let mut points = Vec::new();
+        let mut t = 0.0;
+        for i in 0..1000 {
+            let x = i as f64;
+            let bend = 40.0 * (-((x - 700.0) / 50.0).powi(2)).exp();
+            let wobble = 2.0 * (x / 15.0).sin();
+            let repeats = if i == 500 { 60 } else { 1 };
+            for _ in 0..repeats {
+                points.push((t, 500_000.0 + x, 8_000_000.0 + bend + wobble));
+                t += 0.1;
+            }
+        }
+        let full = Track::from_location(&location_from_traces(points)).unwrap();
+        let map = full.for_map();
+
+        assert_eq!(map.segments.len(), full.segments.len());
+        let (full_vertices, map_vertices) = (&full.segments[0].vertices, &map.segments[0].vertices);
+        assert!(
+            map_vertices.len() * 2 < full_vertices.len(),
+            "{} of {} kept",
+            map_vertices.len(),
+            full_vertices.len()
+        );
+        // A subset, endpoints included, so each keeps its true trace index.
+        assert_eq!(map_vertices.first().unwrap().trace_index, 0);
+        assert_eq!(
+            map_vertices.last().unwrap().trace_index,
+            full_vertices.last().unwrap().trace_index
+        );
+        let full_indices: Vec<u32> = full_vertices.iter().map(|v| v.trace_index).collect();
+        assert!(map_vertices
+            .iter()
+            .all(|v| full_indices.contains(&v.trace_index)));
+        // Rounded to 1e-6 degrees.
+        for v in map_vertices {
+            for c in [v.lon, v.lat] {
+                assert!(((c * 1e6).round() - c * 1e6).abs() < 1e-6, "{c}");
+            }
+        }
+        // And no full vertex is further from the map's line than the
+        // tolerance, with a little for the rounding: the bend survives.
+        let to_m = |v: &TrackVertex| {
+            let o = &full_vertices[0];
+            (
+                (v.lon - o.lon) * o.lat.to_radians().cos() * METRES_PER_DEGREE_LAT,
+                (v.lat - o.lat) * METRES_PER_DEGREE_LAT,
+            )
+        };
+        let line: Vec<(f64, f64)> = map_vertices.iter().map(to_m).collect();
+        for v in full_vertices {
+            let p = to_m(v);
+            let nearest = line
+                .windows(2)
+                .map(|w| {
+                    let p3 = [0.0, p.0, p.1];
+                    let (a, b) = ([0.0, w[0].0, w[0].1], [0.0, w[1].0, w[1].1]);
+                    // Distance to the segment, not its line: clamp to the ends.
+                    let ab = (b[1] - a[1], b[2] - a[2]);
+                    let t = ((p.0 - a[1]) * ab.0 + (p.1 - a[2]) * ab.1)
+                        / (ab.0 * ab.0 + ab.1 * ab.1).max(f64::MIN_POSITIVE);
+                    if (0.0..=1.0).contains(&t) {
+                        perpendicular_distance(p3, a, b)
+                    } else {
+                        let end = if t < 0.0 { a } else { b };
+                        ((p.0 - end[1]).powi(2) + (p.1 - end[2]).powi(2)).sqrt()
+                    }
+                })
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                nearest < MAP_TOLERANCE_M + 0.5,
+                "trace {}: {nearest:.2} m",
+                v.trace_index
+            );
+        }
+        let bend_kept = map_vertices
+            .iter()
+            .map(|v| to_m(v).1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(bend_kept > 35.0, "{bend_kept}");
     }
 
     #[test]

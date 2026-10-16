@@ -35,6 +35,7 @@ my_survey/
       dems/<dem_id>.json          a DEM, which sources link to by id
     cache/                        derived data; safe to delete
       overviews/<revision>/       whole-radargram thumbnails, kept across restarts
+      tracks/<key>.json           each radargram's track, kept across restarts
 ```
 
 Several of these only appear once they are needed. `users.json` is written
@@ -58,8 +59,11 @@ with where the files do not say them.
 contains a `CACHEDIR.TAG`, so backup tools that honour the convention skip it.
 It holds the overview images the server has made, one small file per
 radargram, render profile and size, so that the index and map do not reread
-every radargram after a restart. Overviews of a radargram that has since been
-reprocessed or removed are deleted when the server next scans the catalog.
+every radargram after a restart, and each radargram's track, one small file
+per radargram file, so that the server does not reread every radargram's
+coordinates when it starts. Overviews and tracks of a radargram that has
+since been reprocessed or removed are deleted when the server next scans the
+catalog.
 `catalog-summary.json` is derived too: it is the catalog's size, rewritten
 whenever the catalog is scanned, and read by the site landing page so that it
 does not have to open every project.
@@ -145,6 +149,7 @@ default_format = "geojson"
 
 [catalog]
 show_group_radargrams = false
+show_group_maps = false
 
 [processing]
 max_queued_jobs = 2
@@ -246,6 +251,13 @@ name_field = "Stake"
   page opens. `false` opens the catalog on the group headings and maps, with
   each group's **Show all** button listing its radargrams. A person can
   override it in their own settings. Default: `true`.
+
+`show_group_maps`
+: Whether each group in the radargram catalog shows its map when the page
+  opens. `false` hides them behind each group's **Show map** button; a
+  hidden map loads neither tracks nor basemap tiles, which makes a large
+  catalog quicker to open on a slow connection. A person can override it in
+  their own settings. Default: `true`.
 
 ### `[processing]`
 

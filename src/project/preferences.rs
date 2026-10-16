@@ -142,6 +142,11 @@ pub struct Preferences {
     /// person in a project that hides them can still say "show them to me".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_group_radargrams: Option<bool>,
+    /// Whether the catalog opens with each group's map shown, or hidden
+    /// behind its "Show map" button. On the same terms as
+    /// [`Preferences::show_group_radargrams`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_group_maps: Option<bool>,
     /// Whether the viewer opens on the whole radargram rather than on its
     /// start at full depth (#315).
     ///
@@ -292,6 +297,7 @@ mod tests {
                 level2_format: Some("csv".to_string()),
                 basemap: Some("osm".to_string()),
                 show_group_radargrams: Some(false),
+                show_group_maps: Some(false),
                 open_zoomed_out: Some(true),
                 show_vertex_tooltips: Some(false),
             },
@@ -308,6 +314,7 @@ mod tests {
         assert_eq!(erik.level2_format.as_deref(), Some("csv"));
         assert_eq!(erik.basemap.as_deref(), Some("osm"));
         assert_eq!(erik.show_group_radargrams, Some(false));
+        assert_eq!(erik.show_group_maps, Some(false));
         assert_eq!(erik.open_zoomed_out, Some(true));
         assert_eq!(erik.show_vertex_tooltips, Some(false));
         // The point of the whole module: two people can disagree.
@@ -334,6 +341,7 @@ mod tests {
                 level2_format: None,
                 basemap: None,
                 show_group_radargrams: None,
+                show_group_maps: None,
                 open_zoomed_out: None,
                 show_vertex_tooltips: None,
             },
@@ -352,6 +360,7 @@ mod tests {
             "level2_spacing",
             "level2_format",
             "show_group_radargrams",
+            "show_group_maps",
             "open_zoomed_out",
             "show_vertex_tooltips",
         ] {
@@ -391,6 +400,7 @@ mod tests {
                 level2_format: None,
                 basemap: None,
                 show_group_radargrams: None,
+                show_group_maps: None,
                 open_zoomed_out: None,
                 show_vertex_tooltips: None,
             },
