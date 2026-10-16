@@ -49,6 +49,7 @@ pub async fn get_preferences(
         "level2_format": preferences.level2_format,
         "basemap": preferences.basemap,
         "show_group_radargrams": preferences.show_group_radargrams,
+        "show_group_maps": preferences.show_group_maps,
         "open_zoomed_out": preferences.open_zoomed_out,
         "show_vertex_tooltips": preferences.show_vertex_tooltips,
     })))
@@ -98,6 +99,10 @@ pub struct PreferencesBody {
     /// (#314). `null` defers to the project.
     #[serde(default, deserialize_with = "present")]
     show_group_radargrams: Option<Option<bool>>,
+    /// Whether the catalog opens with each group's map shown. `null`
+    /// defers to the project.
+    #[serde(default, deserialize_with = "present")]
+    show_group_maps: Option<Option<bool>>,
     /// Whether the viewer opens on the whole radargram (#315).
     #[serde(default, deserialize_with = "present")]
     open_zoomed_out: Option<Option<bool>>,
@@ -245,6 +250,10 @@ pub async fn put_preferences(
         // be sayable.
         stored.show_group_radargrams = sent;
     }
+    if let Some(sent) = body.show_group_maps {
+        // The same dropdown, kept as sent for the same reason.
+        stored.show_group_maps = sent;
+    }
 
     if let Some(sent) = body.basemap {
         // Same rule again: a basemap id the project does not offer would
@@ -277,6 +286,7 @@ pub async fn put_preferences(
         "level2_format": stored.level2_format,
         "basemap": stored.basemap,
         "show_group_radargrams": stored.show_group_radargrams,
+        "show_group_maps": stored.show_group_maps,
         "open_zoomed_out": stored.open_zoomed_out,
         "show_vertex_tooltips": stored.show_vertex_tooltips,
     })))

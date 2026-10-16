@@ -406,6 +406,14 @@ pub struct CatalogSection {
     /// it for that page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_group_radargrams: Option<bool>,
+    /// Whether each group's map is shown when the catalog opens, or hidden
+    /// behind the group's "Show map" button. Unset means shown.
+    ///
+    /// On the same terms as `show_group_radargrams`. A hidden map asks the
+    /// server for nothing, which on a slow connection is most of what a
+    /// large catalog costs to open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_group_maps: Option<bool>,
 }
 
 /// The `[render]` defaults a project can carry, as one value.
@@ -437,6 +445,7 @@ pub struct ExportDefaults {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CatalogDefaults {
     pub show_group_radargrams: Option<bool>,
+    pub show_group_maps: Option<bool>,
 }
 
 /// Write `key` under `[table]`, creating the table, or remove it when the
@@ -1039,8 +1048,10 @@ impl Project {
              # How the radargram catalog opens. `show_group_radargrams = false`\n\
              # opens it with each group's radargrams hidden behind its \"Show\n\
              # all\" button, which helps once a project has hundreds of them.\n\
-             # Set it from Project settings in the browser. Left unset, they are\n\
-             # shown; a person can override it in their own settings.\n\
+             # `show_group_maps = false` does the same for each group's map,\n\
+             # behind its \"Show map\" button. Set both from Project settings\n\
+             # in the browser. Left unset, both are shown; a person can\n\
+             # override either in their own settings.\n\
              [catalog]\n\
              \n\
              # Processing raw data on the server. `max_queued_jobs = 2` keeps\n\
@@ -1185,6 +1196,12 @@ impl Project {
                 "show_group_radargrams",
                 catalog.show_group_radargrams.map(toml_edit::value),
             );
+            set_or_clear(
+                document,
+                "catalog",
+                "show_group_maps",
+                catalog.show_group_maps.map(toml_edit::value),
+            );
             Ok(())
         })
     }
@@ -1288,6 +1305,13 @@ impl Project {
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
     pub fn default_show_group_radargrams(&self) -> Option<bool> {
         self.read_config().catalog.show_group_radargrams
+    }
+
+    /// Whether the catalog should open with each group's map shown. `None`
+    /// means shown.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn default_show_group_maps(&self) -> Option<bool> {
+        self.read_config().catalog.show_group_maps
     }
 
     /// The point spacing the download dialogs should open on (#166).

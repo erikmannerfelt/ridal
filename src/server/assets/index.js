@@ -27,37 +27,47 @@ document.getElementById('index-profile-select').addEventListener('change', (even
   location.search = params.toString();
 });
 
-// Each group's "Hide all" / "Show all" (#314). Which way the page opens
-// is a setting the server already applied; this changes it for this page
-// only, the same way the viewer's "Show picks" does. Unhiding is also what
-// lets the hidden cards' lazy thumbnails start loading.
+// Each group's "Hide all" / "Show all" (#314) and "Hide map" / "Show map".
+// Which way the page opens is a setting the server already applied; these
+// change it for this page only, the same way the viewer's "Show picks"
+// does. Unhiding is also what lets the hidden cards' lazy thumbnails start
+// loading, and a hidden map's tracks.
 //
 // "This page" includes the reloads the page does to itself after an edit
 // (`reloadKeepingGroups`): without carrying the state across, removing one
-// radargram from a group the operator had just shown hid it again.
+// radargram from a group the operator had just shown hid it again (#367).
 const GROUPS_SHOWN = 'ridal.groups-shown';
 
-function setGroupShown(button, shown) {
+// The two kinds of toggle, by the key each is saved under.
+const TOGGLES = { radargrams: '.group-toggle', map: '.group-map-toggle' };
+
+function setShown(button, shown) {
   const target = document.getElementById(button.getAttribute('aria-controls'));
   target.hidden = !shown;
   button.setAttribute('aria-expanded', String(shown));
-  button.textContent = shown ? 'Hide all' : 'Show all';
+  button.textContent = shown ? button.dataset.hideLabel : button.dataset.showLabel;
+  if (shown && target.classList.contains('group-map')) showMap(target);
 }
 
-/** Reload the page, keeping each group shown or hidden as it is now.
+/** Reload the page, keeping each group's radargrams and map shown or
+ * hidden as they are now.
  *
  * Keyed by group id rather than the toggle's own id, which is a loop index
  * and shifts when the edit adds or removes a group. Read back, and cleared,
  * once on the next load; storage that is unavailable only costs the state. */
 function reloadKeepingGroups() {
   const shown = {};
-  document.querySelectorAll('.group-toggle').forEach((button) => {
-    shown[button.closest('section.group').id] = button.getAttribute('aria-expanded') === 'true';
-  });
+  for (const [kind, selector] of Object.entries(TOGGLES)) {
+    document.querySelectorAll(selector).forEach((button) => {
+      const groupId = button.closest('section.group').id;
+      shown[groupId] = shown[groupId] || {};
+      shown[groupId][kind] = button.getAttribute('aria-expanded') === 'true';
+    });
+  }
   try {
     sessionStorage.setItem(GROUPS_SHOWN, JSON.stringify(shown));
   } catch (_) {
-    // Nothing to do: the page opens the way the setting says.
+    // Nothing to do: the page opens the way the settings say.
   }
   window.location.reload();
 }
@@ -69,35 +79,22 @@ document.addEventListener('ridal:radargram-edited', (event) => {
   reloadKeepingGroups();
 });
 
-(function restoreGroupsShown() {
-  let shown = null;
-  try {
-    shown = JSON.parse(sessionStorage.getItem(GROUPS_SHOWN));
-    sessionStorage.removeItem(GROUPS_SHOWN);
-  } catch (_) {
-    return;
-  }
-  if (!shown || typeof shown !== 'object') return;
-  document.querySelectorAll('.group-toggle').forEach((button) => {
-    const groupId = button.closest('section.group').id;
-    if (groupId in shown) setGroupShown(button, shown[groupId]);
-  });
-})();
+/* --- Group maps (#121) ----------------------------------------------------
+ *
+ * One map per group, each showing every member's track. Created when it
+ * first comes near the viewport, not when the page loads: a catalog of
+ * hundreds of radargrams has dozens of groups, and creating every map at
+ * once asked for every group's tracks and every map's basemap tiles before
+ * the reader had scrolled anywhere. A hidden map is never observed into
+ * view, so it costs nothing until it is shown.
+ */
+const createdMaps = new Map();
 
-document.querySelectorAll('.group-toggle').forEach((button) => {
-  button.addEventListener('click', () => {
-    setGroupShown(button, button.getAttribute('aria-expanded') !== 'true');
-  });
-});
-
-// One map per group (#121), each showing every member's track. The
-// catalog's target scale (~100 files, #122/#123) keeps this cheap
-// enough to load eagerly rather than needing an IntersectionObserver
-// lazy-init trick for per-card maps.
-document.querySelectorAll('.group-map').forEach((el) => {
+function createMap(el) {
   // The element id is passed so a failing overlay can explain itself over
   // this map rather than over whichever one Leaflet asked last.
   const map = RIDAL.basemap(L.map(el.id), el.id);
+  createdMaps.set(el, map);
 
   RIDAL.fetchJson(RIDAL.apiPath("groups", el.dataset.group, "tracks"))
     .then((members) => {
@@ -164,7 +161,65 @@ document.querySelectorAll('.group-map').forEach((el) => {
       RIDAL.reportError(el.id, `Could not load tracks for this group: ${error.message}`);
       map.setView([0, 0], 2);
     });
+}
+
+// A margin, so a map just below the fold is drawn by the time it is
+// scrolled to. Without IntersectionObserver every map is created at once,
+// as they all were before.
+const mapObserver =
+  'IntersectionObserver' in window
+    ? new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            mapObserver.unobserve(entry.target);
+            if (!createdMaps.has(entry.target)) createMap(entry.target);
+          }
+        },
+        { rootMargin: '300px 0px' },
+      )
+    : null;
+
+/** Start drawing a map that is (now) shown: watch for it to come into
+ * view, or, if it was drawn before it was hidden, tell Leaflet its size
+ * changed -- it measured the container as nothing while it was hidden. */
+function showMap(el) {
+  const map = createdMaps.get(el);
+  if (map) {
+    map.invalidateSize();
+  } else if (mapObserver) {
+    mapObserver.observe(el);
+  } else {
+    createMap(el);
+  }
+}
+
+(function restoreGroupsShown() {
+  let shown = null;
+  try {
+    shown = JSON.parse(sessionStorage.getItem(GROUPS_SHOWN));
+    sessionStorage.removeItem(GROUPS_SHOWN);
+  } catch (_) {
+    return;
+  }
+  if (!shown || typeof shown !== 'object') return;
+  for (const [kind, selector] of Object.entries(TOGGLES)) {
+    document.querySelectorAll(selector).forEach((button) => {
+      const saved = shown[button.closest('section.group').id];
+      if (saved && typeof saved[kind] === 'boolean') setShown(button, saved[kind]);
+    });
+  }
+})();
+
+document.querySelectorAll(Object.values(TOGGLES).join(', ')).forEach((button) => {
+  button.addEventListener('click', () => {
+    setShown(button, button.getAttribute('aria-expanded') !== 'true');
+  });
 });
+
+// Every map shown when the page opens. One restored as shown above was
+// already passed to `showMap`, which watching twice does not disturb.
+document.querySelectorAll('.group-map:not([hidden])').forEach(showMap);
 
 /* --- Merged downloads ----------------------------------------------------
  *

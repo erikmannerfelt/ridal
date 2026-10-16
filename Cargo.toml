@@ -79,6 +79,11 @@ axum = { version = "0.8", optional = true }
 # in-process (#214). A dev-dependency too, where the route tests use the same
 # method directly.
 tower = { version = "0.5", features = ["util"], optional = true }
+# Gzip for pages, JSON and scripts. A catalog of 700 radargrams is 1.5 MB of
+# HTML and its scripts another 600 kB, which on a field connection is
+# seconds; text compresses to a tenth of that. Images are already
+# compressed and downloads are left as they are (see `launch::compression`).
+tower-http = { version = "0.6", features = ["compression-gzip"], optional = true }
 # "time" is for the render-permit acquisition timeout in routes.rs, which
 # turns an overloaded server into a 503 instead of an unbounded queue.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs"], optional = true }
@@ -173,6 +178,7 @@ server = [
     "argon2",
     "axum",
     "tower",
+    "tower-http",
     "futures-util",
     "tokio",
     "tokio-util",

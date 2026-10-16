@@ -15,6 +15,8 @@ use crate::identity::{DisplayName, GroupId, GroupName, RadargramId};
 use crate::io::{self, RidalNetcdfKind};
 use crate::project::overrides::CatalogOverrides;
 
+use super::track_cache::TrackCache;
+
 /// One discovered radargram, selected as the representative for its
 /// `radargram_id` if duplicates were found.
 #[derive(Debug, Clone, PartialEq)]
@@ -377,13 +379,20 @@ impl Catalog {
     /// rule, and it is the point — otherwise an external file reprocessed
     /// later would silently override a deliberate in-project decision, and
     /// the project would not be an overlay at all.
-    pub fn discover_roots(roots: &[CatalogRoot], overrides: &CatalogOverrides) -> Catalog {
+    ///
+    /// Each file's track comes from `tracks`, which a server keeps between
+    /// discoveries so that only a file that changed is read again.
+    pub fn discover_roots(
+        roots: &[CatalogRoot],
+        overrides: &CatalogOverrides,
+        tracks: &TrackCache,
+    ) -> Catalog {
         let candidates: Vec<Candidate> = roots
             .iter()
             .enumerate()
             .flat_map(|(index, root)| discover_candidates(root, index))
             .collect();
-        Self::from_candidates(candidates, roots, overrides)
+        Self::from_candidates(candidates, roots, overrides, tracks)
     }
 
     /// Discover radargrams under `root`, which may be a single processed
@@ -396,13 +405,18 @@ impl Catalog {
     /// not produce the disagreement warning, and a radargram moved into
     /// another group must not bring its old group's name along.
     pub fn discover_with_overrides(root: &Path, overrides: &CatalogOverrides) -> Catalog {
-        Self::discover_roots(&[CatalogRoot::single(root)], overrides)
+        Self::discover_roots(
+            &[CatalogRoot::single(root)],
+            overrides,
+            &TrackCache::in_memory(),
+        )
     }
 
     fn from_candidates(
         candidates: Vec<Candidate>,
         roots: &[CatalogRoot],
         overrides: &CatalogOverrides,
+        tracks: &TrackCache,
     ) -> Catalog {
         let mut warnings = Vec::new();
         // (is the layer writable, id) -> every (datetime, path) found there.
@@ -481,7 +495,8 @@ impl Catalog {
                 elevation_min: None,
                 elevation_max: None,
                 x_scale: None,
-                track_length_m: super::track::read_track_from_netcdf(&candidate.path)
+                track_length_m: tracks
+                    .get(&candidate.path)
                     .ok()
                     .map(|track| track.segments.iter().map(|s| s.length_m).sum()),
                 root: candidate.root,
@@ -1415,7 +1430,11 @@ mod tests {
         }
 
         let roots = [writable(project.path()), read_only(archive.path())];
-        let catalog = Catalog::discover_roots(&roots, &CatalogOverrides::default());
+        let catalog = Catalog::discover_roots(
+            &roots,
+            &CatalogOverrides::default(),
+            &TrackCache::in_memory(),
+        );
         assert_eq!(catalog.entries.len(), 1);
         assert_eq!(catalog.entries[0].root, 0, "the project's copy is served");
         assert_eq!(catalog.entries[0].relative_path, "ours.nc");
@@ -1436,7 +1455,11 @@ mod tests {
         write_processed_nc(&second.path().join("b.nc"), Some("shared"), None, None);
 
         let roots = [read_only(first.path()), read_only(second.path())];
-        let catalog = Catalog::discover_roots(&roots, &CatalogOverrides::default());
+        let catalog = Catalog::discover_roots(
+            &roots,
+            &CatalogOverrides::default(),
+            &TrackCache::in_memory(),
+        );
         assert_eq!(catalog.entries.len(), 1);
         assert_eq!(catalog.warnings.len(), 1, "{:?}", catalog.warnings);
         assert!(catalog.warnings[0]
@@ -1464,7 +1487,7 @@ mod tests {
             },
         );
 
-        let catalog = Catalog::discover_roots(&roots, &overrides);
+        let catalog = Catalog::discover_roots(&roots, &overrides, &TrackCache::in_memory());
         assert_eq!(
             catalog
                 .entries
@@ -1507,7 +1530,11 @@ mod tests {
             read_only(first.path()),
             read_only(second.path()),
         ];
-        let catalog = Catalog::discover_roots(&roots, &CatalogOverrides::default());
+        let catalog = Catalog::discover_roots(
+            &roots,
+            &CatalogOverrides::default(),
+            &TrackCache::in_memory(),
+        );
         assert_eq!(catalog.entries.len(), 1);
         assert_eq!(catalog.entries[0].root, 0, "the project's copy is served");
         assert_eq!(
@@ -1548,7 +1575,11 @@ mod tests {
             },
         );
 
-        let catalog = Catalog::discover_roots(&[read_only(archive.path())], &overrides);
+        let catalog = Catalog::discover_roots(
+            &[read_only(archive.path())],
+            &overrides,
+            &TrackCache::in_memory(),
+        );
         assert!(catalog.entries.is_empty(), "still not served");
         let changed: Vec<_> = catalog
             .warnings
@@ -1567,7 +1598,11 @@ mod tests {
         let current = catalog.entries.first().map(|e| e.revision_id.to_string());
         let _ = current;
         let mut matching = CatalogOverrides::default();
-        let plain = Catalog::discover_roots(&[read_only(archive.path())], &matching);
+        let plain = Catalog::discover_roots(
+            &[read_only(archive.path())],
+            &matching,
+            &TrackCache::in_memory(),
+        );
         let revision = plain.entries[0].revision_id.to_string();
         matching.ignored.insert(
             radargram("line-01"),
@@ -1576,7 +1611,11 @@ mod tests {
                 revision_id: Some(revision),
             },
         );
-        let quiet = Catalog::discover_roots(&[read_only(archive.path())], &matching);
+        let quiet = Catalog::discover_roots(
+            &[read_only(archive.path())],
+            &matching,
+            &TrackCache::in_memory(),
+        );
         assert!(
             !quiet
                 .warnings
@@ -1606,7 +1645,11 @@ mod tests {
             },
         );
 
-        let catalog = Catalog::discover_roots(&[read_only(archive.path())], &overrides);
+        let catalog = Catalog::discover_roots(
+            &[read_only(archive.path())],
+            &overrides,
+            &TrackCache::in_memory(),
+        );
         let vestigial = catalog.vestigial_ignores();
         assert_eq!(vestigial.len(), 1);
         assert_eq!(vestigial[0].radargram_id.as_str(), "long-gone");
@@ -1822,7 +1865,11 @@ mod tests {
             writable: true,
             group_bases: vec![radargrams.clone()],
         };
-        let catalog = Catalog::discover_roots(&[root], &CatalogOverrides::default());
+        let catalog = Catalog::discover_roots(
+            &[root],
+            &CatalogOverrides::default(),
+            &TrackCache::in_memory(),
+        );
 
         let group_of = |id: &str| {
             catalog

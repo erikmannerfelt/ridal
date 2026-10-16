@@ -41,6 +41,12 @@ clicking a radargram opens it in the viewer.
   the viewer is drawn (see {doc}`rendering`).
 - **More info** under a radargram shows its id, size, track length, file and
   processing date, and whether it has been picked.
+- **Hide all** / **Show all** and **Hide map** / **Show map** on a group
+  hide or show its radargrams and its map on this page. Which way the page
+  opens is set under **Radargrams in the catalog** and **Maps in the
+  catalog** in your settings, with a default for the project in its
+  settings. A map is only loaded once it is shown and scrolled to, so hiding
+  the maps makes a large catalog quicker to open on a slow connection.
 - **Download** on a group, or **Download all**, gives the picked and derived
   layer points of every radargram in it as one file, and their tracks as
   GeoJSON.

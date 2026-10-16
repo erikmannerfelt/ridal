@@ -1,8 +1,67 @@
 //! Embedded frontend assets (#120): production must not require a
 //! separate Node dev server or an assets directory alongside the binary.
 
-use axum::http::header;
+use std::sync::OnceLock;
+
+use axum::extract::Request;
+use axum::http::{header, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+
+/// One embedded asset's response, with an `ETag` of its contents.
+///
+/// `no-cache` makes the browser ask before reusing a copy, so a new build
+/// is picked up on the next load; the `ETag` is what lets that question be
+/// answered with an empty 304 ([`not_modified`]) rather than the whole
+/// file again. Without one a catalog page fetched some 600 kB of scripts
+/// and styles on every load. Weak, because the compression layer may
+/// change the bytes on the wire and not their meaning.
+fn embedded(
+    bytes: &'static [u8],
+    content_type: &'static str,
+    etag: &'static OnceLock<String>,
+) -> Response {
+    let etag = etag.get_or_init(|| format!("W/\"{}\"", &blake3::hash(bytes).to_hex()[..20]));
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-cache"),
+            (header::ETAG, etag.as_str()),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// Answer a request whose `If-None-Match` names the response's own `ETag`
+/// with `304 Not Modified` and no body.
+///
+/// Layered on the static routes only. Weak comparison, as RFC 9110 asks of
+/// `If-None-Match`: a `W/` prefix on either side is ignored.
+pub async fn not_modified(request: Request, next: Next) -> Response {
+    let wanted = request.headers().get(header::IF_NONE_MATCH).cloned();
+    let response = next.run(request).await;
+    let (Some(wanted), Some(etag)) = (wanted, response.headers().get(header::ETAG)) else {
+        return response;
+    };
+    let opaque = |tag: &str| tag.trim().trim_start_matches("W/").to_string();
+    let (Ok(wanted), Ok(etag)) = (wanted.to_str(), etag.to_str()) else {
+        return response;
+    };
+    let matches = wanted
+        .split(',')
+        .any(|tag| tag.trim() == "*" || opaque(tag) == opaque(etag));
+    if !response.status().is_success() || !matches {
+        return response;
+    }
+    let mut not_modified = StatusCode::NOT_MODIFIED.into_response();
+    for name in [header::ETAG, header::CACHE_CONTROL] {
+        if let Some(value) = response.headers().get(&name) {
+            not_modified.headers_mut().insert(name, value.clone());
+        }
+    }
+    not_modified
+}
 
 /// Embed and serve one asset. `$path` is relative to `src/server/assets/`.
 ///
@@ -13,14 +72,12 @@ use axum::response::{IntoResponse, Response};
 macro_rules! embedded_asset {
     ($fn_name:ident, $path:literal, $content_type:literal) => {
         pub async fn $fn_name() -> Response {
-            (
-                [
-                    (header::CONTENT_TYPE, $content_type),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                include_bytes!(concat!("assets/", $path)).as_slice(),
+            static ETAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            embedded(
+                include_bytes!(concat!("assets/", $path)),
+                $content_type,
+                &ETAG,
             )
-                .into_response()
         }
     };
 }
@@ -33,14 +90,12 @@ macro_rules! embedded_asset {
 macro_rules! embedded_repo_asset {
     ($fn_name:ident, $path:literal, $content_type:literal) => {
         pub async fn $fn_name() -> Response {
-            (
-                [
-                    (header::CONTENT_TYPE, $content_type),
-                    (header::CACHE_CONTROL, "no-cache"),
-                ],
-                include_bytes!(concat!("../../", $path)).as_slice(),
+            static ETAG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            embedded(
+                include_bytes!(concat!("../../", $path)),
+                $content_type,
+                &ETAG,
             )
-                .into_response()
         }
     };
 }
@@ -90,6 +145,44 @@ embedded_repo_asset!(favicon, "images/logo.png", "image/png");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_asset_the_browser_has_is_not_sent_again() {
+        use tower::ServiceExt;
+        let get = |etag: Option<&str>| {
+            let mut request = axum::http::Request::get("/static/index.js");
+            if let Some(etag) = etag {
+                request = request.header(header::IF_NONE_MATCH, etag);
+            }
+            crate::server::app::static_router()
+                .oneshot(request.body(axum::body::Body::empty()).unwrap())
+        };
+
+        let first = get(None).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first.headers()[header::ETAG].to_str().unwrap().to_string();
+        assert!(etag.starts_with("W/\""), "{etag}");
+        assert_eq!(first.headers()[header::CACHE_CONTROL], "no-cache");
+
+        // Asked again with it, weak or strong, alone or in a list: 304 and
+        // no body.
+        for asked in [
+            etag.clone(),
+            etag.trim_start_matches("W/").to_string(),
+            format!("\"other\", {etag}"),
+        ] {
+            let again = get(Some(&asked)).await.unwrap();
+            assert_eq!(again.status(), StatusCode::NOT_MODIFIED, "{asked}");
+            assert_eq!(again.headers()[header::ETAG], etag.as_str());
+            let body = axum::body::to_bytes(again.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert!(body.is_empty());
+        }
+        // A copy from another build is sent the new one.
+        let stale = get(Some("W/\"0000\"")).await.unwrap();
+        assert_eq!(stale.status(), StatusCode::OK);
+    }
 
     #[tokio::test]
     async fn leaflet_js_is_served_with_correct_content_type_and_is_nonempty() {

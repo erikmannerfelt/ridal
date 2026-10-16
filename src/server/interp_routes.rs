@@ -1107,7 +1107,7 @@ pub async fn get_settings(
         None
     };
 
-    Ok(Json(serde_json::json!({
+    let mut settings = serde_json::json!({
         "project": project.is_some(),
         // What each section may do, answered once here rather than inferred
         // in JavaScript from a role string it would have to rank itself.
@@ -1186,7 +1186,13 @@ pub async fn get_settings(
             .map(|p| crate::project::overlays::problems(&p.overlays()))
             .unwrap_or_default(),
         "my_basemap": mine.basemap,
-    })))
+    });
+    // Added after rather than inside: the literal above is at
+    // `serde_json::json!`'s recursion limit.
+    settings["default_show_group_maps"] =
+        serde_json::json!(project.and_then(|p| p.default_show_group_maps()));
+    settings["my_show_group_maps"] = serde_json::json!(mine.show_group_maps);
+    Ok(Json(settings))
 }
 
 #[derive(serde::Deserialize)]
@@ -1222,6 +1228,10 @@ pub struct SettingsUpdate {
     /// (#314). `null` clears it, restoring shown; absent leaves it alone.
     #[serde(default, deserialize_with = "present")]
     default_show_group_radargrams: Option<Option<bool>>,
+    /// Whether the catalog opens with each group's map shown. `null`
+    /// clears it, restoring shown; absent leaves it alone.
+    #[serde(default, deserialize_with = "present")]
+    default_show_group_maps: Option<Option<bool>>,
     /// The project's vector overlays (#177). Absent leaves them alone; an
     /// empty array removes them all.
     #[serde(default)]
@@ -1289,6 +1299,7 @@ pub async fn put_settings(
         || update.default_spacing.is_some()
         || update.default_format.is_some()
         || update.default_show_group_radargrams.is_some()
+        || update.default_show_group_maps.is_some()
     {
         // Validated here rather than in `Project`: which profiles exist is a
         // server concept, and a CLI-only build has no way to check it. Storing
@@ -1377,6 +1388,10 @@ pub async fn put_settings(
             None => project.default_show_group_radargrams(),
             Some(sent) => sent.filter(|shown| !*shown),
         };
+        let show_group_maps = match update.default_show_group_maps {
+            None => project.default_show_group_maps(),
+            Some(sent) => sent.filter(|shown| !*shown),
+        };
 
         // One write, not two. Everything this half submits lands together
         // or not at all: two conditional writes could leave the file
@@ -1388,6 +1403,7 @@ pub async fn put_settings(
                 &crate::project::ExportDefaults { spacing, format },
                 &crate::project::CatalogDefaults {
                     show_group_radargrams,
+                    show_group_maps,
                 },
             )
             .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
@@ -1509,6 +1525,7 @@ pub async fn put_settings(
         "default_spacing": project.default_spacing(),
         "default_format": project.default_format(),
         "default_show_group_radargrams": project.default_show_group_radargrams(),
+        "default_show_group_maps": project.default_show_group_maps(),
         "project_basemaps": project.basemaps(),
         "default_basemap": map.default_basemap,
         "built_in_basemap": map.offers_built_in(),

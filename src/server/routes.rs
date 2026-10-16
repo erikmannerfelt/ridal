@@ -556,6 +556,20 @@ fn resolve_show_group_radargrams(state: &AppState, caller: &Caller) -> bool {
     )
 }
 
+/// Whether the catalog should open with each group's map shown, rather
+/// than hidden behind the group's "Show map" button.
+fn resolve_show_group_maps(state: &AppState, caller: &Caller) -> bool {
+    cascade(
+        None,
+        my_preferences(state, caller).show_group_maps,
+        state
+            .project
+            .as_ref()
+            .and_then(|p| p.default_show_group_maps()),
+        true,
+    )
+}
+
 /// Whether the handles of a line being edited carry their tooltips
 /// (#363). No project layer, like `show_picks`.
 fn resolve_show_vertex_tooltips(state: &AppState, caller: &Caller) -> bool {
@@ -1670,6 +1684,9 @@ pub async fn index_page(
             // (#314). Each group's button changes it from there without
             // saving.
             show_group_radargrams => resolve_show_group_radargrams(&state, &caller),
+            // Whether each group's map is shown when the page opens, on the
+            // same terms.
+            show_group_maps => resolve_show_group_maps(&state, &caller),
             ..map_page_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
@@ -1857,7 +1874,9 @@ pub async fn dataset_track(
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
-    let track = super::track::read_track_from_netcdf(&path)
+    let track = state
+        .tracks
+        .get(&path)
         .map_err(|e| ApiError::internal("track_read_failed", e))?;
     Ok(Json(track_to_json(&track)))
 }
@@ -2057,7 +2076,8 @@ pub(super) fn attachment(filename: &str) -> (header::HeaderName, String) {
 
 /// `GET /api/v1/datasets/{id}/track.geojson`
 ///
-/// The same simplified track the maps draw, as a portable file. One Feature
+/// The same simplified track the viewer's map draws, as a portable file --
+/// the full one, not the coarser one of the group maps. One Feature
 /// per segment rather than one MultiLineString, so the per-segment trace
 /// range survives into the properties -- a gap in a track is a real thing
 /// (a standstill or a lifted antenna) and collapsing them loses it.
@@ -2076,7 +2096,9 @@ pub async fn dataset_track_geojson(
     let path = state
         .absolute_path(entry)
         .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
-    let track = super::track::read_track_from_netcdf(&path)
+    let track = state
+        .tracks
+        .get(&path)
         .map_err(|e| ApiError::internal("track_read_failed", e))?;
 
     let id = entry.radargram_id.to_string();
@@ -2144,7 +2166,7 @@ fn merged_track_geojson(
         let Ok(path) = state.absolute_path(entry) else {
             continue;
         };
-        let Ok(track) = super::track::read_track_from_netcdf(&path) else {
+        let Ok(track) = state.tracks.get(&path) else {
             continue;
         };
         features.extend(track_features(entry, &track));
@@ -2270,7 +2292,10 @@ pub async fn dataset_download(
 }
 
 /// Every radargram's track in one group, for sibling-track display on the
-/// viewer map and the index page's per-group overview map. A track that
+/// viewer map and the index page's per-group overview map, at the
+/// resolution those draw at ([`super::track::Track::for_map`]): every
+/// group map on a catalog page asks for this, and at full resolution a
+/// catalog of 700 radargrams sent 15 MB of vertices. A track that
 /// fails to read is silently skipped here rather than failing the whole
 /// response -- one bad sibling should not break the rest, matching the
 /// spirit of #122's "one bad candidate does not abort discovery."
@@ -2289,7 +2314,7 @@ pub async fn group_tracks(
         let Ok(path) = state.absolute_path(entry) else {
             continue;
         };
-        if let Ok(track) = super::track::read_track_from_netcdf(&path) {
+        if let Ok(track) = state.tracks.get(&path) {
             out.insert(
                 entry.radargram_id.to_string(),
                 serde_json::json!({
@@ -2298,7 +2323,8 @@ pub async fn group_tracks(
                     // (`listable` filters them for everyone else), and the
                     // map uses the flag to draw it as out of focus (#192).
                     "unlisted": entry.unlisted,
-                    "track": track_to_json(&track),
+                    // Drawn, never looked up in: see `Track::for_map`.
+                    "track": track_to_json(&track.for_map()),
                 }),
             );
         }

@@ -274,8 +274,18 @@
         <button type="button" class="group-toggle"
                 aria-controls="group-radargrams-{{ loop.index }}"
                 aria-expanded="{% if show_group_radargrams %}true{% else %}false{% endif %}"
+                data-hide-label="Hide all" data-show-label="Show all"
         >{% if show_group_radargrams %}Hide all{% else %}Show all{% endif %}</button>
         {% endif %}
+        {#- The map, likewise, and also a setting. A hidden map is never
+            created, so it costs neither its tracks nor its basemap tiles:
+            on a slow connection that is most of what a large catalog
+            takes to open. -#}
+        <button type="button" class="group-map-toggle"
+                aria-controls="group-map-{{ loop.index }}"
+                aria-expanded="{% if show_group_maps %}true{% else %}false{% endif %}"
+                data-hide-label="Hide map" data-show-label="Show map"
+        >{% if show_group_maps %}Hide map{% else %}Show map{% endif %}</button>
         {% if not only_ungrouped %}
         {{ download_menu(
              "group-" ~ loop.index,
@@ -300,7 +310,8 @@
         {% endif %}
       </div>
     </div>
-    <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"></div>
+    <div class="group-map" id="group-map-{{ loop.index }}" data-group="{{ group.id }}"
+         {%- if not show_group_maps %} hidden{% endif %}></div>
     <div class="group-radargrams" id="group-radargrams-{{ loop.index }}"
          {%- if not show_group_radargrams %} hidden{% endif %}>
     <ul class="card-grid">
