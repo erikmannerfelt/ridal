@@ -3,6 +3,38 @@
 What to do when moving an existing project, server or script to a new
 version. {doc}`changelog` lists everything that changed.
 
+## From 0.9 to 0.10
+
+Nothing needs migrating: projects, sites and processed files from 0.9 work
+as they are, and no radargram's revision id changes.
+
+- **`unphase` is retired** (#437). A saved processing profile, step file or
+  script that names it fails when it next runs, with a message saying so.
+  Remove the step; for a display of the magnitude, render with the
+  `abslog` profile. Files already processed with it still open.
+- **Derived layers may change** for picks drawn on an earlier revision
+  (#440). They are now evaluated over the picks carried to the current
+  revision, as the viewer draws them, where before they used the picks as
+  stored. Picks on the current revision, and picks that cannot be carried
+  (such as imports that name no revision), give the same result as before.
+- **Carrying cuts lines at the edge** (#440). A line that runs past the
+  edge of the target revision is now kept up to the edge and the carry is
+  `partial`, where before the line was dropped. Code reading `CarryReport`
+  can find the cut lines in its new `clipped` field.
+- **HTTP API.** Each entry of `GET …/contributors` gains `view`, the
+  document carried to the current revision (`null` when the carry is
+  refused), and the `carry` report; `document` is still the one stored.
+  The viewer draws `view`. `GET /groups/{g}/tracks` sends
+  tracks simplified to map resolution (5 m); a radargram's own track and
+  the GeoJSON downloads keep full resolution.
+- **Disk.** A project gains `ridal_data/cache/tracks/`, which can be
+  deleted at any time and is rebuilt as needed. Kept axes snapshots that
+  nothing needs are now removed 30 days after their revision ended.
+- **GUI names.** The project menu's entries are renamed (Radargram
+  catalog, Layers, Processing, Project settings, All projects), and the
+  viewer's **Hide radargram** button is a **Show radargram** checkbox in
+  the Display menu.
+
 ## From 0.8 to 0.9
 
 Nothing needs migrating: projects, sites and processed files from 0.8 work

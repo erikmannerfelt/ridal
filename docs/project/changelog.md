@@ -3,6 +3,112 @@
 What changed in each release. {doc}`upgrading` says what to do about the
 changes that affect existing data, scripts or servers.
 
+## 0.10.0
+
+### Annotated figures
+
+- **Figures with axes** (#142). A figure spec, a small JSON document,
+  describes an excerpt of a radargram with axes, ticks and labels, and
+  renders it as SVG or PNG: `ridal render FILE --figure spec.json`, or
+  `ridal.render(..., figure=...)` in Python (#425). It sets the view,
+  extent, horizontal scale, physical size and DPI, the units, spacing and
+  anchor of each axis, and the style. Ticks sit at their coordinate's true
+  position, so distance ticks are uneven where the speed varied. With
+  `axes: false` it writes the bare raster and a `.json` sidecar for
+  plotting elsewhere. See {doc}`../guide/rendering`.
+- **Picks and derived layers in figures** (#427). With `--project DIR` (or
+  `project=`), a spec draws picks by user and layer and derived layers by
+  id, with range fills, carried to the revision drawn and moved with the
+  topographic view, as the viewer draws them.
+- **Figures from a server** (#428): `POST /api/v1/datasets/{id}/figure`,
+  byte-identical to a local render of the same file, and
+  `Client.figure()` in the Python client. Picks that could not be drawn as
+  stored are reported as `FigureWarning`s.
+- **Download → Figure…** in the viewer (#429) opens a dialog beside a live
+  preview: the current view, the whole radargram or a dragged rectangle,
+  every option of the spec, and the picks and derived layers to draw. It
+  downloads PNG, SVG or the spec, which reproduces the SVG through
+  `ridal render`. Distances can be in kilometres (`distance_km`).
+
+### Picks
+
+- **A pick manager** on the Layers page (#178, #433) lists every stored
+  interpretation as statistics: lines per layer, the share of traces
+  covered, and whether it is current, on an older revision, ignored,
+  without a radargram, or archived. An admin can **archive** someone
+  else's picks, **purge** archived ones (#162) and **restore** them
+  (#435, #443), and anyone with the `picks` download scope can download
+  the rows shown as one zip (#443). In the Python client it is
+  `interpretation_summaries()`.
+- **Contributors' picks are carried** to the revision being viewed, as a
+  person's own are (#434, #440). Picks that cannot be carried are drawn
+  dashed where they were stored, and the layer panel says whose were
+  refused, cut or moved. The same holds for a person's own picks in a
+  read-only viewer.
+- **A line past the edge of a radargram is cut there** when carried,
+  rather than dropped whole (#440, with gprinterp 0.4.0). A cut of more
+  than half a trace makes the carry `partial`, and `CarryReport` gains
+  `clipped`.
+- **Derived layers are evaluated over carried picks** (#440), so a
+  consensus is computed over the lines the viewer draws. Picks that cannot
+  be carried still count as stored, and the editor, figures and downloads
+  say which they are.
+- Picks without anchors still carry after their file is replaced on disk:
+  a revision's axes are kept as soon as it is discovered (#440), and kept
+  axes nothing needs any more are swept 30 days after their revision
+  ended. A file replaced on disk now supersedes the revision before it.
+
+### Viewer and catalog
+
+- **The catalog loads much faster** (#444). Tracks are read once and
+  cached under `ridal_data/cache/tracks/`, group maps send tracks at map
+  resolution and are only created when scrolled near, pages and scripts
+  are gzipped, and scripts and styles are revalidated with an ETag rather
+  than downloaded again. On a 714-radargram project, opening the catalog
+  went from 21 track requests and 2.1 s of track reads to one request and
+  a 60 KB page, and a server with a warm cache starts in half the time.
+- **Hide map / Show map** on each group, with **Maps in the catalog** in
+  My settings and Project settings (`[catalog] show_group_maps`) (#444).
+- **An Edit menu in the viewer** (#431, #438), with the catalog card's
+  Edit properties, Replace with a new version… and Process…/Attach raw
+  data….
+- **Help where steps are written** (#423, #438): every steps box colours
+  the steps, shows the signature and arguments of the step at the caret
+  with a link to its documentation, and marks unknown steps with
+  suggestions, and steps that may not run before a profile's.
+- The menu reads **Radargram catalog**, **Layers**, **Processing**,
+  **Project settings** and **All projects** in a project, and **Projects**
+  and **Site settings** on site pages (#426, #438).
+- Saving a changed render profile in the settings no longer leaves the
+  menu leading back to the old one through `?profile=` (#432, #438).
+- The viewer's profile, scale and topographic correction controls show
+  what the server rendered after a reload, not the browser's last values
+  (#438).
+- **Hide radargram** is now a **Show radargram** checkbox in the Display
+  menu (#439, #442).
+
+### Processing
+
+- **`unphase` is retired** (#437, #442). It shifted the data by an
+  arbitrary amount: its peak searches ranked samples by magnitude and
+  picked the wrong one. Naming it now fails with a message pointing at the
+  `abslog` render profile; files already processed with it still open.
+- The help of `correct_topography` and `--default-with-topo` now says the
+  step is rarely needed: the viewer, `ridal render --topo` and figures draw
+  the corrected view from `data`, and the stored copy more than doubles
+  the file (#436, #442).
+- `ridal.process()` accepts `render=True` and `track=True`, deriving the
+  same paths as `ridal process -r` and `--track` without a value (#93,
+  #442).
+
+### Documentation
+
+- Every page that was a placeholder is written (#441): a quickstart, the
+  data model, GPR in brief, guides to Python, processing, the browser GUI,
+  interpretation, rendering, coordinates and file formats (with the full
+  NetCDF schema), three worked examples, and the FAQ, citing and
+  contributing pages.
+
 ## 0.9.0
 
 ### Processing on the server
