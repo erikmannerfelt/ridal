@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Ridal HTTP API",
-    "description": "Schemas of the JSON bodies the Ridal server returns. Routes are not described here yet; see the HTTP API reference page for them.",
+    "description": "The Ridal server's HTTP API. Not every route is described here yet; the HTTP API reference page lists the rest. `x-ridal-needs` on an operation is the role or kind of caller it needs.",
     "contact": {
       "name": "Erik Schytt Mannerfelt"
     },
@@ -11,7 +11,480 @@
     },
     "version": "1"
   },
-  "paths": {},
+  "paths": {
+    "/api/v1/auth/invite": {
+      "post": {
+        "tags": [
+          "Signing in"
+        ],
+        "summary": "Set a password with a one-time invite token, and sign in. Ends every\nother session of that account, and adds the membership the invite\ncarried, if it named a project.",
+        "operationId": "redeem_invite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The password is set and the caller signed in. Sets the `ridal_session` cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedIn"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_invite`, or a password that is too weak.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`insecure_transport`: passwords are refused over plain HTTP on a network address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "nobody"
+        }
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "tags": [
+          "Signing in"
+        ],
+        "summary": "Sign in with a name and password. Every failure gives the same answer,\nso that the endpoint cannot be used to find out which accounts exist.\nRefused on a network-bound server without `--allow-insecure-login`.",
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in. Sets the `ridal_session` cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedIn"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The name and password do not match an account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`insecure_transport`: passwords are refused over plain HTTP on a network address.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`no_accounts`: the site has no accounts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "nobody"
+        }
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "Signing in"
+        ],
+        "summary": "Sign out. Succeeds whether or not anyone was signed in.",
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "Signed out. Clears the cookie.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedOut"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "nobody"
+        }
+      }
+    },
+    "/api/v1/auth/me": {
+      "get": {
+        "tags": [
+          "Signing in"
+        ],
+        "summary": "Who the site thinks is calling: their name, whether they are signed in,\nwhether they are a server administrator, and whether the site has\naccounts at all. With an API token, also the token's id, name, grants and\nexpiry.",
+        "operationId": "me",
+        "responses": {
+          "200": {
+            "description": "The caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "nobody"
+        }
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "Server"
+        ],
+        "summary": "The server is up, and the Ridal version it runs. Never requires a login,\nso a client can check what it is talking to before signing in.",
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "description": "The server is up.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "nobody"
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "tags": [
+          "Server"
+        ],
+        "summary": "The OpenAPI description of this API, the same file as the documentation\nsite's `openapi.json`. Never requires a login: it describes the code,\nwhich is public, and nothing about the site.",
+        "operationId": "openapi_json",
+        "responses": {
+          "200": {
+            "description": "This description.",
+            "content": {
+              "application/json": {}
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "nobody"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/preferences": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Preferences and project settings"
+        ],
+        "summary": "The caller's own display preferences.",
+        "operationId": "get_preferences",
+        "responses": {
+          "200": {
+            "description": "The caller's preferences.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyPreferences"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      },
+      "put": {
+        "tags": [
+          "Preferences and project settings"
+        ],
+        "summary": "Change the caller's own display preferences, such as render profile and\nhorizontal scale. Any role may. A field left out keeps its value; `null`\nclears it, deferring to the project.",
+        "operationId": "put_preferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreferencesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The preferences as saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyPreferences"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A value the server does not offer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/profiles": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Server"
+        ],
+        "summary": "The names of the built-in render profiles.",
+        "operationId": "list_profiles",
+        "responses": {
+          "200": {
+            "description": "Profile names.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/settings": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Preferences and project settings"
+        ],
+        "summary": "The project's defaults. On a server without a project, answers\n`project: false`.",
+        "operationId": "get_settings",
+        "responses": {
+          "200": {
+            "description": "The settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "put": {
+        "tags": [
+          "Preferences and project settings"
+        ],
+        "summary": "Change the project's defaults. Changing the upload size limit or the\nproject description needs `admin`.",
+        "operationId": "put_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The defaults as saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A value the server does not offer.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    }
+  },
   "components": {
     "schemas": {
       "Added": {
@@ -519,6 +992,22 @@
           "altitude": {
             "type": "number",
             "format": "double"
+          }
+        }
+      },
+      "Choice": {
+        "type": "object",
+        "description": "One entry a select offers: the value to send back, and what a person\nreads.",
+        "required": [
+          "value",
+          "label"
+        ],
+        "properties": {
+          "value": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
           }
         }
       },
@@ -2263,6 +2752,108 @@
           }
         }
       },
+      "MyPreferences": {
+        "type": "object",
+        "description": "The caller's own preferences, as `GET` and `PUT /api/v1/preferences`\nreturn them. `null` is \"not chosen\", which defers to the project.",
+        "required": [
+          "user",
+          "render_profile",
+          "x_scale",
+          "theme",
+          "show_picks",
+          "level2_spacing",
+          "level2_format",
+          "basemap",
+          "show_group_radargrams",
+          "show_group_maps",
+          "open_zoomed_out",
+          "show_vertex_tooltips"
+        ],
+        "properties": {
+          "user": {
+            "type": "string",
+            "description": "The account they belong to."
+          },
+          "render_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The render profile, by name."
+          },
+          "x_scale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Horizontal stretch, as a multiplier."
+          },
+          "theme": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`light` or `dark`; `null` follows the device."
+          },
+          "show_picks": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` when the viewer opens with the interpretations hidden.\nShown is stored as `null`."
+          },
+          "level2_spacing": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The point spacing the layer-point download dialogs open on."
+          },
+          "level2_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The format the layer-point download dialogs open on."
+          },
+          "basemap": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The basemap the maps draw on, by id."
+          },
+          "show_group_radargrams": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the catalog opens with each group's radargrams listed."
+          },
+          "show_group_maps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the catalog opens with each group's map shown."
+          },
+          "open_zoomed_out": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true` when the viewer opens on the whole radargram. Zoomed in is\nstored as `null`."
+          },
+          "show_vertex_tooltips": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`false` when the handles of a line being edited carry no tooltips.\nShown is stored as `null`."
+          }
+        }
+      },
       "NamedFormat": {
         "type": "object",
         "required": [
@@ -2776,6 +3367,90 @@
         "description": "A GeoJSON position: `[x, y]` in index space (SPEC §7.1), trace index then sample index. Further elements are kept.",
         "minItems": 2
       },
+      "PreferencesBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/preferences`: one person's settings.\n\nEvery field distinguishes three things: absent leaves the stored value\nalone, `null` clears it -- which is what \"Project default\" in the\ndropdown means -- and a value sets it.",
+        "properties": {
+          "render_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A render profile, by name."
+          },
+          "x_scale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Horizontal stretch, one of the factors the viewer offers."
+          },
+          "theme": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`light`, `dark`, or `null` to follow the device (#141)."
+          },
+          "show_picks": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the viewer opens with the interpretations drawn (#143)."
+          },
+          "basemap": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which basemap the maps draw on, by id (#177)."
+          },
+          "level2_spacing": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The point spacing the layer-point download dialogs open on (#166)."
+          },
+          "level2_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The format they open on."
+          },
+          "show_group_radargrams": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the catalog opens with each group's radargrams listed\n(#314). `null` defers to the project."
+          },
+          "show_group_maps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the catalog opens with each group's map shown. `null`\ndefers to the project."
+          },
+          "open_zoomed_out": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the viewer opens on the whole radargram (#315)."
+          },
+          "show_vertex_tooltips": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the handles of a line being edited carry their tooltips\n(#363)."
+          }
+        }
+      },
       "PrimaryAxis": {
         "type": "object",
         "properties": {
@@ -3139,6 +3814,339 @@
           }
         }
       },
+      "ProjectSettings": {
+        "type": "object",
+        "description": "`GET /api/v1/settings`: the project's defaults, what the caller may change,\nand the caller's own preferences, for the settings page.\n\nOn a server without a project, `project` is `false` and the\nproject's values are `null`.",
+        "required": [
+          "project",
+          "can_edit_project",
+          "can_edit_access",
+          "can_administer",
+          "size_bytes",
+          "max_bytes",
+          "default_max_bytes",
+          "user",
+          "role",
+          "download",
+          "authentication_configured",
+          "name",
+          "description",
+          "description_long",
+          "root",
+          "default_profile",
+          "processing_crs",
+          "profiles",
+          "default_xscale",
+          "xscales",
+          "my_profile",
+          "my_xscale",
+          "my_show_picks",
+          "my_spacing",
+          "my_format",
+          "spacings",
+          "formats",
+          "default_spacing",
+          "default_format",
+          "default_show_group_radargrams",
+          "my_show_group_radargrams",
+          "my_open_zoomed_out",
+          "my_show_vertex_tooltips",
+          "basemaps",
+          "project_basemaps",
+          "default_basemap",
+          "built_in_basemap",
+          "basemap_problems",
+          "overlays",
+          "overlay_problems",
+          "my_basemap",
+          "default_show_group_maps",
+          "my_show_group_maps"
+        ],
+        "properties": {
+          "project": {
+            "type": "boolean",
+            "description": "Whether the server is serving a project at all."
+          },
+          "can_edit_project": {
+            "type": "boolean",
+            "description": "Whether the caller may change the project's defaults (`operator`)."
+          },
+          "can_edit_access": {
+            "type": "boolean",
+            "description": "Whether the caller may change members and the access policy: an\n`admin`, in a project served by a site."
+          },
+          "can_administer": {
+            "type": "boolean",
+            "description": "Whether the caller may change what only an `admin` may: the size\nlimit and the descriptions."
+          },
+          "size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The project's size on disk, in bytes. `null` below `operator`.",
+            "minimum": 0
+          },
+          "max_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The project's upload size limit, in bytes. `null` below `operator`.",
+            "minimum": 0
+          },
+          "default_max_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The limit a project has when it sets none, in bytes.",
+            "minimum": 0
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The caller's account, or `null` for an anonymous reader."
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The caller's effective role."
+          },
+          "download": {
+            "$ref": "#/components/schemas/DownloadScope",
+            "description": "The caller's effective download scope."
+          },
+          "authentication_configured": {
+            "type": "boolean",
+            "description": "Whether the site has accounts to sign in to."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project's display name."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The short description, plain text."
+          },
+          "description_long": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The long description, Markdown source."
+          },
+          "root": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project directory on the server."
+          },
+          "default_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The render profile a request that names none gets."
+          },
+          "processing_crs": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The CRS a radargram whose raw data names none is processed in;\n`null` for the UTM zone that suits each track."
+          },
+          "profiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The built-in render profiles, by name."
+          },
+          "default_xscale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The horizontal stretch radargrams open at."
+          },
+          "xscales": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScaleOption"
+            },
+            "description": "The stretch factors the viewer offers."
+          },
+          "my_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The caller's own render profile."
+          },
+          "my_xscale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The caller's own stretch."
+          },
+          "my_show_picks": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The caller's own choice of opening the viewer with picks shown."
+          },
+          "my_spacing": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The caller's own point spacing for downloads."
+          },
+          "my_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The caller's own download format."
+          },
+          "spacings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Choice"
+            },
+            "description": "The point spacings the download dialogs offer."
+          },
+          "formats": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Choice"
+            },
+            "description": "The formats the download dialogs offer."
+          },
+          "default_spacing": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project's point spacing for downloads."
+          },
+          "default_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project's download format."
+          },
+          "default_show_group_radargrams": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the catalog opens with each group's radargrams listed."
+          },
+          "my_show_group_radargrams": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The caller's own choice of the same."
+          },
+          "my_open_zoomed_out": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The caller's own choice of opening the viewer zoomed out."
+          },
+          "my_show_vertex_tooltips": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The caller's own choice of tooltips on the handles of a line."
+          },
+          "basemaps": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The basemaps that may be chosen: the project's own and the built-in\none, without those that cannot be drawn."
+          },
+          "project_basemaps": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The project's own basemaps, as `ridal.toml` holds them."
+          },
+          "default_basemap": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The basemap someone who has not chosen sees; `null` for the first."
+          },
+          "built_in_basemap": {
+            "type": "boolean",
+            "description": "Whether Ridal's built-in basemap is offered."
+          },
+          "basemap_problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What is wrong with the project's basemaps that cannot be drawn."
+          },
+          "overlays": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The project's vector overlays, as `ridal.toml` holds them."
+          },
+          "overlay_problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What is wrong with the overlays that cannot be drawn."
+          },
+          "my_basemap": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The caller's own basemap."
+          },
+          "default_show_group_maps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the catalog opens with each group's map shown."
+          },
+          "my_show_group_maps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The caller's own choice of the same."
+          }
+        }
+      },
       "Promoted": {
         "type": "object",
         "description": "`POST …/interpretations/{user}/promote`: the carried view is now the\ninterpretation.",
@@ -3297,6 +4305,24 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "RedeemBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/auth/invite`.",
+        "required": [
+          "token",
+          "password"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The one-time token from the invite link."
+          },
+          "password": {
+            "type": "string",
+            "description": "The password to set."
           }
         }
       },
@@ -3526,6 +4552,242 @@
               "type": "string"
             },
             "description": "What the gprinterp validator noticed but did not refuse, such as a\nfeature without a stable id."
+          }
+        }
+      },
+      "SavedSettings": {
+        "type": "object",
+        "description": "`PUT /api/v1/settings`: the project's defaults as saved.",
+        "required": [
+          "default_profile",
+          "default_xscale",
+          "default_spacing",
+          "default_format",
+          "default_show_group_radargrams",
+          "default_show_group_maps",
+          "project_basemaps",
+          "default_basemap",
+          "built_in_basemap",
+          "overlays",
+          "size_bytes",
+          "max_bytes",
+          "description",
+          "description_long"
+        ],
+        "properties": {
+          "default_profile": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_xscale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "default_spacing": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_format": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_show_group_radargrams": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "default_show_group_maps": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "project_basemaps": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The project's own basemaps, as `ridal.toml` holds them."
+          },
+          "default_basemap": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "built_in_basemap": {
+            "type": "boolean"
+          },
+          "overlays": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The project's vector overlays, as `ridal.toml` holds them."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The project's size on disk, in bytes.",
+            "minimum": 0
+          },
+          "max_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The upload size limit, in bytes.",
+            "minimum": 0
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description_long": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ScaleOption": {
+        "type": "object",
+        "description": "One horizontal stretch factor the viewer offers.",
+        "required": [
+          "value",
+          "text",
+          "label"
+        ],
+        "properties": {
+          "value": {
+            "type": "number",
+            "format": "double",
+            "description": "The factor, to send back."
+          },
+          "text": {
+            "type": "string",
+            "description": "The factor as text, without a trailing `.0`: `2`, `0.25`."
+          },
+          "label": {
+            "type": "string",
+            "description": "What a person reads: `2×`."
+          }
+        }
+      },
+      "SettingsUpdate": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/settings`. Every field is optional: absent\nleaves the setting alone, and `null` clears it, restoring the built-in\ndefault.",
+        "properties": {
+          "default_profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The profile to use when a request names none."
+          },
+          "default_xscale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Horizontal stretch to open radargrams at. Clearing it restores 1x."
+          },
+          "basemaps": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object"
+            },
+            "description": "The project's own basemaps, in the order the layer control should\nlist them (#177). An empty array removes them all."
+          },
+          "default_basemap": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which basemap someone who has not chosen sees. Clearing it means the\nfirst offered."
+          },
+          "built_in_basemap": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether Ridal's built-in basemap is offered."
+          },
+          "default_spacing": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The point spacing the layer-point download dialogs open on (#166).\nClearing it restores automatic spacing."
+          },
+          "default_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The format they open on. Clearing it restores WGS84 GeoJSON."
+          },
+          "default_show_group_radargrams": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the catalog opens with each group's radargrams listed\n(#314). Clearing it restores shown."
+          },
+          "default_show_group_maps": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the catalog opens with each group's map shown. Clearing it\nrestores shown."
+          },
+          "overlays": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "object"
+            },
+            "description": "The project's vector overlays (#177). An empty array removes them\nall."
+          },
+          "max_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The project's upload size limit in bytes (#173). Changing it needs\n`admin`.",
+            "minimum": 0
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project's short description (#285); an empty string clears it\ntoo. Changing it needs `admin`: it is read by every member and is the\nproject's public face."
+          },
+          "description_long": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The long description, Markdown. As `description`."
           }
         }
       },

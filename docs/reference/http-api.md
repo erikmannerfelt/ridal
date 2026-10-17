@@ -7,11 +7,13 @@ can do too.
 :::{note}
 This page lists every endpoint, the permission it needs and what it does. A
 test fails if a route is added to or removed from the server without this
-page following. Request and response bodies are not described here yet. A
-machine-readable OpenAPI description is in progress: {download}`openapi.json`,
-also served at `/api/v1/openapi.json`, so far holds the schemas of the
-responses the Python client reads and of the picks document (`Document`, from
-gprinterp), and no routes.
+page following. The machine-readable description is {download}`openapi.json`,
+also served at `/api/v1/openapi.json`: it holds the schemas of the request
+and response bodies the tables name, and of the picks document (`Document`,
+from gprinterp). It is being extended section by section: the tables of
+Server, Signing in, and Preferences and project settings are generated from
+it, with their bodies; the rest are written by hand, and their bodies are not
+described yet.
 :::
 
 ## Conventions
@@ -82,32 +84,23 @@ Concurrent edits
 
 ## Server
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/health` | nobody | `{"status": "ok", "version": …}` when the server is up, with the Ridal version it runs. Never requires a login. |
-| `GET` | `/api/v1/openapi.json` | nobody | The OpenAPI description of this API, the same file as {download}`openapi.json`. Never requires a login. |
-| `GET` | `/api/v1/profiles` | anyone | The names of the built-in render profiles. |
+:::{http-endpoints} Server
+:::
 
 ## Signing in
 
 These are the site's, at `/api/v1/auth` rather than under a project, and
-never require a login, since they are how one happens.
+never require a login, since they are how one happens. A server bound to a
+network address refuses passwords unless it is behind a TLS-terminating proxy
+or started with `--allow-insecure-login`; see {doc}`../deploy/reverse-proxy`.
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/auth/me` | nobody | Who the site thinks is calling: their name, whether they are signed in, whether they are a server administrator, and whether the site has accounts at all. With an API token, also the token's id, name, grants and expiry. |
-| `POST` | `/api/v1/auth/login` | nobody | Sign in with a name and password. Every failure gives the same answer, so that the endpoint cannot be used to find out which accounts exist. Refused on a network-bound server without `--allow-insecure-login`; see {doc}`../deploy/reverse-proxy`. |
-| `POST` | `/api/v1/auth/logout` | nobody | Sign out. Succeeds whether or not anyone was signed in. |
-| `POST` | `/api/v1/auth/invite` | nobody | Set a password with a one-time invite token, and sign in. Ends every other session of that account. |
+:::{http-endpoints} Signing in
+:::
 
 ## Preferences and project settings
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/preferences` | anyone | The caller's own display preferences. |
-| `PUT` | `/api/v1/preferences` | signed in | Change the caller's own display preferences, such as render profile and horizontal scale. Any role may. |
-| `GET` | `/api/v1/settings` | anyone | The project's defaults. On a server without a project, answers `project: false`. |
-| `PUT` | `/api/v1/settings` | `operator` | Change the project's defaults. Changing the upload size limit or the project description needs `admin`. |
+:::{http-endpoints} Preferences and project settings
+:::
 
 ## Radargrams
 

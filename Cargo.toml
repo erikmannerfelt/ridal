@@ -102,6 +102,9 @@ pulldown-cmark = { version = "0.13", optional = true }
 # against them. `preserve_order` keeps fields in declaration order, so the
 # committed file reads like the structs and diffs stay small.
 utoipa = { version = "6", features = ["preserve_order"], optional = true }
+# Registers each `/api` route from its `#[utoipa::path]`, so a route cannot
+# be served without being described in the spec (#330).
+utoipa-axum = { version = "0.3", optional = true }
 # Revision and render identities. Not optional: `RevisionId` is shared by
 # the server's cache invalidation and `ridal interp`'s level 2 provenance,
 # which must agree on the same string for the same file.
@@ -185,6 +188,7 @@ server = [
     "minijinja",
     "pulldown-cmark",
     "utoipa",
+    "utoipa-axum",
     "gprinterp/utoipa",
     "walkdir",
     "lru",

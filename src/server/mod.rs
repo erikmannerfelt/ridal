@@ -78,6 +78,9 @@ mod interp_routes_tests;
 pub mod launch;
 pub mod lifecycle_routes;
 pub mod markdown;
+pub mod needs;
+#[cfg(test)]
+mod needs_tests;
 pub mod openapi;
 pub mod overrides_routes;
 pub mod overview_cache;

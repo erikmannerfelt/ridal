@@ -26,7 +26,8 @@ use axum::Json;
 
 use super::app::{AppState, MergeScope};
 use super::auth::Caller;
-use super::routes::{lookup_dataset, ApiError};
+use super::needs::{Needs, Who};
+use super::routes::{lookup_dataset, ApiError, ErrorBody};
 use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
 use crate::project::roles::{DownloadScope, Role};
@@ -1069,10 +1070,144 @@ pub async fn interpretation_level2(
     Ok((headers, body))
 }
 
-/// `GET /api/v1/settings`
+/// `GET /api/v1/settings`: the project's defaults, what the caller may change,
+/// and the caller's own preferences, for the settings page.
 ///
-/// Answers for a non-project catalog too, with `project: false` and no
-/// values, so the page can explain itself rather than 404.
+/// On a server without a project, `project` is `false` and the
+/// project's values are `null`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ProjectSettings {
+    /// Whether the server is serving a project at all.
+    project: bool,
+    /// Whether the caller may change the project's defaults (`operator`).
+    can_edit_project: bool,
+    /// Whether the caller may change members and the access policy: an
+    /// `admin`, in a project served by a site.
+    can_edit_access: bool,
+    /// Whether the caller may change what only an `admin` may: the size
+    /// limit and the descriptions.
+    can_administer: bool,
+    /// The project's size on disk, in bytes. `null` below `operator`.
+    #[schema(required = true)]
+    size_bytes: Option<u64>,
+    /// The project's upload size limit, in bytes. `null` below `operator`.
+    #[schema(required = true)]
+    max_bytes: Option<u64>,
+    /// The limit a project has when it sets none, in bytes.
+    default_max_bytes: u64,
+    /// The caller's account, or `null` for an anonymous reader.
+    #[schema(required = true)]
+    user: Option<String>,
+    /// The caller's effective role.
+    role: Role,
+    /// The caller's effective download scope.
+    download: DownloadScope,
+    /// Whether the site has accounts to sign in to.
+    authentication_configured: bool,
+    /// The project's display name.
+    #[schema(required = true)]
+    name: Option<String>,
+    /// The short description, plain text.
+    #[schema(required = true)]
+    description: Option<String>,
+    /// The long description, Markdown source.
+    #[schema(required = true)]
+    description_long: Option<String>,
+    /// The project directory on the server.
+    #[schema(required = true)]
+    root: Option<String>,
+    /// The render profile a request that names none gets.
+    #[schema(required = true)]
+    default_profile: Option<String>,
+    /// The CRS a radargram whose raw data names none is processed in;
+    /// `null` for the UTM zone that suits each track.
+    #[schema(required = true)]
+    processing_crs: Option<String>,
+    /// The built-in render profiles, by name.
+    profiles: Vec<String>,
+    /// The horizontal stretch radargrams open at.
+    #[schema(required = true)]
+    default_xscale: Option<f64>,
+    /// The stretch factors the viewer offers.
+    xscales: Vec<super::routes::ScaleOption>,
+    /// The caller's own render profile.
+    #[schema(required = true)]
+    my_profile: Option<String>,
+    /// The caller's own stretch.
+    #[schema(required = true)]
+    my_xscale: Option<f64>,
+    /// The caller's own choice of opening the viewer with picks shown.
+    #[schema(required = true)]
+    my_show_picks: Option<bool>,
+    /// The caller's own point spacing for downloads.
+    #[schema(required = true)]
+    my_spacing: Option<String>,
+    /// The caller's own download format.
+    #[schema(required = true)]
+    my_format: Option<String>,
+    /// The point spacings the download dialogs offer.
+    spacings: Vec<super::routes::Choice>,
+    /// The formats the download dialogs offer.
+    formats: Vec<super::routes::Choice>,
+    /// The project's point spacing for downloads.
+    #[schema(required = true)]
+    default_spacing: Option<String>,
+    /// The project's download format.
+    #[schema(required = true)]
+    default_format: Option<String>,
+    /// Whether the catalog opens with each group's radargrams listed.
+    #[schema(required = true)]
+    default_show_group_radargrams: Option<bool>,
+    /// The caller's own choice of the same.
+    #[schema(required = true)]
+    my_show_group_radargrams: Option<bool>,
+    /// The caller's own choice of opening the viewer zoomed out.
+    #[schema(required = true)]
+    my_open_zoomed_out: Option<bool>,
+    /// The caller's own choice of tooltips on the handles of a line.
+    #[schema(required = true)]
+    my_show_vertex_tooltips: Option<bool>,
+    /// The basemaps that may be chosen: the project's own and the built-in
+    /// one, without those that cannot be drawn.
+    #[schema(value_type = Vec<Object>)]
+    basemaps: Vec<serde_json::Value>,
+    /// The project's own basemaps, as `ridal.toml` holds them.
+    #[schema(value_type = Vec<Object>)]
+    project_basemaps: Vec<crate::project::basemaps::Basemap>,
+    /// The basemap someone who has not chosen sees; `null` for the first.
+    #[schema(required = true)]
+    default_basemap: Option<String>,
+    /// Whether Ridal's built-in basemap is offered.
+    built_in_basemap: bool,
+    /// What is wrong with the project's basemaps that cannot be drawn.
+    basemap_problems: Vec<String>,
+    /// The project's vector overlays, as `ridal.toml` holds them.
+    #[schema(value_type = Vec<Object>)]
+    overlays: Vec<crate::project::overlays::Overlay>,
+    /// What is wrong with the overlays that cannot be drawn.
+    overlay_problems: Vec<String>,
+    /// The caller's own basemap.
+    #[schema(required = true)]
+    my_basemap: Option<String>,
+    /// Whether the catalog opens with each group's map shown.
+    #[schema(required = true)]
+    default_show_group_maps: Option<bool>,
+    /// The caller's own choice of the same.
+    #[schema(required = true)]
+    my_show_group_maps: Option<bool>,
+}
+
+/// The project's defaults. On a server without a project, answers
+/// `project: false`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/settings",
+    tag = "Preferences and project settings",
+    responses((status = 200, description = "The settings.", body = ProjectSettings)),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// Answers for a non-project catalog too, so the page can explain itself
+// rather than 404.
 pub async fn get_settings(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -1107,149 +1242,181 @@ pub async fn get_settings(
         None
     };
 
-    let mut settings = serde_json::json!({
-        "project": project.is_some(),
+    Ok(Json(ProjectSettings {
+        project: project.is_some(),
         // What each section may do, answered once here rather than inferred
         // in JavaScript from a role string it would have to rank itself.
-        "can_edit_project": can_edit_project,
+        can_edit_project,
         // Members and the access policy exist only in a site: a project on
         // its own has no accounts for them to be about.
-        "can_edit_access": state.site.is_some() && caller.may(Role::Admin),
+        can_edit_access: state.site.is_some() && caller.may(Role::Admin),
         // Whether the caller may change what only an administrator may: the
         // size cap and the descriptions (#173, #285). Distinct from
         // `can_edit_access`, which also asks whether there is a site to
         // administer; this is the narrower question the server's own
         // `require(Role::Admin, ...)` gates answer.
-        "can_administer": caller.may(Role::Admin),
+        can_administer: caller.may(Role::Admin),
         // Current usage and the effective cap, in bytes (#173). An admin may
         // change the cap; everyone at operator or above may see it.
-        "size_bytes": size_bytes,
-        "max_bytes": max_bytes,
-        "default_max_bytes": crate::project::DEFAULT_MAX_PROJECT_BYTES,
-        "user": caller.user.as_ref().map(|u| u.as_str()),
-        "role": caller.role.as_str(),
-        "download": caller.download.as_str(),
-        "authentication_configured": caller.authentication_configured,
-        "name": project.and_then(|p| p.config().project.name.clone()),
+        size_bytes,
+        max_bytes,
+        default_max_bytes: crate::project::DEFAULT_MAX_PROJECT_BYTES,
+        user: caller.user.as_ref().map(|u| u.as_str().to_string()),
+        role: caller.role,
+        download: caller.download,
+        authentication_configured: caller.authentication_configured,
+        name: project.and_then(|p| p.config().project.name.clone()),
         // The descriptions are the project's own (#285). Returned as stored:
         // the short one is plain text, the long one is Markdown source, and
         // rendering it happens where it is shown rather than here.
-        "description": project.and_then(|p| p.description()),
-        "description_long": project.and_then(|p| p.description_long()),
-        "root": project.map(|p| p.root().display().to_string()),
-        "default_profile": project.and_then(|p| p.default_profile()),
+        description: project.and_then(|p| p.description()),
+        description_long: project.and_then(|p| p.description_long()),
+        root: project.map(|p| p.root().display().to_string()),
+        default_profile: project.and_then(|p| p.default_profile()),
         // What a radargram whose raw data names no CRS is processed in
         // (#382); `null` for the UTM zone that suits each track.
-        "processing_crs": project.and_then(|p| p.processing_crs().ok().flatten()),
-        "profiles": profiles,
-        "default_xscale": project.and_then(|p| p.default_xscale()),
-        "xscales": crate::server::routes::x_scale_options(),
-        "my_profile": mine.render_profile,
-        "my_xscale": mine.x_scale,
-        "my_show_picks": mine.show_picks,
-        "my_spacing": mine.level2_spacing,
-        "my_format": mine.level2_format,
-        "spacings": crate::server::routes::spacing_options(),
-        "formats": crate::server::routes::format_options(),
-        "default_spacing": project.and_then(|p| p.default_spacing()),
-        "default_format": project.and_then(|p| p.default_format()),
-        "default_show_group_radargrams": project.and_then(|p| p.default_show_group_radargrams()),
-        "my_show_group_radargrams": mine.show_group_radargrams,
-        "my_open_zoomed_out": mine.open_zoomed_out,
-        "my_show_vertex_tooltips": mine.show_vertex_tooltips,
+        processing_crs: project.and_then(|p| p.processing_crs().ok().flatten()),
+        profiles,
+        default_xscale: project.and_then(|p| p.default_xscale()),
+        xscales: crate::server::routes::x_scale_options(),
+        my_profile: mine.render_profile,
+        my_xscale: mine.x_scale,
+        my_show_picks: mine.show_picks,
+        my_spacing: mine.level2_spacing,
+        my_format: mine.level2_format,
+        spacings: crate::server::routes::spacing_options(),
+        formats: crate::server::routes::format_options(),
+        default_spacing: project.and_then(|p| p.default_spacing()),
+        default_format: project.and_then(|p| p.default_format()),
+        default_show_group_radargrams: project.and_then(|p| p.default_show_group_radargrams()),
+        my_show_group_radargrams: mine.show_group_radargrams,
+        my_open_zoomed_out: mine.open_zoomed_out,
+        my_show_vertex_tooltips: mine.show_vertex_tooltips,
         // Two lists, deliberately. `basemaps` is what may be *chosen* --
         // the project's entries plus the built-in, with unusable ones
         // dropped -- and fills the two dropdowns. `project_basemaps` is
         // what may be *edited*: the file's own entries, unresolved, so the
         // table saves back what it was given rather than the built-in's
         // defaults written out as though someone had chosen them.
-        "basemaps": crate::server::routes::basemap_options(&state)
+        basemaps: crate::server::routes::basemap_options(&state)
             .iter()
             .map(|map| map.to_browser_json())
-            .collect::<Vec<_>>(),
-        "project_basemaps": project.map(|p| p.basemaps()).unwrap_or_default(),
-        "default_basemap": project.and_then(|p| p.map_section().default_basemap),
-        "built_in_basemap": project
+            .collect(),
+        project_basemaps: project.map(|p| p.basemaps()).unwrap_or_default(),
+        default_basemap: project.and_then(|p| p.map_section().default_basemap),
+        built_in_basemap: project
             .map(|p| p.map_section().offers_built_in())
             .unwrap_or(true),
         // What the file defines but cannot be drawn. Reported rather than
         // left as an absence: a hand-edited typo otherwise shows up only as
         // a basemap missing from a menu.
-        "basemap_problems": project
+        basemap_problems: project
             .map(|p| crate::project::basemaps::problems(&p.basemaps()))
             .unwrap_or_default(),
         // The overlays are a plain list rather than two (#177): there is no
         // built-in to add, so what may be edited and what may be drawn are
         // the same records -- minus the ones that cannot be used.
-        "overlays": project.map(|p| p.overlays()).unwrap_or_default(),
-        "overlay_problems": project
+        overlays: project.map(|p| p.overlays()).unwrap_or_default(),
+        overlay_problems: project
             .map(|p| crate::project::overlays::problems(&p.overlays()))
             .unwrap_or_default(),
-        "my_basemap": mine.basemap,
-    });
-    // Added after rather than inside: the literal above is at
-    // `serde_json::json!`'s recursion limit.
-    settings["default_show_group_maps"] =
-        serde_json::json!(project.and_then(|p| p.default_show_group_maps()));
-    settings["my_show_group_maps"] = serde_json::json!(mine.show_group_maps);
-    Ok(Json(settings))
+        my_basemap: mine.basemap,
+        default_show_group_maps: project.and_then(|p| p.default_show_group_maps()),
+        my_show_group_maps: mine.show_group_maps,
+    }))
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `PUT /api/v1/settings`. Every field is optional: absent
+/// leaves the setting alone, and `null` clears it, restoring the built-in
+/// default.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct SettingsUpdate {
-    /// The profile to use when a request names none. `null` clears it,
-    /// restoring the built-in default; absent leaves it alone.
+    /// The profile to use when a request names none.
     #[serde(default, deserialize_with = "present")]
     default_profile: Option<Option<String>>,
-    /// Horizontal stretch to open radargrams at. `null` clears it,
-    /// restoring 1x; absent leaves it alone.
+    /// Horizontal stretch to open radargrams at. Clearing it restores 1x.
     #[serde(default, deserialize_with = "present")]
     default_xscale: Option<Option<f64>>,
     /// The project's own basemaps, in the order the layer control should
-    /// list them (#177). Absent leaves them alone; an empty array removes
-    /// them all, which is a thing someone can mean.
+    /// list them (#177). An empty array removes them all.
     #[serde(default)]
+    #[schema(value_type = Option<Vec<Object>>)]
     basemaps: Option<Vec<crate::project::basemaps::Basemap>>,
-    /// Which basemap someone who has not chosen sees. `null` clears it,
-    /// which means the first offered; absent leaves it alone.
+    /// Which basemap someone who has not chosen sees. Clearing it means the
+    /// first offered.
     #[serde(default, deserialize_with = "present")]
     default_basemap: Option<Option<String>>,
-    /// Whether Ridal's built-in basemap is offered. Absent leaves it alone.
+    /// Whether Ridal's built-in basemap is offered.
     #[serde(default)]
     built_in_basemap: Option<bool>,
-    /// What the layer-point download dialogs open on (#166). `null` clears
-    /// them, restoring automatic spacing and WGS84 GeoJSON; absent leaves
-    /// them alone.
+    /// The point spacing the layer-point download dialogs open on (#166).
+    /// Clearing it restores automatic spacing.
     #[serde(default, deserialize_with = "present")]
     default_spacing: Option<Option<String>>,
+    /// The format they open on. Clearing it restores WGS84 GeoJSON.
     #[serde(default, deserialize_with = "present")]
     default_format: Option<Option<String>>,
     /// Whether the catalog opens with each group's radargrams listed
-    /// (#314). `null` clears it, restoring shown; absent leaves it alone.
+    /// (#314). Clearing it restores shown.
     #[serde(default, deserialize_with = "present")]
     default_show_group_radargrams: Option<Option<bool>>,
-    /// Whether the catalog opens with each group's map shown. `null`
-    /// clears it, restoring shown; absent leaves it alone.
+    /// Whether the catalog opens with each group's map shown. Clearing it
+    /// restores shown.
     #[serde(default, deserialize_with = "present")]
     default_show_group_maps: Option<Option<bool>>,
-    /// The project's vector overlays (#177). Absent leaves them alone; an
-    /// empty array removes them all.
+    /// The project's vector overlays (#177). An empty array removes them
+    /// all.
     #[serde(default)]
+    #[schema(value_type = Option<Vec<Object>>)]
     overlays: Option<Vec<crate::project::overlays::Overlay>>,
-    /// The project's upload cap in bytes (#173). Absent leaves it alone;
-    /// `null` clears it, restoring the built-in default. Changing it needs
-    /// `Role::Admin`, checked in `put_settings` -- the section is visible to
-    /// an operator, who may read the cap but not lower or raise it.
+    /// The project's upload size limit in bytes (#173). Changing it needs
+    /// `admin`.
+    // Visible to an operator, who may read the cap but not lower or raise
+    // it; the `Role::Admin` check is in `put_settings`.
     #[serde(default, deserialize_with = "present")]
     max_bytes: Option<Option<u64>>,
-    /// The project's short and long descriptions (#285). `null` clears them,
-    /// an empty string is treated as clearing too; absent leaves them alone.
-    /// Changing them needs `Role::Admin`, checked in `put_settings`: the
-    /// description is read by every member and is the project's public face.
+    /// The project's short description (#285); an empty string clears it
+    /// too. Changing it needs `admin`: it is read by every member and is the
+    /// project's public face.
     #[serde(default, deserialize_with = "present")]
     description: Option<Option<String>>,
+    /// The long description, Markdown. As `description`.
     #[serde(default, deserialize_with = "present")]
     description_long: Option<Option<String>>,
+}
+
+/// `PUT /api/v1/settings`: the project's defaults as saved.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct SavedSettings {
+    #[schema(required = true)]
+    default_profile: Option<String>,
+    #[schema(required = true)]
+    default_xscale: Option<f64>,
+    #[schema(required = true)]
+    default_spacing: Option<String>,
+    #[schema(required = true)]
+    default_format: Option<String>,
+    #[schema(required = true)]
+    default_show_group_radargrams: Option<bool>,
+    #[schema(required = true)]
+    default_show_group_maps: Option<bool>,
+    /// The project's own basemaps, as `ridal.toml` holds them.
+    #[schema(value_type = Vec<Object>)]
+    project_basemaps: Vec<crate::project::basemaps::Basemap>,
+    #[schema(required = true)]
+    default_basemap: Option<String>,
+    built_in_basemap: bool,
+    /// The project's vector overlays, as `ridal.toml` holds them.
+    #[schema(value_type = Vec<Object>)]
+    overlays: Vec<crate::project::overlays::Overlay>,
+    /// The project's size on disk, in bytes.
+    size_bytes: u64,
+    /// The upload size limit, in bytes.
+    max_bytes: u64,
+    #[schema(required = true)]
+    description: Option<String>,
+    #[schema(required = true)]
+    description_long: Option<String>,
 }
 
 /// The most a description may be, in bytes.
@@ -1278,7 +1445,19 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-/// `PUT /api/v1/settings`
+/// Change the project's defaults. Changing the upload size limit or the
+/// project description needs `admin`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/settings",
+    tag = "Preferences and project settings",
+    request_body = SettingsUpdate,
+    responses(
+        (status = 200, description = "The defaults as saved.", body = SavedSettings),
+        (status = 400, description = "A value the server does not offer.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn put_settings(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -1519,24 +1698,23 @@ pub async fn put_settings(
     }
 
     let map = project.map_section();
-    Ok(Json(serde_json::json!({
-        "default_profile": project.default_profile(),
-        "default_xscale": project.default_xscale(),
-        "default_spacing": project.default_spacing(),
-        "default_format": project.default_format(),
-        "default_show_group_radargrams": project.default_show_group_radargrams(),
-        "default_show_group_maps": project.default_show_group_maps(),
-        "project_basemaps": project.basemaps(),
-        "default_basemap": map.default_basemap,
-        "built_in_basemap": map.offers_built_in(),
-        "overlays": project.overlays(),
-        "size_bytes": project.size_bytes(),
-        "max_bytes": project.max_bytes(),
-        "description": project.description(),
-        "description_long": project.description_long(),
-    })))
+    Ok(Json(SavedSettings {
+        default_profile: project.default_profile(),
+        default_xscale: project.default_xscale(),
+        default_spacing: project.default_spacing(),
+        default_format: project.default_format(),
+        default_show_group_radargrams: project.default_show_group_radargrams(),
+        default_show_group_maps: project.default_show_group_maps(),
+        project_basemaps: project.basemaps(),
+        default_basemap: map.default_basemap.clone(),
+        built_in_basemap: map.offers_built_in(),
+        overlays: project.overlays(),
+        size_bytes: project.size_bytes(),
+        max_bytes: project.max_bytes(),
+        description: project.description(),
+        description_long: project.description_long(),
+    }))
 }
-
 /// `GET /api/v1/groups/{group}/level2` -- every interpreted radargram in a
 /// group, merged into one file.
 ///
