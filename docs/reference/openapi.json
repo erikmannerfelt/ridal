@@ -222,6 +222,2329 @@
         }
       }
     },
+    "/api/v1/projects/{key}/catalog/ignored": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Radargrams the project is not serving.",
+        "operationId": "list_ignored",
+        "responses": {
+          "200": {
+            "description": "What is not served.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IgnoredListing"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/catalog/track.geojson": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Downloads"
+        ],
+        "summary": "Every track being served as one GeoJSON file.",
+        "operationId": "catalog_track_geojson",
+        "responses": {
+          "200": {
+            "description": "A GeoJSON FeatureCollection, as an attachment.",
+            "content": {
+              "application/geo+json": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "all"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Every radargram being served, with its group and summary metadata.",
+        "operationId": "list_datasets",
+        "responses": {
+          "200": {
+            "description": "The radargrams.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "post": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Upload a processed `.nc` file as the request body. It is validated before\nanything is installed.",
+        "operationId": "upload_dataset",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "query",
+            "description": "What the file was called on the client, used only in error messages.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The processed `.nc` file.",
+          "content": {
+            "application/x-netcdf": {
+              "schema": {
+                "$ref": "#/components/schemas/NetcdfFile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "It is in the project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Added"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a radargram Ridal processed (`not_a_radargram`, `not_a_ridal_radargram`, `ridal_file_too_old`), or `upload_interrupted`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`radargram_exists` or `radargram_ignored`: the id is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`project_full`: the project's size limit would be exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "One radargram's summary metadata.",
+        "operationId": "dataset_detail",
+        "responses": {
+          "200": {
+            "description": "The radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetSummary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Remove a radargram from the project, or stop serving it. A removed one\nleaves its processing profile; one only stopped keeps it, shown as `hidden`.\nIts interpretations are archived.",
+        "operationId": "remove_dataset",
+        "responses": {
+          "200": {
+            "description": "What became of it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Removed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/attributes": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Human-readable metadata, the processing steps and log, and every raw\nattribute of the file.",
+        "operationId": "dataset_attributes",
+        "responses": {
+          "200": {
+            "description": "Its metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetAttributes"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/axes": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "The `twtt` and `depth` axes per sample and the `distance` and `elevation`\nper trace. An axis the file lacks is `null`.",
+        "operationId": "dataset_axes",
+        "responses": {
+          "200": {
+            "description": "Its axes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetAxes"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/axes/gprinterp": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "The `coordinates.axes` block a gprinterp document drawn on the current\nrevision should carry, as the viewer writes it when saving, with the\nrevision it describes. `axes` is `null` when the file cannot describe its\naxes. Picks saved without it cannot be carried onto a reprocessed revision.",
+        "operationId": "dataset_gprinterp_axes",
+        "responses": {
+          "200": {
+            "description": "The axis block.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GprinterpAxes"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/download": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Downloads"
+        ],
+        "summary": "The processed NetCDF file.",
+        "operationId": "dataset_download",
+        "responses": {
+          "200": {
+            "description": "The file, as an attachment.",
+            "content": {
+              "application/x-netcdf": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "all"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/figure": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Images"
+        ],
+        "summary": "An annotated figure, from a figure spec sent as the JSON body. Picks\nother than the caller's own need what the contributor overlay needs, and\nderived layers download `results`; a spec asking for more is refused.\nPicks that could not be drawn as stored are listed in the\n`X-Ridal-Figure-Warnings` header, as a JSON list.",
+        "operationId": "render_figure",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`png` (the default), `svg`, or `json` for the sidecar of a figure\nwithout axes.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FigureSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The figure as an attachment, or the sidecar of one without axes.",
+            "content": {
+              "image/png": {},
+              "image/svg+xml": {},
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FigureSidecar"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_figure_spec`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`revision_mismatch`: the spec names another revision.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "derived"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/properties": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "The project's overrides of this radargram's metadata, and what each field\nwould be without them.",
+        "operationId": "get_properties",
+        "responses": {
+          "200": {
+            "description": "Its properties.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Properties"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      },
+      "put": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Change those overrides.",
+        "operationId": "put_properties",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PropertiesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved."
+          },
+          "400": {
+            "description": "A name, group or scale the server refuses.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/replace": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Upload a new revision of a radargram and report what replacing it would do\nto its interpretations. Nothing is installed yet: install it with the token,\nor discard it.",
+        "operationId": "stage_replacement",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "query",
+            "description": "What the file was called on the client, used only in error messages.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The processed `.nc` file.",
+          "content": {
+            "application/x-netcdf": {
+              "schema": {
+                "$ref": "#/components/schemas/NetcdfFile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Staged, with what installing it would do.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Staged"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a radargram Ridal processed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`wrong_radargram`: the file is another radargram, or it is not in the project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/replace/preflight": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Report what replacing a radargram would do, as staging would, from the new\nfile's axis declarations instead of the file. Nothing is uploaded or staged.",
+        "operationId": "preflight_replacement",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevisionDeclarations"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What replacing it would do.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConsequenceReport"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/replace/{token}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "token",
+          "in": "path",
+          "description": "The token a staged replacement was given.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Install a staged replacement.",
+        "operationId": "commit_replacement",
+        "responses": {
+          "200": {
+            "description": "Replaced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Replaced"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_staging_token`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`staging_expired`: no such staged file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`radargram_changed` or `report_is_stale`: the radargram or its interpretations changed since staging.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Discard a staged replacement.",
+        "operationId": "discard_replacement",
+        "responses": {
+          "204": {
+            "description": "Discarded."
+          },
+          "400": {
+            "description": "`invalid_staging_token`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/restore": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Serve a radargram that was previously ignored.",
+        "operationId": "restore_dataset",
+        "responses": {
+          "204": {
+            "description": "It is served again."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_ignored`: it is not ignored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/revisions": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "Every revision this radargram id has had, including those whose file is\ngone.",
+        "operationId": "list_revisions",
+        "responses": {
+          "200": {
+            "description": "Its revisions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`not_a_project`: the server keeps no history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/traces/{trace}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "trace",
+          "in": "path",
+          "description": "A trace's index, from 0.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "One trace's amplitudes.",
+        "operationId": "dataset_trace",
+        "responses": {
+          "200": {
+            "description": "The trace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Trace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_trace_index`: not a number.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram, or `trace_not_found`: outside it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/track": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "The radargram's track, for the map.",
+        "operationId": "dataset_track",
+        "responses": {
+          "200": {
+            "description": "Its track.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Track"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/track.geojson": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Downloads"
+        ],
+        "summary": "The track as GeoJSON in WGS84, one feature per continuous segment.",
+        "operationId": "dataset_track_geojson",
+        "responses": {
+          "200": {
+            "description": "A GeoJSON FeatureCollection, as an attachment.",
+            "content": {
+              "application/geo+json": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "all"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/views/topo/geometry": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Radargrams"
+        ],
+        "summary": "The geometry of the topographically corrected view, or why it is\nunavailable.",
+        "operationId": "dataset_topo_geometry",
+        "responses": {
+          "200": {
+            "description": "The geometry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TopoGeometry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`topo_unavailable` or `topo_window_invalid`: the corrected view is unavailable, and why.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/views/{view}/chunks/{profile}/{x}/{y}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "view",
+          "in": "path",
+          "description": "`standard`, or `topo` for the topographically corrected view.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "profile",
+          "in": "path",
+          "description": "A render profile, by name.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "x",
+          "in": "path",
+          "description": "The tile's column, from 0.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "y",
+          "in": "path",
+          "description": "The tile's row, from 0.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Images"
+        ],
+        "summary": "One tile of the radargram at full resolution, as the viewer requests them.",
+        "operationId": "chunk_image",
+        "responses": {
+          "200": {
+            "description": "The tile, in the profile's format.",
+            "content": {
+              "image/png": {},
+              "image/jpeg": {}
+            }
+          },
+          "400": {
+            "description": "A coordinate that is not a number.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram, or a tile outside it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/views/{view}/image": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "view",
+          "in": "path",
+          "description": "`standard`, or `topo` for the topographically corrected view.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Images"
+        ],
+        "summary": "The whole radargram as one image file. `width` defaults to one pixel per\ntrace.",
+        "operationId": "dataset_image",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "description": "A render profile, by name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "width",
+            "in": "query",
+            "description": "Output width in pixels. Defaults to the radargram's own trace count,\nwhich is the widest that carries any new information.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "\"png\" (default) or \"jpeg\".",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "quality",
+            "in": "query",
+            "description": "JPEG quality, 1–100. Ignored for PNG.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image, as an attachment.",
+            "content": {
+              "image/png": {},
+              "image/jpeg": {}
+            }
+          },
+          "400": {
+            "description": "A size or format the server will not make.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "derived"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/views/{view}/overview": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "view",
+          "in": "path",
+          "description": "`standard`, or `topo` for the topographically corrected view.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Images"
+        ],
+        "summary": "A low-resolution image of the whole radargram.",
+        "operationId": "overview_image",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "description": "A render profile, by name. Defaults to the caller's, then the\nproject's.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "xscale",
+            "in": "query",
+            "description": "Horizontal stretch for this page. Fell out of naming the cascade:\nwith the chain in one function, the parameter the profile already\nhad was one line rather than a fourth place to get the order wrong.",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image, in the profile's format.",
+            "content": {
+              "image/png": {},
+              "image/jpeg": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/groups/{group}/properties": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "group",
+          "in": "path",
+          "description": "A group's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Groups"
+        ],
+        "summary": "The project's overrides of this group's metadata.",
+        "operationId": "get_group_properties",
+        "responses": {
+          "200": {
+            "description": "Its properties.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupProperties"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`not_a_group` or `invalid_group`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      },
+      "put": {
+        "tags": [
+          "Groups"
+        ],
+        "summary": "Change those overrides.",
+        "operationId": "put_group_properties",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GroupPropertiesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved."
+          },
+          "400": {
+            "description": "`not_a_group`, `invalid_group` or `invalid_group_name`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/groups/{group}/track.geojson": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "group",
+          "in": "path",
+          "description": "A group's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Downloads"
+        ],
+        "summary": "Every track in a group as one GeoJSON file.",
+        "operationId": "group_track_geojson",
+        "responses": {
+          "200": {
+            "description": "A GeoJSON FeatureCollection, as an attachment.",
+            "content": {
+              "application/geo+json": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "all"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/groups/{group}/tracks": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "group",
+          "in": "path",
+          "description": "A group's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Groups"
+        ],
+        "summary": "Every track in a group, for the maps, keyed by radargram id.",
+        "operationId": "group_tracks",
+        "responses": {
+          "200": {
+            "description": "The tracks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/GroupTrack"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
     "/api/v1/projects/{key}/preferences": {
       "parameters": [
         {
@@ -712,6 +3035,84 @@
           }
         },
         "additionalProperties": {}
+      },
+      "AxisSpec_FigureXUnit": {
+        "type": "object",
+        "description": "One axis's ticks and label.",
+        "properties": {
+          "unit": {
+            "type": "string",
+            "enum": [
+              "trace",
+              "distance",
+              "distance_km",
+              "time"
+            ]
+          },
+          "spacing": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Distance between ticks in the axis unit (seconds for time). `None`\npicks a round spacing that gives about six ticks.",
+            "default": null
+          },
+          "anchor": {
+            "type": "number",
+            "format": "double",
+            "description": "Ticks are at `anchor + k * spacing`. The default, 0, puts them on\nmultiples of the spacing.",
+            "default": 0.0
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The axis title. `None` uses the unit's own; `\"\"` draws none.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "AxisSpec_FigureYUnit": {
+        "type": "object",
+        "description": "One axis's ticks and label.",
+        "properties": {
+          "unit": {
+            "type": "string",
+            "enum": [
+              "sample",
+              "twtt",
+              "depth",
+              "elevation"
+            ]
+          },
+          "spacing": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Distance between ticks in the axis unit (seconds for time). `None`\npicks a round spacing that gives about six ticks.",
+            "default": null
+          },
+          "anchor": {
+            "type": "number",
+            "format": "double",
+            "description": "Ticks are at `anchor + k * spacing`. The default, 0, puts them on\nmultiples of the spacing.",
+            "default": 0.0
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The axis title. `None` uses the unit's own; `\"\"` draws none.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
       },
       "Batch": {
         "type": "object",
@@ -1238,6 +3639,48 @@
           }
         }
       },
+      "DatasetAttributes": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/attributes`: a radargram's metadata,\ncurated and raw.",
+        "required": [
+          "entries",
+          "processing_steps",
+          "processing_log",
+          "original_filepaths",
+          "raw"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetadataEntry"
+            },
+            "description": "Human-readable metadata: labelled, with units, in a curated order."
+          },
+          "processing_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The processing steps the file was made with."
+          },
+          "processing_log": {
+            "type": "string",
+            "description": "The processing log, step by step."
+          },
+          "original_filepaths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The raw files it was processed from."
+          },
+          "raw": {
+            "type": "object",
+            "description": "Every global attribute of the file, by name."
+          }
+        }
+      },
       "DatasetAxes": {
         "type": "object",
         "description": "`GET /api/v1/datasets/{radargram_id}/axes`: a radargram's axes, read from\nthe file's variables of the same names. An axis the file lacks is `null`.",
@@ -1708,6 +4151,65 @@
           }
         }
       },
+      "EffectiveProperties": {
+        "type": "object",
+        "description": "A radargram's metadata as the catalog shows it.",
+        "required": [
+          "display_name",
+          "group_id",
+          "group_name",
+          "unlisted",
+          "elevation_min",
+          "elevation_max",
+          "x_scale"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unlisted": {
+            "type": "boolean"
+          },
+          "elevation_min": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The elevation range the corrected view is limited to, in metres."
+          },
+          "elevation_max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "x_scale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The radargram's own horizontal scale, or `null` when it inherits the\nuser's or the project's (#411)."
+          }
+        }
+      },
       "ErrorBody": {
         "type": "object",
         "description": "The body of every API error: `{\"error\": {\"code\", \"message\"}}`.",
@@ -1764,6 +4266,150 @@
           }
         },
         "additionalProperties": {}
+      },
+      "FigureAppearance": {
+        "type": "object",
+        "description": "Text, line and background styling.",
+        "properties": {
+          "font_size": {
+            "type": "number",
+            "format": "double",
+            "description": "Tick label size in points. Axis titles are drawn at the same size.",
+            "default": 10.0
+          },
+          "color": {
+            "type": "string",
+            "description": "Colour of text, ticks and the frame, as `#rrggbb`.",
+            "default": "#000000"
+          },
+          "background": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Background colour as `#rrggbb`, or `null` for transparent.",
+            "default": "#ffffff"
+          }
+        },
+        "additionalProperties": false
+      },
+      "FigureDerived": {
+        "type": "object",
+        "description": "Which derived layers to draw, and how.\n\n`items` are derived item ids. Each is drawn in its own colour, and an\nitem whose range fill reaches another drawn item has the fill drawn\nunder them, as in the viewer. Only items of kind `layer` are positions\nthat can be drawn; an attribute is refused.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "default": []
+          },
+          "width": {
+            "type": "number",
+            "format": "double",
+            "description": "Line width in points.",
+            "default": 1.5
+          },
+          "opacity": {
+            "type": "number",
+            "format": "double",
+            "default": 0.9
+          },
+          "fills": {
+            "type": "boolean",
+            "description": "Whether to draw range fills between drawn items.",
+            "default": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "FigureExtent": {
+        "type": "object",
+        "description": "The part of the radargram a figure shows, in raster coordinates.\n\nPositions are fractional trace and row indices, the same coordinates\nthe viewer uses: trace `t` spans `[t, t + 1)` and row `r` spans\n`[r, r + 1)`, so `traces: [0, n]` is every trace. In the standard view a\nrow is a sample. In the topographic view it is a row of the corrected\nraster, which moves when the radargram's elevation window is edited, so\na spec meant to outlive that can give `elevation` instead.\n\nOmitted bounds mean the whole radargram. Bounds past the data are\nclipped to it, except the rows of the topographic view, which may reach\nabove the highest surface or below the floor to leave empty space there.",
+        "properties": {
+          "traces": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "`[first, last]` trace position.",
+            "default": null
+          },
+          "rows": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "`[top, bottom]` row position.",
+            "default": null
+          },
+          "elevation": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "`[top, bottom]` elevation in metres; topographic view only, and not\ntogether with `rows`.",
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "FigurePickSelector": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          },
+          "layer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "default": null
+          }
+        },
+        "additionalProperties": false
+      },
+      "FigurePicks": {
+        "type": "object",
+        "description": "Which picked lines to draw, and how.\n\nEvery pick whose user and layer match one of `items` is drawn, in its\nlayer's colour. A selector that leaves out `user` matches everyone whose\npicks the caller may see, and one that leaves out `layer` matches every\nlayer, so `[{}]` is all of them; `\"layer\": \"\"` matches unlabelled lines.\nNo items, the default, draws none.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FigurePickSelector"
+            },
+            "default": []
+          },
+          "width": {
+            "type": "number",
+            "format": "double",
+            "description": "Line width in points.",
+            "default": 1.0
+          },
+          "opacity": {
+            "type": "number",
+            "format": "double",
+            "default": 0.85
+          }
+        },
+        "additionalProperties": false
       },
       "FigureSidecar": {
         "type": "object",
@@ -1846,12 +4492,179 @@
           }
         }
       },
+      "FigureSize": {
+        "type": "object",
+        "description": "How big the figure is.\n\n`width` is the whole figure's, margins included; the height follows\nfrom the extent and `x_scale`. With `axes: false` there are no margins\nand `width` is the radargram's own.",
+        "properties": {
+          "width": {
+            "type": "number",
+            "format": "double",
+            "default": 16.0
+          },
+          "unit": {
+            "$ref": "#/components/schemas/FigureSizeUnit",
+            "default": "cm"
+          },
+          "dpi": {
+            "type": "number",
+            "format": "double",
+            "description": "Pixels per inch. Converts `cm` and `in` to pixels, and point sizes\n(fonts, lines) to pixels in every unit.",
+            "default": 300.0
+          }
+        },
+        "additionalProperties": false
+      },
+      "FigureSizeUnit": {
+        "type": "string",
+        "enum": [
+          "cm",
+          "in",
+          "px"
+        ]
+      },
+      "FigureSpec": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Spec format version. Only `1` exists.",
+            "default": 1,
+            "minimum": 0
+          },
+          "view": {
+            "$ref": "#/components/schemas/FigureView",
+            "description": "The standard or the topographically corrected view.",
+            "default": "standard"
+          },
+          "revision_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When set, the revision the spec was made for. Rendering it from a\ndifferent revision is refused: a reprocessed file can have a\ndifferent number of traces, and the same trace numbers would then\nshow a different stretch of the profile.",
+            "default": null
+          },
+          "profile": {
+            "type": "string",
+            "description": "A render profile name (built-in, or a file path on the command\nline).",
+            "default": "default"
+          },
+          "x_scale": {
+            "type": "number",
+            "format": "double",
+            "description": "Horizontal stretch, as the viewer's horizontal scale: the plot is\n`traces * x_scale` units wide for every `rows` units tall.",
+            "default": 1.0
+          },
+          "extent": {
+            "$ref": "#/components/schemas/FigureExtent",
+            "default": {
+              "traces": null,
+              "rows": null,
+              "elevation": null
+            }
+          },
+          "size": {
+            "$ref": "#/components/schemas/FigureSize",
+            "default": {
+              "width": 16.0,
+              "unit": "cm",
+              "dpi": 300.0
+            }
+          },
+          "axes": {
+            "type": "boolean",
+            "description": "`false` writes the radargram alone, with no axes or margins, plus a\nJSON sidecar describing its coordinates (for plotting elsewhere).",
+            "default": true
+          },
+          "x_axis": {
+            "$ref": "#/components/schemas/AxisSpec_FigureXUnit",
+            "default": {
+              "unit": null,
+              "spacing": null,
+              "anchor": 0.0,
+              "label": null
+            }
+          },
+          "y_axis": {
+            "$ref": "#/components/schemas/AxisSpec_FigureYUnit",
+            "default": {
+              "unit": null,
+              "spacing": null,
+              "anchor": 0.0,
+              "label": null
+            }
+          },
+          "style": {
+            "$ref": "#/components/schemas/FigureAppearance",
+            "default": {
+              "font_size": 10.0,
+              "color": "#000000",
+              "background": "#ffffff"
+            }
+          },
+          "radargram": {
+            "type": "boolean",
+            "description": "`false` leaves the radargram out, so only the picks and derived\nlayers are drawn, over the background.",
+            "default": true
+          },
+          "picks": {
+            "$ref": "#/components/schemas/FigurePicks",
+            "description": "Picked lines to draw over the radargram.",
+            "default": {
+              "items": [],
+              "width": 1.0,
+              "opacity": 0.85
+            }
+          },
+          "derived": {
+            "$ref": "#/components/schemas/FigureDerived",
+            "description": "Derived layers to draw over the radargram.",
+            "default": {
+              "items": [],
+              "width": 1.5,
+              "opacity": 0.9,
+              "fills": true
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "FigureView": {
         "type": "string",
         "enum": [
           "standard",
           "topo"
         ]
+      },
+      "FileProperties": {
+        "type": "object",
+        "description": "A radargram's metadata as its file has it.",
+        "required": [
+          "display_name",
+          "group_id",
+          "group_name"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       },
       "FileRole": {
         "type": "string",
@@ -2084,6 +4897,105 @@
           }
         }
       },
+      "GroupChoice": {
+        "type": "object",
+        "description": "A group that can be chosen.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "GroupProperties": {
+        "type": "object",
+        "description": "`GET /api/v1/groups/{group}/properties`: the project's override of a\ngroup's name.",
+        "required": [
+          "group_id",
+          "name",
+          "from_file",
+          "overridden",
+          "member_count"
+        ],
+        "properties": {
+          "group_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name the catalog currently shows."
+          },
+          "from_file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it would show without the override: the name resolved from the\nmembers' own files, or nothing when the group exists only because\nsomebody put radargrams in it."
+          },
+          "overridden": {
+            "type": "boolean"
+          },
+          "member_count": {
+            "type": "integer",
+            "description": "How many radargrams are in it, so the dialog can say what a rename\naffects rather than leaving it to be guessed.",
+            "minimum": 0
+          }
+        }
+      },
+      "GroupPropertiesBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/groups/{group}/properties`.",
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` or empty reverts to whatever the member files say."
+          }
+        }
+      },
+      "GroupTrack": {
+        "type": "object",
+        "description": "One radargram's track in `GET /api/v1/groups/{group}/tracks`, keyed by\nits id there.",
+        "required": [
+          "effective_label",
+          "unlisted",
+          "track"
+        ],
+        "properties": {
+          "effective_label": {
+            "type": "string",
+            "description": "The name the catalog shows for it."
+          },
+          "unlisted": {
+            "type": "boolean",
+            "description": "Whether it is unlisted. Only an `operator` is sent one that is."
+          },
+          "track": {
+            "$ref": "#/components/schemas/Track",
+            "description": "Simplified further than a radargram's own track: for drawing many."
+          }
+        }
+      },
+      "Grouping": {
+        "type": "string",
+        "description": "Which group a radargram is in.",
+        "enum": [
+          "inherit",
+          "ungrouped",
+          "group"
+        ]
+      },
       "HashedFile": {
         "type": "object",
         "description": "One file, by content.",
@@ -2117,6 +5029,50 @@
           "version": {
             "type": "string",
             "description": "The Ridal version the server runs, such as `0.7.1`. Health needs no\nlogin, so a client can check what it is talking to before signing in."
+          }
+        }
+      },
+      "IgnoredItem": {
+        "type": "object",
+        "description": "One radargram that is not being served.",
+        "required": [
+          "radargram_id",
+          "since"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "since": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it stopped being served, RFC 3339."
+          }
+        }
+      },
+      "IgnoredListing": {
+        "type": "object",
+        "description": "`GET /api/v1/catalog/ignored`: the radargrams the project is not\nserving.",
+        "required": [
+          "ignored",
+          "vestigial"
+        ],
+        "properties": {
+          "ignored": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IgnoredItem"
+            },
+            "description": "Radargrams Ridal finds but does not serve."
+          },
+          "vestigial": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IgnoredItem"
+            },
+            "description": "Ignore decisions with nothing to act on, because the radargram is\nnot anywhere Ridal currently looks."
           }
         }
       },
@@ -2693,6 +5649,22 @@
           }
         }
       },
+      "MetadataEntry": {
+        "type": "object",
+        "description": "One row of a radargram's curated metadata.",
+        "required": [
+          "label",
+          "value"
+        ],
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        }
+      },
       "MetadataSummary": {
         "type": "object",
         "required": [
@@ -2869,6 +5841,11 @@
           }
         }
       },
+      "NetcdfFile": {
+        "type": "string",
+        "format": "binary",
+        "description": "A processed `.nc` file, as Ridal writes them."
+      },
       "NewToken": {
         "type": "object",
         "description": "`POST /api/v1/tokens`: the token, shown this once, and its record.",
@@ -3016,6 +5993,30 @@
           }
         ],
         "description": "How one item of a batch ended, or where it is."
+      },
+      "OverriddenFields": {
+        "type": "object",
+        "description": "Which fields the project overrides.",
+        "required": [
+          "display_name",
+          "group",
+          "elevation",
+          "x_scale"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "boolean"
+          },
+          "group": {
+            "type": "boolean"
+          },
+          "elevation": {
+            "type": "boolean"
+          },
+          "x_scale": {
+            "type": "boolean"
+          }
+        }
       },
       "PicksNotCarried": {
         "type": "object",
@@ -4192,6 +7193,99 @@
           }
         }
       },
+      "Properties": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/properties`: the project's overrides\nof a radargram's metadata, and what each field would be without them.",
+        "required": [
+          "radargram_id",
+          "effective",
+          "from_file",
+          "overridden",
+          "groups"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/EffectiveProperties",
+            "description": "What the catalog currently shows."
+          },
+          "from_file": {
+            "$ref": "#/components/schemas/FileProperties",
+            "description": "What it would show with the override removed, field by field, so\n\"revert\" can be labelled with the value it would revert *to* rather\nthan being a leap of faith."
+          },
+          "overridden": {
+            "$ref": "#/components/schemas/OverriddenFields",
+            "description": "Whether each field is currently overridden, so the dialog can say\nwhich values are the project's opinion and which are the file's."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupChoice"
+            },
+            "description": "Every group the catalog knows about, for choosing among them\nwithout having to retype a name and hope the slug matches."
+          }
+        }
+      },
+      "PropertiesBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/datasets/{radargram_id}/properties`: the whole\noverride, replaced rather than patched. A field left out is cleared.",
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`null` or empty reverts to the file's display name."
+          },
+          "grouping": {
+            "$ref": "#/components/schemas/Grouping",
+            "description": "Which group it is in."
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The group to join, when `grouping` is `group`."
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What that group is called. Stored against the group, not the\nradargram, so renaming it is one edit and its members cannot come to\ndisagree. Omitted leaves any existing name alone."
+          },
+          "unlisted": {
+            "type": "boolean",
+            "description": "Whether to leave it out of the listing for everyone below `operator`."
+          },
+          "elevation_min": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`null` on either side reverts that bound to no range at all (#168)."
+          },
+          "elevation_max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "x_scale": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "One of the offered scales, or `null` to inherit the user's or the\nproject's (#411)."
+          }
+        }
+      },
       "Purged": {
         "type": "object",
         "description": "`DELETE /api/v1/interpretations/archived/…`: what was purged.",
@@ -4342,6 +7436,29 @@
           },
           "coordinates": {
             "type": "string"
+          }
+        }
+      },
+      "Removed": {
+        "type": "object",
+        "description": "`DELETE /api/v1/datasets/{radargram_id}`: what became of it.",
+        "required": [
+          "radargram_id",
+          "outcome",
+          "archived"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "type": "string",
+            "description": "`removed` when the file was deleted, `ignored` when it lives in a\nread-only root and was only dropped from the catalog."
+          },
+          "archived": {
+            "type": "integer",
+            "description": "How many interpretations were archived. Zero is worth reporting: it\nis the difference between \"nobody had picked this\" and \"your picks\nare somewhere\".",
+            "minimum": 0
           }
         }
       },
@@ -4513,6 +7630,84 @@
             ],
             "format": "double",
             "description": "The depth grid spacing in metres that the file's `processing_log`\nrecords for `correct_antenna_separation`, when it records one."
+          }
+        }
+      },
+      "RevisionList": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/revisions`.",
+        "required": [
+          "revisions"
+        ],
+        "properties": {
+          "revisions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RevisionSummary"
+            }
+          }
+        }
+      },
+      "RevisionSummary": {
+        "type": "object",
+        "description": "One revision a radargram has been through.",
+        "required": [
+          "revision_id",
+          "current",
+          "superseded_at",
+          "superseded_by",
+          "has_axes",
+          "n_traces",
+          "n_samples",
+          "y_anchor"
+        ],
+        "properties": {
+          "revision_id": {
+            "type": "string"
+          },
+          "current": {
+            "type": "boolean",
+            "description": "Whether it is the one currently behind the id."
+          },
+          "superseded_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it stopped being current, RFC 3339."
+          },
+          "superseded_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The revision that replaced it."
+          },
+          "has_axes": {
+            "type": "boolean",
+            "description": "Whether this revision's axes were kept, which is what decides\nwhether picks drawn on it can be carried onto a later one."
+          },
+          "n_traces": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Sizes from the snapshot, so the history says what changed between\nrevisions without opening anything.",
+            "minimum": 0
+          },
+          "n_samples": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "y_anchor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the vertical axis is anchored to."
           }
         }
       },
@@ -5223,6 +8418,245 @@
               "null"
             ],
             "description": "RFC 3339, or `null` for a token that never expires."
+          }
+        }
+      },
+      "TopoDiagnostics": {
+        "type": "object",
+        "description": "How trustworthy the elevation is, for warning about a suspect one.",
+        "required": [
+          "suspect",
+          "full_span",
+          "robust_span",
+          "ratio",
+          "finite_count",
+          "interpolated_count",
+          "clamped_count",
+          "cropped_rows"
+        ],
+        "properties": {
+          "suspect": {
+            "type": "boolean"
+          },
+          "full_span": {
+            "type": "number",
+            "format": "double"
+          },
+          "robust_span": {
+            "type": "number",
+            "format": "double"
+          },
+          "ratio": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "finite_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "interpolated_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "clamped_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cropped_rows": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "TopoGeometry": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/views/topo/geometry`: how the\ntopographically corrected view is laid out.",
+        "required": [
+          "dz",
+          "elevation_top",
+          "source_height",
+          "raster_height",
+          "shift",
+          "fingerprint",
+          "range",
+          "diagnostics"
+        ],
+        "properties": {
+          "dz": {
+            "type": "number",
+            "format": "double",
+            "description": "The vertical size of one row of the corrected view, in metres."
+          },
+          "elevation_top": {
+            "type": "number",
+            "format": "double",
+            "description": "The elevation of its top row, in metres."
+          },
+          "source_height": {
+            "type": "integer",
+            "description": "Rows in the radargram, and in the corrected view.",
+            "minimum": 0
+          },
+          "raster_height": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "shift": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "Per-trace downward shift, in samples. ~90 KB of JSON on the largest\nfile in the test corpus, which is not a cheaper form to send: the\nclient needs the per-trace shift regardless, to place and cull picks\nin the corrected view (#168), and it compresses well."
+          },
+          "fingerprint": {
+            "type": "string",
+            "description": "A stable identifier of this resolved geometry, carried by the\nfrontend as a chunk-URL query parameter so an elevation-range edit\n(which keeps the same view/x/y/profile) busts the browser's own\nimage cache instead of being served a stale chunk. The server does\nnot read this back on a chunk request -- the current override is\nalways the source of truth for what a chunk renders."
+          },
+          "range": {
+            "$ref": "#/components/schemas/TopoRange"
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/TopoDiagnostics"
+          }
+        }
+      },
+      "TopoRange": {
+        "type": "object",
+        "description": "The elevation range the corrected view is limited to, in metres. `null`\non a side that is not limited.",
+        "required": [
+          "min",
+          "max"
+        ],
+        "properties": {
+          "min": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "max": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          }
+        }
+      },
+      "Trace": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/traces/{trace}`: one trace's\namplitudes.",
+        "required": [
+          "trace",
+          "n_samples",
+          "amplitude"
+        ],
+        "properties": {
+          "trace": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "n_samples": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "amplitude": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            },
+            "description": "One value per sample, top down."
+          }
+        }
+      },
+      "Track": {
+        "type": "object",
+        "description": "A radargram's track, simplified for drawing on a map.",
+        "required": [
+          "segments"
+        ],
+        "properties": {
+          "segments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackSegment"
+            }
+          }
+        }
+      },
+      "TrackSegment": {
+        "type": "object",
+        "description": "One continuous stretch of a track. A gap between segments is a real gap\nin the survey, such as a standstill.",
+        "required": [
+          "segment_index",
+          "trace_start",
+          "trace_end",
+          "n_traces",
+          "length_m",
+          "vertices"
+        ],
+        "properties": {
+          "segment_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "trace_start": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The first and last trace it covers.",
+            "minimum": 0
+          },
+          "trace_end": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "n_traces": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "length_m": {
+            "type": "number",
+            "format": "double",
+            "description": "Its length along the ground, in metres."
+          },
+          "vertices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrackVertex"
+            }
+          }
+        }
+      },
+      "TrackVertex": {
+        "type": "object",
+        "description": "One vertex of a simplified track, in WGS84.",
+        "required": [
+          "trace_index",
+          "lon",
+          "lat"
+        ],
+        "properties": {
+          "trace_index": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The trace it is at.",
+            "minimum": 0
+          },
+          "lon": {
+            "type": "number",
+            "format": "double"
+          },
+          "lat": {
+            "type": "number",
+            "format": "double"
           }
         }
       },

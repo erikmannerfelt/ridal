@@ -61,7 +61,9 @@ use serde::{Deserialize, Serialize};
 
 use super::app::AppState;
 use super::auth::Caller;
-use super::routes::ApiError;
+use super::needs::{Needs, Who};
+use super::openapi::NetcdfFile;
+use super::routes::{ApiError, ErrorBody};
 use crate::identity::{RadargramId, RevisionId};
 use crate::interp::carry::{CarryReport, Severity};
 use crate::interp::source::{AxisDeclarations, RevisionDeclarations};
@@ -98,8 +100,10 @@ const STAGING_DIR: &str = ".staging";
 /// deletes files.
 const STAGING_MAX_AGE_SECS: u64 = 6 * 60 * 60;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ReplaceQuery {
+    /// What the file was called on the client, used only in error messages.
     #[serde(default)]
     pub filename: Option<String>,
 }
@@ -538,10 +542,22 @@ fn same_radargram(incoming: &str, radargram: &RadargramId) -> Result<(), ApiErro
     ))
 }
 
-/// `POST /api/v1/datasets/{id}/replace/preflight` — the report staging the
-/// file would give, from its axis declarations alone (#331).
-///
-/// Nothing is uploaded, staged, written or logged.
+/// Report what replacing a radargram would do, as staging would, from the new
+/// file's axis declarations instead of the file. Nothing is uploaded or staged.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets/{radargram_id}/replace/preflight",
+    tag = "Radargrams",
+    request_body = RevisionDeclarations,
+    responses(
+        (status = 200, description = "What replacing it would do.", body = ConsequenceReport),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
+// file would give, from its axis declarations alone (#331).
+//
+// Nothing is uploaded, staged, written or logged.
 pub async fn preflight_replacement(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -577,11 +593,26 @@ pub async fn preflight_replacement(
     Ok(Json(report))
 }
 
-/// `POST /api/v1/datasets/{id}/replace` — stage a new revision and report.
-///
-/// Nothing is installed. The upload lands in `staging/`, is validated, and
-/// is measured against every interpretation of this id; the answer says
-/// what committing would do.
+/// Upload a new revision of a radargram and report what replacing it would do
+/// to its interpretations. Nothing is installed yet: install it with the token,
+/// or discard it.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets/{radargram_id}/replace",
+    tag = "Radargrams",
+    params(ReplaceQuery),
+    request_body(content = NetcdfFile, content_type = "application/x-netcdf", description = "The processed `.nc` file."),
+    responses(
+        (status = 200, description = "Staged, with what installing it would do.", body = Staged),
+        (status = 400, description = "Not a radargram Ridal processed.", body = ErrorBody),
+        (status = 409, description = "`wrong_radargram`: the file is another radargram, or it is not in the project.", body = ErrorBody),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
+// Nothing is installed. The upload lands in `staging/`, is validated, and
+// is measured against every interpretation of this id; the answer says
+// what committing would do.
 pub async fn stage_replacement(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -738,7 +769,19 @@ pub async fn stage_replacement(
     ))
 }
 
-/// `POST /api/v1/datasets/{id}/replace/{token}` — do it.
+/// Install a staged replacement.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets/{radargram_id}/replace/{token}",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "Replaced.", body = Replaced),
+        (status = 400, description = "`invalid_staging_token`.", body = ErrorBody),
+        (status = 404, description = "`staging_expired`: no such staged file.", body = ErrorBody),
+        (status = 409, description = "`radargram_changed` or `report_is_stale`: the radargram or its interpretations changed since staging.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn commit_replacement(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -965,7 +1008,17 @@ pub async fn commit_replacement(
     }))
 }
 
-/// `DELETE /api/v1/datasets/{id}/replace/{token}` — change your mind.
+/// Discard a staged replacement.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/datasets/{radargram_id}/replace/{token}",
+    tag = "Radargrams",
+    responses(
+        (status = 204, description = "Discarded."),
+        (status = 400, description = "`invalid_staging_token`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn discard_replacement(
     State(state): State<Arc<AppState>>,
     caller: Caller,

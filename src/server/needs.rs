@@ -17,7 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::project::roles::Role;
+use crate::project::roles::{DownloadScope, Role};
 
 /// The name of the extension, on every operation in the spec.
 pub const EXTENSION: &str = "x-ridal-needs";
@@ -42,16 +42,31 @@ pub enum Who {
 /// What an endpoint needs: the `x-ridal-needs` of one operation.
 ///
 /// An object rather than a bare string, so that what the remaining routes
-/// need (a download scope, "their own") can be added as fields without
-/// changing what the ones already annotated say.
+/// need ("their own") can be added as fields without changing what the ones
+/// already annotated say.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Needs {
     pub who: Who,
+    /// The download scope it needs as well, for what it lets someone take
+    /// away rather than look at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<DownloadScope>,
 }
 
 impl Needs {
     pub const fn new(who: Who) -> Self {
-        Self { who }
+        Self {
+            who,
+            download: None,
+        }
+    }
+
+    /// Anyone who may read the project, with this download scope.
+    pub const fn download(scope: DownloadScope) -> Self {
+        Self {
+            who: Who::Anyone,
+            download: Some(scope),
+        }
     }
 }
 
@@ -75,5 +90,9 @@ mod tests {
                 Needs::new(who)
             );
         }
+        let all = Needs::download(DownloadScope::All);
+        let json = r#"{"who":"anyone","download":"all"}"#;
+        assert_eq!(serde_json::to_string(&all).unwrap(), json);
+        assert_eq!(serde_json::from_str::<Needs>(json).unwrap(), all);
     }
 }

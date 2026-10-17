@@ -30,20 +30,42 @@ use serde::Deserialize;
 use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::readable_project;
-use super::routes::{attachment, lookup_dataset, ApiError};
+use super::needs::Needs;
+use super::routes::{attachment, lookup_dataset, ApiError, ErrorBody};
 use crate::project::derived::Audience;
 use crate::project::roles::DownloadScope;
 use crate::render::figure::overlays::{LayerAccess, Readable};
 use crate::render::figure::spec::FigureSpec;
+use crate::render::figure::Sidecar;
 use crate::render::figure::{FigureError, FigureFormat};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct FigureQuery {
-    /// `png` (default), `svg`, or `json` for a sidecar.
+    /// `png` (the default), `svg`, or `json` for the sidecar of a figure
+    /// without axes.
     pub format: Option<String>,
 }
 
-/// `POST /api/v1/datasets/{id}/figure`
+/// An annotated figure, from a figure spec sent as the JSON body. Picks
+/// other than the caller's own need what the contributor overlay needs, and
+/// derived layers download `results`; a spec asking for more is refused.
+/// Picks that could not be drawn as stored are listed in the
+/// `X-Ridal-Figure-Warnings` header, as a JSON list.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets/{radargram_id}/figure",
+    tag = "Images",
+    params(FigureQuery),
+    request_body = FigureSpec,
+    responses(
+        (status = 200, description = "The figure as an attachment, or the sidecar of one without axes.", content(("image/png"), ("image/svg+xml"), (Sidecar = "application/json"))),
+        (status = 400, description = "`invalid_figure_spec`.", body = ErrorBody),
+        (status = 409, description = "`revision_mismatch`: the spec names another revision.", body = ErrorBody),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Derived)))),
+)]
 pub async fn render_figure(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,

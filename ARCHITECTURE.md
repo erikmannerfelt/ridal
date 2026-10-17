@@ -673,18 +673,25 @@ hand-written ones.
   path; the docs show them in the project's shape again.
 - **Permissions are declared and tested, not inferred.** Each operation
   carries `x-ridal-needs` (`src/server/needs.rs`): `nobody`, `anyone`,
-  `signed_in`, or a role. The spec derives each operation's 401/403/409
-  responses from it, the docs render the *Needs* column from it, and
+  `signed_in`, or a role, and optionally a download scope. The spec derives
+  each operation's 401/403/409 responses from it, the docs render the *Needs* column from it, and
   `needs_tests` sends every operation the same request as a caller just
-  below the declaration (which must be refused) and one at it (which must
-  succeed), so a declaration cannot drift from the handler's `require`.
-  Every operation needs a `Case` there.
+  below the declaration on each axis it names (who must be refused) and one
+  at it (who must succeed), so a declaration cannot drift from the
+  handler's `require` or `require_download`. Every operation needs a `Case`
+  there, against a fresh site per probe; a case can prepare files or send
+  a setup request first, such as staging the replacement it commits.
+- **Path parameters are described once**, in `openapi::PATH_PARAMETERS`,
+  and added to every path that uses them; a path with an unknown one fails
+  `every_operation_is_described`. A file sent as the whole body is the
+  `NetcdfFile` schema (a binary string), not `Vec<u8>`.
 - **Doc comments are public.** A handler's doc comment is its description
   in the spec and on the docs site, and a type's is its schema's. Rationale
   for maintainers goes in `//` comments instead.
 - **Response fields are always present.** `every_response_field_is_required`
-  holds every response schema to that; request bodies, read from each
-  `requestBody`, are exempt, since their fields are optional on purpose.
+  holds every response schema to that; schemas only requests use (read
+  from each `requestBody`, with what they contain) are exempt, since their
+  fields are optional on purpose.
 - **The docs render the committed file.** `docs/_ext/ridal_http.py`'s
   `http-endpoints` directive makes one table per tag, so Read the Docs
   never builds Ridal for it. `http_reference_tests` checks that every

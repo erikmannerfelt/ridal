@@ -14,6 +14,7 @@ use super::auth::Caller;
 use super::needs::{Needs, Who};
 use super::templates;
 use crate::identity::RadargramId;
+use crate::project::roles::DownloadScope;
 use crate::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
 use crate::render::profile::{DatasetView, RenderProfile};
 
@@ -846,6 +847,16 @@ fn readable_warnings(
         .collect()
 }
 
+/// Every radargram being served, with its group and summary metadata.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "The radargrams.", body = DatasetList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn list_datasets(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -902,6 +913,17 @@ pub(super) fn lookup_dataset<'a>(
     })
 }
 
+/// One radargram's summary metadata.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "The radargram.", body = DatasetSummary),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn dataset_detail(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -936,8 +958,11 @@ pub(super) fn lookup_profile(name: &str) -> Result<RenderProfile, ApiError> {
 /// Both are "this page only": they never touch what is stored, which is
 /// what makes a link with a profile in it shareable without changing
 /// anything for the person who opens it.
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ProfileQuery {
+    /// A render profile, by name. Defaults to the caller's, then the
+    /// project's.
     pub(super) profile: Option<String>,
     /// Horizontal stretch for this page. Fell out of naming the cascade:
     /// with the chain in one function, the parameter the profile already
@@ -1228,6 +1253,18 @@ pub(super) async fn resolve_view_height(
     .map_err(|e| ApiError::internal("render_task_failed", format!("Render task failed: {e}")))?
 }
 
+/// A low-resolution image of the whole radargram.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/views/{view}/overview",
+    tag = "Images",
+    params(ProfileQuery),
+    responses(
+        (status = 200, description = "The image, in the profile's format.", content(("image/png"), ("image/jpeg"))),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn overview_image(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, view)): Path<(String, String)>,
@@ -1273,6 +1310,18 @@ pub async fn overview_image(
     Ok(image_response(bytes, &profile))
 }
 
+/// One tile of the radargram at full resolution, as the viewer requests them.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/views/{view}/chunks/{profile}/{x}/{y}",
+    tag = "Images",
+    responses(
+        (status = 200, description = "The tile, in the profile's format.", content(("image/png"), ("image/jpeg"))),
+        (status = 400, description = "A coordinate that is not a number.", body = ErrorBody),
+        (status = 404, description = "No such radargram, or a tile outside it.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn chunk_image(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, view, profile_name, x_raw, y_raw)): Path<(
@@ -1854,24 +1903,34 @@ pub async fn viewer_page(
     Ok(Html(html))
 }
 
-#[derive(serde::Serialize)]
+/// One vertex of a simplified track, in WGS84.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[schema(as = TrackVertex)]
 struct TrackVertexJson {
+    /// The trace it is at.
     trace_index: u32,
     lon: f64,
     lat: f64,
 }
 
-#[derive(serde::Serialize)]
+/// One continuous stretch of a track. A gap between segments is a real gap
+/// in the survey, such as a standstill.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[schema(as = TrackSegment)]
 struct TrackSegmentJson {
     segment_index: usize,
+    /// The first and last trace it covers.
     trace_start: u32,
     trace_end: u32,
     n_traces: u32,
+    /// Its length along the ground, in metres.
     length_m: f64,
     vertices: Vec<TrackVertexJson>,
 }
 
-#[derive(serde::Serialize)]
+/// A radargram's track, simplified for drawing on a map.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[schema(as = Track)]
 struct TrackJson {
     segments: Vec<TrackSegmentJson>,
 }
@@ -1901,7 +1960,18 @@ fn track_to_json(track: &super::track::Track) -> TrackJson {
     }
 }
 
-/// This radargram's own track (#121's cursor-sync feature).
+/// The radargram's track, for the map.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/track",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "Its track.", body = TrackJson),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// This radargram's own track (#121's cursor-sync feature).
 pub async fn dataset_track(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -1937,15 +2007,17 @@ pub(super) const MAX_IMAGE_PIXELS: usize = 120_000_000;
 /// JPEG stores its dimensions in 16 bits.
 const MAX_JPEG_DIMENSION: usize = 65_535;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ImageQuery {
+    /// A render profile, by name.
     profile: Option<String>,
     /// Output width in pixels. Defaults to the radargram's own trace count,
     /// which is the widest that carries any new information.
     width: Option<usize>,
     /// "png" (default) or "jpeg".
     format: Option<String>,
-    /// JPEG quality, 1-100. Ignored for PNG.
+    /// JPEG quality, 1–100. Ignored for PNG.
     quality: Option<u8>,
     // The viewer also appends `fp=<geometry fingerprint>` to corrected-view
     // downloads. It is deliberately not a field here: it exists only to
@@ -1955,17 +2027,29 @@ pub struct ImageQuery {
     // unknown key. Do not "tidy it up" out of the frontend.
 }
 
-/// `GET /api/v1/datasets/{id}/views/{view}/image`
-///
-/// The whole radargram as one image, at a caller-chosen width -- what the
-/// viewer shows, composited server-side rather than stitched from chunks in
-/// the browser.
-///
-/// Sizing is the caller's decision because there is no good default: one
-/// pixel per trace is the honest answer for analysis and can be 12000 px
-/// wide, while a figure wants something that fits on a page. Both are
-/// legitimate, so both are offered and the limits are explained when they
-/// are hit.
+/// The whole radargram as one image file. `width` defaults to one pixel per
+/// trace.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/views/{view}/image",
+    tag = "Images",
+    params(ImageQuery),
+    responses(
+        (status = 200, description = "The image, as an attachment.", content(("image/png"), ("image/jpeg"))),
+        (status = 400, description = "A size or format the server will not make.", body = ErrorBody),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Derived)))),
+)]
+// The whole radargram as one image, at a caller-chosen width -- what the
+// viewer shows, composited server-side rather than stitched from chunks in
+// the browser.
+//
+// Sizing is the caller's decision because there is no good default: one
+// pixel per trace is the honest answer for analysis and can be 12000 px
+// wide, while a figure wants something that fits on a page. Both are
+// legitimate, so both are offered and the limits are explained when they
+// are hit.
 pub async fn dataset_image(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, view)): Path<(String, String)>,
@@ -2111,17 +2195,26 @@ pub(super) fn attachment(filename: &str) -> (header::HeaderName, String) {
     )
 }
 
-/// `GET /api/v1/datasets/{id}/track.geojson`
-///
-/// The same simplified track the viewer's map draws, as a portable file --
-/// the full one, not the coarser one of the group maps. One Feature
-/// per segment rather than one MultiLineString, so the per-segment trace
-/// range survives into the properties -- a gap in a track is a real thing
-/// (a standstill or a lifted antenna) and collapsing them loses it.
-///
-/// WGS84, per RFC 7946. The track vertices are already in it: `track.rs`
-/// simplifies in the native projected CRS and reprojects only the vertices
-/// it keeps.
+/// The track as GeoJSON in WGS84, one feature per continuous segment.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/track.geojson",
+    tag = "Downloads",
+    responses(
+        (status = 200, description = "A GeoJSON FeatureCollection, as an attachment.", content_type = "application/geo+json"),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::All)))),
+)]
+// The same simplified track the viewer's map draws, as a portable file --
+// the full one, not the coarser one of the group maps. One Feature
+// per segment rather than one MultiLineString, so the per-segment trace
+// range survives into the properties -- a gap in a track is a real thing
+// (a standstill or a lifted antenna) and collapsing them loses it.
+//
+// WGS84, per RFC 7946. The track vertices are already in it: `track.rs`
+// simplifies in the native projected CRS and reprojects only the vertices
+// it keeps.
 pub async fn dataset_track_geojson(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -2157,15 +2250,23 @@ pub async fn dataset_track_geojson(
         .into_response())
 }
 
-/// `GET /api/v1/groups/{group}/track.geojson` -- every track in a group.
-///
-/// One file rather than one per radargram, because the question a group
-/// answers is "where did we survey", and that is only visible with all of
-/// them together. Each Feature names its radargram, so the merge is
-/// reversible.
-///
-/// A track that fails to read is skipped rather than failing the download,
-/// matching `group_tracks`: one bad member should not deny the rest.
+/// Every track in a group as one GeoJSON file.
+#[utoipa::path(
+    get,
+    path = "/api/v1/groups/{group}/track.geojson",
+    tag = "Downloads",
+    responses(
+        (status = 200, description = "A GeoJSON FeatureCollection, as an attachment.", content_type = "application/geo+json"),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::All)))),
+)]
+// One file rather than one per radargram, because the question a group
+// answers is "where did we survey", and that is only visible with all of
+// them together. Each Feature names its radargram, so the merge is
+// reversible.
+//
+// A track that fails to read is skipped rather than failing the download,
+// matching `group_tracks`: one bad member should not deny the rest.
 pub async fn group_track_geojson(
     State(state): State<Arc<AppState>>,
     Path(group): Path<String>,
@@ -2174,8 +2275,17 @@ pub async fn group_track_geojson(
     merged_track_geojson(&state, &caller, &MergeScope::Group(group))
 }
 
-/// `GET /api/v1/catalog/track.geojson` -- every track the server knows
-/// about, in one file. The catalog-wide half of [`merged_track_geojson`].
+/// Every track being served as one GeoJSON file.
+#[utoipa::path(
+    get,
+    path = "/api/v1/catalog/track.geojson",
+    tag = "Downloads",
+    responses(
+        (status = 200, description = "A GeoJSON FeatureCollection, as an attachment.", content_type = "application/geo+json"),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::All)))),
+)]
+// about, in one file. The catalog-wide half of [`merged_track_geojson`].
 pub async fn catalog_track_geojson(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -2286,11 +2396,20 @@ fn track_features(
         .collect()
 }
 
-/// `GET /api/v1/datasets/{id}/download` -- the processed NetCDF itself.
-///
-/// Streamed rather than read into memory: the files this serves run to
-/// hundreds of megabytes, and buffering one per concurrent request is the
-/// kind of thing that works in testing and falls over in the field.
+/// The processed NetCDF file.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/download",
+    tag = "Downloads",
+    responses(
+        (status = 200, description = "The file, as an attachment.", content_type = "application/x-netcdf"),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::All)))),
+)]
+// Streamed rather than read into memory: the files this serves run to
+// hundreds of megabytes, and buffering one per concurrent request is the
+// kind of thing that works in testing and falls over in the field.
 pub async fn dataset_download(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -2328,14 +2447,24 @@ pub async fn dataset_download(
         .into_response())
 }
 
-/// Every radargram's track in one group, for sibling-track display on the
-/// viewer map and the index page's per-group overview map, at the
-/// resolution those draw at ([`super::track::Track::for_map`]): every
-/// group map on a catalog page asks for this, and at full resolution a
-/// catalog of 700 radargrams sent 15 MB of vertices. A track that
-/// fails to read is silently skipped here rather than failing the whole
-/// response -- one bad sibling should not break the rest, matching the
-/// spirit of #122's "one bad candidate does not abort discovery."
+/// Every track in a group, for the maps, keyed by radargram id.
+#[utoipa::path(
+    get,
+    path = "/api/v1/groups/{group}/tracks",
+    tag = "Groups",
+    responses(
+        (status = 200, description = "The tracks.", body = std::collections::HashMap<String, GroupTrack>),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// Every radargram's track in one group, for sibling-track display on the
+// viewer map and the index page's per-group overview map, at the
+// resolution those draw at ([`super::track::Track::for_map`]): every
+// group map on a catalog page asks for this, and at full resolution a
+// catalog of 700 radargrams sent 15 MB of vertices. A track that
+// fails to read is silently skipped here rather than failing the whole
+// response -- one bad sibling should not break the rest, matching the
+// spirit of #122's "one bad candidate does not abort discovery."
 pub async fn group_tracks(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -2352,21 +2481,34 @@ pub async fn group_tracks(
             continue;
         };
         if let Ok(track) = state.tracks.get(&path) {
+            let member = GroupTrack {
+                effective_label: entry.effective_label(),
+                // Only operator+ ever receives an unlisted entry here
+                // (`listable` filters them for everyone else), and the
+                // map uses the flag to draw it as out of focus (#192).
+                unlisted: entry.unlisted,
+                // Drawn, never looked up in: see `Track::for_map`.
+                track: track_to_json(&track.for_map()),
+            };
             out.insert(
                 entry.radargram_id.to_string(),
-                serde_json::json!({
-                    "effective_label": entry.effective_label(),
-                    // Only operator+ ever receives an unlisted entry here
-                    // (`listable` filters them for everyone else), and the
-                    // map uses the flag to draw it as out of focus (#192).
-                    "unlisted": entry.unlisted,
-                    // Drawn, never looked up in: see `Track::for_map`.
-                    "track": track_to_json(&track.for_map()),
-                }),
+                serde_json::to_value(member).expect("a track serializes"),
             );
         }
     }
-    Json(serde_json::Value::Object(out))
+    Json(out)
+}
+
+/// One radargram's track in `GET /api/v1/groups/{group}/tracks`, keyed by
+/// its id there.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct GroupTrack {
+    /// The name the catalog shows for it.
+    effective_label: String,
+    /// Whether it is unlisted. Only an `operator` is sent one that is.
+    unlisted: bool,
+    /// Simplified further than a radargram's own track: for drawing many.
+    track: TrackJson,
 }
 
 /// Widen an `f32` NetCDF attribute to `f64` via its shortest round-trip
@@ -2501,10 +2643,28 @@ fn format_display_value(value: &serde_json::Value, unit: Option<&str>) -> String
     }
 }
 
-#[derive(serde::Serialize)]
+/// One row of a radargram's curated metadata.
+#[derive(serde::Serialize, utoipa::ToSchema)]
 struct MetadataEntry {
     label: String,
     value: String,
+}
+
+/// `GET /api/v1/datasets/{radargram_id}/attributes`: a radargram's metadata,
+/// curated and raw.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct DatasetAttributes {
+    /// Human-readable metadata: labelled, with units, in a curated order.
+    entries: Vec<MetadataEntry>,
+    /// The processing steps the file was made with.
+    processing_steps: Vec<String>,
+    /// The processing log, step by step.
+    processing_log: String,
+    /// The raw files it was processed from.
+    original_filepaths: Vec<String>,
+    /// Every global attribute of the file, by name.
+    #[schema(value_type = Object)]
+    raw: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Curated priority for known attribute keys: `(tier, order-within-tier)`.
@@ -2735,12 +2895,24 @@ fn build_metadata_entries(
         .collect()
 }
 
-/// The viewer's metadata dialog: curated, human-readable `entries`
-/// (prettified labels, merged units, rounded floats, merged start/stop,
-/// curated order), `processing_steps`/`processing_log` as their own
-/// fields (the log needs its per-step structure preserved, not squashed
-/// into a single-line entry value), and the complete `raw` attribute set
-/// as an escape hatch for anything the curated view doesn't surface.
+/// Human-readable metadata, the processing steps and log, and every raw
+/// attribute of the file.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/attributes",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "Its metadata.", body = DatasetAttributes),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// The viewer's metadata dialog: curated, human-readable `entries`
+// (prettified labels, merged units, rounded floats, merged start/stop,
+// curated order), `processing_steps`/`processing_log` as their own
+// fields (the log needs its per-step structure preserved, not squashed
+// into a single-line entry value), and the complete `raw` attribute set
+// as an escape hatch for anything the curated view doesn't surface.
 pub async fn dataset_attributes(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -2790,13 +2962,13 @@ pub async fn dataset_attributes(
     let survey = SurveyFacts::of(&file);
     let entries = build_metadata_entries(&raw, entry.shape, entry.revision_id.as_str(), survey);
 
-    Ok(Json(serde_json::json!({
-        "entries": entries,
-        "processing_steps": processing_steps,
-        "processing_log": processing_log,
-        "original_filepaths": original_filepaths,
-        "raw": raw,
-    })))
+    Ok(Json(DatasetAttributes {
+        entries,
+        processing_steps,
+        processing_log,
+        original_filepaths,
+        raw,
+    }))
 }
 
 // Written for the viewer's cursor readout (item 3 of the planning round;
@@ -2828,12 +3000,25 @@ pub(super) struct DatasetAxes {
     elevation: Option<Vec<f64>>,
 }
 
-/// `GET /api/v1/datasets/{radargram_id}/axes/gprinterp`: the axis block a
-/// gprinterp document drawn on this revision should carry (#328).
-///
-/// The same block the viewer writes into `coordinates.axes` when it saves.
-/// Without it, picks saved by a script could never be carried onto a
-/// reprocessed revision.
+/// The `coordinates.axes` block a gprinterp document drawn on the current
+/// revision should carry, as the viewer writes it when saving, with the
+/// revision it describes. `axes` is `null` when the file cannot describe its
+/// axes. Picks saved without it cannot be carried onto a reprocessed revision.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/axes/gprinterp",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "The axis block.", body = GprinterpAxes),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// gprinterp document drawn on this revision should carry (#328).
+//
+// The same block the viewer writes into `coordinates.axes` when it saves.
+// Without it, picks saved by a script could never be carried onto a
+// reprocessed revision.
 pub async fn dataset_gprinterp_axes(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -2874,6 +3059,18 @@ pub(super) struct GprinterpAxes {
     axes: Option<serde_json::Value>,
 }
 
+/// The `twtt` and `depth` axes per sample and the `distance` and `elevation`
+/// per trace. An axis the file lacks is `null`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/axes",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "Its axes.", body = DatasetAxes),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn dataset_axes(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -2893,25 +3090,41 @@ pub async fn dataset_axes(
     }))
 }
 
-/// One source trace for the viewer's trace panel (#181).
-///
-/// The panel plots `data[:, trace]` directly rather than a rendered image:
-/// a single column is cheap to read and lets the browser scale it and
-/// label its vertical axis with the TWTT values `/axes` already provides,
-/// neither of which an encoded PNG could do.
-///
-/// Read through the render service's already-open handle, under the same
-/// permit as a render -- see [`with_render_service`] for why. A
-/// structurally invalid index is a 400 and a well-formed but out-of-range
-/// one a 404, the same distinction `chunk_image` draws between its two
-/// coordinates.
-#[derive(serde::Serialize)]
+/// `GET /api/v1/datasets/{radargram_id}/traces/{trace}`: one trace's
+/// amplitudes.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[schema(as = Trace)]
 struct TraceJson {
     trace: usize,
     n_samples: usize,
+    /// One value per sample, top down.
     amplitude: Vec<f32>,
 }
 
+/// One trace's amplitudes.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/traces/{trace}",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "The trace.", body = TraceJson),
+        (status = 400, description = "`invalid_trace_index`: not a number.", body = ErrorBody),
+        (status = 404, description = "No such radargram, or `trace_not_found`: outside it.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// One source trace for the viewer's trace panel (#181).
+//
+// The panel plots `data[:, trace]` directly rather than a rendered image:
+// a single column is cheap to read and lets the browser scale it and
+// label its vertical axis with the TWTT values `/axes` already provides,
+// neither of which an encoded PNG could do.
+//
+// Read through the render service's already-open handle, under the same
+// permit as a render -- see [`with_render_service`] for why. A
+// structurally invalid index is a 400 and a well-formed but out-of-range
+// one a 404, the same distinction `chunk_image` draws between its two
+// coordinates.
 pub async fn dataset_trace(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, trace_raw)): Path<(String, String)>,
@@ -2955,17 +3168,25 @@ pub async fn dataset_trace(
     }))
 }
 
-#[derive(serde::Serialize)]
+/// The elevation range the corrected view is limited to, in metres. `null`
+/// on a side that is not limited.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[schema(as = TopoRange)]
 struct TopoRangeJson {
+    #[schema(required = true)]
     min: Option<f64>,
+    #[schema(required = true)]
     max: Option<f64>,
 }
 
-#[derive(serde::Serialize)]
+/// How trustworthy the elevation is, for warning about a suspect one.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[schema(as = TopoDiagnostics)]
 struct TopoDiagnosticsJson {
     suspect: bool,
     full_span: f64,
     robust_span: f64,
+    #[schema(required = true)]
     ratio: Option<f64>,
     finite_count: usize,
     interpolated_count: usize,
@@ -2973,10 +3194,16 @@ struct TopoDiagnosticsJson {
     cropped_rows: usize,
 }
 
-#[derive(serde::Serialize)]
+/// `GET /api/v1/datasets/{radargram_id}/views/topo/geometry`: how the
+/// topographically corrected view is laid out.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[schema(as = TopoGeometry)]
 struct TopoGeometryJson {
+    /// The vertical size of one row of the corrected view, in metres.
     dz: f64,
+    /// The elevation of its top row, in metres.
     elevation_top: f64,
+    /// Rows in the radargram, and in the corrected view.
     source_height: usize,
     raster_height: usize,
     /// Per-trace downward shift, in samples. ~90 KB of JSON on the largest
@@ -2995,15 +3222,26 @@ struct TopoGeometryJson {
     diagnostics: TopoDiagnosticsJson,
 }
 
-/// `GET /api/v1/datasets/{id}/views/topo/geometry`
-///
-/// Resolves (and, after the first call, returns the memoized) topographic
-/// geometry for the radargram's currently configured elevation range
-/// (#168). The frontend calls this on page load to decide the corrected
-/// view's checkbox availability -- disabled, with the `Err` reason here as
-/// its `title`, rather than offered and failing on the first toggle -- and
-/// again on toggle, to pick up an elevation-range edit made since the page
-/// loaded.
+/// The geometry of the topographically corrected view, or why it is
+/// unavailable.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/views/topo/geometry",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "The geometry.", body = TopoGeometryJson),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+        (status = 400, description = "`topo_unavailable` or `topo_window_invalid`: the corrected view is unavailable, and why.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// Resolves (and, after the first call, returns the memoized) topographic
+// geometry for the radargram's currently configured elevation range
+// (#168). The frontend calls this on page load to decide the corrected
+// view's checkbox availability -- disabled, with the `Err` reason here as
+// its `title`, rather than offered and failing on the first toggle -- and
+// again on toggle, to pick up an elevation-range edit made since the page
+// loaded.
 pub async fn dataset_topo_geometry(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
