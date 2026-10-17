@@ -117,6 +117,12 @@ defaults get them wrong:
   passing on a byte. An over-cap upload would then cost a full transfer and a
   second copy on the proxy before anything refused it.
 
+Files over 64 MiB are sent in chunks of 32 MiB, by the browser and by the
+Python client alike ({ref}`chunked-uploads`), so a proxy that cannot lift its
+request limit, such as Cloudflare's 100 MB, still lets large raw files, DEMs
+and radargrams through. Smaller files go in one request, so such a limit must
+still allow 64 MiB.
+
 :::{warning}
 Ridal cannot detect a limit imposed in front of it. If an upload fails with a
 message about the web server in front of Ridal, check these settings first.

@@ -1101,6 +1101,183 @@ const RIDAL = Object.freeze({
     return { promise, abort: () => xhr.abort() };
   },
 
+  /** Send one file to `url` as `postFile` does, and in chunks when it is
+   * large (#396). The same `{ promise, abort }`, resolving with
+   * `{ status, ok, json }`.
+   *
+   * A file over 64 MiB goes to `/uploads` 32 MiB at a time, and the
+   * finished upload is then named to `url` as `?upload=` in place of a
+   * body. A chunk that fails is retried from where the server got to,
+   * after a wait, a few times in a row. The upload's id is kept in
+   * `localStorage` under the file's name, size and modification time, so
+   * the same file chosen again after a reload, or after giving up, goes on
+   * from there. `abort()` deletes the upload. */
+  uploadFile(url, file, onProgress) {
+    const CHUNKED_ABOVE = 64 * 1024 * 1024;
+    // Under the 100 MB a proxy such as Cloudflare lets through in one
+    // request, and the server's 64 MiB.
+    const CHUNK = 32 * 1024 * 1024;
+    const WAITS = [1000, 2000, 5000, 10000, 30000];
+    // Refusals that mean "ask how far the upload got and go on".
+    const RESUMABLE = new Set([
+      "offset_mismatch",
+      "range_mismatch",
+      "upload_interrupted",
+      "upload_busy",
+    ]);
+    if (file.size <= CHUNKED_ABOVE) return RIDAL.postFile(url, file, onProgress);
+
+    // Under the project's API path, so that two projects on a site do not
+    // share an id.
+    const key = `ridal-upload:${RIDAL.apiPath("uploads")}:${file.name}:${file.size}:${file.lastModified}`;
+    const remembered = () => {
+      try {
+        return localStorage.getItem(key);
+      } catch (error) {
+        return null;
+      }
+    };
+    const remember = (id) => {
+      try {
+        if (id) localStorage.setItem(key, id);
+        else localStorage.removeItem(key);
+      } catch (error) {
+        // Resuming after a reload is a convenience; without storage the
+        // upload still resumes within the page.
+      }
+    };
+
+    let xhr = null;
+    let cancelled = false;
+    let id = null;
+    // One request, answered as `postFile` answers.
+    const send = (method, target, body, headers = {}, progress = null) =>
+      new Promise((resolve, reject) => {
+        if (cancelled) {
+          reject(new Error("upload cancelled"));
+          return;
+        }
+        xhr = new XMLHttpRequest();
+        xhr.open(method, target);
+        for (const [name, value] of Object.entries(headers)) {
+          xhr.setRequestHeader(name, value);
+        }
+        if (progress) {
+          xhr.upload.addEventListener("progress", (event) => progress(event.loaded));
+        }
+        xhr.addEventListener("load", () => {
+          let json = null;
+          try {
+            json = JSON.parse(xhr.responseText);
+          } catch (error) {
+            json = null;
+          }
+          resolve({ status: xhr.status, ok: xhr.status >= 200 && xhr.status < 300, json });
+        });
+        xhr.addEventListener("error", () => reject(new Error("network error")));
+        xhr.addEventListener("abort", () => reject(new Error("upload cancelled")));
+        xhr.send(body);
+      });
+    const discard = () => {
+      if (id) fetch(RIDAL.apiPath("uploads", id), { method: "DELETE" }).catch(() => {});
+      remember(null);
+    };
+
+    const run = async () => {
+      let offset = 0;
+      const known = remembered();
+      if (known) {
+        const status = await send("GET", RIDAL.apiPath("uploads", known), null);
+        if (status.ok && status.json?.size === file.size) {
+          id = known;
+          offset = status.json.offset;
+          onProgress?.(offset, file.size);
+        }
+      }
+      if (!id) {
+        const started = await send(
+          "POST",
+          RIDAL.apiPath("uploads"),
+          JSON.stringify({ name: file.name, size: file.size }),
+          { "Content-Type": "application/json" },
+        );
+        if (!started.ok) return started;
+        id = started.json.id;
+        remember(id);
+      }
+      const upload = RIDAL.apiPath("uploads", id);
+      let failures = 0;
+      while (offset < file.size) {
+        const start = offset;
+        const end = Math.min(start + CHUNK, file.size);
+        let response = null;
+        try {
+          response = await send(
+            "PUT",
+            upload,
+            file.slice(start, end),
+            {
+              "Content-Type": "application/octet-stream",
+              "Content-Range": `bytes ${start}-${end - 1}/${file.size}`,
+            },
+            (loaded) => onProgress?.(start + loaded, file.size),
+          );
+        } catch (error) {
+          if (cancelled) throw error;
+        }
+        if (response?.ok) {
+          offset = end;
+          failures = 0;
+          continue;
+        }
+        const resumable = response === null
+          || response.status >= 500
+          || RESUMABLE.has(response.json?.error?.code);
+        if (!resumable) {
+          // Refused for good, such as a full project: the space it holds
+          // is given back now rather than in a day.
+          discard();
+          return response;
+        }
+        if (failures === WAITS.length) {
+          // Kept, so that choosing the file again goes on from here.
+          if (response) return response;
+          throw new Error("network error");
+        }
+        await new Promise((resolve) => setTimeout(resolve, WAITS[failures]));
+        failures += 1;
+        try {
+          const status = await send("GET", upload, null);
+          if (status.ok) offset = status.json.offset;
+          else if (status.status === 404) {
+            remember(null);
+            return status;
+          }
+        } catch (error) {
+          if (cancelled) throw error;
+        }
+      }
+      const separator = url.includes("?") ? "&" : "?";
+      const used = await send("POST", `${url}${separator}upload=${encodeURIComponent(id)}`, null);
+      // Used whatever the answer, as a body would be.
+      remember(null);
+      return used;
+    };
+    return {
+      // Cancelled while the upload was being started, it is deleted once
+      // its id is known.
+      promise: run().catch((error) => {
+        if (cancelled) discard();
+        throw error;
+      }),
+      abort: () => {
+        cancelled = true;
+        xhr?.abort();
+        discard();
+      },
+    };
+  },
+
   /** Build a track popup as DOM nodes rather than an HTML string.
    *
    * Leaflet assigns a string popup with `innerHTML` and appends an element

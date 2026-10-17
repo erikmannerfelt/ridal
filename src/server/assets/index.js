@@ -435,7 +435,7 @@ document.querySelectorAll('.group-map:not([hidden])').forEach(showMap);
   const cancel = document.getElementById('add-radargram-cancel');
   if (!button || !picker) return;
 
-  // The in-flight upload, so the cancel button can abort it. `RIDAL.postFile`
+  // The in-flight upload, so the cancel button can abort it. `RIDAL.uploadFile`
   // returns the handle with the promise precisely for this.
   let upload = null;
   if (cancel) {
@@ -494,7 +494,7 @@ document.querySelectorAll('.group-map:not([hidden])').forEach(showMap);
       );
     };
     try {
-      upload = RIDAL.postFile(
+      upload = RIDAL.uploadFile(
         `${RIDAL.apiPath('datasets')}?filename=${encodeURIComponent(file.name)}`,
         file,
         onProgress,

@@ -60,6 +60,12 @@ clicking a radargram opens it in the viewer.
   one from raw data, or adds the raw data of a whole survey at once (see
   [below](#adding-raw-data-in-bulk)).
 
+A file over 64 MiB, such as a large radargram or DEM, is uploaded in chunks.
+A chunk that fails is sent again from where the server got to, so a dropped
+connection costs seconds rather than the whole upload. If the upload stops
+anyway, or the page is closed or reloaded, choosing the same file again goes
+on from where it stopped, for up to a day.
+
 ## The viewer
 
 The viewer shows one radargram with a map of where it was recorded below it.
