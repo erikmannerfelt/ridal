@@ -57,6 +57,7 @@ const PARAMETERS: &[(&str, &str)] = &[
     ("y", "0"),
     ("dem", "mettebreen"),
     ("item", "bed_median"),
+    ("name", "viewer-none"),
 ];
 
 /// What a [`Case`] can build its requests from.
@@ -142,6 +143,9 @@ struct Case {
     /// Whether it needs a processing job to finish, which only the stand-in
     /// for `ridal process-job` in [`site`] can do.
     needs_a_job: bool,
+    /// Whether that job takes its time, so it is still running when the
+    /// case acts on it.
+    slow_job: bool,
 }
 
 impl Case {
@@ -154,6 +158,7 @@ impl Case {
             prepare: None,
             setup: Vec::new,
             needs_a_job: false,
+            slow_job: false,
         }
     }
 
@@ -183,6 +188,14 @@ impl Case {
     const fn needs_a_job(self) -> Self {
         Self {
             needs_a_job: true,
+            ..self
+        }
+    }
+
+    const fn slow_job(self) -> Self {
+        Self {
+            needs_a_job: true,
+            slow_job: true,
             ..self
         }
     }
@@ -450,6 +463,39 @@ fn derived_item() -> Vec<Step> {
     steps
 }
 
+fn archived_project() -> Vec<Step> {
+    vec![send_as_admin(
+        "POST",
+        "/api/v1/projects/{key}/archive",
+        |_, _| Payload::None,
+    )]
+}
+
+/// An API token of the owner's, for the project.
+fn token() -> Vec<Step> {
+    vec![Step::Send {
+        method: "POST",
+        path: "/api/v1/tokens",
+        body: |_, _| {
+            Payload::Json(
+                json!({"name": "laptop", "grants": [{"project": PROJECT, "role": "viewer", "download": "none"}]}),
+            )
+        },
+        bind: Some(("id", "info.id")),
+        by_admin: false,
+    }]
+}
+
+fn bulk(_: &Fixture, _: &[Value]) -> Payload {
+    Payload::Json(json!({"prefix": "student", "count": 2, "role": "viewer"}))
+}
+
+fn bulk_passwords(_: &Fixture, _: &[Value]) -> Payload {
+    Payload::Json(json!({
+        "prefix": "student", "count": 2, "role": "viewer", "acknowledge_risk": true,
+    }))
+}
+
 /// One per operation in the spec.
 const CASES: &[Case] = &[
     // Server.
@@ -632,6 +678,44 @@ const CASES: &[Case] = &[
     Case::new("catalog_level2")
         .setup(interpreted)
         .query("user={user}"),
+    // Site server.
+    Case::new("site_info"),
+    Case::new("get_site_preferences"),
+    Case::new("put_site_preferences").body(|_, _| Payload::Json(json!({"theme": "dark"}))),
+    Case::new("site_audit_log"),
+    Case::new("site_status"),
+    Case::new("site_processing"),
+    Case::new("cancel_site_job").setup(draft).slow_job(),
+    Case::new("site_memberships"),
+    Case::new("list_accounts"),
+    Case::new("create_account").body(|_, _| Payload::Json(json!({"name": "newbie"}))),
+    Case::new("create_bulk_invites").body(bulk),
+    Case::new("create_bulk_passwords").body(bulk_passwords),
+    Case::new("update_account").body(|_, _| Payload::Json(json!({"server_admin": false}))),
+    Case::new("delete_account"),
+    Case::new("reissue_account_invite"),
+    Case::new("list_tokens"),
+    Case::new("create_token").body(|_, _| Payload::Json(json!({"name": "laptop", "grants": [{"project": PROJECT, "role": "viewer", "download": "none"}]}))),
+    Case::new("revoke_token").setup(token),
+    Case::new("list_projects"),
+    Case::new("create_project").body(|_, _| Payload::Json(json!({"key": "newproj"}))),
+    Case::new("project_info"),
+    Case::new("update_project").body(|_, _| Payload::Json(json!({"name": "Renamed"}))),
+    Case::new("delete_project").setup(archived_project),
+    Case::new("archive_project"),
+    Case::new("unarchive_project").setup(archived_project),
+    Case::new("list_members"),
+    Case::new("add_member")
+        .body(|_, _| Payload::Json(json!({"name": "invitee", "role": "viewer"}))),
+    Case::new("invite_member")
+        .body(|_, _| Payload::Json(json!({"name": "newbie", "role": "viewer"}))),
+    Case::new("create_project_bulk_invites").body(bulk),
+    Case::new("create_project_bulk_passwords").body(bulk_passwords),
+    Case::new("update_member").body(|_, _| Payload::Json(json!({"role": "picker"}))),
+    Case::new("remove_member"),
+    Case::new("put_project_access")
+        .body(|_, _| Payload::Json(json!({"require_auth_to_read": false}))),
+    Case::new("project_audit_log"),
 ];
 
 /// Who sends a probe.
@@ -643,6 +727,8 @@ enum Caller {
     Member(Role, DownloadScope),
     /// Another member with the same role and download scope.
     Other(Role, DownloadScope),
+    /// [`ROOT`], the server administrator, a member of no project.
+    Root,
 }
 
 /// One request to send, and what must come back.
@@ -660,10 +746,17 @@ fn below<T: Copy + PartialOrd>(ladder: &[T], value: T) -> Option<T> {
     ladder.iter().copied().take_while(|v| *v < value).last()
 }
 
-/// Who sets up what an operation acts on, unless the caller must own it.
-const ADMIN: Caller = Caller::Member(Role::Admin, DownloadScope::All);
+/// The site's one server administrator. The members with the `admin` role
+/// are not, so that a route that needs one cannot pass as needing the other.
+const ROOT: &str = "root";
 
-const UNAUTHORIZED: &[StatusCode] = &[StatusCode::UNAUTHORIZED];
+/// Who sets up what an operation acts on, unless the caller must own it.
+const ADMIN: Caller = Caller::Root;
+
+/// Signing in would help, or the project answers as one that does not
+/// exist, which is how `GET /api/v1/projects/{key}` keeps a private
+/// project's existence to its members.
+const UNAUTHORIZED: &[StatusCode] = &[StatusCode::UNAUTHORIZED, StatusCode::NOT_FOUND];
 const FORBIDDEN: &[StatusCode] = &[StatusCode::FORBIDDEN];
 /// Someone else's draft does not exist, as far as they are told; someone
 /// else's batch is refused.
@@ -681,6 +774,7 @@ fn at_caller(needs: &Needs) -> Caller {
     match needs.who {
         Who::Nobody => Caller::Anonymous,
         Who::Anyone | Who::SignedIn => Caller::Member(Role::Viewer, download),
+        Who::ServerAdmin => Caller::Root,
         Who::Role(role) => Caller::Member(role, download),
     }
 }
@@ -709,6 +803,15 @@ fn probes(needs: &Needs) -> Vec<Probe> {
         // A public project, so that being able to read it is not the reason.
         Who::SignedIn => vec![
             probe(Caller::Anonymous, false, UNAUTHORIZED),
+            probe(at, false, &[]),
+        ],
+        // A project administrator is the nearest thing to one.
+        Who::ServerAdmin => vec![
+            probe(
+                Caller::Member(Role::Admin, DownloadScope::All),
+                false,
+                FORBIDDEN,
+            ),
             probe(at, false, &[]),
         ],
         Who::Role(_) => {
@@ -841,7 +944,7 @@ fn ignore_radargram(root: &StdPath) {
 /// Each job installs the file prepared for its radargram id in
 /// `prepared/`, as a real job would write it, and says so.
 #[cfg(unix)]
-fn processing(dir: &StdPath) -> crate::server::processing::ProcessingConfig {
+fn processing(dir: &StdPath, slow: bool) -> crate::server::processing::ProcessingConfig {
     use std::os::unix::fs::PermissionsExt;
     let prepared = dir.join("prepared");
     std::fs::create_dir(&prepared).unwrap();
@@ -855,12 +958,14 @@ fn processing(dir: &StdPath) -> crate::server::processing::ProcessingConfig {
         &script,
         format!(
             "#!/bin/sh\n\
+             {1}\
              out=$(sed -n 's/.*\"output\":\"\\([^\"]*\\)\".*/\\1/p' \"$2\")\n\
              id=$(sed -n 's/.*\"radargram_id\":\"\\([^\"]*\\)\".*/\\1/p' \"$2\")\n\
              cp {0}/\"$id\".nc \"$out\"\n\
              echo '{{\"event\":\"step\",\"index\":0,\"of\":1,\"step\":\"subset\"}}'\n\
              echo \"{{\\\"event\\\":\\\"done\\\",\\\"output\\\":\\\"$out\\\",\\\"revision_id\\\":\\\"r\\\"}}\"\n",
-            prepared.display()
+            prepared.display(),
+            if slow { "sleep 10\n" } else { "" },
         ),
     )
     .unwrap();
@@ -875,7 +980,7 @@ fn processing(dir: &StdPath) -> crate::server::processing::ProcessingConfig {
 /// Elsewhere every job fails to start, and the cases that need one to
 /// finish are not run.
 #[cfg(not(unix))]
-fn processing(dir: &StdPath) -> crate::server::processing::ProcessingConfig {
+fn processing(dir: &StdPath, _slow: bool) -> crate::server::processing::ProcessingConfig {
     crate::server::processing::ProcessingConfig {
         program: dir.join("no-such-program"),
         work_dir: dir.join("jobs"),
@@ -886,7 +991,11 @@ fn processing(dir: &StdPath) -> crate::server::processing::ProcessingConfig {
 /// A site holding [`RADARGRAM`], two members per role and download scope,
 /// the [`INVITEE`] with a pending invite, and the project's read policy;
 /// and a server over it.
-fn site(private: bool, prepare: Option<fn(&StdPath)>) -> (tempfile::TempDir, Fixture, Router) {
+fn site(
+    private: bool,
+    prepare: Option<fn(&StdPath)>,
+    slow_job: bool,
+) -> (tempfile::TempDir, Fixture, Router) {
     let dir = new_site();
     write_radargram(
         &radargrams(dir.path()).join(format!("{RADARGRAM}.nc")),
@@ -922,6 +1031,12 @@ fn site(private: bool, prepare: Option<fn(&StdPath)>) -> (tempfile::TempDir, Fix
     .unwrap();
     let site = Site::open(dir.path()).unwrap();
     accounts::update(site.store(), |set| {
+        for account in &mut set.users {
+            account.server_admin = false;
+        }
+        let mut root = accounts::Account::new(id(ROOT), true);
+        root.password_hash = Some(hash.to_string());
+        set.users.push(root);
         let mut account = accounts::Account::new(id(INVITEE), false);
         account.invite = Some(pending.clone());
         set.users.push(account);
@@ -940,7 +1055,11 @@ fn site(private: bool, prepare: Option<fn(&StdPath)>) -> (tempfile::TempDir, Fix
         upload: radargram_bytes(&scratch, "upload.nc", "line-02", "2020-01-01T00:00:00Z"),
         revision: radargram_bytes(&scratch, "revision.nc", RADARGRAM, "2021-01-01T00:00:00Z"),
     };
-    let app = site_router_processing(dir.path(), AccessOptions::default(), processing(&scratch));
+    let app = site_router_processing(
+        dir.path(),
+        AccessOptions::default(),
+        processing(&scratch, slow_job),
+    );
     (dir, fixture, app)
 }
 
@@ -959,6 +1078,7 @@ fn account(caller: Caller) -> Option<String> {
         Caller::Anonymous => None,
         Caller::Member(role, download) => Some(member_name(role, download)),
         Caller::Other(role, download) => Some(other_name(role, download)),
+        Caller::Root => Some(ROOT.to_string()),
     }
 }
 
@@ -1084,7 +1204,13 @@ async fn set_up(
                     bound.insert(field.clone(), value);
                 }
                 if let Some((parameter, field)) = bind {
-                    let value = bound.get(field).cloned().unwrap_or_default();
+                    // A field of a field, as `info.id`.
+                    let pointer = format!("/{}", field.replace('.', "/"));
+                    let value = match answer.pointer(&pointer) {
+                        Some(Value::String(text)) => text.clone(),
+                        Some(Value::Number(number)) => number.to_string(),
+                        _ => String::new(),
+                    };
                     bound.insert(parameter.to_string(), value);
                 }
                 answers.push(answer);
@@ -1126,7 +1252,7 @@ async fn run(
     needs: &Needs,
     probe: &Probe,
 ) -> Option<String> {
-    let (dir, mut fixture, app) = site(probe.private, case.prepare);
+    let (dir, mut fixture, app) = site(probe.private, case.prepare, case.slow_job);
     // An operation on the caller's own things is set up by the caller it
     // is probed at, who then owns them; anything else by an `admin`.
     let owner = if needs.own || needs.or_own {

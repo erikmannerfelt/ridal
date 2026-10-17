@@ -209,7 +209,7 @@ fn is_bulk(route: &str) -> bool {
 /// so each line covers one interval. The site settings page reads the same
 /// numbers with [`Heartbeat::peek`], which leaves them for the next line
 /// (#391).
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, utoipa::ToSchema)]
 pub struct Heartbeat {
     /// How long the server has been running, in seconds.
     pub uptime_seconds: u64,
@@ -218,8 +218,10 @@ pub struct Heartbeat {
     pub interval_seconds: f64,
     /// CPU time this process has used since it started, user and system,
     /// in seconds. `None` off Linux.
+    #[schema(required = true)]
     pub cpu_seconds: Option<f64>,
     /// Resident memory, in MB. `None` off Linux.
+    #[schema(required = true)]
     pub rss_mb: Option<f64>,
     /// `--n-workers`: renders that may run at once.
     pub render_permits: usize,
@@ -234,6 +236,7 @@ pub struct Heartbeat {
     pub cache_budget_mb: f64,
     /// Lookups that found their image, since the last heartbeat. `None`
     /// when there were none.
+    #[schema(required = true)]
     pub cache_hit_ratio: Option<f64>,
     /// Requests answered since the last heartbeat.
     pub requests: u64,

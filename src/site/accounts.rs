@@ -86,16 +86,37 @@ impl Account {
 
     /// The only shape allowed out of the process: it drops the hash and the
     /// invite, keeping just what a person needs to see.
-    pub fn redacted(&self) -> serde_json::Value {
-        serde_json::json!({
-            "name": self.name.as_str(),
-            "server_admin": self.server_admin,
-            "activated": self.is_activated(),
-            "invite_pending": self.invite.is_some(),
-            "invite_expires": self.invite.as_ref().map(|invite| invite.expires),
-            "created": self.created,
-        })
+    pub fn redacted(&self) -> RedactedAccount {
+        RedactedAccount {
+            name: self.name.as_str().to_string(),
+            server_admin: self.server_admin,
+            activated: self.is_activated(),
+            invite_pending: self.invite.is_some(),
+            invite_expires: self.invite.as_ref().map(|invite| invite.expires),
+            created: self.created.clone(),
+        }
     }
+}
+
+/// An account as the HTTP API shows it: never its password hash or invite
+/// token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = Account))]
+pub struct RedactedAccount {
+    pub name: String,
+    /// Whether it administers the whole site.
+    pub server_admin: bool,
+    /// Whether it has set a password.
+    pub activated: bool,
+    /// Whether an invite link is outstanding.
+    pub invite_pending: bool,
+    /// When that invite expires, in Unix seconds.
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub invite_expires: Option<i64>,
+    /// When the account was created, RFC 3339.
+    #[cfg_attr(feature = "server", schema(required = true))]
+    pub created: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -334,7 +355,7 @@ mod tests {
     fn redaction_never_carries_the_hash_or_the_invite() {
         let mut account = Account::new(name("anna"), false);
         account.password_hash = Some("$argon2id$secret".to_string());
-        let redacted = account.redacted().to_string();
+        let redacted = serde_json::to_string(&account.redacted()).unwrap();
         assert!(!redacted.contains("argon2"), "{redacted}");
         assert!(!redacted.contains("password_hash"), "{redacted}");
         assert!(!redacted.contains("token_hash"), "{redacted}");

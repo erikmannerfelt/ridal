@@ -7,12 +7,11 @@ can do too.
 :::{note}
 This page lists every endpoint, the permission it needs and what it does. A
 test fails if a route is added to or removed from the server without this
-page following. The machine-readable description is {download}`openapi.json`,
-also served at `/api/v1/openapi.json`: it holds the schemas of the request
-and response bodies the tables name, and of the picks document (`Document`,
-from gprinterp). It is being extended section by section: the tables from
-Server to Level 2 points are generated from it, with their bodies; the site
-server's are written by hand, and their bodies are not described yet.
+page following. The tables are generated from the machine-readable
+description, {download}`openapi.json`, also served at `/api/v1/openapi.json`.
+It describes every endpoint here with its parameters, the schemas of the
+request and response bodies the tables name, and the picks document
+(`Document`, from gprinterp).
 :::
 
 ## Conventions
@@ -238,8 +237,9 @@ endpoints that belong to the *site* rather than to any one project. Under
 
 A project the caller may not see answers `404` exactly as one that does not
 exist, to someone signed in. Someone not signed in, on a site with
-accounts, is asked to sign in instead (`401`, or the login page), for a
-project that exists and one that does not alike.
+accounts, is asked to sign in instead (`401`, or the login page) by a
+project's own endpoints and pages, for a project that exists and one that
+does not alike; `GET /api/v1/projects/{key}` answers them `404` as well.
 
 A **server administrator** is the `server_admin` flag on an account, which
 is separate from a project role. A **project administrator** is a member
@@ -250,39 +250,6 @@ A server started `--read-only` refuses every change below with `403`
 `read_only`, and an archived project refuses changes to its members, access
 policy and invitations with `403` `archived`.
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/site` | anyone | The site's name, whether it has accounts, and who the caller is. |
-| `GET` | `/api/v1/site/preferences` | signed in | The caller's own site-wide settings, currently the theme. |
-| `PUT` | `/api/v1/site/preferences` | signed in | Change them. Any role may. |
-| `GET` | `/api/v1/site/audit` | server administrator | The site's account, membership and project history, most recent first. |
-| `GET` | `/api/v1/site/status` | server administrator | What the server's heartbeat would report now: render workers busy and waiting, the render cache, requests and processing since the last heartbeat, and the process's memory and CPU time. Reading it does not reset the heartbeat's counts. |
-| `GET` | `/api/v1/site/processing` | server administrator | The processing queue: the configured limits, every job it still knows of with its project, owner, state and how long it waited and ran, and how many are queued and running and how much of the memory budget they use. |
-| `DELETE` | `/api/v1/site/processing/{job}` | server administrator | Cancel anyone's processing job: a queued one never starts, a running one is stopped. Recorded in the site's history. `404` when the job has already ended or does not exist. |
-| `GET` | `/api/v1/site/memberships` | server administrator | Every account and the projects it belongs to. |
-| `GET` | `/api/v1/accounts` | server administrator | Every account, without hashes or invite tokens. |
-| `POST` | `/api/v1/accounts` | server administrator | Create an account and mint its invite, optionally naming a project, role and download. It cannot create a server administrator. |
-| `POST` | `/api/v1/accounts/bulk/invites` | server administrator | Create several invite-only accounts at once. |
-| `POST` | `/api/v1/accounts/bulk/passwords` | server administrator | Create several accounts with generated passwords. |
-| `PUT` | `/api/v1/accounts/{name}` | server administrator | Change the server-administrator flag. Refused if it would leave the site with none, or while the account has an invite outstanding. |
-| `DELETE` | `/api/v1/accounts/{name}` | server administrator | Remove an account and its membership in every project. Picks are left in place. |
-| `POST` | `/api/v1/accounts/{name}/invite` | server administrator | Issue a new invite link, for a reset or a lost one. |
-| `GET` | `/api/v1/tokens` | signed in | The caller's API tokens, without their secrets. `?all=true` lists every account's, for a server administrator. |
-| `POST` | `/api/v1/tokens` | signed in | Create an API token: a `name`, an `expires` (`30d`, `12w`, `2y` or `never`; default 90 days) and `grants`, each a `project`, `role` and `download` no higher than the caller's membership there. The token is in the response once and cannot be shown again. Needs a session, never a token. |
-| `DELETE` | `/api/v1/tokens/{id}` | signed in | Revoke one of the caller's tokens, or any token for a server administrator. Someone else's token is `404`, as if it did not exist. |
-| `GET` | `/api/v1/projects` | anyone | The projects the caller is a member of; every project for a server administrator. Public projects are not listed. With an API token, only its granted projects, with the role and download scope the token has there. |
-| `POST` | `/api/v1/projects` | server administrator | Create a project at a key. |
-| `GET` | `/api/v1/projects/{key}` | member, server administrator, or anyone for a public project | One project. |
-| `PATCH` | `/api/v1/projects/{key}` | server administrator | Rename its display name; the key does not change. |
-| `DELETE` | `/api/v1/projects/{key}` | server administrator | Delete an archived project and everything it owns. `409` `not_archived` otherwise. |
-| `POST` | `/api/v1/projects/{key}/archive` | server administrator | Make the project read-only. |
-| `POST` | `/api/v1/projects/{key}/unarchive` | server administrator | Reverse an archive. |
-| `GET` | `/api/v1/projects/{key}/members` | project administrator | The membership list and access policy. |
-| `POST` | `/api/v1/projects/{key}/members` | project administrator | Add or update an existing account's membership. |
-| `POST` | `/api/v1/projects/{key}/members/invite` | project administrator | Create an account and invite it into this project only. `409` `name_in_use` for a name any project has a membership for. |
-| `POST` | `/api/v1/projects/{key}/members/bulk/invites` | project administrator | Bulk-create accounts, each granted this project only. |
-| `POST` | `/api/v1/projects/{key}/members/bulk/passwords` | project administrator | Bulk-create accounts with generated passwords, each granted this project only. |
-| `PUT` | `/api/v1/projects/{key}/members/{name}` | project administrator | Change a member's role or download scope. |
-| `DELETE` | `/api/v1/projects/{key}/members/{name}` | project administrator | Remove the membership. The account itself remains. |
-| `PUT` | `/api/v1/projects/{key}/access` | project administrator | The project's read and anonymous-download policy. |
-| `GET` | `/api/v1/projects/{key}/audit` | project administrator | This project's slice of the site history. |
+:::{http-endpoints} Site server
+:full-paths:
+:::
