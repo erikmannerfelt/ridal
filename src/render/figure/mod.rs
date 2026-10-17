@@ -229,8 +229,10 @@ pub struct Sidecar {
     pub width: usize,
     pub height: usize,
     /// `[first, last]` trace position of the left and right edges.
+    #[cfg_attr(feature = "server", schema(min_items = 2, max_items = 2))]
     pub traces: [f64; 2],
     /// `[top, bottom]` row position of the top and bottom edges.
+    #[cfg_attr(feature = "server", schema(min_items = 2, max_items = 2))]
     pub rows: [f64; 2],
     pub x: SidecarAxis,
     pub y: SidecarAxis,
@@ -243,6 +245,7 @@ pub struct SidecarAxis {
     pub unit: String,
     pub label: String,
     /// The value at the two edges: left and right, or top and bottom.
+    #[cfg_attr(feature = "server", schema(min_items = 2, max_items = 2))]
     pub extent: [f64; 2],
     /// The value at the centre of each pixel column or row.
     pub centres: Vec<f64>,

@@ -550,9 +550,7 @@ class Client:
     def commit_replacement(self, radargram_id: str, token: str) -> models.Replaced:
         """Install a staged replacement."""
         return models.Replaced.from_json(
-            self._http.json(
-                "POST", self._dataset_path(radargram_id, "replace", token), json={}
-            )
+            self._http.json("POST", self._dataset_path(radargram_id, "replace", token))
         )
 
     def discard_replacement(self, radargram_id: str, token: str) -> None:
@@ -1265,7 +1263,7 @@ class Client:
         someone has changed the radargram since the draft was asked for.
         """
         response = self._http.request(
-            "POST", self._project_path("drafts", str(job), "commit"), json={}
+            "POST", self._project_path("drafts", str(job), "commit")
         )
         body = _json_of(response)
         if response.status_code == 201:
