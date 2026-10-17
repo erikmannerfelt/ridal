@@ -788,7 +788,7 @@
       cancel.hidden = false;
       try {
         let lastPercent = -1;
-        uploading = RIDAL.postFile(
+        uploading = RIDAL.uploadFile(
           `${RIDAL.apiPath('raw')}?filename=${encodeURIComponent(file.name)}`,
           file,
           (loaded, size) => {

@@ -505,7 +505,7 @@
             progress.textContent = `Uploading ${done} of ${total}: ${file.name}… ${percent}%`;
           };
           progress.textContent = `Uploading ${done} of ${total}: ${file.name}…`;
-          uploading = RIDAL.postFile(
+          uploading = RIDAL.uploadFile(
             `${RIDAL.apiPath('raw')}?filename=${encodeURIComponent(file.name)}`,
             file,
             onProgress,

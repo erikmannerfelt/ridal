@@ -138,7 +138,7 @@
         const prefix = `Uploading ${done} of ${files.length}: ${file.name}`;
         uploadLine.textContent = `${prefix}…`;
         let last = -1;
-        uploading = RIDAL.postFile(
+        uploading = RIDAL.uploadFile(
           `${RIDAL.apiPath('raw')}?filename=${encodeURIComponent(file.name)}`,
           file,
           (loaded, size) => {

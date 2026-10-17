@@ -447,10 +447,15 @@ as `?upload=` where a body would go. `project::uploads` keeps each upload as
   rather than the hour of `raw::SWEEP_MIN_AGE`: resuming after a laptop slept
   overnight is the point. Uploads count toward `max_bytes` as they grow; the
   declared size is checked when one starts but not reserved.
-- **Clients.** The Python client sends files over 64 MiB in 32 MiB chunks
-  (`_http.Http.upload`), retries a failed chunk from the server's offset with
-  backoff, and deletes the upload when it gives up. It does not resume
-  across processes.
+- **Clients.** Both send files over 64 MiB in 32 MiB chunks and retry a
+  failed chunk from the server's offset with backoff (1, 2, 5, 10, 30 s).
+  The Python client (`_http.Http.upload`) deletes the upload when it gives
+  up, and does not resume across processes. The browser (`RIDAL.uploadFile`
+  in `app.js`, which every upload form uses) keeps the upload's id in
+  `localStorage` under the project's API path and the file's name, size and
+  modification time, so the same file chosen again after a reload or after
+  giving up resumes; it deletes the upload only on a cancel or a refusal
+  that will not change, such as a full project.
 
 ## Processing profiles (#382)
 

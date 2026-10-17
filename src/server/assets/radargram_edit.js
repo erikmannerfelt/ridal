@@ -419,7 +419,7 @@ function reloadAfterEdit() {
         `(${RIDAL.formatBytes(loaded)} of ${RIDAL.formatBytes(total)})`;
     };
     try {
-      const response = await RIDAL.postFile(
+      const response = await RIDAL.uploadFile(
         `${RIDAL.apiPath('datasets', radargramId, 'replace')}` +
           `?filename=${encodeURIComponent(file.name)}`,
         file,
