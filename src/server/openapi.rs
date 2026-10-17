@@ -211,6 +211,12 @@ const PATH_PARAMETERS: &[(&str, &str)] = &[
     ("dem", "A DEM's id."),
     ("batch", "A batch's id."),
     ("job", "A draft's job number."),
+    ("user", "An account name: whose interpretation it is."),
+    (
+        "removal",
+        "An archive entry: the removal or archiving that put the interpretation there, as a summary row's `removal` gives it.",
+    ),
+    ("item", "A derived item's id."),
 ];
 
 /// The `{name}`s in a path, in order.
@@ -401,6 +407,12 @@ mod tests {
         "BulkDownloadItem",
     ];
 
+    /// Stored documents that leave out what they do not set, and are sent
+    /// as stored: the layer vocabulary's layers and groups, and a derived
+    /// item's fill. A missing field there is its default, which the
+    /// document's own description gives.
+    const DOCUMENTS: [&str; 3] = ["Layer", "ExclusivityGroup", "FillTo"];
+
     /// The schema names a `$ref` anywhere in `value` points at.
     fn refs(value: &serde_json::Value, out: &mut Vec<String>) {
         match value {
@@ -464,7 +476,10 @@ mod tests {
         let requests = request_only(&spec);
         let mut optional = Vec::new();
         for (name, schema) in spec["components"]["schemas"].as_object().unwrap() {
-            if requests.contains(name) || gprinterp.contains_key(name) {
+            if requests.contains(name)
+                || gprinterp.contains_key(name)
+                || DOCUMENTS.contains(&name.as_str())
+            {
                 continue;
             }
             let required: Vec<&str> = schema["required"]

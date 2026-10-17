@@ -42,6 +42,7 @@ pub const SCHEMA_VERSION: &str = "1";
 
 /// One layer definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Layer {
     /// Stable slug. Written into gprinterp `properties.label`.
     pub id: String,
@@ -112,6 +113,7 @@ fn default_true() -> bool {
 /// lie *below* the true reflector, so the minimum depth is the defensible
 /// choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Reducer {
     Shallowest,
@@ -128,6 +130,7 @@ pub enum Reducer {
 /// `temperate_ice` are exclusive, but `bed` and `temperate_ice` coexist. Two
 /// layers conflict iff they share at least one group.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct ExclusivityGroup {
     /// Stable id. A layer may list it in [`Layer::groups`].
     pub id: String,
@@ -144,6 +147,7 @@ pub struct ExclusivityGroup {
 
 /// The whole vocabulary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct LayerSet {
     #[serde(default = "default_schema")]
     pub schema: String,

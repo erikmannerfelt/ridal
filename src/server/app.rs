@@ -1196,6 +1196,45 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
         .routes(routes!(super::draft_routes::draft_overview))
         .routes(routes!(super::draft_routes::download_draft))
         .routes(routes!(super::draft_routes::commit_draft))
+        // Interpretations.
+        .routes(routes!(super::interp_routes::list_interpretations))
+        .routes(routes!(super::pick_routes::list_summaries))
+        .routes(routes!(super::pick_routes::archive_interpretation))
+        .routes(routes!(
+            super::pick_routes::download_archived,
+            super::pick_routes::purge_one
+        ))
+        .routes(routes!(super::pick_routes::download_bulk))
+        .routes(routes!(super::pick_routes::restore_archived))
+        .routes(routes!(super::pick_routes::purge_removal))
+        .routes(routes!(
+            super::interp_routes::get_interpretation,
+            super::interp_routes::put_interpretation,
+            super::interp_routes::delete_interpretation
+        ))
+        .routes(routes!(super::interp_routes::get_interpretation_raw))
+        .routes(routes!(super::interp_routes::get_interpretation_carried))
+        .routes(routes!(super::interp_routes::promote_interpretation))
+        // Layers.
+        .routes(routes!(
+            super::interp_routes::get_layers,
+            super::interp_routes::put_layers
+        ))
+        .routes(routes!(super::interp_routes::layer_usage))
+        // Derived items.
+        .routes(routes!(
+            super::derived_routes::get_derived,
+            super::derived_routes::put_derived
+        ))
+        .routes(routes!(super::derived_routes::get_contributors))
+        .routes(routes!(super::derived_routes::get_derived_item))
+        .routes(routes!(super::derived_routes::preview_derived))
+        .routes(routes!(super::derived_routes::download_derived))
+        // Level 2 points.
+        .routes(routes!(super::interp_routes::interpretation_level2))
+        .routes(routes!(super::derived_routes::derived_level2))
+        .routes(routes!(super::interp_routes::group_level2))
+        .routes(routes!(super::interp_routes::catalog_level2))
 }
 
 /// Build the complete Axum application over `state`.
@@ -1208,96 +1247,6 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route("/processing", get(super::routes::processing_page))
         .route("/ingest", get(super::routes::ingest_page))
         .route("/settings", get(super::routes::settings_page))
-        .route(
-            "/api/v1/layers",
-            get(super::interp_routes::get_layers).put(super::interp_routes::put_layers),
-        )
-        .route(
-            "/api/v1/layers/usage",
-            get(super::interp_routes::layer_usage),
-        )
-        .route(
-            "/api/v1/interpretations",
-            get(super::pick_routes::list_summaries),
-        )
-        .route(
-            "/api/v1/interpretations/download",
-            axum::routing::post(super::pick_routes::download_bulk),
-        )
-        .route(
-            "/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}/restore",
-            axum::routing::post(super::pick_routes::restore_archived),
-        )
-        .route(
-            "/api/v1/interpretations/archived/{radargram_id}/{removal}",
-            axum::routing::delete(super::pick_routes::purge_removal),
-        )
-        .route(
-            "/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}",
-            get(super::pick_routes::download_archived).delete(super::pick_routes::purge_one),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/interpretations/{user}/archive",
-            axum::routing::post(super::pick_routes::archive_interpretation),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/interpretations",
-            get(super::interp_routes::list_interpretations),
-        )
-        .route(
-            "/api/v1/catalog/level2",
-            get(super::interp_routes::catalog_level2),
-        )
-        .route(
-            "/api/v1/groups/{group}/level2",
-            get(super::interp_routes::group_level2),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/interpretations/{user}/raw",
-            get(super::interp_routes::get_interpretation_raw),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/interpretations/{user}/level2",
-            get(super::interp_routes::interpretation_level2),
-        )
-        .route(
-            "/api/v1/derived",
-            get(super::derived_routes::get_derived).put(super::derived_routes::put_derived),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/derived",
-            get(super::derived_routes::download_derived),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/derived/{item}",
-            get(super::derived_routes::get_derived_item),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/contributors",
-            get(super::derived_routes::get_contributors),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/derived/preview",
-            axum::routing::post(super::derived_routes::preview_derived),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/derived/level2",
-            get(super::derived_routes::derived_level2),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/interpretations/{user}",
-            get(super::interp_routes::get_interpretation)
-                .put(super::interp_routes::put_interpretation)
-                .delete(super::interp_routes::delete_interpretation),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/interpretations/{user}/promote",
-            axum::routing::post(super::interp_routes::promote_interpretation),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/interpretations/{user}/carried",
-            get(super::interp_routes::get_interpretation_carried),
-        )
         .merge(Router::from(project_api()))
         // Every route above is reached through this, so identity is resolved
         // exactly once per request and a route added later cannot forget to
@@ -2417,7 +2366,7 @@ mod http_reference_tests {
         let routed = routed();
         let described = described();
         let documented = documented();
-        assert!(routed.len() > 50, "the route parser found only {routed:?}");
+        assert!(routed.len() > 20, "the route parser found only {routed:?}");
         let by_hand: BTreeSet<Endpoint> = routed.difference(&described).cloned().collect();
         let undocumented: Vec<_> = by_hand.difference(&documented).collect();
         let stale: Vec<_> = documented.difference(&by_hand).collect();

@@ -18,7 +18,8 @@ use axum::Json;
 use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{self, expectation_from, parse_radargram, parse_user, readable_project};
-use super::routes::ApiError;
+use super::needs::{Needs, Who};
+use super::routes::{ApiError, ErrorBody};
 use crate::identity::{RadargramId, UserId};
 use crate::interp::carry;
 use crate::project::interpretations::{self, InterpretationError, StoredInterpretation};
@@ -447,12 +448,24 @@ fn store_failed(e: InterpretationError) -> ApiError {
     ApiError::internal("store_failed", e.to_string())
 }
 
-/// `GET /api/v1/interpretations` -- every interpretation the caller may
-/// know about, as numbers.
-///
-/// Scans every stored interpretation, as `/layers/usage` does: a directory
-/// walk and a JSON parse per document, fine at the tens to hundreds of
-/// radargrams a project has, and requested only by the pick manager.
+/// Every stored interpretation as statistics: lines, vertices, layers and the
+/// percentage of traces covered, with whether it is on the current revision, an
+/// earlier one, or archived by a removal. A caller below `operator` gets only
+/// their own. No picks are returned, so no download scope is needed.
+#[utoipa::path(
+    get,
+    path = "/api/v1/interpretations",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "The interpretations.", body = InterpretationSummaryList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// know about, as numbers.
+//
+// Scans every stored interpretation, as `/layers/usage` does: a directory
+// walk and a JSON parse per document, fine at the tens to hundreds of
+// radargrams a project has, and requested only by the pick manager.
 pub async fn list_summaries(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -546,17 +559,28 @@ pub(super) struct ArchivedInterpretation {
     removal: String,
 }
 
-/// `POST /api/v1/datasets/{radargram_id}/interpretations/{user}/archive`
-///
-/// Move someone's interpretation into the archive (#178). This is what an
-/// administrator gets instead of deleting another person's picks, which no
-/// one may do (#131): the picks stop being drawn, counted and exported, and
-/// stay attributed in the archive until purged. Conditional on `If-Match`
-/// like a delete, so picks saved after the page loaded are not archived
-/// unseen.
-///
-/// Works whether or not the radargram is served, which is how picks left
-/// behind by a radargram that went away outside Ridal get archived too.
+/// Move someone's interpretation into the archive, where it stays attributed
+/// until purged. Takes `If-Match`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets/{radargram_id}/interpretations/{user}/archive",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "Archived.", body = ArchivedInterpretation),
+        (status = 404, description = "`interpretation_not_found`.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
+// Move someone's interpretation into the archive (#178). This is what an
+// administrator gets instead of deleting another person's picks, which no
+// one may do (#131): the picks stop being drawn, counted and exported, and
+// stay attributed in the archive until purged. Conditional on `If-Match`
+// like a delete, so picks saved after the page loaded are not archived
+// unseen.
+//
+// Works whether or not the radargram is served, which is how picks left
+// behind by a radargram that went away outside Ridal get archived too.
 pub async fn archive_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
@@ -655,10 +679,19 @@ fn archived_not_found(radargram: &RadargramId, removal: &str, user: &UserId) -> 
     )
 }
 
-/// `GET /api/v1/interpretations/archived/{radargram_id}/{removal}/{user}`
-///
-/// One archived interpretation, byte for byte, as a download. Gated like
-/// `…/interpretations/{user}/raw`: archived picks are still raw picks.
+/// One archived interpretation file, byte for byte.
+#[utoipa::path(
+    get,
+    path = "/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "The file, as an attachment.", content_type = "application/json"),
+        (status = 404, description = "No such archived interpretation.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Picks)))),
+)]
+// One archived interpretation, byte for byte, as a download. Gated like
+// `…/interpretations/{user}/raw`: archived picks are still raw picks.
 pub async fn download_archived(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, removal, user)): Path<(String, String, String)>,
@@ -709,9 +742,18 @@ pub(super) struct Purged {
     users: Vec<String>,
 }
 
-/// `DELETE /api/v1/interpretations/archived/{radargram_id}/{removal}`
-///
-/// Destroy every archived interpretation from one removal (#162).
+/// Permanently delete every archived interpretation from one removal or
+/// archiving.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/interpretations/archived/{radargram_id}/{removal}",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "What was deleted.", body = Purged),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
+// Destroy every archived interpretation from one removal (#162).
 pub async fn purge_removal(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, removal)): Path<(String, String)>,
@@ -720,9 +762,17 @@ pub async fn purge_removal(
     purge(&state, &caller, &radargram_id, &removal, None)
 }
 
-/// `DELETE /api/v1/interpretations/archived/{radargram_id}/{removal}/{user}`
-///
-/// Destroy one archived interpretation (#162).
+/// Permanently delete one archived interpretation.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "What was deleted.", body = Purged),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
+// Destroy one archived interpretation (#162).
 pub async fn purge_one(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, removal, user)): Path<(String, String, String)>,
@@ -798,17 +848,27 @@ pub(super) struct RestoredInterpretation {
     version: String,
 }
 
-/// `POST /api/v1/interpretations/archived/{radargram_id}/{removal}/{user}/restore`
-///
-/// Move an archived interpretation back onto its radargram (#435): what
-/// #178's "modify orphaned picks" comes to once the radargram has been
-/// added back. The document is restored as it was archived, so picks drawn
-/// on an earlier revision go through the carry machinery (#148, #370) in
-/// the viewer and are adopted by their owner, not rewritten here.
-///
-/// The administrator's, as archiving is: it undoes an archive. Refused when
-/// the radargram is not in the catalog, and when the user has picks on it
-/// already, which are never merged with or replaced by archived ones.
+/// Move an archived interpretation back onto its radargram, as it was archived.
+#[utoipa::path(
+    post,
+    path = "/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}/restore",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "Restored.", body = RestoredInterpretation),
+        (status = 404, description = "No such archived interpretation.", body = ErrorBody),
+        (status = 409, description = "`not_in_catalog`: the radargram is not served, or `interpretation_exists`: the user has picks on it now.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
+// Move an archived interpretation back onto its radargram (#435): what
+// #178's "modify orphaned picks" comes to once the radargram has been
+// added back. The document is restored as it was archived, so picks drawn
+// on an earlier revision go through the carry machinery (#148, #370) in
+// the viewer and are adopted by their owner, not rewritten here.
+//
+// The administrator's, as archiving is: it undoes an archive. Refused when
+// the radargram is not in the catalog, and when the user has picks on it
+// already, which are never merged with or replaced by archived ones.
 pub async fn restore_archived(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, removal, user)): Path<(String, String, String)>,
@@ -914,18 +974,30 @@ pub(super) struct BulkDownloadItem {
     removal: Option<String>,
 }
 
-/// `POST /api/v1/interpretations/download`
-///
-/// Several interpretations, live or archived, byte for byte in one zip
-/// (#435): the rows the pick manager's filters show. Which rows those are
-/// is the page's to decide, so the request names them rather than the
-/// server repeating the filters.
-///
-/// Gated like the one-file downloads, under the `picks` download scope.
-/// The zip mirrors the layout under `interpretations/`, so it can be put
-/// back into a project as it is, and `manifest.json` lists what it holds
-/// and anything named that was not there, such as picks purged or archived
-/// since the page loaded.
+/// Several interpretation files, live or archived, byte for byte in one zip,
+/// laid out as under `interpretations/`. The zip's `manifest.json` lists what
+/// it holds and what was named but not found.
+#[utoipa::path(
+    post,
+    path = "/api/v1/interpretations/download",
+    tag = "Interpretations",
+    request_body = BulkDownloadRequest,
+    responses(
+        (status = 200, description = "The zip, as an attachment.", content_type = "application/zip"),
+        (status = 400, description = "`nothing_selected`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Picks)))),
+)]
+// Several interpretations, live or archived, byte for byte in one zip
+// (#435): the rows the pick manager's filters show. Which rows those are
+// is the page's to decide, so the request names them rather than the
+// server repeating the filters.
+//
+// Gated like the one-file downloads, under the `picks` download scope.
+// The zip mirrors the layout under `interpretations/`, so it can be put
+// back into a project as it is, and `manifest.json` lists what it holds
+// and anything named that was not there, such as picks purged or archived
+// since the page loaded.
 pub(super) async fn download_bulk(
     State(state): State<Arc<AppState>>,
     caller: Caller,

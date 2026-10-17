@@ -56,10 +56,15 @@ const PARAMETERS: &[(&str, &str)] = &[
     ("x", "0"),
     ("y", "0"),
     ("dem", "mettebreen"),
+    ("item", "bed_median"),
 ];
 
 /// What a [`Case`] can build its requests from.
 struct Fixture {
+    /// The account the setup acts as, whose `{user}` the paths name.
+    owner: String,
+    /// The account the probe is sent by, or empty for an anonymous one.
+    caller: String,
     /// The token of [`INVITEE`]'s invite.
     invite_token: String,
     /// A processed file of another radargram, to upload.
@@ -92,6 +97,9 @@ enum Step {
         path: &'static str,
         body: BodyFn,
         bind: Option<(&'static str, &'static str)>,
+        /// Sent by an `admin` rather than the owner, for what the owner may
+        /// not do, such as replacing the radargram their picks are on.
+        by_admin: bool,
     },
     /// Wait for the draft the last request made to finish.
     AwaitDraft,
@@ -103,6 +111,18 @@ const fn send(method: &'static str, path: &'static str, body: BodyFn) -> Step {
         path,
         body,
         bind: None,
+        by_admin: false,
+    }
+}
+
+/// [`send`], by an `admin`.
+const fn send_as_admin(method: &'static str, path: &'static str, body: BodyFn) -> Step {
+    Step::Send {
+        method,
+        path,
+        body,
+        bind: None,
+        by_admin: true,
     }
 }
 
@@ -285,6 +305,7 @@ fn batch() -> Vec<Step> {
         path: "/api/v1/projects/{key}/processing/profiles/{profile}/reprocess",
         body: |_, _| Payload::Json(json!({})),
         bind: Some(("batch", "id")),
+        by_admin: false,
     });
     steps
 }
@@ -308,6 +329,124 @@ fn draft() -> Vec<Step> {
 fn finished_draft() -> Vec<Step> {
     let mut steps = draft();
     steps.push(Step::AwaitDraft);
+    steps
+}
+
+/// A line on [`RADARGRAM`], as a picks document; with `axes`, drawn on the
+/// revision they describe, so that it can be carried onto a later one.
+fn picks(axes: Option<&Value>) -> Value {
+    let mut document = json!({
+        "key": RADARGRAM,
+        "features": [{
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": [[5.0, 2.0], [30.0, 3.0]]},
+            "properties": {"id": "f-0001", "label": "bed"}
+        }]
+    });
+    if let Some(axes) = axes {
+        document["source"] = json!({
+            "radargram_id": RADARGRAM,
+            "revision_id": axes["revision_id"],
+        });
+        document["coordinates"] = json!({"space": "index", "axes": axes["axes"]});
+    }
+    document
+}
+
+/// The owner's interpretation of [`RADARGRAM`].
+fn interpreted() -> Vec<Step> {
+    vec![send(
+        "PUT",
+        "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}",
+        |_, _| Payload::Json(picks(None)),
+    )]
+}
+
+/// The owner's interpretation, archived by an `admin`.
+fn archived() -> Vec<Step> {
+    let mut steps = interpreted();
+    steps.push(send_as_admin(
+        "POST",
+        "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}/archive",
+        |_, _| Payload::None,
+    ));
+    steps
+}
+
+/// The owner's interpretation, drawn on [`RADARGRAM`] before an `admin`
+/// replaced it, and as carried onto the replacement.
+fn carried() -> Vec<Step> {
+    vec![
+        send(
+            "GET",
+            "/api/v1/projects/{key}/datasets/{radargram_id}/axes/gprinterp",
+            |_, _| Payload::None,
+        ),
+        send(
+            "PUT",
+            "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}",
+            |_, answers| Payload::Json(picks(Some(&answers[0]))),
+        ),
+        send_as_admin(
+            "POST",
+            "/api/v1/projects/{key}/datasets/{radargram_id}/replace",
+            revision,
+        ),
+        send_as_admin(
+            "POST",
+            "/api/v1/projects/{key}/datasets/{radargram_id}/replace/{token}",
+            |_, _| Payload::None,
+        ),
+        send(
+            "GET",
+            "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}/carried",
+            |_, _| Payload::None,
+        ),
+    ]
+}
+
+fn layers_body(_: &Fixture, _: &[Value]) -> Payload {
+    Payload::Json(json!({
+        "schema": "ridal-layers",
+        "schema_version": "1",
+        "layers": [{"id": "bed", "name": "Bed"}],
+    }))
+}
+
+/// A layer vocabulary with `bed` in it, set by an `admin`.
+fn layers() -> Vec<Step> {
+    vec![send_as_admin(
+        "PUT",
+        "/api/v1/projects/{key}/layers",
+        layers_body,
+    )]
+}
+
+/// The derived items, as `PUT /api/v1/derived` takes them.
+fn derived_set(items: Value) -> Payload {
+    Payload::Json(json!({
+        "schema": "ridal-derived",
+        "schema_version": "1",
+        "items": items,
+    }))
+}
+
+/// [`layers`], and a project-wide derived item over them, `bed_median`.
+fn derived_item() -> Vec<Step> {
+    let mut steps = layers();
+    steps.push(send_as_admin(
+        "PUT",
+        "/api/v1/projects/{key}/derived",
+        |_, _| {
+            derived_set(json!([{
+                "id": "bed_median",
+                "name": "Bed",
+                "expression": "median(bed)",
+                "unit": "meters",
+                "scope": "project",
+            }]))
+        },
+    ));
     steps
 }
 
@@ -352,10 +491,10 @@ const CASES: &[Case] = &[
             "processing_datetime": "2021-01-01T00:00:00Z",
             "recipe_hash": null,
             "time": (0..N_TRACES).map(|i| i as f64 * 0.1).collect::<Vec<_>>(),
-            "twtt_anchor": null,
-            "twtt_crop": [],
-            "twtt_time_zero": [],
-            "dt_ns": 0.0,
+            "twtt_anchor": "twtt",
+            "twtt_crop": [4.0],
+            "twtt_time_zero": [4.0],
+            "dt_ns": 0.4,
             "n_samples": N_SAMPLES,
         }))
     }),
@@ -440,6 +579,59 @@ const CASES: &[Case] = &[
     Case::new("commit_draft")
         .setup(finished_draft)
         .needs_a_job(),
+    // Interpretations.
+    Case::new("list_interpretations").setup(interpreted),
+    Case::new("list_summaries").setup(interpreted),
+    Case::new("archive_interpretation").setup(interpreted),
+    Case::new("download_archived").setup(archived),
+    Case::new("download_bulk")
+        .setup(interpreted)
+        .body(|fixture, _| {
+            Payload::Json(json!({"items": [{"radargram_id": RADARGRAM, "user": fixture.owner}]}))
+        }),
+    Case::new("restore_archived").setup(archived),
+    Case::new("purge_one").setup(archived),
+    Case::new("purge_removal").setup(archived),
+    Case::new("get_interpretation").setup(interpreted),
+    Case::new("put_interpretation").body(|_, _| Payload::Json(picks(None))),
+    Case::new("delete_interpretation").setup(interpreted),
+    Case::new("get_interpretation_raw").setup(interpreted),
+    Case::new("get_interpretation_carried").setup(carried),
+    Case::new("promote_interpretation")
+        .setup(carried)
+        .query("onto={to_revision}")
+        .body(|_, answers| Payload::Json(answers.last().unwrap()["document"].clone())),
+    // Layers.
+    Case::new("get_layers"),
+    Case::new("put_layers").body(layers_body),
+    Case::new("layer_usage").setup(interpreted),
+    // Derived items.
+    Case::new("get_derived").setup(derived_item),
+    Case::new("put_derived").setup(layers).body(|fixture, _| {
+        // A private item, which any signed-in account may keep.
+        derived_set(json!([{
+            "id": "mine",
+            "name": "Mine",
+            "expression": "median(bed)",
+            "unit": "meters",
+            "scope": {"private": {"user": fixture.caller}},
+        }]))
+    }),
+    Case::new("get_contributors").setup(interpreted),
+    Case::new("get_derived_item").setup(derived_item),
+    Case::new("preview_derived")
+        .setup(layers)
+        .body(|_, _| Payload::Json(json!({"expression": "median(bed)"}))),
+    Case::new("download_derived").setup(derived_item),
+    // Level 2 points.
+    Case::new("interpretation_level2").setup(interpreted),
+    Case::new("derived_level2").setup(derived_item),
+    Case::new("group_level2")
+        .setup(interpreted)
+        .query("user={user}"),
+    Case::new("catalog_level2")
+        .setup(interpreted)
+        .query("user={user}"),
 ];
 
 /// Who sends a probe.
@@ -468,6 +660,9 @@ fn below<T: Copy + PartialOrd>(ladder: &[T], value: T) -> Option<T> {
     ladder.iter().copied().take_while(|v| *v < value).last()
 }
 
+/// Who sets up what an operation acts on, unless the caller must own it.
+const ADMIN: Caller = Caller::Member(Role::Admin, DownloadScope::All);
+
 const UNAUTHORIZED: &[StatusCode] = &[StatusCode::UNAUTHORIZED];
 const FORBIDDEN: &[StatusCode] = &[StatusCode::FORBIDDEN];
 /// Someone else's draft does not exist, as far as they are told; someone
@@ -475,7 +670,13 @@ const FORBIDDEN: &[StatusCode] = &[StatusCode::FORBIDDEN];
 const NOT_YOURS: &[StatusCode] = &[StatusCode::FORBIDDEN, StatusCode::NOT_FOUND];
 
 /// The caller a declaration is probed at: the least that should succeed.
+///
+/// For `or_own` that is the owner, with no download scope at all, and a
+/// `picker`, since only a picker has picks of their own.
 fn at_caller(needs: &Needs) -> Caller {
+    if needs.or_own {
+        return Caller::Member(Role::Picker, DownloadScope::None);
+    }
     let download = needs.download.unwrap_or(DownloadScope::None);
     match needs.who {
         Who::Nobody => Caller::Anonymous,
@@ -522,6 +723,10 @@ fn probes(needs: &Needs) -> Vec<Probe> {
     if let Some(lower) = below(&DownloadScope::ALL, download) {
         probes.push(probe(Caller::Member(role, lower), false, FORBIDDEN));
     }
+    if needs.or_own {
+        // Not the owner, but with the scope that stands in for owning it.
+        probes.push(probe(Caller::Member(role, download), false, &[]));
+    }
     if needs.own {
         probes.push(probe(Caller::Other(role, download), false, NOT_YOURS));
     }
@@ -538,8 +743,9 @@ fn other_name(role: Role, download: DownloadScope) -> String {
     format!("{}-other", member_name(role, download))
 }
 
-/// A processed radargram in [`GROUP`], with a track, an elevation and a
-/// depth axis, so that every view of it can be drawn.
+/// A processed radargram in [`GROUP`], with a track, an elevation, and
+/// travel-time and depth axes that it declares, so that every view of it
+/// can be drawn and picks on it can be carried onto a later revision.
 fn write_radargram(path: &StdPath, radargram_id: &str, processed: &str) {
     let mut file = netcdf::create(path).unwrap();
     file.add_dimension("y", N_SAMPLES).unwrap();
@@ -547,7 +753,13 @@ fn write_radargram(path: &StdPath, radargram_id: &str, processed: &str) {
     let mut data = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
     let values: Vec<f32> = (0..N_SAMPLES * N_TRACES).map(|i| (i % 7) as f32).collect();
     data.put_values(&values, ..).unwrap();
-    let per_trace: [(&str, Vec<f64>); 4] = [
+    let per_trace: [(&str, Vec<f64>); 7] = [
+        ("distance", (0..N_TRACES).map(|i| i as f64).collect()),
+        (
+            "longitude",
+            (0..N_TRACES).map(|i| 15.0 + i as f64 * 1e-5).collect(),
+        ),
+        ("latitude", vec![72.0; N_TRACES]),
         (
             "easting",
             (0..N_TRACES).map(|i| 500_000.0 + i as f64).collect(),
@@ -565,9 +777,22 @@ fn write_radargram(path: &StdPath, radargram_id: &str, processed: &str) {
         let mut variable = file.add_variable::<f64>(name, &["x"]).unwrap();
         variable.put_values(&values, ..).unwrap();
     }
-    let mut depth = file.add_variable::<f32>("depth", &["y"]).unwrap();
-    let values: Vec<f32> = (0..N_SAMPLES).map(|i| i as f32 * 0.1).collect();
-    depth.put_values(&values, ..).unwrap();
+    // As `interp_routes_tests::write_test_nc_full` writes them: a zero
+    // corrected radargram, whose axes say where they are anchored.
+    let per_sample: [(&str, f64); 2] = [("twtt", 0.4), ("depth", 0.04)];
+    for (name, step) in per_sample {
+        let mut variable = file.add_variable::<f64>(name, &["y"]).unwrap();
+        let values: Vec<f64> = (0..N_SAMPLES).map(|i| i as f64 * step).collect();
+        variable.put_values(&values, ..).unwrap();
+    }
+    file.variable_mut("twtt")
+        .unwrap()
+        .put_attribute("anchor_name", "twtt")
+        .unwrap();
+    for name in ["twtt_crop", "twtt_time_zero"] {
+        let mut variable = file.add_variable::<f64>(name, &[]).unwrap();
+        variable.put_value(4.0, ()).unwrap();
+    }
     for (name, value) in [
         ("crs", "EPSG:32633"),
         ("ridal_processing_datetime", processed),
@@ -578,6 +803,18 @@ fn write_radargram(path: &StdPath, radargram_id: &str, processed: &str) {
     ] {
         file.add_attribute(name, value).unwrap();
     }
+    for (name, value) in [
+        ("antenna_separation", 2.0f32),
+        ("antenna_separation_effective", 2.0),
+        ("medium_velocity", 0.168),
+    ] {
+        file.add_attribute(name, value).unwrap();
+    }
+    file.add_attribute(
+        "processing_steps",
+        netcdf::AttributeValue::Strs(vec!["zero_corr".to_string()]),
+    )
+    .unwrap();
 }
 
 /// The bytes of a radargram written as [`write_radargram`] does.
@@ -697,6 +934,8 @@ fn site(private: bool, prepare: Option<fn(&StdPath)>) -> (tempfile::TempDir, Fix
     let scratch = dir.path().join("scratch");
     std::fs::create_dir(&scratch).unwrap();
     let fixture = Fixture {
+        owner: String::new(),
+        caller: String::new(),
         invite_token,
         upload: radargram_bytes(&scratch, "upload.nc", "line-02", "2020-01-01T00:00:00Z"),
         revision: radargram_bytes(&scratch, "revision.nc", RADARGRAM, "2021-01-01T00:00:00Z"),
@@ -708,21 +947,29 @@ fn site(private: bool, prepare: Option<fn(&StdPath)>) -> (tempfile::TempDir, Fix
 /// A session cookie for `caller`, minted rather than signed in for, so the
 /// probes do not pay for a password hash each.
 fn session(root: &StdPath, caller: Caller) -> Option<String> {
-    let name = match caller {
-        Caller::Anonymous => return None,
-        Caller::Member(role, download) => member_name(role, download),
-        Caller::Other(role, download) => other_name(role, download),
-    };
+    let name = account(caller)?;
     let key = SessionKey::load_or_create(Site::open(root).unwrap().store()).unwrap();
     let value = key.mint(&id(&name), 1, auth::now() + 3600);
     Some(format!("{SESSION_COOKIE}={value}"))
 }
 
-/// `path` with every `{name}` filled in: from `bound` first, then
-/// `params`, then [`PARAMETERS`].
-fn fill(path: &str, bound: &HashMap<String, String>, params: &[(&str, &str)]) -> String {
-    let mut filled = path.to_string();
-    for name in super::openapi::path_parameter_names(path) {
+/// The account `caller` signs in as.
+fn account(caller: Caller) -> Option<String> {
+    match caller {
+        Caller::Anonymous => None,
+        Caller::Member(role, download) => Some(member_name(role, download)),
+        Caller::Other(role, download) => Some(other_name(role, download)),
+    }
+}
+
+/// `uri` with every `{name}` filled in, query included: from `bound`
+/// first, then `params`, then [`PARAMETERS`].
+fn fill(uri: &str, bound: &HashMap<String, String>, params: &[(&str, &str)]) -> String {
+    let mut filled = String::new();
+    let mut rest = uri;
+    while let Some(open) = rest.find('{') {
+        let close = open + rest[open..].find('}').expect("a `{` is closed");
+        let name = &rest[open + 1..close];
         let value = bound
             .get(name)
             .cloned()
@@ -733,9 +980,12 @@ fn fill(path: &str, bound: &HashMap<String, String>, params: &[(&str, &str)]) ->
                     .find(|(known, _)| *known == name)
                     .map(|(_, value)| value.to_string())
             })
-            .unwrap_or_else(|| panic!("no value for {{{name}}} in {path}"));
-        filled = filled.replace(&format!("{{{name}}}"), &value);
+            .unwrap_or_else(|| panic!("no value for {{{name}}} in {uri}"));
+        filled.push_str(&rest[..open]);
+        filled.push_str(&value);
+        rest = &rest[close + 1..];
     }
+    filled.push_str(rest);
     filled
 }
 
@@ -796,7 +1046,7 @@ async fn set_up(
     fixture: &Fixture,
     caller: Caller,
 ) -> Result<(HashMap<String, String>, Vec<Value>), String> {
-    let mut bound = HashMap::new();
+    let mut bound = HashMap::from([("user".to_string(), fixture.owner.clone())]);
     let mut answers: Vec<Value> = Vec::new();
     for step in (case.setup)() {
         match step {
@@ -805,11 +1055,13 @@ async fn set_up(
                 path,
                 body,
                 bind,
+                by_admin,
             } => {
                 let uri = fill(path, &bound, case.params);
+                let sender = if by_admin { ADMIN } else { caller };
                 let (status, bytes) = send_request(
                     app,
-                    request(method, &uri, session(root, caller), body(fixture, &answers)),
+                    request(method, &uri, session(root, sender), body(fixture, &answers)),
                 )
                 .await;
                 if !status.is_success() {
@@ -820,6 +1072,10 @@ async fn set_up(
                 }
                 let answer: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
                 for (field, value) in answer.as_object().into_iter().flatten() {
+                    // `{user}` stays the owner's, whoever an answer names.
+                    if field == "user" {
+                        continue;
+                    }
                     let value = match value {
                         Value::String(text) => text.clone(),
                         Value::Number(number) => number.to_string(),
@@ -870,21 +1126,23 @@ async fn run(
     needs: &Needs,
     probe: &Probe,
 ) -> Option<String> {
-    let (dir, fixture, app) = site(probe.private, case.prepare);
+    let (dir, mut fixture, app) = site(probe.private, case.prepare);
     // An operation on the caller's own things is set up by the caller it
     // is probed at, who then owns them; anything else by an `admin`.
-    let owner = if needs.own {
+    let owner = if needs.own || needs.or_own {
         at_caller(needs)
     } else {
-        Caller::Member(Role::Admin, DownloadScope::All)
+        ADMIN
     };
+    fixture.owner = account(owner).unwrap_or_default();
+    fixture.caller = account(probe.caller).unwrap_or_default();
     let (bound, answers) = match set_up(case, &app, dir.path(), &fixture, owner).await {
         Ok(set) => set,
         Err(problem) => return Some(format!("{method} {path} ({}): {problem}", case.operation)),
     };
     let mut uri = fill(path, &bound, case.params);
     if !case.query.is_empty() {
-        uri = format!("{uri}?{}", case.query);
+        uri = format!("{uri}?{}", fill(case.query, &bound, case.params));
     }
     let (status, bytes) = send_request(
         &app,

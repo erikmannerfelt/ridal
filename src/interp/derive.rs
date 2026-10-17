@@ -51,6 +51,7 @@ use crate::project::layers::{LayerSet, Reducer};
 /// only reached the UI and confused it. A **Layer** is a drawable position; an
 /// **Attribute** is a number per position (a length, a count, a spread).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// A point on the radargram: a single depth/trace position.
@@ -70,6 +71,7 @@ impl fmt::Display for Kind {
 
 /// The unit an expression is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Unit {
     Meters,

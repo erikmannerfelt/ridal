@@ -31,7 +31,8 @@ use axum::Json;
 use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{expectation_from, layer_error, parse_radargram, readable_project};
-use super::routes::{lookup_dataset, ApiError};
+use super::needs::{Needs, Who};
+use super::routes::{lookup_dataset, ApiError, ErrorBody};
 use crate::identity::UserId;
 use crate::interp::derive::{self, GridPosition, ReducedPicks};
 use crate::interp::derived_points::{self, DerivedPointsExport};
@@ -288,7 +289,16 @@ fn load_set(
     derived::read(project.documents()).map_err(derived_error)
 }
 
-/// `GET /api/v1/derived` -- the derived items the caller may see.
+/// The derived items the caller may see, with an `ETag`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/derived",
+    tag = "Derived items",
+    responses(
+        (status = 200, description = "The items.", body = DerivedItems),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn get_derived(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -313,7 +323,7 @@ pub async fn get_derived(
     // Inferred once for the whole set, each item with its own outcome, so a
     // broken item reads as an error without taking the others with it (#271).
     let kinds = set.inferred_kinds(&layer_set);
-    let items: Vec<serde_json::Value> = set
+    let items: Vec<DerivedItemView> = set
         .visible_to(&user)
         .into_iter()
         .map(|item| {
@@ -325,20 +335,20 @@ pub async fn get_derived(
                 },
                 Err(e) => format!("error: {e}"),
             };
-            serde_json::json!({
-                "id": item.id,
-                "name": item.name,
-                "expression": item.expression,
-                "unit": item.unit,
-                "kind": kind,
-                "color": item.color,
-                "show": item.show,
-                "listed": item.listed,
-                "used_by": used_by.get(&item.id).copied().unwrap_or(0),
-                "fill_to": item.fill_to,
-                "scope": item.scope,
-                "audience": item.audience,
-            })
+            DerivedItemView {
+                id: item.id.clone(),
+                name: item.name.clone(),
+                expression: item.expression.clone(),
+                unit: item.unit,
+                kind,
+                color: item.color.clone(),
+                show: item.show,
+                listed: item.listed,
+                used_by: used_by.get(&item.id).copied().unwrap_or(0),
+                fill_to: item.fill_to.clone(),
+                scope: item.scope.clone(),
+                audience: item.audience,
+            }
         })
         .collect();
 
@@ -357,18 +367,73 @@ pub async fn get_derived(
 
     Ok((
         headers,
-        Json(serde_json::json!({
-            "items": items,
-            "layers_unusable_in_expressions": unusable,
+        Json(DerivedItems {
+            items,
+            layers_unusable_in_expressions: unusable,
             // The editor asks the server what it may do rather than guessing
             // from a role string, the same rule as the contributor toggle.
-            "can_author": caller.may(Role::Operator),
-            "can_release": caller.may(Role::Admin),
-        })),
+            can_author: caller.may(Role::Operator),
+            can_release: caller.may(Role::Admin),
+        }),
     ))
 }
 
-/// `PUT /api/v1/derived` -- replace the derived set.
+/// `GET /api/v1/derived`: the derived items the caller may see.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct DerivedItems {
+    items: Vec<DerivedItemView>,
+    /// Layers whose ids an expression cannot name.
+    layers_unusable_in_expressions: Vec<String>,
+    /// Whether the caller may author project-wide items (`operator`).
+    can_author: bool,
+    /// Whether the caller may release a cross-user result (`admin`).
+    can_release: bool,
+}
+
+/// One derived item, with what it was inferred to be.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct DerivedItemView {
+    id: String,
+    name: String,
+    expression: String,
+    unit: derive::Unit,
+    /// `layer` or `attribute`, or why it cannot be evaluated, as
+    /// `error: …`.
+    kind: String,
+    #[schema(required = true)]
+    color: Option<String>,
+    show: bool,
+    listed: bool,
+    /// How many other items use it.
+    used_by: usize,
+    #[schema(required = true)]
+    fill_to: Option<derived::FillTo>,
+    scope: Scope,
+    audience: Audience,
+}
+
+/// `PUT /api/v1/derived`: the set as saved.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct SavedDerived {
+    /// The new version, as the `ETag` gives it.
+    version: String,
+}
+
+/// Replace the derived items. Project-wide items need `operator`; a private
+/// item can only be saved by its owner, and releasing a result computed from
+/// other people's picks to everyone needs `admin`. Takes `If-Match`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/derived",
+    tag = "Derived items",
+    request_body = DerivedSet,
+    responses(
+        (status = 200, description = "Saved.", body = SavedDerived),
+        (status = 400, description = "An item that cannot be saved, such as a cycle between items.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::SignedIn)))),
+)]
 pub async fn put_derived(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -506,23 +571,34 @@ pub async fn put_derived(
     }
     Ok((
         response,
-        Json(serde_json::json!({ "version": version.as_str() })),
+        Json(SavedDerived {
+            version: version.as_str().to_string(),
+        }),
     ))
 }
 
-/// `GET /api/v1/datasets/{id}/contributors` -- the interpretation documents
-/// the caller may see, for the layer panel's contributor overlay (#209).
-///
-/// Each entry has the stored `document`, the `view` to draw on the revision
-/// being served (`null` when it cannot be carried), and the `carry` report
-/// that `GET .../carried` gives for the caller's own (#434).
-///
-/// The obvious route, `GET .../interpretations/{user}`, takes no `Caller` at
-/// all (#212) and therefore cannot decide what a caller may see, so the panel
-/// must not use it. This one returns the caller's own document always, and
-/// everyone's only to a caller who may see cross-user results. `can_see_others`
-/// says which, so the panel shows or hides its "show all contributors" toggle
-/// from the server's answer rather than guessing from a role string.
+/// The interpretations the caller may see, for the layer panel.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/contributors",
+    tag = "Derived items",
+    responses(
+        (status = 200, description = "The interpretations.", body = Contributors),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// the caller may see, for the layer panel's contributor overlay (#209).
+//
+// Each entry has the stored `document`, the `view` to draw on the revision
+// being served (`null` when it cannot be carried), and the `carry` report
+// that `GET .../carried` gives for the caller's own (#434).
+//
+// The obvious route, `GET .../interpretations/{user}`, takes no `Caller` at
+// all (#212) and therefore cannot decide what a caller may see, so the panel
+// must not use it. This one returns the caller's own document always, and
+// everyone's only to a caller who may see cross-user results. `can_see_others`
+// says which, so the panel shows or hides its "show all contributors" toggle
+// from the server's answer rather than guessing from a role string.
 pub async fn get_contributors(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -604,49 +680,93 @@ pub async fn get_contributors(
                 }
                 None => (document.clone(), serde_json::Value::Null),
             };
-            documents.push(serde_json::json!({
-                "user": user,
-                "own": is_own,
-                "document": document,
-                "view": view,
-                "carry": carry,
-            }));
+            documents.push(Contributor {
+                user,
+                own: is_own,
+                document,
+                view,
+                carry,
+            });
         }
     }
 
-    Ok(Json(serde_json::json!({
-        "can_see_others": can_see_others,
-        "documents": documents,
+    Ok(Json(Contributors {
+        can_see_others,
+        documents,
         // Reported rather than swallowed, so the viewer can say a contributor
         // was dropped instead of quietly showing fewer than exist (#213).
-        "unreadable": unreadable,
-    })))
+        unreadable,
+    }))
 }
 
-/// The body of a preview request (#209's expression editor).
-///
-/// Deliberately carries **no audience**. `Audience::Released` grants the
-/// cross-user pick set unconditionally, which is only sound because on a
-/// stored item it can only have been put there by an admin. Accepting it
-/// from a request body would turn that admin decision into a self-service
-/// one -- a picker asks for `released` and gets everyone's data. A preview
-/// is always evaluated as `OwnPicks`, which for an operator already means
-/// everyone (rule 3), so nothing is lost by refusing to take it.
-#[derive(serde::Deserialize)]
+/// `GET /api/v1/datasets/{radargram_id}/contributors`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Contributors {
+    /// Whether the caller sees everyone's picks, or only their own.
+    can_see_others: bool,
+    documents: Vec<Contributor>,
+    /// Interpretations left out because their file name is not a valid user
+    /// id.
+    unreadable: Vec<String>,
+}
+
+/// One person's interpretation of the radargram, for the layer panel.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Contributor {
+    user: String,
+    /// Whether it is the caller's.
+    own: bool,
+    /// As stored.
+    #[schema(value_type = gprinterp::Document)]
+    document: serde_json::Value,
+    /// As drawn on the current revision: carried there, if it was picked on
+    /// an earlier one.
+    #[schema(value_type = gprinterp::Document)]
+    view: serde_json::Value,
+    /// What carrying it changed, or `null` when the radargram is not
+    /// served.
+    #[schema(required = true, value_type = Option<crate::interp::carry::CarryReport>)]
+    carry: serde_json::Value,
+}
+
+// Deliberately carries **no audience**. `Audience::Released` grants the
+// cross-user pick set unconditionally, which is only sound because on a
+// stored item it can only have been put there by an admin. Accepting it
+// from a request body would turn that admin decision into a self-service
+// one -- a picker asks for `released` and gets everyone's data. A preview
+// is always evaluated as `OwnPicks`, which for an operator already means
+// everyone (rule 3), so nothing is lost by refusing to take it.
+
+/// The body of `POST /api/v1/datasets/{radargram_id}/derived/preview`: an
+/// expression, evaluated over the caller's picks as a saved item would be.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct PreviewBody {
     pub expression: String,
+    /// The unit it is written in. Default: metres.
     #[serde(default)]
     pub unit: Option<crate::interp::derive::Unit>,
 }
 
-/// `POST /api/v1/datasets/{id}/derived/preview` -- evaluate an unsaved
-/// expression over the caller's picks.
-///
-/// The editor's live preview is the best guard against a sign or unit
-/// mistake -- `bed - cts` the wrong way round is obvious as a line and
-/// invisible as a number -- so it evaluates without writing anything. The
-/// expression is added to a copy of the set so it can reference the project's
-/// derived items, and only its own result is returned.
+/// Evaluate an unsaved expression over the caller's picks, without storing
+/// anything.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets/{radargram_id}/derived/preview",
+    tag = "Derived items",
+    request_body = PreviewBody,
+    responses(
+        (status = 200, description = "Its values.", body = Preview),
+        (status = 400, description = "`invalid_expression`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Results)))),
+)]
+// expression over the caller's picks.
+//
+// The editor's live preview is the best guard against a sign or unit
+// mistake -- `bed - cts` the wrong way round is obvious as a line and
+// invisible as a number -- so it evaluates without writing anything. The
+// expression is added to a copy of the set so it can reference the project's
+// derived items, and only its own result is returned.
 pub async fn preview_derived(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -689,31 +809,42 @@ pub async fn preview_derived(
         ));
     }
     let result = &evaluation.results["preview"];
-    let values: Vec<serde_json::Value> = result
+    let values: Vec<Option<f64>> = result
         .values
         .iter()
-        .map(|v| {
-            if v.is_nan() {
-                serde_json::Value::Null
-            } else {
-                serde_json::json!(v)
-            }
-        })
+        .map(|v| (!v.is_nan()).then_some(*v))
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "kind": result.kind,
-        "unit": result.unit,
-        "values": values,
+    Ok(Json(Preview {
+        kind: result.kind,
+        unit: result.unit,
+        values,
         // How many contributors fed the evaluation (#241). The editor shows
         // it next to the kind so `median(bed)` reading "over 7 contributors"
         // is visibly a different quantity from a per-contributor line.
-        "contributors": reduced.users.len(),
-        "unknown_users": unknown_users(&caller, &body.expression, &reduced.users),
+        contributors: reduced.users.len(),
+        unknown_users: unknown_users(&caller, &body.expression, &reduced.users),
         // Whose picks could not be carried onto this revision and went in
         // as stored (#434), so the editor can say the result leans on them.
-        "not_carried": not_carried,
-    })))
+        not_carried,
+    }))
+}
+
+/// `POST /api/v1/datasets/{radargram_id}/derived/preview`: an unsaved
+/// expression's values.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Preview {
+    kind: derive::Kind,
+    unit: derive::Unit,
+    /// One value per position, `null` where there is none.
+    values: Vec<Option<f64>>,
+    /// How many people's picks went into it.
+    contributors: usize,
+    /// Users the expression names whose picks it did not have.
+    unknown_users: Vec<String>,
+    /// Users whose picks could not be carried onto the current revision and
+    /// were used as stored.
+    not_carried: Vec<String>,
 }
 
 /// The usernames an expression names that have no picks on this radargram.
@@ -737,7 +868,19 @@ fn unknown_users(caller: &Caller, expression: &str, users: &[String]) -> Vec<Str
         .collect()
 }
 
-/// `GET /api/v1/datasets/{id}/derived/{item}` -- one item's values.
+/// One derived item's values along the radargram.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/derived/{item}",
+    tag = "Derived items",
+    responses(
+        (status = 200, description = "Its values.", body = DerivedValues),
+        (status = 400, description = "`derived_failed`: it cannot be evaluated here.", body = ErrorBody),
+        (status = 403, description = "`not_your_item`: someone else's private item.", body = ErrorBody),
+        (status = 404, description = "`derived_item_not_found`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Results)))),
+)]
 pub async fn get_derived_item(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, item_id)): Path<(String, String)>,
@@ -771,33 +914,53 @@ pub async fn get_derived_item(
     }
     let result = &evaluation.results[&item_id];
 
-    let values: Vec<serde_json::Value> = result
+    let values: Vec<Option<f64>> = result
         .values
         .iter()
-        .map(|v| {
-            if v.is_nan() {
-                serde_json::Value::Null
-            } else {
-                serde_json::json!(v)
-            }
-        })
+        .map(|v| (!v.is_nan()).then_some(*v))
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "radargram_id": radargram.as_str(),
-        "id": item.id,
-        "kind": result.kind,
-        "unit": result.unit,
-        "trace": (0..geometry.n_traces()).collect::<Vec<usize>>(),
-        "values": values,
-        "not_carried": not_carried,
-    })))
+    Ok(Json(DerivedValues {
+        radargram_id: radargram.as_str().to_string(),
+        id: item.id.clone(),
+        kind: result.kind,
+        unit: result.unit,
+        trace: (0..geometry.n_traces()).collect(),
+        values,
+        not_carried,
+    }))
 }
 
-/// `GET /api/v1/datasets/{id}/derived` -- every visible item, long CSV.
-///
-/// Long format: one row per item per grid position. Gaps are empty, which is
-/// how a NaN reads in a CSV.
+/// `GET /api/v1/datasets/{radargram_id}/derived/{item}`: one item's values
+/// along the radargram.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct DerivedValues {
+    radargram_id: String,
+    id: String,
+    kind: derive::Kind,
+    unit: derive::Unit,
+    /// The trace each value is at.
+    trace: Vec<usize>,
+    /// One value per trace, `null` where there is none.
+    values: Vec<Option<f64>>,
+    /// Users whose picks could not be carried onto the current revision and
+    /// were used as stored.
+    not_carried: Vec<String>,
+}
+
+/// Every derived item the caller may see, as a long-format CSV: one row per
+/// item per position.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/derived",
+    tag = "Derived items",
+    responses(
+        (status = 200, description = "The CSV, as an attachment.", content_type = "text/csv"),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Results)))),
+)]
+// Long format: one row per item per grid position. Gaps are empty, which is
+// how a NaN reads in a CSV.
 pub async fn download_derived(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -881,12 +1044,17 @@ pub async fn download_derived(
 
 /// A derived layer points export: the picked-points options plus the listing
 /// choice.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct DerivedPointsQuery {
+    /// `auto`, `per-trace`, `vertices`, or a distance in metres.
     #[serde(default)]
     pub spacing: Option<String>,
+    /// `geojson` (default) or `csv`.
     #[serde(default)]
     pub format: Option<String>,
+    /// Coordinates for the GeoJSON geometry: absent for WGS84, `native` for
+    /// the radargram's own projected CRS, or any CRS PROJ accepts.
     #[serde(default)]
     pub crs: Option<String>,
     /// Include derived layers marked "not listed". Off by default, matching
@@ -955,8 +1123,18 @@ pub(crate) fn export_derived_points(
     .map_err(|e| ApiError::bad_request("derived_property_collision", e.to_string()))
 }
 
-/// `GET /api/v1/datasets/{id}/derived/level2` -- derived layers as level 2
-/// points, in the same formats and spacings as the picked-layer export.
+/// Derived layers as points.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/derived/level2",
+    tag = "Level 2 points",
+    params(DerivedPointsQuery),
+    responses(
+        (status = 200, description = "The points, as an attachment.", content(("application/geo+json"), ("text/csv"))),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Results)))),
+)]
+// points, in the same formats and spacings as the picked-layer export.
 pub async fn derived_level2(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
