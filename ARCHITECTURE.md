@@ -779,10 +779,19 @@ two ends of that request are one type.
   saved by a script are refused when carried onto a reprocessed revision.
   The client never stamps axes onto a document itself, since one drawn on an
   older revision must not be labelled with the current one's.
-- **Testing** is in three layers: the schema check, unit tests against an
-  `httpx.MockTransport`, and integration tests against a real `ridal gui`
-  and site (`RIDAL_BIN`, plus PROJ to process the fixture), which run in
-  CI's `client-integration` job.
+- **Calls are held to the server's operations** (#454).
+  `tests/client/test_contract.py` runs every public `Client` method against
+  a fake server that answers from `openapi.json`: each request must match an
+  operation, send only the query parameters and body fields it declares,
+  and parse the answer made from its response schema (every property
+  filled, the first of each enum and `oneOf`, never `null`, with a few
+  fields pinned in `ANSWERS` so polling methods finish). Every operation is
+  either called by some method or listed in `NOT_WRAPPED` with the reason,
+  so a new endpoint is a decision rather than an oversight.
+- **Testing** is in four layers: the schema check, the contract check,
+  unit tests against an `httpx.MockTransport`, and integration tests
+  against a real `ridal gui` and site (`RIDAL_BIN`, plus PROJ to process
+  the fixture), which run in CI's `client-integration` job.
 
 ## Render pipeline
 

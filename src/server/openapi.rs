@@ -160,6 +160,26 @@ impl PartialSchema for NetcdfFile {
 
 impl utoipa::ToSchema for NetcdfFile {}
 
+/// Two numbers, as `[f64; 2]` serializes: a position, or the two ends of
+/// a range.
+///
+/// A schema of its own, since utoipa writes a fixed-length array as one of
+/// any length. A field that is one pair says so with `min_items` and
+/// `max_items`; this is for a list of them.
+pub(super) struct NumberPair;
+
+impl PartialSchema for NumberPair {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ArrayBuilder::new()
+            .items(f64::schema())
+            .min_items(Some(2))
+            .max_items(Some(2))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for NumberPair {}
+
 /// Where a site serves a project's API, and so where the spec puts it.
 pub(super) const PROJECT_PREFIX: &str = "/api/v1/projects/{key}";
 

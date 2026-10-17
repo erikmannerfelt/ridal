@@ -186,7 +186,7 @@ pub struct PlannedRecording {
     pub traces: Option<u32>,
     /// Simplified, WGS84 `[lon, lat]`; `null` when not asked for or not
     /// read.
-    #[schema(required = true)]
+    #[schema(required = true, value_type = Option<Vec<super::openapi::NumberPair>>)]
     pub track: Option<Vec<[f64; 2]>>,
     /// Which output it is in; `null` when excluded or unreadable.
     #[schema(required = true)]
@@ -249,7 +249,7 @@ pub struct PlanProblem {
     pub pattern: Option<String>,
     /// Where in the pattern, in characters, `[start, end)`, when the
     /// problem is in one place of it.
-    #[schema(required = true)]
+    #[schema(required = true, min_items = 2, max_items = 2)]
     pub span: Option<[usize; 2]>,
     /// For `id_taken`: whether the id is a served radargram, and whether it
     /// has raw data already. Either makes it taken.

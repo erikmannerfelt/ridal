@@ -100,11 +100,14 @@ pub enum View {
 #[serde(deny_unknown_fields, default)]
 pub struct Extent {
     /// `[first, last]` trace position.
+    #[cfg_attr(feature = "server", schema(min_items = 2, max_items = 2))]
     pub traces: Option<[f64; 2]>,
     /// `[top, bottom]` row position.
+    #[cfg_attr(feature = "server", schema(min_items = 2, max_items = 2))]
     pub rows: Option<[f64; 2]>,
     /// `[top, bottom]` elevation in metres; topographic view only, and not
     /// together with `rows`.
+    #[cfg_attr(feature = "server", schema(min_items = 2, max_items = 2))]
     pub elevation: Option<[f64; 2]>,
 }
 
