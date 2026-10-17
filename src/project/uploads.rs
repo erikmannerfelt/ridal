@@ -77,27 +77,32 @@ fn document(id: &str) -> PathBuf {
     Path::new(UPLOADS_DIR).join(format!("{id}.json"))
 }
 
-/// Where an upload's bytes are, whether or not it exists. `None` for an
-/// id that is not one.
+/// Where an existing upload's bytes are, or `None` when there is no such
+/// upload.
 ///
-/// The id reaches here from a request path. [`valid_id`] already limits it
-/// to hex digits, but the name is rebuilt from the number they spell and
-/// the result checked to sit directly in the uploads directory anyway, so
-/// that the path is safe by what is built here rather than by a check made
-/// elsewhere, which CodeQL cannot follow either.
+/// Found by listing the uploads directory and comparing names, so that the
+/// path comes from the filesystem and the id, which reaches here from a
+/// request, is only ever compared. Building the path from the id was safe,
+/// since [`valid_id`] allows only hex digits, but by a check CodeQL cannot
+/// follow; a comparison needs no such argument. There are only ever a few
+/// uploads to list.
 pub fn part_path(data_dir: &Path, id: &str) -> Option<PathBuf> {
-    let number = u128::from_str_radix(valid_id(id)?, 16).ok()?;
-    let dir = data_dir.join(UPLOADS_DIR);
-    let path = dir.join(format!("{number:032x}.part"));
-    (path.parent() == Some(dir.as_path())).then_some(path)
+    let wanted = format!("{}.part", valid_id(id)?);
+    std::fs::read_dir(data_dir.join(UPLOADS_DIR))
+        .ok()?
+        .flatten()
+        .find(|entry| entry.file_name() == wanted.as_str())
+        .map(|entry| entry.path())
 }
 
 /// Start an upload, with nothing sent yet, and answer its id.
 pub fn create(store: &DocumentStore, data_dir: &Path, upload: &Upload) -> Result<String, String> {
     let id = new_id()?;
-    let part = part_path(data_dir, &id).expect("a fresh id is valid");
-    let dir = part.parent().expect("has a parent");
-    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let dir = data_dir.join(UPLOADS_DIR);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    // Built from the id, since it is this server's own and has no file yet.
+    let part = dir.join(format!("{id}.part"));
     // The `.part` first: a crash between the two leaves a file with no
     // document, which `sweep` removes, rather than a document whose bytes
     // cannot be found.
@@ -120,7 +125,7 @@ pub fn read(store: &DocumentStore, data_dir: &Path, id: &str) -> Result<Option<U
         return Ok(None);
     };
     // Without its bytes it is not an upload that can go on.
-    if !part_path(data_dir, id).is_some_and(|part| part.is_file()) {
+    if part_path(data_dir, id).is_none() {
         return Ok(None);
     }
     serde_json::from_str(&text.text)
@@ -143,13 +148,15 @@ pub fn expires_at(data_dir: &Path, id: &str) -> std::io::Result<SystemTime> {
 /// Forget an upload and delete what has arrived. `false` when there was no
 /// such upload.
 pub fn remove(store: &DocumentStore, data_dir: &Path, id: &str) -> Result<bool, String> {
-    let Some(part) = part_path(data_dir, id) else {
+    if valid_id(id).is_none() {
         return Ok(false);
-    };
-    let had_part = match std::fs::remove_file(&part) {
-        Ok(()) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => return Err(format!("could not delete {}: {e}", part.display())),
+    }
+    // No `.part` after `move_part`, and only the document is left.
+    let had_part = match part_path(data_dir, id).map(|part| (std::fs::remove_file(&part), part)) {
+        None => false,
+        Some((Ok(()), _)) => true,
+        Some((Err(e), _)) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Some((Err(e), part)) => return Err(format!("could not delete {}: {e}", part.display())),
     };
     let had_document = store
         .remove(&document(id), &Expectation::Any)
