@@ -92,7 +92,7 @@ impl Default for ProcessingConfig {
 }
 
 /// Which jobs go first. Declared in that order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Priority {
     /// Someone is waiting to look at it.
@@ -143,7 +143,7 @@ pub struct StepProgress {
     pub step: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct JobStatus {
     pub id: u64,
     pub key: String,
@@ -152,12 +152,15 @@ pub struct JobStatus {
     #[serde(flatten)]
     pub state: JobState,
     /// The step running now, or the last one that ran.
+    #[schema(required = true)]
     pub step: Option<StepProgress>,
     /// Every step has run and the file is being written, which for a long
     /// radargram takes a while of its own.
     pub writing: bool,
     /// The radargram the job processes.
     pub radargram_id: String,
+    /// Where it writes its file on the server.
+    #[schema(value_type = String)]
     pub output: PathBuf,
 }
 
@@ -202,7 +205,7 @@ impl std::fmt::Display for SubmitError {
 }
 
 /// Counts for a heartbeat or a status page.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct QueueSnapshot {
     pub queued: usize,
     pub running: usize,
@@ -224,7 +227,7 @@ struct Job {
 
 /// A job as a server administrator sees it (#391): its status, the project
 /// it is for, and how long it has waited and run.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, utoipa::ToSchema)]
 pub struct JobDetail {
     #[serde(flatten)]
     pub status: JobStatus,
@@ -235,8 +238,10 @@ pub struct JobDetail {
     pub waited_seconds: f64,
     /// From starting to ending, or to now while it runs. `None` for a job
     /// that never started.
+    #[schema(required = true)]
     pub ran_seconds: Option<f64>,
     /// How long ago it ended. `None` while it is queued or running.
+    #[schema(required = true)]
     pub ended_seconds_ago: Option<f64>,
 }
 
@@ -258,7 +263,7 @@ impl Job {
 }
 
 /// How the jobs that ended since the heartbeat last asked ended (#282).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct FinishedCounts {
     pub done: u64,
     pub failed: u64,

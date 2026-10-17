@@ -41,6 +41,8 @@ use crate::project::store::DocumentStore;
 
 /// What was done.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = AuditAction))]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     /// A site account was created.
@@ -83,6 +85,8 @@ pub enum Action {
 
 /// One thing that happened.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = AuditEntry))]
 pub struct Entry {
     /// RFC 3339, UTC.
     pub at: String,

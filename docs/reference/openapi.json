@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Ridal HTTP API",
-    "description": "The Ridal server's HTTP API. Not every route is described here yet; the HTTP API reference page lists the rest. `x-ridal-needs` on an operation is the role or kind of caller it needs.",
+    "description": "The Ridal server's HTTP API. `x-ridal-needs` on an operation is the role or kind of caller it needs, and the download scope; the HTTP API reference page says what each means.",
     "contact": {
       "name": "Erik Schytt Mannerfelt"
     },
@@ -12,6 +12,445 @@
     "version": "1"
   },
   "paths": {
+    "/api/v1/accounts": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Every account, without hashes or invite tokens.",
+        "operationId": "list_accounts",
+        "responses": {
+          "200": {
+            "description": "The accounts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not a server administrator, or the server is read-only (`read_only`), or an API token was used (`token_not_allowed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      },
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Create an account and mint its invite, optionally naming a project, role and\ndownload scope. It cannot create a server administrator.",
+        "operationId": "create_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAccountBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created, with its invite link.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedAccount"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`server_admin_at_creation`, or a name, role or scope that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_in_use`, `account_exists` or `duplicate`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/accounts/bulk/invites": {
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Create several invite-only accounts at once.",
+        "operationId": "create_bulk_invites",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkAccountsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created, each with its invite link.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkInvites"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A role, scope or count that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/accounts/bulk/passwords": {
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Create several accounts with generated passwords.",
+        "operationId": "create_bulk_passwords",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkPasswordsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created, each with its password.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkPasswords"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`risk_acknowledgement_required`, `admin_bulk_passwords_forbidden`, or a role, scope or count that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/accounts/{name}": {
+      "parameters": [
+        {
+          "name": "name",
+          "in": "path",
+          "description": "An account name.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Change the server-administrator flag. Refused if it would leave the site\nwith none, or while the account has an invite outstanding.",
+        "operationId": "update_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAccountBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Account"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Refused: the last server administrator, or an invite outstanding.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Remove an account and its membership in every project. Picks are left in\nplace.",
+        "operationId": "delete_account",
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/accounts/{name}/invite": {
+      "parameters": [
+        {
+          "name": "name",
+          "in": "path",
+          "description": "An account name.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Issue a new invite link, for a reset or a lost one.",
+        "operationId": "reissue_account_invite",
+        "responses": {
+          "200": {
+            "description": "The new link.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReissuedInvite"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
     "/api/v1/auth/invite": {
       "post": {
         "tags": [
@@ -219,6 +658,509 @@
         },
         "x-ridal-needs": {
           "who": "nobody"
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "The projects the caller is a member of; every project for a server\nadministrator. Public projects are not listed. With an API token, only its\ngranted projects, with the role and download scope the token has there.",
+        "operationId": "list_projects",
+        "responses": {
+          "200": {
+            "description": "The projects.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectList"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "nobody"
+        }
+      },
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Create a project at a key.",
+        "operationId": "create_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProjectBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedProject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A key that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A project with that key exists.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "One project, with the caller's role and download scope in it. A project\nthe caller may not see, signed in or not, answers `404` as one that does\nnot exist.",
+        "operationId": "project_info",
+        "responses": {
+          "200": {
+            "description": "The project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectEntry"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Delete an archived project and everything it owns.",
+        "operationId": "delete_project",
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_archived`: archive it first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      },
+      "patch": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Rename its display name; the key does not change.",
+        "operationId": "update_project",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProjectBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Renamed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenamedProject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/access": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "The project's read and anonymous-download policy.",
+        "operationId": "put_project_access",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccessBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The policy as saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccessPolicy"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A scope that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`archived`: the project is archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/archive": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Make the project read-only.",
+        "operationId": "archive_project",
+        "responses": {
+          "200": {
+            "description": "Archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivedProject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/audit": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "This project's slice of the site history.",
+        "operationId": "project_audit_log",
+        "responses": {
+          "200": {
+            "description": "The history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLog"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
         }
       }
     },
@@ -4079,7 +5021,7 @@
         {
           "name": "job",
           "in": "path",
-          "description": "A draft's job number.",
+          "description": "A processing job's number, as a draft gives it.",
           "required": true,
           "schema": {
             "type": "string"
@@ -4220,7 +5162,7 @@
         {
           "name": "job",
           "in": "path",
-          "description": "A draft's job number.",
+          "description": "A processing job's number, as a draft gives it.",
           "required": true,
           "schema": {
             "type": "string"
@@ -4315,7 +5257,7 @@
         {
           "name": "job",
           "in": "path",
-          "description": "A draft's job number.",
+          "description": "A processing job's number, as a draft gives it.",
           "required": true,
           "schema": {
             "type": "string"
@@ -4397,7 +5339,7 @@
         {
           "name": "job",
           "in": "path",
-          "description": "A draft's job number.",
+          "description": "A processing job's number, as a draft gives it.",
           "required": true,
           "schema": {
             "type": "string"
@@ -5589,6 +6531,617 @@
         },
         "x-ridal-needs": {
           "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/members": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "The membership list and access policy.",
+        "operationId": "list_members",
+        "responses": {
+          "200": {
+            "description": "The members.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      },
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Add or update an existing account's membership.",
+        "operationId": "add_member",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The membership.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A role or scope that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`archived`: the project is archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`account_not_found`, or no such project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/members/bulk/invites": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Bulk-create accounts, each granted this project only.",
+        "operationId": "create_project_bulk_invites",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkAccountsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created, each with its invite link.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkInvites"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A role, scope or count that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`archived`: the project is archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/members/bulk/passwords": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Bulk-create accounts with generated passwords, each granted this project\nonly.",
+        "operationId": "create_project_bulk_passwords",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkPasswordsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created, each with its password.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkPasswords"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`risk_acknowledgement_required`, `admin_bulk_passwords_forbidden`, or a role, scope or count that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`archived`: the project is archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/members/invite": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Create an account and invite it into this project only.",
+        "operationId": "invite_member",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemberBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created, with its invite link.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitedMember"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A name, role or scope that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`archived`: the project is archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`name_in_use`, `account_exists` or `duplicate`: the name is taken.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/members/{name}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "name",
+          "in": "path",
+          "description": "An account name.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Change a member's role or download scope. Refused for the project's last\nadministrator.",
+        "operationId": "update_member",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateMemberBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The membership.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemberView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A role or scope that is not valid, or the last administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`archived`: the project is archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such member, or no such project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Remove the membership. The account itself remains. Refused for the project's\nlast administrator.",
+        "operationId": "remove_member",
+        "responses": {
+          "204": {
+            "description": "Removed."
+          },
+          "400": {
+            "description": "The last administrator.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`archived`: the project is archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
         }
       }
     },
@@ -7423,10 +8976,694 @@
           "who": "operator"
         }
       }
+    },
+    "/api/v1/projects/{key}/unarchive": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Reverse an archive.",
+        "operationId": "unarchive_project",
+        "responses": {
+          "200": {
+            "description": "No longer archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivedProject"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`read_only`: the server was started read-only.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project, or one the caller may not see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/site": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "The site's name, whether it has accounts, and who the caller is.",
+        "operationId": "site_info",
+        "responses": {
+          "200": {
+            "description": "The site.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SiteInfo"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "nobody"
+        }
+      }
+    },
+    "/api/v1/site/audit": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "The site's account, membership and project history, most recent first.",
+        "operationId": "site_audit_log",
+        "responses": {
+          "200": {
+            "description": "The history.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditLog"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not a server administrator, or the server is read-only (`read_only`), or an API token was used (`token_not_allowed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/site/memberships": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Every account and the projects it belongs to.",
+        "operationId": "site_memberships",
+        "responses": {
+          "200": {
+            "description": "The memberships.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipOverview"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not a server administrator, or the server is read-only (`read_only`), or an API token was used (`token_not_allowed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/site/preferences": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "The caller's own site-wide settings, currently the theme.",
+        "operationId": "get_site_preferences",
+        "responses": {
+          "200": {
+            "description": "Their settings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SitePreferences"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      },
+      "put": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Change the caller's own site-wide settings. Any role may.",
+        "operationId": "put_site_preferences",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SitePreferencesBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Their settings as saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SitePreferences"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`unknown_theme`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      }
+    },
+    "/api/v1/site/processing": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "The processing queue: the configured limits, every job it still knows of\nwith its project, owner, state and how long it waited and ran, and how many\nare queued and running and how much of the memory budget they use.",
+        "operationId": "site_processing",
+        "responses": {
+          "200": {
+            "description": "The queue.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessingQueue"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not a server administrator, or the server is read-only (`read_only`), or an API token was used (`token_not_allowed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/site/processing/{job}": {
+      "parameters": [
+        {
+          "name": "job",
+          "in": "path",
+          "description": "A processing job's number, as a draft gives it.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "delete": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Cancel anyone's processing job: a queued one never starts, a running one is\nstopped. Recorded in the site's history.",
+        "operationId": "cancel_site_job",
+        "responses": {
+          "204": {
+            "description": "Cancelled."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not a server administrator, or the server is read-only (`read_only`), or an API token was used (`token_not_allowed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`job_not_found`: it has already ended, or does not exist.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/site/status": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "What the server's heartbeat would report now: render workers busy and\nwaiting, the render cache, requests and processing since the last heartbeat,\nand the process's memory and CPU time. Reading it does not reset the\nheartbeat's counts.",
+        "operationId": "site_status",
+        "responses": {
+          "200": {
+            "description": "The numbers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Heartbeat"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller is not a server administrator, or the server is read-only (`read_only`), or an API token was used (`token_not_allowed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/tokens": {
+      "get": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "The caller's API tokens, without their secrets. `all=true` lists every\naccount's, for a server administrator.",
+        "operationId": "list_tokens",
+        "parameters": [
+          {
+            "name": "all",
+            "in": "query",
+            "description": "Every account's tokens, for a server administrator.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The tokens.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      },
+      "post": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Create an API token: a `name`, an `expires` (`30d`, `12w`, `2y` or `never`;\ndefault 90 days) and `grants`, each a `project`, `role` and `download` no\nhigher than the caller's membership there. The token is in the response once\nand cannot be shown again. Needs a session, never a token.",
+        "operationId": "create_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTokenBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The token, shown this once.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A grant above the caller's membership, or a name or expiry that is not valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      }
+    },
+    "/api/v1/tokens/{id}": {
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "description": "An API token's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "delete": {
+        "tags": [
+          "Site server"
+        ],
+        "summary": "Revoke one of the caller's tokens, or any token for a server administrator.\nSomeone else's token is answered as if it did not exist.",
+        "operationId": "revoke_token",
+        "responses": {
+          "204": {
+            "description": "Revoked."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such token of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in",
+          "own": true
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "AccessBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/projects/{key}/access`. A field left out is not\nchanged.",
+        "properties": {
+          "require_auth_to_read": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether reading the project needs a login."
+          },
+          "anonymous_download": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What someone not signed in may download."
+          }
+        }
+      },
+      "AccessPolicy": {
+        "type": "object",
+        "description": "`PUT /api/v1/projects/{key}/access`: the access policy as saved.",
+        "required": [
+          "require_auth_to_read",
+          "anonymous_download"
+        ],
+        "properties": {
+          "require_auth_to_read": {
+            "type": "boolean"
+          },
+          "anonymous_download": {
+            "$ref": "#/components/schemas/DownloadScope"
+          }
+        }
+      },
+      "Account": {
+        "type": "object",
+        "description": "An account as the HTTP API shows it: never its password hash or invite\ntoken.",
+        "required": [
+          "name",
+          "server_admin",
+          "activated",
+          "invite_pending",
+          "invite_expires",
+          "created"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "server_admin": {
+            "type": "boolean",
+            "description": "Whether it administers the whole site."
+          },
+          "activated": {
+            "type": "boolean",
+            "description": "Whether it has set a password."
+          },
+          "invite_pending": {
+            "type": "boolean",
+            "description": "Whether an invite link is outstanding."
+          },
+          "invite_expires": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When that invite expires, in Unix seconds."
+          },
+          "created": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the account was created, RFC 3339."
+          }
+        }
+      },
+      "AccountList": {
+        "type": "object",
+        "description": "`GET /api/v1/accounts`: every account.",
+        "required": [
+          "accounts",
+          "invite_ttl_days",
+          "min_password_len",
+          "account_file"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Account"
+            }
+          },
+          "invite_ttl_days": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "min_password_len": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "account_file": {
+            "type": "string",
+            "description": "The file the accounts are kept in, relative to the site."
+          }
+        }
+      },
+      "AccountMemberships": {
+        "type": "object",
+        "description": "One account and the projects it belongs to.",
+        "required": [
+          "name",
+          "memberships"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Membership"
+            }
+          }
+        }
+      },
       "Activity": {
         "type": "object",
         "description": "Who is processing a radargram now (#382): an advisory marker, not a\nlock. Someone's draft says only that it exists and whose it is.",
@@ -7628,6 +9865,22 @@
           }
         }
       },
+      "ArchivedProject": {
+        "type": "object",
+        "description": "A project archived or unarchived.",
+        "required": [
+          "key",
+          "archived"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "archived": {
+            "type": "boolean"
+          }
+        }
+      },
       "Assignment": {
         "type": "object",
         "description": "Which profile a radargram uses, and the steps of its own that run first.",
@@ -7692,6 +9945,112 @@
           "own_picks",
           "released"
         ]
+      },
+      "AuditAction": {
+        "type": "string",
+        "description": "What was done.",
+        "enum": [
+          "account_created",
+          "account_removed",
+          "server_admin_granted",
+          "server_admin_revoked",
+          "invite_issued",
+          "account_activated",
+          "membership_added",
+          "membership_changed",
+          "membership_removed",
+          "project_created",
+          "project_renamed",
+          "project_archived",
+          "project_unarchived",
+          "project_deleted",
+          "access_changed",
+          "token_created",
+          "token_revoked",
+          "processing_job_cancelled"
+        ]
+      },
+      "AuditEntry": {
+        "type": "object",
+        "description": "One thing that happened.",
+        "required": [
+          "at",
+          "actor",
+          "action",
+          "subject"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "description": "RFC 3339, UTC."
+          },
+          "actor": {
+            "type": "string",
+            "description": "Who. An account name, or `cli` for a change made through the command\nline, which has no session to name."
+          },
+          "action": {
+            "$ref": "#/components/schemas/AuditAction"
+          },
+          "subject": {
+            "type": "string",
+            "description": "The account or project key the action is about."
+          },
+          "project": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ProjectKey",
+                "description": "The project a membership change involves, when there is one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Role",
+                "description": "The role involved, when there is one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "download": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DownloadScope",
+                "description": "The download scope involved, when there is one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Free text: how a batch was labelled, what a removal left behind."
+          }
+        }
+      },
+      "AuditLog": {
+        "type": "object",
+        "description": "A history, most recent first.",
+        "required": [
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEntry"
+            }
+          }
+        }
       },
       "Axes": {
         "type": "object",
@@ -7894,6 +10253,45 @@
           }
         }
       },
+      "BulkAccountsBody": {
+        "type": "object",
+        "description": "The body of the bulk invite routes. The bulk password routes take the\nsame, with `acknowledge_risk`.",
+        "required": [
+          "count",
+          "role"
+        ],
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "description": "What the names start with, numbered after it. Ignored when\n`random_names` is set."
+          },
+          "count": {
+            "type": "integer",
+            "description": "How many accounts.",
+            "minimum": 0
+          },
+          "random_names": {
+            "type": "boolean",
+            "description": "Random names instead of `prefix` and a number."
+          },
+          "role": {
+            "type": "string"
+          },
+          "download": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project they join: each invite grants this membership on\nredemption. A project administrator's route names it in the path\ninstead."
+          }
+        }
+      },
       "BulkDownloadItem": {
         "type": "object",
         "description": "One interpretation in a [`BulkDownloadRequest`]: a summary row's\n`radargram_id`, `user` and, for an archived one, `removal`.",
@@ -7929,6 +10327,113 @@
               "$ref": "#/components/schemas/BulkDownloadItem"
             },
             "description": "The interpretations to include, as the pick manager lists them."
+          }
+        }
+      },
+      "BulkInvite": {
+        "type": "object",
+        "description": "One account a bulk invite created.",
+        "required": [
+          "name",
+          "invite_path",
+          "invite_expires"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "invite_path": {
+            "type": "string",
+            "description": "The invite link's path, `/invite/<token>`. It is shown this once."
+          },
+          "invite_expires": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it expires, in Unix seconds."
+          }
+        }
+      },
+      "BulkInvites": {
+        "type": "object",
+        "description": "The accounts a bulk invite created, each with its link.",
+        "required": [
+          "users",
+          "invite_ttl_days"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BulkInvite"
+            }
+          },
+          "invite_ttl_days": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "BulkPasswords": {
+        "type": "object",
+        "description": "The accounts a bulk password request created, each with its password.",
+        "required": [
+          "users",
+          "advisory"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GeneratedPassword"
+            }
+          },
+          "advisory": {
+            "type": "string",
+            "description": "What to tell the people who receive them."
+          }
+        }
+      },
+      "BulkPasswordsBody": {
+        "type": "object",
+        "description": "The body of the bulk password routes.",
+        "required": [
+          "count",
+          "role"
+        ],
+        "properties": {
+          "prefix": {
+            "type": "string",
+            "description": "What the names start with, numbered after it. Ignored when\n`random_names` is set."
+          },
+          "count": {
+            "type": "integer",
+            "description": "How many accounts.",
+            "minimum": 0
+          },
+          "random_names": {
+            "type": "boolean",
+            "description": "Random names instead of `prefix` and a number."
+          },
+          "role": {
+            "type": "string",
+            "description": "Any role but `admin`."
+          },
+          "download": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The project they are added to. A project administrator's route\nnames it in the path instead."
+          },
+          "acknowledge_risk": {
+            "type": "boolean",
+            "description": "Must be `true`: shared passwords are less safe than invite links."
           }
         }
       },
@@ -8392,6 +10897,61 @@
           "uncarried"
         ]
       },
+      "CreateAccountBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/accounts`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "server_admin": {
+            "type": "boolean",
+            "description": "Refused when `true`: grant it once the account has a password."
+          },
+          "project": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When set, the invite grants a membership in this project on\nredemption, with `role` and `download`. A server administrator may\ninstead invite with no project."
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "download": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateProjectBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/projects`.",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The project's key: a slug, its directory and its place in every URL."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its display name."
+          }
+        }
+      },
       "CreateTokenBody": {
         "type": "object",
         "description": "The body of `POST /api/v1/tokens`.",
@@ -8417,6 +10977,53 @@
               "$ref": "#/components/schemas/Grant"
             },
             "description": "The projects the token may act in. Each grant's role and download\nscope may not exceed the account's membership there."
+          }
+        }
+      },
+      "CreatedAccount": {
+        "type": "object",
+        "description": "`POST /api/v1/accounts`: the account created, and the link that sets its\npassword.",
+        "required": [
+          "account",
+          "invite_path",
+          "invite_expires",
+          "invite_ttl_days"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/Account"
+          },
+          "invite_path": {
+            "type": "string",
+            "description": "The invite link's path, `/invite/<token>`. It is shown this once."
+          },
+          "invite_expires": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it expires, in Unix seconds."
+          },
+          "invite_ttl_days": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CreatedProject": {
+        "type": "object",
+        "description": "`POST /api/v1/projects`: the project created.",
+        "required": [
+          "key",
+          "name"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -9790,6 +12397,54 @@
           }
         }
       },
+      "FinishedCounts": {
+        "type": "object",
+        "description": "How the jobs that ended since the heartbeat last asked ended (#282).",
+        "required": [
+          "done",
+          "failed",
+          "timed_out",
+          "cancelled"
+        ],
+        "properties": {
+          "done": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "timed_out": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "cancelled": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "GeneratedPassword": {
+        "type": "object",
+        "description": "One account a bulk password request created. The password is shown this\nonce and not stored.",
+        "required": [
+          "name",
+          "password"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        }
+      },
       "Geometry": {
         "oneOf": [
           {
@@ -10147,6 +12802,124 @@
           }
         }
       },
+      "Heartbeat": {
+        "type": "object",
+        "description": "One heartbeat's numbers, separate from how they are written so a test\ncan check them against the state they came from.\n\nCounts marked \"since the last\" are read and reset by [`Heartbeat::take`],\nso each line covers one interval. The site settings page reads the same\nnumbers with [`Heartbeat::peek`], which leaves them for the next line\n(#391).",
+        "required": [
+          "uptime_seconds",
+          "interval_seconds",
+          "cpu_seconds",
+          "rss_mb",
+          "render_permits",
+          "render_in_use",
+          "render_waiting",
+          "cache_entries",
+          "cache_mb",
+          "cache_budget_mb",
+          "cache_hit_ratio",
+          "requests",
+          "jobs_queued",
+          "jobs_running",
+          "processing_mb",
+          "processing_budget_mb",
+          "jobs"
+        ],
+        "properties": {
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long the server has been running, in seconds.",
+            "minimum": 0
+          },
+          "interval_seconds": {
+            "type": "number",
+            "format": "double",
+            "description": "How long the counts below marked \"since the last\" cover, in seconds:\nsince the last heartbeat, or since the start when there is none."
+          },
+          "cpu_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "CPU time this process has used since it started, user and system,\nin seconds. `None` off Linux."
+          },
+          "rss_mb": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Resident memory, in MB. `None` off Linux."
+          },
+          "render_permits": {
+            "type": "integer",
+            "description": "`--n-workers`: renders that may run at once.",
+            "minimum": 0
+          },
+          "render_in_use": {
+            "type": "integer",
+            "description": "Renders and merged exports running now.",
+            "minimum": 0
+          },
+          "render_waiting": {
+            "type": "integer",
+            "description": "Requests waiting for a render permit now.",
+            "minimum": 0
+          },
+          "cache_entries": {
+            "type": "integer",
+            "description": "Images in the in-memory render cache, their size in MB, and\n`--cache-memory-mb`.",
+            "minimum": 0
+          },
+          "cache_mb": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_budget_mb": {
+            "type": "number",
+            "format": "double"
+          },
+          "cache_hit_ratio": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Lookups that found their image, since the last heartbeat. `None`\nwhen there were none."
+          },
+          "requests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Requests answered since the last heartbeat.",
+            "minimum": 0
+          },
+          "jobs_queued": {
+            "type": "integer",
+            "description": "Processing jobs waiting and running now.",
+            "minimum": 0
+          },
+          "jobs_running": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "processing_mb": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The running jobs' memory estimate against `--processing-memory-mb`.",
+            "minimum": 0
+          },
+          "processing_budget_mb": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "jobs": {
+            "$ref": "#/components/schemas/FinishedCounts",
+            "description": "How the jobs that ended since the last heartbeat ended."
+          }
+        }
+      },
       "IgnoredItem": {
         "type": "object",
         "description": "One radargram that is not being served.",
@@ -10476,6 +13249,42 @@
           }
         }
       },
+      "InvitedMember": {
+        "type": "object",
+        "description": "`POST /api/v1/projects/{key}/members/invite`: the account created, and\nthe link that sets its password.",
+        "required": [
+          "name",
+          "role",
+          "download",
+          "invite_path",
+          "invite_expires",
+          "invite_ttl_days"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "download": {
+            "$ref": "#/components/schemas/DownloadScope"
+          },
+          "invite_path": {
+            "type": "string",
+            "description": "The invite link's path, `/invite/<token>`. It is shown this once."
+          },
+          "invite_expires": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it expires, in Unix seconds."
+          },
+          "invite_ttl_days": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "Item": {
         "allOf": [
           {
@@ -10493,6 +13302,55 @@
             }
           }
         ]
+      },
+      "JobDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          {
+            "type": "object",
+            "required": [
+              "project",
+              "estimate_mb",
+              "waited_seconds",
+              "ran_seconds",
+              "ended_seconds_ago"
+            ],
+            "properties": {
+              "project": {
+                "type": "string"
+              },
+              "estimate_mb": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "waited_seconds": {
+                "type": "number",
+                "format": "double",
+                "description": "From being queued to starting, or to now while it waits. A job\ncancelled before it started waited until it was cancelled."
+              },
+              "ran_seconds": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "format": "double",
+                "description": "From starting to ending, or to now while it runs. `None` for a job\nthat never started."
+              },
+              "ended_seconds_ago": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "format": "double",
+                "description": "How long ago it ended. `None` while it is queued or running."
+              }
+            }
+          }
+        ],
+        "description": "A job as a server administrator sees it (#391): its status, the project\nit is for, and how long it has waited and run."
       },
       "JobState": {
         "oneOf": [
@@ -10585,6 +13443,65 @@
                 "enum": [
                   "timed_out"
                 ]
+              }
+            }
+          }
+        ]
+      },
+      "JobStatus": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/JobState"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "key",
+              "owner",
+              "priority",
+              "step",
+              "writing",
+              "radargram_id",
+              "output"
+            ],
+            "properties": {
+              "id": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "key": {
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              },
+              "priority": {
+                "$ref": "#/components/schemas/Priority"
+              },
+              "step": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/StepProgress",
+                    "description": "The step running now, or the last one that ran."
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "writing": {
+                "type": "boolean",
+                "description": "Every step has run and the file is being written, which for a long\nradargram takes a while of its own."
+              },
+              "radargram_id": {
+                "type": "string",
+                "description": "The radargram the job processes."
+              },
+              "output": {
+                "type": "string",
+                "description": "Where it writes its file on the server."
               }
             }
           }
@@ -10939,6 +13856,140 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "MemberBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/projects/{key}/members` and\n`…/members/invite`.",
+        "required": [
+          "name",
+          "role"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The account."
+          },
+          "role": {
+            "type": "string",
+            "description": "`viewer`, `picker`, `operator` or `admin`."
+          },
+          "download": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The download scope; `all` when left out."
+          }
+        }
+      },
+      "MemberList": {
+        "type": "object",
+        "description": "`GET /api/v1/projects/{key}/members`: the members and the access\npolicy.",
+        "required": [
+          "members",
+          "require_auth_to_read",
+          "anonymous_download",
+          "configured",
+          "has_admin",
+          "roles",
+          "download_scopes"
+        ],
+        "properties": {
+          "members": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberView"
+            }
+          },
+          "require_auth_to_read": {
+            "type": "boolean",
+            "description": "Whether reading the project needs a login."
+          },
+          "anonymous_download": {
+            "$ref": "#/components/schemas/DownloadScope",
+            "description": "What someone not signed in may download."
+          },
+          "configured": {
+            "type": "boolean",
+            "description": "Whether the project has a membership file at all."
+          },
+          "has_admin": {
+            "type": "boolean",
+            "description": "Whether any member is an `admin`."
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            }
+          },
+          "download_scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DownloadScope"
+            }
+          }
+        }
+      },
+      "MemberView": {
+        "type": "object",
+        "description": "One project membership.",
+        "required": [
+          "name",
+          "role",
+          "download"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "download": {
+            "$ref": "#/components/schemas/DownloadScope"
+          }
+        }
+      },
+      "Membership": {
+        "type": "object",
+        "description": "One account's membership in one project.",
+        "required": [
+          "project",
+          "project_name",
+          "role",
+          "download"
+        ],
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "project_name": {
+            "type": "string",
+            "description": "Its display name, or its key when it has none."
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          },
+          "download": {
+            "$ref": "#/components/schemas/DownloadScope"
+          }
+        }
+      },
+      "MembershipOverview": {
+        "type": "object",
+        "description": "`GET /api/v1/site/memberships`: every account and its projects.",
+        "required": [
+          "accounts"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountMemberships"
+            }
           }
         }
       },
@@ -11972,6 +15023,85 @@
         },
         "additionalProperties": {}
       },
+      "Priority": {
+        "type": "string",
+        "description": "Which jobs go first. Declared in that order.",
+        "enum": [
+          "draft",
+          "batch"
+        ]
+      },
+      "ProcessingLimits": {
+        "type": "object",
+        "description": "The processing limits the server was started with.",
+        "required": [
+          "jobs",
+          "memory_mb",
+          "threads_per_job",
+          "timeout_seconds",
+          "max_queued_per_user",
+          "max_queued_per_project",
+          "keep_finished_seconds"
+        ],
+        "properties": {
+          "jobs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "memory_mb": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "threads_per_job": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "max_queued_per_user": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_queued_per_project": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "keep_finished_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ProcessingQueue": {
+        "type": "object",
+        "description": "`GET /api/v1/site/processing`: the processing queue.",
+        "required": [
+          "snapshot",
+          "limits",
+          "jobs"
+        ],
+        "properties": {
+          "snapshot": {
+            "$ref": "#/components/schemas/QueueSnapshot",
+            "description": "How many jobs are queued and running, and the memory they use."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ProcessingLimits"
+          },
+          "jobs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobDetail"
+            },
+            "description": "Every job the queue still knows of."
+          }
+        }
+      },
       "ProcessingState": {
         "oneOf": [
           {
@@ -12329,6 +15459,9 @@
             "description": "Whether reading the project needs a login."
           }
         }
+      },
+      "ProjectKey": {
+        "type": "string"
       },
       "ProjectList": {
         "type": "object",
@@ -12841,6 +15974,30 @@
           }
         }
       },
+      "QueueSnapshot": {
+        "type": "object",
+        "description": "Counts for a heartbeat or a status page.",
+        "required": [
+          "queued",
+          "running",
+          "running_bytes"
+        ],
+        "properties": {
+          "queued": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "running": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "running_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "RadargramId": {
         "type": "string"
       },
@@ -12977,6 +16134,34 @@
           "mean"
         ]
       },
+      "ReissuedInvite": {
+        "type": "object",
+        "description": "`POST /api/v1/accounts/{name}/invite`: a new invite link.",
+        "required": [
+          "user",
+          "invite_path",
+          "invite_expires",
+          "invite_ttl_days"
+        ],
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "invite_path": {
+            "type": "string",
+            "description": "The invite link's path, `/invite/<token>`. It is shown this once."
+          },
+          "invite_expires": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it expires, in Unix seconds."
+          },
+          "invite_ttl_days": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "RelatedFiles": {
         "type": "object",
         "required": [
@@ -13016,6 +16201,18 @@
             "type": "integer",
             "description": "How many interpretations were archived. Zero is worth reporting: it\nis the difference between \"nobody had picked this\" and \"your picks\nare somewhere\".",
             "minimum": 0
+          }
+        }
+      },
+      "RenamedProject": {
+        "type": "object",
+        "description": "`PATCH /api/v1/projects/{key}`: the project renamed.",
+        "required": [
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
           }
         }
       },
@@ -13708,6 +16905,99 @@
           }
         }
       },
+      "SiteInfo": {
+        "type": "object",
+        "description": "`GET /api/v1/site`: the site, and who the caller is in it.",
+        "required": [
+          "name",
+          "accounts_configured",
+          "authenticated",
+          "user",
+          "server_admin",
+          "roles",
+          "download_scopes",
+          "invite_ttl_days",
+          "min_password_len"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "accounts_configured": {
+            "type": "boolean",
+            "description": "Whether the site has accounts to sign in to."
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "server_admin": {
+            "type": "boolean"
+          },
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "description": "The project roles, least first."
+          },
+          "download_scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DownloadScope"
+            },
+            "description": "The download scopes, least first."
+          },
+          "invite_ttl_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long an invite link is good for."
+          },
+          "min_password_len": {
+            "type": "integer",
+            "description": "The shortest password an account may set.",
+            "minimum": 0
+          }
+        }
+      },
+      "SitePreferences": {
+        "type": "object",
+        "description": "The caller's own site-wide settings.",
+        "required": [
+          "user",
+          "theme"
+        ],
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "theme": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`light` or `dark`; `null` follows the device."
+          }
+        }
+      },
+      "SitePreferencesBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/site/preferences`.",
+        "properties": {
+          "theme": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`light`, `dark`, or absent/`null`/empty to follow the device."
+          }
+        }
+      },
       "Source": {
         "type": "object",
         "description": "Radargram linkage (SPEC §6).",
@@ -14394,6 +17684,50 @@
           },
           "reason": {
             "type": "string"
+          }
+        }
+      },
+      "UpdateAccountBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/accounts/{name}`.",
+        "properties": {
+          "server_admin": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Grant or revoke server administration."
+          }
+        }
+      },
+      "UpdateMemberBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/projects/{key}/members/{name}`. A field left\nout is not changed.",
+        "properties": {
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "download": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateProjectBody": {
+        "type": "object",
+        "description": "The body of `PATCH /api/v1/projects/{key}`.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The new display name; `null` or empty removes it."
           }
         }
       }

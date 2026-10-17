@@ -9,16 +9,19 @@ Ridal to render it (#330).
 
 A project's routes are written in the spec as a site serves them, under
 ``/api/v1/projects/{key}``; the table shows them in the project's own shape,
-``/api/v1/…``, as the page's conventions say.
+``/api/v1/…``, as the page's conventions say. ``:full-paths:`` shows paths as
+the spec writes them, for the site's own routes, some of which are under
+``/api/v1/projects/{key}`` too.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from docutils import nodes
+from docutils.parsers.rst import directives
 from docutils.statemachine import StringList
 from sphinx.application import Sphinx
 from sphinx.util.docutils import SphinxDirective
@@ -32,6 +35,7 @@ WHO = {
     "nobody": "nobody",
     "anyone": "anyone",
     "signed_in": "signed in",
+    "server_admin": "server administrator",
 }
 ROLES = ("viewer", "picker", "operator", "admin")
 
@@ -111,9 +115,11 @@ class HttpEndpoints(SphinxDirective):
 
     required_arguments = 1
     final_argument_whitespace = True
+    option_spec: ClassVar[dict[str, Any]] = {"full-paths": directives.flag}
 
     def run(self) -> list[nodes.Node]:
         tag = self.arguments[0]
+        full_paths = "full-paths" in self.options
         spec_path = Path(self.env.srcdir) / SPEC
         self.env.note_dependency(str(spec_path))
         spec = json.loads(spec_path.read_text(encoding="utf-8"))
@@ -128,7 +134,8 @@ class HttpEndpoints(SphinxDirective):
                 except (KeyError, ValueError) as error:
                     raise self.error(f"{method.upper()} {path}: {error}") from error
                 rows.append(
-                    f"| `{method.upper()}` | `{shown_path(path)}` | {needs} "
+                    f"| `{method.upper()}` "
+                    f"| `{path if full_paths else shown_path(path)}` | {needs} "
                     f"| {description(operation)} |"
                 )
         if not rows:

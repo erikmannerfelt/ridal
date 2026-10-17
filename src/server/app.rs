@@ -2249,10 +2249,10 @@ mod tests {
 }
 
 /// What stops `docs/reference/http-api.md` drifting from the routers. Its
-/// tables are rendered from the OpenAPI description for the routes that
-/// description covers, and written by hand for the rest (#330): every `/api`
-/// route must be in one or the other, and every hand-written row must still
-/// be a route.
+/// tables are rendered from the OpenAPI description (#330), which every route
+/// registered through `project_api` and `site::site_api` is in by
+/// construction. These catch what that cannot: an `/api` route registered by
+/// hand with `.route()`, a hand-written row, and a section with no table.
 #[cfg(test)]
 mod http_reference_tests {
     use std::collections::BTreeSet;
@@ -2358,24 +2358,29 @@ mod http_reference_tests {
         endpoints
     }
 
-    /// Every `/api` route is on the page exactly once: a route the OpenAPI
-    /// description covers is rendered from it (`http-endpoints`), and every
-    /// other one is a hand-written row.
+    /// Every `/api` route is described, so the page renders it. Only one is
+    /// registered by hand: `/api/v1/health`, which `build_router` answers
+    /// for a project on its own, and the spec describes where a site
+    /// answers it.
     #[test]
-    fn the_http_reference_lists_every_api_route() {
+    fn every_api_route_is_described() {
         let routed = routed();
-        let described = described();
-        let documented = documented();
-        assert!(routed.len() > 20, "the route parser found only {routed:?}");
-        let by_hand: BTreeSet<Endpoint> = routed.difference(&described).cloned().collect();
-        let undocumented: Vec<_> = by_hand.difference(&documented).collect();
-        let stale: Vec<_> = documented.difference(&by_hand).collect();
         assert!(
-            undocumented.is_empty() && stale.is_empty(),
-            "docs/reference/http-api.md is out of step with build_router.\n\
-             Routes with no row: {undocumented:?}\n\
-             Rows with no route, or for a route the OpenAPI description now \
-             renders: {stale:?}"
+            routed.contains(&("GET".to_string(), "/api/v1/health".to_string())),
+            "the route parser no longer finds build_router's health route: {routed:?}"
+        );
+        let described = described();
+        let undescribed: Vec<_> = routed.difference(&described).collect();
+        assert!(
+            undescribed.is_empty(),
+            "registered with .route() but in no #[utoipa::path]: {undescribed:?}. \
+             Annotate the handler and register it through project_api or site_api."
+        );
+        let rows = documented();
+        assert!(
+            rows.is_empty(),
+            "docs/reference/http-api.md has hand-written rows, which the generated \
+             tables replace: {rows:?}"
         );
     }
 

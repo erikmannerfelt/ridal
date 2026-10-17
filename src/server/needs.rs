@@ -34,6 +34,9 @@ pub enum Who {
     Anyone,
     /// Any signed-in account that may read the project, whatever its role.
     SignedIn,
+    /// A server administrator: the `server_admin` flag on an account, which
+    /// no project role gives.
+    ServerAdmin,
     /// A member with this role or above. Written as the role's own name.
     #[serde(untagged)]
     Role(Role),
@@ -114,6 +117,7 @@ mod tests {
         let cases = [
             (Who::Nobody, r#"{"who":"nobody"}"#),
             (Who::SignedIn, r#"{"who":"signed_in"}"#),
+            (Who::ServerAdmin, r#"{"who":"server_admin"}"#),
             (Who::Role(Role::Operator), r#"{"who":"operator"}"#),
         ];
         for (who, json) in cases {

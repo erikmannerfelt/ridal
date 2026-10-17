@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use axum::extract::{FromRequestParts, Path, Request, State};
 use axum::http::{header, request::Parts, HeaderMap, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post, put};
+use axum::routing::get;
 use axum::{Json, Router};
 use tokio::sync::Semaphore;
 use tower::ServiceExt;
@@ -720,6 +720,42 @@ pub(super) fn site_api() -> OpenApiRouter<Arc<SiteState>> {
         .routes(routes!(login))
         .routes(routes!(logout))
         .routes(routes!(redeem_invite))
+        .routes(routes!(site_info))
+        .routes(routes!(get_site_preferences, put_site_preferences))
+        .routes(routes!(site_audit_log))
+        .routes(routes!(site_status))
+        .routes(routes!(site_processing))
+        .routes(routes!(cancel_site_job))
+        .routes(routes!(site_memberships))
+        .routes(routes!(list_accounts, create_account))
+        // Bulk creation (#214): a batch of one-time invite links, or
+        // accounts with generated passwords for a workshop. matchit prefers
+        // a literal segment, so `bulk` cannot be taken for an account name.
+        .routes(routes!(create_bulk_invites))
+        .routes(routes!(create_bulk_passwords))
+        .routes(routes!(update_account, delete_account))
+        .routes(routes!(reissue_account_invite))
+        .routes(routes!(list_tokens, create_token))
+        .routes(routes!(revoke_token))
+        .routes(routes!(list_projects, create_project))
+        .routes(routes!(project_info, update_project, delete_project))
+        .routes(routes!(archive_project))
+        .routes(routes!(unarchive_project))
+        // Membership and access are project-scoped but administered through
+        // the site, because they name site accounts. Registered here so
+        // they win over the fallback that delegates everything else to the
+        // project's own router.
+        .routes(routes!(list_members, add_member))
+        .routes(routes!(update_member, remove_member))
+        // A project administrator may create an account for their own
+        // project, but only through these: they can grant nothing beyond
+        // the project in their path. Account lifecycle stays at the site
+        // level, for a server administrator.
+        .routes(routes!(invite_member))
+        .routes(routes!(create_project_bulk_invites))
+        .routes(routes!(create_project_bulk_passwords))
+        .routes(routes!(project_audit_log))
+        .routes(routes!(put_project_access))
 }
 
 /// Build the site's Axum application.
@@ -734,77 +770,6 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         // (for a server administrator) the accounts. Project settings stay
         // under the project's key.
         .route("/settings", get(site_settings_page))
-        .route("/api/v1/site", get(site_info))
-        .route("/api/v1/site/audit", get(site_audit_log))
-        .route("/api/v1/site/status", get(site_status))
-        .route("/api/v1/site/processing", get(site_processing))
-        .route(
-            "/api/v1/site/processing/{job}",
-            axum::routing::delete(cancel_site_job),
-        )
-        .route("/api/v1/site/memberships", get(site_memberships))
-        .route(
-            "/api/v1/site/preferences",
-            get(get_site_preferences).put(put_site_preferences),
-        )
-        .route("/api/v1/projects", get(list_projects).post(create_project))
-        .route(
-            "/api/v1/projects/{key}",
-            get(project_info)
-                .patch(update_project)
-                .delete(delete_project),
-        )
-        .route("/api/v1/projects/{key}/archive", post(archive_project))
-        .route("/api/v1/projects/{key}/unarchive", post(unarchive_project))
-        // Membership and access are project-scoped but administered through
-        // the site, because they name site accounts. Registered explicitly so
-        // they win over the fallback that delegates everything else.
-        .route(
-            "/api/v1/projects/{key}/members",
-            get(list_members).post(add_member),
-        )
-        .route(
-            "/api/v1/projects/{key}/members/{name}",
-            put(update_member).delete(remove_member),
-        )
-        // A project administrator may create an account for their own
-        // project, but only through this route: it can grant nothing beyond
-        // the project in its path. Account lifecycle stays at the site
-        // level, for a server administrator.
-        .route("/api/v1/projects/{key}/members/invite", post(invite_member))
-        // A project administrator's bulk creation, likewise scoped to the
-        // project in the path.
-        .route(
-            "/api/v1/projects/{key}/members/bulk/invites",
-            post(create_project_bulk_invites),
-        )
-        .route(
-            "/api/v1/projects/{key}/members/bulk/passwords",
-            post(create_project_bulk_passwords),
-        )
-        .route("/api/v1/projects/{key}/audit", get(project_audit_log))
-        .route("/api/v1/projects/{key}/access", put(put_project_access))
-        .route("/api/v1/accounts", get(list_accounts).post(create_account))
-        .route(
-            "/api/v1/accounts/{name}",
-            put(update_account).delete(delete_account),
-        )
-        .route(
-            "/api/v1/accounts/{name}/invite",
-            post(reissue_account_invite),
-        )
-        // Bulk creation mirrors the project endpoints that preceded it
-        // (#214): a batch of one-time invite links, or accounts with
-        // generated passwords for a workshop. Registered before the `{name}`
-        // routes would not matter -- matchit prefers a literal segment -- but
-        // the two-segment paths cannot collide with a single name anyway.
-        .route("/api/v1/accounts/bulk/invites", post(create_bulk_invites))
-        .route(
-            "/api/v1/accounts/bulk/passwords",
-            post(create_bulk_passwords),
-        )
-        .route("/api/v1/tokens", get(list_tokens).post(create_token))
-        .route("/api/v1/tokens/{id}", axum::routing::delete(revoke_token))
         .merge(Router::from(site_api()))
         // Everything else that looks like a project is that project's own
         // router. The layer resolves identity for the site routes above and
@@ -1576,15 +1541,27 @@ pub(super) struct TokenList {
     tokens: Vec<TokenInfo>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct TokenListQuery {
     /// Every account's tokens, for a server administrator.
     #[serde(default)]
     all: bool,
 }
 
-/// `GET /api/v1/tokens` -- the caller's tokens, or with `?all=true` every
+/// The caller's API tokens, without their secrets. `all=true` lists every
 /// account's, for a server administrator.
+#[utoipa::path(
+    get,
+    path = "/api/v1/tokens",
+    tag = "Site server",
+    params(TokenListQuery),
+    responses(
+        (status = 200, description = "The tokens.", body = TokenList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::SignedIn)))),
+)]
+// account's, for a server administrator.
 async fn list_tokens(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -1626,7 +1603,21 @@ pub(super) struct NewToken {
     info: TokenInfo,
 }
 
-/// `POST /api/v1/tokens` -- create a token for the signed-in account.
+/// Create an API token: a `name`, an `expires` (`30d`, `12w`, `2y` or `never`;
+/// default 90 days) and `grants`, each a `project`, `role` and `download` no
+/// higher than the caller's membership there. The token is in the response once
+/// and cannot be shown again. Needs a session, never a token.
+#[utoipa::path(
+    post,
+    path = "/api/v1/tokens",
+    tag = "Site server",
+    request_body = CreateTokenBody,
+    responses(
+        (status = 201, description = "The token, shown this once.", body = NewToken),
+        (status = 400, description = "A grant above the caller's membership, or a name or expiry that is not valid.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::SignedIn)))),
+)]
 async fn create_token(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -1673,11 +1664,22 @@ async fn create_token(
     ))
 }
 
-/// `DELETE /api/v1/tokens/{id}` -- revoke one of the caller's tokens, or
-/// anyone's for a server administrator.
-///
-/// Someone else's token is not found rather than forbidden, so ids cannot
-/// be probed.
+/// Revoke one of the caller's tokens, or any token for a server administrator.
+/// Someone else's token is answered as if it did not exist.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/tokens/{id}",
+    tag = "Site server",
+    responses(
+        (status = 204, description = "Revoked."),
+        (status = 404, description = "No such token of the caller's.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::SignedIn).own()))),
+)]
+// anyone's for a server administrator.
+//
+// Someone else's token is not found rather than forbidden, so ids cannot
+// be probed.
 async fn revoke_token(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -1859,30 +1861,49 @@ async fn redeem_invite(
 // Projects API
 // ---------------------------------------------------------------------------
 
+/// The site's name, whether it has accounts, and who the caller is.
+#[utoipa::path(
+    get,
+    path = "/api/v1/site",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The site.", body = SiteInfo),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Nobody)))),
+)]
 async fn site_info(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
     let configured = site.accounts_configured();
-    Ok(Json(serde_json::json!({
-        "name": site.name(),
-        "accounts_configured": configured,
-        "authenticated": caller.user.is_some(),
-        "user": caller.user.as_ref().map(|u| u.as_str()),
-        "server_admin": caller.server_admin,
-        "roles": Role::ALL.map(Role::as_str),
-        "download_scopes": DownloadScope::ALL.map(DownloadScope::as_str),
-        "invite_ttl_days": invite::INVITE_TTL_DAYS,
-        "min_password_len": accounts::MIN_PASSWORD_LEN,
-    })))
+    Ok(Json(SiteInfo {
+        name: site.name(),
+        accounts_configured: configured,
+        authenticated: caller.user.is_some(),
+        user: caller.user.as_ref().map(|u| u.as_str().to_string()),
+        server_admin: caller.server_admin,
+        roles: Role::ALL.to_vec(),
+        download_scopes: DownloadScope::ALL.to_vec(),
+        invite_ttl_days: invite::INVITE_TTL_DAYS,
+        min_password_len: accounts::MIN_PASSWORD_LEN,
+    }))
 }
 
 /// How much history one request returns. The log keeps roughly the last
 /// two [`crate::project::jsonl::MAX_BYTES`]; a page shows the recent end of it.
 const AUDIT_PAGE: usize = 500;
 
-/// `GET /api/v1/site/audit` -- the site's account and project history, for a
-/// server administrator.
+/// The site's account, membership and project history, most recent first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/site/audit",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The history.", body = AuditLog),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// server administrator.
 async fn site_audit_log(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -1891,12 +1912,25 @@ async fn site_audit_log(
     let log = site_audit::read(site.site()?.store())
         .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
     let entries: Vec<&site_audit::Entry> = log.entries.iter().rev().take(AUDIT_PAGE).collect();
-    Ok(Json(serde_json::json!({ "entries": entries })))
+    Ok(Json(AuditLog {
+        entries: entries.into_iter().cloned().collect(),
+    }))
 }
 
-/// `GET /api/v1/site/processing` -- what the processing queue is doing,
-/// for whoever runs the server (#382): every job it still knows of, with
-/// its owner and state, and how much of the limits is in use.
+/// The processing queue: the configured limits, every job it still knows of
+/// with its project, owner, state and how long it waited and ran, and how many
+/// are queued and running and how much of the memory budget they use.
+#[utoipa::path(
+    get,
+    path = "/api/v1/site/processing",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The queue.", body = ProcessingQueue),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// for whoever runs the server (#382): every job it still knows of, with
+// its owner and state, and how much of the limits is in use.
 async fn site_processing(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -1905,25 +1939,37 @@ async fn site_processing(
     site.site()?;
     let config = site.processing.config();
     const MB: u64 = 1024 * 1024;
-    Ok(Json(serde_json::json!({
-        "snapshot": site.processing.snapshot(),
+    Ok(Json(ProcessingQueue {
+        snapshot: site.processing.snapshot(),
         // What the flags set, so the page shows them rather than knowing them.
-        "limits": {
-            "jobs": config.jobs,
-            "memory_mb": config.memory_bytes / MB,
-            "threads_per_job": config.threads_per_job,
-            "timeout_seconds": config.timeout.as_secs(),
-            "max_queued_per_user": config.max_queued_per_user,
-            "max_queued_per_project": config.max_queued_per_project,
-            "keep_finished_seconds": config.keep_finished.as_secs(),
+        limits: ProcessingLimits {
+            jobs: config.jobs,
+            memory_mb: config.memory_bytes / MB,
+            threads_per_job: config.threads_per_job,
+            timeout_seconds: config.timeout.as_secs(),
+            max_queued_per_user: config.max_queued_per_user,
+            max_queued_per_project: config.max_queued_per_project,
+            keep_finished_seconds: config.keep_finished.as_secs(),
         },
-        "jobs": site.processing.details(),
-    })))
+        jobs: site.processing.details(),
+    }))
 }
 
-/// `GET /api/v1/site/status` -- what the heartbeat would say now (#282,
-/// #391), for a server administrator. Read without starting the
-/// heartbeat's interval counts again, so looking does not change the log.
+/// What the server's heartbeat would report now: render workers busy and
+/// waiting, the render cache, requests and processing since the last heartbeat,
+/// and the process's memory and CPU time. Reading it does not reset the
+/// heartbeat's counts.
+#[utoipa::path(
+    get,
+    path = "/api/v1/site/status",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The numbers.", body = super::telemetry::Heartbeat),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// #391), for a server administrator. Read without starting the
+// heartbeat's interval counts again, so looking does not change the log.
 async fn site_status(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -1932,9 +1978,20 @@ async fn site_status(
     Ok(Json(super::telemetry::Heartbeat::peek(&site)))
 }
 
-/// `DELETE /api/v1/site/processing/{job}` -- a server administrator stops
-/// anyone's job (#391): a queued one never starts, a running one is killed.
-/// The batch or draft it belonged to records it as cancelled.
+/// Cancel anyone's processing job: a queued one never starts, a running one is
+/// stopped. Recorded in the site's history.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/site/processing/{job}",
+    tag = "Site server",
+    responses(
+        (status = 204, description = "Cancelled."),
+        (status = 404, description = "`job_not_found`: it has already ended, or does not exist.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// anyone's job (#391): a queued one never starts, a running one is killed.
+// The batch or draft it belonged to records it as cancelled.
 async fn cancel_site_job(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -1965,8 +2022,18 @@ async fn cancel_site_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /api/v1/projects/{key}/audit` -- the history of one project, for the
-/// people who administer it. Only the entries that name this project.
+/// This project's slice of the site history.
+#[utoipa::path(
+    get,
+    path = "/api/v1/projects/{key}/audit",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The history.", body = AuditLog),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
+// people who administer it. Only the entries that name this project.
 async fn project_audit_log(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -1983,10 +2050,13 @@ async fn project_audit_log(
         .filter(|entry| entry.project.as_ref() == Some(&key))
         .take(AUDIT_PAGE)
         .collect();
-    Ok(Json(serde_json::json!({ "entries": entries })))
+    Ok(Json(AuditLog {
+        entries: entries.into_iter().cloned().collect(),
+    }))
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `PUT /api/v1/site/preferences`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct SitePreferencesBody {
     /// `light`, `dark`, or absent/`null`/empty to follow the device.
     #[serde(default)]
@@ -2002,7 +2072,16 @@ fn no_preferences() -> ApiError {
     )
 }
 
-/// `GET /api/v1/site/preferences` -- the caller's own site-wide settings.
+/// The caller's own site-wide settings, currently the theme.
+#[utoipa::path(
+    get,
+    path = "/api/v1/site/preferences",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "Their settings.", body = SitePreferences),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::SignedIn)))),
+)]
 async fn get_site_preferences(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2016,16 +2095,26 @@ async fn get_site_preferences(
     let store = site.preferences_store().ok_or_else(no_preferences)?;
     let preferences = crate::project::preferences::read(store, user)
         .map_err(|e| ApiError::internal("preferences_read_failed", e.to_string()))?;
-    Ok(Json(serde_json::json!({
-        "user": user.as_str(),
-        "theme": preferences.theme,
-    })))
+    Ok(Json(SitePreferences {
+        user: user.as_str().to_string(),
+        theme: preferences.theme,
+    }))
 }
 
-/// `PUT /api/v1/site/preferences`
-///
-/// A viewer may do this, exactly as with project preferences: choosing how
-/// you like to look at something is the floor of having an account.
+/// Change the caller's own site-wide settings. Any role may.
+#[utoipa::path(
+    put,
+    path = "/api/v1/site/preferences",
+    tag = "Site server",
+    request_body = SitePreferencesBody,
+    responses(
+        (status = 200, description = "Their settings as saved.", body = SitePreferences),
+        (status = 400, description = "`unknown_theme`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::SignedIn)))),
+)]
+// A viewer may do this, exactly as with project preferences: choosing how
+// you like to look at something is the floor of having an account.
 async fn put_site_preferences(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2056,13 +2145,24 @@ async fn put_site_preferences(
     };
     crate::project::preferences::write(store, user, &stored, &Expectation::Any)
         .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
-    Ok(Json(serde_json::json!({
-        "user": user.as_str(),
-        "theme": stored.theme,
-    })))
+    Ok(Json(SitePreferences {
+        user: user.as_str().to_string(),
+        theme: stored.theme,
+    }))
 }
 
-/// `GET /api/v1/projects`
+/// The projects the caller is a member of; every project for a server
+/// administrator. Public projects are not listed. With an API token, only its
+/// granted projects, with the role and download scope the token has there.
+#[utoipa::path(
+    get,
+    path = "/api/v1/projects",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The projects.", body = ProjectList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Nobody)))),
+)]
 async fn list_projects(
     State(site): State<Arc<SiteState>>,
     TokenOrSession(caller): TokenOrSession,
@@ -2093,14 +2193,30 @@ fn reachable_entry(
     Some(entry)
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `POST /api/v1/projects`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct CreateProjectBody {
+    /// The project's key: a slug, its directory and its place in every URL.
     key: String,
+    /// Its display name.
     #[serde(default)]
     name: Option<String>,
 }
 
-/// `POST /api/v1/projects`
+/// Create a project at a key.
+#[utoipa::path(
+    post,
+    path = "/api/v1/projects",
+    tag = "Site server",
+    request_body = CreateProjectBody,
+    responses(
+        (status = 201, description = "Created.", body = CreatedProject),
+        (status = 400, description = "A key that is not valid.", body = ErrorBody),
+        (status = 409, description = "A project with that key exists.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
 async fn create_project(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2123,14 +2239,26 @@ async fn create_project(
     );
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({
-            "key": key.as_str(),
-            "name": project.config().project.name,
-        })),
+        Json(CreatedProject {
+            key: key.as_str().to_string(),
+            name: project.config().project.name.clone(),
+        }),
     ))
 }
 
-/// `GET /api/v1/projects/{key}`
+/// One project, with the caller's role and download scope in it. A project
+/// the caller may not see, signed in or not, answers `404` as one that does
+/// not exist.
+#[utoipa::path(
+    get,
+    path = "/api/v1/projects/{key}",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The project.", body = ProjectEntry),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 async fn project_info(
     State(site): State<Arc<SiteState>>,
     TokenOrSession(caller): TokenOrSession,
@@ -2142,13 +2270,27 @@ async fn project_info(
         .ok_or_else(hidden_project)
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `PATCH /api/v1/projects/{key}`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct UpdateProjectBody {
+    /// The new display name; `null` or empty removes it.
     #[serde(default)]
     name: Option<String>,
 }
 
-/// `PATCH /api/v1/projects/{key}` -- rename the display name.
+/// Rename its display name; the key does not change.
+#[utoipa::path(
+    patch,
+    path = "/api/v1/projects/{key}",
+    tag = "Site server",
+    request_body = UpdateProjectBody,
+    responses(
+        (status = 200, description = "Renamed.", body = RenamedProject),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
 async fn update_project(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2172,10 +2314,23 @@ async fn update_project(
             key.as_str(),
         ),
     );
-    Ok(Json(serde_json::json!({ "key": key.as_str() })))
+    Ok(Json(RenamedProject {
+        key: key.as_str().to_string(),
+    }))
 }
 
-/// `POST /api/v1/projects/{key}/archive`
+/// Make the project read-only.
+#[utoipa::path(
+    post,
+    path = "/api/v1/projects/{key}/archive",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "Archived.", body = ArchivedProject),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
 async fn archive_project(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2194,12 +2349,24 @@ async fn archive_project(
             key.as_str(),
         ),
     );
-    Ok(Json(
-        serde_json::json!({ "key": key.as_str(), "archived": true }),
-    ))
+    Ok(Json(ArchivedProject {
+        key: key.as_str().to_string(),
+        archived: true,
+    }))
 }
 
-/// `POST /api/v1/projects/{key}/unarchive`
+/// Reverse an archive.
+#[utoipa::path(
+    post,
+    path = "/api/v1/projects/{key}/unarchive",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "No longer archived.", body = ArchivedProject),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
 async fn unarchive_project(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2218,13 +2385,25 @@ async fn unarchive_project(
             key.as_str(),
         ),
     );
-    Ok(Json(serde_json::json!({
-        "key": key.as_str(),
-        "archived": false,
-    })))
+    Ok(Json(ArchivedProject {
+        key: key.as_str().to_string(),
+        archived: false,
+    }))
 }
 
-/// `DELETE /api/v1/projects/{key}`
+/// Delete an archived project and everything it owns.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/projects/{key}",
+    tag = "Site server",
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 409, description = "`not_archived`: archive it first.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
 async fn delete_project(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2316,15 +2495,25 @@ fn require_project_admin(
     }
 }
 
-fn member_json(member: &members::Member) -> serde_json::Value {
-    serde_json::json!({
-        "name": member.name.as_str(),
-        "role": member.role.as_str(),
-        "download": member.download.as_str(),
-    })
+fn member_json(member: &members::Member) -> MemberView {
+    MemberView {
+        name: member.name.as_str().to_string(),
+        role: member.role,
+        download: member.download,
+    }
 }
 
-/// `GET /api/v1/projects/{key}/members`
+/// The membership list and access policy.
+#[utoipa::path(
+    get,
+    path = "/api/v1/projects/{key}/members",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The members.", body = MemberList),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
 async fn list_members(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2337,21 +2526,26 @@ async fn list_members(
         .map_err(member_error)?
         .map(|(set, _)| set)
         .unwrap_or_default();
-    Ok(Json(serde_json::json!({
-        "members": set.members.iter().map(member_json).collect::<Vec<_>>(),
-        "require_auth_to_read": set.require_auth_to_read,
-        "anonymous_download": set.anonymous_download.as_str(),
-        "configured": configured,
-        "has_admin": set.has_admin(),
-        "roles": Role::ALL.map(Role::as_str),
-        "download_scopes": DownloadScope::ALL.map(DownloadScope::as_str),
-    })))
+    Ok(Json(MemberList {
+        members: set.members.iter().map(member_json).collect(),
+        require_auth_to_read: set.require_auth_to_read,
+        anonymous_download: set.anonymous_download,
+        configured,
+        has_admin: set.has_admin(),
+        roles: Role::ALL.to_vec(),
+        download_scopes: DownloadScope::ALL.to_vec(),
+    }))
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `POST /api/v1/projects/{key}/members` and
+/// `…/members/invite`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct MemberBody {
+    /// The account.
     name: String,
+    /// `viewer`, `picker`, `operator` or `admin`.
     role: String,
+    /// The download scope; `all` when left out.
     #[serde(default)]
     download: Option<String>,
 }
@@ -2369,7 +2563,20 @@ fn parse_member_body(body: &MemberBody) -> Result<(UserId, Role, DownloadScope),
     Ok((name, role, download))
 }
 
-/// `POST /api/v1/projects/{key}/members` -- add or update a membership.
+/// Add or update an existing account's membership.
+#[utoipa::path(
+    post,
+    path = "/api/v1/projects/{key}/members",
+    tag = "Site server",
+    request_body = MemberBody,
+    responses(
+        (status = 201, description = "The membership.", body = MemberView),
+        (status = 400, description = "A role or scope that is not valid.", body = ErrorBody),
+        (status = 404, description = "`account_not_found`, or no such project.", body = ErrorBody),
+        (status = 403, description = "`archived`: the project is archived.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
 async fn add_member(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2415,22 +2622,36 @@ async fn add_member(
 
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({
-            "name": name.as_str(),
-            "role": role.as_str(),
-            "download": download.as_str(),
-        })),
+        Json(MemberView {
+            name: name.as_str().to_string(),
+            role,
+            download,
+        }),
     ))
 }
 
-/// `POST /api/v1/projects/{key}/members/invite` -- create a site account and
-/// invite it into this project.
-///
-/// A project administrator may create an account, but only for their own
-/// project: the invite carries this project, role and download and nothing
-/// else. The account is never a server administrator, and account lifecycle
-/// -- deleting it, resetting its password, promoting it -- stays with a
-/// server administrator at the site level.
+/// Create an account and invite it into this project only.
+#[utoipa::path(
+    post,
+    path = "/api/v1/projects/{key}/members/invite",
+    tag = "Site server",
+    request_body = MemberBody,
+    responses(
+        (status = 201, description = "Created, with its invite link.", body = InvitedMember),
+        (status = 400, description = "A name, role or scope that is not valid.", body = ErrorBody),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 409, description = "`name_in_use`, `account_exists` or `duplicate`: the name is taken.", body = ErrorBody),
+        (status = 403, description = "`archived`: the project is archived.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
+// invite it into this project.
+//
+// A project administrator may create an account, but only for their own
+// project: the invite carries this project, role and download and nothing
+// else. The account is never a server administrator, and account lifecycle
+// -- deleting it, resetting its password, promoting it -- stays with a
+// server administrator at the site level.
 async fn invite_member(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2498,18 +2719,20 @@ async fn invite_member(
 
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({
-            "name": name.as_str(),
-            "role": role.as_str(),
-            "download": download.as_str(),
-            "invite_path": format!("/invite/{token}"),
-            "invite_expires": invite.expires,
-            "invite_ttl_days": invite::INVITE_TTL_DAYS,
-        })),
+        Json(InvitedMember {
+            name: name.as_str().to_string(),
+            role,
+            download,
+            invite_path: format!("/invite/{token}"),
+            invite_expires: invite.expires,
+            invite_ttl_days: invite::INVITE_TTL_DAYS,
+        }),
     ))
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `PUT /api/v1/projects/{key}/members/{name}`. A field left
+/// out is not changed.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct UpdateMemberBody {
     #[serde(default)]
     role: Option<String>,
@@ -2517,7 +2740,21 @@ pub struct UpdateMemberBody {
     download: Option<String>,
 }
 
-/// `PUT /api/v1/projects/{key}/members/{name}`
+/// Change a member's role or download scope. Refused for the project's last
+/// administrator.
+#[utoipa::path(
+    put,
+    path = "/api/v1/projects/{key}/members/{name}",
+    tag = "Site server",
+    request_body = UpdateMemberBody,
+    responses(
+        (status = 200, description = "The membership.", body = MemberView),
+        (status = 400, description = "A role or scope that is not valid, or the last administrator.", body = ErrorBody),
+        (status = 404, description = "No such member, or no such project.", body = ErrorBody),
+        (status = 403, description = "`archived`: the project is archived.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
 async fn update_member(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2575,7 +2812,20 @@ async fn update_member(
     Ok(Json(member_json(&updated)))
 }
 
-/// `DELETE /api/v1/projects/{key}/members/{name}`
+/// Remove the membership. The account itself remains. Refused for the project's
+/// last administrator.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/projects/{key}/members/{name}",
+    tag = "Site server",
+    responses(
+        (status = 204, description = "Removed."),
+        (status = 400, description = "The last administrator.", body = ErrorBody),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 403, description = "`archived`: the project is archived.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
 async fn remove_member(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2609,15 +2859,32 @@ async fn remove_member(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `PUT /api/v1/projects/{key}/access`. A field left out is not
+/// changed.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct AccessBody {
+    /// Whether reading the project needs a login.
     #[serde(default)]
     require_auth_to_read: Option<bool>,
+    /// What someone not signed in may download.
     #[serde(default)]
     anonymous_download: Option<String>,
 }
 
-/// `PUT /api/v1/projects/{key}/access` -- the project-wide access policy.
+/// The project's read and anonymous-download policy.
+#[utoipa::path(
+    put,
+    path = "/api/v1/projects/{key}/access",
+    tag = "Site server",
+    request_body = AccessBody,
+    responses(
+        (status = 200, description = "The policy as saved.", body = AccessPolicy),
+        (status = 400, description = "A scope that is not valid.", body = ErrorBody),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 403, description = "`archived`: the project is archived.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
 async fn put_project_access(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2658,33 +2925,51 @@ async fn put_project_access(
         )),
     );
 
-    Ok(Json(serde_json::json!({
-        "require_auth_to_read": set.require_auth_to_read,
-        "anonymous_download": set.anonymous_download.as_str(),
-    })))
+    Ok(Json(AccessPolicy {
+        require_auth_to_read: set.require_auth_to_read,
+        anonymous_download: set.anonymous_download,
+    }))
 }
 
 // ---------------------------------------------------------------------------
 // Accounts API
 // ---------------------------------------------------------------------------
 
-/// `GET /api/v1/accounts`
+/// Every account, without hashes or invite tokens.
+#[utoipa::path(
+    get,
+    path = "/api/v1/accounts",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The accounts.", body = AccountList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
 async fn list_accounts(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "see the accounts")?;
     let set = account_set(&site)?;
-    Ok(Json(serde_json::json!({
-        "accounts": set.users.iter().map(Account::redacted).collect::<Vec<_>>(),
-        "invite_ttl_days": invite::INVITE_TTL_DAYS,
-        "min_password_len": accounts::MIN_PASSWORD_LEN,
-        "account_file": ACCOUNTS_FILE,
-    })))
+    Ok(Json(AccountList {
+        accounts: set.users.iter().map(Account::redacted).collect(),
+        invite_ttl_days: invite::INVITE_TTL_DAYS,
+        min_password_len: accounts::MIN_PASSWORD_LEN,
+        account_file: ACCOUNTS_FILE.to_string(),
+    }))
 }
 
-/// `GET /api/v1/site/memberships` -- every account and the projects it
-/// belongs to, for a read-only overview on the site settings page.
+/// Every account and the projects it belongs to.
+#[utoipa::path(
+    get,
+    path = "/api/v1/site/memberships",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The memberships.", body = MembershipOverview),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// belongs to, for a read-only overview on the site settings page.
 async fn site_memberships(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2694,7 +2979,7 @@ async fn site_memberships(
     let keys = site.site()?.list().map_err(site_error)?;
 
     // Seeded from the accounts so one with no memberships still appears.
-    let mut by_account: std::collections::HashMap<String, Vec<serde_json::Value>> = accounts
+    let mut by_account: std::collections::HashMap<String, Vec<Membership>> = accounts
         .users
         .iter()
         .map(|account| (account.name.as_str().to_string(), Vec::new()))
@@ -2718,38 +3003,40 @@ async fn site_memberships(
         for member in &set.members {
             // A membership may name an account that no longer exists.
             if let Some(list) = by_account.get_mut(member.name.as_str()) {
-                list.push(serde_json::json!({
-                    "project": key.as_str(),
-                    "project_name": name,
-                    "role": member.role.as_str(),
-                    "download": member.download.as_str(),
-                }));
+                list.push(Membership {
+                    project: key.as_str().to_string(),
+                    project_name: name.clone(),
+                    role: member.role,
+                    download: member.download,
+                });
             }
         }
     }
 
-    let overview: Vec<serde_json::Value> = accounts
+    let overview: Vec<AccountMemberships> = accounts
         .users
         .iter()
         .map(|account| {
             let memberships = by_account.remove(account.name.as_str()).unwrap_or_default();
-            serde_json::json!({
-                "name": account.name.as_str(),
-                "memberships": memberships,
-            })
+            AccountMemberships {
+                name: account.name.as_str().to_string(),
+                memberships,
+            }
         })
         .collect();
-    Ok(Json(serde_json::json!({ "accounts": overview })))
+    Ok(Json(MembershipOverview { accounts: overview }))
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `POST /api/v1/accounts`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct CreateAccountBody {
     name: String,
+    /// Refused when `true`: grant it once the account has a password.
     #[serde(default)]
     server_admin: bool,
     /// When set, the invite grants a membership in this project on
-    /// redemption. A server administrator may instead invite with no
-    /// project.
+    /// redemption, with `role` and `download`. A server administrator may
+    /// instead invite with no project.
     #[serde(default)]
     project: Option<String>,
     #[serde(default)]
@@ -2758,7 +3045,21 @@ pub struct CreateAccountBody {
     download: Option<String>,
 }
 
-/// `POST /api/v1/accounts` -- create an account and mint its invite.
+/// Create an account and mint its invite, optionally naming a project, role and
+/// download scope. It cannot create a server administrator.
+#[utoipa::path(
+    post,
+    path = "/api/v1/accounts",
+    tag = "Site server",
+    request_body = CreateAccountBody,
+    responses(
+        (status = 201, description = "Created, with its invite link.", body = CreatedAccount),
+        (status = 400, description = "`server_admin_at_creation`, or a name, role or scope that is not valid.", body = ErrorBody),
+        (status = 409, description = "`name_in_use`, `account_exists` or `duplicate`: the name is taken.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
 async fn create_account(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2826,25 +3127,40 @@ async fn create_account(
 
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({
-            "account": created.redacted(),
-            "invite_path": format!("/invite/{token}"),
-            "invite_expires": expires,
-            "invite_ttl_days": invite::INVITE_TTL_DAYS,
-        })),
+        Json(CreatedAccount {
+            account: created.redacted(),
+            invite_path: format!("/invite/{token}"),
+            invite_expires: expires,
+            invite_ttl_days: invite::INVITE_TTL_DAYS,
+        }),
     ))
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `PUT /api/v1/accounts/{name}`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct UpdateAccountBody {
+    /// Grant or revoke server administration.
     #[serde(default)]
     server_admin: Option<bool>,
 }
 
-/// `PUT /api/v1/accounts/{name}` -- change the server-admin flag.
-///
-/// Bumps the credential version, so a demotion reaches a live session on its
-/// next request rather than when the cookie ages out.
+/// Change the server-administrator flag. Refused if it would leave the site
+/// with none, or while the account has an invite outstanding.
+#[utoipa::path(
+    put,
+    path = "/api/v1/accounts/{name}",
+    tag = "Site server",
+    request_body = UpdateAccountBody,
+    responses(
+        (status = 200, description = "The account.", body = accounts::RedactedAccount),
+        (status = 400, description = "Refused: the last server administrator, or an invite outstanding.", body = ErrorBody),
+        (status = 404, description = "No such account.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// Bumps the credential version, so a demotion reaches a live session on its
+// next request rather than when the cookie ages out.
 async fn update_account(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2910,10 +3226,21 @@ async fn update_account(
     Ok(Json(redacted))
 }
 
-/// `DELETE /api/v1/accounts/{name}`
-///
-/// Removes the account and its membership in every project, never any
-/// project's picks. A later account of the same name starts with nothing.
+/// Remove an account and its membership in every project. Picks are left in
+/// place.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/accounts/{name}",
+    tag = "Site server",
+    responses(
+        (status = 204, description = "Removed."),
+        (status = 404, description = "No such account.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// Removes the account and its membership in every project, never any
+// project's picks. A later account of the same name starts with nothing.
 async fn delete_account(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2946,8 +3273,19 @@ async fn delete_account(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/v1/accounts/{name}/invite` -- reissue, for a reset or a lost
-/// link.
+/// Issue a new invite link, for a reset or a lost one.
+#[utoipa::path(
+    post,
+    path = "/api/v1/accounts/{name}/invite",
+    tag = "Site server",
+    responses(
+        (status = 200, description = "The new link.", body = ReissuedInvite),
+        (status = 404, description = "No such account.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// link.
 async fn reissue_account_invite(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -2977,47 +3315,58 @@ async fn reissue_account_invite(
         ),
     );
 
-    Ok(Json(serde_json::json!({
-        "user": name.as_str(),
-        "invite_path": format!("/invite/{token}"),
-        "invite_expires": expires,
-        "invite_ttl_days": invite::INVITE_TTL_DAYS,
-    })))
+    Ok(Json(ReissuedInvite {
+        user: name.as_str().to_string(),
+        invite_path: format!("/invite/{token}"),
+        invite_expires: expires,
+        invite_ttl_days: invite::INVITE_TTL_DAYS,
+    }))
 }
 
-/// A bulk creation request, shared in shape by the invite and password
-/// routes so the two read the same way.
-#[derive(serde::Deserialize)]
+/// The body of the bulk invite routes. The bulk password routes take the
+/// same, with `acknowledge_risk`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct BulkAccountsBody {
-    /// Ignored when `random_names` is set, and optional so a request can ask
-    /// for random accounts without sending an unused prefix.
+    /// What the names start with, numbered after it. Ignored when
+    /// `random_names` is set.
     #[serde(default)]
     prefix: String,
+    /// How many accounts.
     count: usize,
+    /// Random names instead of `prefix` and a number.
     #[serde(default)]
     random_names: bool,
     role: String,
     #[serde(default)]
     download: Option<String>,
-    /// When set, each invite grants this membership on redemption; a batch
-    /// of generated passwords is added to the project directly, since there
-    /// is no redemption step.
+    /// The project they join: each invite grants this membership on
+    /// redemption. A project administrator's route names it in the path
+    /// instead.
     #[serde(default)]
     project: Option<String>,
 }
 
-#[derive(serde::Deserialize)]
+/// The body of the bulk password routes.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct BulkPasswordsBody {
+    /// What the names start with, numbered after it. Ignored when
+    /// `random_names` is set.
     #[serde(default)]
     prefix: String,
+    /// How many accounts.
     count: usize,
+    /// Random names instead of `prefix` and a number.
     #[serde(default)]
     random_names: bool,
+    /// Any role but `admin`.
     role: String,
     #[serde(default)]
     download: Option<String>,
+    /// The project they are added to. A project administrator's route
+    /// names it in the path instead.
     #[serde(default)]
     project: Option<String>,
+    /// Must be `true`: shared passwords are less safe than invite links.
     #[serde(default)]
     acknowledge_risk: bool,
 }
@@ -3068,7 +3417,7 @@ async fn bulk_invites(
     project: Option<ProjectKey>,
     actor: String,
     body: BulkAccountsBody,
-) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+) -> Result<(StatusCode, Json<BulkInvites>), ApiError> {
     let (role, download) = parse_bulk_role_download(&body.role, body.download.as_deref())?;
     let directory = site.site()?;
     let prefix = (!body.random_names).then_some(body.prefix.as_str());
@@ -3094,18 +3443,33 @@ async fn bulk_invites(
 
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({
-            "users": minted.iter().map(|(name, token, expires)| serde_json::json!({
-                "name": name.as_str(),
-                "invite_path": format!("/invite/{token}"),
-                "invite_expires": expires,
-            })).collect::<Vec<_>>(),
-            "invite_ttl_days": invite::INVITE_TTL_DAYS,
-        })),
+        Json(BulkInvites {
+            users: minted
+                .iter()
+                .map(|(name, token, expires)| BulkInvite {
+                    name: name.as_str().to_string(),
+                    invite_path: format!("/invite/{token}"),
+                    invite_expires: *expires,
+                })
+                .collect(),
+            invite_ttl_days: invite::INVITE_TTL_DAYS,
+        }),
     ))
 }
 
-/// `POST /api/v1/accounts/bulk/invites` -- a batch of one-time invite links.
+/// Create several invite-only accounts at once.
+#[utoipa::path(
+    post,
+    path = "/api/v1/accounts/bulk/invites",
+    tag = "Site server",
+    request_body = BulkAccountsBody,
+    responses(
+        (status = 201, description = "Created, each with its invite link.", body = BulkInvites),
+        (status = 400, description = "A role, scope or count that is not valid.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
 async fn create_bulk_invites(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -3117,8 +3481,21 @@ async fn create_bulk_invites(
     bulk_invites(site, project, actor(&caller), body).await
 }
 
-/// `POST /api/v1/projects/{key}/members/bulk/invites` -- a project
-/// administrator's batch, scoped to their project.
+/// Bulk-create accounts, each granted this project only.
+#[utoipa::path(
+    post,
+    path = "/api/v1/projects/{key}/members/bulk/invites",
+    tag = "Site server",
+    request_body = BulkAccountsBody,
+    responses(
+        (status = 201, description = "Created, each with its invite link.", body = BulkInvites),
+        (status = 400, description = "A role, scope or count that is not valid.", body = ErrorBody),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 403, description = "`archived`: the project is archived.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
+// administrator's batch, scoped to their project.
 async fn create_project_bulk_invites(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -3138,7 +3515,7 @@ async fn bulk_passwords(
     project: Option<ProjectKey>,
     actor: String,
     body: BulkPasswordsBody,
-) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+) -> Result<(StatusCode, Json<BulkPasswords>), ApiError> {
     if !body.acknowledge_risk {
         return Err(ApiError::bad_request(
             "risk_acknowledgement_required",
@@ -3187,18 +3564,33 @@ async fn bulk_passwords(
 
     Ok((
         StatusCode::OK,
-        Json(serde_json::json!({
-            "users": generated.iter().map(|(name, password)| serde_json::json!({
-                "name": name.as_str(),
-                "password": password,
-            })).collect::<Vec<_>>(),
-            "advisory": advisory,
-        })),
+        Json(BulkPasswords {
+            users: generated
+                .iter()
+                .map(|(name, password)| GeneratedPassword {
+                    name: name.as_str().to_string(),
+                    password: password.clone(),
+                })
+                .collect(),
+            advisory: advisory.to_string(),
+        }),
     ))
 }
 
-/// `POST /api/v1/accounts/bulk/passwords` -- accounts with generated
-/// passwords, for a workshop where handing out links is impractical.
+/// Create several accounts with generated passwords.
+#[utoipa::path(
+    post,
+    path = "/api/v1/accounts/bulk/passwords",
+    tag = "Site server",
+    request_body = BulkPasswordsBody,
+    responses(
+        (status = 200, description = "Created, each with its password.", body = BulkPasswords),
+        (status = 400, description = "`risk_acknowledgement_required`, `admin_bulk_passwords_forbidden`, or a role, scope or count that is not valid.", body = ErrorBody),
+        (status = 403, description = "`read_only`: the server was started read-only.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::ServerAdmin)))),
+)]
+// passwords, for a workshop where handing out links is impractical.
 async fn create_bulk_passwords(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -3210,8 +3602,22 @@ async fn create_bulk_passwords(
     bulk_passwords(site, project, actor(&caller), body).await
 }
 
-/// `POST /api/v1/projects/{key}/members/bulk/passwords` -- a project
-/// administrator's batch, scoped to their project.
+/// Bulk-create accounts with generated passwords, each granted this project
+/// only.
+#[utoipa::path(
+    post,
+    path = "/api/v1/projects/{key}/members/bulk/passwords",
+    tag = "Site server",
+    request_body = BulkPasswordsBody,
+    responses(
+        (status = 200, description = "Created, each with its password.", body = BulkPasswords),
+        (status = 400, description = "`risk_acknowledgement_required`, `admin_bulk_passwords_forbidden`, or a role, scope or count that is not valid.", body = ErrorBody),
+        (status = 404, description = "No such project, or one the caller may not see.", body = ErrorBody),
+        (status = 403, description = "`archived`: the project is archived.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Admin))))),
+)]
+// administrator's batch, scoped to their project.
 async fn create_project_bulk_passwords(
     State(site): State<Arc<SiteState>>,
     caller: SiteCaller,
@@ -3222,6 +3628,223 @@ async fn create_project_bulk_passwords(
     require_project_admin(&site, &key, &caller, "create accounts")?;
     site.require_project_writable(&key, "create accounts")?;
     bulk_passwords(site, Some(key), actor(&caller), body).await
+}
+
+// ---------------------------------------------------------------------------
+// Response bodies (#330)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/v1/site`: the site, and who the caller is in it.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct SiteInfo {
+    name: String,
+    /// Whether the site has accounts to sign in to.
+    accounts_configured: bool,
+    authenticated: bool,
+    #[schema(required = true)]
+    user: Option<String>,
+    server_admin: bool,
+    /// The project roles, least first.
+    roles: Vec<Role>,
+    /// The download scopes, least first.
+    download_scopes: Vec<DownloadScope>,
+    /// How long an invite link is good for.
+    invite_ttl_days: i64,
+    /// The shortest password an account may set.
+    min_password_len: usize,
+}
+
+/// A history, most recent first.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct AuditLog {
+    entries: Vec<site_audit::Entry>,
+}
+
+/// `GET /api/v1/site/processing`: the processing queue.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ProcessingQueue {
+    /// How many jobs are queued and running, and the memory they use.
+    snapshot: super::processing::QueueSnapshot,
+    limits: ProcessingLimits,
+    /// Every job the queue still knows of.
+    jobs: Vec<super::processing::JobDetail>,
+}
+
+/// The processing limits the server was started with.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ProcessingLimits {
+    jobs: usize,
+    memory_mb: u64,
+    threads_per_job: usize,
+    timeout_seconds: u64,
+    max_queued_per_user: usize,
+    max_queued_per_project: usize,
+    keep_finished_seconds: u64,
+}
+
+/// The caller's own site-wide settings.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct SitePreferences {
+    user: String,
+    /// `light` or `dark`; `null` follows the device.
+    #[schema(required = true)]
+    theme: Option<String>,
+}
+
+/// `POST /api/v1/projects`: the project created.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct CreatedProject {
+    key: String,
+    #[schema(required = true)]
+    name: Option<String>,
+}
+
+/// `PATCH /api/v1/projects/{key}`: the project renamed.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct RenamedProject {
+    key: String,
+}
+
+/// A project archived or unarchived.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ArchivedProject {
+    key: String,
+    archived: bool,
+}
+
+/// One project membership.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct MemberView {
+    name: String,
+    role: Role,
+    download: DownloadScope,
+}
+
+/// `GET /api/v1/projects/{key}/members`: the members and the access
+/// policy.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct MemberList {
+    members: Vec<MemberView>,
+    /// Whether reading the project needs a login.
+    require_auth_to_read: bool,
+    /// What someone not signed in may download.
+    anonymous_download: DownloadScope,
+    /// Whether the project has a membership file at all.
+    configured: bool,
+    /// Whether any member is an `admin`.
+    has_admin: bool,
+    roles: Vec<Role>,
+    download_scopes: Vec<DownloadScope>,
+}
+
+/// `POST /api/v1/projects/{key}/members/invite`: the account created, and
+/// the link that sets its password.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct InvitedMember {
+    name: String,
+    role: Role,
+    download: DownloadScope,
+    /// The invite link's path, `/invite/<token>`. It is shown this once.
+    invite_path: String,
+    /// When it expires, in Unix seconds.
+    invite_expires: i64,
+    invite_ttl_days: i64,
+}
+
+/// `PUT /api/v1/projects/{key}/access`: the access policy as saved.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct AccessPolicy {
+    require_auth_to_read: bool,
+    anonymous_download: DownloadScope,
+}
+
+/// `GET /api/v1/accounts`: every account.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct AccountList {
+    accounts: Vec<accounts::RedactedAccount>,
+    invite_ttl_days: i64,
+    min_password_len: usize,
+    /// The file the accounts are kept in, relative to the site.
+    account_file: String,
+}
+
+/// `GET /api/v1/site/memberships`: every account and its projects.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct MembershipOverview {
+    accounts: Vec<AccountMemberships>,
+}
+
+/// One account and the projects it belongs to.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct AccountMemberships {
+    name: String,
+    memberships: Vec<Membership>,
+}
+
+/// One account's membership in one project.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct Membership {
+    project: String,
+    /// Its display name, or its key when it has none.
+    project_name: String,
+    role: Role,
+    download: DownloadScope,
+}
+
+/// `POST /api/v1/accounts`: the account created, and the link that sets its
+/// password.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct CreatedAccount {
+    account: accounts::RedactedAccount,
+    /// The invite link's path, `/invite/<token>`. It is shown this once.
+    invite_path: String,
+    /// When it expires, in Unix seconds.
+    invite_expires: i64,
+    invite_ttl_days: i64,
+}
+
+/// `POST /api/v1/accounts/{name}/invite`: a new invite link.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct ReissuedInvite {
+    user: String,
+    /// The invite link's path, `/invite/<token>`. It is shown this once.
+    invite_path: String,
+    /// When it expires, in Unix seconds.
+    invite_expires: i64,
+    invite_ttl_days: i64,
+}
+
+/// The accounts a bulk invite created, each with its link.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct BulkInvites {
+    users: Vec<BulkInvite>,
+    invite_ttl_days: i64,
+}
+
+/// One account a bulk invite created.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct BulkInvite {
+    name: String,
+    /// The invite link's path, `/invite/<token>`. It is shown this once.
+    invite_path: String,
+    /// When it expires, in Unix seconds.
+    invite_expires: i64,
+}
+
+/// The accounts a bulk password request created, each with its password.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct BulkPasswords {
+    users: Vec<GeneratedPassword>,
+    /// What to tell the people who receive them.
+    advisory: String,
+}
+
+/// One account a bulk password request created. The password is shown this
+/// once and not stored.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct GeneratedPassword {
+    name: String,
+    password: String,
 }
 
 #[cfg(test)]

@@ -4,8 +4,7 @@
 //! Its paths come from the routers: every route registered through
 //! `site::site_api` or `app::project_api` is described by its handler's
 //! `#[utoipa::path]`, and could not be served otherwise. A project's routes
-//! are written as a site serves them, under `/api/v1/projects/{key}`. Routes
-//! not yet annotated are still listed by hand in `http-api.md`.
+//! are written as a site serves them, under `/api/v1/projects/{key}`.
 //!
 //! Each schema is derived from the type the handler serializes, so the file
 //! cannot describe a field the server does not send. The picks document's
@@ -46,10 +45,10 @@ use crate::site::tokens;
         // the crate version would make this file stale on every release.
         // `GET /api/v1/health` reports the version a server runs.
         version = "1",
-        description = "The Ridal server's HTTP API. Not every route is \
-                       described here yet; the HTTP API reference page lists \
-                       the rest. `x-ridal-needs` on an operation is the role \
-                       or kind of caller it needs."
+        description = "The Ridal server's HTTP API. `x-ridal-needs` on an \
+                       operation is the role or kind of caller it needs, and \
+                       the download scope; the HTTP API reference page says \
+                       what each means."
     ),
     components(schemas(
         routes::ErrorBody,
@@ -210,7 +209,9 @@ const PATH_PARAMETERS: &[(&str, &str)] = &[
     ),
     ("dem", "A DEM's id."),
     ("batch", "A batch's id."),
-    ("job", "A draft's job number."),
+    ("job", "A processing job's number, as a draft gives it."),
+    ("name", "An account name."),
+    ("id", "An API token's id."),
     ("user", "An account name: whose interpretation it is."),
     (
         "removal",
@@ -304,6 +305,15 @@ fn add_refusals(operation: &mut Operation) {
             "`authentication_required`: the project requires a login to read.",
         )],
         Who::SignedIn => vec![("401", "`authentication_required`: sign in first.")],
+        Who::ServerAdmin => vec![
+            ("401", "`authentication_required`: sign in first."),
+            (
+                "403",
+                "The caller is not a server administrator, or the server is \
+                 read-only (`read_only`), or an API token was used \
+                 (`token_not_allowed`).",
+            ),
+        ],
         Who::Role(_) => vec![
             ("401", "`authentication_required`: sign in first."),
             (
@@ -397,21 +407,11 @@ mod tests {
         }
     }
 
-    /// Request bodies, whose optional fields really are optional: a client
-    /// may leave them out and gets the default. Those of annotated routes
-    /// are read from their `requestBody`; these are the ones whose routes
-    /// are not annotated yet.
-    const UNROUTED_REQUEST_BODIES: [&str; 3] = [
-        "RevisionDeclarations",
-        "CreateTokenBody",
-        "BulkDownloadItem",
-    ];
-
     /// Stored documents that leave out what they do not set, and are sent
-    /// as stored: the layer vocabulary's layers and groups, and a derived
-    /// item's fill. A missing field there is its default, which the
-    /// document's own description gives.
-    const DOCUMENTS: [&str; 3] = ["Layer", "ExclusivityGroup", "FillTo"];
+    /// as stored: the layer vocabulary's layers and groups, a derived item's
+    /// fill, and a line of the site's history. A missing field there is its
+    /// default, which the document's own description gives.
+    const DOCUMENTS: [&str; 4] = ["Layer", "ExclusivityGroup", "FillTo", "AuditEntry"];
 
     /// The schema names a `$ref` anywhere in `value` points at.
     fn refs(value: &serde_json::Value, out: &mut Vec<String>) {
@@ -442,11 +442,11 @@ mod tests {
         seen
     }
 
-    /// The schemas only requests use: the bodies of annotated routes, what
-    /// they contain, and [`UNROUTED_REQUEST_BODIES`], less anything a
-    /// response uses too.
+    /// The schemas only requests use: every route's request body and what
+    /// it contains, less anything a response uses too. Their optional fields
+    /// really are optional: a client may leave them out and get the default.
     fn request_only(spec: &serde_json::Value) -> Vec<String> {
-        let mut requests: Vec<String> = UNROUTED_REQUEST_BODIES.map(String::from).to_vec();
+        let mut requests: Vec<String> = Vec::new();
         let mut responses = Vec::new();
         for item in spec["paths"].as_object().unwrap().values() {
             for operation in item.as_object().unwrap().values() {
