@@ -81,6 +81,8 @@ enum Payload {
     Netcdf(Vec<u8>),
     /// Any other file, such as raw data.
     File(Vec<u8>),
+    /// A chunk of an upload, and its `Content-Range`.
+    Chunk(Vec<u8>, &'static str),
 }
 
 /// Builds a body from the fixture and what the setup's requests answered.
@@ -263,6 +265,21 @@ fn source() -> Vec<Step> {
         source_body,
     ));
     steps
+}
+
+fn new_upload_body(_: &Fixture, _: &[Value]) -> Payload {
+    Payload::Json(json!({"name": "DAT_0001_A1.rad", "size": 10}))
+}
+
+/// An upload of ten bytes, started and nothing sent.
+fn new_upload() -> Vec<Step> {
+    vec![Step::Send {
+        method: "POST",
+        path: "/api/v1/projects/{key}/uploads",
+        body: new_upload_body,
+        bind: Some(("upload", "id")),
+        by_admin: false,
+    }]
 }
 
 fn dem_body(_: &Fixture, answers: &[Value]) -> Payload {
@@ -566,6 +583,13 @@ const CASES: &[Case] = &[
     Case::new("dataset_track_geojson"),
     Case::new("group_track_geojson"),
     Case::new("catalog_track_geojson"),
+    // Uploads in chunks.
+    Case::new("create_upload").body(new_upload_body),
+    Case::new("get_upload").setup(new_upload),
+    Case::new("put_chunk")
+        .setup(new_upload)
+        .body(|_, _| Payload::Chunk(b"0123456789".to_vec(), "bytes 0-9/10")),
+    Case::new("delete_upload").setup(new_upload),
     // Raw data.
     Case::new("upload_raw_file")
         .query("filename=DAT_0001_A1.rad")
@@ -1119,6 +1143,10 @@ fn request(method: &str, uri: &str, cookie: Option<String>, payload: Payload) ->
         Payload::Json(body) => ("application/json", Body::from(body.to_string())),
         Payload::Netcdf(bytes) => ("application/x-netcdf", Body::from(bytes)),
         Payload::File(bytes) => ("application/octet-stream", Body::from(bytes)),
+        Payload::Chunk(bytes, range) => {
+            request = request.header(header::CONTENT_RANGE, range);
+            ("application/octet-stream", Body::from(bytes))
+        }
     };
     request
         .header(header::CONTENT_TYPE, content_type)

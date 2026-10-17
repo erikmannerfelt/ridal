@@ -56,7 +56,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
-use axum::{http::header, http::StatusCode, Json};
+use axum::{http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 
 use super::app::AppState;
@@ -106,6 +106,10 @@ pub struct ReplaceQuery {
     /// What the file was called on the client, used only in error messages.
     #[serde(default)]
     pub filename: Option<String>,
+    /// A finished upload sent in chunks (`POST /api/v1/uploads`), to stage in
+    /// place of a request body, which is then left empty.
+    #[serde(default)]
+    pub upload: Option<String>,
 }
 
 /// What replacing this radargram would do to one interpretation.
@@ -593,8 +597,8 @@ pub async fn preflight_replacement(
     Ok(Json(report))
 }
 
-/// Upload a new revision of a radargram and report what replacing it would do
-/// to its interpretations. Nothing is installed yet: install it with the token,
+/// Upload a new revision of a radargram, or stage one sent in chunks (`upload`),
+/// and report what replacing it would do to its interpretations. Nothing is installed yet: install it with the token,
 /// or discard it.
 #[utoipa::path(
     post,
@@ -605,8 +609,8 @@ pub async fn preflight_replacement(
     responses(
         (status = 200, description = "Staged, with what installing it would do.", body = Staged),
         (status = 400, description = "Not a radargram Ridal processed.", body = ErrorBody),
-        (status = 409, description = "`wrong_radargram`: the file is another radargram, or it is not in the project.", body = ErrorBody),
-        (status = 404, description = "No such radargram.", body = ErrorBody),
+        (status = 409, description = "`wrong_radargram`: the file is another radargram, or it is not in the project; or `upload_incomplete` or `upload_busy`.", body = ErrorBody),
+        (status = 404, description = "No such radargram, or `no_such_upload`.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
 )]
@@ -622,6 +626,15 @@ pub async fn stage_replacement(
     body: axum::body::Body,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "replace a radargram")?;
+    let claimed = query
+        .upload
+        .as_deref()
+        .map(|id| super::upload_routes::claim(&state, project, &caller, id))
+        .transpose()?;
+    let mut query = query;
+    if query.filename.is_none() {
+        query.filename = claimed.as_ref().map(|c| c.upload.name.clone());
+    }
 
     // The lifecycle lock is not held while the body streams (#414): a large
     // file over a slow link would hold up every other upload, removal and
@@ -642,10 +655,7 @@ pub async fn stage_replacement(
         sweep_staging(&dir);
 
         let room = cap.saturating_sub(project.size_bytes());
-        let declared = headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
+        let declared = super::upload_routes::declared_length(&headers, claimed.as_ref());
         if declared.is_some_and(|d| d > room) {
             return Err(super::lifecycle_routes::too_large(
                 declared.unwrap_or_default(),
@@ -664,7 +674,7 @@ pub async fn stage_replacement(
     let token = super::lifecycle_routes::uuid();
     let staged = staged_path(&dir, &token)?;
     let cleanup = super::lifecycle_routes::TempFile(staged.clone());
-    let bytes = super::lifecycle_routes::stream_to_file(body, &staged, room, cap).await?;
+    let bytes = super::upload_routes::receive(claimed, project, body, &staged, room, cap).await?;
 
     let inspection = crate::io::inspect_ridal_netcdf(&staged).map_err(|e| {
         ApiError::bad_request(

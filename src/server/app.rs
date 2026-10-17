@@ -171,6 +171,9 @@ pub struct AppState {
     /// deleted between "nothing links to it" and the write, nor linked in
     /// between. Only ever held over document reads and writes.
     dem_links: Mutex<()>,
+    /// The chunked uploads a request is sending to or taking right now
+    /// ([`super::upload_routes`]), so two cannot append to one at once.
+    pub uploads: super::upload_routes::Sending,
 }
 
 /// Record a project's catalog size after a scan, for the site landing
@@ -441,6 +444,7 @@ impl AppState {
             ingest_reads: Default::default(),
             tracks,
             dem_links: Mutex::new(()),
+            uploads: Default::default(),
         };
         // At startup too, not only on rediscovery. Most projects never
         // add or remove anything through the GUI, and those are exactly
@@ -1149,6 +1153,13 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
         .routes(routes!(super::routes::dataset_track_geojson))
         .routes(routes!(super::routes::group_track_geojson))
         .routes(routes!(super::routes::catalog_track_geojson))
+        // Uploads in chunks (#396).
+        .routes(routes!(super::upload_routes::create_upload))
+        .routes(routes!(
+            super::upload_routes::get_upload,
+            super::upload_routes::put_chunk,
+            super::upload_routes::delete_upload
+        ))
         // Raw data.
         .routes(routes!(super::raw_routes::upload_raw_file))
         .routes(routes!(super::raw_routes::download_raw_file))

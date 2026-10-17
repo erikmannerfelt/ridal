@@ -250,16 +250,16 @@ pub(super) fn gui_router(root: &StdPath, access: AccessOptions) -> Router {
 }
 
 /// The parts of a response these tests assert on.
-struct Response {
-    status: StatusCode,
+pub(super) struct Response {
+    pub(super) status: StatusCode,
     cookie: Option<String>,
-    body: Value,
-    text: String,
+    pub(super) body: Value,
+    pub(super) text: String,
     /// The version the document is now at, for the routes that offer one.
     etag: Option<String>,
 }
 
-async fn send(app: &Router, request: Request<Body>) -> Response {
+pub(super) async fn send(app: &Router, request: Request<Body>) -> Response {
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let cookie = response
@@ -315,7 +315,11 @@ pub(super) fn scoped(uri: &str) -> String {
     }
 }
 
-fn request(method: &str, uri: &str, session: Option<&str>) -> axum::http::request::Builder {
+pub(super) fn request(
+    method: &str,
+    uri: &str,
+    session: Option<&str>,
+) -> axum::http::request::Builder {
     let mut builder = Request::builder().method(method).uri(scoped(uri));
     if let Some(session) = session {
         builder = builder.header(header::COOKIE, session);
@@ -323,7 +327,7 @@ fn request(method: &str, uri: &str, session: Option<&str>) -> axum::http::reques
     builder
 }
 
-async fn get(app: &Router, uri: &str, session: Option<&str>) -> Response {
+pub(super) async fn get(app: &Router, uri: &str, session: Option<&str>) -> Response {
     send(
         app,
         request("GET", uri, session).body(Body::empty()).unwrap(),
@@ -350,7 +354,7 @@ async fn post_with_if_match(
     .await
 }
 
-async fn post(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
+pub(super) async fn post(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
     send(
         app,
         request("POST", uri, session)
@@ -372,7 +376,7 @@ async fn put(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Re
     .await
 }
 
-async fn delete(app: &Router, uri: &str, session: Option<&str>) -> Response {
+pub(super) async fn delete(app: &Router, uri: &str, session: Option<&str>) -> Response {
     send(
         app,
         request("DELETE", uri, session).body(Body::empty()).unwrap(),
@@ -381,7 +385,7 @@ async fn delete(app: &Router, uri: &str, session: Option<&str>) -> Response {
 }
 
 /// Sign in and return the cookie to send back.
-async fn sign_in(app: &Router, name: &str) -> String {
+pub(super) async fn sign_in(app: &Router, name: &str) -> String {
     let response = post(
         app,
         "/api/v1/auth/login",
@@ -3954,7 +3958,7 @@ fn lifecycle_app(users: Vec<User>) -> (tempfile::TempDir, tempfile::TempDir, Rou
 /// `max_bytes` has to be in `ridal.toml` before the project is opened: the
 /// config is read once and cached, so a test that edits the file afterwards
 /// is testing the default.
-fn lifecycle_app_with_cap(
+pub(super) fn lifecycle_app_with_cap(
     users: Vec<User>,
     max_bytes: Option<u64>,
 ) -> (tempfile::TempDir, tempfile::TempDir, Router) {
@@ -3996,7 +4000,12 @@ fn lifecycle_app_with_cap(
     (dir, archive, app)
 }
 
-async fn post_bytes(app: &Router, uri: &str, body: Vec<u8>, session: Option<&str>) -> Response {
+pub(super) async fn post_bytes(
+    app: &Router,
+    uri: &str,
+    body: Vec<u8>,
+    session: Option<&str>,
+) -> Response {
     send(
         app,
         request("POST", uri, session)
@@ -6259,7 +6268,7 @@ async fn upload_recording(app: &Router, stem: &str, session: &str) -> Value {
 
 /// `n` bytes no other call with another `seed` makes, so the raw store
 /// cannot take two of them for one file.
-fn distinct_bytes(n: u64, seed: u8) -> Vec<u8> {
+pub(super) fn distinct_bytes(n: u64, seed: u8) -> Vec<u8> {
     (0..n)
         .map(|i| (i as u8).wrapping_mul(31).wrapping_add(seed) ^ ((i >> 8) as u8))
         .collect()
@@ -6316,7 +6325,7 @@ fn held_upload(
 }
 
 /// A processed radargram called `id`, as an upload's bytes.
-fn radargram_bytes(id: &str) -> Vec<u8> {
+pub(super) fn radargram_bytes(id: &str) -> Vec<u8> {
     let staging = tempfile::tempdir().unwrap();
     let source = staging.path().join("upload.nc");
     super::interp_routes_tests::write_test_nc_with_axes(&source, id, None);

@@ -1457,13 +1457,22 @@
         "tags": [
           "Radargrams"
         ],
-        "summary": "Upload a processed `.nc` file as the request body. It is validated before\nanything is installed.",
+        "summary": "Upload a processed `.nc` file as the request body, or add one sent in chunks\n(`upload`). It is validated before anything is installed.",
         "operationId": "upload_dataset",
         "parameters": [
           {
             "name": "filename",
             "in": "query",
             "description": "What the file was called on the client, used only in error messages.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "upload",
+            "in": "query",
+            "description": "A finished upload sent in chunks (`POST /api/v1/uploads`), to add in\nplace of a request body, which is then left empty.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1522,8 +1531,18 @@
               }
             }
           },
+          "404": {
+            "description": "`no_such_upload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "`radargram_exists` or `radargram_ignored`: the id is taken.",
+            "description": "`radargram_exists` or `radargram_ignored`: the id is taken; or `upload_incomplete` or `upload_busy`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3471,13 +3490,22 @@
         "tags": [
           "Radargrams"
         ],
-        "summary": "Upload a new revision of a radargram and report what replacing it would do\nto its interpretations. Nothing is installed yet: install it with the token,\nor discard it.",
+        "summary": "Upload a new revision of a radargram, or stage one sent in chunks (`upload`),\nand report what replacing it would do to its interpretations. Nothing is installed yet: install it with the token,\nor discard it.",
         "operationId": "stage_replacement",
         "parameters": [
           {
             "name": "filename",
             "in": "query",
             "description": "What the file was called on the client, used only in error messages.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "upload",
+            "in": "query",
+            "description": "A finished upload sent in chunks (`POST /api/v1/uploads`), to stage in\nplace of a request body, which is then left empty.",
             "required": false,
             "schema": {
               "type": "string"
@@ -3537,7 +3565,7 @@
             }
           },
           "404": {
-            "description": "No such radargram.",
+            "description": "No such radargram, or `no_such_upload`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3547,7 +3575,7 @@
             }
           },
           "409": {
-            "description": "`wrong_radargram`: the file is another radargram, or it is not in the project.",
+            "description": "`wrong_radargram`: the file is another radargram, or it is not in the project; or `upload_incomplete` or `upload_busy`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -8234,14 +8262,23 @@
         "tags": [
           "Raw data"
         ],
-        "summary": "Upload one raw file as the request body. `filename` is required, since a\nfile's name says what it is to its recording (`DAT_0001_A1.rd3`). Uploading\na file the project already has stores nothing new.",
+        "summary": "Upload one raw file as the request body, or store one sent in chunks\n(`upload`). `filename` is required for a body, since a file's name says what\nit is to its recording (`DAT_0001_A1.rd3`). Uploading a file the project\nalready has stores nothing new.",
         "operationId": "upload_raw_file",
         "parameters": [
           {
             "name": "filename",
             "in": "query",
-            "description": "The file's name, which says what it is to its recording\n(`DAT_0001_A1.rd3`). Required.",
-            "required": true,
+            "description": "The file's name, which says what it is to its recording\n(`DAT_0001_A1.rd3`). Required, unless `upload` is given, whose name\nit is otherwise.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "upload",
+            "in": "query",
+            "description": "A finished upload sent in chunks (`POST /api/v1/uploads`), to store in\nplace of a request body, which is then left empty.",
+            "required": false,
             "schema": {
               "type": "string"
             }
@@ -8299,8 +8336,18 @@
               }
             }
           },
+          "404": {
+            "description": "`no_such_upload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "description": "`upload_incomplete` or `upload_busy`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -9039,6 +9086,347 @@
         },
         "x-ridal-needs": {
           "who": "server_admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/uploads": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Uploads"
+        ],
+        "summary": "Start an upload of a file to be sent in chunks. The project's size limit is\nchecked against the declared size now, and against each chunk as it comes.",
+        "operationId": "create_upload",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewUpload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Started, with nothing sent yet.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_name`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`project_full`: the project's size limit would be exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/uploads/{upload}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "upload",
+          "in": "path",
+          "description": "An upload's id, as starting it answered.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Uploads"
+        ],
+        "summary": "How far an upload has got: where the next chunk starts.",
+        "operationId": "get_upload",
+        "responses": {
+          "200": {
+            "description": "The upload, with its offset also in `Upload-Offset`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_upload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "own": true
+        }
+      },
+      "put": {
+        "tags": [
+          "Uploads"
+        ],
+        "summary": "Send one chunk of an upload as the request body, at the byte range\n`Content-Range` gives (`bytes 0-33554431/5000000000`). It must start where\nthe upload has got to; one that breaks off keeps what arrived.",
+        "operationId": "put_chunk",
+        "parameters": [
+          {
+            "name": "Content-Range",
+            "in": "header",
+            "description": "`bytes START-END/SIZE`: where this chunk goes, `END` inclusive, and the whole file's size.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The chunk.",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/Chunk"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The chunk is in, with the new offset also in `Upload-Offset`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_content_range`, `size_mismatch`, or `range_mismatch` or `upload_interrupted`: the body was not the range it said, and what arrived of it is kept. The offset is in `Upload-Offset`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_upload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`offset_mismatch`: the chunk does not start where the upload has got to, which is in `Upload-Offset`; or `upload_busy`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`chunk_too_large`, or `project_full`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "own": true
+        }
+      },
+      "delete": {
+        "tags": [
+          "Uploads"
+        ],
+        "summary": "Give up on an upload, deleting what has arrived.",
+        "operationId": "delete_upload",
+        "responses": {
+          "204": {
+            "description": "Gone."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_upload`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "own": true
         }
       }
     },
@@ -10630,6 +11018,11 @@
             "type": "string"
           }
         }
+      },
+      "Chunk": {
+        "type": "string",
+        "format": "binary",
+        "description": "The bytes of a file that `Content-Range` gives."
       },
       "Clipped": {
         "type": "object",
@@ -14237,6 +14630,26 @@
           }
         }
       },
+      "NewUpload": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/uploads`.",
+        "required": [
+          "name",
+          "size"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The file's name, which says what it is to its recording\n(`DAT_0001_A1.rd3`), and which a radargram upload uses in what it\nsays about the file."
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The whole file's size in bytes.",
+            "minimum": 0
+          }
+        }
+      },
       "NumberPair": {
         "type": "array",
         "items": {
@@ -17747,6 +18160,41 @@
               "null"
             ],
             "description": "The new display name; `null` or empty removes it."
+          }
+        }
+      },
+      "UploadStatus": {
+        "type": "object",
+        "description": "An upload, and how far it has got.",
+        "required": [
+          "id",
+          "name",
+          "size",
+          "offset",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The whole file's size in bytes, as declared.",
+            "minimum": 0
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many bytes have arrived: where the next chunk starts. Equal to\n`size` once the upload can be used.",
+            "minimum": 0
+          },
+          "expires_at": {
+            "type": "string",
+            "description": "When the upload is deleted if nothing more is sent to it, RFC 3339."
           }
         }
       }

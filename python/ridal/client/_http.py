@@ -10,6 +10,7 @@ import contextlib
 import email.message
 import os
 import tempfile
+import time
 import urllib.parse
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -28,6 +29,21 @@ except ImportError as error:  # pragma: no cover - depends on the environment
 # Small enough that progress moves visibly on a slow link, large enough that
 # the per-chunk overhead is noise next to a 100 MB radargram.
 CHUNK_BYTES: Final = 1 << 20
+
+#: Files larger than this are uploaded in chunks, which survive a dropped
+#: connection (#396); smaller ones in one request.
+CHUNKED_ABOVE: Final = 64 << 20
+#: The size of each chunk of a chunked upload: under the 100 MB a proxy such
+#: as Cloudflare lets through in one request, and the server's 64 MiB limit.
+UPLOAD_CHUNK_BYTES: Final = 32 << 20
+#: Seconds to wait before each retry of a chunk that failed. A chunk is
+#: retried as many times in a row as there are waits; one that goes through
+#: starts the count again.
+RETRY_WAITS: Final = (1.0, 2.0, 5.0, 10.0, 30.0)
+#: Refusals that mean "ask how far the upload got and go on from there".
+_RESUMABLE_CODES: Final = frozenset(
+    {"offset_mismatch", "range_mismatch", "upload_interrupted", "upload_busy"}
+)
 
 
 def quote(segment: str) -> str:
@@ -68,6 +84,11 @@ class Http:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         self.base = url.rstrip("/")
+        #: Above how many bytes :meth:`upload` sends a file in chunks, and
+        #: how large they are. Attributes rather than constants so that a
+        #: test can send a small file in several.
+        self.chunked_above = CHUNKED_ABOVE
+        self.chunk_bytes = UPLOAD_CHUNK_BYTES
         self._client = httpx.Client(
             base_url=self.base,
             headers=headers,
@@ -145,11 +166,29 @@ class Http:
         source: Path,
         *,
         params: Mapping[str, str] | None = None,
+        uploads: str,
         label: str,
         progress: Progress | None,
     ) -> Any:
-        """Stream a file as a request body and return the JSON answer."""
+        """Send a file to ``path`` and return the JSON answer.
+
+        A file over :attr:`chunked_above` is sent in chunks to ``uploads``,
+        the project's ``/uploads``, retrying a chunk that fails from where
+        the server got to, and then named to ``path`` as ``?upload=``. A
+        smaller one is streamed as the request body.
+        """
         total = source.stat().st_size
+        if total > self.chunked_above:
+            return self._upload_in_chunks(
+                method,
+                path,
+                source,
+                total,
+                params=params,
+                uploads=uploads,
+                label=label,
+                progress=progress,
+            )
 
         def chunks() -> Iterator[bytes]:
             done = 0
@@ -170,6 +209,112 @@ class Http:
                 "Content-Length": str(total),
             },
         )
+
+    def _upload_in_chunks(
+        self,
+        method: str,
+        path: str,
+        source: Path,
+        total: int,
+        *,
+        params: Mapping[str, str] | None,
+        uploads: str,
+        label: str,
+        progress: Progress | None,
+    ) -> Any:
+        started = self.json("POST", uploads, json={"name": source.name, "size": total})
+        upload_id = str(started["id"])
+        upload = f"{uploads}/{quote(upload_id)}"
+        try:
+            self._send_chunks(upload, source, total, label=label, progress=progress)
+        except BaseException:
+            # Given up, or interrupted: deleted now rather than holding its
+            # share of the project's space for the day the server keeps it.
+            with contextlib.suppress(errors.RidalError):
+                self._send("DELETE", upload)
+            raise
+        return self.json(method, path, params={**(params or {}), "upload": upload_id})
+
+    def _send_chunks(
+        self,
+        upload: str,
+        source: Path,
+        total: int,
+        *,
+        label: str,
+        progress: Progress | None,
+    ) -> None:
+        """Send ``source`` to ``upload`` a chunk at a time, from the start.
+
+        After a chunk fails, ask the server how far it got (it keeps what
+        arrived of a chunk that broke off) and go on from there.
+        """
+        offset = 0
+        failures = 0
+        resync = False
+        while resync or offset < total:
+            try:
+                if resync:
+                    offset = int(self.json("GET", upload)["offset"])
+                    resync = False
+                    continue
+                length = min(self.chunk_bytes, total - offset)
+                self._send(
+                    "PUT",
+                    upload,
+                    content=_read_range(
+                        source,
+                        offset,
+                        length,
+                        label=label,
+                        total=total,
+                        progress=progress,
+                    ),
+                    headers={
+                        "Content-Type": "application/octet-stream",
+                        "Content-Length": str(length),
+                        "Content-Range": f"bytes {offset}-{offset + length - 1}/{total}",
+                    },
+                )
+                offset += length
+                failures = 0
+            except errors.RidalError as error:
+                if not _resumable(error) or failures == len(RETRY_WAITS):
+                    raise
+                time.sleep(RETRY_WAITS[failures])
+                failures += 1
+                resync = True
+
+
+def _read_range(
+    source: Path,
+    offset: int,
+    length: int,
+    *,
+    label: str,
+    total: int,
+    progress: Progress | None,
+) -> Iterator[bytes]:
+    """``length`` bytes of ``source`` from ``offset``, a piece at a time."""
+    done = 0
+    with source.open("rb") as file:
+        file.seek(offset)
+        while done < length and (piece := file.read(min(CHUNK_BYTES, length - done))):
+            done += len(piece)
+            yield piece
+            if progress is not None:
+                progress(ProgressEvent("upload", label, offset + done, total))
+
+
+def _resumable(error: "errors.RidalError") -> bool:
+    """Whether a failed chunk is worth resuming: the connection failed, a
+    proxy or the server failed, or the server got a different part of the
+    chunk than was sent."""
+    if isinstance(error, errors.TransportError):
+        return True
+    if isinstance(error, errors.ServerError):
+        return error.status >= 500 or error.code in _RESUMABLE_CODES
+    return False
 
 
 def raise_for_status(response: "httpx.Response") -> None:

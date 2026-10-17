@@ -193,3 +193,16 @@ def test_an_ingest_plan_names_what_it_would_make(
         (problem,) = again.problems
         assert problem.kind == "id_taken"
         assert (problem.served, problem.has_source) == (False, True)
+
+
+def test_a_file_sent_in_chunks_is_stored_as_the_same_file(
+    empty_gui: Server, recording: list[Path]
+) -> None:
+    (data,) = [path for path in recording if path.suffix == ".rd3"]
+    with ridal_client.Client(empty_gui.url) as client:
+        whole = client.upload_raw(data)
+        client._http.chunked_above = 0
+        client._http.chunk_bytes = 1 << 16
+        chunked = client.upload_raw(data)
+    assert data.stat().st_size > 2 * (1 << 16), "sent in more than one chunk"
+    assert chunked == whole

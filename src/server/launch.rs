@@ -85,9 +85,10 @@ async fn serve_gui(
     .await
 }
 
-/// Remove upload temporaries a crash left in a project, saying what went
-/// (#302). A tidy start; a failure is a warning rather than refusal to
-/// serve, since the catalog already skips these files.
+/// Remove upload temporaries a crash left in a project, and chunked
+/// uploads nobody has sent to for a day (#396), saying what went (#302).
+/// A tidy start; a failure is a warning rather than refusal to serve,
+/// since the catalog already skips these files.
 fn sweep_upload_temps(project: &crate::project::Project) {
     match project.sweep_upload_temps() {
         Ok(0) => {}
@@ -97,6 +98,19 @@ fn sweep_upload_temps(project: &crate::project::Project) {
         ),
         Err(e) => eprintln!(
             "Warning: could not sweep stale uploads from {}: {e}",
+            project.root().display()
+        ),
+    }
+    let uploads =
+        crate::project::uploads::sweep(project.data_dir(), crate::project::uploads::MAX_IDLE);
+    match uploads {
+        Ok(0) => {}
+        Ok(n) => eprintln!(
+            "Removed {n} unfinished upload(s) left for a day from {}",
+            project.root().display()
+        ),
+        Err(e) => eprintln!(
+            "Warning: could not sweep unfinished uploads from {}: {e}",
             project.root().display()
         ),
     }

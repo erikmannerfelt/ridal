@@ -33,6 +33,7 @@ my_survey/
       files/<aa>/<blake3>         each raw file once, named by its content
       sources/<radargram_id>.json what each radargram is made from
       dems/<dem_id>.json          a DEM, which sources link to by id
+    uploads/                      uploads part-way through being sent in chunks
     cache/                        derived data; safe to delete
       overviews/<revision>/       whole-radargram thumbnails, kept across restarts
       tracks/<key>.json           each radargram's track, kept across restarts
@@ -54,6 +55,12 @@ copy of them on the server, so back it up too. Each `sources/<radargram_id>.json
 names the recordings a radargram is made from, in merge order, and optionally
 the CRS, the DEM and the antenna frequency and separation it is processed
 with where the files do not say them.
+
+`uploads/` holds files being sent in chunks (see {ref}`uploads in chunks
+<chunked-uploads>`), each a `<id>.part` with what has arrived and a
+`<id>.json` with what was declared. A file leaves it when it is used, and an
+upload nobody has sent to for a day is deleted. Nothing in it is worth
+keeping.
 
 `cache/` is **derived**. Deleting it is always safe; Ridal rebuilds it. It
 contains a `CACHEDIR.TAG`, so backup tools that honour the convention skip it.

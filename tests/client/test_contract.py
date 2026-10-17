@@ -75,6 +75,8 @@ NOT_WRAPPED: Final[dict[str, str]] = {
     "catalog_level2": "level2() is per radargram",
     "draft_overview": "the processing page's preview",
     "processing_activity": "the processing page's",
+    "get_upload": "only after a chunk fails (test_chunked.py)",
+    "delete_upload": "only when a chunked upload is given up (test_chunked.py)",
     "unseen_batches": "the banner on every project page",
     "mark_batch_seen": "the banner on every project page",
     # The site server: administration is the settings pages' and the CLI's.
@@ -333,6 +335,13 @@ class Files:
     radargram: Callable[[], Path]
 
 
+def in_chunks(client: Any) -> Any:
+    """``client``, sending every file in chunks of 64 kB."""
+    client._http.chunked_above = 0
+    client._http.chunk_bytes = 1 << 16
+    return client
+
+
 def stored(name: str) -> models.StoredFile:
     return models.StoredFile(name=name, blake3="a" * 64, bytes=1)
 
@@ -411,7 +420,8 @@ CALLS: Final[dict[str, Callable[[Any, Files], Any]]] = {
     "link_dem": lambda c, f: c.link_dem("line-01", "mettebreen"),
     "dems": lambda c, f: c.dems(),
     "dem": lambda c, f: c.dem("mettebreen"),
-    "add_dem": lambda c, f: c.add_dem("mettebreen", "Mettebreen", DEM),
+    # In chunks, so that the upload operations are called too.
+    "add_dem": lambda c, f: in_chunks(c).add_dem("mettebreen", "Mettebreen", DEM),
     "rename_dem": lambda c, f: c.rename_dem("mettebreen", "Mettebreen 2020"),
     "delete_dem": lambda c, f: c.delete_dem("mettebreen"),
     "create_draft": lambda c, f: c.create_draft(
