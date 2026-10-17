@@ -27,7 +27,9 @@ use serde::{Deserialize, Serialize};
 use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{expectation_from, parse_radargram, readable_project};
-use super::routes::ApiError;
+use super::needs::{Needs, Who};
+use super::openapi::NetcdfFile;
+use super::routes::{ApiError, ErrorBody};
 use crate::project::raw::{self, NamedFile, Source, SourceNames};
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{StoreError, Version};
@@ -61,10 +63,12 @@ fn with_etag(version: &Version) -> [(header::HeaderName, String); 1] {
     [(header::ETAG, version.to_string())]
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct UploadQuery {
     /// The file's name, which says what it is to its recording
     /// (`DAT_0001_A1.rd3`). Required.
+    #[param(required = true)]
     pub filename: Option<String>,
 }
 
@@ -76,6 +80,22 @@ pub struct StoredFile {
     pub bytes: u64,
 }
 
+/// Upload one raw file as the request body. `filename` is required, since a
+/// file's name says what it is to its recording (`DAT_0001_A1.rd3`). Uploading
+/// a file the project already has stores nothing new.
+#[utoipa::path(
+    post,
+    path = "/api/v1/raw",
+    tag = "Raw data",
+    params(UploadQuery),
+    request_body(content = NetcdfFile, content_type = "application/octet-stream", description = "The file."),
+    responses(
+        (status = 201, description = "Stored, or already there.", body = StoredFile),
+        (status = 400, description = "`filename_required`.", body = ErrorBody),
+        (status = 413, description = "`project_full`: the project's size limit would be exceeded.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn upload_raw_file(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -149,6 +169,17 @@ pub async fn upload_raw_file(
     ))
 }
 
+/// A stored raw file.
+#[utoipa::path(
+    get,
+    path = "/api/v1/raw/{blake3}",
+    tag = "Raw data",
+    responses(
+        (status = 200, description = "The file, as an attachment.", content_type = "application/octet-stream"),
+        (status = 404, description = "`no_such_file`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::All)))),
+)]
 pub async fn download_raw_file(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -191,6 +222,18 @@ pub struct SourceList {
     pub names: std::collections::BTreeMap<String, SourceNames>,
 }
 
+/// The ids of every radargram the project has raw data for, whether or not it
+/// has been processed yet, and the names each source gives its radargram until
+/// it is served.
+#[utoipa::path(
+    get,
+    path = "/api/v1/sources",
+    tag = "Raw data",
+    responses(
+        (status = 200, description = "The sources.", body = SourceList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn list_sources(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -227,6 +270,17 @@ pub struct SourceView {
     pub recordings: Vec<crate::gpr::InfoRecord>,
 }
 
+/// What the radargram is made from, with an `ETag`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/sources/{radargram_id}",
+    tag = "Raw data",
+    responses(
+        (status = 200, description = "Its source.", body = SourceView),
+        (status = 404, description = "`no_source`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn get_source(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -255,12 +309,14 @@ pub async fn get_source(
 }
 
 /// The body of `PUT /api/v1/sources/{radargram_id}`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SourceBody {
     /// The recordings, in merge order, each the files it is made of by name
     /// and hash, as `POST /api/v1/raw` answered. Which file is the header,
     /// the data and the positions is read from the names.
     pub recordings: Vec<Vec<NamedFile>>,
+    /// An EPSG code, such as `EPSG:32633`. Without it, the positions go in
+    /// the UTM zone that suits them best.
     #[serde(default)]
     pub crs: Option<String>,
     /// One of the project's DEMs, by id (`GET /api/v1/dems`).
@@ -340,6 +396,25 @@ fn source_crs(text: &str) -> Result<String, ApiError> {
     })
 }
 
+/// Set or switch what the radargram is made from. Every recording is read
+/// before anything is saved, and what its header and positions say is in the
+/// answer. Recordings that cannot be merged into one radargram (different CRS,
+/// antenna frequency, time window or antenna separation) are refused. Every
+/// draft and batch made from the source uses its CRS, DEM and antenna
+/// overrides, and changing them makes what was processed without them `stale`.
+/// Takes `If-Match`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/sources/{radargram_id}",
+    tag = "Raw data",
+    request_body = SourceBody,
+    responses(
+        (status = 200, description = "The source as saved, with its `ETag`.", body = SourceView),
+        (status = 400, description = "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, or an antenna frequency nothing gives), `invalid_antenna_mhz` or `invalid_antenna_separation`.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn put_source(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -503,6 +578,18 @@ pub(super) fn write_with_dem(
     raw::write_source(project.documents(), id, source, expected).map_err(|e| store_error(&e))
 }
 
+/// Forget what the radargram is made from, and take it out of its processing
+/// profile. Files no other source names are deleted after an hour.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/sources/{radargram_id}",
+    tag = "Raw data",
+    responses(
+        (status = 204, description = "Forgotten."),
+        (status = 404, description = "`no_source`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn delete_source(
     State(state): State<Arc<AppState>>,
     caller: Caller,

@@ -1149,6 +1149,53 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
         .routes(routes!(super::routes::dataset_track_geojson))
         .routes(routes!(super::routes::group_track_geojson))
         .routes(routes!(super::routes::catalog_track_geojson))
+        // Raw data.
+        .routes(routes!(super::raw_routes::upload_raw_file))
+        .routes(routes!(super::raw_routes::download_raw_file))
+        .routes(routes!(super::raw_routes::list_sources))
+        .routes(routes!(
+            super::raw_routes::get_source,
+            super::raw_routes::put_source,
+            super::raw_routes::delete_source
+        ))
+        .routes(routes!(super::dem_routes::link_dem))
+        .routes(routes!(super::ingest_routes::plan_ingest))
+        // DEMs.
+        .routes(routes!(super::dem_routes::list_dems))
+        .routes(routes!(
+            super::dem_routes::get_dem,
+            super::dem_routes::put_dem,
+            super::dem_routes::delete_dem
+        ))
+        // Processing profiles.
+        .routes(routes!(super::processing_routes::list_profiles))
+        .routes(routes!(
+            super::processing_routes::get_profile,
+            super::processing_routes::put_profile,
+            super::processing_routes::delete_profile
+        ))
+        .routes(routes!(super::processing_routes::list_assignments))
+        .routes(routes!(
+            super::processing_routes::put_assignment,
+            super::processing_routes::delete_assignment
+        ))
+        .routes(routes!(super::processing_routes::processing_activity))
+        .routes(routes!(super::processing_routes::processing_status))
+        .routes(routes!(super::batch_routes::reprocess))
+        .routes(routes!(super::batch_routes::list_batches))
+        .routes(routes!(super::batch_routes::unseen_batches))
+        .routes(routes!(super::batch_routes::get_batch))
+        .routes(routes!(super::batch_routes::mark_batch_seen))
+        // Drafts.
+        .routes(routes!(super::draft_routes::create_draft))
+        .routes(routes!(super::draft_routes::list_drafts))
+        .routes(routes!(
+            super::draft_routes::get_draft,
+            super::draft_routes::delete_draft
+        ))
+        .routes(routes!(super::draft_routes::draft_overview))
+        .routes(routes!(super::draft_routes::download_draft))
+        .routes(routes!(super::draft_routes::commit_draft))
 }
 
 /// Build the complete Axum application over `state`.
@@ -1204,104 +1251,6 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
         .route(
             "/api/v1/groups/{group}/level2",
             get(super::interp_routes::group_level2),
-        )
-        .route(
-            "/api/v1/raw",
-            axum::routing::post(super::raw_routes::upload_raw_file),
-        )
-        .route(
-            "/api/v1/raw/{blake3}",
-            get(super::raw_routes::download_raw_file),
-        )
-        .route("/api/v1/sources", get(super::raw_routes::list_sources))
-        .route(
-            "/api/v1/ingest/plan",
-            axum::routing::post(super::ingest_routes::plan_ingest),
-        )
-        .route(
-            "/api/v1/sources/{radargram_id}/dem",
-            axum::routing::put(super::dem_routes::link_dem),
-        )
-        .route("/api/v1/dems", get(super::dem_routes::list_dems))
-        .route(
-            "/api/v1/dems/{dem}",
-            get(super::dem_routes::get_dem)
-                .put(super::dem_routes::put_dem)
-                .delete(super::dem_routes::delete_dem),
-        )
-        .route(
-            "/api/v1/sources/{radargram_id}",
-            get(super::raw_routes::get_source)
-                .put(super::raw_routes::put_source)
-                .delete(super::raw_routes::delete_source),
-        )
-        .route(
-            "/api/v1/processing/profiles",
-            get(super::processing_routes::list_profiles),
-        )
-        .route(
-            "/api/v1/processing/profiles/{profile}",
-            get(super::processing_routes::get_profile)
-                .put(super::processing_routes::put_profile)
-                .delete(super::processing_routes::delete_profile),
-        )
-        .route(
-            "/api/v1/processing/assignments",
-            get(super::processing_routes::list_assignments),
-        )
-        .route(
-            "/api/v1/processing/activity",
-            get(super::processing_routes::processing_activity),
-        )
-        .route(
-            "/api/v1/processing/status",
-            get(super::processing_routes::processing_status),
-        )
-        .route(
-            "/api/v1/processing/assignments/{radargram_id}",
-            axum::routing::put(super::processing_routes::put_assignment)
-                .delete(super::processing_routes::delete_assignment),
-        )
-        .route(
-            "/api/v1/processing/profiles/{profile}/reprocess",
-            axum::routing::post(super::batch_routes::reprocess),
-        )
-        .route(
-            "/api/v1/processing/batches",
-            get(super::batch_routes::list_batches),
-        )
-        .route(
-            "/api/v1/processing/batches/unseen",
-            get(super::batch_routes::unseen_batches),
-        )
-        .route(
-            "/api/v1/processing/batches/{batch}",
-            get(super::batch_routes::get_batch),
-        )
-        .route(
-            "/api/v1/processing/batches/{batch}/seen",
-            axum::routing::post(super::batch_routes::mark_batch_seen),
-        )
-        .route(
-            "/api/v1/sources/{radargram_id}/drafts",
-            axum::routing::post(super::draft_routes::create_draft),
-        )
-        .route("/api/v1/drafts", get(super::draft_routes::list_drafts))
-        .route(
-            "/api/v1/drafts/{job}",
-            get(super::draft_routes::get_draft).delete(super::draft_routes::delete_draft),
-        )
-        .route(
-            "/api/v1/drafts/{job}/views/{view}/overview",
-            get(super::draft_routes::draft_overview),
-        )
-        .route(
-            "/api/v1/drafts/{job}/download",
-            get(super::draft_routes::download_draft),
-        )
-        .route(
-            "/api/v1/drafts/{job}/commit",
-            axum::routing::post(super::draft_routes::commit_draft),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}/raw",

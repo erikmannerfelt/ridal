@@ -223,7 +223,7 @@ pub(super) fn site_router(root: &StdPath, access: AccessOptions) -> Router {
 }
 
 /// [`site_router`], processing with `processing`.
-fn site_router_processing(
+pub(super) fn site_router_processing(
     root: &StdPath,
     access: AccessOptions,
     processing: crate::server::processing::ProcessingConfig,

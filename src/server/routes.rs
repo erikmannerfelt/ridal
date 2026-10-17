@@ -1315,6 +1315,7 @@ pub async fn overview_image(
     get,
     path = "/api/v1/datasets/{radargram_id}/views/{view}/chunks/{profile}/{x}/{y}",
     tag = "Images",
+    params(("profile" = String, Path, description = "A render profile, by name.")),
     responses(
         (status = 200, description = "The tile, in the profile's format.", content(("image/png"), ("image/jpeg"))),
         (status = 400, description = "A coordinate that is not a number.", body = ErrorBody),

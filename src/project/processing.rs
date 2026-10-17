@@ -227,13 +227,17 @@ pub fn list_profiles(store: &DocumentStore) -> Result<Vec<Profile>, ProcessingEr
     Ok(out)
 }
 
-/// What a client sends to create or change a profile.
+/// The body of `PUT /api/v1/processing/profiles/{profile}`: a processing
+/// profile, created or changed.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct ProfileEdit {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// The processing steps, as `ridal process --steps` takes them.
     pub steps: Vec<String>,
+    /// m/ns.
     pub medium_velocity: f32,
 }
 

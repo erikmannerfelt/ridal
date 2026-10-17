@@ -673,14 +673,20 @@ hand-written ones.
   path; the docs show them in the project's shape again.
 - **Permissions are declared and tested, not inferred.** Each operation
   carries `x-ridal-needs` (`src/server/needs.rs`): `nobody`, `anyone`,
-  `signed_in`, or a role, and optionally a download scope. The spec derives
+  `signed_in`, or a role, optionally a download scope, and `own` for an
+  operation only on what the caller made (a draft, a batch's report). The spec derives
   each operation's 401/403/409 responses from it, the docs render the *Needs* column from it, and
   `needs_tests` sends every operation the same request as a caller just
   below the declaration on each axis it names (who must be refused) and one
   at it (who must succeed), so a declaration cannot drift from the
   handler's `require` or `require_download`. Every operation needs a `Case`
-  there, against a fresh site per probe; a case can prepare files or send
-  a setup request first, such as staging the replacement it commits.
+  there, against a fresh site per probe. A case's setup is a list of
+  requests, each answer filling the path parameters and bodies after it
+  (upload raw files, then name them in a source, then draft it); for an
+  `own` operation the setup runs as the caller probed at, and a second
+  account with the same role must be refused. A shell script stands in for
+  `ridal process-job` on Unix, so drafts and batches finish; elsewhere the
+  cases that need a finished job are skipped.
 - **Path parameters are described once**, in `openapi::PATH_PARAMETERS`,
   and added to every path that uses them; a path with an unknown one fails
   `every_operation_is_described`. A file sent as the whole body is the

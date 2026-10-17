@@ -1975,15 +1975,6 @@
           }
         },
         {
-          "name": "profile",
-          "in": "path",
-          "description": "A render profile, by name.",
-          "required": true,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
           "name": "x",
           "in": "path",
           "description": "The tile's column, from 0.",
@@ -2008,6 +1999,17 @@
         ],
         "summary": "One tile of the radargram at full resolution, as the viewer requests them.",
         "operationId": "chunk_image",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "path",
+            "description": "A render profile, by name.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "The tile, in the profile's format.",
@@ -2272,6 +2274,757 @@
         },
         "x-ridal-needs": {
           "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/dems": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "DEMs"
+        ],
+        "summary": "Every DEM, with the radargrams linked to it.",
+        "operationId": "list_dems",
+        "responses": {
+          "200": {
+            "description": "The DEMs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/dems/{dem}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "dem",
+          "in": "path",
+          "description": "A DEM's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "DEMs"
+        ],
+        "summary": "One DEM, as the list gives it, with an `ETag`.",
+        "operationId": "get_dem",
+        "responses": {
+          "200": {
+            "description": "The DEM.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such DEM.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "put": {
+        "tags": [
+          "DEMs"
+        ],
+        "summary": "Add a DEM from a file uploaded as raw data, which GDAL must be able to read\nas a raster. For an existing DEM, `name` renames it and a different `file`\nreplaces its file, refused while any radargram links to it. Takes `If-\nMatch`, and `If-None-Match: *` to only create.",
+        "operationId": "put_dem",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DemBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Changed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemView"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Added.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DemView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`dem_unreadable`, `name_required` or `file_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`dem_in_use`: its file cannot change while radargrams link to it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      },
+      "delete": {
+        "tags": [
+          "DEMs"
+        ],
+        "summary": "Delete a DEM. Refused, naming the radargrams, while any links to it. Takes\n`If-Match`.",
+        "operationId": "delete_dem",
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`dem_in_use`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/drafts": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Drafts"
+        ],
+        "summary": "The caller's drafts.",
+        "operationId": "list_drafts",
+        "responses": {
+          "200": {
+            "description": "The drafts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/drafts/{job}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "job",
+          "in": "path",
+          "description": "A draft's job number.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Drafts"
+        ],
+        "summary": "One draft: its `state`, the step it is on, whether every step has run and\nthe file is being written, and the revision it was made against.",
+        "operationId": "get_draft",
+        "responses": {
+          "200": {
+            "description": "The draft.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such draft of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "own": true
+        }
+      },
+      "delete": {
+        "tags": [
+          "Drafts"
+        ],
+        "summary": "Stop a draft, or throw a finished one away.",
+        "operationId": "delete_draft",
+        "responses": {
+          "204": {
+            "description": "Stopped or thrown away."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such draft of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "own": true
+        }
+      }
+    },
+    "/api/v1/projects/{key}/drafts/{job}/commit": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "job",
+          "in": "path",
+          "description": "A draft's job number.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Drafts"
+        ],
+        "summary": "Make a finished draft the radargram. A draft of a served radargram is staged\nas a replacement, answered as staging one is, with the token that commits\nit; a draft of a new id is installed as an upload.",
+        "operationId": "commit_draft",
+        "responses": {
+          "200": {
+            "description": "Staged as a replacement.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Staged"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Installed as a new radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Added"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such draft of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`radargram_moved`: the radargram was replaced, added or removed since the draft was made, or the draft has not finished.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "own": true
+        }
+      }
+    },
+    "/api/v1/projects/{key}/drafts/{job}/download": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "job",
+          "in": "path",
+          "description": "A draft's job number.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Drafts"
+        ],
+        "summary": "A finished draft's NetCDF file.",
+        "operationId": "download_draft",
+        "responses": {
+          "200": {
+            "description": "The file, as an attachment.",
+            "content": {
+              "application/x-netcdf": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such draft of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It has not finished.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "download": "all",
+          "own": true
+        }
+      }
+    },
+    "/api/v1/projects/{key}/drafts/{job}/views/{view}/overview": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "job",
+          "in": "path",
+          "description": "A draft's job number.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "view",
+          "in": "path",
+          "description": "`standard`, or `topo` for the topographically corrected view.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Drafts"
+        ],
+        "summary": "A low-resolution image of a finished draft.",
+        "operationId": "draft_overview",
+        "parameters": [
+          {
+            "name": "profile",
+            "in": "query",
+            "description": "A render profile, by name. Defaults to the caller's, then the\nproject's.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "xscale",
+            "in": "query",
+            "description": "Horizontal stretch for this page. Fell out of naming the cascade:\nwith the chain in one function, the parameter the profile already\nhad was one line rather than a fourth place to get the order wrong.",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The image, in the profile's format.",
+            "content": {
+              "image/png": {},
+              "image/jpeg": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such draft of the caller's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It has not finished.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "own": true
         }
       }
     },
@@ -2545,6 +3298,81 @@
         }
       }
     },
+    "/api/v1/projects/{key}/ingest/plan": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "Plan many uploaded recordings as the radargrams they would make, creating\nnothing. Answers every recording, every output, every antenna, and the\nproblems with the plan, which is answered in full even when there are some.\nEach call keeps its recordings' files from being deleted for another hour.",
+        "operationId": "plan_ingest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The plan.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestPlan"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
     "/api/v1/projects/{key}/preferences": {
       "parameters": [
         {
@@ -2642,6 +3470,934 @@
         }
       }
     },
+    "/api/v1/projects/{key}/processing/activity": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Who is processing what now: each radargram with a draft queued or running,\nor in an unfinished batch item. A draft says nothing more than whose it is.",
+        "operationId": "processing_activity",
+        "parameters": [
+          {
+            "name": "radargram_id",
+            "in": "query",
+            "description": "Only this radargram.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What is being processed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/assignments": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Which radargram uses which processing profile, and the steps of its own.",
+        "operationId": "list_assignments",
+        "responses": {
+          "200": {
+            "description": "The assignments.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Assignments"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/assignments/{radargram_id}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Put a radargram in a processing profile, optionally with steps of its own\nthat run first, which may only be `subset` and `remove_traces`.",
+        "operationId": "put_assignment",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignmentBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Its assignment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Assignment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_steps`: steps of its own other than `subset` and `remove_traces`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`no_source`: the project has no raw data for it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Take a radargram out of its processing profile.",
+        "operationId": "delete_assignment",
+        "responses": {
+          "204": {
+            "description": "Taken out."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/batches": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "The 50 most recent batches, newest first, each item with its `outcome`.",
+        "operationId": "list_batches",
+        "responses": {
+          "200": {
+            "description": "The batches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/batches/unseen": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "The caller's own batches that have ended and whose report they have not\ndismissed, newest first: what the banner on every project page announces.",
+        "operationId": "unseen_batches",
+        "responses": {
+          "200": {
+            "description": "The batches.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BatchList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/batches/{batch}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "batch",
+          "in": "path",
+          "description": "A batch's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "One batch, item by item.",
+        "operationId": "get_batch",
+        "responses": {
+          "200": {
+            "description": "The batch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Batch"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_batch`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/batches/{batch}/seen": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "batch",
+          "in": "path",
+          "description": "A batch's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Dismiss the report of a batch the caller started, so it is no longer\nannounced.",
+        "operationId": "mark_batch_seen",
+        "responses": {
+          "204": {
+            "description": "Dismissed."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Someone else started it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_batch`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator",
+          "own": true
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/profiles": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Every processing profile, each with its versions and the radargrams that use\nit.",
+        "operationId": "list_processing_profiles",
+        "responses": {
+          "200": {
+            "description": "The profiles.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/profiles/{profile}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "profile",
+          "in": "path",
+          "description": "A processing profile's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "One processing profile, with an `ETag`.",
+        "operationId": "get_processing_profile",
+        "responses": {
+          "200": {
+            "description": "The profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "put": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Create or change a processing profile. Changing the steps or the velocity\nmakes a new version. Takes `If-Match`.",
+        "operationId": "put_processing_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The profile as saved, with its `ETag`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_steps`, `invalid_velocity`, `invalid_profile_id` or `name_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Delete a processing profile. Refused while any radargram uses it.",
+        "operationId": "delete_processing_profile",
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`profile_in_use`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/profiles/{profile}/reprocess": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "profile",
+          "in": "path",
+          "description": "A processing profile's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Start a batch: reprocess every `stale` and `not_processed` radargram in the\nprofile (and `older_processing` ones too with `include_older`), at the\nprofile's current version, and commit each with no review. `hidden` members\nare left out; members with no raw data, and members an unfinished batch is\nalready processing, are listed as skipped.",
+        "operationId": "reprocess",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReprocessBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The batch, started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Batch"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nothing in the profile needs it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/processing/status": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Processing profiles"
+        ],
+        "summary": "Every radargram in a processing profile, and where it stands: `current`;\n`stale`, with the `reasons`; `older_processing`, meaning the same steps run\nby an older version of a step or of Ridal; `not_processed`; `no_raw_data`;\nor `hidden`, ignored in this project. Neither of the last two is ever\ncounted as stale.",
+        "operationId": "processing_status",
+        "parameters": [
+          {
+            "name": "radargram_id",
+            "in": "query",
+            "description": "Only this radargram.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Where each stands.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
     "/api/v1/projects/{key}/profiles": {
       "parameters": [
         {
@@ -2687,6 +4443,184 @@
         },
         "x-ridal-needs": {
           "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/raw": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "Upload one raw file as the request body. `filename` is required, since a\nfile's name says what it is to its recording (`DAT_0001_A1.rd3`). Uploading\na file the project already has stores nothing new.",
+        "operationId": "upload_raw_file",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "query",
+            "description": "The file's name, which says what it is to its recording\n(`DAT_0001_A1.rd3`). Required.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The file.",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/NetcdfFile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Stored, or already there.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredFile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`filename_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`project_full`: the project's size limit would be exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/raw/{blake3}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "blake3",
+          "in": "path",
+          "description": "A stored raw file's blake3 hash, as its upload answered.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "A stored raw file.",
+        "operationId": "download_raw_file",
+        "responses": {
+          "200": {
+            "description": "The file, as an attachment.",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_file`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "all"
         }
       }
     },
@@ -2806,10 +4740,521 @@
           "who": "operator"
         }
       }
+    },
+    "/api/v1/projects/{key}/sources": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "The ids of every radargram the project has raw data for, whether or not it\nhas been processed yet, and the names each source gives its radargram until\nit is served.",
+        "operationId": "list_sources",
+        "responses": {
+          "200": {
+            "description": "The sources.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/sources/{radargram_id}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "What the radargram is made from, with an `ETag`.",
+        "operationId": "get_source",
+        "responses": {
+          "200": {
+            "description": "Its source.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_source`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "put": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "Set or switch what the radargram is made from. Every recording is read\nbefore anything is saved, and what its header and positions say is in the\nanswer. Recordings that cannot be merged into one radargram (different CRS,\nantenna frequency, time window or antenna separation) are refused. Every\ndraft and batch made from the source uses its CRS, DEM and antenna\noverrides, and changing them makes what was processed without them `stale`.\nTakes `If-Match`.",
+        "operationId": "put_source",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The source as saved, with its `ETag`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`recordings_not_mergeable`, `source_unreadable` (such as a DEM that does not cover the recordings, or an antenna frequency nothing gives), `invalid_antenna_mhz` or `invalid_antenna_separation`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "Forget what the radargram is made from, and take it out of its processing\nprofile. Files no other source names are deleted after an hour.",
+        "operationId": "delete_source",
+        "responses": {
+          "204": {
+            "description": "Forgotten."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_source`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/sources/{radargram_id}/dem": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "put": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "Link the radargram to one of the project's DEMs, or unlink it with `null`,\nleaving its recordings as they are. The recordings are read with the DEM, as\nsetting the source reads them. A radargram processed before the change is\nstale afterwards. Takes `If-Match`.",
+        "operationId": "link_dem",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The source as saved, with its `ETag`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`source_unreadable`: the DEM does not cover the recordings.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_source`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/sources/{radargram_id}/drafts": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Drafts"
+        ],
+        "summary": "Process the radargram's raw data. The antenna overrides are the source's.\nAsking again for the same draft answers the same one.",
+        "operationId": "create_draft",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "The draft, queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_source`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`too_many_jobs` or `project_too_many_jobs`: as many jobs are waiting or running as the server allows one person, or the project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
     }
   },
   "components": {
     "schemas": {
+      "Activity": {
+        "type": "object",
+        "description": "Who is processing a radargram now (#382): an advisory marker, not a\nlock. Someone's draft says only that it exists and whose it is.",
+        "required": [
+          "radargram_id",
+          "kind",
+          "by",
+          "mine",
+          "waiting"
+        ],
+        "properties": {
+          "radargram_id": {
+            "$ref": "#/components/schemas/RadargramId"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`draft` or `batch`."
+          },
+          "by": {
+            "type": "string",
+            "description": "Whose draft, or who started the batch."
+          },
+          "mine": {
+            "type": "boolean",
+            "description": "The caller's own."
+          },
+          "waiting": {
+            "type": "boolean",
+            "description": "A batch item that is waiting for its turn rather than running."
+          }
+        }
+      },
+      "ActivityList": {
+        "type": "object",
+        "description": "`GET /api/v1/processing/activity`.",
+        "required": [
+          "activity"
+        ],
+        "properties": {
+          "activity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Activity"
+            }
+          }
+        }
+      },
       "Added": {
         "type": "object",
         "description": "`POST /api/v1/datasets`: the radargram is in the project.",
@@ -2921,6 +5366,28 @@
         },
         "additionalProperties": {}
       },
+      "AntennaOverride": {
+        "type": "object",
+        "description": "What to take one antenna to be, where its files do not say or are\nwrong. Either may be left to the files.",
+        "properties": {
+          "mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "MHz."
+          },
+          "separation": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "m."
+          }
+        }
+      },
       "ArchivedInterpretation": {
         "type": "object",
         "description": "`POST …/interpretations/{user}/archive`: the interpretation was archived.",
@@ -2959,6 +5426,26 @@
               "type": "string"
             },
             "description": "Canonical; selection steps only."
+          }
+        }
+      },
+      "AssignmentBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/processing/assignments/{radargram_id}`.",
+        "required": [
+          "profile"
+        ],
+        "properties": {
+          "profile": {
+            "type": "string",
+            "description": "The processing profile, by id."
+          },
+          "pre_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Steps of the radargram's own, run before the profile's: `subset`\nand `remove_traces` only."
           }
         }
       },
@@ -3902,6 +6389,30 @@
           }
         }
       },
+      "DemBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/dems/{dem}`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "What the DEM is called."
+          },
+          "file": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NamedFile",
+                "description": "The file, as `POST /api/v1/raw` answered. Required for a new DEM;\nfor an existing one, a different file replaces its own, which is\nrefused while any radargram links to it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "DemId": {
         "type": "string"
       },
@@ -4077,6 +6588,30 @@
           "derived",
           "all"
         ]
+      },
+      "DraftBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/sources/{radargram_id}/drafts`.",
+        "required": [
+          "steps"
+        ],
+        "properties": {
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The processing steps, as `ridal process --steps` takes them."
+          },
+          "medium_velocity": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "m/ns. Default: that of ice, as for `ridal process`."
+          }
+        }
       },
       "DraftList": {
         "type": "object",
@@ -5539,6 +8074,19 @@
           }
         }
       },
+      "LinkBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/sources/{radargram_id}/dem`.",
+        "properties": {
+          "dem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A DEM id, or `null` for none."
+          }
+        }
+      },
       "LocationSummary": {
         "type": "object",
         "required": [
@@ -5826,6 +8374,24 @@
           }
         }
       },
+      "NamedFile": {
+        "type": "object",
+        "description": "A file the client names for a recording, before Ridal knows its role.",
+        "required": [
+          "name",
+          "blake3"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The file's name, which says what it is: `DAT_0001_A1.rad`."
+          },
+          "blake3": {
+            "type": "string",
+            "description": "The blake3 the upload answered with."
+          }
+        }
+      },
       "NamedFormat": {
         "type": "object",
         "required": [
@@ -6107,6 +8673,124 @@
               "boolean",
               "null"
             ]
+          }
+        }
+      },
+      "PlanRequest": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/ingest/plan`. Recordings are named by their\nkey, a hash of their files' contents that the plan gives, so that an edit\nsticks to its recording however the list around it changes.",
+        "required": [
+          "recordings"
+        ],
+        "properties": {
+          "recordings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RecordingFiles"
+            },
+            "description": "Every uploaded recording, in any order."
+          },
+          "merge_threshold_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The gap above which recordings split; `null` never merges."
+          },
+          "excluded": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recordings to leave out."
+          },
+          "joins": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recordings to keep with the one before them in time, whatever the\ngap."
+          },
+          "splits": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recordings that start a new output although they would merge."
+          },
+          "id_pattern": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As `ridal batch-process --id-pattern` takes it (#368). Without it,\neach output is named after its first recording's file."
+          },
+          "display_name_pattern": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As `ridal batch-process --display-name-pattern` takes it."
+          },
+          "ids": {
+            "type": "object",
+            "description": "Ids and display names typed over what the patterns give, by the key\nof the output's first recording.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "display_names": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The catalog group the outputs go in, which `{group}` and\n`{group_name}` render."
+          },
+          "group_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "crs": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As for a source: an EPSG code, and one of the project's DEMs by id."
+          },
+          "dem": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "antennas": {
+            "type": "object",
+            "description": "Overrides by antenna, as the headers name it (#409): applied to\nevery recording with that antenna, before grouping, so `{freq}`,\n`per=freq` and merging see them, and carried to the sources made.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AntennaOverride"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "include_tracks": {
+            "type": "boolean",
+            "description": "Whether to send each recording's track. A page that has them\nalready may leave them out of a re-plan."
           }
         }
       },
@@ -6630,6 +9314,35 @@
               "$ref": "#/components/schemas/ProfileVersion"
             },
             "description": "Oldest first; the last is current. Never empty."
+          }
+        }
+      },
+      "ProfileEdit": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/processing/profiles/{profile}`: a processing\nprofile, created or changed.",
+        "required": [
+          "name",
+          "steps",
+          "medium_velocity"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The processing steps, as `ridal process --steps` takes them."
+          },
+          "medium_velocity": {
+            "type": "number",
+            "format": "float",
+            "description": "m/ns."
           }
         }
       },
@@ -7402,6 +10115,22 @@
           }
         }
       },
+      "RecordingFiles": {
+        "type": "object",
+        "description": "One recording as the request names it.",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NamedFile"
+            },
+            "description": "The files it is made of, as `POST /api/v1/raw` answered."
+          }
+        }
+      },
       "RedeemBody": {
         "type": "object",
         "description": "The body of `POST /api/v1/auth/invite`.",
@@ -7479,6 +10208,26 @@
           },
           "to_revision": {
             "type": "string"
+          }
+        }
+      },
+      "ReprocessBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/processing/profiles/{profile}/reprocess`.",
+        "properties": {
+          "include_older": {
+            "type": "boolean",
+            "description": "Also reprocess what an older Ridal processed exactly as the profile\nsays (`older_processing`). Off by default: that is not stale."
+          },
+          "radargram_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/RadargramId"
+            },
+            "description": "Only these of the profile's radargrams, such as one catalog group's.\nOmitted, every one."
           }
         }
       },
@@ -8094,6 +10843,66 @@
           }
         },
         "additionalProperties": {}
+      },
+      "SourceBody": {
+        "type": "object",
+        "description": "The body of `PUT /api/v1/sources/{radargram_id}`.",
+        "required": [
+          "recordings"
+        ],
+        "properties": {
+          "recordings": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/NamedFile"
+              }
+            },
+            "description": "The recordings, in merge order, each the files it is made of by name\nand hash, as `POST /api/v1/raw` answered. Which file is the header,\nthe data and the positions is read from the names."
+          },
+          "crs": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "An EPSG code, such as `EPSG:32633`. Without it, the positions go in\nthe UTM zone that suits them best."
+          },
+          "dem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "One of the project's DEMs, by id (`GET /api/v1/dems`)."
+          },
+          "antenna_mhz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The antenna's frequency in MHz, overriding what the files say."
+          },
+          "antenna_separation": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "float",
+            "description": "The antenna separation in m, overriding what the files say."
+          },
+          "names": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SourceNames",
+                "description": "What to call the radargram until it is served (#382 phase 7).\nAbsent keeps what the source had; `null` removes it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "SourceDem": {
         "allOf": [

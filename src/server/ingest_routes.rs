@@ -25,12 +25,14 @@ use serde::{Deserialize, Serialize};
 
 use super::app::AppState;
 use super::auth::Caller;
+use super::needs::{Needs, Who};
 use super::raw_routes::project_for;
 use super::routes::ApiError;
 use crate::gpr::{GroupingEdits, GroupingRecording, Split};
 use crate::id_pattern::{BatchFacts, OutputFacts, Pattern, PatternKind};
 use crate::identity::{DisplayName, RadargramId};
 use crate::project::raw::{self, NamedFile};
+use crate::project::roles::Role;
 
 /// More than any survey; enough to keep one request's reads bounded.
 const MAX_RECORDINGS: usize = 5000;
@@ -41,16 +43,17 @@ const TRACK_VERTICES: usize = 64;
 const CACHE_ENTRIES: usize = 8192;
 
 /// One recording as the request names it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct RecordingFiles {
     /// The files it is made of, as `POST /api/v1/raw` answered.
     pub files: Vec<NamedFile>,
 }
 
 /// The body of `POST /api/v1/ingest/plan`. Recordings are named by their
-/// key ([`recording_key`]), so that an edit sticks to its
-/// recording however the list around it changes.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// key, a hash of their files' contents that the plan gives, so that an edit
+/// sticks to its recording however the list around it changes.
+// The key is `recording_key`.
+#[derive(Debug, Clone, Default, Deserialize, utoipa::ToSchema)]
 pub struct PlanRequest {
     /// Every uploaded recording, in any order.
     pub recordings: Vec<RecordingFiles>,
@@ -67,10 +70,11 @@ pub struct PlanRequest {
     /// Recordings that start a new output although they would merge.
     #[serde(default)]
     pub splits: Vec<String>,
-    /// #368 syntax. Without it, each output is named after its first
-    /// recording's file.
+    /// As `ridal batch-process --id-pattern` takes it (#368). Without it,
+    /// each output is named after its first recording's file.
     #[serde(default)]
     pub id_pattern: Option<String>,
+    /// As `ridal batch-process --display-name-pattern` takes it.
     #[serde(default)]
     pub display_name_pattern: Option<String>,
     /// Ids and display names typed over what the patterns give, by the key
@@ -107,7 +111,7 @@ fn yes() -> bool {
 
 /// What to take one antenna to be, where its files do not say or are
 /// wrong. Either may be left to the files.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Deserialize, utoipa::ToSchema)]
 pub struct AntennaOverride {
     /// MHz.
     #[serde(default)]
@@ -467,6 +471,20 @@ pub struct Taken {
     pub sources: HashSet<String>,
 }
 
+/// Plan many uploaded recordings as the radargrams they would make, creating
+/// nothing. Answers every recording, every output, every antenna, and the
+/// problems with the plan, which is answered in full even when there are some.
+/// Each call keeps its recordings' files from being deleted for another hour.
+#[utoipa::path(
+    post,
+    path = "/api/v1/ingest/plan",
+    tag = "Raw data",
+    request_body = PlanRequest,
+    responses(
+        (status = 200, description = "The plan.", body = IngestPlan),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn plan_ingest(
     State(state): State<Arc<AppState>>,
     caller: Caller,

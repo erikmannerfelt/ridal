@@ -23,7 +23,8 @@ use serde::{Deserialize, Serialize};
 use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{expectation_from, parse_radargram, readable_project};
-use super::routes::ApiError;
+use super::needs::{Needs, Who};
+use super::routes::{ApiError, ErrorBody};
 use crate::identity::{ProfileId, RadargramId};
 use crate::project::processing::{self, Assignment, Assignments, Profile, ProfileEdit};
 use crate::project::roles::Role;
@@ -81,6 +82,18 @@ pub struct ProfileList {
     pub profiles: Vec<ProfileView>,
 }
 
+/// Every processing profile, each with its versions and the radargrams that use
+/// it.
+#[utoipa::path(
+    get,
+    path = "/api/v1/processing/profiles",
+    operation_id = "list_processing_profiles",
+    tag = "Processing profiles",
+    responses(
+        (status = 200, description = "The profiles.", body = ProfileList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn list_profiles(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -105,6 +118,18 @@ pub async fn list_profiles(
     Ok(Json(ProfileList { profiles }))
 }
 
+/// One processing profile, with an `ETag`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/processing/profiles/{profile}",
+    operation_id = "get_processing_profile",
+    tag = "Processing profiles",
+    responses(
+        (status = 200, description = "The profile.", body = ProfileView),
+        (status = 404, description = "`no_such_profile`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn get_profile(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -130,6 +155,21 @@ pub async fn get_profile(
         .into_response())
 }
 
+/// Create or change a processing profile. Changing the steps or the velocity
+/// makes a new version. Takes `If-Match`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/processing/profiles/{profile}",
+    operation_id = "put_processing_profile",
+    tag = "Processing profiles",
+    request_body = ProfileEdit,
+    responses(
+        (status = 200, description = "The profile as saved, with its `ETag`.", body = ProfileView),
+        (status = 400, description = "`invalid_steps`, `invalid_velocity`, `invalid_profile_id` or `name_required`.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn put_profile(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -168,6 +208,18 @@ pub async fn put_profile(
         .into_response())
 }
 
+/// Delete a processing profile. Refused while any radargram uses it.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/processing/profiles/{profile}",
+    operation_id = "delete_processing_profile",
+    tag = "Processing profiles",
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 409, description = "`profile_in_use`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn delete_profile(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -187,6 +239,16 @@ pub async fn delete_profile(
     }
 }
 
+/// Which radargram uses which processing profile, and the steps of its own.
+#[utoipa::path(
+    get,
+    path = "/api/v1/processing/assignments",
+    tag = "Processing profiles",
+    responses(
+        (status = 200, description = "The assignments.", body = crate::project::processing::Assignments),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn list_assignments(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -201,8 +263,10 @@ pub async fn list_assignments(
     Ok(Json(assignments))
 }
 
-#[derive(Debug, Deserialize)]
+/// The body of `PUT /api/v1/processing/assignments/{radargram_id}`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AssignmentBody {
+    /// The processing profile, by id.
     pub profile: String,
     /// Steps of the radargram's own, run before the profile's: `subset`
     /// and `remove_traces` only.
@@ -210,6 +274,21 @@ pub struct AssignmentBody {
     pub pre_steps: Vec<String>,
 }
 
+/// Put a radargram in a processing profile, optionally with steps of its own
+/// that run first, which may only be `subset` and `remove_traces`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/processing/assignments/{radargram_id}",
+    tag = "Processing profiles",
+    request_body = AssignmentBody,
+    responses(
+        (status = 200, description = "Its assignment.", body = crate::project::processing::Assignment),
+        (status = 400, description = "`invalid_steps`: steps of its own other than `subset` and `remove_traces`.", body = ErrorBody),
+        (status = 404, description = "`no_such_profile`.", body = ErrorBody),
+        (status = 409, description = "`no_source`: the project has no raw data for it.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn put_assignment(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -244,6 +323,16 @@ pub async fn put_assignment(
     Ok(Json(assignment))
 }
 
+/// Take a radargram out of its processing profile.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/processing/assignments/{radargram_id}",
+    tag = "Processing profiles",
+    responses(
+        (status = 204, description = "Taken out."),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn delete_assignment(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -274,13 +363,30 @@ pub struct StatusList {
 ///
 /// Reads each served file's recipe, so it opens every file once: off the
 /// async executor.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct StatusQuery {
-    /// Only this radargram: what the process dialog asks, rather than
-    /// reading every file in the project to show one.
+    /// Only this radargram.
+    // What the process dialog asks, rather than reading every file in the
+    // project to show one.
     pub radargram_id: Option<String>,
 }
 
+/// Every radargram in a processing profile, and where it stands: `current`;
+/// `stale`, with the `reasons`; `older_processing`, meaning the same steps run
+/// by an older version of a step or of Ridal; `not_processed`; `no_raw_data`;
+/// or `hidden`, ignored in this project. Neither of the last two is ever
+/// counted as stale.
+#[utoipa::path(
+    get,
+    path = "/api/v1/processing/status",
+    tag = "Processing profiles",
+    params(StatusQuery),
+    responses(
+        (status = 200, description = "Where each stands.", body = StatusList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn processing_status(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -299,10 +405,11 @@ pub async fn processing_status(
 
 /// Who is processing a radargram now (#382): an advisory marker, not a
 /// lock. Someone's draft says only that it exists and whose it is.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Activity {
     pub radargram_id: RadargramId,
     /// `draft` or `batch`.
+    #[schema(value_type = String)]
     pub kind: &'static str,
     /// Whose draft, or who started the batch.
     pub by: String,
@@ -312,13 +419,25 @@ pub struct Activity {
     pub waiting: bool,
 }
 
-#[derive(Debug, Serialize)]
+/// `GET /api/v1/processing/activity`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ActivityList {
     pub activity: Vec<Activity>,
 }
 
-/// `GET /api/v1/processing/activity`: every radargram being processed in
-/// the project, or with `?radargram_id=` the one.
+/// Who is processing what now: each radargram with a draft queued or running,
+/// or in an unfinished batch item. A draft says nothing more than whose it is.
+#[utoipa::path(
+    get,
+    path = "/api/v1/processing/activity",
+    tag = "Processing profiles",
+    params(StatusQuery),
+    responses(
+        (status = 200, description = "What is being processed.", body = ActivityList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// the project, or with `?radargram_id=` the one.
 pub async fn processing_activity(
     State(state): State<Arc<AppState>>,
     caller: Caller,
