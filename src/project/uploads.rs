@@ -88,11 +88,20 @@ fn document(id: &str) -> PathBuf {
 /// uploads to list.
 pub fn part_path(data_dir: &Path, id: &str) -> Option<PathBuf> {
     let wanted = format!("{}.part", valid_id(id)?);
+    listed(data_dir)
+        .into_iter()
+        .find(|path| path.file_name().is_some_and(|name| name == wanted.as_str()))
+}
+
+/// Every file in the uploads directory. Apart from [`part_path`] so that
+/// the listing is not in a function that has the request's id at all.
+fn listed(data_dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(data_dir.join(UPLOADS_DIR))
-        .ok()?
+        .into_iter()
         .flatten()
-        .find(|entry| entry.file_name() == wanted.as_str())
+        .flatten()
         .map(|entry| entry.path())
+        .collect()
 }
 
 /// Start an upload, with nothing sent yet, and answer its id.
