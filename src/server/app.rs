@@ -11,6 +11,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use axum::routing::get;
 use axum::Router;
 use tokio::sync::Semaphore;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use super::catalog::{Catalog, CatalogRoot, RevisionId};
 use crate::identity::{ProjectKey, RadargramId};
@@ -1086,25 +1088,35 @@ pub fn static_router() -> Router {
         .layer(axum::middleware::from_fn(super::assets::not_modified))
 }
 
+/// A project's `/api` routes that the OpenAPI description covers (#330).
+///
+/// Each is registered from its handler's `#[utoipa::path]`, so its path
+/// and methods are the ones the spec describes. The paths are the
+/// project's own shape, `/api/v1/…`; a site serves them at
+/// `/api/v1/projects/{key}/…`, which is how the spec writes them.
+pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
+    OpenApiRouter::new()
+        .routes(routes!(super::routes::list_profiles))
+        .routes(routes!(
+            super::preference_routes::get_preferences,
+            super::preference_routes::put_preferences
+        ))
+        .routes(routes!(
+            super::interp_routes::get_settings,
+            super::interp_routes::put_settings
+        ))
+}
+
 /// Build the complete Axum application over `state`.
 pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(super::routes::index_page))
         .route("/view/{radargram_id}", get(super::routes::viewer_page))
         .route("/api/v1/health", get(super::routes::health))
-        .route(
-            "/api/v1/preferences",
-            get(super::preference_routes::get_preferences)
-                .put(super::preference_routes::put_preferences),
-        )
         .route("/layers", get(super::routes::layers_page))
         .route("/processing", get(super::routes::processing_page))
         .route("/ingest", get(super::routes::ingest_page))
         .route("/settings", get(super::routes::settings_page))
-        .route(
-            "/api/v1/settings",
-            get(super::interp_routes::get_settings).put(super::interp_routes::put_settings),
-        )
         .route(
             "/api/v1/layers",
             get(super::interp_routes::get_layers).put(super::interp_routes::put_layers),
@@ -1309,7 +1321,6 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
                 .put(super::interp_routes::put_interpretation)
                 .delete(super::interp_routes::delete_interpretation),
         )
-        .route("/api/v1/profiles", get(super::routes::list_profiles))
         .route(
             "/api/v1/datasets",
             get(super::routes::list_datasets).post(super::lifecycle_routes::upload_dataset),
@@ -1397,6 +1408,7 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             "/api/v1/datasets/{radargram_id}/views/{view}/chunks/{profile}/{x}/{y}",
             get(super::routes::chunk_image),
         )
+        .merge(Router::from(project_api()))
         // Every route above is reached through this, so identity is resolved
         // exactly once per request and a route added later cannot forget to
         // ask who is calling. It is also the only place that can enforce
@@ -2397,9 +2409,11 @@ mod tests {
     }
 }
 
-/// `docs/reference/http-api.md` is written by hand, so this is what stops it
-/// drifting: every `/api` route in [`build_router`] must have a row there,
-/// and every row must still be a route.
+/// What stops `docs/reference/http-api.md` drifting from the routers. Its
+/// tables are rendered from the OpenAPI description for the routes that
+/// description covers, and written by hand for the rest (#330): every `/api`
+/// route must be in one or the other, and every hand-written row must still
+/// be a route.
 #[cfg(test)]
 mod http_reference_tests {
     use std::collections::BTreeSet;
@@ -2460,14 +2474,19 @@ mod http_reference_tests {
         endpoints
     }
 
-    /// `(METHOD, path)` for every table row in the reference page.
-    fn documented() -> BTreeSet<Endpoint> {
+    fn page() -> String {
         let page = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("docs")
             .join("reference")
             .join("http-api.md");
-        let page = std::fs::read_to_string(page).unwrap();
-        page.lines()
+        std::fs::read_to_string(page).unwrap()
+    }
+
+    /// `(METHOD, path)` for every hand-written table row in the reference
+    /// page.
+    fn documented() -> BTreeSet<Endpoint> {
+        page()
+            .lines()
             .filter(|line| line.starts_with("| `"))
             .map(|line| {
                 let cells: Vec<&str> = line.split('|').map(|cell| cell.trim()).collect();
@@ -2479,18 +2498,69 @@ mod http_reference_tests {
             .collect()
     }
 
+    /// `(METHOD, path)` for every operation in the OpenAPI description,
+    /// both as the spec writes it and, for a project's, in the project's
+    /// own shape (`/api/v1/datasets`) that `build_router` and the page use.
+    fn described() -> BTreeSet<Endpoint> {
+        let spec = serde_json::to_value(super::super::openapi::spec()).unwrap();
+        let mut endpoints = BTreeSet::new();
+        for (path, item) in spec["paths"].as_object().unwrap() {
+            for method in item.as_object().unwrap().keys() {
+                if method == "parameters" {
+                    continue;
+                }
+                let method = method.to_uppercase();
+                if let Some(rest) = path.strip_prefix(super::super::openapi::PROJECT_PREFIX) {
+                    endpoints.insert((method.clone(), format!("/api/v1{rest}")));
+                }
+                endpoints.insert((method, path.clone()));
+            }
+        }
+        endpoints
+    }
+
+    /// Every `/api` route is on the page exactly once: a route the OpenAPI
+    /// description covers is rendered from it (`http-endpoints`), and every
+    /// other one is a hand-written row.
     #[test]
     fn the_http_reference_lists_every_api_route() {
         let routed = routed();
+        let described = described();
         let documented = documented();
         assert!(routed.len() > 50, "the route parser found only {routed:?}");
-        let undocumented: Vec<_> = routed.difference(&documented).collect();
-        let stale: Vec<_> = documented.difference(&routed).collect();
+        let by_hand: BTreeSet<Endpoint> = routed.difference(&described).cloned().collect();
+        let undocumented: Vec<_> = by_hand.difference(&documented).collect();
+        let stale: Vec<_> = documented.difference(&by_hand).collect();
         assert!(
             undocumented.is_empty() && stale.is_empty(),
             "docs/reference/http-api.md is out of step with build_router.\n\
              Routes with no row: {undocumented:?}\n\
-             Rows with no route: {stale:?}"
+             Rows with no route, or for a route the OpenAPI description now \
+             renders: {stale:?}"
+        );
+    }
+
+    /// Each tag in the OpenAPI description is a section of the page, and
+    /// is rendered there by an `http-endpoints` directive. The docs build
+    /// fails on a directive naming a tag that does not exist.
+    #[test]
+    fn the_http_reference_renders_every_tag() {
+        let spec = serde_json::to_value(super::super::openapi::spec()).unwrap();
+        let page = page();
+        let mut missing = BTreeSet::new();
+        for item in spec["paths"].as_object().unwrap().values() {
+            for operation in item.as_object().unwrap().values() {
+                for tag in operation["tags"].as_array().into_iter().flatten() {
+                    let tag = tag.as_str().unwrap();
+                    if !page.contains(&format!(":::{{http-endpoints}} {tag}\n")) {
+                        missing.insert(tag.to_string());
+                    }
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "docs/reference/http-api.md has no `:::{{http-endpoints}} TAG` for {missing:?}"
         );
     }
 }

@@ -13,7 +13,8 @@ use axum::Json;
 
 use super::app::AppState;
 use super::auth::Caller;
-use super::routes::ApiError;
+use super::needs::{Needs, Who};
+use super::routes::{ApiError, ErrorBody};
 use crate::identity::UserId;
 use crate::project::preferences;
 use crate::project::store::Expectation;
@@ -31,7 +32,77 @@ fn project(state: &AppState) -> Result<&Project, ApiError> {
     })
 }
 
-/// `GET /api/v1/preferences` -- the caller's own.
+/// The caller's own preferences, as `GET` and `PUT /api/v1/preferences`
+/// return them. `null` is "not chosen", which defers to the project.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct MyPreferences {
+    /// The account they belong to.
+    user: String,
+    /// The render profile, by name.
+    #[schema(required = true)]
+    render_profile: Option<String>,
+    /// Horizontal stretch, as a multiplier.
+    #[schema(required = true)]
+    x_scale: Option<f64>,
+    /// `light` or `dark`; `null` follows the device.
+    #[schema(required = true)]
+    theme: Option<String>,
+    /// `false` when the viewer opens with the interpretations hidden.
+    /// Shown is stored as `null`.
+    #[schema(required = true)]
+    show_picks: Option<bool>,
+    /// The point spacing the layer-point download dialogs open on.
+    #[schema(required = true)]
+    level2_spacing: Option<String>,
+    /// The format the layer-point download dialogs open on.
+    #[schema(required = true)]
+    level2_format: Option<String>,
+    /// The basemap the maps draw on, by id.
+    #[schema(required = true)]
+    basemap: Option<String>,
+    /// Whether the catalog opens with each group's radargrams listed.
+    #[schema(required = true)]
+    show_group_radargrams: Option<bool>,
+    /// Whether the catalog opens with each group's map shown.
+    #[schema(required = true)]
+    show_group_maps: Option<bool>,
+    /// `true` when the viewer opens on the whole radargram. Zoomed in is
+    /// stored as `null`.
+    #[schema(required = true)]
+    open_zoomed_out: Option<bool>,
+    /// `false` when the handles of a line being edited carry no tooltips.
+    /// Shown is stored as `null`.
+    #[schema(required = true)]
+    show_vertex_tooltips: Option<bool>,
+}
+
+impl MyPreferences {
+    fn new(user: &UserId, preferences: preferences::Preferences) -> Self {
+        Self {
+            user: user.as_str().to_string(),
+            render_profile: preferences.render_profile,
+            x_scale: preferences.x_scale,
+            theme: preferences.theme,
+            show_picks: preferences.show_picks,
+            level2_spacing: preferences.level2_spacing,
+            level2_format: preferences.level2_format,
+            basemap: preferences.basemap,
+            show_group_radargrams: preferences.show_group_radargrams,
+            show_group_maps: preferences.show_group_maps,
+            open_zoomed_out: preferences.open_zoomed_out,
+            show_vertex_tooltips: preferences.show_vertex_tooltips,
+        }
+    }
+}
+
+/// The caller's own display preferences.
+#[utoipa::path(
+    get,
+    path = "/api/v1/preferences",
+    tag = "Preferences and project settings",
+    responses((status = 200, description = "The caller's preferences.", body = MyPreferences)),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::SignedIn)))),
+)]
 pub async fn get_preferences(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -39,46 +110,35 @@ pub async fn get_preferences(
     let (project, user) = my_preferences_target(&state, &caller)?;
     let preferences = preferences::read(project.documents(), user)
         .map_err(|e| ApiError::internal("preferences_read_failed", e.to_string()))?;
-    Ok(Json(serde_json::json!({
-        "user": user.as_str(),
-        "render_profile": preferences.render_profile,
-        "x_scale": preferences.x_scale,
-        "theme": preferences.theme,
-        "show_picks": preferences.show_picks,
-        "level2_spacing": preferences.level2_spacing,
-        "level2_format": preferences.level2_format,
-        "basemap": preferences.basemap,
-        "show_group_radargrams": preferences.show_group_radargrams,
-        "show_group_maps": preferences.show_group_maps,
-        "open_zoomed_out": preferences.open_zoomed_out,
-        "show_vertex_tooltips": preferences.show_vertex_tooltips,
-    })))
+    Ok(Json(MyPreferences::new(user, preferences)))
 }
 
-/// One person's settings, as the page submits them.
+// Absent used to mean "clear it", on the grounds that the page always
+// sends everything. That made the endpoint a trap for anything else:
+// `PUT {"theme":"dark"}` silently wiped this person's render profile and
+// scale. With six settings and more coming, "sends everything" is a
+// property of one caller rather than of the API, so it is no longer
+// assumed.
+//
+// This narrows, but does not close, last-writer-wins between two settings
+// tabs: both send every field, so the later save still overwrites what the
+// earlier one changed. Deliberately left there. A preference is cheap to
+// re-choose and belongs to one person, so the conditional-write machinery
+// the picks and the layer vocabulary use -- ETag out, `If-Match` back --
+// would cost a round trip and a 412 dialog to protect a dropdown from its
+// owner's other tab.
+
+/// The body of `PUT /api/v1/preferences`: one person's settings.
 ///
 /// Every field distinguishes three things: absent leaves the stored value
 /// alone, `null` clears it -- which is what "Project default" in the
 /// dropdown means -- and a value sets it.
-///
-/// Absent used to mean "clear it", on the grounds that the page always
-/// sends everything. That made the endpoint a trap for anything else:
-/// `PUT {"theme":"dark"}` silently wiped this person's render profile and
-/// scale. With six settings and more coming, "sends everything" is a
-/// property of one caller rather than of the API, so it is no longer
-/// assumed.
-///
-/// This narrows, but does not close, last-writer-wins between two settings
-/// tabs: both send every field, so the later save still overwrites what the
-/// earlier one changed. Deliberately left there. A preference is cheap to
-/// re-choose and belongs to one person, so the conditional-write machinery
-/// the picks and the layer vocabulary use -- ETag out, `If-Match` back --
-/// would cost a round trip and a 412 dialog to protect a dropdown from its
-/// owner's other tab.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct PreferencesBody {
+    /// A render profile, by name.
     #[serde(default, deserialize_with = "present")]
     render_profile: Option<Option<String>>,
+    /// Horizontal stretch, one of the factors the viewer offers.
     #[serde(default, deserialize_with = "present")]
     x_scale: Option<Option<f64>>,
     /// `light`, `dark`, or `null` to follow the device (#141).
@@ -90,9 +150,10 @@ pub struct PreferencesBody {
     /// Which basemap the maps draw on, by id (#177).
     #[serde(default, deserialize_with = "present")]
     basemap: Option<Option<String>>,
-    /// What the layer-point download dialogs open on (#166).
+    /// The point spacing the layer-point download dialogs open on (#166).
     #[serde(default, deserialize_with = "present")]
     level2_spacing: Option<Option<String>>,
+    /// The format they open on.
     #[serde(default, deserialize_with = "present")]
     level2_format: Option<Option<String>>,
     /// Whether the catalog opens with each group's radargrams listed
@@ -126,11 +187,23 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-/// `PUT /api/v1/preferences`
-///
-/// A `viewer` may do this. Setting how you like to look at something is not
-/// a permission an administrator grants -- it is the floor of what having an
-/// account means.
+/// Change the caller's own display preferences, such as render profile and
+/// horizontal scale. Any role may. A field left out keeps its value; `null`
+/// clears it, deferring to the project.
+#[utoipa::path(
+    put,
+    path = "/api/v1/preferences",
+    tag = "Preferences and project settings",
+    request_body = PreferencesBody,
+    responses(
+        (status = 200, description = "The preferences as saved.", body = MyPreferences),
+        (status = 400, description = "A value the server does not offer.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::SignedIn)))),
+)]
+// A `viewer` may do this. Setting how you like to look at something is not
+// a permission an administrator grants -- it is the floor of what having an
+// account means.
 pub async fn put_preferences(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -276,20 +349,7 @@ pub async fn put_preferences(
     preferences::write(project.documents(), user, &stored, &Expectation::Any)
         .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
 
-    Ok(Json(serde_json::json!({
-        "user": user.as_str(),
-        "render_profile": stored.render_profile,
-        "x_scale": stored.x_scale,
-        "theme": stored.theme,
-        "show_picks": stored.show_picks,
-        "level2_spacing": stored.level2_spacing,
-        "level2_format": stored.level2_format,
-        "basemap": stored.basemap,
-        "show_group_radargrams": stored.show_group_radargrams,
-        "show_group_maps": stored.show_group_maps,
-        "open_zoomed_out": stored.open_zoomed_out,
-        "show_vertex_tooltips": stored.show_vertex_tooltips,
-    })))
+    Ok(Json(MyPreferences::new(user, stored)))
 }
 
 /// Where the caller's own preferences live.

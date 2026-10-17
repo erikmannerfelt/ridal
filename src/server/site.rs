@@ -31,11 +31,14 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use tokio::sync::Semaphore;
 use tower::ServiceExt;
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 use super::app::{AccessOptions, AppState, SiteContext};
 use super::auth::{self, SessionKey, SESSION_TTL_DAYS};
+use super::needs::{Needs, Who};
 use super::render_service::RenderServiceConfig;
-use super::routes::{ApiError, PageError};
+use super::routes::{ApiError, ErrorBody, PageError};
 use super::templates;
 use crate::identity::{ProjectKey, UserId};
 use crate::project::members;
@@ -707,6 +710,18 @@ async fn site_middleware(
     }
 }
 
+/// The site's own `/api` routes that the OpenAPI description covers (#330),
+/// each registered from its handler's `#[utoipa::path]`.
+pub(super) fn site_api() -> OpenApiRouter<Arc<SiteState>> {
+    OpenApiRouter::new()
+        .routes(routes!(super::routes::health))
+        .routes(routes!(super::openapi::openapi_json))
+        .routes(routes!(me))
+        .routes(routes!(login))
+        .routes(routes!(logout))
+        .routes(routes!(redeem_invite))
+}
+
 /// Build the site's Axum application.
 pub fn build_site_router(site: Arc<SiteState>) -> Router {
     let access_log =
@@ -719,8 +734,6 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
         // (for a server administrator) the accounts. Project settings stay
         // under the project's key.
         .route("/settings", get(site_settings_page))
-        .route("/api/v1/health", get(super::routes::health))
-        .route("/api/v1/openapi.json", get(super::openapi::openapi_json))
         .route("/api/v1/site", get(site_info))
         .route("/api/v1/site/audit", get(site_audit_log))
         .route("/api/v1/site/status", get(site_status))
@@ -790,12 +803,9 @@ pub fn build_site_router(site: Arc<SiteState>) -> Router {
             "/api/v1/accounts/bulk/passwords",
             post(create_bulk_passwords),
         )
-        .route("/api/v1/auth/me", get(me))
         .route("/api/v1/tokens", get(list_tokens).post(create_token))
         .route("/api/v1/tokens/{id}", axum::routing::delete(revoke_token))
-        .route("/api/v1/auth/login", post(login))
-        .route("/api/v1/auth/logout", post(logout))
-        .route("/api/v1/auth/invite", post(redeem_invite))
+        .merge(Router::from(site_api()))
         // Everything else that looks like a project is that project's own
         // router. The layer resolves identity for the site routes above and
         // for this fallback alike.
@@ -1333,11 +1343,25 @@ fn issue_session(
     Ok([(header::SET_COOKIE, auth::session_cookie(&value, ttl))])
 }
 
-/// `POST /api/v1/auth/login`
-///
-/// One refusal for every failure, and a decoy verification for a name that
-/// does not exist, so the form cannot be used to enumerate accounts or to
-/// time which ones exist.
+/// Sign in with a name and password. Every failure gives the same answer,
+/// so that the endpoint cannot be used to find out which accounts exist.
+/// Refused on a network-bound server without `--allow-insecure-login`.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/login",
+    tag = "Signing in",
+    request_body = LoginBody,
+    responses(
+        (status = 200, description = "Signed in. Sets the `ridal_session` cookie.", body = SignedIn),
+        (status = 401, description = "The name and password do not match an account.", body = ErrorBody),
+        (status = 403, description = "`insecure_transport`: passwords are refused over plain HTTP on a network address.", body = ErrorBody),
+        (status = 409, description = "`no_accounts`: the site has no accounts.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Nobody)))),
+)]
+// One refusal for every failure, and a decoy verification for a name that
+// does not exist, so the form cannot be used to enumerate accounts or to
+// time which ones exist.
 async fn login(
     State(site): State<Arc<SiteState>>,
     Json(body): Json<LoginBody>,
@@ -1394,7 +1418,14 @@ fn burn_a_verification(candidate: &str) {
     }
 }
 
-/// `POST /api/v1/auth/logout`
+/// Sign out. Succeeds whether or not anyone was signed in.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/logout",
+    tag = "Signing in",
+    responses((status = 200, description = "Signed out. Clears the cookie.", body = SignedOut)),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Nobody)))),
+)]
 async fn logout() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -1411,10 +1442,19 @@ pub(super) struct SignedOut {
     signed_out: bool,
 }
 
-/// `GET /api/v1/auth/me` -- who the site thinks is calling.
-///
-/// The one site route that answers for an API token as well as a session,
-/// so a script can check what its token is (#194).
+/// Who the site thinks is calling: their name, whether they are signed in,
+/// whether they are a server administrator, and whether the site has
+/// accounts at all. With an API token, also the token's id, name, grants and
+/// expiry.
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/me",
+    tag = "Signing in",
+    responses((status = 200, description = "The caller.", body = Me)),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Nobody)))),
+)]
+// The one site route that answers for an API token as well as a session,
+// so a script can check what its token is (#194).
 async fn me(
     State(site): State<Arc<SiteState>>,
     TokenOrSession(caller): TokenOrSession,
@@ -1684,17 +1724,32 @@ fn account_for_invite<'a>(set: &'a AccountSet, token: &str, now: i64) -> Option<
     })
 }
 
-#[derive(serde::Deserialize)]
+/// The body of `POST /api/v1/auth/invite`.
+#[derive(serde::Deserialize, utoipa::ToSchema)]
 pub struct RedeemBody {
+    /// The one-time token from the invite link.
     token: String,
+    /// The password to set.
     password: String,
 }
 
-/// `POST /api/v1/auth/invite` -- set a password with a one-time token.
-///
-/// Redeeming consumes the token, sets the password and bumps the credential
-/// version, then adds the membership the invite carried, if it named a
-/// project. Signs the person in on success.
+/// Set a password with a one-time invite token, and sign in. Ends every
+/// other session of that account, and adds the membership the invite
+/// carried, if it named a project.
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/invite",
+    tag = "Signing in",
+    request_body = RedeemBody,
+    responses(
+        (status = 200, description = "The password is set and the caller signed in. Sets the `ridal_session` cookie.", body = SignedIn),
+        (status = 400, description = "`invalid_invite`, or a password that is too weak.", body = ErrorBody),
+        (status = 403, description = "`insecure_transport`: passwords are refused over plain HTTP on a network address.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Nobody)))),
+)]
+// Redeeming consumes the token, sets the password and bumps the credential
+// version.
 async fn redeem_invite(
     State(site): State<Arc<SiteState>>,
     Json(body): Json<RedeemBody>,

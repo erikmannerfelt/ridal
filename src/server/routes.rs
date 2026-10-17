@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 use super::app::{validate_radargram_id, AppState, MergeScope, NO_GROUP_ID};
 use super::auth::Caller;
+use super::needs::{Needs, Who};
 use super::templates;
 use crate::identity::RadargramId;
 use crate::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
@@ -181,6 +182,15 @@ pub(super) struct Health {
     version: &'static str,
 }
 
+/// The server is up, and the Ridal version it runs. Never requires a login,
+/// so a client can check what it is talking to before signing in.
+#[utoipa::path(
+    get,
+    path = "/api/v1/health",
+    tag = "Server",
+    responses((status = 200, description = "The server is up.", body = Health)),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Nobody)))),
+)]
 pub async fn health() -> impl IntoResponse {
     Json(Health {
         status: "ok",
@@ -188,6 +198,14 @@ pub async fn health() -> impl IntoResponse {
     })
 }
 
+/// The names of the built-in render profiles.
+#[utoipa::path(
+    get,
+    path = "/api/v1/profiles",
+    tag = "Server",
+    responses((status = 200, description = "Profile names.", body = Vec<String>)),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn list_profiles() -> impl IntoResponse {
     let names: Vec<String> = RenderProfile::built_in_profiles()
         .into_iter()
@@ -308,18 +326,37 @@ fn format_x_scale(scale: f64) -> String {
 /// while JavaScript's `String(2.0)` gives `2` -- and two pages disagreeing
 /// on an option's value is the kind of difference that only shows up when
 /// something tries to match one against the other.
-pub fn x_scale_options() -> Vec<serde_json::Value> {
+pub fn x_scale_options() -> Vec<ScaleOption> {
     X_SCALES
         .iter()
         .map(|scale| {
             let text = format_x_scale(*scale);
-            serde_json::json!({
-                "value": scale,
-                "text": text,
-                "label": format!("{text}\u{00d7}"),
-            })
+            ScaleOption {
+                value: *scale,
+                label: format!("{text}\u{00d7}"),
+                text,
+            }
         })
         .collect()
+}
+
+/// One horizontal stretch factor the viewer offers.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct ScaleOption {
+    /// The factor, to send back.
+    value: f64,
+    /// The factor as text, without a trailing `.0`: `2`, `0.25`.
+    text: String,
+    /// What a person reads: `2×`.
+    label: String,
+}
+
+/// One entry a select offers: the value to send back, and what a person
+/// reads.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct Choice {
+    value: &'static str,
+    label: &'static str,
 }
 
 /// Whether `scale` is one the viewer can actually select.
@@ -364,18 +401,18 @@ pub const LEVEL2_FORMATS: [(&str, &str); 3] = [
 pub const DEFAULT_LEVEL2_FORMAT: &str = "geojson";
 
 /// The offered spacings for a template to render as `<option>`s.
-pub fn spacing_options() -> Vec<serde_json::Value> {
+pub fn spacing_options() -> Vec<Choice> {
     LEVEL2_SPACINGS
         .iter()
-        .map(|(value, label)| serde_json::json!({ "value": value, "label": label }))
+        .map(|&(value, label)| Choice { value, label })
         .collect()
 }
 
 /// The offered formats for a template to render as `<option>`s.
-pub fn format_options() -> Vec<serde_json::Value> {
+pub fn format_options() -> Vec<Choice> {
     LEVEL2_FORMATS
         .iter()
-        .map(|(value, label)| serde_json::json!({ "value": value, "label": label }))
+        .map(|&(value, label)| Choice { value, label })
         .collect()
 }
 
