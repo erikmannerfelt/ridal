@@ -53,6 +53,7 @@ pub const SCHEMA_VERSION: &str = "1";
 
 /// Who may see and edit a derived item.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     /// Visible to everyone with viewing rights.
@@ -64,6 +65,7 @@ pub enum Scope {
 
 /// A range fill between a derived layer and another layer (#209).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct FillTo {
     /// The layer id to fill toward.
     pub target: String,
@@ -80,6 +82,7 @@ fn default_opacity() -> f64 {
 
 /// One named expression.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct DerivedItem {
     /// Stable identifier; a valid Rhai name (see
     /// [`crate::identity::sanitize_to_identifier`]) and immutable.
@@ -135,6 +138,7 @@ pub struct DerivedItem {
 /// full consensus for an operator and a personal result for a picker. That is
 /// what lets a consensus be defined and monitored while picking is still open.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Audience {
     /// Every viewer below operator gets the item over **their own** picks.
@@ -197,6 +201,7 @@ impl DerivedItem {
 
 /// The whole set of derived items.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct DerivedSet {
     #[serde(default = "default_schema")]
     pub schema: String,

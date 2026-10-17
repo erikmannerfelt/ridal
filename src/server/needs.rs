@@ -54,6 +54,11 @@ pub struct Needs {
     /// draft. Anyone else is refused, or told it does not exist.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub own: bool,
+    /// Whether the download scope is waived for the caller's own: their own
+    /// interpretation needs none, anyone else's needs `download`. Unlike
+    /// `own`, which refuses anyone else outright.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub or_own: bool,
 }
 
 impl Needs {
@@ -62,6 +67,7 @@ impl Needs {
             who,
             download: None,
             own: false,
+            or_own: false,
         }
     }
 
@@ -71,6 +77,15 @@ impl Needs {
             who: Who::Anyone,
             download: Some(scope),
             own: false,
+            or_own: false,
+        }
+    }
+
+    /// The caller's own, or anyone's with this download scope.
+    pub const fn own_or_download(scope: DownloadScope) -> Self {
+        Self {
+            or_own: true,
+            ..Self::download(scope)
         }
     }
 
@@ -118,5 +133,9 @@ mod tests {
         let json = r#"{"who":"operator","download":"all","own":true}"#;
         assert_eq!(serde_json::to_string(&mine).unwrap(), json);
         assert_eq!(serde_json::from_str::<Needs>(json).unwrap(), mine);
+        let either = Needs::own_or_download(DownloadScope::Picks);
+        let json = r#"{"who":"anyone","download":"picks","or_own":true}"#;
+        assert_eq!(serde_json::to_string(&either).unwrap(), json);
+        assert_eq!(serde_json::from_str::<Needs>(json).unwrap(), either);
     }
 }

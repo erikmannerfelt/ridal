@@ -51,6 +51,8 @@ def needs_text(needs: dict[str, Any]) -> str:
     download = needs.get("download")
     if download is None:
         return base
+    if needs.get("or_own"):
+        return f"own, or download `{download}`"
     if base == "anyone":
         return f"download `{download}`"
     return f"{base}; download `{download}`"

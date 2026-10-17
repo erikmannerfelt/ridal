@@ -191,7 +191,16 @@ pub(crate) fn layer_error(error: layers::LayerError) -> ApiError {
     }
 }
 
-/// `GET /api/v1/datasets/{id}/interpretations` -- who has interpreted this.
+/// Who has interpreted this radargram.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/interpretations",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "Who.", body = InterpretationList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn list_interpretations(
     State(state): State<Arc<AppState>>,
     Path(radargram_id): Path<String>,
@@ -219,7 +228,17 @@ pub(super) struct InterpretationList {
     writable: bool,
 }
 
-/// `GET /api/v1/datasets/{id}/interpretations/{user}`
+/// One person's interpretation, with an `ETag`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/interpretations/{user}",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "The interpretation.", body = gprinterp::Document),
+        (status = 404, description = "`interpretation_not_found`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::own_or_download(DownloadScope::Picks)))),
+)]
 pub async fn get_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
@@ -251,15 +270,25 @@ pub async fn get_interpretation(
     ))
 }
 
-/// `GET /api/v1/datasets/{id}/interpretations/{user}/carried`
-///
-/// The stored interpretation as it should be *drawn* on the revision this
-/// catalog is serving, with a report of what carrying it cost (#148).
-///
-/// A separate route rather than a flag on the read above, so the authored
-/// document is never quietly swapped for a derived one. Whoever asks for
-/// the interpretation gets the interpretation; whoever asks for the view
-/// gets the view and is told which it is.
+/// The interpretation as drawn on the radargram's current revision, when it was
+/// picked on an earlier one, with a report of what carrying it over changed.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/interpretations/{user}/carried",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "As carried.", body = CarriedView),
+        (status = 404, description = "`interpretation_not_found`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::own_or_download(DownloadScope::Picks)))),
+)]
+// The stored interpretation as it should be *drawn* on the revision this
+// catalog is serving, with a report of what carrying it cost (#148).
+//
+// A separate route rather than a flag on the read above, so the authored
+// document is never quietly swapped for a derived one. Whoever asks for
+// the interpretation gets the interpretation; whoever asks for the view
+// gets the view and is told which it is.
 pub async fn get_interpretation_carried(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
@@ -349,58 +378,75 @@ pub(super) struct CarriedView {
     document: Option<gprinterp::Document>,
 }
 
-/// Which revision the page believed it was adopting onto.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct PromoteQuery {
+    /// The revision the caller believes is current, and is adopting onto.
+    /// Required.
     #[serde(default)]
+    #[param(required = true)]
     onto: Option<String>,
 }
 
-/// `POST /api/v1/datasets/{id}/interpretations/{user}/promote`
-///
-/// Adopt the carried view as the interpretation: "I have looked at these
-/// on the current revision, they are in the right place, and they are now
-/// my picks on it."
-///
-/// # Why this is a route and not just a save
-///
-/// #148 argues at length against *migrating* interpretations, and every
-/// word of it holds: re-anchoring is approximate, writing it back would
-/// launder an approximation into ground truth, it compounds across
-/// successive replaces, and it cannot be undone. That argument is about
-/// something happening **automatically**, to everybody's picks, as a side
-/// effect of a replace.
-///
-/// This is the opposite: one person, one document, having looked at it.
-/// The three objections are answered rather than ignored —
-///
-/// - *approximate*: the document records that it was carried, in
-///   `meta.ridal_carried_from`, so the artefact itself says its
-///   coordinates were derived rather than drawn;
-/// - *compounds*: it records what it was carried **from**, so a chain is
-///   visible rather than invisible;
-/// - *irreversible*: the version as drawn is archived first.
-///
-/// # What gets stored is what was on screen
-///
-/// Including any edit made on top of the carried view. An earlier version
-/// of this recomputed the carry here and ignored the request body, on the
-/// grounds that a derived view arriving back as an authored document
-/// should not be trusted — which threw away exactly the edits somebody had
-/// just made. The reasoning was wrong: an edit made over a carried view is
-/// made by dragging a vertex across *this* revision, so it is already in
-/// this revision's index space and there is nothing to carry about it. The
-/// browser is the authority on coordinates for every ordinary save, and
-/// this is no different.
-///
-/// What the body cannot be trusted about is *which revision* it was
-/// looking at, so it says: `?onto=` must name the revision this catalog is
-/// currently serving. A tab left open across a replace then fails loudly
-/// rather than writing coordinates validated against a file that is gone.
-///
-/// The server still recomputes the carry, but only to compare — so the
-/// provenance can record whether what arrived is the carry as derived or
-/// the carry as adjusted.
+/// Adopt the carried-over interpretation, sent as the body as the caller looked
+/// at it, as the interpretation on the current revision.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets/{radargram_id}/interpretations/{user}/promote",
+    tag = "Interpretations",
+    params(PromoteQuery),
+    request_body = gprinterp::Document,
+    responses(
+        (status = 200, description = "Adopted.", body = Promoted),
+        (status = 400, description = "`onto_required`.", body = ErrorBody),
+        (status = 404, description = "`interpretation_not_found`.", body = ErrorBody),
+        (status = 409, description = "`stale_revision`: `onto` is not current; `already_current`; or `cannot_be_carried`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Picker)).own()))),
+)]
+// Adopt the carried view as the interpretation: "I have looked at these
+// on the current revision, they are in the right place, and they are now
+// my picks on it."
+//
+// # Why this is a route and not just a save
+//
+// #148 argues at length against *migrating* interpretations, and every
+// word of it holds: re-anchoring is approximate, writing it back would
+// launder an approximation into ground truth, it compounds across
+// successive replaces, and it cannot be undone. That argument is about
+// something happening **automatically**, to everybody's picks, as a side
+// effect of a replace.
+//
+// This is the opposite: one person, one document, having looked at it.
+// The three objections are answered rather than ignored —
+//
+// - *approximate*: the document records that it was carried, in
+//   `meta.ridal_carried_from`, so the artefact itself says its
+//   coordinates were derived rather than drawn;
+// - *compounds*: it records what it was carried **from**, so a chain is
+//   visible rather than invisible;
+// - *irreversible*: the version as drawn is archived first.
+//
+// # What gets stored is what was on screen
+//
+// Including any edit made on top of the carried view. An earlier version
+// of this recomputed the carry here and ignored the request body, on the
+// grounds that a derived view arriving back as an authored document
+// should not be trusted — which threw away exactly the edits somebody had
+// just made. The reasoning was wrong: an edit made over a carried view is
+// made by dragging a vertex across *this* revision, so it is already in
+// this revision's index space and there is nothing to carry about it. The
+// browser is the authority on coordinates for every ordinary save, and
+// this is no different.
+//
+// What the body cannot be trusted about is *which revision* it was
+// looking at, so it says: `?onto=` must name the revision this catalog is
+// currently serving. A tab left open across a replace then fails loudly
+// rather than writing coordinates validated against a file that is gone.
+//
+// The server still recomputes the carry, but only to compare — so the
+// provenance can record whether what arrived is the carry as derived or
+// the carry as adjusted.
 pub async fn promote_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
@@ -649,7 +695,23 @@ pub(super) struct Promoted {
     archived: Option<String>,
 }
 
-/// `PUT /api/v1/datasets/{id}/interpretations/{user}`
+/// Save the caller's interpretation. Refused if a line breaks its layer's
+/// rules, such as an overhang on a layer that does not allow them. Takes `If-
+/// Match`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/datasets/{radargram_id}/interpretations/{user}",
+    tag = "Interpretations",
+    request_body = gprinterp::Document,
+    responses(
+        (status = 200, description = "Saved over the one there was.", body = Saved),
+        (status = 201, description = "Saved, the first.", body = Saved),
+        (status = 400, description = "`invalid_interpretation` or `violation`: a line breaks its layer's rules.", body = ErrorBody),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Picker)).own()))),
+)]
 pub async fn put_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
@@ -763,7 +825,18 @@ pub(super) struct Saved {
     warnings: Vec<String>,
 }
 
-/// `DELETE /api/v1/datasets/{id}/interpretations/{user}`
+/// Delete the caller's interpretation. Takes `If-Match`.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/datasets/{radargram_id}/interpretations/{user}",
+    tag = "Interpretations",
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 404, description = "`interpretation_not_found`.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Picker)).own()))),
+)]
 pub async fn delete_interpretation(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
@@ -793,11 +866,19 @@ pub async fn delete_interpretation(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /api/v1/layers` -- the project's layer vocabulary.
-///
-/// A catalog with no project returns an empty vocabulary rather than a 404:
-/// the viewer asks for this on every page load, and a read-only catalog
-/// having no layers is a normal answer, not a failure.
+/// The project's layers, their rules and exclusivity groups, with an `ETag`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/layers",
+    tag = "Layers",
+    responses(
+        (status = 200, description = "The layers.", body = LayersView),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// A catalog with no project returns an empty vocabulary rather than a 404:
+// the viewer asks for this on every page load, and a read-only catalog
+// having no layers is a normal answer, not a failure.
 pub async fn get_layers(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -805,11 +886,11 @@ pub async fn get_layers(
     let Some(project) = state.project.as_ref() else {
         return Ok((
             [(header::ETAG, String::new())],
-            Json(serde_json::json!({
-                "layers": [],
-                "groups": [],
-                "writable": false,
-            })),
+            Json(LayersView {
+                layers: Vec::new(),
+                groups: Vec::new(),
+                writable: false,
+            }),
         ));
     };
 
@@ -819,27 +900,65 @@ pub async fn get_layers(
         .unwrap_or_else(String::new);
     Ok((
         [(header::ETAG, etag)],
-        Json(serde_json::json!({
-            "layers": set.layers,
+        Json(LayersView {
+            layers: set.layers,
             // Mutually exclusive layer groups (#208). Read here so the
             // management page can show and edit them; the derive step already
             // consumes them from the same document.
-            "groups": set.groups,
+            groups: set.groups,
             // Readable by a viewer, changeable by an operator: a picker
             // *uses* layers but does not get to invent them, or a project
             // accumulates `bed`, `Bed` and `bedrock` within a week.
-            "writable": caller.may(Role::Operator),
-        })),
+            writable: caller.may(Role::Operator),
+        }),
     ))
 }
 
-/// `GET /api/v1/datasets/{id}/interpretations/{user}/raw`
-///
-/// The stored gprinterp document, byte for byte, as a download. Distinct
-/// from the plain `GET` above, which the viewer uses and which is not a
-/// file: this one is what leaves Ridal for another tool, so it keeps
-/// whatever the file actually contains -- including fields this version
-/// does not model -- rather than a re-serialisation of what was parsed.
+/// `GET /api/v1/layers`: the project's layer vocabulary.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct LayersView {
+    layers: Vec<layers::Layer>,
+    /// Mutually exclusive groups of layers.
+    groups: Vec<layers::ExclusivityGroup>,
+    /// Whether the caller may change them (`operator`).
+    writable: bool,
+}
+
+/// `PUT /api/v1/layers`: the vocabulary as saved.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct SavedLayers {
+    layers: Vec<layers::Layer>,
+    groups: Vec<layers::ExclusivityGroup>,
+    /// The new version, as the `ETag` gives it.
+    version: String,
+}
+
+/// `GET /api/v1/layers/usage`: how many picked features use each layer.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(super) struct LayerUsage {
+    /// Features per defined layer, by id, zero included.
+    counts: std::collections::BTreeMap<String, usize>,
+    /// Features per label in use that no layer defines.
+    undefined: std::collections::BTreeMap<String, usize>,
+}
+
+/// The stored interpretation file, byte for byte. Needs the download scope even
+/// for one's own.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/interpretations/{user}/raw",
+    tag = "Interpretations",
+    responses(
+        (status = 200, description = "The file, as an attachment.", content_type = "application/json"),
+        (status = 404, description = "`interpretation_not_found`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Picks)))),
+)]
+// The stored gprinterp document, byte for byte, as a download. Distinct
+// from the plain `GET` above, which the viewer uses and which is not a
+// file: this one is what leaves Ridal for another tool, so it keeps
+// whatever the file actually contains -- including fields this version
+// does not model -- rather than a re-serialisation of what was parsed.
 pub async fn get_interpretation_raw(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
@@ -893,7 +1012,8 @@ pub async fn get_interpretation_raw(
 /// Derived from the *stored* interpretation rather than from anything the
 /// browser holds, so what is downloaded is exactly what was saved. The
 /// picker hides the link while there are unsaved picks for the same reason.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct Level2Query {
     /// "auto", "per-trace", "vertices", or a distance in metres.
     #[serde(default)]
@@ -906,16 +1026,16 @@ pub struct Level2Query {
     /// Ignored for CSV, which carries both regardless.
     #[serde(default)]
     crs: Option<String>,
-    /// Whose picks a *merged* download covers. Ignored by the single-user
-    /// route, which names its user in the path.
-    ///
-    /// Defaults to the caller's own, which is what "download my level 2
-    /// points for this group" means and what the button in the UI sends. An
-    /// anonymous reader has no "own", so they have to name someone.
+    /// Whose picks a merged download covers; the caller's own when left
+    /// out. Ignored by the single-user route, which names its user in the
+    /// path.
+    // The caller's own is what "download my level 2 points for this group"
+    // means and what the button in the UI sends. An anonymous reader has no
+    // "own", so they have to name someone.
     #[serde(default)]
     user: Option<String>,
-    /// Admin only: one file with every contributor's points, each row still
-    /// tagged with its user. Off by default; the server checks the role.
+    /// `admin` only: one file with every contributor's points, each row
+    /// still tagged with its user.
     #[serde(default)]
     every_user: bool,
     /// Export the computed derived layers instead of the picked points.
@@ -928,6 +1048,19 @@ pub struct Level2Query {
     include_unlisted: bool,
 }
 
+/// One person's picked layers as points, from what is saved. `every_user`
+/// (`admin` only) exports every contributor instead.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/interpretations/{user}/level2",
+    tag = "Level 2 points",
+    params(Level2Query),
+    responses(
+        (status = 200, description = "The points, as an attachment.", content(("application/geo+json"), ("text/csv"))),
+        (status = 404, description = "`interpretation_not_found`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Derived)))),
+)]
 pub async fn interpretation_level2(
     State(state): State<Arc<AppState>>,
     Path((radargram_id, user)): Path<(String, String)>,
@@ -1715,16 +1848,29 @@ pub async fn put_settings(
         description_long: project.description_long(),
     }))
 }
-/// `GET /api/v1/groups/{group}/level2` -- every interpreted radargram in a
-/// group, merged into one file.
-///
-/// Concatenation, not reconciliation: each point already names its own
-/// radargram and revision, so the merge adds nothing and loses nothing.
-///
-/// Radargrams nobody has interpreted are skipped rather than erroring --
-/// a group is a survey, and part of one being unpicked is its normal
-/// state. If *none* are, that is worth saying rather than handing back an
-/// empty file.
+/// Every interpreted radargram in a group, merged: one person's picks (`user`,
+/// by default the caller), every contributor's (`every_user`, `admin` only), or
+/// the derived layers (`derived`).
+#[utoipa::path(
+    get,
+    path = "/api/v1/groups/{group}/level2",
+    tag = "Level 2 points",
+    params(Level2Query),
+    responses(
+        (status = 200, description = "The points, as an attachment.", content(("application/geo+json"), ("text/csv"))),
+        (status = 404, description = "Nobody has interpreted any of them.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Derived)))),
+)]
+// group, merged into one file.
+//
+// Concatenation, not reconciliation: each point already names its own
+// radargram and revision, so the merge adds nothing and loses nothing.
+//
+// Radargrams nobody has interpreted are skipped rather than erroring --
+// a group is a survey, and part of one being unpicked is its normal
+// state. If *none* are, that is worth saying rather than handing back an
+// empty file.
 pub async fn group_level2(
     State(state): State<Arc<AppState>>,
     Path(group): Path<String>,
@@ -1734,8 +1880,19 @@ pub async fn group_level2(
     merged_level2_offloaded(state, caller, MergeScope::Group(group), query).await
 }
 
-/// `GET /api/v1/catalog/level2` -- every interpreted radargram the server
-/// knows about, merged. The catalog-wide half of [`merged_level2`].
+/// Every interpreted radargram being served, merged, as the group export does.
+#[utoipa::path(
+    get,
+    path = "/api/v1/catalog/level2",
+    tag = "Level 2 points",
+    params(Level2Query),
+    responses(
+        (status = 200, description = "The points, as an attachment.", content(("application/geo+json"), ("text/csv"))),
+        (status = 404, description = "Nobody has interpreted any of them.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::Derived)))),
+)]
+// knows about, merged. The catalog-wide half of [`merged_level2`].
 pub async fn catalog_level2(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -2023,17 +2180,26 @@ fn merged_level2(
     Ok((headers, body))
 }
 
-/// `GET /api/v1/layers/usage` -- how many picked features use each layer.
-///
-/// Exists so the management page can say what deleting a layer would
-/// orphan, before it is deleted rather than after. Also reports labels in
-/// use that the vocabulary does not define, which is the same information
-/// `ridal project info` prints.
-///
-/// Scans every stored interpretation. That is a directory walk plus a JSON
-/// parse per document, which is fine at the scale this serves (a project has
-/// tens to low hundreds of radargrams, and each document is small) and is
-/// only requested when someone opens the layers page.
+/// How many picked features use each layer, and labels in use that no layer
+/// defines.
+#[utoipa::path(
+    get,
+    path = "/api/v1/layers/usage",
+    tag = "Layers",
+    responses(
+        (status = 200, description = "The counts.", body = LayerUsage),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// Exists so the management page can say what deleting a layer would
+// orphan, before it is deleted rather than after. Also reports labels in
+// use that the vocabulary does not define, which is the same information
+// `ridal project info` prints.
+//
+// Scans every stored interpretation. That is a directory walk plus a JSON
+// parse per document, which is fine at the scale this serves (a project has
+// tens to low hundreds of radargrams, and each document is small) and is
+// only requested when someone opens the layers page.
 pub async fn layer_usage(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -2071,13 +2237,23 @@ pub async fn layer_usage(
         counts.entry(layer.id.clone()).or_insert(0);
     }
 
-    Ok(Json(serde_json::json!({
-        "counts": counts,
-        "undefined": undefined,
-    })))
+    Ok(Json(LayerUsage { counts, undefined }))
 }
 
-/// `PUT /api/v1/layers` -- replace the vocabulary.
+/// Replace the layer definitions: the whole document, a bare array of layers,
+/// or `{layers, groups}`, keeping what is left out. Takes `If-Match`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/layers",
+    tag = "Layers",
+    request_body = layers::LayerSet,
+    responses(
+        (status = 200, description = "Saved.", body = SavedLayers),
+        (status = 400, description = "`invalid_layers`.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn put_layers(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -2128,11 +2304,11 @@ pub async fn put_layers(
     Ok((
         StatusCode::OK,
         [(header::ETAG, format!("\"{version}\""))],
-        Json(serde_json::json!({
-            "layers": set.layers,
-            "groups": set.groups,
-            "version": version.as_str(),
-        })),
+        Json(SavedLayers {
+            layers: set.layers,
+            groups: set.groups,
+            version: version.as_str().to_string(),
+        }),
     ))
 }
 

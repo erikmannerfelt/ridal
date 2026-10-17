@@ -673,8 +673,11 @@ hand-written ones.
   path; the docs show them in the project's shape again.
 - **Permissions are declared and tested, not inferred.** Each operation
   carries `x-ridal-needs` (`src/server/needs.rs`): `nobody`, `anyone`,
-  `signed_in`, or a role, optionally a download scope, and `own` for an
-  operation only on what the caller made (a draft, a batch's report). The spec derives
+  `signed_in`, or a role, optionally a download scope, `own` for an
+  operation only on what the caller made (a draft, a batch's report, their
+  own interpretation), and `or_own` where the download scope is waived for
+  the caller's own (reading an interpretation: one's own, or anyone's with
+  `picks`). The spec derives
   each operation's 401/403/409 responses from it, the docs render the *Needs* column from it, and
   `needs_tests` sends every operation the same request as a caller just
   below the declaration on each axis it names (who must be refused) and one
@@ -684,7 +687,8 @@ hand-written ones.
   requests, each answer filling the path parameters and bodies after it
   (upload raw files, then name them in a source, then draft it); for an
   `own` operation the setup runs as the caller probed at, and a second
-  account with the same role must be refused. A shell script stands in for
+  account with the same role must be refused. `{user}` is always the
+  account the setup acted as. A shell script stands in for
   `ridal process-job` on Unix, so drafts and batches finish; elsewhere the
   cases that need a finished job are skipped.
 - **Path parameters are described once**, in `openapi::PATH_PARAMETERS`,

@@ -287,6 +287,134 @@
         }
       }
     },
+    "/api/v1/projects/{key}/catalog/level2": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Level 2 points"
+        ],
+        "summary": "Every interpreted radargram being served, merged, as the group export does.",
+        "operationId": "catalog_level2",
+        "parameters": [
+          {
+            "name": "spacing",
+            "in": "query",
+            "description": "\"auto\", \"per-trace\", \"vertices\", or a distance in metres.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "\"geojson\" (default) or \"csv\".",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "crs",
+            "in": "query",
+            "description": "Coordinates for the GeoJSON geometry: absent for WGS84, \"native\" for\nthe radargram's own projected CRS, or any CRS string PROJ accepts.\nIgnored for CSV, which carries both regardless.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "description": "Whose picks a merged download covers; the caller's own when left\nout. Ignored by the single-user route, which names its user in the\npath.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "every_user",
+            "in": "query",
+            "description": "`admin` only: one file with every contributor's points, each row\nstill tagged with its user.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "derived",
+            "in": "query",
+            "description": "Export the computed derived layers instead of the picked points.\nOnly the merged (group/catalog) route reads this; the single-radargram\nderived export has its own route.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "include_unlisted",
+            "in": "query",
+            "description": "When `derived`, include derived layers marked \"not listed\".",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The points, as an attachment.",
+            "content": {
+              "application/geo+json": {},
+              "text/csv": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nobody has interpreted any of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "derived"
+        }
+      }
+    },
     "/api/v1/projects/{key}/catalog/track.geojson": {
       "parameters": [
         {
@@ -796,6 +924,400 @@
         }
       }
     },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/contributors": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Derived items"
+        ],
+        "summary": "The interpretations the caller may see, for the layer panel.",
+        "operationId": "get_contributors",
+        "responses": {
+          "200": {
+            "description": "The interpretations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Contributors"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/derived": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Derived items"
+        ],
+        "summary": "Every derived item the caller may see, as a long-format CSV: one row per\nitem per position.",
+        "operationId": "download_derived",
+        "responses": {
+          "200": {
+            "description": "The CSV, as an attachment.",
+            "content": {
+              "text/csv": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "results"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/derived/level2": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Level 2 points"
+        ],
+        "summary": "Derived layers as points.",
+        "operationId": "derived_level2",
+        "parameters": [
+          {
+            "name": "spacing",
+            "in": "query",
+            "description": "`auto`, `per-trace`, `vertices`, or a distance in metres.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`geojson` (default) or `csv`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "crs",
+            "in": "query",
+            "description": "Coordinates for the GeoJSON geometry: absent for WGS84, `native` for\nthe radargram's own projected CRS, or any CRS PROJ accepts.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_unlisted",
+            "in": "query",
+            "description": "Include derived layers marked \"not listed\". Off by default, matching\nthe viewer panel: unlisted means \"keep it out of the way\", so an\nexport takes the same set unless asked otherwise.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The points, as an attachment.",
+            "content": {
+              "application/geo+json": {},
+              "text/csv": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "results"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/derived/preview": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Derived items"
+        ],
+        "summary": "Evaluate an unsaved expression over the caller's picks, without storing\nanything.",
+        "operationId": "preview_derived",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Its values.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_expression`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "results"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/derived/{item}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "item",
+          "in": "path",
+          "description": "A derived item's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Derived items"
+        ],
+        "summary": "One derived item's values along the radargram.",
+        "operationId": "get_derived_item",
+        "responses": {
+          "200": {
+            "description": "Its values.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DerivedValues"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`derived_failed`: it cannot be evaluated here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not_your_item`: someone else's private item.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`derived_item_not_found`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "results"
+        }
+      }
+    },
     "/api/v1/projects/{key}/datasets/{radargram_id}/download": {
       "parameters": [
         {
@@ -982,6 +1504,844 @@
         "x-ridal-needs": {
           "who": "anyone",
           "download": "derived"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Who has interpreted this radargram.",
+        "operationId": "list_interpretations",
+        "responses": {
+          "200": {
+            "description": "Who.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterpretationList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "user",
+          "in": "path",
+          "description": "An account name: whose interpretation it is.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "One person's interpretation, with an `ETag`.",
+        "operationId": "get_interpretation",
+        "responses": {
+          "200": {
+            "description": "The interpretation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Document"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`interpretation_not_found`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "picks",
+          "or_own": true
+        }
+      },
+      "put": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Save the caller's interpretation. Refused if a line breaks its layer's\nrules, such as an overhang on a layer that does not allow them. Takes `If-\nMatch`.",
+        "operationId": "put_interpretation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Document"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved over the one there was.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Saved"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Saved, the first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Saved"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_interpretation` or `violation`: a line breaks its layer's rules.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "picker",
+          "own": true
+        }
+      },
+      "delete": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Delete the caller's interpretation. Takes `If-Match`.",
+        "operationId": "delete_interpretation",
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`interpretation_not_found`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "picker",
+          "own": true
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}/archive": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "user",
+          "in": "path",
+          "description": "An account name: whose interpretation it is.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Move someone's interpretation into the archive, where it stays attributed\nuntil purged. Takes `If-Match`.",
+        "operationId": "archive_interpretation",
+        "responses": {
+          "200": {
+            "description": "Archived.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivedInterpretation"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`interpretation_not_found`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}/carried": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "user",
+          "in": "path",
+          "description": "An account name: whose interpretation it is.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "The interpretation as drawn on the radargram's current revision, when it was\npicked on an earlier one, with a report of what carrying it over changed.",
+        "operationId": "get_interpretation_carried",
+        "responses": {
+          "200": {
+            "description": "As carried.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CarriedView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`interpretation_not_found`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "picks",
+          "or_own": true
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}/level2": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Level 2 points"
+        ],
+        "summary": "One person's picked layers as points, from what is saved. `every_user`\n(`admin` only) exports every contributor instead.",
+        "operationId": "interpretation_level2",
+        "parameters": [
+          {
+            "name": "spacing",
+            "in": "query",
+            "description": "\"auto\", \"per-trace\", \"vertices\", or a distance in metres.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "\"geojson\" (default) or \"csv\".",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "crs",
+            "in": "query",
+            "description": "Coordinates for the GeoJSON geometry: absent for WGS84, \"native\" for\nthe radargram's own projected CRS, or any CRS string PROJ accepts.\nIgnored for CSV, which carries both regardless.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "description": "Whose picks a merged download covers; the caller's own when left\nout. Ignored by the single-user route, which names its user in the\npath.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "every_user",
+            "in": "query",
+            "description": "`admin` only: one file with every contributor's points, each row\nstill tagged with its user.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "derived",
+            "in": "query",
+            "description": "Export the computed derived layers instead of the picked points.\nOnly the merged (group/catalog) route reads this; the single-radargram\nderived export has its own route.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "include_unlisted",
+            "in": "query",
+            "description": "When `derived`, include derived layers marked \"not listed\".",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The points, as an attachment.",
+            "content": {
+              "application/geo+json": {},
+              "text/csv": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`interpretation_not_found`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "derived"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}/promote": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "user",
+          "in": "path",
+          "description": "An account name: whose interpretation it is.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Adopt the carried-over interpretation, sent as the body as the caller looked\nat it, as the interpretation on the current revision.",
+        "operationId": "promote_interpretation",
+        "parameters": [
+          {
+            "name": "onto",
+            "in": "query",
+            "description": "The revision the caller believes is current, and is adopting onto.\nRequired.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Document"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Adopted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Promoted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`onto_required`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`interpretation_not_found`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`stale_revision`: `onto` is not current; `already_current`; or `cannot_be_carried`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "picker",
+          "own": true
+        }
+      }
+    },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/interpretations/{user}/raw": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "user",
+          "in": "path",
+          "description": "An account name: whose interpretation it is.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "The stored interpretation file, byte for byte. Needs the download scope even\nfor one's own.",
+        "operationId": "get_interpretation_raw",
+        "responses": {
+          "200": {
+            "description": "The file, as an attachment.",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`interpretation_not_found`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "picks"
         }
       }
     },
@@ -2533,6 +3893,113 @@
         }
       }
     },
+    "/api/v1/projects/{key}/derived": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Derived items"
+        ],
+        "summary": "The derived items the caller may see, with an `ETag`.",
+        "operationId": "get_derived",
+        "responses": {
+          "200": {
+            "description": "The items.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DerivedItems"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "put": {
+        "tags": [
+          "Derived items"
+        ],
+        "summary": "Replace the derived items. Project-wide items need `operator`; a private\nitem can only be saved by its owner, and releasing a result computed from\nother people's picks to everyone needs `admin`. Takes `If-Match`.",
+        "operationId": "put_derived",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DerivedSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedDerived"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An item that cannot be saved, such as a cycle between items.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      }
+    },
     "/api/v1/projects/{key}/drafts": {
       "parameters": [
         {
@@ -3028,6 +4495,143 @@
         }
       }
     },
+    "/api/v1/projects/{key}/groups/{group}/level2": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "group",
+          "in": "path",
+          "description": "A group's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Level 2 points"
+        ],
+        "summary": "Every interpreted radargram in a group, merged: one person's picks (`user`,\nby default the caller), every contributor's (`every_user`, `admin` only), or\nthe derived layers (`derived`).",
+        "operationId": "group_level2",
+        "parameters": [
+          {
+            "name": "spacing",
+            "in": "query",
+            "description": "\"auto\", \"per-trace\", \"vertices\", or a distance in metres.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "\"geojson\" (default) or \"csv\".",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "crs",
+            "in": "query",
+            "description": "Coordinates for the GeoJSON geometry: absent for WGS84, \"native\" for\nthe radargram's own projected CRS, or any CRS string PROJ accepts.\nIgnored for CSV, which carries both regardless.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "description": "Whose picks a merged download covers; the caller's own when left\nout. Ignored by the single-user route, which names its user in the\npath.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "every_user",
+            "in": "query",
+            "description": "`admin` only: one file with every contributor's points, each row\nstill tagged with its user.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "derived",
+            "in": "query",
+            "description": "Export the computed derived layers instead of the picked points.\nOnly the merged (group/catalog) route reads this; the single-radargram\nderived export has its own route.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "include_unlisted",
+            "in": "query",
+            "description": "When `derived`, include derived layers marked \"not listed\".",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The points, as an attachment.",
+            "content": {
+              "application/geo+json": {},
+              "text/csv": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Nobody has interpreted any of them.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "derived"
+        }
+      }
+    },
     "/api/v1/projects/{key}/groups/{group}/properties": {
       "parameters": [
         {
@@ -3370,6 +4974,621 @@
         },
         "x-ridal-needs": {
           "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/interpretations": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Every stored interpretation as statistics: lines, vertices, layers and the\npercentage of traces covered, with whether it is on the current revision, an\nearlier one, or archived by a removal. A caller below `operator` gets only\ntheir own. No picks are returned, so no download scope is needed.",
+        "operationId": "list_summaries",
+        "responses": {
+          "200": {
+            "description": "The interpretations.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterpretationSummaryList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/interpretations/archived/{radargram_id}/{removal}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "removal",
+          "in": "path",
+          "description": "An archive entry: the removal or archiving that put the interpretation there, as a summary row's `removal` gives it.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "delete": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Permanently delete every archived interpretation from one removal or\narchiving.",
+        "operationId": "purge_removal",
+        "responses": {
+          "200": {
+            "description": "What was deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Purged"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/interpretations/archived/{radargram_id}/{removal}/{user}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "removal",
+          "in": "path",
+          "description": "An archive entry: the removal or archiving that put the interpretation there, as a summary row's `removal` gives it.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "user",
+          "in": "path",
+          "description": "An account name: whose interpretation it is.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "One archived interpretation file, byte for byte.",
+        "operationId": "download_archived",
+        "responses": {
+          "200": {
+            "description": "The file, as an attachment.",
+            "content": {
+              "application/json": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such archived interpretation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "picks"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Permanently delete one archived interpretation.",
+        "operationId": "purge_one",
+        "responses": {
+          "200": {
+            "description": "What was deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Purged"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/interpretations/archived/{radargram_id}/{removal}/{user}/restore": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "removal",
+          "in": "path",
+          "description": "An archive entry: the removal or archiving that put the interpretation there, as a summary row's `removal` gives it.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "user",
+          "in": "path",
+          "description": "An account name: whose interpretation it is.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Move an archived interpretation back onto its radargram, as it was archived.",
+        "operationId": "restore_archived",
+        "responses": {
+          "200": {
+            "description": "Restored.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoredInterpretation"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such archived interpretation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_in_catalog`: the radargram is not served, or `interpretation_exists`: the user has picks on it now.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "admin"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/interpretations/download": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Interpretations"
+        ],
+        "summary": "Several interpretation files, live or archived, byte for byte in one zip,\nlaid out as under `interpretations/`. The zip's `manifest.json` lists what\nit holds and what was named but not found.",
+        "operationId": "download_bulk",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkDownloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The zip, as an attachment.",
+            "content": {
+              "application/zip": {}
+            }
+          },
+          "400": {
+            "description": "`nothing_selected`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "picks"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/layers": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Layers"
+        ],
+        "summary": "The project's layers, their rules and exclusivity groups, with an `ETag`.",
+        "operationId": "get_layers",
+        "responses": {
+          "200": {
+            "description": "The layers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayersView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "put": {
+        "tags": [
+          "Layers"
+        ],
+        "summary": "Replace the layer definitions: the whole document, a bare array of layers,\nor `{layers, groups}`, keeping what is left out. Takes `If-Match`.",
+        "operationId": "put_layers",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LayerSet"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedLayers"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_layers`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`not_a_project`: the server is serving files that are not a project.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/layers/usage": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Layers"
+        ],
+        "summary": "How many picked features use each layer, and labels in use that no layer\ndefines.",
+        "operationId": "layer_usage",
+        "responses": {
+          "200": {
+            "description": "The counts.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LayerUsage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
         }
       }
     },
@@ -5466,6 +7685,14 @@
           }
         }
       },
+      "Audience": {
+        "type": "string",
+        "description": "Whose picks an item is evaluated over, for a viewer who cannot already see\neveryone's picks.\n\nThis is the axis that decides whether a result is a *personal* readout or a\n*cross-user* one, and it is deliberately separate from [`Scope`], which\ndecides who can see the item exists at all. The distinction matters because\na consensus computed over other people's picks is the one thing a picker\nmust not see mid-experiment: seeing it would tell them what everyone else\nconcluded, which is exactly the bias the study design exists to avoid.\n\nNote that `OwnPicks` is not a restriction on the *item*, it is a promise\nabout what a given viewer gets: the same project-wide definition yields the\nfull consensus for an operator and a personal result for a picker. That is\nwhat lets a consensus be defined and monitored while picking is still open.",
+        "enum": [
+          "own_picks",
+          "released"
+        ]
+      },
       "Axes": {
         "type": "object",
         "properties": {
@@ -6002,6 +8229,73 @@
           }
         }
       },
+      "Contributor": {
+        "type": "object",
+        "description": "One person's interpretation of the radargram, for the layer panel.",
+        "required": [
+          "user",
+          "own",
+          "document",
+          "view",
+          "carry"
+        ],
+        "properties": {
+          "user": {
+            "type": "string"
+          },
+          "own": {
+            "type": "boolean",
+            "description": "Whether it is the caller's."
+          },
+          "document": {
+            "$ref": "#/components/schemas/Document",
+            "description": "As stored."
+          },
+          "view": {
+            "$ref": "#/components/schemas/Document",
+            "description": "As drawn on the current revision: carried there, if it was picked on\nan earlier one."
+          },
+          "carry": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CarryReport",
+                "description": "What carrying it changed, or `null` when the radargram is not\nserved."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Contributors": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/contributors`.",
+        "required": [
+          "can_see_others",
+          "documents",
+          "unreadable"
+        ],
+        "properties": {
+          "can_see_others": {
+            "type": "boolean",
+            "description": "Whether the caller sees everyone's picks, or only their own."
+          },
+          "documents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Contributor"
+            }
+          },
+          "unreadable": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Interpretations left out because their file name is not a valid user\nid."
+          }
+        }
+      },
       "Convention": {
         "type": "object",
         "description": "Indexing conventions (SPEC §7.3). The permitted values are fixed, and a validating reader rejects anything else.",
@@ -6460,6 +8754,241 @@
         ],
         "description": "A DEM, as the list and the single view give it."
       },
+      "DerivedItem": {
+        "type": "object",
+        "description": "One named expression.",
+        "required": [
+          "id",
+          "name",
+          "expression"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable identifier; a valid Rhai name (see\n[`crate::identity::sanitize_to_identifier`]) and immutable."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "expression": {
+            "type": "string",
+            "description": "The expression, in Rhai."
+          },
+          "unit": {
+            "$ref": "#/components/schemas/Unit",
+            "description": "The unit the expression is written in."
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hex colour, same validation as [`crate::project::layers::Layer::color`]."
+          },
+          "show": {
+            "type": "boolean",
+            "description": "Whether the viewer shows it by default. Off, because a new expression\nis more likely to be wrong than the layers it is built from."
+          },
+          "listed": {
+            "type": "boolean",
+            "description": "Whether the item appears in the viewer's layer panel at all.\n\nOn by default. An intermediate layer -- one that exists only as an\ninput to another derived item -- can be unlisted so it does not clutter\nthe panel; it stays usable in expressions and stays on the /layers\npage. Distinct from `show`, which is only the initial drawn state of an\nitem that *is* listed."
+          },
+          "fill_to": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FillTo",
+                "description": "Optional range fill (#209)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "audience": {
+            "$ref": "#/components/schemas/Audience",
+            "description": "Whose picks feed this item, for viewers who cannot already see\neveryone's picks (below the operator role)."
+          }
+        },
+        "additionalProperties": {}
+      },
+      "DerivedItemView": {
+        "type": "object",
+        "description": "One derived item, with what it was inferred to be.",
+        "required": [
+          "id",
+          "name",
+          "expression",
+          "unit",
+          "kind",
+          "color",
+          "show",
+          "listed",
+          "used_by",
+          "fill_to",
+          "scope",
+          "audience"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "expression": {
+            "type": "string"
+          },
+          "unit": {
+            "$ref": "#/components/schemas/Unit"
+          },
+          "kind": {
+            "type": "string",
+            "description": "`layer` or `attribute`, or why it cannot be evaluated, as\n`error: …`."
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "show": {
+            "type": "boolean"
+          },
+          "listed": {
+            "type": "boolean"
+          },
+          "used_by": {
+            "type": "integer",
+            "description": "How many other items use it.",
+            "minimum": 0
+          },
+          "fill_to": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FillTo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "audience": {
+            "$ref": "#/components/schemas/Audience"
+          }
+        }
+      },
+      "DerivedItems": {
+        "type": "object",
+        "description": "`GET /api/v1/derived`: the derived items the caller may see.",
+        "required": [
+          "items",
+          "layers_unusable_in_expressions",
+          "can_author",
+          "can_release"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DerivedItemView"
+            }
+          },
+          "layers_unusable_in_expressions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Layers whose ids an expression cannot name."
+          },
+          "can_author": {
+            "type": "boolean",
+            "description": "Whether the caller may author project-wide items (`operator`)."
+          },
+          "can_release": {
+            "type": "boolean",
+            "description": "Whether the caller may release a cross-user result (`admin`)."
+          }
+        }
+      },
+      "DerivedSet": {
+        "type": "object",
+        "description": "The whole set of derived items.",
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DerivedItem"
+            }
+          }
+        },
+        "additionalProperties": {}
+      },
+      "DerivedValues": {
+        "type": "object",
+        "description": "`GET /api/v1/datasets/{radargram_id}/derived/{item}`: one item's values\nalong the radargram.",
+        "required": [
+          "radargram_id",
+          "id",
+          "kind",
+          "unit",
+          "trace",
+          "values",
+          "not_carried"
+        ],
+        "properties": {
+          "radargram_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/Kind"
+          },
+          "unit": {
+            "$ref": "#/components/schemas/Unit"
+          },
+          "trace": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "The trace each value is at."
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "description": "One value per trace, `null` where there is none."
+          },
+          "not_carried": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Users whose picks could not be carried onto the current revision and\nwere used as stored."
+          }
+        }
+      },
       "Displacement": {
         "type": "object",
         "description": "How far the carried coordinates moved, in index units.\n\nTraces and samples rather than metres or nanoseconds, because that is\nwhat the viewer draws in and what \"did this pick move\" means on screen.\nThe median says whether the revisions broadly agree; the worst says\nwhether any single vertex went somewhere else, which an average would\nhide behind a thousand that did not.",
@@ -6773,6 +9302,33 @@
             "type": "string",
             "description": "For a person to read. The wording may change between releases."
           }
+        }
+      },
+      "ExclusivityGroup": {
+        "type": "object",
+        "description": "A set of layers that cannot all hold a value for one user at one position\n(#208).\n\nMembership is deliberately *not* transitive: in the Svalbard setup `bed`\nand `bed_no_temperate` are exclusive, and `bed_no_temperate` and\n`temperate_ice` are exclusive, but `bed` and `temperate_ice` coexist. Two\nlayers conflict iff they share at least one group.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable id. A layer may list it in [`Layer::groups`]."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The layers that are mutually exclusive within this group."
+          }
+        },
+        "additionalProperties": {
+          "description": "Anything a future version adds, preserved on rewrite."
         }
       },
       "Feature": {
@@ -7209,6 +9765,30 @@
           "data",
           "coordinates"
         ]
+      },
+      "FillTo": {
+        "type": "object",
+        "description": "A range fill between a derived layer and another layer (#209).",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "The layer id to fill toward."
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Fill colour; falls back to the item's own colour when absent."
+          },
+          "opacity": {
+            "type": "number",
+            "format": "double"
+          }
+        }
       },
       "Geometry": {
         "oneOf": [
@@ -8040,6 +10620,111 @@
         ],
         "description": "[`JobStatus`] without what is the server's business: where its files\nare, and the key it was queued under."
       },
+      "Kind": {
+        "type": "string",
+        "description": "What an expression's value means (#205).\n\nTwo kinds, not three. An earlier `Length`/`Scalar` split was never acted on\nby any branch — the only decisions are \"is it a layer\" — and the stored\n`unit` already distinguishes a thickness from a count, so the extra terms\nonly reached the UI and confused it. A **Layer** is a drawable position; an\n**Attribute** is a number per position (a length, a count, a spread).",
+        "enum": [
+          "layer",
+          "attribute"
+        ]
+      },
+      "Layer": {
+        "type": "object",
+        "description": "One layer definition.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Stable slug. Written into gprinterp `properties.label`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Display name. Cosmetic; safe to change at any time."
+          },
+          "color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CSS colour used to draw the layer in the viewer."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "allow_overhangs": {
+            "type": "boolean",
+            "description": "Permit lines in this layer to double back in trace.\n\nOff by default, because a reflector has one depth per position and a\nline that overhangs is usually a mis-click. Some layers legitimately\ndo overhang -- a crevasse wall, a water-body outline -- which is why\nit is a property of the layer rather than of Ridal.\n\nTurning it on has a cost: such a layer cannot be exported at even\nspacing along the ground track, because that works by asking the line\nfor its depth at a position, which is the question an overhang has\ntwo answers to. It exports as its own picked vertices instead. See\n[`crate::interp::checks`]."
+          },
+          "reducer": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Reducer",
+                "description": "How to collapse several picked values for one user at one position to\none. `None` inherits [`LayerSet::default_reducer`].\n\nReducers apply at **evaluation time only**: stored picks are never\nrewritten, so changing a reducer is non-destructive and reversible."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warn_on_duplicates": {
+            "type": "boolean",
+            "description": "Whether more than one value for this layer at one trace is worth\npointing out.\n\nOff for a layer that is legitimately multi-valued -- folded englacial\nreflectors, say -- where a duplicate is the point rather than a\nmistake."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the exclusivity groups this layer belongs to (#208).\n\nMembership is defined by [`ExclusivityGroup::members`]; this list is\nthe same relation seen from the layer, and the two are unioned when\nconflicts are computed."
+          }
+        },
+        "additionalProperties": {
+          "description": "Anything a future version adds, preserved on rewrite."
+        }
+      },
+      "LayerSet": {
+        "type": "object",
+        "description": "The whole vocabulary.",
+        "properties": {
+          "schema": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "string"
+          },
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Layer"
+            }
+          },
+          "default_reducer": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Reducer",
+                "description": "The reducer a layer inherits when it does not set its own (#207)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExclusivityGroup"
+            },
+            "description": "Mutually exclusive layer groups (#208)."
+          }
+        },
+        "additionalProperties": {}
+      },
       "LayerSummary": {
         "type": "object",
         "description": "One layer within an [`InterpretationSummary`].",
@@ -8071,6 +10756,66 @@
               "null"
             ],
             "format": "double"
+          }
+        }
+      },
+      "LayerUsage": {
+        "type": "object",
+        "description": "`GET /api/v1/layers/usage`: how many picked features use each layer.",
+        "required": [
+          "counts",
+          "undefined"
+        ],
+        "properties": {
+          "counts": {
+            "type": "object",
+            "description": "Features per defined layer, by id, zero included.",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "undefined": {
+            "type": "object",
+            "description": "Features per label in use that no layer defines.",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "LayersView": {
+        "type": "object",
+        "description": "`GET /api/v1/layers`: the project's layer vocabulary.",
+        "required": [
+          "layers",
+          "groups",
+          "writable"
+        ],
+        "properties": {
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Layer"
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExclusivityGroup"
+            },
+            "description": "Mutually exclusive groups of layers."
+          },
+          "writable": {
+            "type": "boolean",
+            "description": "Whether the caller may change them (`operator`)."
           }
         }
       },
@@ -9136,6 +11881,79 @@
           }
         }
       },
+      "Preview": {
+        "type": "object",
+        "description": "`POST /api/v1/datasets/{radargram_id}/derived/preview`: an unsaved\nexpression's values.",
+        "required": [
+          "kind",
+          "unit",
+          "values",
+          "contributors",
+          "unknown_users",
+          "not_carried"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/Kind"
+          },
+          "unit": {
+            "$ref": "#/components/schemas/Unit"
+          },
+          "values": {
+            "type": "array",
+            "items": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "description": "One value per position, `null` where there is none."
+          },
+          "contributors": {
+            "type": "integer",
+            "description": "How many people's picks went into it.",
+            "minimum": 0
+          },
+          "unknown_users": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Users the expression names whose picks it did not have."
+          },
+          "not_carried": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Users whose picks could not be carried onto the current revision and\nwere used as stored."
+          }
+        }
+      },
+      "PreviewBody": {
+        "type": "object",
+        "description": "The body of `POST /api/v1/datasets/{radargram_id}/derived/preview`: an\nexpression, evaluated over the caller's picks as a saved item would be.",
+        "required": [
+          "expression"
+        ],
+        "properties": {
+          "expression": {
+            "type": "string"
+          },
+          "unit": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Unit",
+                "description": "The unit it is written in. Default: metres."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "PrimaryAxis": {
         "type": "object",
         "properties": {
@@ -10149,6 +12967,16 @@
           }
         }
       },
+      "Reducer": {
+        "type": "string",
+        "description": "How to collapse several picked values for one user at one position into\none, at evaluation time (#207).\n\n`Shallowest` is the project default: stray picks on multiples and ringing\nlie *below* the true reflector, so the minimum depth is the defensible\nchoice.",
+        "enum": [
+          "shallowest",
+          "deepest",
+          "median",
+          "mean"
+        ]
+      },
       "RelatedFiles": {
         "type": "object",
         "required": [
@@ -10499,6 +13327,46 @@
           }
         }
       },
+      "SavedDerived": {
+        "type": "object",
+        "description": "`PUT /api/v1/derived`: the set as saved.",
+        "required": [
+          "version"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "The new version, as the `ETag` gives it."
+          }
+        }
+      },
+      "SavedLayers": {
+        "type": "object",
+        "description": "`PUT /api/v1/layers`: the vocabulary as saved.",
+        "required": [
+          "layers",
+          "groups",
+          "version"
+        ],
+        "properties": {
+          "layers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Layer"
+            }
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExclusivityGroup"
+            }
+          },
+          "version": {
+            "type": "string",
+            "description": "The new version, as the `ETag` gives it."
+          }
+        }
+      },
       "SavedSettings": {
         "type": "object",
         "description": "`PUT /api/v1/settings`: the project's defaults as saved.",
@@ -10628,6 +13496,39 @@
             "description": "What a person reads: `2×`."
           }
         }
+      },
+      "Scope": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Visible to everyone with viewing rights.",
+            "enum": [
+              "project"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "Visible only to its owner.",
+            "required": [
+              "private"
+            ],
+            "properties": {
+              "private": {
+                "type": "object",
+                "description": "Visible only to its owner.",
+                "required": [
+                  "user"
+                ],
+                "properties": {
+                  "user": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "Who may see and edit a derived item."
       },
       "SettingsUpdate": {
         "type": "object",
@@ -11468,6 +14369,16 @@
             "format": "double"
           }
         }
+      },
+      "Unit": {
+        "type": "string",
+        "description": "The unit an expression is written in.",
+        "enum": [
+          "meters",
+          "nanoseconds",
+          "samples",
+          "dimensionless"
+        ]
       },
       "UnreadableInterpretation": {
         "type": "object",

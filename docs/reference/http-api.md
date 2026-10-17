@@ -11,8 +11,8 @@ page following. The machine-readable description is {download}`openapi.json`,
 also served at `/api/v1/openapi.json`: it holds the schemas of the request
 and response bodies the tables name, and of the picks document (`Document`,
 from gprinterp). It is being extended section by section: the tables from
-Server to Drafts are generated from it, with their bodies; the rest are
-written by hand, and their bodies are not described yet.
+Server to Level 2 points are generated from it, with their bodies; the site
+server's are written by hand, and their bodies are not described yet.
 :::
 
 ## Conventions
@@ -194,41 +194,18 @@ A `picker` may only write their own interpretation. Reading someone else's
 needs the `picks` download scope. Reading one's own needs no scope, since
 the viewer draws it; downloading it as a file (`/raw`) still needs `picks`.
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/datasets/{radargram_id}/interpretations` | anyone | Who has interpreted this radargram. |
-| `GET` | `/api/v1/interpretations` | anyone; everyone's needs `operator` | Every stored interpretation as statistics: lines, vertices, layers and the percentage of traces covered, with whether it is on the current revision, an earlier one, or archived by a removal. A caller below `operator` gets only their own. No picks are returned, so no download scope is needed. |
-| `POST` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/archive` | `admin` | Move someone's interpretation into the archive, where it stays attributed until purged. Conditional on `If-Match`. |
-| `GET` | `/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}` | download `picks` | One archived interpretation file, byte for byte. |
-| `POST` | `/api/v1/interpretations/download` | download `picks` | Several interpretation files, live or archived, byte for byte in one zip, laid out as under `interpretations/`. Body: `items`, each a `radargram_id`, `user` and, for an archived one, `removal`. The zip's `manifest.json` lists what it holds and what was named but not found. |
-| `POST` | `/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}/restore` | `admin` | Move an archived interpretation back onto its radargram, as it was archived. Refused with `409` when the radargram is not in the catalog (`not_in_catalog`) or the user has picks on it now (`interpretation_exists`). |
-| `DELETE` | `/api/v1/interpretations/archived/{radargram_id}/{removal}/{user}` | `admin` | Permanently delete one archived interpretation. |
-| `DELETE` | `/api/v1/interpretations/archived/{radargram_id}/{removal}` | `admin` | Permanently delete every archived interpretation from one removal or archiving. |
-| `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | own, or download `picks` | One person's interpretation, with an `ETag`. |
-| `PUT` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | `picker`, own | Save an interpretation. Refused if a line breaks its layer's rules, such as an overhang on a layer that does not allow them. |
-| `DELETE` | `/api/v1/datasets/{radargram_id}/interpretations/{user}` | `picker`, own | Delete an interpretation. |
-| `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/raw` | download `picks`, even for one's own | The stored interpretation file, byte for byte. |
-| `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/carried` | own, or download `picks` | The interpretation as drawn on the radargram's current revision, when it was picked on an earlier one, with a report of what carrying it over changed. |
-| `POST` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/promote` | `picker`, own | Adopt the carried-over interpretation as the interpretation on the current revision. Query: `onto`, the revision the caller believes is current. |
+:::{http-endpoints} Interpretations
+:::
 
 ## Layers
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/layers` | anyone | The project's layers, their rules and exclusivity groups, with an `ETag`. |
-| `PUT` | `/api/v1/layers` | `operator` | Replace the layer definitions. |
-| `GET` | `/api/v1/layers/usage` | anyone | How many picked features use each layer, and labels in use that no layer defines. |
+:::{http-endpoints} Layers
+:::
 
 ## Derived items
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/derived` | anyone | The derived items the caller may see, with an `ETag`. |
-| `PUT` | `/api/v1/derived` | signed in; `operator` for project-wide items | Replace the derived items. A private item can only be saved by its owner, and releasing a result computed from other people's picks to everyone needs `admin`. |
-| `GET` | `/api/v1/datasets/{radargram_id}/contributors` | anyone | The interpretations the caller may see, for the layer panel. |
-| `GET` | `/api/v1/datasets/{radargram_id}/derived/{item}` | download `results` | One derived item's values along the radargram. |
-| `POST` | `/api/v1/datasets/{radargram_id}/derived/preview` | download `results` | Evaluate an unsaved expression over the caller's picks, without storing anything. |
-| `GET` | `/api/v1/datasets/{radargram_id}/derived` | download `results` | Every derived item the caller may see, as a long-format CSV: one row per item per position. |
+:::{http-endpoints} Derived items
+:::
 
 ## Level 2 points
 
@@ -246,12 +223,8 @@ They share these query parameters:
 : For GeoJSON geometry: omitted for WGS84, `native` for the radargram's own
   projected CRS, or any CRS that PROJ accepts. CSV always carries both.
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/datasets/{radargram_id}/interpretations/{user}/level2` | download `derived` | One person's picked layers as points, from what is saved. Query: `every_user` (`admin` only) exports every contributor instead. |
-| `GET` | `/api/v1/datasets/{radargram_id}/derived/level2` | download `results` | Derived layers as points. Query: `include_unlisted`. |
-| `GET` | `/api/v1/groups/{group}/level2` | download `derived` | Every interpreted radargram in a group, merged. Query: `user` (default: the caller), `every_user` (`admin` only), `derived`, `include_unlisted`. |
-| `GET` | `/api/v1/catalog/level2` | download `derived` | Every interpreted radargram being served, merged. Same query as the group export. |
+:::{http-endpoints} Level 2 points
+:::
 
 (site-server)=
 ## Site server
