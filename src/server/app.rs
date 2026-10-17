@@ -1105,6 +1105,50 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
             super::interp_routes::get_settings,
             super::interp_routes::put_settings
         ))
+        // Radargrams.
+        .routes(routes!(
+            super::routes::list_datasets,
+            super::lifecycle_routes::upload_dataset
+        ))
+        .routes(routes!(
+            super::routes::dataset_detail,
+            super::lifecycle_routes::remove_dataset
+        ))
+        .routes(routes!(super::routes::dataset_attributes))
+        .routes(routes!(super::routes::dataset_axes))
+        .routes(routes!(super::routes::dataset_gprinterp_axes))
+        .routes(routes!(super::routes::dataset_trace))
+        .routes(routes!(super::routes::dataset_track))
+        .routes(routes!(super::routes::dataset_topo_geometry))
+        .routes(routes!(super::lifecycle_routes::list_revisions))
+        .routes(routes!(
+            super::overrides_routes::get_properties,
+            super::overrides_routes::put_properties
+        ))
+        .routes(routes!(super::replace_routes::preflight_replacement))
+        .routes(routes!(super::replace_routes::stage_replacement))
+        .routes(routes!(
+            super::replace_routes::commit_replacement,
+            super::replace_routes::discard_replacement
+        ))
+        .routes(routes!(super::lifecycle_routes::restore_dataset))
+        .routes(routes!(super::lifecycle_routes::list_ignored))
+        // Groups.
+        .routes(routes!(super::routes::group_tracks))
+        .routes(routes!(
+            super::overrides_routes::get_group_properties,
+            super::overrides_routes::put_group_properties
+        ))
+        // Images.
+        .routes(routes!(super::routes::overview_image))
+        .routes(routes!(super::routes::chunk_image))
+        .routes(routes!(super::routes::dataset_image))
+        .routes(routes!(super::figure_routes::render_figure))
+        // Downloads.
+        .routes(routes!(super::routes::dataset_download))
+        .routes(routes!(super::routes::dataset_track_geojson))
+        .routes(routes!(super::routes::group_track_geojson))
+        .routes(routes!(super::routes::catalog_track_geojson))
 }
 
 /// Build the complete Axum application over `state`.
@@ -1154,24 +1198,12 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             get(super::interp_routes::list_interpretations),
         )
         .route(
-            "/api/v1/catalog/track.geojson",
-            get(super::routes::catalog_track_geojson),
-        )
-        .route(
             "/api/v1/catalog/level2",
             get(super::interp_routes::catalog_level2),
         )
         .route(
-            "/api/v1/groups/{group}/track.geojson",
-            get(super::routes::group_track_geojson),
-        )
-        .route(
             "/api/v1/groups/{group}/level2",
             get(super::interp_routes::group_level2),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/download",
-            get(super::routes::dataset_download),
         )
         .route(
             "/api/v1/raw",
@@ -1272,18 +1304,6 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
             axum::routing::post(super::draft_routes::commit_draft),
         )
         .route(
-            "/api/v1/datasets/{radargram_id}/track.geojson",
-            get(super::routes::dataset_track_geojson),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/views/{view}/image",
-            get(super::routes::dataset_image),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/figure",
-            axum::routing::post(super::figure_routes::render_figure),
-        )
-        .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}/raw",
             get(super::interp_routes::get_interpretation_raw),
         )
@@ -1322,91 +1342,12 @@ pub fn build_router(state: std::sync::Arc<AppState>) -> Router {
                 .delete(super::interp_routes::delete_interpretation),
         )
         .route(
-            "/api/v1/datasets",
-            get(super::routes::list_datasets).post(super::lifecycle_routes::upload_dataset),
-        )
-        .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}/promote",
             axum::routing::post(super::interp_routes::promote_interpretation),
         )
         .route(
             "/api/v1/datasets/{radargram_id}/interpretations/{user}/carried",
             get(super::interp_routes::get_interpretation_carried),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/revisions",
-            get(super::lifecycle_routes::list_revisions),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/replace",
-            axum::routing::post(super::replace_routes::stage_replacement),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/replace/preflight",
-            axum::routing::post(super::replace_routes::preflight_replacement),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/replace/{token}",
-            axum::routing::post(super::replace_routes::commit_replacement)
-                .delete(super::replace_routes::discard_replacement),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/restore",
-            axum::routing::post(super::lifecycle_routes::restore_dataset),
-        )
-        .route(
-            "/api/v1/catalog/ignored",
-            get(super::lifecycle_routes::list_ignored),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/properties",
-            get(super::overrides_routes::get_properties)
-                .put(super::overrides_routes::put_properties),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}",
-            get(super::routes::dataset_detail).delete(super::lifecycle_routes::remove_dataset),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/track",
-            get(super::routes::dataset_track),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/attributes",
-            get(super::routes::dataset_attributes),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/axes",
-            get(super::routes::dataset_axes),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/axes/gprinterp",
-            get(super::routes::dataset_gprinterp_axes),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/traces/{trace}",
-            get(super::routes::dataset_trace),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/views/topo/geometry",
-            get(super::routes::dataset_topo_geometry),
-        )
-        .route(
-            "/api/v1/groups/{group}/tracks",
-            get(super::routes::group_tracks),
-        )
-        .route(
-            "/api/v1/groups/{group}/properties",
-            get(super::overrides_routes::get_group_properties)
-                .put(super::overrides_routes::put_group_properties),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/views/{view}/overview",
-            get(super::routes::overview_image),
-        )
-        .route(
-            "/api/v1/datasets/{radargram_id}/views/{view}/chunks/{profile}/{x}/{y}",
-            get(super::routes::chunk_image),
         )
         .merge(Router::from(project_api()))
         // Every route above is reached through this, so identity is resolved

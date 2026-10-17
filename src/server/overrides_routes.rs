@@ -29,15 +29,18 @@ use serde::{Deserialize, Serialize};
 
 use super::app::AppState;
 use super::auth::Caller;
-use super::routes::{lookup_dataset, ApiError};
+use super::needs::{Needs, Who};
+use super::routes::{lookup_dataset, ApiError, ErrorBody};
 use crate::identity::{DisplayName, GroupId, GroupName, RadargramId};
 use crate::project::overrides::{
     self, CatalogOverrides, GroupMembership, GroupOverride, RadargramOverride,
 };
 use crate::project::roles::Role;
 
-/// What the dialog needs to render itself.
-#[derive(Debug, Serialize)]
+/// `GET /api/v1/datasets/{radargram_id}/properties`: the project's overrides
+/// of a radargram's metadata, and what each field would be without them.
+// What the dialog needs to render itself.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Properties {
     radargram_id: String,
     /// What the catalog currently shows.
@@ -54,27 +57,40 @@ pub struct Properties {
     groups: Vec<GroupChoice>,
 }
 
-#[derive(Debug, Serialize)]
+/// A radargram's metadata as the catalog shows it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 struct EffectiveProperties {
+    #[schema(required = true)]
     display_name: Option<String>,
+    #[schema(required = true)]
     group_id: Option<String>,
+    #[schema(required = true)]
     group_name: Option<String>,
     unlisted: bool,
+    /// The elevation range the corrected view is limited to, in metres.
+    #[schema(required = true)]
     elevation_min: Option<f64>,
+    #[schema(required = true)]
     elevation_max: Option<f64>,
     /// The radargram's own horizontal scale, or `null` when it inherits the
     /// user's or the project's (#411).
+    #[schema(required = true)]
     x_scale: Option<f64>,
 }
 
-#[derive(Debug, Serialize)]
+/// A radargram's metadata as its file has it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 struct FileProperties {
+    #[schema(required = true)]
     display_name: Option<String>,
+    #[schema(required = true)]
     group_id: Option<String>,
+    #[schema(required = true)]
     group_name: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+/// Which fields the project overrides.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 struct OverriddenFields {
     display_name: bool,
     group: bool,
@@ -82,23 +98,26 @@ struct OverriddenFields {
     x_scale: bool,
 }
 
-#[derive(Debug, Serialize)]
+/// A group that can be chosen.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 struct GroupChoice {
     id: String,
     name: String,
 }
 
-/// A whole override, replaced rather than patched.
-///
-/// The dialog shows every field at once, so a save says what all of them
-/// should be. A patch would leave "the user cleared this" and "the user did
-/// not mention this" looking identical in JSON, which is exactly the
-/// distinction the whole document is built on.
-#[derive(Debug, Deserialize)]
+// The dialog shows every field at once, so a save says what all of them
+// should be. A patch would leave "the user cleared this" and "the user did
+// not mention this" looking identical in JSON, which is exactly the
+// distinction the whole document is built on.
+
+/// The body of `PUT /api/v1/datasets/{radargram_id}/properties`: the whole
+/// override, replaced rather than patched. A field left out is cleared.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct PropertiesBody {
     /// `null` or empty reverts to the file's display name.
     #[serde(default)]
     display_name: Option<String>,
+    /// Which group it is in.
     #[serde(default)]
     grouping: Grouping,
     /// The group to join, when `grouping` is `group`.
@@ -109,6 +128,7 @@ pub struct PropertiesBody {
     /// disagree. Omitted leaves any existing name alone.
     #[serde(default)]
     group_name: Option<String>,
+    /// Whether to leave it out of the listing for everyone below `operator`.
     #[serde(default)]
     unlisted: bool,
     /// `null` on either side reverts that bound to no range at all (#168).
@@ -122,7 +142,8 @@ pub struct PropertiesBody {
     x_scale: Option<f64>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+/// Which group a radargram is in.
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
 enum Grouping {
     /// Whatever the file says.
@@ -150,6 +171,18 @@ fn project_for<'a>(
     })
 }
 
+/// The project's overrides of this radargram's metadata, and what each field
+/// would be without them.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/properties",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "Its properties.", body = Properties),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn get_properties(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -202,6 +235,19 @@ pub async fn get_properties(
     }))
 }
 
+/// Change those overrides.
+#[utoipa::path(
+    put,
+    path = "/api/v1/datasets/{radargram_id}/properties",
+    tag = "Radargrams",
+    request_body = PropertiesBody,
+    responses(
+        (status = 204, description = "Saved."),
+        (status = 400, description = "A name, group or scale the server refuses.", body = ErrorBody),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn put_properties(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -372,15 +418,19 @@ fn refresh_catalog(state: &AppState) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// What the group dialog needs to render itself.
-#[derive(Debug, Serialize)]
+/// `GET /api/v1/groups/{group}/properties`: the project's override of a
+/// group's name.
+// What the group dialog needs to render itself.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct GroupProperties {
     group_id: String,
     /// The name the catalog currently shows.
+    #[schema(required = true)]
     name: Option<String>,
     /// What it would show without the override: the name resolved from the
     /// members' own files, or nothing when the group exists only because
     /// somebody put radargrams in it.
+    #[schema(required = true)]
     from_file: Option<String>,
     overridden: bool,
     /// How many radargrams are in it, so the dialog can say what a rename
@@ -388,7 +438,8 @@ pub struct GroupProperties {
     member_count: usize,
 }
 
-#[derive(Debug, Deserialize)]
+/// The body of `PUT /api/v1/groups/{group}/properties`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct GroupPropertiesBody {
     /// `null` or empty reverts to whatever the member files say.
     #[serde(default)]
@@ -411,6 +462,17 @@ fn group_for(raw: &str) -> Result<GroupId, ApiError> {
     GroupId::new(raw).map_err(|e| ApiError::bad_request("invalid_group", e.to_string()))
 }
 
+/// The project's overrides of this group's metadata.
+#[utoipa::path(
+    get,
+    path = "/api/v1/groups/{group}/properties",
+    tag = "Groups",
+    responses(
+        (status = 200, description = "Its properties.", body = GroupProperties),
+        (status = 400, description = "`not_a_group` or `invalid_group`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn get_group_properties(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -461,6 +523,18 @@ pub async fn get_group_properties(
     }))
 }
 
+/// Change those overrides.
+#[utoipa::path(
+    put,
+    path = "/api/v1/groups/{group}/properties",
+    tag = "Groups",
+    request_body = GroupPropertiesBody,
+    responses(
+        (status = 204, description = "Saved."),
+        (status = 400, description = "`not_a_group`, `invalid_group` or `invalid_group_name`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn put_group_properties(
     State(state): State<Arc<AppState>>,
     caller: Caller,

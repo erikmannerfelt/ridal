@@ -40,10 +40,17 @@ def needs_text(needs: dict[str, Any]) -> str:
     """The Needs column for one operation's ``x-ridal-needs``."""
     who = needs["who"]
     if who in WHO:
-        return WHO[who]
-    if who in ROLES:
-        return f"`{who}`"
-    raise ValueError(f"unknown x-ridal-needs.who {who!r}")
+        base = WHO[who]
+    elif who in ROLES:
+        base = f"`{who}`"
+    else:
+        raise ValueError(f"unknown x-ridal-needs.who {who!r}")
+    download = needs.get("download")
+    if download is None:
+        return base
+    if who == "anyone":
+        return f"download `{download}`"
+    return f"{base}, download `{download}`"
 
 
 def shown_path(path: str) -> str:
@@ -54,20 +61,32 @@ def shown_path(path: str) -> str:
 
 
 def schema_name(content: dict[str, Any] | None) -> str | None:
-    """The schema a JSON body refers to, if it names one."""
-    schema = (content or {}).get("application/json", {}).get("schema", {})
+    """The schema a body refers to, when it has one media type and that names
+    one. An image that may also come as a JSON sidecar is not named after
+    the sidecar."""
+    if not content or len(content) != 1:
+        return None
+    schema = next(iter(content.values())).get("schema", {})
     ref = schema.get("$ref") or schema.get("items", {}).get("$ref")
     return ref.rsplit("/", 1)[-1] if ref else None
 
 
 def description(operation: dict[str, Any]) -> str:
-    """The doc comment on one line, with the bodies it takes and returns."""
+    """The doc comment on one line, with its query parameters and the bodies
+    it takes and returns."""
     text = " ".join(
         part
         for part in (operation.get("summary"), operation.get("description"))
         if part
     )
     text = " ".join(text.split())
+    query = [
+        f"`{parameter['name']}`"
+        for parameter in operation.get("parameters", [])
+        if parameter.get("in") == "query"
+    ]
+    if query:
+        text += f" Query: {', '.join(query)}."
     request = schema_name(operation.get("requestBody", {}).get("content"))
     response = schema_name(operation["responses"].get("200", {}).get("content"))
     if request:

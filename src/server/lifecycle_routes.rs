@@ -33,7 +33,9 @@ use serde::{Deserialize, Serialize};
 
 use super::app::AppState;
 use super::auth::Caller;
-use super::routes::ApiError;
+use super::needs::{Needs, Who};
+use super::openapi::NetcdfFile;
+use super::routes::{ApiError, ErrorBody};
 use crate::identity::RadargramId;
 use crate::io::RidalNetcdfKind;
 use crate::project::revisions::{self, ledger};
@@ -47,11 +49,12 @@ use crate::project::{audit, interpretations, overrides};
 /// the running total is checked as the body arrives, and this is how often.
 const CHUNK_CHECK_BYTES: u64 = 8 * 1024 * 1024;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct UploadQuery {
-    /// What the file was called on the client. A display hint for error
-    /// messages only — **never** used to build a path. The file lands at a
-    /// name derived from the radargram id inside it.
+    /// What the file was called on the client, used only in error messages.
+    // **Never** used to build a path. The file lands at a name derived from
+    // the radargram id inside it.
     #[serde(default)]
     pub filename: Option<String>,
 }
@@ -75,11 +78,13 @@ pub struct Added {
     archived_interpretations: usize,
 }
 
-#[derive(Debug, Serialize)]
+/// `DELETE /api/v1/datasets/{radargram_id}`: what became of it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Removed {
     radargram_id: String,
     /// `removed` when the file was deleted, `ignored` when it lives in a
     /// read-only root and was only dropped from the catalog.
+    #[schema(value_type = String)]
     outcome: &'static str,
     /// How many interpretations were archived. Zero is worth reporting: it
     /// is the difference between "nobody had picked this" and "your picks
@@ -87,17 +92,23 @@ pub struct Removed {
     archived: usize,
 }
 
-#[derive(Debug, Serialize)]
+/// `GET /api/v1/catalog/ignored`: the radargrams the project is not
+/// serving.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct IgnoredListing {
+    /// Radargrams Ridal finds but does not serve.
     ignored: Vec<IgnoredItem>,
     /// Ignore decisions with nothing to act on, because the radargram is
     /// not anywhere Ridal currently looks.
     vestigial: Vec<IgnoredItem>,
 }
 
-#[derive(Debug, Serialize)]
+/// One radargram that is not being served.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct IgnoredItem {
     radargram_id: String,
+    /// When it stopped being served, RFC 3339.
+    #[schema(required = true)]
     since: Option<String>,
 }
 
@@ -121,12 +132,26 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// `POST /api/v1/datasets` — install a processed radargram.
-///
-/// Streamed to a temporary file inside the destination directory and
-/// validated before anything is installed, so a rejected upload leaves the
-/// catalog exactly as it was. The rename at the end is the only moment the
-/// project changes, and it is atomic.
+/// Upload a processed `.nc` file as the request body. It is validated before
+/// anything is installed.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets",
+    tag = "Radargrams",
+    params(UploadQuery),
+    request_body(content = NetcdfFile, content_type = "application/x-netcdf", description = "The processed `.nc` file."),
+    responses(
+        (status = 201, description = "It is in the project.", body = Added),
+        (status = 400, description = "Not a radargram Ridal processed (`not_a_radargram`, `not_a_ridal_radargram`, `ridal_file_too_old`), or `upload_interrupted`.", body = ErrorBody),
+        (status = 409, description = "`radargram_exists` or `radargram_ignored`: the id is taken.", body = ErrorBody),
+        (status = 413, description = "`project_full`: the project's size limit would be exceeded.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
+// Streamed to a temporary file inside the destination directory and
+// validated before anything is installed, so a rejected upload leaves the
+// catalog exactly as it was. The rename at the end is the only moment the
+// project changes, and it is atomic.
 pub async fn upload_dataset(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -407,7 +432,19 @@ pub(super) fn take_out_of_profile(project: &crate::project::Project, id: &Radarg
     }
 }
 
-/// `DELETE /api/v1/datasets/{id}` — remove it, or stop serving it.
+/// Remove a radargram from the project, or stop serving it. A removed one
+/// leaves its processing profile; one only stopped keeps it, shown as `hidden`.
+/// Its interpretations are archived.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/datasets/{radargram_id}",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "What became of it.", body = Removed),
+        (status = 404, description = "No such radargram.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn remove_dataset(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -562,11 +599,20 @@ pub async fn remove_dataset(
     }))
 }
 
-/// `POST /api/v1/datasets/{id}/restore` — lift an ignore.
-///
-/// Only ever undoes an *ignore*. A radargram whose file was deleted is not
-/// restorable from here, and saying so is better than a button that looks
-/// like undo and is not.
+/// Serve a radargram that was previously ignored.
+#[utoipa::path(
+    post,
+    path = "/api/v1/datasets/{radargram_id}/restore",
+    tag = "Radargrams",
+    responses(
+        (status = 204, description = "It is served again."),
+        (status = 404, description = "`not_ignored`: it is not ignored.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
+// Only ever undoes an *ignore*. A radargram whose file was deleted is not
+// restorable from here, and saying so is better than a button that looks
+// like undo and is not.
 pub async fn restore_dataset(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -624,7 +670,16 @@ pub async fn restore_dataset(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /api/v1/catalog/ignored` — what the project is not serving.
+/// Radargrams the project is not serving.
+#[utoipa::path(
+    get,
+    path = "/api/v1/catalog/ignored",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "What is not served.", body = IgnoredListing),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn list_ignored(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -946,31 +1001,56 @@ mod tests {
 }
 
 /// One revision a radargram has been through.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct RevisionSummary {
     revision_id: String,
     /// Whether it is the one currently behind the id.
     current: bool,
+    /// When it stopped being current, RFC 3339.
+    #[schema(required = true)]
     superseded_at: Option<String>,
+    /// The revision that replaced it.
+    #[schema(required = true)]
     superseded_by: Option<String>,
     /// Whether this revision's axes were kept, which is what decides
     /// whether picks drawn on it can be carried onto a later one.
     has_axes: bool,
     /// Sizes from the snapshot, so the history says what changed between
     /// revisions without opening anything.
+    #[schema(required = true)]
     n_traces: Option<usize>,
+    #[schema(required = true)]
     n_samples: Option<usize>,
+    /// What the vertical axis is anchored to.
+    #[schema(required = true)]
     y_anchor: Option<String>,
 }
 
-/// `GET /api/v1/datasets/{id}/revisions` — what this id has been.
-///
-/// Reads the ledger rather than the files: the whole point of #148 is that
-/// a superseded revision's file may be gone while its mapping is not.
-///
-/// `viewer` and above. Which revisions a radargram has had is the same kind
-/// of fact as its processing date -- provenance about data people are
-/// already being shown, not an operator's working notes.
+/// `GET /api/v1/datasets/{radargram_id}/revisions`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct RevisionList {
+    revisions: Vec<RevisionSummary>,
+}
+
+/// Every revision this radargram id has had, including those whose file is
+/// gone.
+#[utoipa::path(
+    get,
+    path = "/api/v1/datasets/{radargram_id}/revisions",
+    tag = "Radargrams",
+    responses(
+        (status = 200, description = "Its revisions.", body = RevisionList),
+        (status = 404, description = "`not_a_project`: the server keeps no history.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
+// Reads the ledger rather than the files: the whole point of #148 is that
+// a superseded revision's file may be gone while its mapping is not.
+//
+// `viewer` and above, which is anyone who may read the project. Which
+// revisions a radargram has had is the same kind of fact as its processing
+// date -- provenance about data people are already being shown, not an
+// operator's working notes.
 pub async fn list_revisions(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -1019,5 +1099,7 @@ pub async fn list_revisions(
         })
         .collect::<Vec<_>>();
 
-    Ok(Json(serde_json::json!({ "revisions": summaries })))
+    Ok(Json(RevisionList {
+        revisions: summaries,
+    }))
 }

@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 pub const SPEC_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields, default)]
 pub struct FigureSpec {
     /// Spec format version. Only `1` exists.
@@ -94,6 +95,8 @@ pub enum View {
 /// clipped to it, except the rows of the topographic view, which may reach
 /// above the highest surface or below the floor to leave empty space there.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureExtent))]
 #[serde(deny_unknown_fields, default)]
 pub struct Extent {
     /// `[first, last]` trace position.
@@ -111,6 +114,8 @@ pub struct Extent {
 /// from the extent and `x_scale`. With `axes: false` there are no margins
 /// and `width` is the radargram's own.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureSize))]
 #[serde(deny_unknown_fields, default)]
 pub struct Size {
     pub width: f64,
@@ -131,6 +136,8 @@ impl Default for Size {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureSizeUnit))]
 #[serde(rename_all = "lowercase")]
 pub enum SizeUnit {
     #[default]
@@ -156,19 +163,26 @@ impl Size {
 }
 
 /// One axis's ticks and label.
+// Each field gives its schema default itself: the derive would otherwise
+// call `AxisSpec::default()`, which it cannot do without the generic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields, default)]
 pub struct AxisSpec<U> {
     /// What the axis counts in. `None` picks the default for the view and
     /// what the file has.
+    #[cfg_attr(feature = "server", schema(default = json!(null)))]
     pub unit: Option<U>,
     /// Distance between ticks in the axis unit (seconds for time). `None`
     /// picks a round spacing that gives about six ticks.
+    #[cfg_attr(feature = "server", schema(default = json!(null)))]
     pub spacing: Option<f64>,
     /// Ticks are at `anchor + k * spacing`. The default, 0, puts them on
     /// multiples of the spacing.
+    #[cfg_attr(feature = "server", schema(default = 0.0))]
     pub anchor: f64,
     /// The axis title. `None` uses the unit's own; `""` draws none.
+    #[cfg_attr(feature = "server", schema(default = json!(null)))]
     pub label: Option<String>,
 }
 
@@ -184,6 +198,8 @@ impl<U> Default for AxisSpec<U> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureXUnit))]
 #[serde(rename_all = "snake_case")]
 pub enum XUnit {
     /// Trace number.
@@ -198,6 +214,8 @@ pub enum XUnit {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureYUnit))]
 #[serde(rename_all = "lowercase")]
 pub enum YUnit {
     /// Sample number (standard view only).
@@ -240,6 +258,8 @@ impl YUnit {
 /// layer, so `[{}]` is all of them; `"layer": ""` matches unlabelled lines.
 /// No items, the default, draws none.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigurePicks))]
 #[serde(deny_unknown_fields, default)]
 pub struct PickOverlay {
     pub items: Vec<PickSelector>,
@@ -259,6 +279,8 @@ impl Default for PickOverlay {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigurePickSelector))]
 #[serde(deny_unknown_fields, default)]
 pub struct PickSelector {
     pub user: Option<String>,
@@ -286,6 +308,8 @@ impl PickSelector {
 /// under them, as in the viewer. Only items of kind `layer` are positions
 /// that can be drawn; an attribute is refused.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureDerived))]
 #[serde(deny_unknown_fields, default)]
 pub struct DerivedOverlay {
     pub items: Vec<String>,
@@ -309,6 +333,8 @@ impl Default for DerivedOverlay {
 
 /// Text, line and background styling.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureAppearance))]
 #[serde(deny_unknown_fields, default)]
 pub struct Style {
     /// Tick label size in points. Axis titles are drawn at the same size.

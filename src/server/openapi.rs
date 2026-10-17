@@ -141,6 +141,26 @@ pub async fn openapi_json() -> impl IntoResponse {
     ([(header::CONTENT_TYPE, "application/json")], spec_json())
 }
 
+/// A processed `.nc` file sent as the whole request body.
+///
+/// A schema of its own, since `Vec<u8>` would describe the bytes as an
+/// array of integers.
+pub(super) struct NetcdfFile;
+
+impl PartialSchema for NetcdfFile {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::String)
+            .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
+                utoipa::openapi::KnownFormat::Binary,
+            )))
+            .description(Some("A processed `.nc` file, as Ridal writes them."))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for NetcdfFile {}
+
 /// Where a site serves a project's API, and so where the spec puts it.
 pub(super) const PROJECT_PREFIX: &str = "/api/v1/projects/{key}";
 
@@ -152,15 +172,63 @@ pub(super) fn spec() -> utoipa::openapi::OpenApi {
     let mut project = app::project_api().into_openapi();
     project.paths.paths = std::mem::take(&mut project.paths.paths)
         .into_iter()
-        .map(|(path, item)| (under_project(&path), with_key_parameter(item)))
+        .map(|(path, item)| (under_project(&path), item))
         .collect();
     spec.merge(project);
-    for item in spec.paths.paths.values_mut() {
+    for (path, item) in spec.paths.paths.iter_mut() {
+        add_path_parameters(path, item);
         for operation in operations(item) {
             add_refusals(operation);
         }
     }
     spec
+}
+
+/// What each path parameter is, wherever it appears. Declared once per
+/// path, from here, so the same name means the same thing everywhere.
+const PATH_PARAMETERS: &[(&str, &str)] = &[
+    (
+        "key",
+        "The project's key. `ridal gui` serves its one project as `default`.",
+    ),
+    ("radargram_id", "A radargram's id."),
+    ("group", "A group's id."),
+    (
+        "view",
+        "`standard`, or `topo` for the topographically corrected view.",
+    ),
+    ("trace", "A trace's index, from 0."),
+    ("profile", "A render profile, by name."),
+    ("x", "The tile's column, from 0."),
+    ("y", "The tile's row, from 0."),
+    ("token", "The token a staged replacement was given."),
+];
+
+/// The `{name}`s in a path, in order.
+pub(super) fn path_parameter_names(path: &str) -> Vec<&str> {
+    path.split('/')
+        .filter_map(|segment| segment.strip_prefix('{')?.strip_suffix('}'))
+        .collect()
+}
+
+/// Declare each of the path's parameters that [`PATH_PARAMETERS`] knows.
+fn add_path_parameters(path: &str, item: &mut PathItem) {
+    for name in path_parameter_names(path) {
+        let Some((_, description)) = PATH_PARAMETERS.iter().find(|(known, _)| *known == name)
+        else {
+            continue;
+        };
+        let parameter = ParameterBuilder::new()
+            .name(name)
+            .parameter_in(ParameterIn::Path)
+            .required(Required::True)
+            .description(Some(*description))
+            .schema(Some(String::schema()))
+            .build();
+        item.parameters
+            .get_or_insert_with(Vec::new)
+            .push(parameter.into());
+    }
 }
 
 /// `/api/v1/datasets` as a site serves it: `/api/v1/projects/{key}/datasets`.
@@ -169,23 +237,6 @@ fn under_project(path: &str) -> String {
         .strip_prefix("/api/v1")
         .expect("a project route is under /api/v1");
     format!("{PROJECT_PREFIX}{rest}")
-}
-
-/// Declare `{key}` once per path rather than on every operation.
-fn with_key_parameter(mut item: PathItem) -> PathItem {
-    let key = ParameterBuilder::new()
-        .name("key")
-        .parameter_in(ParameterIn::Path)
-        .required(Required::True)
-        .description(Some(
-            "The project's key. `ridal gui` serves its one project as `default`.",
-        ))
-        .schema(Some(String::schema()))
-        .build();
-    item.parameters
-        .get_or_insert_with(Vec::new)
-        .insert(0, key.into());
-    item
 }
 
 /// Every operation on one path.
@@ -221,14 +272,14 @@ fn add_refusals(operation: &mut Operation) {
     let Ok(needs) = needs_of(operation) else {
         return;
     };
-    let refusals: &[(&str, &str)] = match needs.who {
-        Who::Nobody => &[],
-        Who::Anyone => &[(
+    let mut refusals: Vec<(&str, &str)> = match needs.who {
+        Who::Nobody => vec![],
+        Who::Anyone => vec![(
             "401",
             "`authentication_required`: the project requires a login to read.",
         )],
-        Who::SignedIn => &[("401", "`authentication_required`: sign in first.")],
-        Who::Role(_) => &[
+        Who::SignedIn => vec![("401", "`authentication_required`: sign in first.")],
+        Who::Role(_) => vec![
             ("401", "`authentication_required`: sign in first."),
             (
                 "403",
@@ -242,6 +293,24 @@ fn add_refusals(operation: &mut Operation) {
             ),
         ],
     };
+    if needs.download.is_some() {
+        // A role's 401 and 403 already cover a download refusal too.
+        if !matches!(needs.who, Who::Role(_)) {
+            refusals = vec![
+                (
+                    "401",
+                    "`authentication_required`: sign in, or the project requires a \
+                     login to read.",
+                ),
+                (
+                    "403",
+                    "The caller's download scope is too low \
+                     (`download_not_permitted`), or an API token's grant is below \
+                     it (`token_limit`).",
+                ),
+            ];
+        }
+    }
     for (status, description) in refusals {
         operation
             .responses
@@ -249,7 +318,7 @@ fn add_refusals(operation: &mut Operation) {
             .entry(status.to_string())
             .or_insert_with(|| {
                 ResponseBuilder::new()
-                    .description(*description)
+                    .description(description)
                     .content(
                         "application/json",
                         ContentBuilder::new()
@@ -313,18 +382,52 @@ mod tests {
         "BulkDownloadItem",
     ];
 
-    /// The schema names `requestBody` refers to, in every path.
-    fn request_bodies(spec: &serde_json::Value) -> Vec<String> {
-        let mut names: Vec<String> = UNROUTED_REQUEST_BODIES.map(String::from).to_vec();
+    /// The schema names a `$ref` anywhere in `value` points at.
+    fn refs(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if let Some(target) = map.get("$ref").and_then(|r| r.as_str()) {
+                    out.push(target.rsplit('/').next().unwrap().to_string());
+                }
+                map.values().for_each(|v| refs(v, out));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| refs(v, out)),
+            _ => {}
+        }
+    }
+
+    /// Every schema reachable from `roots` through the components.
+    fn reachable(spec: &serde_json::Value, roots: Vec<String>) -> Vec<String> {
+        let components = &spec["components"]["schemas"];
+        let mut seen: Vec<String> = Vec::new();
+        let mut queue = roots;
+        while let Some(name) = queue.pop() {
+            if seen.contains(&name) {
+                continue;
+            }
+            refs(&components[&name], &mut queue);
+            seen.push(name);
+        }
+        seen
+    }
+
+    /// The schemas only requests use: the bodies of annotated routes, what
+    /// they contain, and [`UNROUTED_REQUEST_BODIES`], less anything a
+    /// response uses too.
+    fn request_only(spec: &serde_json::Value) -> Vec<String> {
+        let mut requests: Vec<String> = UNROUTED_REQUEST_BODIES.map(String::from).to_vec();
+        let mut responses = Vec::new();
         for item in spec["paths"].as_object().unwrap().values() {
             for operation in item.as_object().unwrap().values() {
-                let schema = &operation["requestBody"]["content"]["application/json"]["schema"];
-                if let Some(name) = schema["$ref"].as_str() {
-                    names.push(name.rsplit('/').next().unwrap().to_string());
-                }
+                refs(&operation["requestBody"], &mut requests);
+                refs(&operation["responses"], &mut responses);
             }
         }
-        names
+        let responses = reachable(spec, responses);
+        reachable(spec, requests)
+            .into_iter()
+            .filter(|name| !responses.contains(name))
+            .collect()
     }
 
     /// Every field of a response is sent, including one that is `null`, so
@@ -339,7 +442,7 @@ mod tests {
     fn every_response_field_is_required() {
         let spec = serde_json::to_value(super::spec()).unwrap();
         let gprinterp = gprinterp_schemas();
-        let requests = request_bodies(&spec);
+        let requests = request_only(&spec);
         let mut optional = Vec::new();
         for (name, schema) in spec["components"]["schemas"].as_object().unwrap() {
             if requests.contains(name) || gprinterp.contains_key(name) {
@@ -366,13 +469,28 @@ mod tests {
 
     /// What the reference page and `needs_tests` rely on, for every
     /// operation: what it needs, one tag (the page's section), a summary
-    /// (its description there), and an `operationId` no other has.
+    /// (its description there), an `operationId` no other has, and a
+    /// description of every path parameter.
     #[test]
     fn every_operation_is_described() {
         let mut spec = super::spec();
         let mut ids = std::collections::BTreeSet::new();
         let mut faults = Vec::new();
         for (path, item) in spec.paths.paths.iter_mut() {
+            let declared: Vec<String> = item
+                .parameters
+                .iter()
+                .flatten()
+                .filter_map(|p| match p {
+                    utoipa::openapi::RefOr::T(p) => Some(p.name.clone()),
+                    utoipa::openapi::RefOr::Ref(_) => None,
+                })
+                .collect();
+            for name in super::path_parameter_names(path) {
+                if !declared.iter().any(|d| d == name) {
+                    faults.push(format!("{path}: {{{name}}} is not in PATH_PARAMETERS"));
+                }
+            }
             for operation in super::operations(item) {
                 let id = operation.operation_id.clone().unwrap_or_default();
                 if let Err(e) = super::needs_of(operation) {

@@ -10,10 +10,9 @@ test fails if a route is added to or removed from the server without this
 page following. The machine-readable description is {download}`openapi.json`,
 also served at `/api/v1/openapi.json`: it holds the schemas of the request
 and response bodies the tables name, and of the picks document (`Document`,
-from gprinterp). It is being extended section by section: the tables of
-Server, Signing in, and Preferences and project settings are generated from
-it, with their bodies; the rest are written by hand, and their bodies are not
-described yet.
+from gprinterp). It is being extended section by section: the tables from
+Server to Downloads are generated from it, with their bodies; the rest are
+written by hand, and their bodies are not described yet.
 :::
 
 ## Conventions
@@ -104,53 +103,26 @@ or started with `--allow-insecure-login`; see {doc}`../deploy/reverse-proxy`.
 
 ## Radargrams
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/datasets` | anyone | Every radargram being served, with its group and summary metadata. |
-| `POST` | `/api/v1/datasets` | `operator` | Upload a processed `.nc` file as the request body. It is validated before anything is installed. Query: `filename`, used only in error messages. |
-| `GET` | `/api/v1/datasets/{radargram_id}` | anyone | One radargram's summary metadata. |
-| `DELETE` | `/api/v1/datasets/{radargram_id}` | `operator` | Remove a radargram from the project, or stop serving it. A removed one leaves its processing profile; one only stopped keeps it, shown as `hidden`. |
-| `GET` | `/api/v1/datasets/{radargram_id}/attributes` | anyone | Human-readable metadata, the processing steps and log, and every raw attribute of the file. |
-| `GET` | `/api/v1/datasets/{radargram_id}/axes/gprinterp` | anyone | The `coordinates.axes` block a gprinterp document drawn on the current revision should carry, as the viewer writes it when saving, with the revision it describes. `null` when the file cannot describe its axes. Picks saved without it cannot be carried onto a reprocessed revision. |
-| `GET` | `/api/v1/datasets/{radargram_id}/axes` | anyone | The `twtt` and `depth` axes per sample and the `distance` and `elevation` per trace. An axis the file lacks is `null`. |
-| `GET` | `/api/v1/datasets/{radargram_id}/traces/{trace}` | anyone | One trace's amplitudes. |
-| `GET` | `/api/v1/datasets/{radargram_id}/track` | anyone | The radargram's track, for the map. |
-| `GET` | `/api/v1/datasets/{radargram_id}/views/topo/geometry` | anyone | The geometry of the topographically corrected view, or why it is unavailable. |
-| `GET` | `/api/v1/datasets/{radargram_id}/revisions` | `viewer` | Every revision this radargram id has had. |
-| `GET` | `/api/v1/datasets/{radargram_id}/properties` | `operator` | The project's overrides of this radargram's metadata, and what each field would be without them. |
-| `PUT` | `/api/v1/datasets/{radargram_id}/properties` | `operator` | Change those overrides. |
-| `POST` | `/api/v1/datasets/{radargram_id}/replace/preflight` | `operator` | Report what replacing a radargram would do, as staging would, from the new file's axis declarations (the `RevisionDeclarations` schema in {download}`openapi.json`) instead of the file. Nothing is uploaded or staged. |
-| `POST` | `/api/v1/datasets/{radargram_id}/replace` | `operator` | Upload a new revision of a radargram and report what replacing it would do to its interpretations. Nothing is installed yet. Query: `filename`. |
-| `POST` | `/api/v1/datasets/{radargram_id}/replace/{token}` | `operator` | Install a staged replacement. |
-| `DELETE` | `/api/v1/datasets/{radargram_id}/replace/{token}` | `operator` | Discard a staged replacement. |
-| `POST` | `/api/v1/datasets/{radargram_id}/restore` | `operator` | Serve a radargram that was previously ignored. |
-| `GET` | `/api/v1/catalog/ignored` | `operator` | Radargrams the project is not serving. |
+:::{http-endpoints} Radargrams
+:::
 
 ## Groups
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/groups/{group}/tracks` | anyone | Every track in a group, for the maps. |
-| `GET` | `/api/v1/groups/{group}/properties` | `operator` | The project's overrides of this group's metadata. |
-| `PUT` | `/api/v1/groups/{group}/properties` | `operator` | Change those overrides. |
+:::{http-endpoints} Groups
+:::
 
 ## Images
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/datasets/{radargram_id}/views/{view}/overview` | anyone | A low-resolution image of the whole radargram. Query: `profile`, `xscale`. |
-| `GET` | `/api/v1/datasets/{radargram_id}/views/{view}/chunks/{profile}/{x}/{y}` | anyone | One tile of the radargram at full resolution, as the viewer requests them. |
-| `GET` | `/api/v1/datasets/{radargram_id}/views/{view}/image` | download `derived` | The whole radargram as one image file. Query: `profile`, `width` (default: one pixel per trace), `format` (`png` or `jpeg`), `quality` (1–100, JPEG only). |
-| `POST` | `/api/v1/datasets/{radargram_id}/figure` | download `derived` | An annotated figure, from a figure spec sent as the JSON body (see {doc}`../guide/rendering`). Query: `format` (`png`, the default, `svg`, or `json` for the sidecar of a figure without axes). Picks other than the caller's own need what the contributor overlay needs, and derived layers download `results`; a spec asking for more is refused. `409 revision_mismatch` when the spec names another revision. Picks that could not be drawn as stored are listed in the `X-Ridal-Figure-Warnings` header, as a JSON list. |
+A figure spec, the body of `POST /api/v1/datasets/{radargram_id}/figure`, is
+described in {doc}`../guide/rendering`.
+
+:::{http-endpoints} Images
+:::
 
 ## Downloads
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/datasets/{radargram_id}/download` | download `all` | The processed NetCDF file. |
-| `GET` | `/api/v1/datasets/{radargram_id}/track.geojson` | download `all` | The track as GeoJSON in WGS84, one feature per continuous segment. |
-| `GET` | `/api/v1/groups/{group}/track.geojson` | download `all` | Every track in a group as one GeoJSON file. |
-| `GET` | `/api/v1/catalog/track.geojson` | download `all` | Every track being served as one GeoJSON file. |
+:::{http-endpoints} Downloads
+:::
 
 ## Raw data
 
