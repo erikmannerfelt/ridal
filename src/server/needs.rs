@@ -41,9 +41,8 @@ pub enum Who {
 
 /// What an endpoint needs: the `x-ridal-needs` of one operation.
 ///
-/// An object rather than a bare string, so that what the remaining routes
-/// need ("their own") can be added as fields without changing what the ones
-/// already annotated say.
+/// An object rather than a bare string, so that each part can be read on
+/// its own and a new one added without changing what the others say.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Needs {
     pub who: Who,
@@ -51,6 +50,10 @@ pub struct Needs {
     /// away rather than look at.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub download: Option<DownloadScope>,
+    /// Whether it acts only on something the caller made, such as their own
+    /// draft. Anyone else is refused, or told it does not exist.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub own: bool,
 }
 
 impl Needs {
@@ -58,6 +61,7 @@ impl Needs {
         Self {
             who,
             download: None,
+            own: false,
         }
     }
 
@@ -66,6 +70,20 @@ impl Needs {
         Self {
             who: Who::Anyone,
             download: Some(scope),
+            own: false,
+        }
+    }
+
+    /// Only on what the caller made.
+    pub const fn own(self) -> Self {
+        Self { own: true, ..self }
+    }
+
+    /// With this download scope as well.
+    pub const fn and_download(self, scope: DownloadScope) -> Self {
+        Self {
+            download: Some(scope),
+            ..self
         }
     }
 }
@@ -94,5 +112,11 @@ mod tests {
         let json = r#"{"who":"anyone","download":"all"}"#;
         assert_eq!(serde_json::to_string(&all).unwrap(), json);
         assert_eq!(serde_json::from_str::<Needs>(json).unwrap(), all);
+        let mine = Needs::new(Who::Role(Role::Operator))
+            .own()
+            .and_download(DownloadScope::All);
+        let json = r#"{"who":"operator","download":"all","own":true}"#;
+        assert_eq!(serde_json::to_string(&mine).unwrap(), json);
+        assert_eq!(serde_json::from_str::<Needs>(json).unwrap(), mine);
     }
 }

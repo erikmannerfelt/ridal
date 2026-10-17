@@ -33,8 +33,9 @@ use serde::{Deserialize, Serialize};
 use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{expectation_from, parse_radargram, readable_project};
+use super::needs::{Needs, Who};
 use super::raw_routes::{project_for, read_recordings, store_error, write_with_dem, SourceView};
-use super::routes::ApiError;
+use super::routes::{ApiError, ErrorBody};
 use crate::identity::{DemId, RadargramId};
 use crate::project::raw::{self, Dem, NamedFile, SourceDem};
 use crate::project::roles::Role;
@@ -122,6 +123,16 @@ pub struct DemList {
     pub dems: Vec<DemView>,
 }
 
+/// Every DEM, with the radargrams linked to it.
+#[utoipa::path(
+    get,
+    path = "/api/v1/dems",
+    tag = "DEMs",
+    responses(
+        (status = 200, description = "The DEMs.", body = DemList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn list_dems(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -144,6 +155,17 @@ fn with_etag(version: &Version, view: DemView) -> Response {
     ([(header::ETAG, version.to_string())], Json(view)).into_response()
 }
 
+/// One DEM, as the list gives it, with an `ETag`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/dems/{dem}",
+    tag = "DEMs",
+    responses(
+        (status = 200, description = "The DEM.", body = DemView),
+        (status = 404, description = "No such DEM.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
+)]
 pub async fn get_dem(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -160,8 +182,9 @@ pub async fn get_dem(
 }
 
 /// The body of `PUT /api/v1/dems/{dem}`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DemBody {
+    /// What the DEM is called.
     pub name: String,
     /// The file, as `POST /api/v1/raw` answered. Required for a new DEM;
     /// for an existing one, a different file replaces its own, which is
@@ -170,6 +193,24 @@ pub struct DemBody {
     pub file: Option<NamedFile>,
 }
 
+/// Add a DEM from a file uploaded as raw data, which GDAL must be able to read
+/// as a raster. For an existing DEM, `name` renames it and a different `file`
+/// replaces its file, refused while any radargram links to it. Takes `If-
+/// Match`, and `If-None-Match: *` to only create.
+#[utoipa::path(
+    put,
+    path = "/api/v1/dems/{dem}",
+    tag = "DEMs",
+    request_body = DemBody,
+    responses(
+        (status = 200, description = "Changed.", body = DemView),
+        (status = 201, description = "Added.", body = DemView),
+        (status = 400, description = "`dem_unreadable`, `name_required` or `file_required`.", body = ErrorBody),
+        (status = 409, description = "`dem_in_use`: its file cannot change while radargrams link to it.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn put_dem(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -275,6 +316,19 @@ pub async fn put_dem(
     Ok(response)
 }
 
+/// Delete a DEM. Refused, naming the radargrams, while any links to it. Takes
+/// `If-Match`.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/dems/{dem}",
+    tag = "DEMs",
+    responses(
+        (status = 204, description = "Deleted."),
+        (status = 409, description = "`dem_in_use`.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn delete_dem(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -300,17 +354,34 @@ pub async fn delete_dem(
 }
 
 /// The body of `PUT /api/v1/sources/{radargram_id}/dem`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct LinkBody {
     /// A DEM id, or `null` for none.
     pub dem: Option<String>,
 }
 
-/// Link a radargram's source to a DEM, or unlink it, without adding its
-/// raw data again. Takes `If-Match` with the source's `ETag`; without one,
-/// the source as it is read here is the one changed. Linking reads the
-/// recordings with the DEM, and answers what they say as `PUT
-/// /sources/{id}` does.
+/// Link the radargram to one of the project's DEMs, or unlink it with `null`,
+/// leaving its recordings as they are. The recordings are read with the DEM, as
+/// setting the source reads them. A radargram processed before the change is
+/// stale afterwards. Takes `If-Match`.
+#[utoipa::path(
+    put,
+    path = "/api/v1/sources/{radargram_id}/dem",
+    tag = "Raw data",
+    request_body = LinkBody,
+    responses(
+        (status = 200, description = "The source as saved, with its `ETag`.", body = SourceView),
+        (status = 400, description = "`source_unreadable`: the DEM does not cover the recordings.", body = ErrorBody),
+        (status = 404, description = "`no_source`.", body = ErrorBody),
+        (status = 412, description = "`version_conflict`: the `If-Match` is not the current version.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
+// Link a radargram's source to a DEM, or unlink it, without adding its
+// raw data again. Takes `If-Match` with the source's `ETag`; without one,
+// the source as it is read here is the one changed. Linking reads the
+// recordings with the DEM, and answers what they say as `PUT
+// /sources/{id}` does.
 pub async fn link_dem(
     State(state): State<Arc<AppState>>,
     caller: Caller,

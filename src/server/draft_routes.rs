@@ -38,8 +38,9 @@ use serde::{Deserialize, Serialize};
 use super::app::{AppState, OpenRadargram};
 use super::auth::Caller;
 use super::interp_routes::parse_radargram;
+use super::needs::{Needs, Who};
 use super::processing::{JobRequest, JobState, JobStatus, Priority};
-use super::routes::ApiError;
+use super::routes::{ApiError, ErrorBody};
 use crate::identity::RadargramId;
 use crate::project::raw;
 use crate::project::roles::{DownloadScope, Role};
@@ -131,9 +132,10 @@ fn not_found() -> ApiError {
     ApiError::not_found("no_such_draft", "You have no draft with that number.")
 }
 
-/// What `POST /api/v1/sources/{radargram_id}/drafts` takes.
-#[derive(Debug, Deserialize)]
+/// The body of `POST /api/v1/sources/{radargram_id}/drafts`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct DraftBody {
+    /// The processing steps, as `ridal process --steps` takes them.
     pub steps: Vec<String>,
     /// m/ns. Default: that of ice, as for `ridal process`.
     #[serde(default)]
@@ -462,6 +464,20 @@ pub(super) async fn prepare(
     })
 }
 
+/// Process the radargram's raw data. The antenna overrides are the source's.
+/// Asking again for the same draft answers the same one.
+#[utoipa::path(
+    post,
+    path = "/api/v1/sources/{radargram_id}/drafts",
+    tag = "Drafts",
+    request_body = DraftBody,
+    responses(
+        (status = 202, description = "The draft, queued.", body = DraftView),
+        (status = 404, description = "`no_source`.", body = ErrorBody),
+        (status = 429, description = "`too_many_jobs` or `project_too_many_jobs`: as many jobs are waiting or running as the server allows one person, or the project.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn create_draft(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -540,6 +556,16 @@ pub struct DraftList {
     pub drafts: Vec<DraftView>,
 }
 
+/// The caller's drafts.
+#[utoipa::path(
+    get,
+    path = "/api/v1/drafts",
+    tag = "Drafts",
+    responses(
+        (status = 200, description = "The drafts.", body = DraftList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn list_drafts(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -582,6 +608,18 @@ fn with_draft<T>(
     }
 }
 
+/// One draft: its `state`, the step it is on, whether every step has run and
+/// the file is being written, and the revision it was made against.
+#[utoipa::path(
+    get,
+    path = "/api/v1/drafts/{job}",
+    tag = "Drafts",
+    responses(
+        (status = 200, description = "The draft.", body = DraftView),
+        (status = 404, description = "No such draft of the caller's.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator)).own()))),
+)]
 pub async fn get_draft(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -591,6 +629,17 @@ pub async fn get_draft(
     Ok(Json(view))
 }
 
+/// Stop a draft, or throw a finished one away.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/drafts/{job}",
+    tag = "Drafts",
+    responses(
+        (status = 204, description = "Stopped or thrown away."),
+        (status = 404, description = "No such draft of the caller's.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator)).own()))),
+)]
 pub async fn delete_draft(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -634,6 +683,18 @@ fn finished_output(state: &AppState, caller: &Caller, job: u64) -> Result<PathBu
     }
 }
 
+/// A finished draft's NetCDF file.
+#[utoipa::path(
+    get,
+    path = "/api/v1/drafts/{job}/download",
+    tag = "Drafts",
+    responses(
+        (status = 200, description = "The file, as an attachment.", content_type = "application/x-netcdf"),
+        (status = 404, description = "No such draft of the caller's.", body = ErrorBody),
+        (status = 409, description = "It has not finished.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator)).own().and_download(DownloadScope::All)))),
+)]
 pub async fn download_draft(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -661,6 +722,19 @@ pub async fn download_draft(
         .into_response())
 }
 
+/// A low-resolution image of a finished draft.
+#[utoipa::path(
+    get,
+    path = "/api/v1/drafts/{job}/views/{view}/overview",
+    tag = "Drafts",
+    params(super::routes::ProfileQuery),
+    responses(
+        (status = 200, description = "The image, in the profile's format.", content(("image/png"), ("image/jpeg"))),
+        (status = 404, description = "No such draft of the caller's.", body = ErrorBody),
+        (status = 409, description = "It has not finished.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator)).own()))),
+)]
 pub async fn draft_overview(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -715,6 +789,21 @@ pub async fn draft_overview(
     Ok(super::routes::image_response(bytes, &profile))
 }
 
+/// Make a finished draft the radargram. A draft of a served radargram is staged
+/// as a replacement, answered as staging one is, with the token that commits
+/// it; a draft of a new id is installed as an upload.
+#[utoipa::path(
+    post,
+    path = "/api/v1/drafts/{job}/commit",
+    tag = "Drafts",
+    responses(
+        (status = 200, description = "Staged as a replacement.", body = super::replace_routes::Staged),
+        (status = 201, description = "Installed as a new radargram.", body = super::lifecycle_routes::Added),
+        (status = 404, description = "No such draft of the caller's.", body = ErrorBody),
+        (status = 409, description = "`radargram_moved`: the radargram was replaced, added or removed since the draft was made, or the draft has not finished.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator)).own()))),
+)]
 pub async fn commit_draft(
     State(state): State<Arc<AppState>>,
     caller: Caller,

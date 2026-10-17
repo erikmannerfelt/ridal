@@ -433,6 +433,7 @@ pub fn sweep(
 
 /// A file the client names for a recording, before Ridal knows its role.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct NamedFile {
     /// The file's name, which says what it is: `DAT_0001_A1.rad`.
     pub name: String,

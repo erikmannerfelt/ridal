@@ -198,10 +198,19 @@ const PATH_PARAMETERS: &[(&str, &str)] = &[
         "`standard`, or `topo` for the topographically corrected view.",
     ),
     ("trace", "A trace's index, from 0."),
-    ("profile", "A render profile, by name."),
+    // A render profile in the one image path that has one, which says so
+    // itself (`chunk_image`).
+    ("profile", "A processing profile's id."),
     ("x", "The tile's column, from 0."),
     ("y", "The tile's row, from 0."),
     ("token", "The token a staged replacement was given."),
+    (
+        "blake3",
+        "A stored raw file's blake3 hash, as its upload answered.",
+    ),
+    ("dem", "A DEM's id."),
+    ("batch", "A batch's id."),
+    ("job", "A draft's job number."),
 ];
 
 /// The `{name}`s in a path, in order.
@@ -211,9 +220,19 @@ pub(super) fn path_parameter_names(path: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Declare each of the path's parameters that [`PATH_PARAMETERS`] knows.
+/// Declare each of the path's parameters that [`PATH_PARAMETERS`] knows,
+/// unless its operations declare it themselves.
 fn add_path_parameters(path: &str, item: &mut PathItem) {
     for name in path_parameter_names(path) {
+        let declared_by_all = operations(item).all(|operation| {
+            operation.parameters.iter().flatten().any(|p| match p {
+                utoipa::openapi::RefOr::T(p) => p.name == name,
+                utoipa::openapi::RefOr::Ref(_) => false,
+            })
+        });
+        if declared_by_all {
+            continue;
+        }
         let Some((_, description)) = PATH_PARAMETERS.iter().find(|(known, _)| *known == name)
         else {
             continue;
@@ -477,17 +496,29 @@ mod tests {
         let mut ids = std::collections::BTreeSet::new();
         let mut faults = Vec::new();
         for (path, item) in spec.paths.paths.iter_mut() {
-            let declared: Vec<String> = item
-                .parameters
-                .iter()
-                .flatten()
-                .filter_map(|p| match p {
-                    utoipa::openapi::RefOr::T(p) => Some(p.name.clone()),
-                    utoipa::openapi::RefOr::Ref(_) => None,
-                })
+            let names = |parameters: &Option<
+                Vec<utoipa::openapi::RefOr<utoipa::openapi::path::Parameter>>,
+            >|
+             -> Vec<String> {
+                parameters
+                    .iter()
+                    .flatten()
+                    .filter_map(|p| match p {
+                        utoipa::openapi::RefOr::T(p) => Some(p.name.clone()),
+                        utoipa::openapi::RefOr::Ref(_) => None,
+                    })
+                    .collect()
+            };
+            let on_path = names(&item.parameters);
+            let on_operations: Vec<Vec<String>> = super::operations(item)
+                .map(|operation| names(&operation.parameters))
                 .collect();
             for name in super::path_parameter_names(path) {
-                if !declared.iter().any(|d| d == name) {
+                let declared = on_path.iter().any(|d| d == name)
+                    || on_operations
+                        .iter()
+                        .all(|own| own.iter().any(|d| d == name));
+                if !declared {
                     faults.push(format!("{path}: {{{name}}} is not in PATH_PARAMETERS"));
                 }
             }

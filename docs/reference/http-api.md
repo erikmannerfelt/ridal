@@ -11,7 +11,7 @@ page following. The machine-readable description is {download}`openapi.json`,
 also served at `/api/v1/openapi.json`: it holds the schemas of the request
 and response bodies the tables name, and of the picks document (`Document`,
 from gprinterp). It is being extended section by section: the tables from
-Server to Downloads are generated from it, with their bodies; the rest are
+Server to Drafts are generated from it, with their bodies; the rest are
 written by hand, and their bodies are not described yet.
 :::
 
@@ -135,16 +135,8 @@ radargram id, so it can be set before the radargram has been processed.
 Removing a radargram from the project removes its source too; ignoring one
 does not.
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `POST` | `/api/v1/raw` | `operator` | Upload one raw file as the request body. Query: `filename`, required, since a file's name says what it is to its recording (`DAT_0001_A1.rd3`). Answers its `name`, `blake3` and size. Uploading a file the project already has stores nothing new. |
-| `GET` | `/api/v1/raw/{blake3}` | download `all` | A stored raw file. |
-| `GET` | `/api/v1/sources` | `viewer` | The ids of every radargram the project has raw data for, `radargram_ids`, whether or not it has been processed yet, and `names`, the names each source gives its radargram until it is served, by id, for those that give any. |
-| `GET` | `/api/v1/sources/{radargram_id}` | `viewer` | What the radargram is made from, with an `ETag`. |
-| `PUT` | `/api/v1/sources/{radargram_id}` | `operator` | Set or switch what the radargram is made from: `recordings`, a list of recordings in merge order, each a list of `{name, blake3}` as the upload answered, and optionally `crs`, an EPSG code such as `EPSG:32633` (without it, the positions go in the UTM zone that suits them best), `dem`, the id of one of the project's DEMs, `antenna_mhz` and `antenna_separation`, overriding the antenna frequency (MHz) and separation (m) the files give (each a positive number; `400 invalid_antenna_mhz` or `invalid_antenna_separation` otherwise; left out, read from the files), and `names`, `{display_name, group_name, group_id}`, what to call the radargram until it is served (the group id is derived from the name unless given; left out, the source keeps the names it had, and `null` removes them). Which file is a recording's header, data and positions is read from the names. Every recording is read before anything is saved, and what its header and positions say is in the answer. Recordings that cannot be merged into one radargram (different CRS, antenna frequency, time window or antenna separation) are refused with `400 recordings_not_mergeable`, and a DEM that does not cover them, or an antenna whose frequency the files do not give and no `antenna_mhz` does, with `400 source_unreadable`. Every draft and batch made from the source uses its CRS, DEM and antenna overrides, and changing them makes what was processed without them `stale`. Takes `If-Match`. |
-| `PUT` | `/api/v1/sources/{radargram_id}/dem` | `operator` | Link the radargram to one of the project's DEMs, `{"dem": "<id>"}`, or unlink it, `{"dem": null}`, leaving its recordings as they are. The recordings are read with the DEM, as `PUT /api/v1/sources/{radargram_id}` reads them. A radargram processed before the change is stale afterwards. Takes `If-Match`. |
-| `DELETE` | `/api/v1/sources/{radargram_id}` | `operator` | Forget what the radargram is made from, and take it out of its processing profile. Files no other source names are deleted after an hour. |
-| `POST` | `/api/v1/ingest/plan` | `operator` | Plan many uploaded recordings as the radargrams they would make, creating nothing. Body: `recordings`, each `{files: [{name, blake3}]}`, in any order; `merge_threshold_seconds` (`null` never merges); `excluded`, `joins` and `splits`, recordings by key (a hash of their files' contents, which the answer gives) to leave out, to keep with the one before them whatever the gap, and to start a new radargram; `id_pattern` and `display_name_pattern` as `ridal batch-process` takes them; `ids` and `display_names`, typed over the patterns, by the key of an output's first recording; `group_name` and `group_id`; `crs` and `dem` as for a source; `antennas`, overrides by antenna as the headers name it, each `{mhz, separation}`, applied to every recording with that antenna before grouping and naming; and `include_tracks` (default `true`). Answers every recording (time, antenna and its frequency after any override, traces, a simplified WGS84 track, its output, or why it cannot be read), every output (its recordings in merge order, id, display name, the split that starts it, and the `antenna_mhz_override` and `antenna_separation_override` its source is to have), every antenna (what its name gives, the range of separations its files give, the overrides asked for, and how many recordings have it), and `problems`, each with a `kind`, a message and where it is: `invalid_pattern` (with the pattern and the character `span`), `invalid_group`, `invalid_id`, `id_collision`, `id_taken` (with `served` and `has_source`), `join_refused`, `unreadable` and `antenna_frequency_unknown` (an antenna whose name gives no frequency, until `antennas` gives one). A plan with problems is answered in full. Each call keeps its recordings' files from being deleted for another hour. |
+:::{http-endpoints} Raw data
+:::
 
 ## DEMs
 
@@ -159,12 +151,8 @@ A DEM's file cannot be replaced, nor the DEM deleted, while any radargram
 links to it, so nobody's elevations change underneath them: to change the
 DEM of linked radargrams, add another and link them to that.
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/dems` | `viewer` | Every DEM: `id`, `name`, `file` (`{name, blake3}`), its size in `bytes`, who uploaded it and when (`by`, `at`), and the `radargram_ids` linked to it. |
-| `GET` | `/api/v1/dems/{dem}` | `viewer` | One DEM, as the list gives it, with an `ETag`. |
-| `PUT` | `/api/v1/dems/{dem}` | `operator` | Add a DEM: `name`, and `file`, `{name, blake3}` of a file uploaded through `POST /api/v1/raw`, which GDAL must be able to read as a raster (`400 dem_unreadable` otherwise). For an existing DEM, `name` renames it and a different `file` replaces its file, refused with `409 dem_in_use` while any radargram links to it. Answers `201` when it is new. Takes `If-Match`, and `If-None-Match: *` to only create. |
-| `DELETE` | `/api/v1/dems/{dem}` | `operator` | Delete a DEM. Refused with `409 dem_in_use`, naming the radargrams, while any links to it. Takes `If-Match`. |
+:::{http-endpoints} DEMs
+:::
 
 ## Processing profiles
 
@@ -177,22 +165,8 @@ description does not. A radargram is **assigned** to one profile, and may
 have steps of its own that run first, as long as they only choose traces and
 samples (`subset`, `remove_traces`).
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `GET` | `/api/v1/processing/profiles` | `viewer` | Every processing profile, each with its versions and the radargrams that use it. |
-| `GET` | `/api/v1/processing/profiles/{profile}` | `viewer` | One processing profile, with an `ETag`. |
-| `PUT` | `/api/v1/processing/profiles/{profile}` | `operator` | Create or change a processing profile: `name`, `steps`, `medium_velocity` and optionally `description`. Takes `If-Match`. |
-| `DELETE` | `/api/v1/processing/profiles/{profile}` | `operator` | Delete a processing profile. Refused while any radargram uses it. |
-| `GET` | `/api/v1/processing/assignments` | `viewer` | Which radargram uses which processing profile, and the steps of its own. |
-| `PUT` | `/api/v1/processing/assignments/{radargram_id}` | `operator` | Put a radargram in a processing profile: `profile`, and optionally `pre_steps`, which may only be `subset` and `remove_traces`. Refused with `409 no_source` when the project has no raw data for it. |
-| `DELETE` | `/api/v1/processing/assignments/{radargram_id}` | `operator` | Take a radargram out of its processing profile. |
-| `GET` | `/api/v1/processing/activity` | `viewer` | Who is processing what now: each radargram with a draft queued or running, or in an unfinished batch item, as `radargram_id`, `kind` (`draft` or `batch`), `by` (whose draft, or who started the batch), `mine`, and `waiting` for a batch item not yet started. A draft says nothing more. `?radargram_id=` asks about one radargram. |
-| `GET` | `/api/v1/processing/status` | `viewer` | Every radargram in a processing profile, and where it stands: `current`; `stale`, with the `reasons` (an older version of the profile, other steps, switched raw data, a changed DEM or CRS, or a file from before Ridal recorded what it was made from), and `custom`, true when its steps or velocity match no version of the profile; `older_processing`, meaning the same steps run by an older version of a step or of Ridal; `not_processed`; `no_raw_data`; or `hidden`, ignored in this project and kept in its profile until the ignore is lifted. Neither of the last two is ever counted as stale. `profile_version` is the version it matches, when it matches one. `?radargram_id=` asks about one radargram only. |
-| `POST` | `/api/v1/processing/profiles/{profile}/reprocess` | `operator` | Start a batch: reprocess every `stale` and `not_processed` radargram in the profile (and `older_processing` ones too with `include_older: true`), at the profile's current version, and commit each with no review. `radargram_ids` limits it to those of the profile's radargrams. Answers `202` with the batch; `hidden` members are left out; members with no raw data, and members an unfinished batch is already processing, are listed as skipped. `409` when nothing needs it. |
-| `GET` | `/api/v1/processing/batches` | `operator` | The 50 most recent batches, newest first, each item with its `outcome`: `waiting`, `processing`, `committed` (with `picks_not_carried`, whose interpretations did not come across whole: each `user`, its `severity`, `approximate`, `partial` or `refused`, and how many features were `dropped`), `already_current`, `skipped` (with a `reason`), `failed` (with a `message`) or `interrupted`, when the server stopped before it finished. |
-| `GET` | `/api/v1/processing/batches/unseen` | `operator` | The caller's own batches that have ended (finished, or stopped by a restart) and whose report they have not dismissed, newest first. What the banner on every project page announces. |
-| `GET` | `/api/v1/processing/batches/{batch}` | `operator` | One batch, item by item. |
-| `POST` | `/api/v1/processing/batches/{batch}/seen` | `operator`, own | Dismiss the report of a batch the caller started, so it is no longer announced. `seen_at` says when. |
+:::{http-endpoints} Processing profiles
+:::
 
 ## Drafts
 
@@ -211,15 +185,8 @@ staged as a replacement: the answer is the same consequence report and token
 as `POST /api/v1/datasets/{radargram_id}/replace`, and the token commits it
 in the same way. A draft of a new id is installed as an upload.
 
-| Method | Path | Needs | Description |
-|---|---|---|---|
-| `POST` | `/api/v1/sources/{radargram_id}/drafts` | `operator` | Process the radargram's raw data: `steps`, and optionally `medium_velocity`. The antenna overrides are the source's (`PUT /api/v1/sources/{radargram_id}`). Answers `202` with the draft's `job` number and state. Asking again for the same draft answers the same one. `429` when the caller already has as many jobs waiting or running as the server allows one person (`too_many_jobs`), or the project as many as it may have (`project_too_many_jobs`). |
-| `GET` | `/api/v1/drafts` | `operator` | The caller's drafts. |
-| `GET` | `/api/v1/drafts/{job}` | `operator`, own | One draft: its `state` (`queued`, `running`, `done`, `failed`, `cancelled` or `timed_out`), the step it is on (`step`), whether every step has run and the file is being written (`writing`), and the revision it was made against. |
-| `DELETE` | `/api/v1/drafts/{job}` | `operator`, own | Stop a draft, or throw a finished one away. |
-| `GET` | `/api/v1/drafts/{job}/views/{view}/overview` | `operator`, own | A low-resolution image of a finished draft. Query: `profile`. |
-| `GET` | `/api/v1/drafts/{job}/download` | `operator`, own; download `all` | A finished draft's NetCDF file. |
-| `POST` | `/api/v1/drafts/{job}/commit` | `operator`, own | Make a finished draft the radargram, as described above. |
+:::{http-endpoints} Drafts
+:::
 
 ## Interpretations
 

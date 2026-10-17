@@ -40,8 +40,9 @@ use serde::{Deserialize, Serialize};
 use super::app::AppState;
 use super::auth::Caller;
 use super::draft_routes::{prepare, submit_error, Prepared, Processing};
+use super::needs::{Needs, Who};
 use super::processing::{JobState, Priority};
-use super::routes::ApiError;
+use super::routes::{ApiError, ErrorBody};
 use crate::identity::{ProfileId, RadargramId};
 use crate::project::processing::{self, ProcessingState};
 use crate::project::roles::Role;
@@ -300,7 +301,8 @@ fn history(state: &AppState, project: &crate::project::Project) -> Vec<Batch> {
     batches
 }
 
-#[derive(Debug, Default, Deserialize)]
+/// The body of `POST /api/v1/processing/profiles/{profile}/reprocess`.
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct ReprocessBody {
     /// Also reprocess what an older Ridal processed exactly as the profile
     /// says (`older_processing`). Off by default: that is not stale.
@@ -312,6 +314,23 @@ pub struct ReprocessBody {
     pub radargram_ids: Option<Vec<RadargramId>>,
 }
 
+/// Start a batch: reprocess every `stale` and `not_processed` radargram in the
+/// profile (and `older_processing` ones too with `include_older`), at the
+/// profile's current version, and commit each with no review. `hidden` members
+/// are left out; members with no raw data, and members an unfinished batch is
+/// already processing, are listed as skipped.
+#[utoipa::path(
+    post,
+    path = "/api/v1/processing/profiles/{profile}/reprocess",
+    tag = "Processing profiles",
+    request_body = ReprocessBody,
+    responses(
+        (status = 202, description = "The batch, started.", body = Batch),
+        (status = 404, description = "`no_such_profile`.", body = ErrorBody),
+        (status = 409, description = "Nothing in the profile needs it.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn reprocess(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -799,6 +818,16 @@ pub struct BatchList {
     pub batches: Vec<Batch>,
 }
 
+/// The 50 most recent batches, newest first, each item with its `outcome`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/processing/batches",
+    tag = "Processing profiles",
+    responses(
+        (status = 200, description = "The batches.", body = BatchList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn list_batches(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -810,9 +839,19 @@ pub async fn list_batches(
     Ok(Json(BatchList { batches }))
 }
 
-/// `GET /api/v1/processing/batches/unseen`: the caller's batches that have
-/// ended and whose report they have not dismissed, newest first. What the
-/// banner on every page announces.
+/// The caller's own batches that have ended and whose report they have not
+/// dismissed, newest first: what the banner on every project page announces.
+#[utoipa::path(
+    get,
+    path = "/api/v1/processing/batches/unseen",
+    tag = "Processing profiles",
+    responses(
+        (status = 200, description = "The batches.", body = BatchList),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
+// ended and whose report they have not dismissed, newest first. What the
+// banner on every page announces.
 pub async fn unseen_batches(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -827,9 +866,21 @@ pub async fn unseen_batches(
     Ok(Json(BatchList { batches }))
 }
 
-/// `POST /api/v1/processing/batches/{batch}/seen`: the caller has seen the
-/// report of a batch they started, so it is no longer announced. Only for
-/// the one who started it: it is their banner.
+/// Dismiss the report of a batch the caller started, so it is no longer
+/// announced.
+#[utoipa::path(
+    post,
+    path = "/api/v1/processing/batches/{batch}/seen",
+    tag = "Processing profiles",
+    responses(
+        (status = 204, description = "Dismissed."),
+        (status = 403, description = "Someone else started it.", body = ErrorBody),
+        (status = 404, description = "`no_such_batch`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator)).own()))),
+)]
+// report of a batch they started, so it is no longer announced. Only for
+// the one who started it: it is their banner.
 pub async fn mark_batch_seen(
     State(state): State<Arc<AppState>>,
     caller: Caller,
@@ -859,6 +910,17 @@ pub async fn mark_batch_seen(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// One batch, item by item.
+#[utoipa::path(
+    get,
+    path = "/api/v1/processing/batches/{batch}",
+    tag = "Processing profiles",
+    responses(
+        (status = 200, description = "The batch.", body = Batch),
+        (status = 404, description = "`no_such_batch`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
+)]
 pub async fn get_batch(
     State(state): State<Arc<AppState>>,
     caller: Caller,

@@ -37,7 +37,8 @@ ROLES = ("viewer", "picker", "operator", "admin")
 
 
 def needs_text(needs: dict[str, Any]) -> str:
-    """The Needs column for one operation's ``x-ridal-needs``."""
+    """The Needs column for one operation's ``x-ridal-needs``: who, then
+    "own", then the download scope, as ``operator, own; download all``."""
     who = needs["who"]
     if who in WHO:
         base = WHO[who]
@@ -45,12 +46,14 @@ def needs_text(needs: dict[str, Any]) -> str:
         base = f"`{who}`"
     else:
         raise ValueError(f"unknown x-ridal-needs.who {who!r}")
+    if needs.get("own"):
+        base += ", own"
     download = needs.get("download")
     if download is None:
         return base
-    if who == "anyone":
+    if base == "anyone":
         return f"download `{download}`"
-    return f"{base}, download `{download}`"
+    return f"{base}; download `{download}`"
 
 
 def shown_path(path: str) -> str:
@@ -88,11 +91,16 @@ def description(operation: dict[str, Any]) -> str:
     if query:
         text += f" Query: {', '.join(query)}."
     request = schema_name(operation.get("requestBody", {}).get("content"))
-    response = schema_name(operation["responses"].get("200", {}).get("content"))
+    returned = []
+    for status, response in operation["responses"].items():
+        name = schema_name(response.get("content"))
+        if status.startswith("2") and name and name not in returned:
+            returned.append(name)
+    response = " or ".join(f"`{name}`" for name in returned)
     if request:
         text += f" Body: `{request}`."
     if response:
-        text += f" Returns `{response}`."
+        text += f" Returns {response}."
     return text.replace("|", "\\|")
 
 
