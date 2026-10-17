@@ -727,7 +727,10 @@ async fn commit(
             State(Arc::clone(state)),
             caller.clone(),
             Path(radargram.to_string()),
-            axum::extract::Query(super::replace_routes::ReplaceQuery { filename }),
+            axum::extract::Query(super::replace_routes::ReplaceQuery {
+                filename,
+                upload: None,
+            }),
             headers,
             body,
         )
@@ -737,7 +740,10 @@ async fn commit(
             let added = super::lifecycle_routes::upload_dataset(
                 State(Arc::clone(state)),
                 caller.clone(),
-                axum::extract::Query(super::lifecycle_routes::UploadQuery { filename }),
+                axum::extract::Query(super::lifecycle_routes::UploadQuery {
+                    filename,
+                    upload: None,
+                }),
                 headers,
                 body,
             )

@@ -405,6 +405,53 @@ directly), plus an optional CRS and DEM. The routes are in
   interval by interval rather than over windows, since every format Ridal
   reads gives times finer than the trace interval.
 
+## Uploads in chunks (#396)
+
+A file too large for one request is sent in chunks: `POST /api/v1/uploads`
+declares a name and size, `PUT /api/v1/uploads/{upload}` appends a chunk at
+the `Content-Range` it gives, and the finished upload is used by naming it
+as `?upload=` where a body would go. `project::uploads` keeps each upload as
+`ridal_data/uploads/<id>.json` (what was declared, and whose it is) and
+`<id>.part` (what arrived); the routes are `server::upload_routes`.
+
+- **The offset is the `.part`'s length.** Nothing else records how far an
+  upload got, so nothing can disagree with the disk after a crash or a chunk
+  that broke off. What arrived of a broken chunk is kept; a chunk that does
+  not start at the offset is refused with it (`Upload-Offset`), and the
+  client resumes from there. Chunks are not hashed on their own: the file is
+  hashed when it is used, as a body is, so its blake3 is the same however it
+  was sent.
+- **One protocol, several consumers.** `POST /raw`, `POST /datasets` and
+  `POST /datasets/{id}/replace` each split at the point where a body has
+  been streamed to a temporary file (`upload_routes::receive`): the upload's
+  `.part` is moved there instead, and everything after is unchanged. The
+  upload is consumed whatever the answer, as a body is. It is claimed
+  (`upload_routes::claim`) before the handler does anything, so one that is
+  incomplete, someone else's or busy is refused before any work.
+- **The lifecycle lock is not held while a chunk arrives**, for the reason
+  #414 took it off whole-file uploads. It is taken to measure the room for a
+  chunk before writing it, and by the consumer to install, as for a body.
+  `AppState::uploads` (`Sending`) is what stops two requests appending to,
+  or taking, one upload at once: the second is refused with `upload_busy`
+  rather than queued. A `DELETE` does not claim it, so a cancel straight
+  after an abandoned chunk is not refused; the chunk then finds its upload
+  gone.
+- **Raw uploads hash outside the lock.** `raw::install_hashed` takes a hash
+  computed beforehand, so a multi-GB file is no longer hashed while every
+  other upload, removal and replace waits.
+- **An upload is its sender's** (`owner`, the account; `None` in `ridal gui`).
+  Anyone else gets `404 no_such_upload`, never `403`, so an id says nothing
+  about whose it is. Ids are 128 random bits.
+- **Swept after a day without a chunk** (`uploads::MAX_IDLE`), by the newest
+  mtime of the upload's files, on every `POST /uploads` and at startup. A day
+  rather than the hour of `raw::SWEEP_MIN_AGE`: resuming after a laptop slept
+  overnight is the point. Uploads count toward `max_bytes` as they grow; the
+  declared size is checked when one starts but not reserved.
+- **Clients.** The Python client sends files over 64 MiB in 32 MiB chunks
+  (`_http.Http.upload`), retries a failed chunk from the server's offset with
+  backoff, and deletes the upload when it gives up. It does not resume
+  across processes.
+
 ## Processing profiles (#382)
 
 `project::processing` keeps **processing profiles** under

@@ -123,6 +123,40 @@ described in {doc}`../guide/rendering`.
 :::{http-endpoints} Downloads
 :::
 
+(chunked-uploads)=
+## Uploads in chunks
+
+A file can be sent in one request, as the body of the endpoint that takes
+it, or in chunks, which survive a dropped connection: a DEM of several GB, a
+long recording, or a processed radargram larger than a proxy in front of the
+server lets through in one request (Cloudflare's limit is 100 MB).
+
+1. Start an upload with `POST /api/v1/uploads` and `{"name": ..., "size":
+   ...}`, the file's name and its whole size in bytes. The size is checked
+   against the project's size limit here, and each chunk again as it comes.
+2. Send each chunk with `PUT /api/v1/uploads/{upload}`, the bytes as the
+   body and `Content-Range: bytes START-END/SIZE` saying where they go,
+   `END` inclusive. A chunk may be at most 64 MiB; 16 to 32 MiB is a good
+   size. A chunk must start where the upload has got to. One that does not
+   is refused with `409 offset_mismatch`, and the offset the server has is
+   in the `Upload-Offset` header.
+3. Use the finished upload by naming it where the file would otherwise be
+   the body: `POST /api/v1/raw?upload={upload}`, `POST
+   /api/v1/datasets?upload={upload}` or `POST
+   /api/v1/datasets/{radargram_id}/replace?upload={upload}`, with an empty
+   body. The file is checked and stored exactly as one sent whole, and has
+   the same blake3. The upload is gone afterwards, whatever the answer.
+
+When a chunk fails, what arrived of it is kept. Ask `GET
+/api/v1/uploads/{upload}` how far the upload has got (its `offset`, also in
+`Upload-Offset`) and go on from there. An upload is only its sender's:
+anyone else is told it does not exist. One nobody has sent to for a day is
+deleted, and `expires_at` says when that will be; `DELETE
+/api/v1/uploads/{upload}` deletes it straight away.
+
+:::{http-endpoints} Uploads
+:::
+
 ## Raw data
 
 The raw recordings a radargram is made from, kept so that it can be

@@ -160,6 +160,23 @@ impl PartialSchema for NetcdfFile {
 
 impl utoipa::ToSchema for NetcdfFile {}
 
+/// One chunk of an upload sent in chunks (#396), as the whole request body.
+pub(super) struct Chunk;
+
+impl PartialSchema for Chunk {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::String)
+            .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
+                utoipa::openapi::KnownFormat::Binary,
+            )))
+            .description(Some("The bytes of a file that `Content-Range` gives."))
+            .into()
+    }
+}
+
+impl utoipa::ToSchema for Chunk {}
+
 /// Two numbers, as `[f64; 2]` serializes: a position, or the two ends of
 /// a range.
 ///
@@ -232,6 +249,7 @@ const PATH_PARAMETERS: &[(&str, &str)] = &[
     ("job", "A processing job's number, as a draft gives it."),
     ("name", "An account name."),
     ("id", "An API token's id."),
+    ("upload", "An upload's id, as starting it answered."),
     ("user", "An account name: whose interpretation it is."),
     (
         "removal",

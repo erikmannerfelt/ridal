@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! POST   /api/v1/raw?filename=…          upload one file; answers its blake3
+//! POST   /api/v1/raw?upload=…            store one sent in chunks (#396)
 //! GET    /api/v1/raw/{blake3}            download a stored file
 //! GET    /api/v1/sources                 which radargram ids have raw data
 //! GET    /api/v1/sources/{radargram_id}  what a radargram is made from
@@ -67,9 +68,12 @@ fn with_etag(version: &Version) -> [(header::HeaderName, String); 1] {
 #[into_params(parameter_in = Query)]
 pub struct UploadQuery {
     /// The file's name, which says what it is to its recording
-    /// (`DAT_0001_A1.rd3`). Required.
-    #[param(required = true)]
+    /// (`DAT_0001_A1.rd3`). Required, unless `upload` is given, whose name
+    /// it is otherwise.
     pub filename: Option<String>,
+    /// A finished upload sent in chunks (`POST /api/v1/uploads`), to store in
+    /// place of a request body, which is then left empty.
+    pub upload: Option<String>,
 }
 
 /// `POST /api/v1/raw`: the file was stored, or was already.
@@ -80,9 +84,10 @@ pub struct StoredFile {
     pub bytes: u64,
 }
 
-/// Upload one raw file as the request body. `filename` is required, since a
-/// file's name says what it is to its recording (`DAT_0001_A1.rd3`). Uploading
-/// a file the project already has stores nothing new.
+/// Upload one raw file as the request body, or store one sent in chunks
+/// (`upload`). `filename` is required for a body, since a file's name says what
+/// it is to its recording (`DAT_0001_A1.rd3`). Uploading a file the project
+/// already has stores nothing new.
 #[utoipa::path(
     post,
     path = "/api/v1/raw",
@@ -92,6 +97,8 @@ pub struct StoredFile {
     responses(
         (status = 201, description = "Stored, or already there.", body = StoredFile),
         (status = 400, description = "`filename_required`.", body = ErrorBody),
+        (status = 404, description = "`no_such_upload`.", body = ErrorBody),
+        (status = 409, description = "`upload_incomplete` or `upload_busy`.", body = ErrorBody),
         (status = 413, description = "`project_full`: the project's size limit would be exceeded.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
@@ -104,13 +111,21 @@ pub async fn upload_raw_file(
     body: axum::body::Body,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "upload raw data")?;
-    let name = query.filename.ok_or_else(|| {
-        ApiError::bad_request(
-            "filename_required",
-            "Say what the file is called with `?filename=`: its name is what tells \
+    let claimed = query
+        .upload
+        .as_deref()
+        .map(|id| super::upload_routes::claim(&state, project, &caller, id))
+        .transpose()?;
+    let name = query
+        .filename
+        .or_else(|| claimed.as_ref().map(|c| c.upload.name.clone()))
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "filename_required",
+                "Say what the file is called with `?filename=`: its name is what tells \
              Ridal what it is to its recording.",
-        )
-    })?;
+            )
+        })?;
     // The same measure as a radargram upload, under the same lock, so that
     // the two kinds of upload cannot each see room for one file. The lock is
     // not held while the body streams (#396): a multi-GB file over a slow
@@ -121,10 +136,7 @@ pub async fn upload_raw_file(
     let room = {
         let _lifecycle = state.lifecycle_lock().await;
         let room = cap.saturating_sub(project.size_bytes());
-        let declared = headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
+        let declared = super::upload_routes::declared_length(&headers, claimed.as_ref());
         if declared.is_some_and(|declared| declared > room) {
             return Err(super::lifecycle_routes::too_large(
                 declared.unwrap_or_default(),
@@ -137,8 +149,16 @@ pub async fn upload_raw_file(
     let incoming = raw::incoming_path(project.data_dir())
         .map_err(|e| ApiError::internal("upload_failed", e))?;
     let cleanup = super::lifecycle_routes::TempFile(incoming.clone());
-    // Stops at `room`, so a wrong Content-Length cannot overfill.
-    let bytes = super::lifecycle_routes::stream_to_file(body, &incoming, room, cap).await?;
+    // A body stops at `room`, so a wrong Content-Length cannot overfill.
+    let bytes = super::upload_routes::receive(claimed, project, body, &incoming, room, cap).await?;
+    // Outside the lock: a file of several GB takes a while to hash.
+    let hashed = {
+        let incoming = incoming.clone();
+        tokio::task::spawn_blocking(move || crate::recipe::hash_file(&incoming))
+            .await
+            .map_err(|e| ApiError::internal("upload_failed", e.to_string()))?
+            .map_err(|e| ApiError::internal("upload_failed", e))?
+    };
 
     let lifecycle = state.lifecycle_lock().await;
     // The project's size includes this upload's own `.part` file, which is
@@ -153,10 +173,12 @@ pub async fn upload_raw_file(
         return Err(super::lifecycle_routes::too_large(bytes, room, cap));
     }
     let data_dir = project.data_dir().to_path_buf();
-    let stored = tokio::task::spawn_blocking(move || raw::install(&data_dir, &incoming, &name))
-        .await
-        .map_err(|e| ApiError::internal("upload_failed", e.to_string()))?
-        .map_err(|e| ApiError::internal("upload_failed", e))?;
+    let stored = tokio::task::spawn_blocking(move || {
+        raw::install_hashed(&data_dir, &incoming, &name, &hashed.blake3)
+    })
+    .await
+    .map_err(|e| ApiError::internal("upload_failed", e.to_string()))?
+    .map_err(|e| ApiError::internal("upload_failed", e))?;
     cleanup.installed();
     drop(lifecycle);
     Ok((

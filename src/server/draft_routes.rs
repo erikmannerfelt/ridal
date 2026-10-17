@@ -855,7 +855,10 @@ pub async fn commit_draft(
             State(Arc::clone(&state)),
             caller,
             Path(radargram.to_string()),
-            Query(super::replace_routes::ReplaceQuery { filename }),
+            Query(super::replace_routes::ReplaceQuery {
+                filename,
+                upload: None,
+            }),
             headers,
             body,
         )
@@ -864,7 +867,10 @@ pub async fn commit_draft(
         None => super::lifecycle_routes::upload_dataset(
             State(Arc::clone(&state)),
             caller,
-            Query(super::lifecycle_routes::UploadQuery { filename }),
+            Query(super::lifecycle_routes::UploadQuery {
+                filename,
+                upload: None,
+            }),
             headers,
             body,
         )

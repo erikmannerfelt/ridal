@@ -490,6 +490,11 @@ class Client:
 
         Refused (:class:`~ridal.client.errors.Conflict`) when the project
         already has a radargram with this id; replace it instead.
+
+        A file over 64 MiB is sent in chunks, and a chunk that fails is
+        retried from where the server got to, a few times over about a
+        minute, before giving up. Resuming does not outlive the call: a
+        failed upload is started again from the beginning.
         """
         source = Path(path)
         return models.Added.from_json(
@@ -498,6 +503,7 @@ class Client:
                 self._project_path("datasets"),
                 source,
                 params={"filename": source.name},
+                uploads=self._project_path("uploads"),
                 label=source.name,
                 progress=progress,
             )
@@ -529,6 +535,11 @@ class Client:
         :meth:`commit_replacement` or :meth:`discard_replacement` it with.
         A staged file counts against the project's size limit until then,
         and is swept after six hours.
+
+        A file over 64 MiB is sent in chunks, and a chunk that fails is
+        retried from where the server got to, a few times over about a
+        minute, before giving up. Resuming does not outlive the call: a
+        failed upload is started again from the beginning.
         """
         source = Path(path)
         (local,) = ridal.info(source)
@@ -542,6 +553,7 @@ class Client:
                 self._dataset_path(local["radargram_id"], "replace"),
                 source,
                 params={"filename": source.name},
+                uploads=self._project_path("uploads"),
                 label=source.name,
                 progress=progress,
             )
@@ -874,6 +886,11 @@ class Client:
 
         Its name says what it is to its recording, so the file is sent under
         its own name. A file the project already has is not stored twice.
+
+        A file over 64 MiB is sent in chunks, and a chunk that fails is
+        retried from where the server got to, a few times over about a
+        minute, before giving up. Resuming does not outlive the call: a
+        failed upload is started again from the beginning.
         """
         source = Path(path)
         return models.StoredFile.from_json(
@@ -882,6 +899,7 @@ class Client:
                 self._project_path("raw"),
                 source,
                 params={"filename": source.name},
+                uploads=self._project_path("uploads"),
                 label=source.name,
                 progress=progress,
             )

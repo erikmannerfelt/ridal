@@ -208,9 +208,24 @@ pub fn incoming_path(data_dir: &Path) -> Result<PathBuf, String> {
 ///
 /// Already stored, the new copy is dropped: the content is the name, so the
 /// two are the same file.
+#[cfg(test)]
 pub fn install(data_dir: &Path, written: &Path, name: &str) -> Result<HashedFile, String> {
     let hashed = crate::recipe::hash_file(written)?;
-    let destination = file_path(data_dir, &hashed.blake3).expect("blake3 is always valid hex");
+    install_hashed(data_dir, written, name, &hashed.blake3)
+}
+
+/// [`install`] for a file already hashed, which is how the server installs:
+/// the hashing, which for a file of several GB takes a while, then happens
+/// outside the lock that installs. `blake3` must be what [`crate::recipe::hash_file`] answered
+/// for `written`.
+pub fn install_hashed(
+    data_dir: &Path,
+    written: &Path,
+    name: &str,
+    blake3: &str,
+) -> Result<HashedFile, String> {
+    let destination =
+        file_path(data_dir, blake3).ok_or_else(|| format!("'{blake3}' is not a blake3 hash"))?;
     if destination.is_file() {
         let _ = std::fs::remove_file(written);
         // Uploaded again, so young again: otherwise a file that sat
@@ -226,7 +241,7 @@ pub fn install(data_dir: &Path, written: &Path, name: &str) -> Result<HashedFile
     }
     Ok(HashedFile {
         name: name.to_string(),
-        blake3: hashed.blake3,
+        blake3: blake3.to_string(),
     })
 }
 

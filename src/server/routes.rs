@@ -43,7 +43,11 @@ impl ApiError {
     /// Attach a response header. Invalid header values are dropped rather
     /// than panicking: a malformed hint is not worth turning an error
     /// response into a different, more confusing error response.
-    fn with_header(mut self, name: header::HeaderName, value: impl Into<String>) -> Self {
+    pub(super) fn with_header(
+        mut self,
+        name: header::HeaderName,
+        value: impl Into<String>,
+    ) -> Self {
         self.headers.push((name, value.into()));
         self
     }

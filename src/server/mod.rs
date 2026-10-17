@@ -101,3 +101,6 @@ pub mod telemetry;
 pub mod templates;
 pub mod track;
 pub mod track_cache;
+pub mod upload_routes;
+#[cfg(test)]
+mod upload_routes_tests;

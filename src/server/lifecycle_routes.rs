@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! POST   /api/v1/datasets?filename=...   upload a processed .nc
+//! POST   /api/v1/datasets?upload=...     add one sent in chunks (#396)
 //! DELETE /api/v1/datasets/{id}           remove it, or ignore it
 //! POST   /api/v1/datasets/{id}/restore   lift an ignore
 //! GET    /api/v1/catalog/ignored         what is ignored, and what is vestigial
@@ -28,7 +29,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
-use axum::{http::header, http::StatusCode, Json};
+use axum::{http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 
 use super::app::AppState;
@@ -57,6 +58,10 @@ pub struct UploadQuery {
     // the radargram id inside it.
     #[serde(default)]
     pub filename: Option<String>,
+    /// A finished upload sent in chunks (`POST /api/v1/uploads`), to add in
+    /// place of a request body, which is then left empty.
+    #[serde(default)]
+    pub upload: Option<String>,
 }
 
 /// `POST /api/v1/datasets`: the radargram is in the project.
@@ -132,8 +137,8 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// Upload a processed `.nc` file as the request body. It is validated before
-/// anything is installed.
+/// Upload a processed `.nc` file as the request body, or add one sent in chunks
+/// (`upload`). It is validated before anything is installed.
 #[utoipa::path(
     post,
     path = "/api/v1/datasets",
@@ -143,7 +148,8 @@ fn now() -> String {
     responses(
         (status = 201, description = "It is in the project.", body = Added),
         (status = 400, description = "Not a radargram Ridal processed (`not_a_radargram`, `not_a_ridal_radargram`, `ridal_file_too_old`), or `upload_interrupted`.", body = ErrorBody),
-        (status = 409, description = "`radargram_exists` or `radargram_ignored`: the id is taken.", body = ErrorBody),
+        (status = 404, description = "`no_such_upload`.", body = ErrorBody),
+        (status = 409, description = "`radargram_exists` or `radargram_ignored`: the id is taken; or `upload_incomplete` or `upload_busy`.", body = ErrorBody),
         (status = 413, description = "`project_full`: the project's size limit would be exceeded.", body = ErrorBody),
     ),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Role(Role::Operator))))),
@@ -161,6 +167,15 @@ pub async fn upload_dataset(
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "add a radargram")?;
     let destination = writable_destination(project)?;
+    let claimed = query
+        .upload
+        .as_deref()
+        .map(|id| super::upload_routes::claim(&state, project, &caller, id))
+        .transpose()?;
+    let mut query = query;
+    if query.filename.is_none() {
+        query.filename = claimed.as_ref().map(|c| c.upload.name.clone());
+    }
 
     // Measuring the project, checking for a colliding id and installing the
     // file are one decision, and two uploads interleaving them each see room
@@ -175,10 +190,7 @@ pub async fn upload_dataset(
     let room = {
         let _lifecycle = state.lifecycle_lock().await;
         let room = cap.saturating_sub(project.size_bytes());
-        let declared = headers
-            .get(header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok());
+        let declared = super::upload_routes::declared_length(&headers, claimed.as_ref());
         if declared.is_some_and(|declared| declared > room) {
             return Err(too_large(declared.unwrap_or_default(), room, cap));
         }
@@ -194,7 +206,8 @@ pub async fn upload_dataset(
     // `.tmp.nc` in the radargram directory, where it would be discovered
     // as a radargram. Constructing it first makes the property structural.
     let cleanup = TempFile(temporary.clone());
-    let bytes = stream_to_file(body, &temporary, room, cap).await?;
+    let bytes =
+        super::upload_routes::receive(claimed, project, body, &temporary, room, cap).await?;
 
     let inspection = crate::io::inspect_ridal_netcdf(&temporary).map_err(|e| {
         ApiError::bad_request(

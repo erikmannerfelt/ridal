@@ -98,6 +98,7 @@ pub mod raw;
 pub mod revisions;
 pub mod roles;
 pub mod store;
+pub mod uploads;
 
 use std::path::{Path, PathBuf};
 
@@ -149,6 +150,8 @@ cache/
 catalog-summary.json
 # Uploads part-way through being staged.
 .staging/
+# Uploads part-way through being sent in chunks.
+uploads/
 # Who may use the project inside a site. It names the site's accounts,
 # which are the site's business rather than the survey's.
 users.json
