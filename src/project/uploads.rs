@@ -79,9 +79,17 @@ fn document(id: &str) -> PathBuf {
 
 /// Where an upload's bytes are, whether or not it exists. `None` for an
 /// id that is not one.
+///
+/// The id reaches here from a request path. [`valid_id`] already limits it
+/// to hex digits, but the name is rebuilt from the number they spell and
+/// the result checked to sit directly in the uploads directory anyway, so
+/// that the path is safe by what is built here rather than by a check made
+/// elsewhere, which CodeQL cannot follow either.
 pub fn part_path(data_dir: &Path, id: &str) -> Option<PathBuf> {
-    let id = valid_id(id)?;
-    Some(data_dir.join(UPLOADS_DIR).join(format!("{id}.part")))
+    let number = u128::from_str_radix(valid_id(id)?, 16).ok()?;
+    let dir = data_dir.join(UPLOADS_DIR);
+    let path = dir.join(format!("{number:032x}.part"));
+    (path.parent() == Some(dir.as_path())).then_some(path)
 }
 
 /// Start an upload, with nothing sent yet, and answer its id.
