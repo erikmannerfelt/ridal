@@ -47,6 +47,8 @@ clicking a radargram opens it in the viewer.
   catalog** in your settings, with a default for the project in its
   settings. A map is only loaded once it is shown and scrolled to, so hiding
   the maps makes a large catalog quicker to open on a slow connection.
+  **Hidden only where all are unlisted** hides only the maps of groups whose
+  radargrams are all unlisted.
 - **Download** on a group, or **Download all**, gives the picked and derived
   layer points of every radargram in it as one file, and their tracks as
   GeoJSON.

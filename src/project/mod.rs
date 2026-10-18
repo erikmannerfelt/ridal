@@ -409,15 +409,110 @@ pub struct CatalogSection {
     /// it for that page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_group_radargrams: Option<bool>,
-    /// Whether each group's map is shown when the catalog opens, or hidden
+    /// Which groups' maps are shown when the catalog opens; the others wait
     /// behind the group's "Show map" button. Unset means shown.
     ///
     /// On the same terms as `show_group_radargrams`. A hidden map asks the
     /// server for nothing, which on a slow connection is most of what a
     /// large catalog costs to open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub show_group_maps: Option<bool>,
+    pub show_group_maps: Option<GroupMaps>,
 }
+
+/// Which groups' maps the catalog opens with shown (#444, #447).
+///
+/// Written as `true`, `false` or `"listed"`, so a file or a request from
+/// before `Listed` existed, which could only say `true` or `false`, still
+/// means what it meant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupMaps {
+    /// Every group's map. `true`.
+    Shown,
+    /// None of them. `false`.
+    Hidden,
+    /// Only those of groups with a listed radargram. `"listed"`.
+    ///
+    /// A group whose radargrams are all unlisted shows only operators a
+    /// heading and a collapsed list, and its map is what such a catalog
+    /// spends most of its loading on, for data its curators set aside.
+    Listed,
+}
+
+impl GroupMaps {
+    /// Whether a group's map opens shown, given whether any of its
+    /// radargrams is listed.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn shows(self, has_listed: bool) -> bool {
+        match self {
+            Self::Shown => true,
+            Self::Hidden => false,
+            Self::Listed => has_listed,
+        }
+    }
+
+    /// How `ridal.toml` holds it.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    fn to_toml(self) -> toml_edit::Item {
+        match self {
+            Self::Shown => toml_edit::value(true),
+            Self::Hidden => toml_edit::value(false),
+            Self::Listed => toml_edit::value("listed"),
+        }
+    }
+}
+
+impl Serialize for GroupMaps {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Shown => serializer.serialize_bool(true),
+            Self::Hidden => serializer.serialize_bool(false),
+            Self::Listed => serializer.serialize_str("listed"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GroupMaps {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Text(String),
+        }
+        match Raw::deserialize(deserializer)? {
+            Raw::Bool(true) => Ok(Self::Shown),
+            Raw::Bool(false) => Ok(Self::Hidden),
+            Raw::Text(text) if text == "listed" => Ok(Self::Listed),
+            Raw::Text(text) => Err(serde::de::Error::custom(format!(
+                "expected true, false or \"listed\", not \"{text}\""
+            ))),
+        }
+    }
+}
+
+/// `true`, `false` or `"listed"` in the OpenAPI description: what it
+/// serializes as.
+#[cfg(feature = "server")]
+impl utoipa::PartialSchema for GroupMaps {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ObjectBuilder, OneOfBuilder, Type};
+        OneOfBuilder::new()
+            .item(ObjectBuilder::new().schema_type(Type::Boolean))
+            .item(
+                ObjectBuilder::new()
+                    .schema_type(Type::String)
+                    .enum_values(Some(["listed"])),
+            )
+            .description(Some(
+                "`true` shows every group's map, `false` none, and `\"listed\"` \
+                 only those of groups with a listed radargram.",
+            ))
+            .into()
+    }
+}
+
+#[cfg(feature = "server")]
+impl utoipa::ToSchema for GroupMaps {}
 
 /// The `[render]` defaults a project can carry, as one value.
 ///
@@ -448,7 +543,7 @@ pub struct ExportDefaults {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CatalogDefaults {
     pub show_group_radargrams: Option<bool>,
-    pub show_group_maps: Option<bool>,
+    pub show_group_maps: Option<GroupMaps>,
 }
 
 /// Write `key` under `[table]`, creating the table, or remove it when the
@@ -1052,7 +1147,9 @@ impl Project {
              # opens it with each group's radargrams hidden behind its \"Show\n\
              # all\" button, which helps once a project has hundreds of them.\n\
              # `show_group_maps = false` does the same for each group's map,\n\
-             # behind its \"Show map\" button. Set both from Project settings\n\
+             # behind its \"Show map\" button, and `show_group_maps = \"listed\"`\n\
+             # hides only the maps of groups whose radargrams are all\n\
+             # unlisted. Set both from Project settings\n\
              # in the browser. Left unset, both are shown; a person can\n\
              # override either in their own settings.\n\
              [catalog]\n\
@@ -1203,7 +1300,7 @@ impl Project {
                 document,
                 "catalog",
                 "show_group_maps",
-                catalog.show_group_maps.map(toml_edit::value),
+                catalog.show_group_maps.map(GroupMaps::to_toml),
             );
             Ok(())
         })
@@ -1310,10 +1407,10 @@ impl Project {
         self.read_config().catalog.show_group_radargrams
     }
 
-    /// Whether the catalog should open with each group's map shown. `None`
-    /// means shown.
+    /// Which groups' maps the catalog should open with shown. `None` means
+    /// every group's.
     #[cfg_attr(not(feature = "server"), allow(dead_code))]
-    pub fn default_show_group_maps(&self) -> Option<bool> {
+    pub fn default_show_group_maps(&self) -> Option<GroupMaps> {
         self.read_config().catalog.show_group_maps
     }
 
@@ -2461,6 +2558,55 @@ mod tests {
         assert_eq!(reopened.default_profile().as_deref(), Some("abslog"));
         assert_eq!(reopened.default_xscale(), Some(2.0));
         assert_eq!(reopened.basemaps().len(), 1);
+    }
+
+    #[test]
+    fn group_maps_read_the_booleans_from_before_listed_existed() {
+        // #447 turned a boolean into three answers. A `ridal.toml` or a
+        // preferences file from 0.10, which could only say true or false,
+        // must keep meaning what it said.
+        for (text, expected) in [
+            ("true", GroupMaps::Shown),
+            ("false", GroupMaps::Hidden),
+            ("\"listed\"", GroupMaps::Listed),
+        ] {
+            let read: GroupMaps = serde_json::from_str(text).unwrap();
+            assert_eq!(read, expected, "{text}");
+            assert_eq!(serde_json::to_string(&read).unwrap(), text);
+        }
+        assert!(serde_json::from_str::<GroupMaps>("\"sometimes\"").is_err());
+        assert!(serde_json::from_str::<GroupMaps>("1").is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(MARKER),
+            "[project]\nname = \"x\"\n\n[catalog]\nshow_group_maps = false\n",
+        )
+        .unwrap();
+        let project = Project::open(dir.path()).unwrap();
+        assert_eq!(project.default_show_group_maps(), Some(GroupMaps::Hidden));
+
+        // And the new answer survives a write and a re-read.
+        project
+            .set_defaults(
+                &RenderDefaults::default(),
+                &ExportDefaults::default(),
+                &CatalogDefaults {
+                    show_group_radargrams: None,
+                    show_group_maps: Some(GroupMaps::Listed),
+                },
+            )
+            .unwrap();
+        let reopened = Project::open(dir.path()).unwrap();
+        assert_eq!(reopened.default_show_group_maps(), Some(GroupMaps::Listed));
+    }
+
+    #[test]
+    fn group_maps_shows_a_group_by_whether_any_radargram_is_listed() {
+        assert!(GroupMaps::Shown.shows(false));
+        assert!(!GroupMaps::Hidden.shows(true));
+        assert!(GroupMaps::Listed.shows(true));
+        assert!(!GroupMaps::Listed.shows(false));
     }
 
     #[test]

@@ -925,6 +925,41 @@ async fn a_site_project_links_back_to_the_site_root() {
 }
 
 #[tokio::test]
+async fn a_site_project_links_to_the_site_settings_for_someone_signed_in() {
+    // #446. The site's settings were reachable from a project only by
+    // leaving it first. They sit with the way out, since they are the
+    // site's, and only for someone signed in: the page sends anyone else to
+    // the login.
+    let link = r#"<li><a href="/settings">Site settings</a></li>"#;
+    let (_open_dir, open) = site_with(Vec::new(), &["glac"], AccessOptions::default());
+    let anonymous = send(&open, get("/p/glac/", None)).await;
+    assert_eq!(anonymous.status, StatusCode::OK, "{}", anonymous.text);
+    assert!(
+        anonymous.text.contains(">All projects<"),
+        "{}",
+        anonymous.text
+    );
+    assert!(
+        !anonymous.text.contains(">Site settings<"),
+        "{}",
+        anonymous.text
+    );
+
+    let hash = password_hash();
+    let (_dir, app) = site_with(
+        vec![activated("anna", true, &hash)],
+        &["glac"],
+        AccessOptions::default(),
+    );
+    let cookie = sign_in(&app, "anna").await;
+    let page = send(&app, get("/p/glac/", Some(&cookie))).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text);
+    assert!(page.text.contains(link), "{}", page.text);
+    let menu_position = |needle: &str| page.text.find(needle).expect(needle);
+    assert!(menu_position(">All projects<") < menu_position(link));
+}
+
+#[tokio::test]
 async fn a_project_admin_creates_an_account_for_their_project() {
     let hash = password_hash();
     let (_dir, app) = site_with(

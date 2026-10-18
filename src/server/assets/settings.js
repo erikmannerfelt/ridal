@@ -192,6 +192,16 @@
     return value === "" ? null : value === "true";
   }
 
+  /* The maps setting is a boolean with a third answer (#447): "listed"
+   * shows only the maps of groups with a listed radargram. */
+  function mapsChoice(value) {
+    return value === "listed" ? value : boolChoice(value);
+  }
+
+  function parseMapsChoice(value) {
+    return value === "listed" ? value : parseBoolChoice(value);
+  }
+
   /* Fill a <select> with the basemaps that can be chosen. Named by `name`
    * but valued by `id`, which is what a preference and the project default
    * both store -- a rename must not silently repoint either. */
@@ -284,7 +294,7 @@
     const myGroups = byId("my-show-group-radargrams");
     if (myGroups) myGroups.value = boolChoice(settings.my_show_group_radargrams);
     const myMaps = byId("my-show-group-maps");
-    if (myMaps) myMaps.value = boolChoice(settings.my_show_group_maps);
+    if (myMaps) myMaps.value = mapsChoice(settings.my_show_group_maps);
     fillOptions(byId("my-spacing"), spacings, settings.my_spacing, "Project default");
     fillOptions(byId("my-format"), formats, settings.my_format, "Project default");
 
@@ -301,7 +311,7 @@
       defaultGroups.value = boolChoice(settings.default_show_group_radargrams);
     }
     const defaultMaps = byId("default-show-group-maps");
-    if (defaultMaps) defaultMaps.value = boolChoice(settings.default_show_group_maps);
+    if (defaultMaps) defaultMaps.value = mapsChoice(settings.default_show_group_maps);
     for (const id of [
       "default-profile",
       "default-xscale",
@@ -387,7 +397,7 @@
         open_zoomed_out: byId("my-open-zoomed-out").checked,
         show_vertex_tooltips: byId("my-show-vertex-tooltips").checked,
         show_group_radargrams: parseBoolChoice(byId("my-show-group-radargrams").value),
-        show_group_maps: parseBoolChoice(byId("my-show-group-maps").value),
+        show_group_maps: parseMapsChoice(byId("my-show-group-maps").value),
         level2_spacing: byId("my-spacing").value || null,
         level2_format: byId("my-format").value || null,
         basemap: byId("my-basemap").value || null,
@@ -405,7 +415,7 @@
         byId("my-show-vertex-tooltips").checked =
           saved.show_vertex_tooltips !== false;
         byId("my-show-group-radargrams").value = boolChoice(saved.show_group_radargrams);
-        byId("my-show-group-maps").value = boolChoice(saved.show_group_maps);
+        byId("my-show-group-maps").value = mapsChoice(saved.show_group_maps);
         byId("my-spacing").value = saved.level2_spacing || "";
         byId("my-format").value = saved.level2_format || "";
         byId("my-basemap").value = saved.basemap || "";
@@ -432,7 +442,7 @@
           default_show_group_radargrams: parseBoolChoice(
             byId("default-show-group-radargrams").value,
           ),
-          default_show_group_maps: parseBoolChoice(byId("default-show-group-maps").value),
+          default_show_group_maps: parseMapsChoice(byId("default-show-group-maps").value),
         });
         byId("default-profile").value = saved.default_profile || "";
         if ((saved.default_profile || null) !== storedDefaultProfile) dropProfileOverride();
@@ -446,7 +456,7 @@
         byId("default-show-group-radargrams").value = boolChoice(
           saved.default_show_group_radargrams,
         );
-        byId("default-show-group-maps").value = boolChoice(saved.default_show_group_maps);
+        byId("default-show-group-maps").value = mapsChoice(saved.default_show_group_maps);
         // Naming the file is the point: the change lands somewhere the user
         // can go and look at, which is not obvious from a dropdown.
         setStatus("settings-status", "Saved to ridal.toml");
