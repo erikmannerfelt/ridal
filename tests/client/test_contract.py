@@ -323,7 +323,11 @@ class SpecServer:
         if media == "application/geo+json":
             body = {"type": "FeatureCollection", "features": []}
             return httpx.Response(status, json=body, headers=headers)
-        headers["Content-Disposition"] = 'attachment; filename="file"'
+        # Named after the path, as a real server names a download after what
+        # it is: one name for all of them sends parallel downloads to one
+        # file, and on Windows the second rename onto it is refused.
+        name = "-".join(request.url.path.strip("/").split("/")[-3:])
+        headers["Content-Disposition"] = f'attachment; filename="{name}"'
         return httpx.Response(status, content=b"a", headers=headers)
 
 
