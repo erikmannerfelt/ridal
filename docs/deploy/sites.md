@@ -71,8 +71,9 @@ administrator, to the site:
 
 The top-right menu offers **Projects** and **Site settings** on site pages,
 and **Radargram catalog**, **Layers**, **Processing**, **Project settings**
-and **All projects** on a project's pages. **All projects** leaves the project
-for the site's list of projects. The Ridal wordmark always opens the project you are in.
+and **All projects** on a project's pages, followed by **Site settings** when
+you are signed in. **All projects** leaves the project for the site's list of
+projects. The Ridal wordmark always opens the project you are in.
 
 ## Who may do what
 

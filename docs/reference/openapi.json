@@ -13088,6 +13088,20 @@
           }
         }
       },
+      "GroupMaps": {
+        "oneOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "string",
+            "enum": [
+              "listed"
+            ]
+          }
+        ],
+        "description": "`true` shows every group's map, `false` none, and `\"listed\"` only those of groups with a listed radargram."
+      },
       "GroupProperties": {
         "type": "object",
         "description": "`GET /api/v1/groups/{group}/properties`: the project's override of a\ngroup's name.",
@@ -14553,11 +14567,15 @@
             "description": "Whether the catalog opens with each group's radargrams listed."
           },
           "show_group_maps": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Whether the catalog opens with each group's map shown."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GroupMaps",
+                "description": "Which groups' maps the catalog opens with shown."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "open_zoomed_out": {
             "type": [
@@ -15342,11 +15360,15 @@
             "description": "Whether the catalog opens with each group's radargrams listed\n(#314). `null` defers to the project."
           },
           "show_group_maps": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Whether the catalog opens with each group's map shown. `null`\ndefers to the project."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GroupMaps",
+                "description": "Which groups' maps the catalog opens with shown (#447). `null`\ndefers to the project."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "open_zoomed_out": {
             "type": [
@@ -16229,18 +16251,26 @@
             "description": "The caller's own basemap."
           },
           "default_show_group_maps": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Whether the catalog opens with each group's map shown."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GroupMaps",
+                "description": "Which groups' maps the catalog opens with shown."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "my_show_group_maps": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "The caller's own choice of the same."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GroupMaps",
+                "description": "The caller's own choice of the same."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -17048,9 +17078,13 @@
             ]
           },
           "default_show_group_maps": {
-            "type": [
-              "boolean",
-              "null"
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GroupMaps"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "project_basemaps": {
@@ -17224,11 +17258,15 @@
             "description": "Whether the catalog opens with each group's radargrams listed\n(#314). Clearing it restores shown."
           },
           "default_show_group_maps": {
-            "type": [
-              "boolean",
-              "null"
-            ],
-            "description": "Whether the catalog opens with each group's map shown. Clearing it\nrestores shown."
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GroupMaps",
+                "description": "Which groups' maps the catalog opens with shown (#447). Clearing it\nrestores every group's."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "overlays": {
             "type": [

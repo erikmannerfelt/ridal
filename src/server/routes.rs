@@ -15,6 +15,7 @@ use super::needs::{Needs, Who};
 use super::templates;
 use crate::identity::RadargramId;
 use crate::project::roles::DownloadScope;
+use crate::project::GroupMaps;
 use crate::render::grid::{ChunkGrid, OverviewSpec, ViewerRaster};
 use crate::render::profile::{DatasetView, RenderProfile};
 
@@ -598,9 +599,9 @@ fn resolve_show_group_radargrams(state: &AppState, caller: &Caller) -> bool {
     )
 }
 
-/// Whether the catalog should open with each group's map shown, rather
-/// than hidden behind the group's "Show map" button.
-fn resolve_show_group_maps(state: &AppState, caller: &Caller) -> bool {
+/// Which groups' maps the catalog should open with shown, rather than
+/// hidden behind the group's "Show map" button.
+fn resolve_show_group_maps(state: &AppState, caller: &Caller) -> GroupMaps {
     cascade(
         None,
         my_preferences(state, caller).show_group_maps,
@@ -608,7 +609,7 @@ fn resolve_show_group_maps(state: &AppState, caller: &Caller) -> bool {
             .project
             .as_ref()
             .and_then(|p| p.default_show_group_maps()),
-        true,
+        GroupMaps::Shown,
     )
 }
 
@@ -1408,6 +1409,10 @@ struct GroupSummary {
     /// disagree about which is which. Always empty below `operator`, since
     /// the filter has already dropped them.
     unlisted_entries: Vec<DatasetSummary>,
+    /// Whether the group's map is shown when the page opens. Per group
+    /// because [`GroupMaps::Listed`] answers differently for a group whose
+    /// radargrams are all unlisted (#447).
+    show_map: bool,
 }
 
 /// The settings page.
@@ -1663,6 +1668,7 @@ pub async fn index_page(
     let visible = listable(catalog.entries.iter(), &caller);
     let entries: Vec<DatasetSummary> = visible.iter().copied().map(&summarize_entry).collect();
     let warnings = readable_warnings(&catalog, &visible, &caller);
+    let show_group_maps = resolve_show_group_maps(&state, &caller);
 
     // Every entry gets one map on the index page (#121): named groups,
     // and "Ungrouped" for entries with none, presented identically
@@ -1691,6 +1697,7 @@ pub async fn index_page(
             GroupSummary {
                 id: id.to_string(),
                 label,
+                show_map: show_group_maps.shows(members.iter().any(|e| !e.unlisted)),
                 entries: members
                     .iter()
                     .copied()
@@ -1720,6 +1727,7 @@ pub async fn index_page(
         groups.push(GroupSummary {
             id: NO_GROUP_ID.to_string(),
             label: "Ungrouped".to_string(),
+            show_map: show_group_maps.shows(ungrouped.iter().any(|e| !e.unlisted)),
             entries: ungrouped
                 .iter()
                 .copied()
@@ -1775,9 +1783,6 @@ pub async fn index_page(
             // (#314). Each group's button changes it from there without
             // saving.
             show_group_radargrams => resolve_show_group_radargrams(&state, &caller),
-            // Whether each group's map is shown when the page opens, on the
-            // same terms.
-            show_group_maps => resolve_show_group_maps(&state, &caller),
             ..map_page_context(&state, &caller),
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;

@@ -73,13 +73,20 @@
                 Both settings pages and the way out are named for what they
                 belong to (#426): two pages called "Settings", and a
                 "Projects" that meant "leave this one", did not say where
-                they went. -#}
+                they went.
+
+                Site settings sit with the way out (#446), since they belong
+                to the site and not to this project, and only for someone
+                signed in: the page sends anyone else to the login. -#}
             <li><a href="{{ page_base|safe }}/{{ profile_query }}">Radargram catalog</a></li>
             <li><a href="{{ page_base|safe }}/layers{{ profile_query }}">Layers</a></li>
             <li><a href="{{ page_base|safe }}/processing{{ profile_query }}">Processing</a></li>
             <li><a href="{{ page_base|safe }}/settings{{ profile_query }}">Project settings</a></li>
             {%- if site_managed %}
               <li class="site-menu-separated"><a href="/">All projects</a></li>
+              {%- if current_user %}
+                <li><a href="{{ site_settings_href|safe }}">Site settings</a></li>
+              {%- endif %}
             {%- endif %}
           {%- elif current_user %}
             {#- Site pages (#214): there is no project to catalog, layer or

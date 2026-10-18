@@ -18,6 +18,7 @@ use super::routes::{ApiError, ErrorBody};
 use crate::identity::UserId;
 use crate::project::preferences;
 use crate::project::store::Expectation;
+use crate::project::GroupMaps;
 use crate::project::Project;
 
 /// The project, or a 409 explaining that this catalog is not one.
@@ -63,9 +64,9 @@ pub(super) struct MyPreferences {
     /// Whether the catalog opens with each group's radargrams listed.
     #[schema(required = true)]
     show_group_radargrams: Option<bool>,
-    /// Whether the catalog opens with each group's map shown.
+    /// Which groups' maps the catalog opens with shown.
     #[schema(required = true)]
-    show_group_maps: Option<bool>,
+    show_group_maps: Option<GroupMaps>,
     /// `true` when the viewer opens on the whole radargram. Zoomed in is
     /// stored as `null`.
     #[schema(required = true)]
@@ -160,10 +161,10 @@ pub struct PreferencesBody {
     /// (#314). `null` defers to the project.
     #[serde(default, deserialize_with = "present")]
     show_group_radargrams: Option<Option<bool>>,
-    /// Whether the catalog opens with each group's map shown. `null`
+    /// Which groups' maps the catalog opens with shown (#447). `null`
     /// defers to the project.
     #[serde(default, deserialize_with = "present")]
-    show_group_maps: Option<Option<bool>>,
+    show_group_maps: Option<Option<GroupMaps>>,
     /// Whether the viewer opens on the whole radargram (#315).
     #[serde(default, deserialize_with = "present")]
     open_zoomed_out: Option<Option<bool>>,

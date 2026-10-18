@@ -263,8 +263,10 @@ name_field = "Stake"
 : Whether each group in the radargram catalog shows its map when the page
   opens. `false` hides them behind each group's **Show map** button; a
   hidden map loads neither tracks nor basemap tiles, which makes a large
-  catalog quicker to open on a slow connection. A person can override it in
-  their own settings. Default: `true`.
+  catalog quicker to open on a slow connection. `"listed"` hides only the
+  maps of groups whose radargrams are all unlisted, which only operators and
+  admins see. A person can override it in their own settings. Default:
+  `true`.
 
 ### `[processing]`
 

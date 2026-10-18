@@ -2662,6 +2662,11 @@ async fn ridal_gui_serves_its_project_to_the_local_person_with_no_login() {
     // No sign-in link, and no way back to a site there is not.
     assert!(!catalog.text.contains(">Sign in<"), "{}", catalog.text);
     assert!(!catalog.text.contains(">All projects<"), "{}", catalog.text);
+    assert!(
+        !catalog.text.contains(">Site settings<"),
+        "{}",
+        catalog.text
+    );
 
     let settings = get(&app, "/api/v1/projects/default/settings", None).await;
     assert_eq!(settings.body["user"], "default");
@@ -3148,6 +3153,105 @@ async fn the_group_jump_list_counts_unlisted_members_only_for_an_admin() {
         "{}",
         page.text
     );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn listed_group_maps_hides_only_the_maps_of_groups_with_nothing_listed() {
+    // #447. A third answer to the maps setting: shown, except where every
+    // radargram in the group is unlisted.
+    use crate::project::overrides::{self, RadargramOverride};
+
+    let hash = password_hash();
+    let dir = new_site();
+    for (id, group) in [("line-01", "Drønbreen"), ("line-02", "Kroppbreen")] {
+        super::interp_routes_tests::write_test_nc_with_axes(
+            &radargrams(dir.path()).join(format!("{id}.nc")),
+            id,
+            Some(group),
+        );
+    }
+    write_people(
+        dir.path(),
+        &UserSet {
+            users: vec![
+                activated("erik", Role::Operator, DownloadScope::All, &hash),
+                activated("student", Role::Picker, DownloadScope::All, &hash),
+            ],
+            ..UserSet::default()
+        },
+    );
+    let project = open_project(dir.path());
+    overrides::update(project.documents(), |o| {
+        o.radargrams.insert(
+            crate::identity::RadargramId::new("line-02").unwrap(),
+            RadargramOverride {
+                unlisted: true,
+                ..Default::default()
+            },
+        );
+        Ok(())
+    })
+    .unwrap();
+    let app = site_router(dir.path(), AccessOptions::default());
+    let erik = sign_in(&app, "erik").await;
+
+    // Whether each group's map opens hidden, in page order.
+    let maps_hidden = |text: &str| -> Vec<bool> {
+        text.split(r#"<div class="group-map""#)
+            .skip(1)
+            .map(|rest| rest[..rest.find('>').unwrap()].ends_with(" hidden"))
+            .collect()
+    };
+    let page = get(&app, "/", Some(&erik)).await;
+    assert_eq!(maps_hidden(&page.text), vec![false, false], "{}", page.text);
+
+    let saved = put(
+        &app,
+        "/api/v1/settings",
+        &json!({"default_show_group_maps": "listed"}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["default_show_group_maps"], "listed");
+    let marker = std::fs::read_to_string(project_root(dir.path()).join("ridal.toml")).unwrap();
+    assert!(marker.contains(r#"show_group_maps = "listed""#), "{marker}");
+
+    // Drønbreen has a listed radargram and keeps its map; Kroppbreen's only
+    // one is unlisted, so its map waits behind its button.
+    let page = get(&app, "/", Some(&erik)).await;
+    assert_eq!(maps_hidden(&page.text), vec![false, true], "{}", page.text);
+    assert_eq!(page.text.matches(">Hide map</button>").count(), 1);
+    assert_eq!(page.text.matches(">Show map</button>").count(), 1);
+
+    // A picker never sees Kroppbreen, and Drønbreen's map is shown.
+    let student = sign_in(&app, "student").await;
+    let page = get(&app, "/", Some(&student)).await;
+    assert_eq!(maps_hidden(&page.text), vec![false], "{}", page.text);
+
+    // The same answer as a personal preference, read back as sent.
+    let saved = put(
+        &app,
+        "/api/v1/preferences",
+        &json!({"show_group_maps": "listed"}),
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    assert_eq!(saved.body["show_group_maps"], "listed");
+    let settings = get(&app, "/api/v1/settings", Some(&student)).await;
+    assert_eq!(settings.body["my_show_group_maps"], "listed");
+
+    // Anything else is refused rather than read as one of the three.
+    let refused = put(
+        &app,
+        "/api/v1/settings",
+        &json!({"default_show_group_maps": "sometimes"}),
+        Some(&erik),
+    )
+    .await;
+    assert!(refused.status.is_client_error(), "{}", refused.text);
 }
 
 #[tokio::test]

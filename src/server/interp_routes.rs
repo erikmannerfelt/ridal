@@ -32,7 +32,7 @@ use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{Expectation, StoreError, Version};
-use crate::project::{audit, interpretations, layers, Project};
+use crate::project::{audit, interpretations, layers, GroupMaps, Project};
 
 /// The project, if this server has one and `caller` may do `action` in it.
 ///
@@ -1322,12 +1322,12 @@ pub(super) struct ProjectSettings {
     /// The caller's own basemap.
     #[schema(required = true)]
     my_basemap: Option<String>,
-    /// Whether the catalog opens with each group's map shown.
+    /// Which groups' maps the catalog opens with shown.
     #[schema(required = true)]
-    default_show_group_maps: Option<bool>,
+    default_show_group_maps: Option<GroupMaps>,
     /// The caller's own choice of the same.
     #[schema(required = true)]
-    my_show_group_maps: Option<bool>,
+    my_show_group_maps: Option<GroupMaps>,
 }
 
 /// The project's defaults. On a server without a project, answers
@@ -1493,10 +1493,10 @@ pub struct SettingsUpdate {
     /// (#314). Clearing it restores shown.
     #[serde(default, deserialize_with = "present")]
     default_show_group_radargrams: Option<Option<bool>>,
-    /// Whether the catalog opens with each group's map shown. Clearing it
-    /// restores shown.
+    /// Which groups' maps the catalog opens with shown (#447). Clearing it
+    /// restores every group's.
     #[serde(default, deserialize_with = "present")]
-    default_show_group_maps: Option<Option<bool>>,
+    default_show_group_maps: Option<Option<GroupMaps>>,
     /// The project's vector overlays (#177). An empty array removes them
     /// all.
     #[serde(default)]
@@ -1532,7 +1532,7 @@ pub(super) struct SavedSettings {
     #[schema(required = true)]
     default_show_group_radargrams: Option<bool>,
     #[schema(required = true)]
-    default_show_group_maps: Option<bool>,
+    default_show_group_maps: Option<GroupMaps>,
     /// The project's own basemaps, as `ridal.toml` holds them.
     #[schema(value_type = Vec<Object>)]
     project_basemaps: Vec<crate::project::basemaps::Basemap>,
@@ -1702,7 +1702,7 @@ pub async fn put_settings(
         };
         let show_group_maps = match update.default_show_group_maps {
             None => project.default_show_group_maps(),
-            Some(sent) => sent.filter(|shown| !*shown),
+            Some(sent) => sent.filter(|maps| *maps != GroupMaps::Shown),
         };
 
         // One write, not two. Everything this half submits lands together
