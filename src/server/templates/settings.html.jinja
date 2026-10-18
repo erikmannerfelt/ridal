@@ -156,15 +156,15 @@
               <option value="">Project default</option>
               <option value="true">Shown</option>
               <option value="false">Hidden</option>
-              <option value="listed">Hidden only where all are unlisted</option>
+              <option value="listed">Hide where all are unlisted</option>
             </select>
             <span class="hint">
               Whether each group shows its map when the catalog opens. A
               hidden map loads nothing, which makes a large catalog quicker to
               open on a slow connection; each group&rsquo;s &ldquo;Show
-              map&rdquo; button still shows it. &ldquo;Hidden only where all
-              are unlisted&rdquo; hides the maps of groups whose radargrams
-              are all unlisted, and shows the rest.
+              map&rdquo; button still shows it. &ldquo;Hide where all are
+              unlisted&rdquo; hides the maps of groups whose radargrams are
+              all unlisted, and shows the rest.
             </span>
           </label>
           {#- #166. The two download dialogs open on these. -#}
@@ -306,12 +306,12 @@
           <select id="default-show-group-maps" {% if not can_edit_project %}disabled{% endif %}>
             <option value="">Shown</option>
             <option value="false">Hidden</option>
-            <option value="listed">Hidden only where all are unlisted</option>
+            <option value="listed">Hide where all are unlisted</option>
           </select>
           <span class="hint">
             Whether each group shows its map when the catalog opens. A hidden
             map loads nothing until its &ldquo;Show map&rdquo; button is
-            pressed. &ldquo;Hidden only where all are unlisted&rdquo; hides
+            pressed. &ldquo;Hide where all are unlisted&rdquo; hides
             the maps of groups whose radargrams are all unlisted, and shows
             the rest.
           </span>
