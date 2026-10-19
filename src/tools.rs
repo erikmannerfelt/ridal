@@ -85,6 +85,38 @@ pub fn without_tools<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
+/// Write `input` to `child`'s stdin and wait for it to finish, collecting
+/// its output.
+///
+/// `child` comes from [`spawn_tool`] with stdin piped. The input is written
+/// from another thread while this one reads the output, because writing it
+/// all first deadlocks once a tool that answers line by line (`cs2cs`) has
+/// filled its output pipe and stopped reading.
+///
+/// A tool that exits without reading all of its input is not an error
+/// here: `gdallocationinfo` does that when it rejects an option or cannot
+/// open the raster, and what it printed says why, while the broken pipe
+/// alone says nothing. The caller judges the output.
+pub fn communicate(
+    mut child: std::process::Child,
+    input: Vec<u8>,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Write;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| std::io::Error::other("the tool's stdin is not piped"))?;
+    let writer = std::thread::spawn(move || match stdin.write_all(&input) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        result => result,
+    });
+    let output = child.wait_with_output()?;
+    writer
+        .join()
+        .map_err(|_| std::io::Error::other("writing to the tool's stdin panicked"))??;
+    Ok(output)
+}
+
 /// Mark every descriptor above stderr close-on-exec, in a forked child.
 ///
 /// Close-on-exec rather than closed: std's own error pipe to the parent is
@@ -626,6 +658,46 @@ mod tests {
             "a tool started through spawn_tool inherited an open NetCDF file"
         );
         drop(file);
+    }
+
+    /// More than a pipe holds, which is when writing it all before reading
+    /// either deadlocks or meets a closed pipe.
+    #[cfg(unix)]
+    fn more_than_a_pipe_holds() -> Vec<u8> {
+        b"15.0 78.0\n".repeat(100_000)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn communicate_does_not_deadlock_on_a_tool_that_echoes() {
+        let input = more_than_a_pipe_holds();
+        let child = super::spawn_tool(
+            std::process::Command::new("cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped()),
+        )
+        .unwrap();
+        let output = super::communicate(child, input.clone()).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, input);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn communicate_returns_the_output_of_a_tool_that_stops_reading() {
+        // As an older `gdallocationinfo` does on `-r bilinear` (GDAL < 3.10),
+        // which used to surface as "Broken pipe (os error 32)" and hide both
+        // the fallback without `-r` and GDAL's own message.
+        let child = super::spawn_tool(
+            std::process::Command::new("sh")
+                .args(["-c", "echo refused >&2; exit 1"])
+                .stdin(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped()),
+        )
+        .unwrap();
+        let output = super::communicate(child, more_than_a_pipe_holds()).unwrap();
+        assert!(!output.status.success());
+        assert_eq!(output.stderr, b"refused\n");
     }
 
     #[test]

@@ -256,7 +256,6 @@ fn proj_convert_crs(
 ) -> Result<Vec<Coord>, String> {
     let mut new_coords = Vec::<Coord>::new();
 
-    use std::io::Write;
     let proj_conv_str = format!("{src_crs} +to {dst_crs} -f %.4f")
         .split(" ")
         .map(|s| s.to_string())
@@ -266,7 +265,7 @@ fn proj_convert_crs(
     for i in 0..x.len() {
         values.push(format!("{} {}", x[i], y[i]));
     }
-    let mut child = crate::tools::spawn_tool(
+    let child = crate::tools::spawn_tool(
         std::process::Command::new("cs2cs")
             .args(proj_conv_str)
             .stdout(std::process::Stdio::piped())
@@ -274,15 +273,7 @@ fn proj_convert_crs(
     )
     .map_err(|e| format!("Call error when spawning process: {e}"))?;
 
-    child
-        .stdin
-        .take()
-        .ok_or("Call error: stdin could not be bound".to_string())?
-        .write_all((values.join("\n") + "\n").as_bytes())
-        .map_err(|e| format!("Call error writing to stdin: {e}"))?;
-
-    let output = child
-        .wait_with_output()
+    let output = crate::tools::communicate(child, (values.join("\n") + "\n").into_bytes())
         .map_err(|e| format!("Call process error: {e}"))?;
     let parsed = String::from_utf8_lossy(&output.stdout);
 

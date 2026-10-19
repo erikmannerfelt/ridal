@@ -2,7 +2,6 @@
 use std::path::Path;
 
 use crate::coords::Coord;
-use std::io::Write;
 
 /// Describe a failure to launch one of GDAL's command-line tools.
 ///
@@ -35,7 +34,7 @@ fn run_gdallocationinfo(
         args.push("bilinear");
     }
 
-    let mut child = crate::tools::spawn_tool(
+    let child = crate::tools::spawn_tool(
         std::process::Command::new("gdallocationinfo")
             .args(&args)
             .stdin(std::process::Stdio::piped())
@@ -44,24 +43,12 @@ fn run_gdallocationinfo(
     )
     .map_err(|e| spawn_error("gdallocationinfo", &e))?;
 
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or("Call error: stdin could not be bound".to_string())?;
-
-        let mut buf = String::new();
-        for coord in coords_wgs84 {
-            buf.push_str(&format!("{} {}\n", coord.x, coord.y));
-        }
-
-        stdin
-            .write_all(buf.as_bytes())
-            .map_err(|e| format!("Call error writing to stdin: {e}"))?;
+    let mut buf = String::new();
+    for coord in coords_wgs84 {
+        buf.push_str(&format!("{} {}\n", coord.x, coord.y));
     }
 
-    child
-        .wait_with_output()
+    crate::tools::communicate(child, buf.into_bytes())
         .map_err(|e| format!("Call process error: {e}"))
 }
 
@@ -339,6 +326,26 @@ mod tests {
             .err()
             .unwrap()
             .contains("No such file or directory"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn a_dem_gdal_cannot_open_is_named_for_a_long_profile() {
+        // `gdallocationinfo` exits without reading its input when it cannot
+        // open the DEM, as an older one does on `-r bilinear` (GDAL < 3.10).
+        // With more coordinates than a pipe holds, as any real profile has,
+        // that surfaced as "Broken pipe (os error 32)", and the fallback
+        // without `-r` never ran.
+        let crs = Crs::Utm(UtmCrs {
+            zone: 33,
+            north: true,
+        });
+        let coord = make_test_coords()[0].0;
+        let coords_wgs84 = crate::coords::to_wgs84(&vec![coord; 10_000], &crs).unwrap();
+        let wrong_path = get_dem_path().with_extension("tiffffff");
+
+        let err = super::sample_dem(&wrong_path, &coords_wgs84).unwrap_err();
+        assert!(err.contains("No such file or directory"), "{err}");
     }
 
     #[test]
