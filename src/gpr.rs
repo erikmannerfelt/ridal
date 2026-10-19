@@ -154,7 +154,10 @@ impl CorPoint {
 #[derive(Debug, Clone)]
 pub enum LocationCorrection {
     None,
-    Dem(PathBuf),
+    Dem {
+        path: PathBuf,
+        resampling: crate::dem::Resampling,
+    },
 }
 
 /// How many fixes at an end of a track set the rate its times are
@@ -386,15 +389,18 @@ impl GPRLocation {
 
         let coords_wgs84 =
             crate::coords::to_wgs84(&coords, &crate::coords::Crs::from_user_input(&self.crs)?)?;
-        let elev = dem::sample_dem(dem_path, &coords_wgs84)?;
+        let sample = dem::sample_dem(dem_path, &coords_wgs84)?;
 
         for (i, point) in self.cor_points.iter_mut().enumerate() {
-            if let Some(e) = elev.get(i) {
+            if let Some(e) = sample.elevations.get(i) {
                 point.altitude = *e as f64;
             }
         }
 
-        self.correction = LocationCorrection::Dem(dem_path.to_path_buf());
+        self.correction = LocationCorrection::Dem {
+            path: dem_path.to_path_buf(),
+            resampling: sample.resampling,
+        };
         Ok(())
     }
 
@@ -621,6 +627,10 @@ impl GPR {
             core_version: crate::recipe::CORE_PROCESSING_VERSION,
             bundles: inputs.bundles.clone(),
             dem: inputs.dem.clone(),
+            dem_resampling: match &self.location.correction {
+                LocationCorrection::Dem { resampling, .. } => *resampling,
+                LocationCorrection::None => crate::dem::Resampling::default(),
+            },
             crs: self.location.crs.clone(),
             medium_velocity: self.metadata.medium_velocity,
             antenna_mhz_override: inputs.antenna_mhz_override,
@@ -2960,7 +2970,7 @@ fn correction_summary(location: &GPRLocation) -> CorrectionSummary {
             kind: "none".to_string(),
             source: None,
         },
-        LocationCorrection::Dem(path) => CorrectionSummary {
+        LocationCorrection::Dem { path, .. } => CorrectionSummary {
             kind: "dem".to_string(),
             source: Some(path.to_string_lossy().to_string()),
         },

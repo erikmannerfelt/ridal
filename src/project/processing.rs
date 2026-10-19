@@ -524,6 +524,15 @@ pub fn state_of(
             crate::recipe::CORE_PROCESSING_VERSION
         ));
     }
+    // Not stale: the same request on this server's GDAL gives the same
+    // file. Older, because a GDAL from 3.10 gives a better one (#462).
+    if recipe.dem.is_some() && !recipe.dem_resampling.is_bilinear() {
+        older.push(
+            "its DEM was sampled at the nearest cell, as GDAL before 3.10 does, \
+             rather than bilinearly"
+                .to_string(),
+        );
+    }
     for step in &recipe.steps {
         if let Ok(parsed) = crate::steps::parse_one(&step.step) {
             let now = parsed.step.version();
@@ -747,6 +756,7 @@ mod tests {
             core_version: crate::recipe::CORE_PROCESSING_VERSION,
             bundles: vec![bundle("aa")],
             dem: None,
+            dem_resampling: crate::dem::Resampling::Bilinear,
             crs: "EPSG:32633".to_string(),
             medium_velocity: velocity,
             antenna_mhz_override: None,
@@ -950,6 +960,59 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_dem_sampled_at_the_nearest_cell_is_older_processing() {
+        let (_dir, store) = store();
+        let p = id("p");
+        let (profile, _) = save_profile(
+            &store,
+            &p,
+            edit(&["dewow"], 0.168),
+            "a",
+            "t",
+            &Expectation::Any,
+        )
+        .unwrap();
+        let assignment = Assignment {
+            profile: p,
+            pre_steps: vec![],
+        };
+        let dem = crate::recipe::HashedFile {
+            name: "dem.tif".to_string(),
+            blake3: "dd".to_string(),
+        };
+        let mut with_dem = source("aa");
+        with_dem.dem = Some(crate::project::raw::SourceDem {
+            id: crate::identity::DemId::new("dem").unwrap(),
+            file: dem.clone(),
+        });
+        let mut processed = recipe_of(&profile.current().steps, 0.168);
+        processed.dem = Some(dem);
+        let state = |recipe: &crate::recipe::Recipe| {
+            state_of(
+                &assignment,
+                &profile,
+                Some(&with_dem),
+                true,
+                Some(recipe),
+                None,
+                false,
+            )
+        };
+        assert_eq!(
+            state(&processed),
+            ProcessingState::Current { profile_version: 1 }
+        );
+        processed.dem_resampling = crate::dem::Resampling::Nearest;
+        match state(&processed) {
+            ProcessingState::OlderProcessing {
+                profile_version: 1,
+                reasons,
+            } => assert!(reasons[0].contains("nearest cell"), "{reasons:?}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

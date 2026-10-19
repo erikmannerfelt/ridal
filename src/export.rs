@@ -402,14 +402,10 @@ impl GPR {
         );
 
         // elevation correction
-        let elev_corr = match &self.location.correction {
-            LocationCorrection::None => "None".to_string(),
-            LocationCorrection::Dem(fp) => format!(
-                "DEM-corrected: {:?}",
-                fp.as_path().file_name().unwrap().to_str().unwrap()
-            ),
-        };
-        attrs.insert("elevation_correction".into(), ExportAttr::String(elev_corr));
+        attrs.insert(
+            "elevation_correction".into(),
+            ExportAttr::String(elevation_correction(&self.location.correction)),
+        );
 
         // CRS (kept as a global attr for now; CF grid_mapping deferred)
         attrs.insert("crs".into(), ExportAttr::String(self.location.crs.clone()));
@@ -883,5 +879,47 @@ impl GPR {
             data_vars,
             attrs,
         })
+    }
+}
+
+/// The `elevation_correction` attribute: `None`, or the DEM's file name.
+///
+/// Bilinear says nothing more, as before #462, so a file made with a GDAL
+/// that has it is unchanged.
+fn elevation_correction(correction: &LocationCorrection) -> String {
+    match correction {
+        LocationCorrection::None => "None".to_string(),
+        LocationCorrection::Dem { path, resampling } => {
+            let name = path.as_path().file_name().unwrap().to_str().unwrap();
+            match resampling {
+                crate::dem::Resampling::Bilinear => format!("DEM-corrected: {name:?}"),
+                crate::dem::Resampling::Nearest => {
+                    format!("DEM-corrected: {name:?} (nearest cell, GDAL before 3.10)")
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod elevation_correction_tests {
+    use super::{elevation_correction, LocationCorrection};
+    use crate::dem::Resampling;
+
+    #[test]
+    fn only_a_dem_sampled_at_the_nearest_cell_says_how() {
+        let dem = |resampling| LocationCorrection::Dem {
+            path: "/data/dems/svalbard.tif".into(),
+            resampling,
+        };
+        assert_eq!(elevation_correction(&LocationCorrection::None), "None");
+        assert_eq!(
+            elevation_correction(&dem(Resampling::Bilinear)),
+            "DEM-corrected: \"svalbard.tif\""
+        );
+        assert_eq!(
+            elevation_correction(&dem(Resampling::Nearest)),
+            "DEM-corrected: \"svalbard.tif\" (nearest cell, GDAL before 3.10)"
+        );
     }
 }

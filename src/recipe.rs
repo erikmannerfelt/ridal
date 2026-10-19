@@ -1,8 +1,9 @@
 //! What a processed radargram was made from, recorded in the file (#382).
 //!
 //! A [`Recipe`] is everything that determines a processed file's contents:
-//! the raw files, by checksum; the DEM, if any; the CRS, medium velocity and
-//! antenna overrides; and the steps, each with its version. Its hash is what
+//! the raw files, by checksum; the DEM, if any, and how it was sampled; the
+//! CRS, medium velocity and antenna overrides; and the steps, each with its
+//! version. Its hash is what
 //! [`crate::identity::RevisionId::fingerprint_v2`] fingerprints, so the same
 //! raw data processed the same way is the same revision, wherever and
 //! whenever it was processed, and a different input or step is a different
@@ -115,6 +116,12 @@ pub struct Recipe {
     /// The raw recordings, in the order they were merged.
     pub bundles: Vec<Bundle>,
     pub dem: Option<HashedFile>,
+    /// How `dem` was sampled, which depends on the GDAL that ran (#462).
+    /// Left out where bilinear, both here and from the hash, so recipes
+    /// from before it was recorded keep their hash; nearly all of them
+    /// were bilinear, and a nearest one cannot be told apart afterwards.
+    #[serde(default, skip_serializing_if = "crate::dem::Resampling::is_bilinear")]
+    pub dem_resampling: crate::dem::Resampling,
     /// The CRS the coordinates were projected into, as the file records it.
     pub crs: String,
     /// m/ns.
@@ -164,6 +171,12 @@ impl Recipe {
         for step in &self.steps {
             put(&mut hasher, step.step.as_bytes());
             put(&mut hasher, &step.version.to_le_bytes());
+        }
+        // Last, after the steps' count has fixed how many fields came
+        // before, so one more cannot be read as any recipe without it.
+        if !self.dem_resampling.is_bilinear() {
+            put(&mut hasher, b"dem_resampling");
+            put(&mut hasher, self.dem_resampling.as_str().as_bytes());
         }
         hasher.finalize().to_hex().to_string()
     }
@@ -270,6 +283,7 @@ mod tests {
                 ],
             }],
             dem: None,
+            dem_resampling: crate::dem::Resampling::Bilinear,
             crs: "EPSG:32633".to_string(),
             medium_velocity: 0.168,
             antenna_mhz_override: None,
@@ -324,6 +338,9 @@ mod tests {
                     blake3: "dd".to_string(),
                 })
             }),
+            ("sampling the DEM at the nearest cell", |r| {
+                r.dem_resampling = crate::dem::Resampling::Nearest
+            }),
             ("the CRS", |r| r.crs = "EPSG:32634".to_string()),
             ("the velocity", |r| r.medium_velocity = 0.1),
             ("an antenna frequency override", |r| {
@@ -370,9 +387,31 @@ mod tests {
 
     #[test]
     fn the_json_round_trips() {
-        let recipe = recipe();
+        let mut recipe = recipe();
         let read: Recipe = serde_json::from_str(&recipe.to_json()).unwrap();
         assert_eq!(read, recipe);
+        assert_eq!(read.hash(), recipe.hash());
+
+        recipe.dem_resampling = crate::dem::Resampling::Nearest;
+        assert!(recipe.to_json().contains(r#""dem_resampling":"nearest""#));
+        let read: Recipe = serde_json::from_str(&recipe.to_json()).unwrap();
+        assert_eq!(read, recipe);
+    }
+
+    #[test]
+    fn a_bilinear_dem_is_written_as_before_462() {
+        // Every recipe from before #462 that has a DEM reads as bilinear,
+        // and one that is bilinear now writes and hashes as they did.
+        let mut recipe = recipe();
+        recipe.dem = Some(HashedFile {
+            name: "dem.tif".to_string(),
+            blake3: "dd".to_string(),
+        });
+        assert!(!recipe.to_json().contains("dem_resampling"));
+        let mut before: serde_json::Value = serde_json::from_str(&recipe.to_json()).unwrap();
+        before.as_object_mut().unwrap().remove("dem_resampling");
+        let read: Recipe = serde_json::from_value(before).unwrap();
+        assert_eq!(read.dem_resampling, crate::dem::Resampling::Bilinear);
         assert_eq!(read.hash(), recipe.hash());
     }
 
