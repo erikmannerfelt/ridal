@@ -7273,6 +7273,171 @@ async fn an_ingest_plan_groups_and_names_uploaded_recordings() {
     assert_eq!(refused.body["error"]["code"], "group_id_without_name");
 }
 
+/// A download's status, `Content-Disposition` and bytes, which the
+/// text-decoding helpers cannot show.
+async fn download_bytes(app: &Router, uri: &str, session: &str) -> (StatusCode, String, Vec<u8>) {
+    let response = app
+        .clone()
+        .oneshot(
+            request("GET", uri, Some(session))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, disposition, bytes.to_vec())
+}
+
+/// Each file in a zip by its path, with its bytes.
+fn unzip(bytes: &[u8]) -> std::collections::BTreeMap<String, Vec<u8>> {
+    use std::io::Read;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    (0..archive.len())
+        .map(|i| {
+            let mut file = archive.by_index(i).unwrap();
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents).unwrap();
+            (file.name().unwrap().to_string(), contents)
+        })
+        .collect()
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_sources_raw_data_and_a_dem_download_under_their_own_names() {
+    // #460.
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![
+        activated("erik", Role::Operator, DownloadScope::All, &hash),
+        activated("dora", Role::Viewer, DownloadScope::Derived, &hash),
+    ]);
+    let erik = sign_in(&app, "erik").await;
+    let dora = sign_in(&app, "dora").await;
+    let stem = "dronbreen-20250327-DAT_0066_A1";
+    let recording = upload_recording(&app, stem, &erik).await;
+    let set = put(
+        &app,
+        "/api/v1/sources/line-new",
+        &json!({"recordings": [recording]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(set.status, StatusCode::OK, "{}", set.text);
+
+    // The files as they were uploaded, under the radargram's name.
+    let (status, disposition, bytes) =
+        download_bytes(&app, "/api/v1/sources/line-new/raw.zip", &erik).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(disposition, "attachment; filename=\"line-new-raw.zip\"");
+    let files = unzip(&bytes);
+    let expected: std::collections::BTreeMap<String, Vec<u8>> = ["rad", "rd3", "cor"]
+        .iter()
+        .map(|ext| {
+            (
+                format!("line-new/{stem}.{ext}"),
+                std::fs::read(format!("assets/mala/{stem}.{ext}")).unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(files, expected);
+    // Dated when they were stored, not at the format's zero, 1980.
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&bytes)).unwrap();
+    let dated = archive.by_index(0).unwrap().last_modified().unwrap();
+    assert!(dated.year() > 1980, "{dated:?}");
+
+    // The viewer offers it to whoever may take it, for a radargram the
+    // project has raw data for.
+    assert!(!get(&app, "/view/ours", Some(&erik))
+        .await
+        .text
+        .contains("dl-raw-data"));
+    let ours = put(
+        &app,
+        "/api/v1/sources/ours",
+        &json!({"recordings": [recording]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(ours.status, StatusCode::OK, "{}", ours.text);
+    let page = get(&app, "/view/ours", Some(&erik)).await;
+    assert!(page.text.contains("id=\"dl-raw-data\""), "{}", page.text);
+    let page = get(&app, "/view/ours", Some(&dora)).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(!page.text.contains("dl-raw-data"), "{}", page.text);
+
+    // Merged recordings may share names, so each has its own directory,
+    // numbered in merge order.
+    let merged = put(
+        &app,
+        "/api/v1/sources/line-merged",
+        &json!({"recordings": [recording, recording]}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.text);
+    let (_, _, bytes) = download_bytes(&app, "/api/v1/sources/line-merged/raw.zip", &erik).await;
+    let names: Vec<String> = unzip(&bytes).into_keys().collect();
+    assert_eq!(
+        names,
+        [
+            format!("line-merged/1/{stem}.cor"),
+            format!("line-merged/1/{stem}.rad"),
+            format!("line-merged/1/{stem}.rd3"),
+            format!("line-merged/2/{stem}.cor"),
+            format!("line-merged/2/{stem}.rad"),
+            format!("line-merged/2/{stem}.rd3"),
+        ]
+    );
+
+    // A DEM under its own name rather than its hash.
+    let dem_path = dronbreen_dem(dir.path(), 10);
+    let dem_file = upload_file(&app, dem_path.to_str().unwrap(), &erik).await;
+    let added = put(
+        &app,
+        "/api/v1/dems/dronbreen",
+        &json!({"name": "Drønbreen", "file": dem_file}),
+        Some(&erik),
+    )
+    .await;
+    assert!(added.status.is_success(), "{}", added.text);
+    let (status, disposition, bytes) =
+        download_bytes(&app, "/api/v1/dems/dronbreen/file", &erik).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(disposition, "attachment; filename=\"dronbreen-10.tif\"");
+    assert_eq!(bytes, std::fs::read(&dem_path).unwrap());
+
+    // Both are raw data: the `all` download scope, as for the radargram.
+    for uri in [
+        "/api/v1/sources/line-new/raw.zip",
+        "/api/v1/dems/dronbreen/file",
+    ] {
+        let refused = get(&app, uri, Some(&dora)).await;
+        assert_eq!(refused.status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(refused.body["error"]["code"], "download_not_permitted");
+    }
+    assert_eq!(
+        get(&app, "/api/v1/sources/line-none/raw.zip", Some(&erik))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(&app, "/api/v1/dems/nothing/file", Some(&erik))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn raw_data_is_uploaded_once_and_a_source_names_it() {

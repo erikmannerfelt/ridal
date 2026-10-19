@@ -597,6 +597,7 @@ const CASES: &[Case] = &[
     Case::new("download_raw_file").setup(upload_recording),
     Case::new("list_sources"),
     Case::new("get_source").setup(source),
+    Case::new("download_source").setup(source),
     Case::new("put_source")
         .setup(upload_recording)
         .body(source_body),
@@ -610,6 +611,7 @@ const CASES: &[Case] = &[
     // DEMs.
     Case::new("list_dems"),
     Case::new("get_dem").setup(dem),
+    Case::new("download_dem").setup(dem),
     Case::new("put_dem").setup(upload_dem).body(dem_body),
     Case::new("delete_dem").setup(dem),
     // Processing profiles.

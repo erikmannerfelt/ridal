@@ -49,6 +49,8 @@ NOT_WRAPPED: Final[dict[str, str]] = {
     "dataset_trace": "the viewer's trace panel",
     "dataset_track": "the viewer's map; track() is the GeoJSON download",
     "dataset_topo_geometry": "the viewer's corrected view",
+    "download_source": "the viewer's raw data zip; source() and download_raw() give each file",
+    "download_dem": "the processing page's; download_raw() takes a DEM's file by its hash",
     "list_revisions": "the catalog page's history",
     "get_properties": "the catalog page's dialog",
     "put_properties": "the catalog page's dialog",

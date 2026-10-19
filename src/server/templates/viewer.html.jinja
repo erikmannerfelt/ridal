@@ -147,6 +147,11 @@
         {% if can_download_all %}
           <li><button type="button" id="dl-radargram">Radargram (NetCDF)</button></li>
         {% endif %}
+        {#- The files it was processed from (#460), when the project has
+            them; `has_raw_data` is false for anyone without `all`. -#}
+        {% if has_raw_data %}
+          <li><button type="button" id="dl-raw-data">Raw data (zip)</button></li>
+        {% endif %}
       </ul>
     </details>
     {% endif %}

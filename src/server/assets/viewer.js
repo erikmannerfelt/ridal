@@ -1389,6 +1389,12 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     menu.open = false;
     window.location.href = `${datasetUrl}/download`;
   });
+  /* A navigation for the same reason: raw data runs to several GB and is
+   * streamed as the zip is written (#460). */
+  bind('dl-raw-data', () => {
+    menu.open = false;
+    window.location.href = `${RIDAL.apiPath("sources", RADARGRAM_ID)}/raw.zip`;
+  });
   bind('dl-raw', () => {
     if (!picksAreStale()) go(`${picksUrl}/raw`);
   });

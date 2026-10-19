@@ -138,6 +138,9 @@ The viewer's **Download** menu has:
   current render profile;
 - **Figure…**, an annotated figure (see [Figures](#figures));
 - **Radargram (NetCDF)**, which is the processed file itself.
+- **Raw data (zip)**, the files it was processed from, as they were uploaded,
+  when the project has them. A radargram merged from several recordings has
+  one numbered folder per recording, in the order they were merged.
 
 What each account may download is decided by its download scope (see
 {doc}`../deploy/accounts`).
@@ -157,7 +160,8 @@ radargram, and **Process…** processes it again from its raw data (see
 
 **Processing**
 : Processing profiles, raw data that are not processed yet, DEMs and recent
-  batches (see {doc}`processing`).
+  batches (see {doc}`processing`). **Download** beside raw data that is not
+  processed yet gives its files as a zip, and beside a DEM gives its file.
 
 **Project settings**
 : Your own preferences, such as the render profile and horizontal scale that

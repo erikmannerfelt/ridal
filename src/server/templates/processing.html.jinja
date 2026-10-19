@@ -53,7 +53,8 @@
     No processing profiles yet.
   </p>
   <div id="processing-profiles"
-       data-writable="{% if writable %}true{% else %}false{% endif %}"></div>
+       data-writable="{% if writable %}true{% else %}false{% endif %}"
+       data-can-download="{% if can_download_all %}true{% else %}false{% endif %}"></div>
 
   {% if project %}
   {#- With processing optional, raw data nobody has processed would be
