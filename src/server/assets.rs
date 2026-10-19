@@ -849,4 +849,90 @@ mod tests {
             }
         }
     }
+
+    /// Every data table pans inside a `.table-scroll` wrapper (#295, #465).
+    ///
+    /// A table outside one widens the whole page on a phone, and nothing
+    /// shows it on the wide screen a page is usually written on: the DEM
+    /// list on the processing page went out that way beside two tables
+    /// that had the wrapper. So a template's `layers-table` must open
+    /// directly inside one, and a script must build its tables through
+    /// `RIDAL.scrollingTable`, which adds both.
+    ///
+    /// The directories are read rather than listed, so a new page or script
+    /// is checked without anyone remembering to add it here.
+    #[test]
+    fn every_data_table_scrolls_on_a_narrow_screen() {
+        let server = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server");
+        let files = |dir: &str, suffix: &str| -> Vec<(String, String)> {
+            let mut found: Vec<(String, String)> = std::fs::read_dir(server.join(dir))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.to_string_lossy().ends_with(suffix))
+                .map(|path| {
+                    let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                    (name, std::fs::read_to_string(&path).unwrap())
+                })
+                .collect();
+            found.sort();
+            assert!(!found.is_empty(), "no {suffix} files in {dir}");
+            found
+        };
+
+        for (name, html) in files("templates", ".html.jinja") {
+            let lines: Vec<&str> = html.lines().collect();
+            for (number, line) in lines.iter().enumerate() {
+                if !(line.contains("<table") && line.contains("layers-table")) {
+                    continue;
+                }
+                let before = lines[..number]
+                    .iter()
+                    .rev()
+                    .map(|l| l.trim())
+                    .find(|l| !l.is_empty());
+                assert_eq!(
+                    before,
+                    Some(r#"<div class="table-scroll">"#),
+                    "{name}:{} is a data table outside a .table-scroll, so it \
+                     widens the page on a phone",
+                    number + 1
+                );
+            }
+        }
+
+        // The helper is the one place allowed to make a table.
+        let helper = |js: &str| -> Option<(usize, usize)> {
+            let start = js.find("  scrollingTable(")?;
+            let end = start + js[start..].find("\n  },\n")?;
+            Some((start, end))
+        };
+        let mut helpers = 0;
+        for (name, js) in files("assets", ".js") {
+            let mut js = js;
+            if let Some((start, end)) = helper(&js) {
+                helpers += 1;
+                js.replace_range(start..end, "");
+            }
+            for (number, line) in js.lines().enumerate() {
+                let trimmed = line.trim();
+                let makes_a_table = ["createElement(\"table\")", "createElement('table')"]
+                    .iter()
+                    .chain(&["el('table'", "el(\"table\""])
+                    .any(|pattern| trimmed.contains(pattern))
+                    // `el(` with its tag on the next line.
+                    || trimmed == "'table'," || trimmed == "\"table\","
+                    // The class, not the layers page's `#layers-table`.
+                    || trimmed
+                        .match_indices("layers-table")
+                        .any(|(at, _)| !trimmed[..at].ends_with('#'));
+                assert!(
+                    !makes_a_table,
+                    "{name}:{} builds a table without RIDAL.scrollingTable, so \
+                     it may widen the page on a phone: {trimmed}",
+                    number + 1
+                );
+            }
+        }
+        assert_eq!(helpers, 1, "RIDAL.scrollingTable not found in app.js");
+    }
 }

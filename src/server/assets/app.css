@@ -107,6 +107,12 @@
   width: 100%;
 }
 
+/* An invite link is one long word: wrapped, so the sheet fits a phone and
+ * a printed page rather than panning or being cut off (#465). */
+.bulk-table td {
+  overflow-wrap: anywhere;
+}
+
 @media print {
   body * {
     visibility: hidden;
@@ -125,6 +131,11 @@
 
   #bulk-result .bulk-actions {
     display: none;
+  }
+
+  /* Paper cannot be panned. */
+  #bulk-result .table-scroll {
+    overflow: visible;
   }
 }
 
@@ -240,8 +251,14 @@ header a:hover {
   width: auto;
 }
 
+/* A word too long for its line breaks rather than pushing the page sideways
+ * on a phone (#465), wherever it is, so a new section does not have to
+ * remember to ask. `break-word` rather than `anywhere`: it leaves min-content
+ * widths alone, so a table's columns keep their width and the table pans in
+ * its `.table-scroll` instead of wrapping each cell a letter to a line. */
 main {
   padding: var(--space-4);
+  overflow-wrap: break-word;
 }
 
 h1 {

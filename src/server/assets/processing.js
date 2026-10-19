@@ -48,6 +48,14 @@
     node.append(...children);
     return node;
   };
+  /** One of the page's tables, with `head` naming its columns, in the
+   * wrapper that scrolls it sideways on a narrow screen (#465). */
+  const membersTable = (head, rows) =>
+    RIDAL.scrollingTable(
+      'processing-members',
+      el('thead', {}, el('tr', {}, ...head.map((h) => el('th', { scope: 'col', textContent: h })))),
+      el('tbody', {}, ...rows),
+    );
   const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
   const linesOf = (text) =>
@@ -526,19 +534,13 @@
     if (members.length) {
       const head = ['Radargram', 'State', 'Steps before the profile'];
       if (writable) head.push('');
+      // The layers page's table: columns keep a readable width and the
+      // wrapper scrolls sideways on a narrow screen, rather than squeezing
+      // the reasons into a column a word wide.
       section.append(
-        el(
-          'div',
-          { className: 'table-scroll' },
-          el(
-            'table',
-            // The layers page's table: columns keep a readable width and
-            // the wrapper scrolls sideways on a narrow screen, rather than
-            // squeezing the reasons into a column a word wide.
-            { className: 'processing-members layers-table' },
-            el('thead', {}, el('tr', {}, ...head.map((h) => el('th', { scope: 'col', textContent: h })))),
-            el('tbody', {}, ...members.map((m) => memberRow(profile, m, statuses[m.id]))),
-          ),
+        membersTable(
+          head,
+          members.map((m) => memberRow(profile, m, statuses[m.id])),
         ),
       );
     }
@@ -604,18 +606,7 @@
     });
     const head = ['Radargram', 'Name', 'Profile'];
     if (writable || canDownload) head.push('');
-    document.getElementById('raw-unprocessed-list').replaceChildren(
-      el(
-        'div',
-        { className: 'table-scroll' },
-        el(
-          'table',
-          { className: 'processing-members layers-table' },
-          el('thead', {}, el('tr', {}, ...head.map((h) => el('th', { scope: 'col', textContent: h })))),
-          el('tbody', {}, ...rows),
-        ),
-      ),
-    );
+    document.getElementById('raw-unprocessed-list').replaceChildren(membersTable(head, rows));
   }
 
   function renderHistory(batches, profiles) {
@@ -779,14 +770,7 @@
     }
     const heads = ['Name', 'ID', 'Size', 'Uploaded', 'Used by'];
     if (writable || canDownload) heads.push('');
-    demsList.replaceChildren(
-      el(
-        'table',
-        { className: 'processing-members layers-table' },
-        el('thead', {}, el('tr', {}, ...heads.map((h) => el('th', { textContent: h })))),
-        el('tbody', {}, ...dems.map(demRow)),
-      ),
-    );
+    demsList.replaceChildren(membersTable(heads, dems.map(demRow)));
   }
 
   const demsForm = document.getElementById('dems-form');
