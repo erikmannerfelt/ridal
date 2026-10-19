@@ -3503,6 +3503,7 @@ mod tests {
             core_version: crate::recipe::CORE_PROCESSING_VERSION,
             bundles: vec![],
             dem: None,
+            dem_resampling: crate::dem::Resampling::Bilinear,
             crs: "EPSG:32633".to_string(),
             medium_velocity: 0.168,
             antenna_mhz_override: None,

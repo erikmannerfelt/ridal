@@ -71,6 +71,8 @@ async fn serve_gui(
         );
     }
 
+    warn_about_gdal();
+
     let site = SiteState::local(state, processing);
     super::telemetry::spawn_heartbeat(std::sync::Arc::clone(&site), heartbeat);
     let router = site::build_site_router(site);
@@ -113,6 +115,14 @@ fn sweep_upload_temps(project: &crate::project::Project) {
             "Warning: could not sweep unfinished uploads from {}: {e}",
             project.root().display()
         ),
+    }
+}
+
+/// Say so when DEMs would be sampled at the nearest cell, or not at all
+/// (#462). A site also shows it to its server administrators.
+fn warn_about_gdal() {
+    if let Some(warning) = crate::dem::resampling_warning() {
+        eprintln!("Warning: {warning}");
     }
 }
 
@@ -236,6 +246,7 @@ async fn serve_site(
     } else {
         println!("  read-only, no accounts");
     }
+    warn_about_gdal();
 
     super::telemetry::spawn_heartbeat(std::sync::Arc::clone(&state), heartbeat);
     serve(

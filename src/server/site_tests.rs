@@ -611,6 +611,46 @@ async fn site_settings_require_a_login() {
 }
 
 #[tokio::test]
+async fn only_a_server_admin_is_told_about_the_servers_gdal() {
+    let hash = password_hash();
+    let (_dir, app) = site_with(
+        vec![
+            activated("anna", true, &hash),
+            activated("bert", false, &hash),
+        ],
+        &[],
+        AccessOptions::default(),
+    );
+    // Whatever this machine's GDAL is: the page says what the check says,
+    // and only to an administrator.
+    let warning = crate::dem::resampling_warning();
+    let admin = send(&app, get("/settings", Some(&sign_in(&app, "anna").await))).await;
+    assert_eq!(
+        admin.text.contains("id=\"gdal-warning\""),
+        warning.is_some(),
+        "{}",
+        admin.text
+    );
+    let other = send(&app, get("/settings", Some(&sign_in(&app, "bert").await))).await;
+    assert_eq!(other.status, StatusCode::OK, "{}", other.text);
+    assert!(!other.text.contains("gdal-warning"), "{}", other.text);
+
+    // And what it shows when there is something to say.
+    let page = crate::server::templates::environment()
+        .get_template("site_settings.html.jinja")
+        .unwrap()
+        .render(minijinja::context! {
+            server_admin => true,
+            gdal_warning => "GDAL 3.7.3 samples a DEM at the nearest cell only",
+        })
+        .unwrap();
+    assert!(
+        page.contains("<strong>DEM sampling.</strong> GDAL 3.7.3 samples"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
 async fn a_site_theme_is_personal_and_reaches_every_project() {
     let hash = password_hash();
     let (_dir, app) = site_with(

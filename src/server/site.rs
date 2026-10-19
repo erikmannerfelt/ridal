@@ -1188,6 +1188,11 @@ async fn site_settings_page(
             current_user => caller.user.as_ref().map(|u| u.as_str()),
             current_role => if caller.server_admin { "admin" } else { "viewer" },
             server_admin => caller.server_admin,
+            // About the machine, so only for whoever runs it.
+            gdal_warning => caller
+                .server_admin
+                .then(crate::dem::resampling_warning)
+                .flatten(),
             authentication_configured => configured,
             active_theme => site_theme(&site, caller.user.as_ref()),
             api_base => api_base,

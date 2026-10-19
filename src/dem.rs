@@ -1,7 +1,126 @@
 /// Tools to read elevation from Digital Elevation Models (DEMs)
 use std::path::Path;
+use std::sync::OnceLock;
+
+use serde::{Deserialize, Serialize};
 
 use crate::coords::Coord;
+
+/// How a DEM is read between its cell centres.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Resampling {
+    /// Interpolated from the four nearest cells (`-r bilinear`).
+    #[default]
+    Bilinear,
+    /// The value of the cell a point falls in: all `gdallocationinfo`
+    /// can do before GDAL 3.10. Along a track this gives steps of up to a
+    /// cell's relief rather than a smooth surface.
+    Nearest,
+}
+
+impl Resampling {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Resampling::Bilinear => "bilinear",
+            Resampling::Nearest => "nearest",
+        }
+    }
+
+    pub fn is_bilinear(&self) -> bool {
+        *self == Resampling::Bilinear
+    }
+}
+
+/// The first GDAL release whose `gdallocationinfo` takes `-r` (#462).
+pub const BILINEAR_SINCE: (u32, u32) = (3, 10);
+
+/// The `major.minor.patch` of a `--version` line such as
+/// `GDAL 3.7.3, released 2023/10/30` or `GDAL 3.13.3 "Iowa City", ...`.
+fn parse_gdal_version(line: &str) -> Option<(u32, u32, u32)> {
+    let version = line.trim().strip_prefix("GDAL ")?;
+    let mut parts = version.split('.').map(|part| {
+        let digits: String = part.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse::<u32>().ok()
+    });
+    let major = parts.next()??;
+    let minor = parts.next()??;
+    let patch = parts.next().flatten().unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+/// The version of the GDAL that `gdallocationinfo` belongs to.
+///
+/// Asked once per process: it decides how every DEM is sampled, and a
+/// change of GDAL under a running server needs a restart anyway. Only a
+/// version that was read is kept, so a failure is reported each time.
+pub fn gdal_version() -> Result<(u32, u32, u32), String> {
+    static VERSION: OnceLock<(u32, u32, u32)> = OnceLock::new();
+    if let Some(version) = VERSION.get() {
+        return Ok(*version);
+    }
+    let output = crate::tools::spawn_tool(
+        std::process::Command::new("gdallocationinfo")
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    )
+    .map_err(|e| spawn_error("gdallocationinfo", &e))?
+    .wait_with_output()
+    .map_err(|e| format!("Call process error: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = parse_gdal_version(&stdout).ok_or_else(|| {
+        format!(
+            "Could not read GDAL's version from `gdallocationinfo --version`: {:?}",
+            stdout.trim()
+        )
+    })?;
+    Ok(*VERSION.get_or_init(|| version))
+}
+
+/// How this machine's GDAL samples a DEM.
+pub fn resampling() -> Result<Resampling, String> {
+    let (major, minor, _) = gdal_version()?;
+    Ok(if (major, minor) >= BILINEAR_SINCE {
+        Resampling::Bilinear
+    } else {
+        Resampling::Nearest
+    })
+}
+
+/// What the person running a server should know about how it samples
+/// DEMs, or `None` when GDAL samples them bilinearly (#462).
+///
+/// Worked out once per process, failure included, so a page can show it
+/// without starting a tool on every view: the servers ask it before they
+/// listen, which is also where they print it.
+pub fn resampling_warning() -> Option<&'static str> {
+    static WARNING: OnceLock<Option<String>> = OnceLock::new();
+    WARNING
+        .get_or_init(|| match gdal_version() {
+            Ok((major, minor, _)) if (major, minor) >= BILINEAR_SINCE => None,
+            Ok((major, minor, patch)) => Some(format!(
+                "GDAL {major}.{minor}.{patch} samples a DEM at the nearest cell only, so \
+                 elevations along a radargram step from one cell to the next. Install \
+                 GDAL {}.{} or later and restart Ridal to sample DEMs bilinearly; \
+                 radargrams processed with a DEM until then are listed as older \
+                 processing.",
+                BILINEAR_SINCE.0, BILINEAR_SINCE.1
+            )),
+            Err(e) => Some(format!("No DEM can be sampled: {e}")),
+        })
+        .as_deref()
+}
+
+/// What [`sample_dem`] read, and how.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DemSample {
+    /// One per coordinate, in the DEM's units (m for every DEM Ridal is
+    /// used with).
+    pub elevations: Vec<f32>,
+    pub resampling: Resampling,
+}
 
 /// Describe a failure to launch one of GDAL's command-line tools.
 ///
@@ -23,13 +142,13 @@ fn spawn_error(program: &str, error: &std::io::Error) -> String {
 fn run_gdallocationinfo(
     dem_path: &Path,
     coords_wgs84: &[Coord],
-    use_bilinear: bool,
+    resampling: Resampling,
 ) -> Result<std::process::Output, String> {
     let dem_str = dem_path.to_str().ok_or("Empty DEM path given")?;
 
     let mut args = vec!["-xml", "-b", "1", "-wgs84", dem_str];
 
-    if use_bilinear {
+    if resampling == Resampling::Bilinear {
         args.push("-r");
         args.push("bilinear");
     }
@@ -50,12 +169,6 @@ fn run_gdallocationinfo(
 
     crate::tools::communicate(child, buf.into_bytes())
         .map_err(|e| format!("Call process error: {e}"))
-}
-
-/// Helper: does stdout contain any XML result tags?
-fn has_result_tags(stdout: &[u8]) -> bool {
-    let s = String::from_utf8_lossy(stdout);
-    s.contains("<Value>") || s.contains("<Alert>")
 }
 
 fn parse_elevations_from_output(
@@ -105,26 +218,29 @@ fn parse_elevations_from_output(
     Ok(elevations)
 }
 
-pub fn sample_dem(dem_path: &Path, coords_wgs84: &[Coord]) -> Result<Vec<f32>, String> {
+/// Sample `dem_path` at each of `coords_wgs84` (lon, lat).
+///
+/// Bilinearly where GDAL can, at the nearest cell before GDAL 3.10 (see
+/// [`resampling`]), which the result says so that it can be recorded.
+pub fn sample_dem(dem_path: &Path, coords_wgs84: &[Coord]) -> Result<DemSample, String> {
     if coords_wgs84.is_empty() {
         return Err("Coords vec is empty.".into());
     }
 
-    // First: try with bilinear
-    let first_output = run_gdallocationinfo(dem_path, coords_wgs84, true)?;
-
-    if !has_result_tags(&first_output.stdout) {
-        // No <Value> or <Alert> at all → likely unsupported -r bilinear /
-        // invalid combo → fall back and retry without -r.
+    let resampling = resampling()?;
+    if resampling == Resampling::Nearest {
+        let (major, minor, patch) = gdal_version()?;
         eprintln!(
-            "gdallocationinfo output failed (no output) with '-r bilinear'. \
-             Falling back to nearest neighbor sampling."
+            "Warning: GDAL {major}.{minor}.{patch} samples a DEM at the nearest cell only; \
+             GDAL {}.{} or later is needed to interpolate bilinearly.",
+            BILINEAR_SINCE.0, BILINEAR_SINCE.1
         );
-
-        let second_output = run_gdallocationinfo(dem_path, coords_wgs84, false)?;
-        return parse_elevations_from_output(&second_output, coords_wgs84);
     }
-    parse_elevations_from_output(&first_output, coords_wgs84)
+    let output = run_gdallocationinfo(dem_path, coords_wgs84, resampling)?;
+    Ok(DemSample {
+        elevations: parse_elevations_from_output(&output, coords_wgs84)?,
+        resampling,
+    })
 }
 
 /// Check that GDAL reads `dem_path` as a raster, so a DEM that is not one
@@ -227,46 +343,31 @@ mod tests {
         ]
     }
 
-    pub fn supports_interpolation() -> Result<bool, String> {
-        use std::io::Write;
-        use std::process::Stdio;
+    #[test]
+    fn a_gdal_version_is_read_from_any_release_line() {
+        use super::parse_gdal_version as parse;
+        assert_eq!(parse("GDAL 3.7.3, released 2023/10/30\n"), Some((3, 7, 3)));
+        assert_eq!(
+            parse("GDAL 3.13.3 \"Iowa City\", released 2026/08/13"),
+            Some((3, 13, 3))
+        );
+        assert_eq!(parse("GDAL 3.10.0dev-0d5ae0d4, released"), Some((3, 10, 0)));
+        assert_eq!(parse("GDAL 3.10, released"), Some((3, 10, 0)));
+        assert_eq!(parse("Usage: gdallocationinfo"), None);
+        assert_eq!(parse(""), None);
+        // 3.10 is above 3.9, which a comparison of strings gets wrong.
+        assert!((3, 10) > (3, 9));
+    }
 
-        // Use the same DEM your tests use; you can generalize if needed
-        let dem_path = crate::dem::tests::get_dem_path();
-        let dem_str = dem_path
-            .to_str()
-            .ok_or("Empty DEM path given in supports_interpolation")?;
-
-        // Single arbitrary coordinate; if the flag is supported, we should get XML with <Value>/<Alert>.
-        let mut child = crate::tools::spawn_tool(
-            std::process::Command::new("gdallocationinfo")
-                .args(["-xml", "-b", "1", "-wgs84", "-r", "bilinear", dem_str])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped()),
-        )
-        .map_err(|e| format!("Error spawning gdallocationinfo: {e}"))?;
-
-        {
-            let mut stdin = child
-                .stdin
-                .take()
-                .ok_or("stdin could not be bound in supports_interpolation".to_string())?;
-            // Some coordinate; doesn't matter as long as it's a valid numeric pair.
-            stdin
-                .write_all(b"0 0\n")
-                .map_err(|e| format!("Error writing to stdin in supports_interpolation: {e}"))?;
-        }
-
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("Error waiting for gdallocationinfo: {e}"))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // If the option is supported, we should see some XML structure; if not, we'll typically
-        // just get usage/help on stderr and nothing useful on stdout.
-        Ok(stdout.contains("<Value>") || stdout.contains("<Alert>"))
+    #[test]
+    fn the_resampling_follows_the_installed_gdal() {
+        let (major, minor, _) = super::gdal_version().unwrap();
+        let expected = if (major, minor) >= super::BILINEAR_SINCE {
+            super::Resampling::Bilinear
+        } else {
+            super::Resampling::Nearest
+        };
+        assert_eq!(super::resampling().unwrap(), expected);
     }
 
     #[test]
@@ -289,7 +390,7 @@ mod tests {
 
         let dem_path = get_dem_path();
 
-        let supports_interpolation = supports_interpolation().unwrap();
+        let supports_interpolation = super::resampling().unwrap() == super::Resampling::Bilinear;
 
         println!("Sampling DEM");
         let coords_wgs84 = crate::coords::to_wgs84(&working_coords, &crs).unwrap();
@@ -301,7 +402,7 @@ mod tests {
         for (coord, expected) in coords_elevs {
             let coord_wgs84 = crate::coords::to_wgs84(&[coord], &crs).unwrap();
 
-            let result = super::sample_dem(&dem_path, &coord_wgs84);
+            let result = super::sample_dem(&dem_path, &coord_wgs84).map(|s| s.elevations);
 
             // The tests validate on bilinearly interpolated coordinates. This will fail if it's nearest
             if supports_interpolation {
@@ -332,10 +433,9 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     fn a_dem_gdal_cannot_open_is_named_for_a_long_profile() {
         // `gdallocationinfo` exits without reading its input when it cannot
-        // open the DEM, as an older one does on `-r bilinear` (GDAL < 3.10).
-        // With more coordinates than a pipe holds, as any real profile has,
-        // that surfaced as "Broken pipe (os error 32)", and the fallback
-        // without `-r` never ran.
+        // open the DEM, as an older one also did on `-r bilinear` (GDAL <
+        // 3.10). With more coordinates than a pipe holds, as any real
+        // profile has, that surfaced as "Broken pipe (os error 32)" (#461).
         let crs = Crs::Utm(UtmCrs {
             zone: 33,
             north: true,

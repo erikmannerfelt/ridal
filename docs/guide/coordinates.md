@@ -68,10 +68,16 @@ ridal process DAT_0066_A1.rad --default --dem svalbard_dem.tif
 
 The DEM can be any raster that GDAL reads, in any CRS, since Ridal samples it
 with GDAL's `gdallocationinfo`, which therefore has to be on the `PATH`.
-GDAL 3.10 and later sample it bilinearly; older versions take the nearest
-cell. The output's `elevation_correction`
-attribute names the DEM that was used. On a server, a DEM is added once on
-the **Processing** page and then chosen in each radargram's **Process…**
+GDAL 3.10 and later sample it bilinearly; older versions can only take the
+nearest cell, so the elevations step from one cell to the next along the
+track. Ridal then warns: `ridal process` when it samples, `ridal gui` and
+`ridal server start` when they start, and a site's **Site settings** page to
+its server administrators. The output's `elevation_correction` attribute
+names the DEM that was used, and adds "nearest cell" when it was sampled that
+way. Its recipe records it too, so it is another revision than one sampled
+bilinearly, and the **Processing** page lists it as older processing until
+it is reprocessed with a newer GDAL. On a server, a DEM is added once on the
+**Processing** page and then chosen in each radargram's **Process…**
 dialog.
 
 A DEM gives the surface at the time it was made rather than at the time of

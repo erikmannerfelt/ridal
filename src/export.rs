@@ -404,10 +404,17 @@ impl GPR {
         // elevation correction
         let elev_corr = match &self.location.correction {
             LocationCorrection::None => "None".to_string(),
-            LocationCorrection::Dem(fp) => format!(
-                "DEM-corrected: {:?}",
-                fp.as_path().file_name().unwrap().to_str().unwrap()
-            ),
+            LocationCorrection::Dem { path, resampling } => {
+                let name = path.as_path().file_name().unwrap().to_str().unwrap();
+                // Bilinear says nothing more, as before #462, so a file made
+                // with a GDAL that has it is unchanged.
+                match resampling {
+                    crate::dem::Resampling::Bilinear => format!("DEM-corrected: {name:?}"),
+                    crate::dem::Resampling::Nearest => {
+                        format!("DEM-corrected: {name:?} (nearest cell, GDAL before 3.10)")
+                    }
+                }
+            }
         };
         attrs.insert("elevation_correction".into(), ExportAttr::String(elev_corr));
 

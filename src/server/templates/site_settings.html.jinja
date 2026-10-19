@@ -13,6 +13,14 @@
 
   <div id="site-error" class="warning" role="status" aria-live="polite" hidden></div>
 
+  {#- The server's GDAL, for its administrators only (#462): a DEM sampled
+      at the nearest cell looks plausible, so nothing else would show it. -#}
+  {% if gdal_warning %}
+  <div class="warning" id="gdal-warning">
+    <p><strong>DEM sampling.</strong> {{ gdal_warning }}</p>
+  </div>
+  {% endif %}
+
   {#- Personal settings that belong to the whole site rather than to one
       project (#214). The theme is the first of them: choosing a dark screen
       is about the reader, not the survey, so one choice follows them into
