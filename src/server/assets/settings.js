@@ -1182,8 +1182,8 @@
         : "Each link works once. Send each person only their own link.";
     box.appendChild(note);
 
-    const table = document.createElement("table");
-    table.className = "layers-table bulk-table";
+    const scroller = RIDAL.scrollingTable("bulk-table");
+    const table = scroller.firstElementChild;
     const header = document.createElement("tr");
     for (const label of mode === "passwords"
       ? ["Name", "Password"]
@@ -1208,7 +1208,7 @@
       table.appendChild(row);
       rows.push([user.name, text]);
     }
-    box.appendChild(table);
+    box.appendChild(scroller);
     const actions = document.createElement("div");
     actions.className = "bulk-actions";
     const print = document.createElement("button");

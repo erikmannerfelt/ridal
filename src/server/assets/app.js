@@ -243,14 +243,33 @@ const RIDAL = Object.freeze({
     }
   },
 
-  /** A table of site-audit entries, most recent first.
+  /** A data table that pans sideways on a narrow screen (#465).
+   *
+   * Returns a `.table-scroll` wrapper holding a table of `children`, styled
+   * as the layers page's with `className` added; reach the table itself as
+   * the wrapper's `firstElementChild`. Every table a script builds goes through
+   * here, because a table outside the wrapper widens the whole page on a
+   * phone and nothing shows it on a wide screen (#295). A test in
+   * templates.rs refuses a table built any other way. */
+  scrollingTable(className = "", ...children) {
+    const table = document.createElement("table");
+    table.className = className ? `layers-table ${className}` : "layers-table";
+    table.append(...children);
+    const wrapper = document.createElement("div");
+    wrapper.className = "table-scroll";
+    wrapper.append(table);
+    return wrapper;
+  },
+
+  /** A table of site-audit entries, most recent first, in its scrolling
+   * wrapper.
    *
    * The server sends the entries already reversed; this lays them out. The
    * action is a snake_case enum, shown as words, and the detail column
    * carries the role/download or a free-text note when there is one. */
   historyTable(entries) {
-    const table = document.createElement("table");
-    table.className = "layers-table";
+    const wrapper = RIDAL.scrollingTable();
+    const table = wrapper.firstElementChild;
     const header = document.createElement("tr");
     for (const label of ["When", "Who", "What", "About", "Project", "Detail"]) {
       const th = document.createElement("th");
@@ -267,7 +286,7 @@ const RIDAL = Object.freeze({
       cell.textContent = "Nothing has been recorded yet.";
       row.appendChild(cell);
       table.appendChild(row);
-      return table;
+      return wrapper;
     }
     for (const entry of entries) {
       const row = document.createElement("tr");
@@ -292,7 +311,7 @@ const RIDAL = Object.freeze({
       }
       table.appendChild(row);
     }
-    return table;
+    return wrapper;
   },
 
   /** The message for an error response that Ridal did not write.
