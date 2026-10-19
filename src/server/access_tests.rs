@@ -2898,17 +2898,26 @@ async fn a_bind_that_cannot_carry_a_password_refuses_one_per_request() {
 async fn an_invalid_invite_is_refused_without_hashing_the_password() {
     // Argon2id is deliberately expensive, so hashing before checking the
     // token let an unauthenticated caller spend a hash of the server's CPU
-    // per request. Timed rather than asserted structurally, because the
-    // property *is* the cost.
+    // per request. Counted rather than timed (#430): a timed request also
+    // pays for routing, the store and first use, which under coverage
+    // instrumentation cost more than a hash with the token checked first.
     let hash = password_hash();
-    let (_dir, app) = app_with(vec![activated(
-        "erik",
-        Role::Admin,
-        DownloadScope::All,
-        &hash,
-    )]);
+    let mut invited = activated("student", Role::Picker, DownloadScope::All, &hash);
+    invited.password_hash = None;
+    invited.invite = Some(Invite {
+        token_hash: blake3::hash(b"good-token").to_hex().to_string(),
+        expires: super::auth::now() + 3600,
+        project: None,
+        role: None,
+        download: None,
+    });
+    let (_dir, app) = app_with(vec![
+        activated("erik", Role::Admin, DownloadScope::All, &hash),
+        invited,
+    ]);
+    let hashes = || accounts::HASHES.with(|n| n.get());
 
-    let start = std::time::Instant::now();
+    let before = hashes();
     let refused = post(
         &app,
         "/api/v1/auth/invite",
@@ -2916,20 +2925,31 @@ async fn an_invalid_invite_is_refused_without_hashing_the_password() {
         None,
     )
     .await;
-    let rejecting = start.elapsed();
     assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        hashes() - before,
+        0,
+        "rejecting a bad token hashed the password -- the token is being \
+         checked after the hash again"
+    );
 
-    // What one hash actually costs on this machine, measured rather than
-    // assumed -- the parameters are the crate's defaults and will change.
-    let start = std::time::Instant::now();
-    accounts::hash_password(&format!("{}-cost", password())).unwrap();
-    let hashing = start.elapsed();
-
-    assert!(
-        rejecting < hashing,
-        "rejecting a bad token took {rejecting:?}, which is not comfortably \
-         less than the {hashing:?} one hash costs -- the token is probably \
-         being checked after the hash again"
+    // The control: a valid token is hashed, and counted, on this thread. If
+    // the hash moved off it (to `spawn_blocking`, say), the count above
+    // would be zero whatever the order, and this says so.
+    let before = hashes();
+    let redeemed = post(
+        &app,
+        "/api/v1/auth/invite",
+        &json!({"token": "good-token", "password": format!("{}-new", password())}),
+        None,
+    )
+    .await;
+    assert_eq!(redeemed.status, StatusCode::OK, "{}", redeemed.text);
+    assert_eq!(
+        hashes() - before,
+        1,
+        "redeeming a valid invite was not counted as one hash on the test's \
+         thread, so the count of zero above proves nothing"
     );
 }
 

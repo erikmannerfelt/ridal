@@ -251,6 +251,15 @@ pub fn check_password(password: &str) -> Result<(), AccountError> {
     Ok(())
 }
 
+#[cfg(all(test, feature = "server"))]
+thread_local! {
+    /// How many Argon2id hashes [`hash_password`] has computed on this
+    /// thread, for a test asserting that a request spent none (#430).
+    /// Per thread, so the hashing of tests running beside it is not counted;
+    /// a `#[tokio::test]` runs its requests on its own thread.
+    pub static HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Hash a password with Argon2id at the crate's default parameters.
 #[cfg(feature = "server")]
 pub fn hash_password(password: &str) -> Result<String, AccountError> {
@@ -258,6 +267,8 @@ pub fn hash_password(password: &str) -> Result<String, AccountError> {
     use argon2::password_hash::PasswordHasher;
 
     check_password(password)?;
+    #[cfg(test)]
+    HASHES.with(|n| n.set(n.get() + 1));
     let hash: PasswordHash = argon2::Argon2::default()
         .hash_password(password.as_bytes())
         .map_err(|e| AccountError::Hash(e.to_string()))?;
