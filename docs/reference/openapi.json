@@ -4863,6 +4863,77 @@
         }
       }
     },
+    "/api/v1/projects/{key}/dems/{dem}/file": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "dem",
+          "in": "path",
+          "description": "A DEM's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "DEMs"
+        ],
+        "summary": "The DEM's file, as an attachment named as it was uploaded.",
+        "operationId": "download_dem",
+        "responses": {
+          "200": {
+            "description": "The file, as an attachment.",
+            "content": {
+              "application/octet-stream": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such DEM.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "all"
+        }
+      }
+    },
     "/api/v1/projects/{key}/derived": {
       "parameters": [
         {
@@ -9021,6 +9092,77 @@
         },
         "x-ridal-needs": {
           "who": "operator"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/sources/{radargram_id}/raw.zip": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Raw data"
+        ],
+        "summary": "A radargram's raw files as one zip, laid out as they were uploaded: under\na directory named after the radargram, and with one numbered directory\nper recording, in merge order, when there are several. The DEM it links\nto is not included; that is `GET /api/v1/dems/{dem}/file`.",
+        "operationId": "download_source",
+        "responses": {
+          "200": {
+            "description": "The zip, as an attachment.",
+            "content": {
+              "application/zip": {}
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in, or the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's download scope is too low (`download_not_permitted`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_source`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone",
+          "download": "all"
         }
       }
     },

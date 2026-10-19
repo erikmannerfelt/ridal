@@ -1850,6 +1850,18 @@ pub async fn viewer_page(
         .map(|json| script_safe_json(&json))
         .unwrap_or_else(|| "null".to_string());
 
+    // Whether the project holds this radargram's raw files, which the
+    // Download menu then offers (#460). Asked only of someone who may take
+    // them, and a source that cannot be read offers nothing, as for any
+    // download the page cannot back.
+    let has_raw_data = caller.may_download(crate::project::roles::DownloadScope::All)
+        && state.project.as_ref().is_some_and(|project| {
+            matches!(
+                crate::project::raw::read_source(project.documents(), &entry.radargram_id),
+                Ok(Some(_))
+            )
+        });
+
     let export_defaults = resolve_export_defaults(&state, &caller);
     let env = templates::environment();
     let tmpl = env
@@ -1863,6 +1875,7 @@ pub async fn viewer_page(
             // processing it write (#431). Not `in_project`: base.html uses
             // that for whether the page belongs to a project at all.
             radargram_in_project => state.is_writable(entry),
+            has_raw_data => has_raw_data,
             group_name => entry.group_name.as_ref().map(|g| g.to_string()),
             group_id => entry.group_id.as_ref().map(|g| g.to_string()),
             revision_id => entry.revision_id.to_string(),

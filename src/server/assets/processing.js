@@ -12,6 +12,8 @@
   const host = document.getElementById('processing-profiles');
   if (!host) return;
   const writable = host.dataset.writable === 'true';
+  // Raw data and DEMs are downloaded under the `all` scope (#460).
+  const canDownload = host.dataset.canDownload === 'true';
   const errorBox = document.getElementById('processing-error');
   const empty = document.getElementById('processing-empty');
   const historyList = document.getElementById('processing-history-list');
@@ -568,6 +570,12 @@
             : el('span', { className: 'hint', textContent: 'none' }),
         ),
       ];
+      const actions = el('td', { className: 'processing-row-actions' });
+      if (canDownload) {
+        actions.append(
+          downloadButton(`${RIDAL.apiPath('sources', id)}/raw.zip`, `The raw files of '${id}', as a zip`),
+        );
+      }
       if (writable) {
         const process = el('button', { type: 'button', textContent: 'Process…' });
         process.dataset.processRadargram = id;
@@ -588,12 +596,14 @@
             fail(error.message);
           }
         });
-        cells.push(el('td', { className: 'processing-row-actions' }, process, ' ', remove));
+        if (canDownload) actions.append(' ');
+        actions.append(process, ' ', remove);
       }
+      if (writable || canDownload) cells.push(actions);
       return el('tr', {}, ...cells);
     });
     const head = ['Radargram', 'Name', 'Profile'];
-    if (writable) head.push('');
+    if (writable || canDownload) head.push('');
     document.getElementById('raw-unprocessed-list').replaceChildren(
       el(
         'div',
@@ -644,6 +654,18 @@
     }
   }
   let historyShown = false;
+
+  /** A button that downloads `url` by navigating to it, as the viewer's
+   * NetCDF download does: raw data and DEMs run to several GB, and the
+   * server streams them rather than have a page hold one whole. Only
+   * offered to someone who may download it, so no refusal is expected. */
+  function downloadButton(url, title) {
+    const button = el('button', { type: 'button', textContent: 'Download', title });
+    button.addEventListener('click', () => {
+      window.location.href = url;
+    });
+    return button;
+  }
 
   /* --- DEMs ------------------------------------------------------------ */
 
@@ -713,10 +735,15 @@
       }),
       usedCell,
     ];
+    const actions = el('td', { className: 'processing-row-actions' });
+    if (canDownload) {
+      actions.append(downloadButton(`${RIDAL.apiPath('dems', dem.id)}/file`, dem.file.name));
+    }
     if (writable) {
       const rename = el('button', { type: 'button', textContent: 'Rename' });
       rename.addEventListener('click', () => renameIn(nameCell, dem));
-      const actions = el('td', { className: 'processing-row-actions' }, rename);
+      if (canDownload) actions.append(' ');
+      actions.append(rename);
       if (used === 0) {
         const remove = el('button', { type: 'button', textContent: 'Delete', className: 'danger' });
         remove.addEventListener('click', async () => {
@@ -731,8 +758,8 @@
         });
         actions.append(' ', remove);
       }
-      cells.push(actions);
     }
+    if (writable || canDownload) cells.push(actions);
     return el('tr', {}, ...cells);
   }
 
@@ -751,7 +778,7 @@
       return;
     }
     const heads = ['Name', 'ID', 'Size', 'Uploaded', 'Used by'];
-    if (writable) heads.push('');
+    if (writable || canDownload) heads.push('');
     demsList.replaceChildren(
       el(
         'table',

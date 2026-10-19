@@ -3,6 +3,7 @@
 //! ```text
 //! GET    /api/v1/dems                       every DEM, and who links to it
 //! GET    /api/v1/dems/{dem}                 one
+//! GET    /api/v1/dems/{dem}/file            its file, under its own name (#460)
 //! PUT    /api/v1/dems/{dem}                 add one from an uploaded file, rename it, or replace its file
 //! DELETE /api/v1/dems/{dem}                 delete one nobody links to
 //! PUT    /api/v1/sources/{radargram_id}/dem link a radargram to a DEM, or unlink it
@@ -38,7 +39,7 @@ use super::raw_routes::{project_for, read_recordings, store_error, write_with_de
 use super::routes::{ApiError, ErrorBody};
 use crate::identity::{DemId, RadargramId};
 use crate::project::raw::{self, Dem, NamedFile, SourceDem};
-use crate::project::roles::Role;
+use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{Expectation, Version};
 use crate::recipe::HashedFile;
 
@@ -179,6 +180,59 @@ pub async fn get_dem(
         .ok_or_else(|| no_such_dem(&id))?;
     let users = users_of(project, &id)?;
     Ok(with_etag(&version, view_of(project, dem, users)))
+}
+
+/// The DEM's file, as an attachment named as it was uploaded.
+#[utoipa::path(
+    get,
+    path = "/api/v1/dems/{dem}/file",
+    tag = "DEMs",
+    responses(
+        (status = 200, description = "The file, as an attachment.", content_type = "application/octet-stream"),
+        (status = 404, description = "No such DEM.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::All)))),
+)]
+// The same bytes as `GET /api/v1/raw/{blake3}`, which names a file by its
+// hash; a browser saving this one keeps the name, and with it the
+// extension GDAL and everyone else go by.
+pub async fn download_dem(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(dem): Path<String>,
+) -> Result<Response, ApiError> {
+    // A DEM is raw data, downloaded under the same scope (#460).
+    caller.require_download(DownloadScope::All, "a DEM")?;
+    let project = readable_project(&state)?;
+    let id = parse_dem(&dem)?;
+    let (dem, _) = raw::read_dem(project.documents(), &id)
+        .map_err(read_error)?
+        .ok_or_else(|| no_such_dem(&id))?;
+    let path = raw::file_path(project.data_dir(), &dem.file.blake3)
+        .filter(|path| path.is_file())
+        .ok_or_else(|| {
+            ApiError::internal(
+                "raw_missing",
+                format!("The file of DEM '{id}' is not stored in this project."),
+            )
+        })?;
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| ApiError::internal("raw_open_failed", e.to_string()))?;
+    let length = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .map_err(|e| ApiError::internal("raw_stat_failed", e.to_string()))?;
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_LENGTH, length.to_string()),
+            super::routes::attachment(&super::raw_routes::header_filename(&dem.file.name)),
+        ],
+        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file)),
+    )
+        .into_response())
 }
 
 /// The body of `PUT /api/v1/dems/{dem}`.

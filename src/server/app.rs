@@ -1169,6 +1169,7 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
             super::raw_routes::put_source,
             super::raw_routes::delete_source
         ))
+        .routes(routes!(super::raw_routes::download_source))
         .routes(routes!(super::dem_routes::link_dem))
         .routes(routes!(super::ingest_routes::plan_ingest))
         // DEMs.
@@ -1178,6 +1179,7 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
             super::dem_routes::put_dem,
             super::dem_routes::delete_dem
         ))
+        .routes(routes!(super::dem_routes::download_dem))
         // Processing profiles.
         .routes(routes!(super::processing_routes::list_profiles))
         .routes(routes!(

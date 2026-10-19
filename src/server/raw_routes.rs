@@ -6,6 +6,7 @@
 //! GET    /api/v1/raw/{blake3}            download a stored file
 //! GET    /api/v1/sources                 which radargram ids have raw data
 //! GET    /api/v1/sources/{radargram_id}  what a radargram is made from
+//! GET    /api/v1/sources/{radargram_id}/raw.zip  its raw files, as one zip (#460)
 //! PUT    /api/v1/sources/{radargram_id}  set or switch it, and read each recording
 //! DELETE /api/v1/sources/{radargram_id}  forget it
 //! ```
@@ -229,6 +230,208 @@ pub async fn download_raw_file(
             (header::CONTENT_LENGTH, length.to_string()),
         ],
         axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file)),
+    )
+        .into_response())
+}
+
+/// A file name to put in a `Content-Disposition` header: a stored name is
+/// whatever an uploader called the file, and a quote or a control character
+/// in it would end the header's value early.
+pub(super) fn header_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c == '"' || c == '\\' || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Where each of a source's files goes in its zip, and where it is stored.
+///
+/// Under a directory named after the radargram, so that unpacking two zips
+/// side by side keeps them apart. A merged source has one numbered
+/// directory per recording, in merge order, as [`raw::materialize`] lays
+/// them out to be read: two recordings may share file names.
+fn source_zip_entries(
+    data_dir: &std::path::Path,
+    id: &crate::identity::RadargramId,
+    source: &Source,
+) -> Result<Vec<(String, std::path::PathBuf)>, ApiError> {
+    let merged = source.bundles.len() > 1;
+    let mut entries = Vec::new();
+    for (index, bundle) in source.bundles.iter().enumerate() {
+        for file in &bundle.files {
+            let name = raw::plain_name(&file.file.name)
+                .map_err(|e| ApiError::internal("source_read_failed", e))?;
+            let stored = raw::file_path(data_dir, &file.file.blake3)
+                .filter(|path| path.is_file())
+                .ok_or_else(|| {
+                    ApiError::internal(
+                        "raw_missing",
+                        format!(
+                            "{name} ({}) of '{id}' is not stored in this project.",
+                            file.file.blake3
+                        ),
+                    )
+                })?;
+            let in_zip = if merged {
+                format!("{id}/{}/{name}", index + 1)
+            } else {
+                format!("{id}/{name}")
+            };
+            entries.push((in_zip, stored));
+        }
+    }
+    Ok(entries)
+}
+
+/// What a zip being written sends on: the response body, in chunks.
+struct ChannelWriter {
+    sender: tokio::sync::mpsc::Sender<std::io::Result<axum::body::Bytes>>,
+    buffer: Vec<u8>,
+}
+
+impl ChannelWriter {
+    /// Large enough that a raw file of several GB is not millions of
+    /// messages, small enough that a slow reader holds back little.
+    const CHUNK: usize = 256 * 1024;
+
+    fn send(&mut self) -> std::io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        let chunk = std::mem::replace(&mut self.buffer, Vec::with_capacity(Self::CHUNK));
+        // Fails only once the response is gone, as when the download is
+        // cancelled, which is what stops the writing.
+        self.sender
+            .blocking_send(Ok(chunk.into()))
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+    }
+}
+
+impl std::io::Write for ChannelWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.buffer.extend_from_slice(bytes);
+        if self.buffer.len() >= Self::CHUNK {
+            self.send()?;
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.send()
+    }
+}
+
+/// Write `entries` as a zip into `writer`, each file stored as it is.
+///
+/// Stored, not deflated: raw radar data is mostly noise to a compressor,
+/// and a file of several GB is not worth the CPU. Zip64 throughout, since
+/// a stream cannot go back to widen a header once a file turns out large.
+fn write_zip(
+    entries: &[(String, std::path::PathBuf)],
+    writer: impl std::io::Write,
+) -> std::io::Result<()> {
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .large_file(true);
+    let mut zip = zip::ZipWriter::new_stream(writer);
+    for (name, path) in entries {
+        let mut file = std::fs::File::open(path)?;
+        // When the file was stored, which is when it was uploaded: what a
+        // stored file has to say about its age. Left at the format's
+        // 1980 where that cannot be read or put in a zip's date.
+        let stored_at = file
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .map(|t| chrono::DateTime::<chrono::Utc>::from(t).naive_utc())
+            .and_then(|t| {
+                use chrono::{Datelike, Timelike};
+                zip::DateTime::from_date_and_time(
+                    u16::try_from(t.year()).ok()?,
+                    t.month() as u8,
+                    t.day() as u8,
+                    t.hour() as u8,
+                    t.minute() as u8,
+                    t.second() as u8,
+                )
+                .ok()
+            });
+        let options = match stored_at {
+            Some(time) => options.last_modified_time(time),
+            None => options,
+        };
+        zip.start_file(name.as_str(), options)
+            .map_err(std::io::Error::other)?;
+        std::io::copy(&mut file, &mut zip)?;
+    }
+    let mut inner = zip.finish().map_err(std::io::Error::other)?.into_inner();
+    inner.flush()
+}
+
+/// A radargram's raw files as one zip, laid out as they were uploaded: under
+/// a directory named after the radargram, and with one numbered directory
+/// per recording, in merge order, when there are several. The DEM it links
+/// to is not included; that is `GET /api/v1/dems/{dem}/file`.
+#[utoipa::path(
+    get,
+    path = "/api/v1/sources/{radargram_id}/raw.zip",
+    tag = "Raw data",
+    responses(
+        (status = 200, description = "The zip, as an attachment.", content_type = "application/zip"),
+        (status = 404, description = "`no_source`.", body = ErrorBody),
+    ),
+    extensions(("x-ridal-needs" = json!(Needs::download(DownloadScope::All)))),
+)]
+// Streamed as it is written (#460): a merged source can be several GB, so
+// neither memory nor a temporary copy on disk is the place to build it.
+pub async fn download_source(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+    Path(radargram_id): Path<String>,
+) -> Result<Response, ApiError> {
+    caller.require_download(DownloadScope::All, "raw data")?;
+    let project = readable_project(&state)?;
+    let id = parse_radargram(&radargram_id)?;
+    let (source, _) = raw::read_source(project.documents(), &id)
+        .map_err(|e| ApiError::internal("source_read_failed", e))?
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "no_source",
+                format!("'{id}' has no raw data in this project."),
+            )
+        })?;
+    // Every file is found before the response starts, so a missing one is
+    // an error status rather than a zip cut short.
+    let entries = source_zip_entries(project.data_dir(), &id, &source)?;
+
+    let (sender, receiver) = tokio::sync::mpsc::channel(4);
+    tokio::task::spawn_blocking(move || {
+        let mut writer = ChannelWriter {
+            sender: sender.clone(),
+            buffer: Vec::with_capacity(ChannelWriter::CHUNK),
+        };
+        if let Err(e) = write_zip(&entries, &mut writer) {
+            // An error item ends the body unfinished, which the client
+            // sees as a failed download rather than a short, valid zip.
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                let _ = sender.blocking_send(Err(e));
+            }
+        }
+    });
+    let body = futures_util::stream::unfold(receiver, |mut receiver| async move {
+        receiver.recv().await.map(|chunk| (chunk, receiver))
+    });
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/zip".to_string()),
+            super::routes::attachment(&format!("{id}-raw.zip")),
+        ],
+        axum::body::Body::from_stream(body),
     )
         .into_response())
 }

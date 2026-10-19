@@ -86,7 +86,7 @@ the ones before it:
 | `results` | Derived results, such as a consensus layer, but nobody's individual picks. |
 | `picks` | Picks, as the stored files: their own, and other people's. |
 | `derived` | Also level 2 points and rendered radargram images. |
-| `all` | Also the radargram files themselves, their tracks, and the raw data they are made from. The default. |
+| `all` | Also the radargram files themselves, their tracks, the raw data they are made from, and the project's DEMs. The default. |
 
 `results` comes before `picks` on purpose. A consensus over many people's
 picks reveals less than any one person's picks, so "the results, but not the
