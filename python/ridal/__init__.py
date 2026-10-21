@@ -2,7 +2,8 @@
 
 The functions here are implemented in Rust (``ridal._ridal``) and re-exported
 unchanged; see their own documentation. :mod:`ridal.client` is the HTTP client
-for a Ridal server.
+for a Ridal server, and :mod:`ridal.impdar` writes ImpDAR radargrams with
+:func:`write_netcdf`.
 """
 
 from ridal import _ridal
@@ -19,6 +20,7 @@ from ridal._ridal import (
     render,
     run_cli,
     version,
+    write_netcdf,
 )
 
 # The extension's own module documentation lists the entry points; it is the
@@ -38,4 +40,5 @@ __all__ = [
     "render",
     "run_cli",
     "version",
+    "write_netcdf",
 ]

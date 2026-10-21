@@ -29,4 +29,31 @@ def read(*args: Any, **kwargs: Any) -> Any: ...
 def process(*args: Any, **kwargs: Any) -> Any: ...
 def batch_process(*args: Any, **kwargs: Any) -> Any: ...
 def render(*args: Any, **kwargs: Any) -> dict[str, Any]: ...
+def write_netcdf(
+    path: _Path,
+    data: Any,
+    *,
+    twtt_ns: Any,
+    time_zero_ns: float | Any | None,
+    trace_time: Any,
+    antenna_mhz: float,
+    antenna_separation: float,
+    longitude: Any | None = ...,
+    latitude: Any | None = ...,
+    x: Any | None = ...,
+    y: Any | None = ...,
+    crs: str | None = ...,
+    elevation: Any | None = ...,
+    dem: _Path | None = ...,
+    antenna_separation_effective: float | None = ...,
+    medium_velocity: float = ...,
+    radargram_id: str | None = ...,
+    radargram_name: str | None = ...,
+    group_id: str | None = ...,
+    group_name: str | None = ...,
+    metadata: Any | None = ...,
+    log: Sequence[str] | None = ...,
+    source_file: str | None = ...,
+    antenna: str | None = ...,
+) -> str: ...
 def run_cli(*args: Any, **kwargs: Any) -> None: ...

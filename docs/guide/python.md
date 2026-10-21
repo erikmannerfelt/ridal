@@ -156,6 +156,57 @@ ridal.render("line66.nc", "figure.svg", figure={"y_axis": {"unit": "depth"}})
 
 See {doc}`rendering` for render profiles and figure specs.
 
+(python-other-tools)=
+## Data from other tools
+
+`ridal.write_netcdf` writes a radargram processed elsewhere as a Ridal NetCDF
+file, for example to pick it in the GUI. It processes nothing: it takes the
+data, its travel-time axis and a position, time and elevation for every
+trace, plus what the arrays cannot say, such as the antenna:
+
+```python
+ridal.write_netcdf(
+    "line66.nc",
+    data,                       # (samples, traces)
+    twtt_ns=twtt,               # evenly spaced
+    time_zero_ns=128.4,         # or None if it was never located
+    trace_time=times,           # datetime64, or seconds since 1970
+    longitude=lon, latitude=lat,
+    elevation=elev,             # or dem="dem.tif"
+    antenna_mhz=25.0,
+    antenna_separation=6.2,
+    radargram_id="storbreen-line66",
+)
+```
+
+`time_zero_ns` is where time zero sits on the original recording, and it has
+no default: pass `None` when it was never located rather than a guess. Picks
+are carried between two versions of a radargram through it, so they carry
+only when it is right, and only between files with the same `radargram_id`.
+Give the positions either as `longitude` and `latitude` or as `x` and `y`
+with their `crs`.
+
+For data processed in [ImpDAR](https://github.com/dlilien/ImpDAR),
+`ridal.impdar.from_radardata` does the mapping: units, trace times, time zero
+from ImpDAR's crops, and its processing history in the file's log. ImpDAR
+itself is not a dependency of Ridal.
+
+```python
+from impdar.lib.RadarData import RadarData
+import ridal.impdar
+
+rd = RadarData("line66_proc.mat")
+ridal.impdar.from_radardata(
+    rd, "line66.nc", antenna_mhz=25.0, radargram_id="storbreen-line66"
+)
+```
+
+It treats time zero as located only where an ImpDAR crop from the top put
+the trigger at sample 0. The trigger ImpDAR's Malå loader sets on a raw file
+is a fixed 36 samples, not a measurement, so a raw file is written with time
+zero never located. An elevation-corrected radargram is refused, because its
+vertical axis is no longer time.
+
 ## Errors
 
 Arguments that do not fit together (such as both `steps` and `default=True`)

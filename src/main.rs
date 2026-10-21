@@ -15,6 +15,11 @@ mod cli;
 mod coords;
 mod dem;
 mod export;
+/// A radargram built from arrays: `ridal.write_netcdf` in Python. Only the
+/// binding in `lib.rs` calls it; it is declared here for its tests, which
+/// run in this target.
+#[allow(dead_code)]
+mod external;
 mod filters;
 mod formats;
 mod gpr;

@@ -845,6 +845,41 @@ two ends of that request are one type.
   against a real `ridal gui` and site (`RIDAL_BIN`, plus PROJ to process
   the fixture), which run in CI's `client-integration` job.
 
+## Radargrams from other tools
+
+`ridal.write_netcdf` writes data processed elsewhere as a Ridal NetCDF file,
+so it can be picked in the GUI; `ridal.impdar.from_radardata` maps an ImpDAR
+`RadarData` onto it. `src/external.rs` validates the arrays and builds a
+`GPR` (`GPR::from_external`), which exports through `GPR::export` like any
+processed radargram, so the layout has one owner. The scope is picking:
+nothing else in the server treats these files differently.
+
+- **The file says what the caller knows about the vertical axis, and no
+  more.** `time_zero_ns` is required but may be `None`, which writes the
+  existing `0` sentinel ("never located"); zero itself is refused as
+  ambiguous. The crop is derived (`twtt_ns[0] + time_zero_ns`, or
+  `twtt_ns[0]` when time zero is unknown), so `twtt[0] == crop - time_zero`
+  holds by construction and the anchors of [carrying](#carrying-picks-across-revisions-148-370)
+  mean what they mean for any file.
+- **`antenna_separation_effective` is the acquisition separation or `0`**,
+  the two states `GPR::twtt_anchor_name` reads. An external NMO sets `0`; it
+  records none of the parameters `interp::separation` needs, so such a file
+  offers no recording clock, only `twtt_normal_incidence`.
+- **No recipe.** Without `inputs`, the revision id comes from the radargram
+  id and the write time, so every write is a new revision of the same
+  radargram, discovered and carried as such.
+- **External history goes in `processing_log`, never `processing_steps`**,
+  which holds only Ridal's step names: `interp::separation` and #329 parse
+  them.
+- **Every per-trace value is required and finite** (positions, times,
+  elevations or a DEM); an error lists the offending traces. Positions come
+  as longitude/latitude or as x/y with a CRS, never both.
+- **ImpDAR's time zero** is located only where ImpDAR asserted it: a crop
+  from the top leaving `trig == 0`, at `flags.crop[1]` samples into the
+  recording. A nonzero `trig` is not trusted, since the RAMAC loader always
+  sets 36. Elevation-corrected data is refused: its vertical axis is not
+  time.
+
 ## Render pipeline
 
 Fixed order, enforced by module structure rather than just convention:

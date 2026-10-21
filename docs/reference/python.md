@@ -29,6 +29,16 @@ Generated from the docstrings of the installed `ridal` package. The
 .. autofunction:: ridal.render
 ```
 
+## Data from other tools
+
+See {ref}`the guide <python-other-tools>`.
+
+```{eval-rst}
+.. autofunction:: ridal.write_netcdf
+
+.. autofunction:: ridal.impdar.from_radardata
+```
+
 ## Discovery
 
 ```{eval-rst}
