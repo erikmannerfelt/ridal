@@ -918,6 +918,44 @@ mod tests {
     }
 
     #[test]
+    fn a_long_steep_topo_profile_keeps_its_bands_tall() {
+        // The server hang this guards against: across a long profile with a
+        // few hundred metres of relief, the shift span over the whole width
+        // exceeded the read budget by itself, the band fell to one row, and
+        // every one of the thousands of bands reread nearly the whole
+        // source. Reads are stripped now, so the overhead is one strip's
+        // slab and the band stays close to what the budget allows.
+        let (height, width) = (16, 8192);
+        let source = Array2::<f32>::zeros((height, width));
+        let inner = crate::source::ArraySource::new(source.view());
+        // 4000 samples of relief, far more than the 2048 rows the budget
+        // allows at this width.
+        let elevation: Vec<f64> = (0..width)
+            .map(|i| 4000.0 * i as f64 / width as f64)
+            .collect();
+        let depth: Vec<f32> = (0..height).map(|i| i as f32).collect();
+        let geometry = super::super::topo::resolve_topo_geometry(
+            Some(&elevation),
+            Some(&depth),
+            width,
+            height,
+            super::super::topo::ElevationRange::NONE,
+        )
+        .unwrap();
+        let source = super::super::topo::TopoSource::new(&inner, &geometry);
+        let renderer = Renderer::new(&source);
+
+        let budget_rows = OVERVIEW_READ_BUDGET_BYTES / (width * std::mem::size_of::<f32>());
+        let band = renderer.overview_rows_per_band();
+        let overhead = source.vertical_read_overhead(0, width);
+        assert!(
+            band >= budget_rows / 2,
+            "band of {band} rows of a budget of {budget_rows}"
+        );
+        assert!(band + overhead <= budget_rows);
+    }
+
+    #[test]
     #[serial_test::serial(netcdf)]
     fn adjacent_chunks_at_scale_one_use_consistent_limits_no_visible_seam() {
         // Regression guard for #119's seam warning: if two adjacent chunks
