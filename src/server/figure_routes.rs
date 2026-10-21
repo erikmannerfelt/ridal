@@ -120,10 +120,22 @@ pub async fn render_figure(
         readable_project(&state)?;
     }
 
+    // A figure permit before a render permit, so an export waiting behind
+    // another holds no render permit while it waits (#473).
+    let figure_permit = acquire_figure_permit(&state).await?;
     let permit = super::routes::acquire_render_permit(&state).await?;
+    let activity = state.render_config().activity.start(
+        super::activity::RenderKind::Figure,
+        &state.key,
+        radargram_key.to_string(),
+    );
+    // Fires when this handler's future is dropped, which is when the
+    // client goes away: nobody else wants this figure, so it stops at the
+    // next band rather than finishing into the void.
+    let (interrupt, _cancel_on_drop) = crate::render::interrupt::Interrupt::on_drop();
     let task_state = Arc::clone(&state);
     let figure = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
+        let _permits = (figure_permit, permit);
         // Gathered before the render service is locked, so reading picks
         // and evaluating derived layers does not hold up the viewer's chunks
         // of this radargram.
@@ -147,9 +159,22 @@ pub async fn render_figure(
             &task_state.render_config().open_readers,
             &radargram,
             |service| {
+                activity.rendering();
+                // From now: the wait for the lock is not the render's.
+                let interrupt = interrupt.with_deadline(super::routes::BANDED_RENDER_DEADLINE);
                 service
-                    .render_figure(&spec, &profile, format, overlays.as_ref(), range)
-                    .map_err(figure_error)
+                    .render_figure(
+                        &spec,
+                        &profile,
+                        format,
+                        overlays.as_ref(),
+                        range,
+                        interrupt.clone(),
+                    )
+                    .map_err(|e| {
+                        super::routes::interrupted_error(&interrupt)
+                            .unwrap_or_else(|| figure_error(e))
+                    })
             },
         )?;
         Ok::<_, ApiError>((figure, overlays.map(|o| o.warnings).unwrap_or_default()))
@@ -175,6 +200,30 @@ pub async fn render_figure(
         }
     }
     Ok(response)
+}
+
+/// How long a figure export waits for another to finish before a 503.
+const FIGURE_PERMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Take one of the server's figure permits (#473), before the render
+/// permit: an export waiting for another export then holds nothing the
+/// viewer needs.
+async fn acquire_figure_permit(
+    state: &AppState,
+) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
+    tokio::time::timeout(
+        FIGURE_PERMIT_TIMEOUT,
+        state.render_config().figure_permits.acquire_owned(),
+    )
+    .await
+    .map_err(|_| {
+        ApiError::service_unavailable(
+            "figure_busy",
+            "The server is exporting as many figures as it allows at once. Retry shortly.",
+        )
+        .with_header(header::RETRY_AFTER, "5".to_string())
+    })?
+    .map_err(|_| ApiError::internal("figure_permits_closed", "Figure permits were closed"))
 }
 
 /// The header that carries what could not be drawn as stored (picks that

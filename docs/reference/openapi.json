@@ -13374,6 +13374,7 @@
           "render_permits",
           "render_in_use",
           "render_waiting",
+          "renders",
           "cache_entries",
           "cache_mb",
           "cache_budget_mb",
@@ -13427,6 +13428,13 @@
             "type": "integer",
             "description": "Requests waiting for a render permit now.",
             "minimum": 0
+          },
+          "renders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RunningRender"
+            },
+            "description": "What the render permits in use are doing, longest-running first\n(#473)."
           },
           "cache_entries": {
             "type": "integer",
@@ -16820,6 +16828,17 @@
           }
         }
       },
+      "RenderKind": {
+        "type": "string",
+        "description": "What a render permit is being used for.",
+        "enum": [
+          "chunk",
+          "overview",
+          "figure",
+          "trace",
+          "level2"
+        ]
+      },
       "Replaced": {
         "type": "object",
         "description": "`POST /api/v1/datasets/{radargram_id}/replace/{token}`: the replace is done.",
@@ -17098,6 +17117,38 @@
           "operator",
           "admin"
         ]
+      },
+      "RunningRender": {
+        "type": "object",
+        "description": "One render holding a permit now.",
+        "required": [
+          "kind",
+          "project",
+          "target",
+          "seconds",
+          "waiting_for_radargram"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RenderKind"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectKey"
+          },
+          "target": {
+            "type": "string",
+            "description": "What it renders: a radargram's id, `draft N` for processing job\n`N`'s draft, or `group G` or `catalog` for a merged level 2 export."
+          },
+          "seconds": {
+            "type": "number",
+            "format": "double",
+            "description": "Since it took its render permit, in seconds."
+          },
+          "waiting_for_radargram": {
+            "type": "boolean",
+            "description": "Whether it is still waiting for its radargram's lock, behind another\nrender of the same radargram, rather than rendering. Never for a\nlevel 2 export, which takes no radargram's lock."
+          }
+        }
       },
       "Saved": {
         "type": "object",

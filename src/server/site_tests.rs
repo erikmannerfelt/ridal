@@ -1610,6 +1610,8 @@ async fn the_server_status_is_for_a_server_admin_and_leaves_the_log_its_counts()
     assert_eq!(first.status, StatusCode::OK, "{}", first.text);
     assert!(first.body["render_permits"].as_u64().unwrap() >= 1);
     assert!(first.body["cache_budget_mb"].as_f64().unwrap() > 0.0);
+    // Nothing is rendering while nobody looks at a radargram (#473).
+    assert_eq!(first.body["renders"], serde_json::json!([]));
     let second = send(&app, get("/api/v1/site/status", Some(&anna))).await;
     // Counted on: the requests the first look made are still there.
     assert!(

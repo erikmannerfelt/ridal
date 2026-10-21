@@ -229,6 +229,9 @@ pub struct Heartbeat {
     pub render_in_use: usize,
     /// Requests waiting for a render permit now.
     pub render_waiting: usize,
+    /// What the render permits in use are doing, longest-running first
+    /// (#473).
+    pub renders: Vec<super::activity::RunningRender>,
     /// Images in the in-memory render cache, their size in MB, and
     /// `--cache-memory-mb`.
     pub cache_entries: usize,
@@ -283,6 +286,7 @@ impl Heartbeat {
             render_permits,
             render_in_use: render_permits.saturating_sub(site.render_permits.available_permits()),
             render_waiting: config.permit_waiters.load(Ordering::Relaxed),
+            renders: config.activity.snapshot(),
             cache_entries: config.cache.len(),
             cache_mb: round1(config.cache.current_bytes() as f64 / MB),
             cache_budget_mb: round1(config.cache.max_bytes() as f64 / MB),
@@ -307,6 +311,17 @@ impl Heartbeat {
 
     /// Write this heartbeat as one `info` line.
     pub fn log(&self) {
+        // The longest-running render only: a line has room for one, and it
+        // is the one that says whether something is stuck.
+        let longest = self.renders.first();
+        let render_longest = longest.map(|render| {
+            format!(
+                "{}:{}/{}",
+                render.kind.as_str(),
+                render.project,
+                render.target
+            )
+        });
         tracing::info!(
             target: HEARTBEAT_TARGET,
             cpu_s = self.cpu_seconds,
@@ -314,6 +329,8 @@ impl Heartbeat {
             render_in_use = self.render_in_use,
             render_permits = self.render_permits,
             render_waiting = self.render_waiting,
+            render_longest = render_longest.as_deref(),
+            render_longest_s = longest.map(|render| render.seconds),
             cache_entries = self.cache_entries,
             cache_mb = self.cache_mb,
             cache_budget_mb = self.cache_budget_mb,

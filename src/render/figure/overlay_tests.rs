@@ -59,6 +59,7 @@ fn render(
             elevation_range: topo::ElevationRange::NONE,
             overlays,
             contrast: None,
+            interrupt: crate::render::interrupt::Interrupt::never(),
         },
         spec,
         &RenderProfile {

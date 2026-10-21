@@ -23,6 +23,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::render::colormap;
 use crate::render::grid::{Chunk, OverviewSpec, CHUNK_SIZE};
+use crate::render::interrupt::Interrupt;
 use crate::render::profile::{AmplitudeLimits, DatasetView, RenderProfile};
 use crate::render::renderer::Renderer;
 use crate::render::stats::sampled_amplitude_limits;
@@ -358,6 +359,12 @@ pub struct RenderServiceConfig {
     /// Requests waiting for one of the `--n-workers` render permits right
     /// now, for the heartbeat (#282). Shared by every clone, like `cache`.
     pub permit_waiters: Arc<std::sync::atomic::AtomicUsize>,
+    /// Bounds how many figure exports run at once, server-wide (#473); see
+    /// [`figure_permits`]. Shared by every clone, like `cache`.
+    pub figure_permits: Arc<tokio::sync::Semaphore>,
+    /// The renders holding a render permit now, for the status page
+    /// (#473). Shared by every clone, like `cache`.
+    pub activity: crate::server::activity::RenderActivity,
 }
 
 impl RenderServiceConfig {
@@ -371,6 +378,7 @@ impl RenderServiceConfig {
                 n_workers,
             ))),
             open_readers: ReaderPool::new(max_open_readers(n_workers)),
+            figure_permits: Arc::new(tokio::sync::Semaphore::new(figure_permits(n_workers))),
             ..self
         }
     }
@@ -388,6 +396,17 @@ impl RenderServiceConfig {
 /// build permit at all.
 pub fn overview_build_permits(n_workers: usize) -> usize {
     (n_workers / 4).max(1)
+}
+
+/// Concurrent figure exports for `n_workers`: half of them, at least one
+/// (#473).
+///
+/// A figure takes a render permit as well, so this only keeps figures from
+/// taking all of them: in #472, a second export of the same radargram held
+/// the other of two permits while it waited for the first, and nothing
+/// else rendered anywhere. With one worker, the one figure still takes it.
+pub fn figure_permits(n_workers: usize) -> usize {
+    (n_workers / 2).max(1)
 }
 
 /// How many radargrams may hold an open NetCDF handle at once (#306):
@@ -410,6 +429,8 @@ impl Default for RenderServiceConfig {
             overview_builds: Arc::new(tokio::sync::Semaphore::new(1)),
             open_readers: ReaderPool::new(1),
             permit_waiters: Arc::default(),
+            figure_permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            activity: Default::default(),
         }
         .with_n_workers(n_workers)
     }
@@ -879,12 +900,15 @@ impl RenderService {
         Some(bytes)
     }
 
+    /// `interrupt` stops a build that runs too long (#473); nothing is
+    /// cached then, so the next request starts again.
     pub fn get_or_render_overview(
         &mut self,
         spec: &OverviewSpec,
         view: DatasetView,
         profile: &RenderProfile,
         range: ElevationRange,
+        interrupt: &Interrupt,
     ) -> Result<Vec<u8>, String> {
         // Not counted: the overview route has just looked, and is here
         // because it missed. This look is for one built meanwhile.
@@ -896,13 +920,17 @@ impl RenderService {
         let bytes = match view {
             DatasetView::Standard => {
                 let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
-                Renderer::new(reader).render_overview(spec, &pinned, limits)?
+                Renderer::new(reader)
+                    .with_interrupt(interrupt.clone())
+                    .render_overview(spec, &pinned, limits)?
             }
             DatasetView::Topographic => {
                 let geometry = self.resolve_topo_geometry(range).map_err(|e| e.message)?;
                 let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
                 let source = TopoSource::new(reader, &geometry);
-                Renderer::new(&source).render_overview(spec, &pinned, limits)?
+                Renderer::new(&source)
+                    .with_interrupt(interrupt.clone())
+                    .render_overview(spec, &pinned, limits)?
             }
         };
         let bytes = match &disk {
@@ -976,6 +1004,7 @@ impl RenderService {
         format: crate::render::figure::FigureFormat,
         overlays: Option<&crate::render::figure::overlays::Overlays>,
         range: ElevationRange,
+        interrupt: Interrupt,
     ) -> Result<crate::render::figure::RenderedFigure, crate::render::figure::FigureError> {
         use crate::render::figure::FigureError;
         let contrast = if spec.radargram && format != crate::render::figure::FigureFormat::Sidecar {
@@ -995,6 +1024,7 @@ impl RenderService {
                 elevation_range: range,
                 overlays,
                 contrast,
+                interrupt,
             },
             spec,
             profile,
@@ -1098,6 +1128,7 @@ mod tests {
                     DatasetView::Standard,
                     &profile,
                     ElevationRange::NONE,
+                    &Interrupt::never(),
                 )
                 .unwrap();
 
@@ -1190,6 +1221,7 @@ mod tests {
                 DatasetView::Topographic,
                 &profile,
                 ElevationRange::NONE,
+                &Interrupt::never(),
             )
             .unwrap();
 
@@ -1520,6 +1552,7 @@ mod tests {
                     DatasetView::Standard,
                     &profile,
                     ElevationRange::NONE,
+                    &Interrupt::never(),
                 )
                 .unwrap()
         };
@@ -1563,6 +1596,7 @@ mod tests {
                 DatasetView::Standard,
                 &RenderProfile::default_profile(),
                 ElevationRange::NONE,
+                &Interrupt::never(),
             )
             .unwrap();
         assert!(!cache_dir.join("overviews").exists());
@@ -1616,8 +1650,14 @@ mod tests {
         assert_eq!(overview_build_permits(16), 4);
         assert_eq!(max_open_readers(1), 16);
         assert_eq!(max_open_readers(32), 64);
+        // Figures leave at least one worker for everything else, where
+        // there is more than one (#473).
+        assert_eq!(figure_permits(1), 1);
+        assert_eq!(figure_permits(2), 1);
+        assert_eq!(figure_permits(5), 2);
         let config = RenderServiceConfig::default().with_n_workers(16);
         assert_eq!(config.overview_builds.available_permits(), 4);
+        assert_eq!(config.figure_permits.available_permits(), 8);
     }
 
     fn walk_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {

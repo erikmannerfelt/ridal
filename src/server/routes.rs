@@ -110,7 +110,7 @@ impl ApiError {
 
     /// Temporary overload rather than a fault: the request was valid and
     /// retrying it later may well succeed.
-    fn service_unavailable(code: &'static str, message: impl Into<String>) -> Self {
+    pub(super) fn service_unavailable(code: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, code, message)
     }
 
@@ -1002,6 +1002,37 @@ const RENDER_BUSY_RETRY_AFTER_SECS: u64 = 5;
 /// broken picture, and waiting is what the queue is for.
 const OVERVIEW_BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// How long an overview build or a figure export may run once it has its
+/// radargram (#473), before it stops and answers `render_timed_out`.
+///
+/// Since #472 the slowest full-width topographic figure measured takes
+/// about 10 s, so this leaves a wide margin for a busy or slower server,
+/// while bounding what one render can hold: a permit and its radargram's
+/// lock, which every chunk of that radargram waits for.
+pub(super) const BANDED_RENDER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The error for a render `interrupt` stopped, or `None` when it has not
+/// fired and the render failed for some other reason.
+pub(super) fn interrupted_error(
+    interrupt: &crate::render::interrupt::Interrupt,
+) -> Option<ApiError> {
+    use crate::render::interrupt::Interruption;
+    Some(match interrupt.interruption()? {
+        Interruption::TimedOut => ApiError::service_unavailable(
+            "render_timed_out",
+            format!(
+                "The image took longer than the {} s a render is allowed. A narrower \
+                 extent or a smaller size renders faster.",
+                interrupt.limit().map_or(0, |limit| limit.as_secs())
+            ),
+        ),
+        // Nobody is waiting for this answer: the request has gone.
+        Interruption::Cancelled => {
+            ApiError::service_unavailable("render_cancelled", "The render was cancelled.")
+        }
+    })
+}
+
 /// An overview for `spec`: from cache if it is there, otherwise built under
 /// an overview build permit as well as a render permit.
 ///
@@ -1013,6 +1044,7 @@ const OVERVIEW_BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 pub(super) async fn get_or_build_overview(
     state: Arc<AppState>,
     radargram: Arc<super::app::OpenRadargram>,
+    label: String,
     spec: OverviewSpec,
     view: DatasetView,
     profile: crate::render::profile::RenderProfile,
@@ -1050,15 +1082,29 @@ pub(super) async fn get_or_build_overview(
     })?
     .map_err(|_| ApiError::internal("render_permits_closed", "Render permits were closed"))?;
 
-    with_render_service(state, radargram, move |service| {
-        // Moved in so it is held for the build itself: a client that
-        // disconnects mid-build drops the request, not the blocking task,
-        // and the permit must outlive the request to keep counting it.
-        let _build = build;
-        service
-            .get_or_render_overview(&spec, view, &profile, range)
-            .map_err(|e| ApiError::internal("render_failed", e))
-    })
+    with_render_service(
+        state,
+        radargram,
+        super::activity::RenderKind::Overview,
+        label,
+        move |service| {
+            // Moved in so it is held for the build itself: a client that
+            // disconnects mid-build drops the request, not the blocking task,
+            // and the permit must outlive the request to keep counting it.
+            let _build = build;
+            // A deadline but no cancel on disconnect: an overview finished
+            // after its request has gone still goes into the cache for the
+            // next one, and a card grid's thumbnails are abandoned often.
+            let interrupt =
+                crate::render::interrupt::Interrupt::never().with_deadline(BANDED_RENDER_DEADLINE);
+            service
+                .get_or_render_overview(&spec, view, &profile, range, &interrupt)
+                .map_err(|e| {
+                    interrupted_error(&interrupt)
+                        .unwrap_or_else(|| ApiError::internal("render_failed", e))
+                })
+        },
+    )
     .await
 }
 
@@ -1131,9 +1177,14 @@ pub(crate) async fn acquire_render_permit(
 /// landing mid-request must not let a render run against a different
 /// generation's service than the one whose shape built its grid. See
 /// [`resolve_view_height`].
+///
+/// `kind` and `label` (the radargram's id) list it among the server's
+/// running renders while it holds its permit (#473).
 async fn with_render_service<R, F>(
     state: Arc<AppState>,
     radargram: Arc<super::app::OpenRadargram>,
+    kind: super::activity::RenderKind,
+    label: String,
     render: F,
 ) -> Result<R, ApiError>
 where
@@ -1143,11 +1194,19 @@ where
     R: Send + 'static,
 {
     let permit = acquire_render_permit(&state).await?;
+    let activity = state
+        .render_config()
+        .activity
+        .start(kind, &state.key, label);
 
     tokio::task::spawn_blocking(move || {
         // Held until the render finishes, then released for the next
         // waiter.
         let _permit = permit;
+        let render = move |service: &mut crate::server::render_service::RenderService| {
+            activity.rendering();
+            render(service)
+        };
         // `render` builds its own `ApiError` (a 404 for a well-formed but
         // out-of-grid chunk, a 400 naming why the corrected view is
         // unavailable, a 500 for anything else) rather than this function
@@ -1306,6 +1365,7 @@ pub async fn overview_image(
     let bytes = get_or_build_overview(
         state.clone(),
         radargram,
+        entry.radargram_id.to_string(),
         spec,
         dataset_view,
         profile.clone(),
@@ -1384,11 +1444,17 @@ pub async fn chunk_image(
     })?;
     let render_profile = profile.clone();
 
-    let bytes = with_render_service(state.clone(), radargram, move |service| {
-        service
-            .get_or_render_chunk(&chunk, dataset_view, &render_profile, elevation_range)
-            .map_err(|e| ApiError::internal("render_failed", e))
-    })
+    let bytes = with_render_service(
+        state.clone(),
+        radargram,
+        super::activity::RenderKind::Chunk,
+        entry.radargram_id.to_string(),
+        move |service| {
+            service
+                .get_or_render_chunk(&chunk, dataset_view, &render_profile, elevation_range)
+                .map_err(|e| ApiError::internal("render_failed", e))
+        },
+    )
     .await?;
     Ok(image_response(bytes, &profile))
 }
@@ -2190,6 +2256,7 @@ pub async fn dataset_image(
     let bytes = get_or_build_overview(
         state.clone(),
         radargram,
+        radargram_id_owned.clone(),
         spec,
         dataset_view,
         profile.clone(),
@@ -3171,11 +3238,17 @@ pub async fn dataset_trace(
             )
         })?;
 
-    let column = with_render_service(state.clone(), radargram, move |service| {
-        service
-            .read_trace(trace)
-            .map_err(|e| ApiError::internal("trace_read_failed", e))
-    })
+    let column = with_render_service(
+        state.clone(),
+        radargram,
+        super::activity::RenderKind::Trace,
+        entry.radargram_id.to_string(),
+        move |service| {
+            service
+                .read_trace(trace)
+                .map_err(|e| ApiError::internal("trace_read_failed", e))
+        },
+    )
     .await?
     .ok_or_else(|| {
         ApiError::not_found(
@@ -3341,6 +3414,22 @@ mod tests {
             response.headers().get(header::RETRY_AFTER).unwrap(),
             &RENDER_BUSY_RETRY_AFTER_SECS.to_string()
         );
+    }
+
+    #[test]
+    fn only_a_fired_interrupt_becomes_an_interrupted_error() {
+        use crate::render::interrupt::Interrupt;
+        // Unfired: the render failed for its own reason, which the caller
+        // reports as it would have before #473.
+        assert!(super::interrupted_error(&Interrupt::never()).is_none());
+        let timed_out =
+            super::interrupted_error(&Interrupt::never().with_deadline(std::time::Duration::ZERO))
+                .unwrap()
+                .into_response();
+        assert_eq!(timed_out.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let (interrupt, guard) = Interrupt::on_drop();
+        drop(guard);
+        assert!(super::interrupted_error(&interrupt).is_some());
     }
 
     #[test]
