@@ -84,7 +84,9 @@ jobs:
 
   # The HTTP client's tests against real servers (#328). The wheel has no
   # server in it, so this builds the `ridal` command as well, and installs
-  # PROJ to process the fixture radargram the tests serve.
+  # PROJ to process the fixture radargram the tests serve. The writer's
+  # tests run here too: they need netCDF4 to read files back, and ImpDAR
+  # for `ridal.impdar`.
   client-integration:
     name: Python client against a real server
     needs: build-pr
@@ -122,14 +124,14 @@ jobs:
 
     - name: Install the wheel with the client
       run: |
-        pip install pytest pandas geopandas
+        pip install pytest pandas geopandas netCDF4 impdar
         whl=$(ls wheels/*.whl)
         pip install "${whl}[client]"
 
     - name: Test
       env:
         RIDAL_BIN: target/debug/ridal
-      run: python -m pytest tests/client -v
+      run: python -m pytest tests/client tests/writer -v
 
   build-all:
     name: Build all platforms

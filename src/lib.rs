@@ -5,6 +5,10 @@ mod cli;
 mod coords;
 mod dem;
 mod export;
+/// A radargram built from arrays: `ridal.write_netcdf` in Python, its only
+/// caller outside tests.
+#[cfg_attr(not(feature = "python"), allow(dead_code))]
+mod external;
 mod filters;
 mod formats;
 mod gpr;
@@ -86,6 +90,7 @@ const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 #[pyo3::pymodule(name = "_ridal")]
 pub mod ridal {
     use crate::{formats, gpr};
+    use numpy::PyArrayMethods;
     use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError};
     use pyo3::ffi::c_str;
     use pyo3::prelude::*;
@@ -1286,6 +1291,302 @@ pub mod ridal {
             PyRuntimeError::new_err(format!("Failed to serialize the preflight body: {e}"))
         })?;
         json_to_py(py, &text)
+    }
+
+    /// `value` as a one-dimensional float array, as a `Vec`.
+    fn f64_vector(py: Python<'_>, value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<f64>> {
+        let numpy = py.import("numpy")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dtype", numpy.getattr("float64")?)?;
+        let array = numpy.getattr("asarray")?.call((value,), Some(&kwargs))?;
+        let array = array.cast_into::<numpy::PyArray1<f64>>().map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "{name} must be one-dimensional, one value per {}",
+                if name == "twtt_ns" { "sample" } else { "trace" }
+            ))
+        })?;
+        Ok(array.readonly().as_array().to_vec())
+    }
+
+    /// Trace times as seconds since the Unix epoch, from `datetime64` or
+    /// from numbers that already are; `NaT` becomes NaN, which the
+    /// validation then names.
+    fn epoch_seconds(py: Python<'_>, value: &Bound<'_, PyAny>) -> PyResult<Vec<f64>> {
+        let numpy = py.import("numpy")?;
+        let array = numpy.getattr("asarray")?.call1((value,))?;
+        let kind: String = array.getattr("dtype")?.getattr("kind")?.extract()?;
+        let seconds = if kind == "M" {
+            let epoch = numpy.getattr("datetime64")?.call1((0, "s"))?;
+            let second = numpy.getattr("timedelta64")?.call1((1, "s"))?;
+            array.sub(epoch)?.div(second)?
+        } else {
+            array
+        };
+        f64_vector(py, &seconds, "trace_time")
+    }
+
+    /// Write a radargram processed elsewhere as a Ridal NetCDF file.
+    ///
+    /// Use this to bring data from another tool (or a script) into Ridal,
+    /// for example to pick it in the web interface: the file has the layout
+    /// `process()` writes and goes through the same export. Nothing is
+    /// processed. :func:`ridal.impdar.from_radardata` does this for an
+    /// ImpDAR ``RadarData``.
+    ///
+    /// Every per-trace value is required for every trace, and must be
+    /// finite; an error names the traces that are not.
+    ///
+    /// Parameters
+    /// ----------
+    /// path : path-like
+    ///     The ``.nc`` file to write. An existing file is replaced.
+    /// data : array_like
+    ///     Amplitudes, shaped ``(samples, traces)``.
+    /// twtt_ns : array_like
+    ///     Time of each sample in nanoseconds, evenly spaced. Travel time
+    ///     from time zero when `time_zero_ns` is given; time since the
+    ///     instrument started sampling when it is None.
+    /// time_zero_ns : float, array_like or None
+    ///     Where time zero (the direct wave's arrival) sits on the recording
+    ///     clock, in nanoseconds: how far into the original record it is. One
+    ///     value, or one per trace. None when it has never been located; no
+    ///     value is assumed. Required, so that this is always a decision.
+    ///     Picks are carried between two versions of a radargram through
+    ///     this and `twtt_ns`, so it needs to be right for that to work.
+    /// trace_time : array_like
+    ///     Time of each trace, as ``datetime64`` or seconds since the Unix
+    ///     epoch (UTC).
+    /// longitude, latitude : array_like, optional
+    ///     WGS84 position of each trace, in degrees. Give these, or `x` and
+    ///     `y`, not both.
+    /// x, y : array_like, optional
+    ///     Projected position of each trace, in the units of `crs`.
+    /// crs : str, optional
+    ///     Coordinate reference system of `x` and `y` (required with them),
+    ///     or the one to project `longitude` and `latitude` into (default:
+    ///     the best WGS84 UTM zone).
+    /// elevation : array_like, optional
+    ///     Elevation of each trace, in metres. Give this or `dem`.
+    /// dem : path-like, optional
+    ///     Digital elevation model to sample each trace's elevation from.
+    /// antenna_mhz : float
+    ///     Antenna centre frequency in MHz.
+    /// antenna_separation : float
+    ///     Transmitter-receiver separation at acquisition, in metres.
+    /// antenna_separation_effective : float, optional
+    ///     The separation the data still needs correcting for: equal to
+    ///     `antenna_separation` (the default) when nothing corrected for it,
+    ///     ``0`` after a normal-moveout (NMO) correction.
+    /// medium_velocity : float, default 0.168
+    ///     Radar wave velocity in the medium, in m/ns, used for depths.
+    /// radargram_id : str, optional
+    ///     Stable, unique identifier for the radargram (lowercase ASCII,
+    ///     digits, ``-``, ``_``). Defaults to the file stem, with a warning.
+    ///     Give every version of one radargram the same id, so picks drawn
+    ///     on one can be carried to the next.
+    /// radargram_name, group_id, group_name : str, optional
+    ///     As in `process()`.
+    /// metadata : mapping, optional
+    ///     Additional JSON-serializable user metadata, as in `process()`.
+    /// log : sequence of str, optional
+    ///     How the data was processed, one line each, written to the file's
+    ///     processing log ahead of Ridal's own line.
+    /// source_file : str, optional
+    ///     The file the data was made from, recorded in
+    ///     ``original_filepaths``.
+    /// antenna : str, optional
+    ///     The antenna's name. Defaults to its frequency.
+    ///
+    /// Returns
+    /// -------
+    /// str
+    ///     The path written.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If an argument is missing, the wrong shape or length, not finite,
+    ///     out of range, or inconsistent with another.
+    /// RuntimeError
+    ///     If the DEM cannot be sampled or the file cannot be written.
+    #[pyfunction]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        path,
+        data,
+        *,
+        twtt_ns,
+        time_zero_ns,
+        trace_time,
+        antenna_mhz,
+        antenna_separation,
+        longitude=None,
+        latitude=None,
+        x=None,
+        y=None,
+        crs=None,
+        elevation=None,
+        dem=None,
+        antenna_separation_effective=None,
+        medium_velocity=0.168,
+        radargram_id=None,
+        radargram_name=None,
+        group_id=None,
+        group_name=None,
+        metadata=None,
+        log=None,
+        source_file=None,
+        antenna=None
+    ))]
+    fn write_netcdf(
+        py: Python<'_>,
+        path: Py<PyAny>,
+        data: Py<PyAny>,
+        twtt_ns: Py<PyAny>,
+        time_zero_ns: Option<Py<PyAny>>,
+        trace_time: Py<PyAny>,
+        antenna_mhz: f32,
+        antenna_separation: f32,
+        longitude: Option<Py<PyAny>>,
+        latitude: Option<Py<PyAny>>,
+        x: Option<Py<PyAny>>,
+        y: Option<Py<PyAny>>,
+        crs: Option<String>,
+        elevation: Option<Py<PyAny>>,
+        dem: Option<Py<PyAny>>,
+        antenna_separation_effective: Option<f32>,
+        medium_velocity: f32,
+        radargram_id: Option<String>,
+        radargram_name: Option<String>,
+        group_id: Option<String>,
+        group_name: Option<String>,
+        metadata: Option<Py<PyAny>>,
+        log: Option<Vec<String>>,
+        source_file: Option<String>,
+        antenna: Option<String>,
+    ) -> PyResult<String> {
+        use crate::external::{Elevation, Position};
+        use pyo3::exceptions::PyValueError;
+
+        let path = fspath(py, path.bind(py))?;
+        // NetCDF reports a missing directory as "Permission denied".
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            if !parent.is_dir() {
+                return Err(PyValueError::new_err(format!(
+                    "The directory to write {path:?} in does not exist"
+                )));
+            }
+        }
+
+        let numpy = py.import("numpy")?;
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("dtype", numpy.getattr("float32")?)?;
+        let data = numpy
+            .getattr("asarray")?
+            .call((data.bind(py),), Some(&kwargs))?
+            .cast_into::<numpy::PyArray2<f32>>()
+            .map_err(|_| PyValueError::new_err("data must be two-dimensional, (samples, traces)"))?
+            .readonly()
+            .as_array()
+            .to_owned();
+
+        let vector = |value: &Py<PyAny>, name: &str| f64_vector(py, value.bind(py), name);
+        let twtt_ns = vector(&twtt_ns, "twtt_ns")?;
+        let time_zero_ns = match time_zero_ns {
+            None => None,
+            Some(value) => {
+                // A scalar is one value for every trace.
+                let array = numpy.getattr("atleast_1d")?.call1((value.bind(py),))?;
+                Some(f64_vector(py, &array, "time_zero_ns")?)
+            }
+        };
+        let trace_time = epoch_seconds(py, trace_time.bind(py))?;
+
+        let position =
+            match (longitude, latitude, x, y) {
+                (Some(longitude), Some(latitude), None, None) => Position::LonLat {
+                    longitude: vector(&longitude, "longitude")?,
+                    latitude: vector(&latitude, "latitude")?,
+                    crs,
+                },
+                (None, None, Some(x), Some(y)) => Position::Projected {
+                    x: vector(&x, "x")?,
+                    y: vector(&y, "y")?,
+                    crs: crs.ok_or_else(|| {
+                        PyValueError::new_err("x and y need crs, the system they are in")
+                    })?,
+                },
+                (None, None, None, None) => return Err(PyValueError::new_err(
+                    "Trace positions are required: give longitude and latitude, or x, y and crs",
+                )),
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "Give longitude and latitude, or x and y (with crs), and only one of \
+                     those pairs",
+                    ))
+                }
+            };
+        let elevation = match (elevation, optional_path(py, dem)?) {
+            (Some(values), None) => Elevation::Values(vector(&values, "elevation")?),
+            (None, Some(dem)) => Elevation::Dem(dem),
+            (Some(_), Some(_)) => {
+                return Err(PyValueError::new_err("Give elevation or dem, not both"))
+            }
+            (None, None) => {
+                return Err(PyValueError::new_err(
+                    "Elevations are required: give elevation, or a dem to sample them from",
+                ))
+            }
+        };
+
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| PyValueError::new_err(format!("{path:?} has no file name")))?;
+        let (radargram_id, id_note) =
+            crate::identity::resolve_radargram_id(radargram_id.as_deref(), None, stem)
+                .map_err(PyValueError::new_err)?;
+        if let Some(note) = id_note {
+            py.import("warnings")?.getattr("warn")?.call1((note,))?;
+        }
+        let group =
+            crate::identity::resolve_group(group_name.as_deref(), group_id.as_deref(), None, None)
+                .map_err(PyValueError::new_err)?;
+        let (group_name, group_id) = match group {
+            Some((name, id)) => (Some(name), Some(id)),
+            None => (None, None),
+        };
+        let identity = gpr::RidalIdentity {
+            radargram_id: Some(radargram_id),
+            display_name: crate::identity::resolve_display_name(radargram_name.as_deref(), None),
+            group_name,
+            group_id,
+        };
+        let user_metadata = optional_metadata(py, metadata)?;
+
+        let arrays = crate::external::Arrays {
+            data,
+            twtt_ns,
+            time_zero_ns,
+            trace_time,
+            position,
+            elevation,
+            antenna,
+            antenna_mhz,
+            antenna_separation,
+            antenna_separation_effective,
+            medium_velocity,
+            log: log.unwrap_or_default(),
+            source_file,
+        };
+        let mut gpr = crate::external::build(arrays, identity).map_err(|e| match e {
+            crate::external::BuildError::Argument(e) => PyValueError::new_err(e),
+            crate::external::BuildError::Dem(e) => PyRuntimeError::new_err(e),
+        })?;
+        gpr.user_metadata = user_metadata;
+        py.detach(|| gpr.export(&path))
+            .map_err(PyRuntimeError::new_err)?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     /// Removed legacy entry point for the old Python CLI wrapper.

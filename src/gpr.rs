@@ -1001,6 +1001,37 @@ impl GPR {
         })
     }
 
+    /// A radargram whose data and vertical axis were made elsewhere: what
+    /// [`crate::external::build`] assembles from arrays.
+    ///
+    /// The caller has already checked every argument against the others,
+    /// including the length invariants of `crop_ns` and `time_zero_ns`;
+    /// this only puts them where the rest of `GPR` expects them.
+    pub(crate) fn from_external(
+        data: Array2<f32>,
+        location: GPRLocation,
+        metadata: GPRMeta,
+        antenna_separation_effective: f32,
+        crop_ns: Vec<f32>,
+        time_zero_ns: Vec<f32>,
+        log: Vec<String>,
+    ) -> GPR {
+        GPR {
+            data,
+            location,
+            metadata,
+            log,
+            steps: Vec::new(),
+            topo_data: None,
+            antenna_separation_effective,
+            crop_ns,
+            time_zero_ns,
+            user_metadata: user_metadata::UserMetadata::new(),
+            identity: RidalIdentity::default(),
+            inputs: None,
+        }
+    }
+
     /// Render this radargram to an image with a render profile.
     ///
     /// Goes through the same pipeline as `ridal render` and the web GUI --
