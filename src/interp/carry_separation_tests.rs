@@ -8,7 +8,7 @@ use crate::interp::carry;
 
 const BASE: &str = "remove_empty_traces,zero_corr";
 
-fn process(directory: &Path, name: &str, steps: &str) -> PathBuf {
+pub(super) fn process(directory: &Path, name: &str, steps: &str) -> PathBuf {
     let output = directory.join(format!("{name}.nc"));
     let params = crate::gpr::RunParams {
         filepaths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -46,7 +46,11 @@ fn processing_log(path: &Path) -> String {
     }
 }
 
-fn document(revision: &str, axes: &anchors::Axes, points: &[(f64, f64)]) -> gprinterp::Document {
+pub(super) fn document(
+    revision: &str,
+    axes: &anchors::Axes,
+    points: &[(f64, f64)],
+) -> gprinterp::Document {
     serde_json::from_value(serde_json::json!({
         "key": "dronbreen",
         "source": {"radargram_id": "dronbreen", "revision_id": revision},

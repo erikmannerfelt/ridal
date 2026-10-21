@@ -1072,6 +1072,15 @@ pub mod ledger {
         /// the grid. `None` as for `separation_corrected`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub migrated: Option<bool>,
+        /// Where time zero sits on the recording clock (ns), the median over
+        /// the traces; `0` where it was never located, as in the file.
+        /// `None` as for `separation_corrected`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub time_zero_ns: Option<f64>,
+        /// The sample interval (ns), which says how far a move of time zero
+        /// is in samples. `None` as for `separation_corrected`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub sample_interval_ns: Option<f64>,
     }
 
     /// What a revision's processing did that carrying picks off it has to
@@ -1080,6 +1089,9 @@ pub mod ledger {
     pub struct RevisionFacts {
         pub separation_corrected: Option<bool>,
         pub migrated: Option<bool>,
+        /// See [`RevisionRecord::time_zero_ns`].
+        pub time_zero_ns: Option<f64>,
+        pub sample_interval_ns: Option<f64>,
     }
 
     impl RevisionFacts {
@@ -1088,8 +1100,30 @@ pub mod ledger {
             Self {
                 separation_corrected: separation.map(|s| s.is_corrected()),
                 migrated: separation.map(|s| s.is_migrated()),
+                time_zero_ns: median(&declared.twtt_time_zero),
+                sample_interval_ns: (declared.dt_ns.is_finite() && declared.dt_ns > 0.)
+                    .then_some(declared.dt_ns),
             }
         }
+    }
+
+    /// The median of finite `values`, or `None` when there are none.
+    ///
+    /// One number for a per-trace time zero: what a carry warning needs is
+    /// how far time zero moved, and a per-trace zero correction moves it by
+    /// different amounts that the typical one describes.
+    fn median(values: &[f64]) -> Option<f64> {
+        let mut finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+        if finite.is_empty() {
+            return None;
+        }
+        finite.sort_by(f64::total_cmp);
+        let mid = finite.len() / 2;
+        Some(if finite.len().is_multiple_of(2) {
+            (finite[mid - 1] + finite[mid]) / 2.
+        } else {
+            finite[mid]
+        })
     }
 
     #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1217,6 +1251,8 @@ pub mod ledger {
         };
         record.separation_corrected = record.separation_corrected.or(facts.separation_corrected);
         record.migrated = record.migrated.or(facts.migrated);
+        record.time_zero_ns = record.time_zero_ns.or(facts.time_zero_ns);
+        record.sample_interval_ns = record.sample_interval_ns.or(facts.sample_interval_ns);
     }
 
     /// The facts recorded for a revision, as far as they are known.
@@ -1228,6 +1264,8 @@ pub mod ledger {
             .map(|record| RevisionFacts {
                 separation_corrected: record.separation_corrected,
                 migrated: record.migrated,
+                time_zero_ns: record.time_zero_ns,
+                sample_interval_ns: record.sample_interval_ns,
             })
             .unwrap_or_default()
     }
@@ -1430,6 +1468,8 @@ mod ledger_tests {
         let corrected = RevisionFacts {
             separation_corrected: Some(true),
             migrated: Some(false),
+            time_zero_ns: Some(106.61),
+            sample_interval_ns: Some(3.046),
         };
         update(&store, |ledger| {
             // Nothing to fill in for a revision the ledger does not know.
@@ -1444,6 +1484,8 @@ mod ledger_tests {
                 RevisionFacts {
                     separation_corrected: Some(false),
                     migrated: Some(true),
+                    time_zero_ns: Some(130.98),
+                    sample_interval_ns: Some(1.0),
                 },
             );
         })

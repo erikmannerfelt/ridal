@@ -231,12 +231,24 @@ rules ever change, grep for these sentinels first.
 
 Picks are stored in sample and trace indices of the revision they were
 drawn on. `interp::carry` places them on another revision through
-gprinterp's anchor axes: `trace_time` for `x`, and for `y` the travel time
-(`twtt`, or `twtt_normal_incidence` after an antenna-separation correction)
-or, failing a shared one, `recording_time`, the original recording's clock.
-`interp::anchors` builds those axes from the file; `project::revisions`
-keeps a snapshot of a revision's axes, and the ledger (`revisions.json`)
-its history.
+gprinterp's anchor axes: `trace_time` for `x`, and for `y`
+`recording_time`, the original recording's clock, or, failing a shared one,
+the travel time (`twtt`, or `twtt_normal_incidence` after an
+antenna-separation correction). `interp::anchors` builds those axes from the
+file; `project::revisions` keeps a snapshot of a revision's axes, and the
+ledger (`revisions.json`) its history.
+
+- **The recording clock comes first (#470, gprinterp 0.5).** A pick belongs
+  on the same horizon however a reprocessing located time zero: onset or
+  peak, another method, crop or margin. The clock puts it on the same
+  recorded sample; travel time, measured from time zero, moved it by
+  however far time zero moved (8 samples on Drønbreen for onset → peak).
+  Travel time is still used where either side has no regular clock, and
+  then `carry::time_zero_warning` says how far time zero moved, from the
+  ledger's `time_zero_ns`. It also notes a depth change when the clock
+  carried across a moved time zero, and a carry between a revision without
+  a zero correction and one with it. `interp::carry_time_zero_tests` pins
+  each case on the committed Malå file.
 
 - **A corrected revision's recording clock is reconstructed, not
   assumed (#370).** `correct_antenna_separation` resamples onto a depth

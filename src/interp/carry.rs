@@ -880,6 +880,8 @@ pub fn carry(document: &gprinterp::Document, axes: &Axes, to_revision: &str) -> 
 /// a *may*: a flat reflector does not move at all. So it is a warning on a
 /// carry that went ahead, never a refusal. Said only where both sides are
 /// known, since an unknown is not a difference.
+///
+/// A moved time zero (#470) is said too: see [`time_zero_warning`].
 pub fn add_processing_warnings(
     carried: &mut Carried,
     from: crate::project::revisions::ledger::RevisionFacts,
@@ -901,6 +903,75 @@ pub fn add_processing_warnings(
                  drawn but the reflectors under them may have moved. Check them \
                  against the data."
             ));
+        }
+    }
+    if let Some(warning) = time_zero_warning(carried.report.y_anchor.as_deref(), from, to) {
+        carried.report.warnings.push(warning);
+    }
+}
+
+/// What a difference in time zero between two revisions did to a carry.
+///
+/// Through the recording clock a pick stays on the same data however time
+/// zero moved, which is why it is the preferred anchor; its travel time and
+/// depth still changed, and that is worth a line. Through a travel time
+/// (when either revision has no regular recording clock, such as after a
+/// per-trace zero correction or an external NMO) the pick keeps its travel
+/// time, so the data moved under it by however far time zero moved: that is
+/// the warning that matters. A revision whose time zero was never located
+/// carried onto one where it was, or back, is the user's own change and
+/// carries exactly; it is said because every depth changed with it.
+///
+/// Nothing is said for moves under half a sample, which draw on the same
+/// sample, or where either side is unknown.
+fn time_zero_warning(
+    y_anchor: Option<&str>,
+    from: crate::project::revisions::ledger::RevisionFacts,
+    to: crate::project::revisions::ledger::RevisionFacts,
+) -> Option<String> {
+    let (Some(drawn), Some(now)) = (from.time_zero_ns, to.time_zero_ns) else {
+        return None;
+    };
+    match (drawn > 0., now > 0.) {
+        (false, false) => None,
+        (false, true) => Some(
+            "These picks were drawn on a revision whose time zero was never located, and \
+             this one has a zero correction. They are on the same data, but their travel \
+             times and depths are now measured from time zero."
+                .to_string(),
+        ),
+        (true, false) => Some(
+            "These picks were drawn on a revision with a zero correction, and this one \
+             has none. They are on the same data, but their travel times and depths are \
+             now measured from wherever the recording started."
+                .to_string(),
+        ),
+        (true, true) => {
+            let moved = now - drawn;
+            let dt = to.sample_interval_ns.or(from.sample_interval_ns)?;
+            if moved.abs() <= dt / 2. {
+                return None;
+            }
+            let direction = if moved > 0. { "later" } else { "earlier" };
+            let size = format!(
+                "{:.1} ns ({:.1} samples) {direction}",
+                moved.abs(),
+                moved.abs() / dt
+            );
+            Some(if y_anchor == Some("recording_time") {
+                format!(
+                    "Time zero is {size} here than on the revision these picks were \
+                     drawn on. They are on the same data, but their travel times and \
+                     depths changed by that much."
+                )
+            } else {
+                format!(
+                    "Time zero is {size} here than on the revision these picks were \
+                     drawn on, and they could only be carried by travel time, which is \
+                     measured from time zero. They kept their travel times, so the data \
+                     under them moved by that much. Check them against the data."
+                )
+            })
         }
     }
 }
@@ -1034,6 +1105,7 @@ mod tests {
         let facts = |migrated| RevisionFacts {
             separation_corrected: Some(false),
             migrated: Some(migrated),
+            ..Default::default()
         };
 
         let mut carried = carry(&doc, &drawn_on, "rev-b");
@@ -1055,6 +1127,36 @@ mod tests {
         let mut current = carry(&doc, &drawn_on, "rev-a");
         add_processing_warnings(&mut current, facts(false), facts(true));
         assert!(current.report.warnings.is_empty());
+    }
+
+    #[test]
+    fn a_moved_time_zero_is_said_according_to_how_the_picks_were_carried() {
+        // #470.
+        use crate::project::revisions::ledger::RevisionFacts;
+        let at = |time_zero| RevisionFacts {
+            time_zero_ns: Some(time_zero),
+            sample_interval_ns: Some(3.0),
+            ..Default::default()
+        };
+        let clock = time_zero_warning(Some("recording_time"), at(100.), at(124.)).unwrap();
+        assert!(clock.contains("24.0 ns (8.0 samples) later"), "{clock}");
+        assert!(clock.contains("same data"), "{clock}");
+        let travel = time_zero_warning(Some("twtt"), at(100.), at(97.)).unwrap();
+        assert!(travel.contains("3.0 ns (1.0 samples) earlier"), "{travel}");
+        assert!(travel.contains("Check them"), "{travel}");
+        assert!(
+            time_zero_warning(Some("twtt"), at(100.), at(101.)).is_none(),
+            "under half a sample draws on the same sample"
+        );
+        let none = time_zero_warning(Some("recording_time"), at(0.), at(100.)).unwrap();
+        assert!(none.contains("never located"), "{none}");
+        let back = time_zero_warning(Some("recording_time"), at(100.), at(0.)).unwrap();
+        assert!(back.contains("has none"), "{back}");
+        assert!(time_zero_warning(Some("recording_time"), at(0.), at(0.)).is_none());
+        assert!(
+            time_zero_warning(Some("twtt"), RevisionFacts::default(), at(100.)).is_none(),
+            "an unknown is not a difference"
+        );
     }
 
     #[test]
