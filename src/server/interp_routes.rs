@@ -1917,10 +1917,22 @@ async fn merged_level2_offloaded(
     query: Level2Query,
 ) -> Result<(HeaderMap, String), ApiError> {
     let permit = super::routes::acquire_render_permit(&state).await?;
+    let target = match &scope {
+        MergeScope::Catalog => "catalog".to_string(),
+        MergeScope::Group(group) => format!("group {group}"),
+    };
+    let activity = state.render_config().activity.start(
+        super::activity::RenderKind::Level2,
+        &state.key,
+        target,
+    );
+    // It locks no radargram's render service, so it renders from the start.
+    activity.rendering();
     tokio::task::spawn_blocking(move || {
         // Held until the whole export finishes, then released for the next
         // waiter.
         let _permit = permit;
+        let _activity = activity;
         merged_level2(&state, &caller, &scope, query)
     })
     .await

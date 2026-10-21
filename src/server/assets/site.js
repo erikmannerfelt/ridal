@@ -886,6 +886,13 @@
       return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`;
     };
     const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    const RENDER_KINDS = {
+      chunk: "Viewer image",
+      overview: "Overview",
+      figure: "Figure",
+      trace: "Trace",
+      level2: "Level 2 export",
+    };
 
     function renderStatus(status) {
       const rows = [
@@ -895,6 +902,19 @@
           `${status.render_in_use} of ${status.render_permits} workers busy` +
             (status.render_waiting ? `, ${status.render_waiting} waiting` : ""),
         ],
+      ];
+      /* What the busy workers are doing (#473), longest-running first: a
+       * render stuck on one radargram shows here as the oldest entry, with
+       * whatever waits behind it on the same radargram. */
+      status.renders.forEach((render, i) => {
+        rows.push([
+          i === 0 ? "Running" : "",
+          `${RENDER_KINDS[render.kind] || render.kind} of ` +
+            `${render.project}/${render.target}, ${duration(render.seconds)}` +
+            (render.waiting_for_radargram ? ", waiting for the radargram" : ""),
+        ]);
+      });
+      rows.push(
         [
           "Render cache",
           `${status.cache_mb} of ${status.cache_budget_mb} MB, ` +
@@ -918,7 +938,7 @@
             `${status.jobs.timed_out} timed out, ${status.jobs.cancelled} cancelled ` +
             `in the last ${duration(status.interval_seconds)}`,
         ],
-      ];
+      );
       // Linux only: the server leaves them out elsewhere.
       if (status.rss_mb != null) {
         rows.push(["Memory", `${status.rss_mb} MB`]);

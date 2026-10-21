@@ -37,8 +37,17 @@ this" is never a mode you arrive at by accident.
   whole site**, not per project, so it caps concurrent rendering across every
   project a site serves. Building an overview reads a whole radargram, so at
   most a quarter of these (at least one) build overviews at a time; overviews
-  already built are served without waiting. It also sets how many radargram
-  files stay open between requests: twice this, at least 16.
+  already built are served without waiting. Figure exports likewise take
+  at most half of them (at least one), so exports cannot hold every worker
+  while the viewer waits. It also sets how many radargram files stay open
+  between requests: twice this, at least 16.
+
+  An overview build or a figure export that runs for more than 2 minutes
+  once it has its radargram is stopped and answered with a 503
+  `render_timed_out`, so one slow render cannot hold a worker, and every
+  viewer image of that radargram, indefinitely. A figure export also stops
+  when the browser that asked for it goes away. The status page lists every
+  render holding a worker, what it renders and how long it has run.
 
 `--cache-memory-mb`
 : In-memory budget for encoded radargram images. Like `--n-workers`, it is
@@ -109,7 +118,7 @@ Every `--heartbeat-seconds` (default 60; `0` turns it off), one line about
 what the server is doing:
 
 ```text
-INFO ridal::heartbeat: heartbeat cpu_s=2.2 rss_mb=72.6 render_in_use=0 render_permits=8 render_waiting=0 cache_entries=13 cache_mb=0.1 cache_budget_mb=256.0 cache_hit_ratio=0.8 requests=20 jobs_queued=0 jobs_running=0 processing_mb=0 processing_budget_mb=4096 jobs_done=0 jobs_failed=0 jobs_timed_out=0 jobs_cancelled=0
+INFO ridal::heartbeat: heartbeat cpu_s=2.2 rss_mb=72.6 render_in_use=1 render_permits=8 render_waiting=0 render_longest="overview:glaciers/dronbreen-1" render_longest_s=1.4 cache_entries=13 cache_mb=0.1 cache_budget_mb=256.0 cache_hit_ratio=0.8 requests=20 jobs_queued=0 jobs_running=0 processing_mb=0 processing_budget_mb=4096 jobs_done=0 jobs_failed=0 jobs_timed_out=0 jobs_cancelled=0
 ```
 
 `cpu_s`, `rss_mb`
@@ -121,6 +130,14 @@ INFO ridal::heartbeat: heartbeat cpu_s=2.2 rss_mb=72.6 render_in_use=0 render_pe
 : Renders and merged downloads running, out of `--n-workers`, and requests
   waiting for one. Requests that wait often, or a viewer that is slow to
   fill in while CPUs are idle, mean `--n-workers` is too low.
+
+`render_longest`, `render_longest_s`
+: The render that has held its worker longest, as
+  `kind:project/target` (`kind` is `chunk`, `overview`, `figure`, `trace`
+  or `level2`; `target` the radargram, or the group of a level 2 export),
+  and for how many seconds. Left out when nothing is rendering. A
+  render that is still there, growing, line after line is stuck on that
+  radargram; the status page lists the others.
 
 `cache_entries`, `cache_mb`, `cache_budget_mb`, `cache_hit_ratio`
 : Images in the in-memory render cache, how much they take, and

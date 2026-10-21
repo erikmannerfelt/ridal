@@ -84,6 +84,7 @@
 pub mod colormap;
 pub mod figure;
 pub mod grid;
+pub mod interrupt;
 pub mod oneshot;
 pub mod profile;
 pub mod renderer;

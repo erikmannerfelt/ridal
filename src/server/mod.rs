@@ -58,6 +58,7 @@
 
 #[cfg(test)]
 mod access_tests;
+pub mod activity;
 pub mod app;
 pub mod assets;
 pub mod auth;

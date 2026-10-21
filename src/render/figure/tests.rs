@@ -54,6 +54,7 @@ fn render(
             elevation_range: topo::ElevationRange::NONE,
             overlays: None,
             contrast: None,
+            interrupt: crate::render::interrupt::Interrupt::never(),
         },
         spec,
         &profile(data.nrows() as f32),

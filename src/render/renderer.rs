@@ -15,6 +15,7 @@ use ndarray::Array2;
 
 use super::colormap;
 use super::grid::{Chunk, OverviewSpec, SourceWindow};
+use super::interrupt::Interrupt;
 use super::profile::{RenderProfile, SourceTransform};
 use super::resample::resample;
 use crate::source::AmplitudeSource;
@@ -43,11 +44,23 @@ const OVERVIEW_READ_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct Renderer<'a, S: AmplitudeSource> {
     reader: &'a S,
+    /// Checked between bands of a banded render (overviews and figures),
+    /// which read the whole window they draw (#473). Chunks read one
+    /// chunk's source and are not checked.
+    interrupt: Interrupt,
 }
 
 impl<'a, S: AmplitudeSource> Renderer<'a, S> {
     pub fn new(reader: &'a S) -> Self {
-        Self { reader }
+        Self {
+            reader,
+            interrupt: Interrupt::never(),
+        }
+    }
+
+    /// Stop a banded render at the next band once `interrupt` fires.
+    pub fn with_interrupt(self, interrupt: Interrupt) -> Self {
+        Self { interrupt, ..self }
     }
 
     /// Render one chunk to encoded image bytes.
@@ -278,6 +291,7 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
         let band = source_rows_per_band.max(1);
         let mut row0 = row_lo;
         while row0 < row_hi {
+            self.interrupt.check()?;
             let row1 = (row0 + band).min(row_hi);
             let mut source = self.reader.read_window(row0, row1, col_lo, col_hi)?;
             apply_source_transform(&mut source, profile);
@@ -915,6 +929,35 @@ mod tests {
             estimated_read_rows * bytes_per_source_row <= OVERVIEW_READ_BUDGET_BYTES,
             "band size {band} with overhead {overhead} exceeds the read budget"
         );
+    }
+
+    #[test]
+    fn a_fired_interrupt_stops_an_overview_and_a_window_render() {
+        // #473: checked before every band, so an interrupt that has fired
+        // stops the render before it reads anything more.
+        let source = Array2::<f32>::zeros((64, 128));
+        let reader = crate::source::ArraySource::new(source.view());
+        let spec = OverviewSpec::new(128, 64, 64);
+        let profile = png(RenderProfile::by_name("default").unwrap());
+        let window = SourceWindow {
+            row0: 0.0,
+            row1: 64.0,
+            col0: 0.0,
+            col1: 128.0,
+        };
+        let fired = || Interrupt::never().with_deadline(std::time::Duration::ZERO);
+
+        let renderer = Renderer::new(&reader);
+        assert!(renderer
+            .render_overview(&spec, &profile, (0.0, 1.0))
+            .is_ok());
+        let stopped = Renderer::new(&reader).with_interrupt(fired());
+        assert!(stopped
+            .render_overview(&spec, &profile, (0.0, 1.0))
+            .is_err());
+        assert!(stopped
+            .render_window_rgba(&window, 64, 32, &profile, (0.0, 1.0))
+            .is_err());
     }
 
     #[test]

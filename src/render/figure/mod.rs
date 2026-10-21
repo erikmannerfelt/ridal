@@ -202,6 +202,9 @@ pub struct FigureSource<'a, S: AmplitudeSource> {
     /// the caller has them already: the server's render service keeps them
     /// per revision and profile. `None` estimates them here, the same way.
     pub contrast: Option<(RenderProfile, (f32, f32))>,
+    /// When to give up on drawing the radargram (#473): the server's
+    /// deadline, or the request going away. The command line never does.
+    pub interrupt: crate::render::interrupt::Interrupt,
 }
 
 /// A rendered figure.
@@ -510,6 +513,7 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
         };
         Some(
             Renderer::new(drawn)
+                .with_interrupt(input.interrupt.clone())
                 .render_window_rgba(&window, layout.plot_w, layout.plot_h, &pinned, limits)
                 .map_err(FigureError::Render)?,
         )
@@ -1085,6 +1089,7 @@ pub fn render_figure_path(
             elevation_range,
             overlays: overlays.as_ref(),
             contrast: None,
+            interrupt: crate::render::interrupt::Interrupt::never(),
         },
         spec,
         &profile,

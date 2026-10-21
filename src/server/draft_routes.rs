@@ -780,6 +780,7 @@ pub async fn draft_overview(
     let bytes = super::routes::get_or_build_overview(
         Arc::clone(&state),
         radargram,
+        format!("draft {job}"),
         spec,
         dataset_view,
         profile.clone(),
