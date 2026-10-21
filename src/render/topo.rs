@@ -506,6 +506,13 @@ fn compute_diagnostics(elevation: &[f64], finite_count: usize) -> TopoDiagnostic
 /// be free to move independently.
 const SHIFT_KERNEL_HALF_WIDTH: i64 = 4;
 
+/// Columns per source read in [`TopoSource::read_window`]. Narrow enough
+/// that a strip's shift span stays near the band it serves on a steep
+/// profile, and a multiple of the 256-column chunks Ridal writes, so
+/// strips (aligned to multiples of this) never split a chunk between two
+/// reads.
+const SHEAR_READ_STRIP_COLUMNS: usize = 512;
+
 /// `sinc(x) = sin(pi x) / (pi x)`, with the removable singularity at zero
 /// filled in.
 fn sinc(x: f64) -> f64 {
@@ -543,6 +550,92 @@ pub struct TopoSource<'a, S: AmplitudeSource> {
 impl<'a, S: AmplitudeSource> TopoSource<'a, S> {
     pub fn new(inner: &'a S, geometry: &'a TopoGeometry) -> Self {
         Self { inner, geometry }
+    }
+
+    /// [`AmplitudeSource::read_window`] for the columns `[col0, col1)` of
+    /// one strip, written into `out` (that strip's columns of the window,
+    /// pre-filled with NaN). The slab it reads spans the shift range of
+    /// these columns only.
+    fn shift_strip(
+        &self,
+        row0: usize,
+        row1: usize,
+        col0: usize,
+        col1: usize,
+        out: &mut ndarray::ArrayViewMut2<f32>,
+    ) -> Result<(), String> {
+        let h = self.geometry.source_height;
+        let shifts = &self.geometry.shift[col0..col1];
+        let max_shift = shifts.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
+        let min_shift = shifts.iter().cloned().fold(f32::INFINITY, f32::min) as f64;
+
+        let k = SHIFT_KERNEL_HALF_WIDTH;
+        let lo = row0 as f64 - max_shift;
+        let hi = row1 as f64 - min_shift;
+        let slab_row0 = ((lo.floor() as i64 - k + 1).max(0) as usize).min(h);
+        let slab_row1 = ((hi.ceil() as i64 + k).max(0) as usize).min(h);
+
+        let slab = if slab_row0 < slab_row1 {
+            self.inner.read_window(slab_row0, slab_row1, col0, col1)?
+        } else {
+            Array2::from_elem((0, col1 - col0), f32::NAN)
+        };
+
+        for (local_c, &s) in shifts.iter().enumerate() {
+            let shift = s as f64;
+            let read_tap = |idx: i64| -> f32 {
+                if idx < 0 {
+                    return f32::NAN;
+                }
+                let idx = idx as usize;
+                if idx >= h || idx < slab_row0 || idx >= slab_row1 {
+                    return f32::NAN;
+                }
+                slab[[idx - slab_row0, local_c]]
+            };
+
+            for r in row0..row1 {
+                let p = r as f64 - shift;
+                let ip = p.floor();
+                let f = p - ip;
+                let i0 = ip as i64;
+
+                let value = if f == 0.0 {
+                    read_tap(i0)
+                } else if !read_tap(i0).is_finite() || !read_tap(i0 + 1).is_finite() {
+                    // Outside the data band (or straddling a genuine
+                    // no-data sample): NaN, on exactly the same condition
+                    // the two-tap version used, so the wedge does not move.
+                    f32::NAN
+                } else {
+                    let mut acc = 0.0_f64;
+                    let mut wsum = 0.0_f64;
+                    for idx in (i0 - k + 1)..=(i0 + k) {
+                        let v = read_tap(idx);
+                        if !v.is_finite() {
+                            continue;
+                        }
+                        let w = shift_kernel_weight(p - idx as f64);
+                        acc += v as f64 * w;
+                        wsum += w;
+                    }
+                    // Lanczos weights are signed, so a footprint whose
+                    // surviving taps nearly cancel would divide by ~0.
+                    // Fall back to the two central taps there rather than
+                    // producing a wild value -- same guard, and same
+                    // threshold, as `resample::resample_lanczos`.
+                    if wsum.abs() > 1e-6 {
+                        (acc / wsum) as f32
+                    } else {
+                        let v0 = read_tap(i0) as f64;
+                        let v1 = read_tap(i0 + 1) as f64;
+                        ((1.0 - f) * v0 + f * v1) as f32
+                    }
+                };
+                out[[r - row0, local_c]] = value;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -602,97 +695,48 @@ impl<S: AmplitudeSource> AmplitudeSource for TopoSource<'_, S> {
         if row0 >= row1 || col0 >= col1 {
             return Ok(Array2::from_elem((0, 0), 0.0));
         }
-        let h = self.geometry.source_height;
-        let shifts = &self.geometry.shift[col0..col1];
-        let max_shift = shifts.iter().cloned().fold(f32::NEG_INFINITY, f32::max) as f64;
-        let min_shift = shifts.iter().cloned().fold(f32::INFINITY, f32::min) as f64;
-
-        let k = SHIFT_KERNEL_HALF_WIDTH;
-        let lo = row0 as f64 - max_shift;
-        let hi = row1 as f64 - min_shift;
-        let slab_row0 = ((lo.floor() as i64 - k + 1).max(0) as usize).min(h);
-        let slab_row1 = ((hi.ceil() as i64 + k).max(0) as usize).min(h);
-
-        let slab = if slab_row0 < slab_row1 {
-            self.inner.read_window(slab_row0, slab_row1, col0, col1)?
-        } else {
-            Array2::from_elem((0, col1 - col0), f32::NAN)
-        };
-
         let mut out = Array2::from_elem((row1 - row0, col1 - col0), f32::NAN);
-        for (local_c, &s) in shifts.iter().enumerate() {
-            let shift = s as f64;
-            let read_tap = |idx: i64| -> f32 {
-                if idx < 0 {
-                    return f32::NAN;
-                }
-                let idx = idx as usize;
-                if idx >= h || idx < slab_row0 || idx >= slab_row1 {
-                    return f32::NAN;
-                }
-                slab[[idx - slab_row0, local_c]]
-            };
-
-            for r in row0..row1 {
-                let p = r as f64 - shift;
-                let ip = p.floor();
-                let f = p - ip;
-                let i0 = ip as i64;
-
-                let value = if f == 0.0 {
-                    read_tap(i0)
-                } else if !read_tap(i0).is_finite() || !read_tap(i0 + 1).is_finite() {
-                    // Outside the data band (or straddling a genuine
-                    // no-data sample): NaN, on exactly the same condition
-                    // the two-tap version used, so the wedge does not move.
-                    f32::NAN
-                } else {
-                    let mut acc = 0.0_f64;
-                    let mut wsum = 0.0_f64;
-                    for idx in (i0 - k + 1)..=(i0 + k) {
-                        let v = read_tap(idx);
-                        if !v.is_finite() {
-                            continue;
-                        }
-                        let w = shift_kernel_weight(p - idx as f64);
-                        acc += v as f64 * w;
-                        wsum += w;
-                    }
-                    // Lanczos weights are signed, so a footprint whose
-                    // surviving taps nearly cancel would divide by ~0.
-                    // Fall back to the two central taps there rather than
-                    // producing a wild value -- same guard, and same
-                    // threshold, as `resample::resample_lanczos`.
-                    if wsum.abs() > 1e-6 {
-                        (acc / wsum) as f32
-                    } else {
-                        let v0 = read_tap(i0) as f64;
-                        let v1 = read_tap(i0 + 1) as f64;
-                        ((1.0 - f) * v0 + f * v1) as f32
-                    }
-                };
-                out[[r - row0, local_c]] = value;
-            }
+        // Strip by strip, so each slab spans only its own strip's shift
+        // range. One slab across a long, steep profile is the rectangle
+        // around a parallelogram: nearly the whole source height for every
+        // band, however thin the band (#472).
+        let mut strip0 = col0;
+        while strip0 < col1 {
+            let strip1 =
+                ((strip0 / SHEAR_READ_STRIP_COLUMNS + 1) * SHEAR_READ_STRIP_COLUMNS).min(col1);
+            let mut strip = out.slice_mut(ndarray::s![.., strip0 - col0..strip1 - col0]);
+            self.shift_strip(row0, row1, strip0, strip1, &mut strip)?;
+            strip0 = strip1;
         }
         Ok(out)
     }
 
-    /// Source rows a read over `[col0, col1)` fetches beyond the naive
-    /// `row1 - row0` its caller asked for, from the shift spanning that
-    /// column range. Column-ranged because the two callers need different
-    /// answers: a 256-column chunk needs only its local shift span, while a
-    /// full-width overview band needs the global one.
+    /// Source rows a read over `[col0, col1)` holds beyond the naive
+    /// `row1 - row0` its caller asked for, counted in rows of the
+    /// requested width.
+    ///
+    /// Within one read strip (a viewer chunk, always), that is the slab's
+    /// extra height: the shift span across these columns plus the kernel's
+    /// reach. A wider read holds one strip's slab at a time beside its
+    /// output, and a slab is never taller than the source, so it holds at
+    /// most `source_height` rows of `SHEAR_READ_STRIP_COLUMNS` columns,
+    /// whatever the relief.
     ///
     /// Used by `Renderer::overview_rows_per_band` to size bands so their
-    /// *actual* reads (which `read_window` above already computes
-    /// correctly regardless) stay within the overview read budget, rather
-    /// than overshooting it by the shift span on every band.
+    /// *actual* reads stay within the overview read budget. Before reads
+    /// were stripped this was the shift span across the whole width, which
+    /// on a long, steep profile exceeded the budget by itself and left
+    /// bands of one row, each rereading the whole sheared slab.
     fn vertical_read_overhead(&self, col0: usize, col1: usize) -> usize {
         let width = self.geometry.shift.len();
         let col1 = col1.min(width);
         let col0 = col0.min(col1);
         if col0 >= col1 {
             return 0;
+        }
+        if col0 / SHEAR_READ_STRIP_COLUMNS != (col1 - 1) / SHEAR_READ_STRIP_COLUMNS {
+            let strip_samples = self.geometry.source_height * SHEAR_READ_STRIP_COLUMNS;
+            return strip_samples.div_ceil(col1 - col0);
         }
         let shifts = &self.geometry.shift[col0..col1];
         let max_shift = shifts.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -1352,6 +1396,57 @@ mod tests {
             topo.vertical_read_overhead(0, 3),
             span.ceil() as usize + 2 * SHIFT_KERNEL_HALF_WIDTH as usize
         );
+    }
+
+    #[test]
+    fn stripped_reads_match_one_slab_across_the_whole_window() {
+        // Reading strip by strip must change how much source is held at
+        // once and nothing else: each output column only ever uses its own
+        // column of the slab, and every strip's slab covers its columns'
+        // taps. Fractional, varying shifts, so the kernel path runs, and
+        // windows that start and end off the strip grid.
+        let (height, width) = (60, 3 * SHEAR_READ_STRIP_COLUMNS + 77);
+        let source = Array2::from_shape_fn((height, width), |(r, c)| {
+            ((r * 7 + c * 13) % 23) as f32 - 11.0
+        });
+        let elevation: Vec<f64> = (0..width)
+            .map(|i| 300.0 * (i as f64 / 211.0).sin() + 0.37 * i as f64)
+            .collect();
+        let geometry = resolve_topo_geometry(
+            Some(&elevation),
+            Some(&flat_depth(height, 1.0)),
+            width,
+            height,
+            ElevationRange::NONE,
+        )
+        .unwrap();
+        let inner = ArraySource::new(source.view());
+        let topo = TopoSource::new(&inner, &geometry);
+        let (raster_h, _) = topo.shape();
+
+        for (row0, row1, col0, col1) in [
+            (0, raster_h, 0, width),
+            (100, 180, 37, width - 5),
+            (250, 251, 500, 530),
+            (
+                0,
+                raster_h,
+                SHEAR_READ_STRIP_COLUMNS,
+                2 * SHEAR_READ_STRIP_COLUMNS,
+            ),
+        ] {
+            let stripped = topo.read_window(row0, row1, col0, col1).unwrap();
+            let mut whole = Array2::from_elem((row1 - row0, col1 - col0), f32::NAN);
+            topo.shift_strip(row0, row1, col0, col1, &mut whole.view_mut())
+                .unwrap();
+            assert!(
+                stripped
+                    .iter()
+                    .zip(whole.iter())
+                    .all(|(a, b)| a.to_bits() == b.to_bits()),
+                "rows {row0}..{row1}, columns {col0}..{col1} differ"
+            );
+        }
     }
 
     #[test]
