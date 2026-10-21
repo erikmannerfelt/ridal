@@ -233,10 +233,15 @@ Picks are tied to a radargram's id and drawn on one revision of it, i.e. one
 processing. When the radargram is processed again, the picks are **carried**
 to the new revision through the clock and positions that the two revisions
 share, for example across a new zero correction, a `subset`, removed
-standstills or a different antenna separation correction. A banner in the
+standstills or a different antenna separation correction. A pick stays on
+the same data when time zero moves, for example from the onset of the
+direct wave to its peak or with another zero correction method, so it
+stays on its horizon while its travel time and depth change. A banner in the
 viewer says when picks had to be moved or could not be carried exactly, and
 what moved, while picks that cannot be carried at all are drawn where they
-were stored.
+were stored. It also says when time zero moved and the picks could only be
+carried by travel time, as after a per-trace zero correction, because they
+then keep their travel time and the data moves under them.
 
 The stored picks stay as they were drawn until they are saved on the new
 revision, and the version that saving replaces is kept.

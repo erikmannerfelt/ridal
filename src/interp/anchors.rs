@@ -403,12 +403,14 @@ pub fn twtt_axis(
 /// the one axis a radargram always has: cropping is recorded whether or
 /// not a zero correction has ever run.
 ///
-/// Emitted *alongside* `twtt` rather than instead of it. The two answer
-/// different questions, and gprinterp prefers travel time where both
-/// revisions have it — this is what relates the pair that has no shared
-/// travel time, which is every corrected-versus-uncorrected reprocess.
-/// Without it, picks drawn before a zero correction and picks drawn after
-/// one could never be shown on each other's revision.
+/// Emitted *alongside* `twtt` rather than instead of it. gprinterp
+/// prefers it where both revisions have it (since 0.5, #470): it puts a
+/// pick on the same recorded sample however the two revisions located time
+/// zero, where travel time would move it by however far time zero moved.
+/// It also relates the pair that has no shared travel time, which is every
+/// corrected-versus-uncorrected reprocess. Travel time is left for
+/// revisions without a regular clock: per-trace crops, and an
+/// antenna-separation correction that cannot be inverted.
 ///
 /// `None` when the crop differs per trace, for the same reason
 /// [`twtt_axis`] refuses a per-trace offset: a `regular` axis has one
@@ -591,11 +593,11 @@ pub fn axes_from_declarations(declared: &crate::interp::source::AxisDeclarations
             anchor: vec![anchor],
         })
     };
-    // Travel time first, the recording clock second, which is the order
-    // SPEC §8.2 prefers them in. A radargram whose time zero has never been
-    // located has only the second, and that is exactly what it is for: it
-    // relates a corrected revision to an uncorrected one, which share no
-    // travel-time axis and would otherwise be unrelatable.
+    // Travel time first, the recording clock second. Which one a carry
+    // uses is gprinterp's fixed order (SPEC §8.2), which since 0.5 puts the
+    // clock first (#470), not this list's; the order here is what snapshots
+    // store as their primary and alternate anchor. A radargram whose time
+    // zero has never been located has only the clock.
     let y: Vec<AnchorAxis> = [
         twtt_axis(
             declared.twtt_anchor.as_deref(),

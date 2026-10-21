@@ -24,6 +24,8 @@ pub mod anchors;
 pub mod carry;
 #[cfg(test)]
 mod carry_separation_tests;
+#[cfg(test)]
+mod carry_time_zero_tests;
 pub mod checks;
 pub mod derive;
 #[cfg(test)]

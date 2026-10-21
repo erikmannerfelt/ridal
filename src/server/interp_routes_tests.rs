@@ -3113,6 +3113,7 @@ async fn picks_from_a_migrated_revision_carry_with_a_warning() {
             RevisionFacts {
                 separation_corrected: Some(false),
                 migrated: Some(true),
+                ..Default::default()
             },
         );
     })
@@ -3323,13 +3324,15 @@ async fn derived_layers_are_evaluated_over_carried_picks() {
     )
     .unwrap();
 
-    // Ben drew on a revision whose time zero was one sample later, so his
-    // sample 2 is this revision's sample 3.
+    // Ben drew on a revision cropped one sample later, so his sample 2 is
+    // this revision's sample 3 on every axis: travel time and the
+    // recording clock alike.
     let axes = offered_axes(&app).await;
     let mut earlier = axes.clone();
-    let y = &mut earlier["y"]["anchor"][0];
-    let dt = y["dt"].as_f64().expect("a regular travel-time axis");
-    y["t0"] = serde_json::json!(y["t0"].as_f64().unwrap() + dt);
+    for y in earlier["y"]["anchor"].as_array_mut().unwrap() {
+        let dt = y["dt"].as_f64().expect("a regular axis");
+        y["t0"] = serde_json::json!(y["t0"].as_f64().unwrap() + dt);
+    }
     let ben = document_with_axes(&earlier, &[[0.0, 2.0], [39.0, 2.0]], "rev-earlier");
     // Cleo's picks name a revision nothing describes: refused.
     let mut cleo = document_with_axes(&axes, &[[0.0, 5.0], [39.0, 5.0]], "rev-vanished");

@@ -61,7 +61,10 @@ base64 = "0.23"
 # The level 1 interpretation format (`ridal interp`). Developed alongside
 # ridal in its own repository; see github.com/erikmannerfelt/gprinterp.
 # 0.3.1 for the `utoipa` feature, which `server` turns on.
-gprinterp = "0.4.0"
+# TEMPORARY (#470): the unreleased branch that prefers the recording clock
+# (erikmannerfelt/gprinterp#15). Becomes "0.5.0" once that is published;
+# crates.io refuses a git dependency, so this cannot be released as is.
+gprinterp = { git = "https://github.com/erikmannerfelt/gprinterp", branch = "recording-time-first" }
 
 # Derived items (#205) are user-authored expressions over picked layers, e.g.
 # `median(bed)` or `std(bed)`. Rhai is an embedded scripting language with no
