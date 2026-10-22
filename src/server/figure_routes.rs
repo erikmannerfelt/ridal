@@ -92,7 +92,7 @@ pub async fn render_figure(
     };
     // By name only: on the command line a profile may also be a TOML file,
     // which a request must never be able to make the server read.
-    let profile = super::routes::lookup_profile(&state, &spec.profile)?;
+    let profile = super::routes::lookup_profile(&state, &caller, &spec.profile)?;
     let access = layer_access(&caller, &spec)?;
 
     let catalog = state.catalog();

@@ -1015,10 +1015,14 @@ impl RenderService {
                 height: spec.height,
             },
         );
+        // A personal profile (#183) is one person's, and only the shared
+        // profiles, whose number the project controls, may fill the disk.
+        // The overview route never asks for one; an image download can.
         let disk = self
             .overview_disk
             .as_ref()
             .filter(|_| spec.width <= MAX_PERSISTED_OVERVIEW_WIDTH)
+            .filter(|_| !profile.is_personal())
             .cloned();
         (variant, key, disk)
     }

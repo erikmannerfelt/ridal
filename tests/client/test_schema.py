@@ -38,6 +38,7 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.Grant: ("Grant", {}),
     models.RenderProfile: ("RenderProfileView", {}),
     models.RenderProfileList: ("RenderProfileList", {}),
+    models.PersonalProfileList: ("PersonalProfileList", {}),
     models.TokenSummary: ("TokenSummary", {}),
     # Processing on the server (#382).
     models.HashedFile: ("HashedFile", {}),

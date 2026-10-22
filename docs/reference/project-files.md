@@ -25,6 +25,7 @@ my_survey/
       assignments.json            which radargram uses which profile
     render/
       profiles/<name>.json        one of the project's own render profiles
+      personal/<user>/<name>.json one person's own render profile
     users.json                    this project's members, and its access policy
     overrides.json                corrected radargram and group metadata
     revisions/, revisions.json    earlier revisions of replaced radargrams
@@ -154,6 +155,7 @@ dir = "/var/cache/ridal/dronbreen"
 default_profile = "default"
 default_xscale = 2.0
 hidden_profiles = ["abslog"]
+personal_profiles = false
 
 [export]
 default_spacing = "10"
@@ -245,6 +247,11 @@ name_field = "Stake"
 : Built-in render profiles left out of the lists to choose from. A hidden
   profile still draws when a link or a person's setting names it. The
   default profile cannot be hidden. Default: none.
+
+`personal_profiles`
+: Whether people may keep render profiles of their own
+  (`render/personal/`). With `false`, the ones they have are kept but
+  neither offered, drawn nor added to. Default: `true`.
 
 `default_xscale`
 : The horizontal stretch a radargram opens with. Default: `1.0`. A

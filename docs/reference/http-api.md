@@ -135,6 +135,18 @@ next profile it would have used. A built-in cannot be changed or deleted, but
 an `operator` can hide it with `hidden_profiles` in the project settings,
 which leaves it out of the lists while links that name it keep working.
 
+A **personal** profile is one person's own, in one project, kept under
+`/api/v1/preferences/render-profiles` like their other preferences: any
+signed-in account may keep up to 20. Its name starts with `personal-`, and
+two people may each have one of the same name, since a name is looked up
+among the caller's own; a link to someone else's is a link to your own of
+that name, or falls back. A personal profile draws the viewer's tiles,
+figures and downloads, but never the catalog's thumbnails: those use its
+`thumbnail_profile`, a built-in or project profile, or the project's default.
+An `operator` can stop personal profiles with `personal_profiles` in the
+project settings; the ones people have are then kept, but neither offered,
+drawn nor added to, until it is turned on again.
+
 :::{http-endpoints} Render profiles
 :::
 

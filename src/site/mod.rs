@@ -569,9 +569,12 @@ impl Site {
         // Their personal settings go with them, site-wide and in every
         // project, so a later account of the same name starts clean. Best
         // effort: a leftover theme is not worth failing a removal over.
+        // Their personal render profiles are settings too (#183); their
+        // picks are not, and stay.
         let _ = crate::project::preferences::remove(self.store(), name);
         for (_, project) in self.memberships()? {
             let _ = crate::project::preferences::remove(project.documents(), name);
+            let _ = crate::project::render_profiles::remove_all_personal(project.documents(), name);
         }
         Ok(removed_from)
     }

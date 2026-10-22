@@ -212,7 +212,15 @@ def problems(value: Any, schema: dict[str, Any], where: str) -> list[str]:
     missing, or a field it does not have. Types are left to the server."""
     schema = resolve(schema)
     if "allOf" in schema:
-        return [p for part in schema["allOf"] for p in problems(value, part, where)]
+        # A flattened body: one object with every part's fields, so the parts
+        # are merged rather than each checked on its own, which would find
+        # every other part's fields not in it.
+        parts = [resolve(part) for part in schema["allOf"]]
+        merged: dict[str, Any] = {"properties": {}, "required": []}
+        for part in parts:
+            merged["properties"].update(part.get("properties", {}))
+            merged["required"] += part.get("required", [])
+        return problems(value, merged, where)
     for key in ("oneOf", "anyOf"):
         if key in schema:
             branches = [b for b in schema[key] if resolve(b).get("type") != "null"]
@@ -449,6 +457,15 @@ CALLS: Final[dict[str, Callable[[Any, Files], Any]]] = {
         dataclasses.replace(c.render_profile("seismic"), name="survey")
     ),
     "delete_render_profile": lambda c, f: c.delete_render_profile("survey"),
+    "personal_render_profiles": lambda c, f: c.personal_render_profiles(),
+    "personal_render_profile": lambda c, f: c.personal_render_profile("personal-mine"),
+    "save_personal_render_profile": lambda c, f: c.save_personal_render_profile(
+        dataclasses.replace(c.render_profile("seismic"), name="personal-mine"),
+        thumbnail_profile="seismic",
+    ),
+    "delete_personal_render_profile": lambda c, f: c.delete_personal_render_profile(
+        "personal-mine"
+    ),
     "profiles": lambda c, f: c.profiles(),
     "profile": lambda c, f: c.profile("standard"),
     "save_profile": lambda c, f: c.save_profile(

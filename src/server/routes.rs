@@ -205,8 +205,8 @@ pub async fn health() -> impl IntoResponse {
 }
 
 /// The names of the render profiles to choose from: the built-ins the
-/// project does not hide, then its own. `GET /api/v1/render-profiles` has
-/// them in full.
+/// project does not hide, then its own, then the caller's personal ones.
+/// `GET /api/v1/render-profiles` has them in full.
 #[utoipa::path(
     get,
     path = "/api/v1/profiles",
@@ -214,8 +214,11 @@ pub async fn health() -> impl IntoResponse {
     responses((status = 200, description = "Profile names.", body = Vec<String>)),
     extensions(("x-ridal-needs" = json!(Needs::new(Who::Anyone)))),
 )]
-pub async fn list_profiles(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(state.render_profiles().offered_names(""))
+pub async fn list_profiles(
+    State(state): State<Arc<AppState>>,
+    caller: Caller,
+) -> impl IntoResponse {
+    Json(state.render_profiles_for(&caller).offered_names(""))
 }
 
 /// One radargram as the catalog lists it: an entry of `GET /api/v1/datasets`,
@@ -516,8 +519,7 @@ fn resolve_x_scale(
 /// tile on it would be refused, with nothing on it to choose another. A
 /// hidden built-in still resolves; hiding only takes it out of the lists.
 fn resolve_profile(state: &AppState, caller: &Caller, requested: Option<String>) -> String {
-    let profiles = state.render_profiles();
-    let known = |name: Option<String>| name.filter(|n| profiles.lookup(n).is_some());
+    let known = |name: Option<String>| name.filter(|n| lookup_profile(state, caller, n).is_ok());
     cascade(
         known(requested),
         known(my_preferences(state, caller).render_profile),
@@ -955,20 +957,25 @@ pub(super) fn lookup_view(view: &str) -> Result<DatasetView, ApiError> {
     }
 }
 
-/// The render profile called `name`: a built-in, or one of the project's
-/// own (#183). A hidden built-in is found too, since hiding only takes it
-/// out of the lists.
-pub(super) fn lookup_profile(state: &AppState, name: &str) -> Result<RenderProfile, ApiError> {
-    state
-        .render_profiles()
-        .lookup(name)
-        .cloned()
-        .ok_or_else(|| {
-            ApiError::bad_request(
-                "unknown_render_profile",
-                format!("Unknown render profile '{name}'."),
-            )
-        })
+/// The render profile called `name`: a built-in, one of the project's own,
+/// or one of `caller`'s personal profiles (#183). A hidden built-in is found
+/// too, since hiding only takes it out of the lists.
+pub(super) fn lookup_profile(
+    state: &AppState,
+    caller: &Caller,
+    name: &str,
+) -> Result<RenderProfile, ApiError> {
+    let found = if name.starts_with(crate::render::profile::PERSONAL_PROFILE_PREFIX) {
+        super::render_profile_routes::lookup_personal(state, caller, name).map(|p| p.profile)
+    } else {
+        state.render_profiles().lookup(name).cloned()
+    };
+    found.ok_or_else(|| {
+        ApiError::bad_request(
+            "unknown_render_profile",
+            format!("Unknown render profile '{name}'."),
+        )
+    })
 }
 
 /// The per-page overrides of the two viewing preferences.
@@ -1344,13 +1351,21 @@ pub(super) async fn resolve_view_height(
 )]
 pub async fn overview_image(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     Path((radargram_id, view)): Path<(String, String)>,
     Query(query): Query<ProfileQuery>,
 ) -> Result<Response, ApiError> {
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
     let dataset_view = lookup_view(&view)?;
-    let profile = lookup_profile(&state, query.profile.as_deref().unwrap_or("default"))?;
+    let profile = overview_profile(
+        &state,
+        &caller,
+        query
+            .profile
+            .as_deref()
+            .unwrap_or(super::render_profile_routes::FALLBACK_PROFILE),
+    )?;
 
     // From the same snapshot the entry came out of, so the service and the
     // entry describe one generation of the catalog.
@@ -1388,6 +1403,41 @@ pub async fn overview_image(
     Ok(image_response(bytes, &profile))
 }
 
+/// The profile an overview asked for as `name` is drawn with.
+///
+/// A personal profile draws none of its own (#183): its thumbnail profile
+/// does, or the project's default when that is unset or gone. Overviews are
+/// kept on disk, and only the shared profiles, whose number the project
+/// controls, may fill that cache.
+fn overview_profile(
+    state: &AppState,
+    caller: &Caller,
+    name: &str,
+) -> Result<RenderProfile, ApiError> {
+    if !name.starts_with(crate::render::profile::PERSONAL_PROFILE_PREFIX) {
+        return lookup_profile(state, caller, name);
+    }
+    let personal =
+        super::render_profile_routes::lookup_personal(state, caller, name).ok_or_else(|| {
+            ApiError::bad_request(
+                "unknown_render_profile",
+                format!("Unknown render profile '{name}'."),
+            )
+        })?;
+    let shared = state.render_profiles();
+    let project_default = state.project.as_ref().and_then(|p| p.default_profile());
+    [personal.thumbnail_profile, project_default]
+        .into_iter()
+        .flatten()
+        .find_map(|n| shared.lookup(&n).cloned())
+        .or_else(|| {
+            shared
+                .lookup(super::render_profile_routes::FALLBACK_PROFILE)
+                .cloned()
+        })
+        .ok_or_else(|| ApiError::internal("no_render_profile", "The built-in profiles are gone."))
+}
+
 /// One tile of the radargram at full resolution, as the viewer requests them.
 #[utoipa::path(
     get,
@@ -1403,6 +1453,7 @@ pub async fn overview_image(
 )]
 pub async fn chunk_image(
     State(state): State<Arc<AppState>>,
+    caller: Caller,
     Path((radargram_id, view, profile_name, x_raw, y_raw)): Path<(
         String,
         String,
@@ -1414,7 +1465,7 @@ pub async fn chunk_image(
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
     let dataset_view = lookup_view(&view)?;
-    let profile = lookup_profile(&state, &profile_name)?;
+    let profile = lookup_profile(&state, &caller, &profile_name)?;
 
     // Structurally invalid coordinates (not a non-negative integer) are a
     // 400, distinct from a well-formed but out-of-grid request (404) --
@@ -1506,7 +1557,7 @@ pub async fn settings_page(
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
     let active_profile = resolve_profile(&state, &caller, query.profile);
-    lookup_profile(&state, &active_profile).map_err(PageError)?;
+    lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
 
     let env = templates::environment();
     let tmpl = env
@@ -1621,7 +1672,7 @@ pub async fn layers_page(
     // with. An unknown profile is rejected rather than passed on, so a bad
     // value cannot propagate silently through the menu.
     let active_profile = resolve_profile(&state, &caller, query.profile);
-    lookup_profile(&state, &active_profile).map_err(PageError)?;
+    lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
 
     let env = templates::environment();
     let tmpl = env
@@ -1652,13 +1703,15 @@ pub async fn processing_page(
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
     let active_profile = resolve_profile(&state, &caller, query.profile);
-    lookup_profile(&state, &active_profile).map_err(PageError)?;
+    lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
     let env = templates::environment();
     let tmpl = env
         .get_template("processing.html.jinja")
         .expect("processing template is always registered");
     // For the process dialog's images, as on the catalog and the viewer.
-    let profiles = state.render_profiles().offered_names(&active_profile);
+    let profiles = state
+        .render_profiles_for(&caller)
+        .offered_names(&active_profile);
     let html = tmpl
         .render(minijinja::context! {
             project => state.project.is_some(),
@@ -1680,7 +1733,7 @@ pub async fn ingest_page(
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
     let active_profile = resolve_profile(&state, &caller, query.profile);
-    lookup_profile(&state, &active_profile).map_err(PageError)?;
+    lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
     let env = templates::environment();
     let tmpl = env
         .get_template("ingest.html.jinja")
@@ -1703,8 +1756,10 @@ pub async fn index_page(
     Query(query): Query<ProfileQuery>,
 ) -> Result<impl IntoResponse, PageError> {
     let active_profile = resolve_profile(&state, &caller, query.profile);
-    lookup_profile(&state, &active_profile).map_err(PageError)?;
-    let profiles = state.render_profiles().offered_names(&active_profile);
+    lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
+    let profiles = state
+        .render_profiles_for(&caller)
+        .offered_names(&active_profile);
 
     // Counted once per entry here and reused below, rather than per card:
     // the same radargram appears in both the flat list and its group, and
@@ -1871,7 +1926,7 @@ pub async fn viewer_page(
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id).map_err(PageError)?;
     let active_profile = resolve_profile(&state, &caller, query.profile);
-    lookup_profile(&state, &active_profile).map_err(PageError)?;
+    lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
 
     // From the same snapshot the entry came out of, so the service and the
     // entry describe one generation of the catalog.
@@ -1887,7 +1942,7 @@ pub async fn viewer_page(
     let raster = ViewerRaster::new(width, height);
     let grid = ChunkGrid::new(raster);
 
-    let profile_set = state.render_profiles();
+    let profile_set = state.render_profiles_for(&caller);
     let offered = profile_set.offered(&active_profile);
     let profiles: Vec<String> = offered.iter().map(|p| p.name.clone()).collect();
     // The display adjustment works on the rendered bytes, which for a
@@ -2165,7 +2220,11 @@ pub async fn dataset_image(
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
     let dataset_view = lookup_view(&view)?;
-    let base = lookup_profile(&state, &resolve_profile(&state, &caller, query.profile))?;
+    let base = lookup_profile(
+        &state,
+        &caller,
+        &resolve_profile(&state, &caller, query.profile),
+    )?;
 
     // From the same snapshot the entry came out of, so the service and the
     // entry describe one generation of the catalog.

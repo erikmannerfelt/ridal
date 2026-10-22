@@ -1343,7 +1343,7 @@ class Profile:
         )
 
 
-RenderProfileScope: TypeAlias = Literal["built_in", "project"]
+RenderProfileScope: TypeAlias = Literal["built_in", "project", "personal"]
 
 #: The fields of a render profile itself, as a ``PUT`` sends them and a
 #: profile file holds them: everything in :class:`RenderProfile` but where it
@@ -1397,9 +1397,14 @@ class RenderProfile:
     stats_skip_first_samples: int
     nodata_color: tuple[int, int, int] | None
     scope: RenderProfileScope
-    """``built_in`` (Ridal's) or ``project`` (the project's own)."""
+    """``built_in`` (Ridal's), ``project`` (the project's own) or ``personal``
+    (the caller's own, named ``personal-…``)."""
     hidden: bool
     """Left out of the lists to choose from; still renders by name."""
+    thumbnail_profile: str | None
+    """For a personal profile, the shared profile the catalog's thumbnails
+    are drawn with while it is chosen; ``None`` is the project's default,
+    and for every other profile."""
     etag: str | None = None
 
     def definition(self) -> dict[str, Any]:
@@ -1426,6 +1431,7 @@ class RenderProfile:
                 nodata_color=None if nodata is None else tuple(nodata),
                 scope=d["scope"],
                 hidden=d["hidden"],
+                thumbnail_profile=d["thumbnail_profile"],
                 etag=etag,
             )
 
@@ -1449,6 +1455,30 @@ class RenderProfileList:
             lambda d: cls(
                 profiles=tuple(RenderProfile.from_json(p) for p in d["profiles"]),
                 default=d["default"],
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PersonalProfileList:
+    """The caller's personal render profiles in a project."""
+
+    profiles: tuple[RenderProfile, ...]
+    allowed: bool
+    """Whether the project lets people use and add their own. When it does
+    not, the ones they have are kept, unused."""
+    max: int
+    """How many one person may keep in the project."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "PersonalProfileList":
+        return _parse(
+            "personal profile list",
+            data,
+            lambda d: cls(
+                profiles=tuple(RenderProfile.from_json(p) for p in d["profiles"]),
+                allowed=d["allowed"],
+                max=d["max"],
             ),
         )
 

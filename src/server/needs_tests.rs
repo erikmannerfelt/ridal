@@ -360,6 +360,26 @@ fn render_profile() -> Vec<Step> {
     )]
 }
 
+/// A personal render profile (#183), as its owner keeps it.
+fn personal_profile_body(_: &Fixture, _: &[Value]) -> Payload {
+    let mut body = serde_json::to_value(crate::render::profile::RenderProfile {
+        name: "personal-mine".to_string(),
+        contrast: 1.5,
+        ..crate::render::profile::RenderProfile::default_profile()
+    })
+    .unwrap();
+    body["thumbnail_profile"] = json!("default");
+    Payload::Json(body)
+}
+
+fn personal_profile() -> Vec<Step> {
+    vec![send(
+        "PUT",
+        "/api/v1/projects/{key}/preferences/render-profiles/personal-mine",
+        personal_profile_body,
+    )]
+}
+
 fn draft_body(_: &Fixture, _: &[Value]) -> Payload {
     Payload::Json(json!({"steps": [STEPS]}))
 }
@@ -643,6 +663,16 @@ const CASES: &[Case] = &[
     Case::new("delete_render_profile")
         .params(&[("name", "survey")])
         .setup(render_profile),
+    Case::new("list_personal_render_profiles"),
+    Case::new("get_personal_render_profile")
+        .params(&[("name", "personal-mine")])
+        .setup(personal_profile),
+    Case::new("put_personal_render_profile")
+        .params(&[("name", "personal-mine")])
+        .body(personal_profile_body),
+    Case::new("delete_personal_render_profile")
+        .params(&[("name", "personal-mine")])
+        .setup(personal_profile),
     // Processing profiles.
     Case::new("list_processing_profiles"),
     Case::new("get_processing_profile").setup(profile),

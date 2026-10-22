@@ -7341,6 +7341,234 @@
         }
       }
     },
+    "/api/v1/projects/{key}/preferences/render-profiles": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "The caller's own personal render profiles in this project.",
+        "operationId": "list_personal_render_profiles",
+        "responses": {
+          "200": {
+            "description": "Their profiles.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonalProfileList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/preferences/render-profiles/{name}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "name",
+          "in": "path",
+          "description": "An account name.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "One of the caller's personal render profiles, with an `ETag`.",
+        "operationId": "get_personal_render_profile",
+        "responses": {
+          "200": {
+            "description": "The profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderProfileView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_render_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in",
+          "own": true
+        }
+      },
+      "put": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "Create or replace one of the caller's personal render profiles. Its name\nstarts with `personal-`, and the body's `name` must be the one in the\npath. `thumbnail_profile`, if set, names a built-in or project profile.\nTakes `If-Match`, and `If-None-Match: *` to only create.",
+        "operationId": "put_personal_render_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalProfile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The profile as saved, with its `ETag`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderProfileView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_render_profile`, `invalid_render_profile_name`, `not_a_personal_profile_name`, `render_profile_name_mismatch` or `unknown_thumbnail_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`personal_profiles_off`: the project does not allow them; or `too_many_personal_profiles`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "Delete one of the caller's personal render profiles. Links and settings\nthat name it fall back to the next profile they would have used.",
+        "operationId": "delete_personal_render_profile",
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_render_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in",
+          "own": true
+        }
+      }
+    },
     "/api/v1/projects/{key}/processing/activity": {
       "parameters": [
         {
@@ -8285,7 +8513,7 @@
         "tags": [
           "Server"
         ],
-        "summary": "The names of the render profiles to choose from: the built-ins the\nproject does not hide, then its own. `GET /api/v1/render-profiles` has\nthem in full.",
+        "summary": "The names of the render profiles to choose from: the built-ins the\nproject does not hide, then its own, then the caller's personal ones.\n`GET /api/v1/render-profiles` has them in full.",
         "operationId": "list_profiles",
         "responses": {
           "200": {
@@ -8530,7 +8758,7 @@
         "tags": [
           "Render profiles"
         ],
-        "summary": "Every render profile this project can render with, each in full.",
+        "summary": "Every render profile the caller can render with in this project, each in\nfull: the built-ins, the project's own, and the caller's personal ones.",
         "operationId": "list_render_profiles",
         "responses": {
           "200": {
@@ -15414,6 +15642,55 @@
           }
         }
       },
+      "PersonalProfile": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RenderProfile"
+          },
+          {
+            "type": "object",
+            "required": [
+              "thumbnail_profile"
+            ],
+            "properties": {
+              "thumbnail_profile": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The built-in or project profile that overviews (the catalog's\nthumbnails) are drawn with while this one is chosen. Unset is the\nproject's default."
+              }
+            }
+          }
+        ],
+        "description": "One person's own render profile, and the profile the catalog's\nthumbnails use in its place."
+      },
+      "PersonalProfileList": {
+        "type": "object",
+        "description": "The caller's personal render profiles, and whether they may use them.",
+        "required": [
+          "profiles",
+          "allowed",
+          "max"
+        ],
+        "properties": {
+          "profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RenderProfileView"
+            }
+          },
+          "allowed": {
+            "type": "boolean",
+            "description": "Whether the project lets people keep their own. When it does not,\nthe ones they have are kept but neither offered nor rendered, and no\nnew one can be saved."
+          },
+          "max": {
+            "type": "integer",
+            "description": "How many one person may keep in this project.",
+            "minimum": 0
+          }
+        }
+      },
       "PicksNotCarried": {
         "type": "object",
         "description": "One person's picks that a committed item did not carry whole, from the\nreplacement's consequence report.",
@@ -16352,7 +16629,8 @@
         "description": "Where a profile comes from.",
         "enum": [
           "built_in",
-          "project"
+          "project",
+          "personal"
         ]
       },
       "ProfileVersion": {
@@ -16546,6 +16824,7 @@
           "processing_crs",
           "profiles",
           "hidden_profiles",
+          "personal_profiles",
           "default_xscale",
           "xscales",
           "my_profile",
@@ -16687,6 +16966,10 @@
               "type": "string"
             },
             "description": "The built-in render profiles this project does not offer."
+          },
+          "personal_profiles": {
+            "type": "boolean",
+            "description": "Whether people may keep render profiles of their own."
           },
           "default_xscale": {
             "type": [
@@ -17418,7 +17701,8 @@
             "type": "object",
             "required": [
               "scope",
-              "hidden"
+              "hidden",
+              "thumbnail_profile"
             ],
             "properties": {
               "scope": {
@@ -17427,6 +17711,13 @@
               "hidden": {
                 "type": "boolean",
                 "description": "Left out of the lists people choose from, but still rendered when\nasked for by name. Only a built-in can be hidden."
+              },
+              "thumbnail_profile": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "For a personal profile, the shared profile the catalog's thumbnails\nare drawn with while it is chosen; unset is the project's default.\n`null` for every other profile."
               }
             }
           }
@@ -17830,6 +18121,7 @@
           "default_profile",
           "default_xscale",
           "hidden_profiles",
+          "personal_profiles",
           "default_spacing",
           "default_format",
           "default_show_group_radargrams",
@@ -17862,6 +18154,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "personal_profiles": {
+            "type": "boolean"
           },
           "default_spacing": {
             "type": [
@@ -18025,6 +18320,13 @@
               "type": "string"
             },
             "description": "Built-in render profiles to leave out of the lists people choose\nfrom (#183). An empty array hides none. The project's default cannot\nbe hidden."
+          },
+          "personal_profiles": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether people may keep render profiles of their own (#183).\nTurning it off keeps the ones they have, unused, until it is turned\non again."
           },
           "basemaps": {
             "type": [

@@ -233,7 +233,7 @@ pub async fn put_preferences(
         stored.render_profile = match sent.as_deref() {
             None | Some("") => None,
             Some(name) => {
-                if state.render_profiles().lookup(name).is_none() {
+                if super::routes::lookup_profile(&state, &caller, name).is_err() {
                     return Err(ApiError::bad_request(
                         "unknown_profile",
                         format!("There is no render profile called '{name}'."),
@@ -358,7 +358,7 @@ pub async fn put_preferences(
 /// Anonymous readers have nowhere to keep any, which is a 401 rather than a
 /// silent no-op: the page would otherwise show a saved setting that was
 /// never saved.
-fn my_preferences_target<'a, 'b>(
+pub(super) fn my_preferences_target<'a, 'b>(
     state: &'a AppState,
     caller: &'b Caller,
 ) -> Result<(&'a Project, &'b UserId), ApiError> {

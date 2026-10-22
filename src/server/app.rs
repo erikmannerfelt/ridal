@@ -652,6 +652,30 @@ impl AppState {
         super::render_profile_routes::ProfileSet::of_project(self.project.as_ref(), project)
     }
 
+    /// Every render profile `caller` can render with: the shared ones, and
+    /// their own while the project allows personal profiles (#183).
+    ///
+    /// Reads every personal profile of theirs, so it is for pages and
+    /// lists; a tile looks its one profile up with
+    /// [`super::routes::lookup_profile`] instead.
+    pub fn render_profiles_for(
+        &self,
+        caller: &super::auth::Caller,
+    ) -> super::render_profile_routes::ProfileSet {
+        let set = self.render_profiles();
+        match (self.personal_project(), caller.user.as_ref()) {
+            (Some(project), Some(user)) => set.with_personal(
+                super::render_profile_routes::load_personal_profiles(project, user),
+            ),
+            _ => set,
+        }
+    }
+
+    /// The project, when it lets people keep render profiles of their own.
+    pub fn personal_project(&self) -> Option<&crate::project::Project> {
+        self.project.as_ref().filter(|p| p.personal_profiles())
+    }
+
     /// Read the project's render profiles again, so a profile file edited
     /// by hand is picked up by whatever rediscovers the catalog, not only
     /// by a restart.
@@ -1160,6 +1184,14 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
             super::render_profile_routes::get_render_profile,
             super::render_profile_routes::put_render_profile,
             super::render_profile_routes::delete_render_profile
+        ))
+        .routes(routes!(
+            super::render_profile_routes::list_personal_render_profiles
+        ))
+        .routes(routes!(
+            super::render_profile_routes::get_personal_render_profile,
+            super::render_profile_routes::put_personal_render_profile,
+            super::render_profile_routes::delete_personal_render_profile
         ))
         .routes(routes!(
             super::preference_routes::get_preferences,
