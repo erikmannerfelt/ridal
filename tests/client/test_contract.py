@@ -39,6 +39,7 @@ NOT_WRAPPED: Final[dict[str, str]] = {
     "redeem_invite": "an invite is redeemed in the browser",
     "openapi_json": "this description itself",
     "list_profiles": "render_profiles() lists them in full",
+    "preview_render_profile": "the profile editor's",
     "get_preferences": "a person's display preferences are the viewer's",
     "put_preferences": "a person's display preferences are the viewer's",
     "get_settings": "the settings page's",

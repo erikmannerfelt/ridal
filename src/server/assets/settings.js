@@ -134,10 +134,14 @@
    * choice, which is a real option rather than a placeholder: it clears
    * the setting instead of storing the name of the fallback, which is what
    * lets a later change to the layer below reach whoever never chose. */
-  function fillProfiles(select, emptyLabel, selected) {
+  function fillProfiles(select, emptyLabel, selected, sharedOnly) {
     if (!select) return;
     const options = [new Option(emptyLabel, "")];
-    for (const name of profiles) options.push(new Option(name, name));
+    for (const name of profiles) {
+      // A personal profile is one person's, so never the project's default.
+      if (sharedOnly && name.startsWith("personal-")) continue;
+      options.push(new Option(name, name));
+    }
     select.replaceChildren(...options);
     select.value = selected || "";
   }
@@ -302,6 +306,7 @@
       byId("default-profile"),
       "Ridal default",
       settings.default_profile,
+      true,
     );
     fillScales(byId("default-xscale"), settings.default_xscale);
     fillOptions(byId("default-spacing"), spacings, settings.default_spacing, "Ridal default");
@@ -350,7 +355,187 @@
     if (descriptionLong) descriptionLong.value = settings.description_long || "";
     setStatus("description-status", "");
 
+    await loadMyRenderProfiles();
+    if (canEditProject) await loadRenderProfiles(settings);
     if (canEditAccess) await loadMembers();
+  }
+
+  /* --- My render profiles (#183) -------------------------------------------
+   *
+   * The caller's personal profiles, each with a Delete button. Listed even
+   * while the project does not allow them: they are kept then, unused, and
+   * this is the one place left to clear them out. */
+  const myProfilesBox = byId("my-render-profiles");
+  const MY_PROFILES_NOTE = myProfilesBox
+    ? byId("my-render-profiles-note").innerHTML
+    : "";
+
+  async function loadMyRenderProfiles() {
+    if (!myProfilesBox) return;
+    let list;
+    try {
+      list = await RIDAL.fetchJson(RIDAL.apiPath("preferences", "render-profiles"));
+    } catch (error) {
+      showError(`Could not load your render profiles: ${error.message}`);
+      return;
+    }
+    const note = byId("my-render-profiles-note");
+    if (list.allowed) {
+      note.innerHTML = MY_PROFILES_NOTE;
+    } else {
+      note.textContent =
+        "This project does not let people keep render profiles of their own at " +
+        "the moment. Yours are kept, unused, and come back if an operator " +
+        "allows them again.";
+    }
+    const body = byId("my-render-profiles-table").querySelector("tbody");
+    const rows = (list.profiles || []).map((profile) => {
+      const row = document.createElement("tr");
+      const name = document.createElement("td");
+      name.textContent = profile.name.replace(/^personal-/, "");
+      const thumbnails = document.createElement("td");
+      thumbnails.textContent = profile.thumbnail_profile || "Project default";
+      const action = document.createElement("td");
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Delete";
+      remove.addEventListener("click", () => deleteMyRenderProfile(profile.name));
+      action.appendChild(remove);
+      row.append(name, thumbnails, action);
+      return row;
+    });
+    if (rows.length === 0) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 3;
+      cell.className = "hint";
+      cell.textContent = "None yet.";
+      row.appendChild(cell);
+      rows.push(row);
+    }
+    body.replaceChildren(...rows);
+  }
+
+  async function deleteMyRenderProfile(name) {
+    const bare = name.replace(/^personal-/, "");
+    if (
+      !window.confirm(
+        `Delete your render profile "${bare}"? Pages and settings that use it ` +
+          "fall back to the next profile they would have used.",
+      )
+    ) {
+      return;
+    }
+    clearError();
+    try {
+      await send("DELETE", RIDAL.apiPath("preferences", "render-profiles", name));
+    } catch (error) {
+      showError(error.message);
+      return;
+    }
+    await load();
+    setStatus("my-render-profiles-status", `Deleted ${bare}.`);
+  }
+
+  /* --- Render profiles (#183) ----------------------------------------------
+   *
+   * The built-ins, each with whether it is offered, and the project's own,
+   * each with a Delete button. Hiding is saved with the switch for personal
+   * profiles by the section's own button, as `hidden_profiles` and
+   * `personal_profiles`; a delete applies at once, since it asks first. */
+  const profilesForm = byId("render-profiles-form");
+
+  async function loadRenderProfiles(settings) {
+    if (!profilesForm) return;
+    const personal = byId("personal-profiles");
+    personal.checked = settings.personal_profiles !== false;
+    let list;
+    try {
+      list = await RIDAL.fetchJson(RIDAL.apiPath("render-profiles"));
+    } catch (error) {
+      showError(`Could not load the render profiles: ${error.message}`);
+      return;
+    }
+    const body = byId("render-profiles-table").querySelector("tbody");
+    body.replaceChildren();
+    for (const profile of list.profiles) {
+      if (profile.scope === "personal") continue;
+      body.appendChild(renderProfileRow(profile, profile.name === list.default));
+    }
+    setStatus("render-profiles-status", "");
+  }
+
+  function renderProfileRow(profile, isDefault) {
+    const row = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = isDefault ? `${profile.name} (default)` : profile.name;
+    const kind = document.createElement("td");
+    kind.textContent = profile.scope === "built_in" ? "Built-in" : "Project";
+    const offered = document.createElement("td");
+    const action = document.createElement("td");
+    if (profile.scope === "built_in") {
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.dataset.profile = profile.name;
+      box.checked = !profile.hidden;
+      box.disabled = isDefault;
+      if (isDefault) box.title = "The default is always offered.";
+      box.setAttribute("aria-label", `Offer ${profile.name}`);
+      offered.appendChild(box);
+    } else {
+      offered.textContent = "Yes";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.textContent = "Delete";
+      remove.disabled = isDefault;
+      if (isDefault) remove.title = "Choose another default before deleting this one.";
+      remove.addEventListener("click", () => deleteRenderProfile(profile.name));
+      action.appendChild(remove);
+    }
+    row.append(name, kind, offered, action);
+    return row;
+  }
+
+  async function deleteRenderProfile(name) {
+    if (
+      !window.confirm(
+        `Delete the render profile "${name}"? Links and settings that name it ` +
+          "fall back to the next profile they would have used.",
+      )
+    ) {
+      return;
+    }
+    clearError();
+    try {
+      await send("DELETE", RIDAL.apiPath("render-profiles", name));
+    } catch (error) {
+      showError(error.message);
+      return;
+    }
+    await load();
+  }
+
+  if (profilesForm) {
+    profilesForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      clearError();
+      setStatus("render-profiles-status", "Saving…");
+      const hidden = [...profilesForm.querySelectorAll("input[data-profile]")]
+        .filter((box) => !box.checked)
+        .map((box) => box.dataset.profile);
+      try {
+        await send("PUT", RIDAL.apiPath("settings"), {
+          hidden_profiles: hidden,
+          personal_profiles: byId("personal-profiles").checked,
+        });
+      } catch (error) {
+        showError(error.message);
+        setStatus("render-profiles-status", "");
+        return;
+      }
+      await load();
+      setStatus("render-profiles-status", "Saved to ridal.toml");
+    });
   }
 
   /* The theme is a site-wide, personal setting (#214), so it has its own

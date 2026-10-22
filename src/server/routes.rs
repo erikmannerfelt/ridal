@@ -1759,7 +1759,7 @@ pub async fn index_page(
     lookup_profile(&state, &caller, &active_profile).map_err(PageError)?;
     let profiles = state
         .render_profiles_for(&caller)
-        .offered_names(&active_profile);
+        .offered_shared_names(&active_profile);
 
     // Counted once per entry here and reused below, rather than per card:
     // the same radargram appears in both the flat list and its group, and
@@ -1944,15 +1944,12 @@ pub async fn viewer_page(
 
     let profile_set = state.render_profiles_for(&caller);
     let offered = profile_set.offered(&active_profile);
-    let profiles: Vec<String> = offered.iter().map(|p| p.name.clone()).collect();
-    // The display adjustment works on the rendered bytes, which for a
-    // colormapped profile are a hue as well as a level, so the viewer
-    // switches it off for these rather than shift their colours.
-    let colormap_profiles: Vec<String> = offered
-        .iter()
-        .filter(|p| p.colormap.is_some())
-        .map(|p| p.name.clone())
-        .collect();
+    let profile_groups = profile_groups(&profile_set, &offered);
+    let active_label = profile_display_name(&profile_set, &active_profile);
+    // Who may tune a profile in the editor (#183), and so preview one: as
+    // `profile_preview_routes::require_preview` decides.
+    let edit_personal = caller.user.is_some() && state.personal_project().is_some();
+    let edit_project = state.project.is_some() && caller.may(crate::project::roles::Role::Operator);
 
     // What the picker writes into `coordinates.axes` when it saves (#146),
     // built here because the values live in the radargram and the document
@@ -2022,8 +2019,15 @@ pub async fn viewer_page(
             // Who the viewer will save as. Empty for an anonymous reader,
             // who cannot save anything -- the toolbar says so instead.
             user => caller.user.as_ref().map(|u| u.as_str()).unwrap_or(""),
-            profiles => profiles,
-            colormap_profiles => colormap_profiles,
+            profile_groups => profile_groups,
+            active_label => active_label,
+            edit_personal => edit_personal,
+            edit_project => edit_project,
+            // As text: an `f32` as a template value prints its `f64` widening,
+            // -1.7000000476837158, where the profile's JSON says -1.7.
+            siglog_default => crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10.to_string(),
+            offset_default => crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET.to_string(),
+            max_color_stops => crate::render::colormap::MAX_COLOR_STOPS,
             active_profile => active_profile,
             chunk_size => crate::render::grid::CHUNK_SIZE,
             n_cols => grid.n_cols,
@@ -2053,6 +2057,90 @@ pub async fn viewer_page(
         })
         .map_err(|e| PageError(ApiError::internal("template_error", e.to_string())))?;
     Ok(Html(html))
+}
+
+/// One option of a render profile select.
+#[derive(serde::Serialize)]
+struct ProfileOption {
+    name: String,
+    /// What the option shows: a personal profile without its prefix, as it
+    /// is listed under "Mine".
+    label: String,
+    /// The display adjustment works on the rendered bytes, which for a
+    /// colormapped profile are a hue as well as a level, so the viewer
+    /// switches it off for these rather than shift their colours.
+    colormap: bool,
+}
+
+/// One `<optgroup>` of a render profile select.
+#[derive(serde::Serialize)]
+struct ProfileGroup {
+    label: &'static str,
+    profiles: Vec<ProfileOption>,
+}
+
+/// What the viewer's Display menu calls profile `name`: a personal profile
+/// by its name without the prefix, as the select lists it under "Mine",
+/// unless an offered built-in or project profile has that name too, when it is
+/// "Personal: <name>" so the two cannot be mistaken for each other. Mirrored
+/// by `profileDisplayName` in viewer.js, which relabels it on a change.
+fn profile_display_name(set: &super::render_profile_routes::ProfileSet, name: &str) -> String {
+    match name.strip_prefix(crate::render::profile::PERSONAL_PROFILE_PREFIX) {
+        Some(bare) if set.personal(name).is_some() => {
+            // The offered ones, which are what the select lists and so
+            // what the page's script can check against.
+            if set.offered(name).iter().any(|p| p.name == bare) {
+                format!("Personal: {bare}")
+            } else {
+                bare.to_string()
+            }
+        }
+        _ => name.to_string(),
+    }
+}
+
+/// `offered`, grouped as the viewer's select shows them: built-in, the
+/// project's, then the caller's own. Empty groups are left out.
+fn profile_groups(
+    set: &super::render_profile_routes::ProfileSet,
+    offered: &[&crate::render::profile::RenderProfile],
+) -> Vec<ProfileGroup> {
+    let mut groups = [
+        ProfileGroup {
+            label: "Built-in",
+            profiles: Vec::new(),
+        },
+        ProfileGroup {
+            label: "Project",
+            profiles: Vec::new(),
+        },
+        ProfileGroup {
+            label: "Mine",
+            profiles: Vec::new(),
+        },
+    ];
+    for profile in offered {
+        let (group, label) = if set.is_built_in(&profile.name) {
+            (0, profile.name.as_str())
+        } else if set.personal(&profile.name).is_some() {
+            let label = profile
+                .name
+                .strip_prefix(crate::render::profile::PERSONAL_PROFILE_PREFIX)
+                .unwrap_or(&profile.name);
+            (2, label)
+        } else {
+            (1, profile.name.as_str())
+        };
+        groups[group].profiles.push(ProfileOption {
+            name: profile.name.clone(),
+            label: label.to_string(),
+            colormap: profile.colormap.is_some(),
+        });
+    }
+    groups
+        .into_iter()
+        .filter(|g| !g.profiles.is_empty())
+        .collect()
 }
 
 /// One vertex of a simplified track, in WGS84.

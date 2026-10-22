@@ -1260,6 +1260,29 @@ and changed by operators through `/api/v1/render-profiles`.
   A grey profile with one renders RGB through an identity grey LUT
   (`RenderProfile::rgb_lut`), so its data pixels match the one-channel
   path; figures keep no-data transparent.
+- **The editor previews, it does not tile.** Tuning a profile through the
+  viewer's tiles would render and cache a full tile set at every zoom level
+  for each intermediate setting. `profile_preview_routes` instead draws one
+  image of the viewer's extent through `RenderService::render_figure` with
+  axes off, from an unsaved profile in the body, and caches nothing (the
+  limits estimate is shared through `limits_key_fragment`, so a colour change
+  samples nothing). It is bounded by size (2000 x 1500, a tall extent getting
+  a narrower image), by the figure permits, and by one preview in flight per
+  person: `Previews` keeps a `CancelHandle` per user, and claiming the slot
+  fires the previous preview's interrupt. Only saving makes the viewer draw
+  tiles with the profile, once; the chunk URLs then carry a `v=` per saved
+  name, as `fp=` does for an elevation edit, so the page does not reuse the
+  images it already holds for that name.
+- **The editor leaves out resampling and the tile format.** A preview
+  averages colours, as a figure does, so resampling (which only acts on
+  zoomed-out tiles) could never be judged in it; the editor sets it from
+  the transform as the built-ins pair them, keeping the starting profile's
+  while its transform is unchanged. The format is kept as it was. Both stay
+  settable through a profile file or the API.
+- **One save control in the editor.** A name and a place (mine or the
+  project's) cover saving in place (`If-Match` on the version loaded),
+  saving a copy (`If-None-Match: *`, asking before replacing), duplicating a
+  built-in and sharing one's own with the project.
 
 ## Concurrency and resource bounds
 

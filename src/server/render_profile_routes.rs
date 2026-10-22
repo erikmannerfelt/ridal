@@ -139,6 +139,18 @@ impl ProfileSet {
             .collect()
     }
 
+    /// [`Self::offered_names`] for the catalog: the shared profiles only,
+    /// since its thumbnails are never drawn with a personal one. `active`
+    /// is still listed when it is personal, so the select shows what the
+    /// page's links carry.
+    pub fn offered_shared_names(&self, active: &str) -> Vec<String> {
+        self.offered(active)
+            .into_iter()
+            .filter(|p| !p.is_personal() || p.name == active)
+            .map(|p| p.name.clone())
+            .collect()
+    }
+
     /// The overview-file tags of every shared profile, for clearing out
     /// the overviews of the rest
     /// ([`super::overview_cache::OverviewDiskCache::harvest`]). Never a

@@ -179,6 +179,8 @@ pub struct AppState {
     /// through [`Self::edit_render_profiles`]. In memory because every
     /// chunk request looks its profile up.
     project_render_profiles: RwLock<Arc<Vec<crate::render::profile::RenderProfile>>>,
+    /// The render profile previews in flight, one per person (#183).
+    pub previews: super::profile_preview_routes::Previews,
 }
 
 /// Record a project's catalog size after a scan, for the site landing
@@ -463,6 +465,7 @@ impl AppState {
             dem_links: Mutex::new(()),
             uploads: Default::default(),
             project_render_profiles: RwLock::new(project_render_profiles),
+            previews: Default::default(),
         };
         // At startup too, not only on rediscovery. Most projects never
         // add or remove anything through the GUI, and those are exactly
@@ -1137,6 +1140,10 @@ pub fn static_router() -> Router {
         .route("/static/picker.js", get(super::assets::picker_js))
         .route("/static/panel.js", get(super::assets::panel_js))
         .route("/static/figure.js", get(super::assets::figure_js))
+        .route(
+            "/static/profile_editor.js",
+            get(super::assets::profile_editor_js),
+        )
         .route("/static/login.js", get(super::assets::login_js))
         .route("/static/settings.js", get(super::assets::settings_js))
         .route("/static/site.js", get(super::assets::site_js))
@@ -1240,6 +1247,9 @@ pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
         .routes(routes!(super::routes::chunk_image))
         .routes(routes!(super::routes::dataset_image))
         .routes(routes!(super::figure_routes::render_figure))
+        .routes(routes!(
+            super::profile_preview_routes::preview_render_profile
+        ))
         // Downloads.
         .routes(routes!(super::routes::dataset_download))
         .routes(routes!(super::routes::dataset_track_geojson))

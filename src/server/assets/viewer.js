@@ -124,7 +124,16 @@ function chunkUrl(x, y, profile) {
   // browser could serve a stale cached chunk for it. The server does not
   // read this back -- the current override is always the source of truth
   // for what a chunk renders.
-  return G.view === "topo" && G.fingerprint ? `${base}?fp=${G.fingerprint}` : base;
+  const params = new URLSearchParams();
+  if (G.view === "topo" && G.fingerprint) params.set("fp", G.fingerprint);
+  // The same for a profile edited in place (#183): its name, and so this
+  // URL, is unchanged, and the page would otherwise keep showing the chunks
+  // it already holds. profile_editor.js sets it on every save.
+  if (window.RIDAL_PROFILE_EDITS && window.RIDAL_PROFILE_EDITS[profile]) {
+    params.set("v", window.RIDAL_PROFILE_EDITS[profile]);
+  }
+  const query = params.toString();
+  return query ? `${base}?${query}` : base;
 }
 
 function chunkBounds(x, y, scale) {
@@ -1667,7 +1676,19 @@ document.getElementById('metadata-close').addEventListener('click', () => dialog
     // effect, so a radargram that looks off is not mistaken for a bad
     // render.
     menu.querySelector('summary').textContent =
-      `Display: ${select.value}${adjusted ? ' (adjusted)' : ''}`;
+      `Display: ${profileDisplayName()}${adjusted ? ' (adjusted)' : ''}`;
+  }
+
+  /* A personal profile by its name without the prefix, as the select lists
+   * it, unless a built-in or project profile in the list has that name too:
+   * then "Personal: <name>". As `routes::profile_display_name` names it
+   * when the page loads. */
+  function profileDisplayName() {
+    const value = select.value;
+    if (!value.startsWith('personal-')) return value;
+    const bare = value.slice('personal-'.length);
+    const shared = [...select.options].some((o) => o.value === bare);
+    return shared ? `Personal: ${bare}` : bare;
   }
 
   function remember() {

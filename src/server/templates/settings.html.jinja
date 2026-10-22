@@ -203,6 +203,27 @@
           <button type="submit">Save my settings</button>
           <span id="my-settings-status" class="pick-status"></span>
         </form>
+        {#- Personal render profiles (#183): made and changed in the viewer's
+            editor, listed here to be cleared out, including while the
+            project does not allow them and the editor is not offered. -#}
+        {% if project %}
+        <div id="my-render-profiles">
+          <h3>My render profiles</h3>
+          <p class="hint" id="my-render-profiles-note">
+            Made and changed in the viewer: <em>Display</em>, then
+            <em>Edit profile</em>.
+          </p>
+          <div class="table-scroll">
+            <table id="my-render-profiles-table" class="layers-table">
+              <thead>
+                <tr><th>Profile</th><th>Thumbnails</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <span id="my-render-profiles-status" class="pick-status"></span>
+        </div>
+        {% endif %}
       {% else %}
         {#- Shown rather than hidden, following the same rule as the picking
             toolbar: a missing control reads as a missing feature. -#}
@@ -330,6 +351,52 @@
         comments and anything you have edited by hand are kept.
       </p>
     </section>
+
+    {#- The project's render profiles (#183): which built-ins are offered,
+        deleting the project's own, and whether people may keep profiles of
+        their own. Profiles are made and tuned in the viewer's editor, where
+        there is a radargram to see them on; this is the list to tidy. -#}
+    {% if can_edit_project %}
+      <section class="settings-section" id="render-profiles-section">
+        <h2>Render profiles<a class="docs-help" href="{{ docs_base|safe }}guide/rendering.html#render-profiles"
+            target="_blank" rel="noopener" title="Render profiles in the documentation">?</a></h2>
+        <p class="hint">
+          New profiles are made in the viewer: <em>Display</em>, then
+          <em>Edit profile</em>, which previews them on the radargram. How
+          tiles are resampled and encoded is not in the editor; a project
+          profile&rsquo;s can be set through its file or the HTTP API (see
+          <a href="{{ docs_base|safe }}guide/rendering.html#a-profile-of-your-own"
+             target="_blank" rel="noopener">a profile of your own</a>).
+        </p>
+        <form id="render-profiles-form" class="settings-form" novalidate>
+          <label class="settings-field checkbox">
+            <input type="checkbox" id="personal-profiles" autocomplete="off">
+            Let people keep render profiles of their own
+            <span class="hint">
+              Turned off, the ones people have are kept but not used, and
+              come back when this is turned on again.
+            </span>
+          </label>
+          <div class="table-scroll">
+            <table id="render-profiles-table" class="layers-table">
+              <thead>
+                <tr><th>Profile</th><th>Kind</th><th>Offered</th><th></th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <span class="hint">
+            A built-in that is not offered still draws when a link or
+            someone&rsquo;s setting names it. The default can be neither
+            hidden nor deleted.
+          </span>
+          <div>
+            <button type="submit">Save render profile settings</button>
+            <span id="render-profiles-status" class="pick-status"></span>
+          </div>
+        </form>
+      </section>
+    {% endif %}
 
     {#- The project's size and its cap (#173). Shown to operators, who may
         see how full the project is; only an administrator may change the

@@ -3465,6 +3465,96 @@
         }
       }
     },
+    "/api/v1/projects/{key}/datasets/{radargram_id}/render-profile-preview": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "radargram_id",
+          "in": "path",
+          "description": "A radargram's id.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "post": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "A PNG of part of a radargram drawn with `profile`, which need not be\nsaved: what the profile editor shows. At most 2000 x 1500 px, never\ncached, and one in flight per person, so a new preview stops the\nprevious one (which then answers `503 render_cancelled`). Needs a\nsigned-in caller in a project that allows personal profiles, or an\noperator.",
+        "operationId": "preview_render_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfilePreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The preview.",
+            "content": {
+              "image/png": {}
+            }
+          },
+          "400": {
+            "description": "`invalid_preview` or `invalid_render_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such radargram.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "`render_cancelled`: a newer preview replaced it; `figure_busy`, `render_busy` or `render_timed_out`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "signed_in"
+        }
+      }
+    },
     "/api/v1/projects/{key}/datasets/{radargram_id}/replace": {
       "parameters": [
         {
@@ -16623,6 +16713,59 @@
             }
           }
         }
+      },
+      "ProfilePreviewRequest": {
+        "type": "object",
+        "description": "What to preview, and where.",
+        "required": [
+          "profile",
+          "traces",
+          "rows",
+          "width"
+        ],
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/RenderProfile",
+            "description": "The profile to draw with, saved or not. Its `name` is not looked up."
+          },
+          "view": {
+            "$ref": "#/components/schemas/FigureView",
+            "description": "The standard or the topographically corrected view."
+          },
+          "traces": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "`[first, last]` trace position, as in a figure spec's extent.",
+            "maxItems": 2,
+            "minItems": 2
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            },
+            "description": "`[top, bottom]` row position, as in a figure spec's extent.",
+            "maxItems": 2,
+            "minItems": 2
+          },
+          "x_scale": {
+            "type": "number",
+            "format": "double",
+            "description": "Horizontal stretch, as the viewer's horizontal scale. Unset is 1.",
+            "default": 1.0
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The image's width in pixels, at most 2000. Its height follows from\nthe extent and `x_scale`; past 1500 px the width is reduced to keep\nthe height there.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "ProfileScope": {
         "type": "string",

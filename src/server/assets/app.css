@@ -4128,3 +4128,49 @@ pre.steps-highlight {
   border-radius: var(--radius-sm);
   padding: var(--space-1) var(--space-2);
 }
+
+/* --- Render profile editor (#183) ------------------------------------------
+ *
+ * Laid out as the figure dialog is, whose classes it shares; these are the
+ * parts it has of its own. */
+.profile-stops {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-2) 0;
+}
+
+.profile-stop {
+  display: grid;
+  grid-template-columns: 5rem 3rem auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.profile-stop input[type="color"] {
+  width: 3rem;
+  height: 1.8rem;
+  padding: 0;
+}
+
+.profile-stop button {
+  justify-self: start;
+}
+
+#profile-dialog .figure-grid label > span {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+#profile-dialog .figure-grid input[type="range"] {
+  flex: 1;
+}
+
+#pe-update.is-stale {
+  outline: 2px solid var(--color-warning-border);
+}
+
+#profile-dialog [hidden] {
+  display: none !important;
+}

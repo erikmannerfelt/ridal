@@ -82,7 +82,9 @@ same line.
 The display controls only change how the radargram is drawn:
 
 Render profile
-: As in the catalog (see {doc}`rendering`).
+: As in the catalog (see {doc}`rendering`), listed as built-in, the
+  project's and your own. **Edit profile…** opens the profile editor (see
+  [tuning a profile in the viewer](rendering.md#tuning-a-profile-in-the-viewer)).
 
 Horizontal scale
 : Stretches or squeezes the radargram horizontally, from 0.25× to 8×.

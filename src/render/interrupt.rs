@@ -109,9 +109,33 @@ impl Interrupt {
 #[derive(Debug)]
 pub struct CancelOnDrop(Arc<AtomicBool>);
 
+impl CancelOnDrop {
+    /// A handle that fires the same interrupt from elsewhere, before this
+    /// guard is dropped: for a newer request that replaces this one, such as
+    /// the next preview of a render profile being tuned.
+    pub fn handle(&self) -> CancelHandle {
+        CancelHandle(Arc::clone(&self.0))
+    }
+}
+
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Fires the [`Interrupt`] of a [`CancelOnDrop`] without dropping it.
+#[derive(Debug, Clone)]
+pub struct CancelHandle(Arc<AtomicBool>);
+
+impl CancelHandle {
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether `self` and `other` fire the same interrupt.
+    pub fn same_as(&self, other: &CancelHandle) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -134,6 +158,17 @@ mod tests {
         drop(guard);
         assert_eq!(interrupt.interruption(), Some(Interruption::Cancelled));
         assert!(interrupt.check().is_err());
+    }
+
+    #[test]
+    fn a_handle_cancels_before_the_guard_is_dropped() {
+        let (interrupt, guard) = Interrupt::on_drop();
+        let handle = guard.handle();
+        assert!(handle.same_as(&guard.handle()));
+        assert!(!handle.same_as(&Interrupt::on_drop().1.handle()));
+        handle.cancel();
+        assert_eq!(interrupt.interruption(), Some(Interruption::Cancelled));
+        drop(guard);
     }
 
     #[test]

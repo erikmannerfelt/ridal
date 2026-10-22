@@ -34,7 +34,7 @@
         #297. Their rows are hidden until viewer.js wires them, so a page
         without JavaScript does not offer dead controls. -#}
     <details class="site-menu display-menu" id="display-menu">
-      <summary>Display: {{ active_profile }}</summary>
+      <summary>Display: {{ active_label }}</summary>
       {#- `autocomplete="off"` on the profile, the scale and the topographic
           correction: what the page opens with is the server's to say, and a
           browser restores a control's last value on a reload, over it. After
@@ -44,11 +44,20 @@
       <ul>
         <li><label>Render profile
           <select id="profile-select" autocomplete="off">
-            {% for p in profiles %}
-            <option value="{{ p }}"{% if p == active_profile %} selected{% endif %}{% if p in colormap_profiles %} data-colormap{% endif %}>{{ p }}</option>
+            {% for g in profile_groups %}
+            <optgroup label="{{ g.label }}">
+              {% for p in g.profiles %}
+              <option value="{{ p.name }}"{% if p.name == active_profile %} selected{% endif %}{% if p.colormap %} data-colormap{% endif %}>{{ p.label }}</option>
+              {% endfor %}
+            </optgroup>
             {% endfor %}
           </select>
         </label></li>
+        {#- The profile editor (#183), for whoever may keep a profile of
+            their own or edit the project's. -#}
+        {% if edit_personal or edit_project %}
+        <li><button type="button" id="profile-edit">Edit profile&hellip;</button></li>
+        {% endif %}
         {#- Options come from the server so the project's default always
             has an entry to select; a hardcoded list here could drift from
             the one the settings page validates against. -#}
@@ -477,6 +486,124 @@
   </dialog>
   {% endif %}
 
+  {#- The render profile editor (#183). The preview is one image of the
+      extent on screen, drawn by the server with the unsaved profile; only
+      saving makes the viewer render tiles with it. Limits from the server
+      are data attributes, so profile_editor.js holds no copy of them. -#}
+  {% if edit_personal or edit_project %}
+  <dialog id="profile-dialog" class="figure-dialog"
+          data-edit-personal="{% if edit_personal %}true{% else %}false{% endif %}"
+          data-edit-project="{% if edit_project %}true{% else %}false{% endif %}"
+          data-siglog-default="{{ siglog_default }}" data-offset-default="{{ offset_default }}"
+          data-max-stops="{{ max_color_stops }}">
+    <h2>Edit render profile</h2>
+    <p class="hint" id="pe-origin"></p>
+    <div class="figure-layout">
+      <form class="figure-controls" id="pe-form" autocomplete="off">
+        <fieldset>
+          <legend>Start from</legend>
+          <div class="figure-grid">
+            <label>Profile <select id="pe-start"></select></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Colours</legend>
+          <div class="figure-grid">
+            <label>Colour scale <select id="pe-preset"></select></label>
+          </div>
+          <div id="pe-stops" class="profile-stops"></div>
+          <p class="figure-buttons">
+            <button type="button" id="pe-add-stop">Add stop</button>
+            <button type="button" id="pe-reverse">Reverse</button>
+          </p>
+          <div class="figure-grid">
+            <label class="figure-check"><input type="checkbox" id="pe-nodata-on"> No-data colour</label>
+            <label>Colour <input type="color" id="pe-nodata" value="#808080"></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Amplitude</legend>
+          <div class="figure-grid">
+            <label title="Applied to every sample before anything else.">Source transform
+              <select id="pe-source">
+                <option value="None">None</option>
+                <option value="SigLog">Signed log</option>
+                <option value="AdaptiveSigLog">Adaptive signed log</option>
+              </select></label>
+            <label id="pe-siglog-row" title="log10 of the magnitude below which samples become zero.">Strength (log10)
+              <input type="number" id="pe-siglog" step="0.1" min="-20" max="20"></label>
+            <label id="pe-offset-row" title="The strength is log10(noise floor) + this offset.">Offset from noise (log10)
+              <input type="number" id="pe-offset" step="0.1" min="-20" max="20"></label>
+            <label>Transform
+              <select id="pe-transform">
+                <option value="Linear">Linear</option>
+                <option value="AbsLog">Log of magnitude</option>
+                <option value="Positive">Positive</option>
+              </select></label>
+            <label>Limits
+              <select id="pe-limits">
+                <option value="Percentile">Percentiles</option>
+                <option value="Explicit">Explicit amplitudes</option>
+              </select></label>
+            <label class="pe-percentile">Low percentile (%)
+              <input type="number" id="pe-low" step="0.5" min="0" max="100"></label>
+            <label class="pe-percentile">High percentile (%)
+              <input type="number" id="pe-high" step="0.5" min="0" max="100"></label>
+            <label class="pe-explicit">Minimum
+              <input type="number" id="pe-min" step="any"></label>
+            <label class="pe-explicit">Maximum
+              <input type="number" id="pe-max" step="any"></label>
+            <label class="figure-check" title="Limits at plus and minus the larger of the two, so that zero is the middle of the scale."><input type="checkbox" id="pe-symmetric"> Symmetric about zero</label>
+            <label class="pe-percentile" title="Rows at the top of every trace left out of the percentiles, to keep the direct wave out of them.">Skip first samples
+              <input type="number" id="pe-skip" step="1" min="0"></label>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Appearance</legend>
+          <div class="figure-grid">
+            <label>Contrast <span><input type="range" id="pe-contrast" min="0.1" max="5" step="0.05">
+              <output id="pe-contrast-value" for="pe-contrast"></output></span></label>
+            <label>Black level <span><input type="range" id="pe-black" min="-0.9" max="0.9" step="0.01">
+              <output id="pe-black-value" for="pe-black"></output></span></label>
+          </div>
+        </fieldset>
+        <div id="pe-warnings" class="figure-messages" role="status" aria-live="polite"></div>
+      </form>
+      <div class="figure-preview-pane">
+        <div class="figure-preview" id="pe-preview">
+          <img id="pe-image" alt="Preview of the render profile" hidden>
+          <p class="figure-preview-status" id="pe-status">Update the preview to see the profile.</p>
+        </div>
+        <p class="figure-buttons">
+          <button type="button" id="pe-update">Update preview</button>
+          <label class="figure-check"><input type="checkbox" id="pe-auto"> Auto update</label>
+          <button type="button" id="pe-compare" aria-pressed="false" disabled
+                  title="Show the preview before the last update, to compare.">Show previous</button>
+          <button type="button" id="pe-extent" title="Preview what the viewer shows now.">Use current view</button>
+        </p>
+        <p class="hint" id="pe-extent-note"></p>
+      </div>
+    </div>
+    <div class="figure-buttons figure-actions">
+      <label>Name <input type="text" id="pe-name" size="16" spellcheck="false"></label>
+      <label>Save to
+        <select id="pe-scope">
+          {% if edit_personal %}<option value="personal">My profiles</option>{% endif %}
+          {% if edit_project %}<option value="project">Project</option>{% endif %}
+        </select></label>
+      <label id="pe-thumbnail-row" title="The catalog's thumbnails are drawn with a shared profile while this one is chosen.">Thumbnails
+        <select id="pe-thumbnail"></select></label>
+      <button type="button" id="pe-delete" class="figure-minor" hidden>Delete</button>
+      <span class="figure-actions-spacer"></span>
+      <span id="pe-save-status" class="pick-status"></span>
+      <button type="button" id="pe-save">Save</button>
+      {#- "Cancel" while there are edits it would throw away, "Close" once
+          they are saved: profile_editor.js switches it. -#}
+      <button type="button" id="pe-close">Cancel</button>
+    </div>
+  </dialog>
+  {% endif %}
+
   <dialog id="download-dialog">
     <h2>Download layer points</h2>
     <p class="hint">
@@ -661,4 +788,5 @@
 <script src="/static/process.js"></script>
 <script src="/static/radargram_edit.js"></script>
 <script src="/static/figure.js"></script>
+<script src="/static/profile_editor.js"></script>
 {% endblock %}

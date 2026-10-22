@@ -91,6 +91,7 @@ mod pick_routes_tests;
 pub mod preference_routes;
 pub mod processing;
 pub mod processing_routes;
+pub mod profile_preview_routes;
 pub mod raw_routes;
 pub mod render_profile_routes;
 #[cfg(test)]
