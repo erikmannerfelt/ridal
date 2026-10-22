@@ -50,7 +50,8 @@ keeps its amplitudes (see {doc}`processing`).
 In the GUI, the render profile is chosen at the top of the catalog and in the
 viewer, and it is remembered for each person. A project's default is
 `[render] default_profile` in `ridal.toml` (see
-{doc}`../reference/project-files`).
+{doc}`../reference/project-files`). A project can also add profiles of its
+own; see [project render profiles](#project-render-profiles).
 
 ### A profile of your own
 
@@ -71,8 +72,43 @@ black_level = 0.0
 stats_skip_first_samples = 0       # rows at the top left out of the percentiles
 ```
 
-A server only offers its built-in profiles, so a profile file is for the
-command line and Python only.
+Three more fields may be left out:
+
+```toml
+colormap = { name = "mine", stops = [
+  { position = 0.0, color = [0, 0, 76] },
+  { position = 0.5, color = [255, 255, 255] },
+  { position = 1.0, color = [128, 0, 0] },
+] }                                # up to 32 stops; without it, gray
+symmetric_limits = true            # limits at ±(the larger), so zero is the middle of the scale
+nodata_color = [255, 0, 255]       # pixels without data; without it, mid-gray
+```
+
+The quickest way to write one is to start from a built-in: a server gives
+any profile as a file at `GET /api/v1/render-profiles/{name}?format=toml`,
+and the Python client's `render_profile_file` returns the same text.
+
+### Project render profiles
+
+A project can have render profiles of its own next to the built-ins. They
+are offered everywhere a built-in is, to everyone in the project, and they
+are kept in the project (see {doc}`../reference/project-files`). An
+`operator` creates and changes them with `PUT /api/v1/render-profiles/{name}`
+(see {doc}`../reference/http-api`), or with the Python client:
+
+```python
+import dataclasses
+
+seismic = client.render_profile("seismic")
+client.save_render_profile(dataclasses.replace(seismic, name="survey", contrast=1.5))
+```
+
+A project profile cannot take a built-in's name. Changing one changes how
+everything rendered with it looks from then on, and deleting one sends
+links and settings that name it back to the next profile they would have
+used. The project's default cannot be deleted. Built-ins the project does not
+want offered can be hidden with `[render] hidden_profiles` in `ridal.toml`;
+a hidden profile still draws when a link names it.
 
 ## Horizontal scale
 

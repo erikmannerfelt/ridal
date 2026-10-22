@@ -110,6 +110,13 @@ The extension picks SVG or PNG. A spec with `"axes": false` also writes the
 sidecar beside the image. Picks that could not be drawn as stored are reported
 as a {py:class}`ridal.client.FigureWarning`, and the figure is drawn anyway.
 
+The spec's `profile` is any render profile the project offers:
+`render_profiles` lists them, the built-ins and the project's own. An
+`operator` adds one with `save_render_profile` and removes it with
+`delete_render_profile`, and `render_profile_file` gives any profile as the
+TOML file `ridal render` reads, so the same picture can be drawn locally
+(see {doc}`rendering`).
+
 ## Uploading and replacing many files
 
 A folder of reprocessed radargrams is sorted against the project before

@@ -92,6 +92,9 @@ pub mod preference_routes;
 pub mod processing;
 pub mod processing_routes;
 pub mod raw_routes;
+pub mod render_profile_routes;
+#[cfg(test)]
+mod render_profile_routes_tests;
 pub mod render_service;
 pub mod replace_routes;
 pub mod routes;

@@ -235,10 +235,11 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
         let accumulated =
             self.accumulate_colours(&whole, out_w, out_h, profile, limits, source_rows_per_band)?;
 
-        if profile.colormap.is_some() {
+        if profile.rgb_lut().is_some() {
+            let pad = pad_color(profile);
             let image = image::RgbImage::from_fn(out_w as u32, out_h as u32, |x, y| {
                 let pixel = y as usize * out_w + x as usize;
-                image::Rgb(accumulated.colour(pixel).unwrap_or(PAD_COLOR))
+                image::Rgb(accumulated.colour(pixel).unwrap_or(pad))
             });
             colormap::encode_rgb(&image, profile.format)
         } else {
@@ -267,7 +268,7 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
         source_rows_per_band: usize,
     ) -> Result<AccumulatedColours, String> {
         let (src_h, src_w) = self.reader.shape();
-        let lut = profile.colormap.as_ref().map(|cmap| cmap.lut());
+        let lut = profile.rgb_lut();
         let channels = if lut.is_some() { 3 } else { 1 };
 
         let (first_col, col_taps) = footprint_taps_window(window.col0, window.col1, out_w);
@@ -362,10 +363,10 @@ impl<'a, S: AmplitudeSource> Renderer<'a, S> {
 
 /// Colormap (if any) and encode a resampled chunk or band.
 ///
-/// `None` takes the original grayscale path unchanged -- the same
-/// functions, producing the same bytes, so every grayscale profile's
-/// cached renders stay valid. `Some` builds the 256-entry LUT once for
-/// this render and takes the RGB path, which is the point of keeping the
+/// A profile without a [`RenderProfile::rgb_lut`] takes the original
+/// grayscale path unchanged -- the same functions, producing the same
+/// bytes, so every grayscale profile's cached renders stay valid. One with
+/// a LUT (a colormap, or a no-data colour) takes the RGB path, which is the point of keeping the
 /// two apart: a greyscale JPEG is a genuinely one-component JPEG and a
 /// greyscale PNG is markedly smaller than an RGB one, so re-encoding
 /// every render with a replicated grey channel would triple the lossless
@@ -375,17 +376,23 @@ fn render_and_encode(
     profile: &RenderProfile,
     limits: (f32, f32),
 ) -> Result<Vec<u8>, String> {
-    match &profile.colormap {
+    match profile.rgb_lut() {
         None => {
             let image = colormap::render_grayscale(resampled, profile, limits, PAD_VALUE);
             colormap::encode(&image, profile.format)
         }
-        Some(cmap) => {
-            let lut = cmap.lut();
-            let image = colormap::render_colormapped(resampled, profile, limits, &lut, PAD_COLOR);
+        Some(lut) => {
+            let image =
+                colormap::render_colormapped(resampled, profile, limits, &lut, pad_color(profile));
             colormap::encode_rgb(&image, profile.format)
         }
     }
+}
+
+/// The colour of a pixel with no valid data: the profile's own, or the pad
+/// grey.
+fn pad_color(profile: &RenderProfile) -> [u8; 3] {
+    profile.nodata_color.unwrap_or(PAD_COLOR)
 }
 
 /// Area-weighted colour sums from [`Renderer::accumulate_colours`], not yet
@@ -785,6 +792,46 @@ mod tests {
         let image = image::load_from_memory(&bytes).unwrap().to_luma8();
         assert_eq!(image.get_pixel(0, 0).0[0], 0, "half-valid footprint");
         assert_eq!(image.get_pixel(1, 0).0[0], PAD_VALUE, "empty footprint");
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn a_no_data_colour_paints_empty_footprints_and_nothing_else() {
+        // #183: a grey profile with a no-data colour renders RGB, its data
+        // pixels the same greys as without one, in chunks and overviews.
+        let (height, width) = (2, 4);
+        #[rustfmt::skip]
+        let data = [
+            0.0, 1.0, f32::NAN, f32::NAN,
+            0.0, 1.0, f32::NAN, f32::NAN,
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_nc_values(&path, height, width, &data);
+        let reader = SourceReader::open(&path).unwrap();
+        let renderer = Renderer::new(&reader);
+        let magenta = [255, 0, 255];
+        let profile = png(RenderProfile {
+            nodata_color: Some(magenta),
+            ..RenderProfile::default_profile()
+        });
+
+        let spec = OverviewSpec::new(width, height, 4);
+        let overview = renderer
+            .render_overview(&spec, &profile, (0.0, 1.0))
+            .unwrap();
+        let image = image::load_from_memory(&overview).unwrap();
+        assert!(matches!(image, image::DynamicImage::ImageRgb8(_)));
+        let image = image.to_rgb8();
+        assert_eq!(image.get_pixel(0, 0).0, [0; 3]);
+        assert_eq!(image.get_pixel(1, 0).0, [255; 3]);
+        assert_eq!(image.get_pixel(2, 0).0, magenta);
+
+        let chunk = ViewerRaster::new(width, height).grid().chunk(0, 0).unwrap();
+        let tile = renderer.render_chunk(&chunk, &profile, (0.0, 1.0)).unwrap();
+        let tile = image::load_from_memory(&tile).unwrap().to_rgb8();
+        assert_eq!(tile.get_pixel(0, 0).0, [0; 3]);
+        assert_eq!(tile.get_pixel(3, 1).0, magenta);
     }
 
     #[test]

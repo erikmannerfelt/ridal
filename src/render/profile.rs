@@ -10,69 +10,77 @@ use serde::{Deserialize, Serialize};
 
 use super::colormap::Colormap;
 
+// The doc comments on these types and their variants are the public
+// description of a render profile in the HTTP API (#183); the reasoning
+// behind them is in `//` comments.
+
+/// How a tile combines the samples a pixel covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub enum ResamplingMethod {
-    /// Area-weighted mean over source-pixel footprints (#118).
-    /// Nearest-neighbor is deliberately excluded per the issue's own
-    /// guidance for this data.
+    /// The mean of the samples, weighted by how much of each the pixel
+    /// covers.
+    // Area-weighted mean over source-pixel footprints (#118).
+    // Nearest-neighbor is deliberately excluded per the issue's own
+    // guidance for this data.
     Mean,
-    /// Largest source value in each footprint. For a profile that reads
-    /// *signed* amplitude asymmetrically (see
-    /// [`AmplitudeTransform::Positive`]), the mean is the wrong reducer:
-    /// radar traces oscillate about zero, so averaging a large footprint
-    /// cancels them toward zero and the asymmetric stretch then clips the
-    /// result to black. Identical to `Mean` at a 1:1 footprint. See
-    /// `resample::resample` for the full rationale.
-    ///
-    /// Superseded by [`LanczosRectified`](Self::LanczosRectified) for
-    /// `positive` (biases every footprint upward into speckle, which the
-    /// rectified windowed-sinc filter does not); not currently used by any
-    /// built-in profile, kept as a documented option.
+    /// The largest sample.
+    // For a profile that reads *signed* amplitude asymmetrically (see
+    // `AmplitudeTransform::Positive`), the mean is the wrong reducer: radar
+    // traces oscillate about zero, so averaging a large footprint cancels
+    // them toward zero and the asymmetric stretch then clips the result to
+    // black. Identical to `Mean` at a 1:1 footprint. See
+    // `resample::resample` for the full rationale.
+    //
+    // Superseded by `LanczosRectified` for `positive` (biases every
+    // footprint upward into speckle, which the rectified windowed-sinc
+    // filter does not); not currently used by any built-in profile, kept as
+    // a documented option.
     Peak,
-    /// Windowed-sinc (Lanczos-3) filtering, applied separably.
-    ///
-    /// The principled anti-aliasing choice: `Mean` is a box filter and
-    /// blurs, `Peak` is an order statistic that biases every footprint
-    /// upward and turns noise into speckle, while this preserves the
-    /// shape of the signal around a feature rather than only its average
-    /// or its maximum. Also reduces to an identity at an aligned 1:1
-    /// footprint, where the kernel taps land on integers and `sinc` is
-    /// zero at all of them but the centre.
-    ///
-    /// Plain (unrectified) Lanczos is still a *linear* filter, so on
-    /// signed oscillating amplitude it cancels toward zero exactly the way
-    /// `Mean` does -- measured, not assumed: `positive` overviews under
-    /// this came out nearly black. Not currently used by any built-in
-    /// profile as a result; kept as a documented option for a profile
-    /// whose amplitude is not signed and asymmetric.
+    /// A windowed-sinc (Lanczos-3) filter of the samples.
+    // The principled anti-aliasing choice: `Mean` is a box filter and
+    // blurs, `Peak` is an order statistic that biases every footprint
+    // upward and turns noise into speckle, while this preserves the shape
+    // of the signal around a feature rather than only its average or its
+    // maximum. Also reduces to an identity at an aligned 1:1 footprint,
+    // where the kernel taps land on integers and `sinc` is zero at all of
+    // them but the centre.
+    //
+    // Plain (unrectified) Lanczos is still a *linear* filter, so on signed
+    // oscillating amplitude it cancels toward zero exactly the way `Mean`
+    // does -- measured, not assumed: `positive` overviews under this came
+    // out nearly black. Not currently used by any built-in profile as a
+    // result; kept as a documented option for a profile whose amplitude is
+    // not signed and asymmetric.
     Lanczos,
-    /// Lanczos applied to `|amplitude|` rather than signed amplitude.
-    ///
-    /// Removes the cancellation plain `Lanczos` suffers on signed
-    /// oscillating traces while keeping proper anti-aliasing, which `Peak`
-    /// (an order statistic that biases every footprint upward into
-    /// speckle) does not provide. Compared against both on real data (see
-    /// `PHASE1_LOG.md`) and read best of the three; used by
-    /// [`RenderProfile::positive_profile`] and
-    /// [`RenderProfile::abslog_profile`].
-    ///
-    /// Safe for any profile whose display value is already sign-agnostic
-    /// (`positive`'s asymmetric stretch, `abslog`'s `log10|amplitude|`).
-    /// For a plain signed-linear profile it would change what the image
-    /// means rather than just how it is anti-aliased.
+    /// `Lanczos` of the samples' magnitudes, which keeps signed traces from
+    /// averaging out; for profiles that do not show the sign.
+    // Removes the cancellation plain `Lanczos` suffers on signed
+    // oscillating traces while keeping proper anti-aliasing, which `Peak`
+    // (an order statistic that biases every footprint upward into speckle)
+    // does not provide. Compared against both on real data (see
+    // `PHASE1_LOG.md`) and read best of the three; used by
+    // `RenderProfile::positive_profile` and `RenderProfile::abslog_profile`.
+    //
+    // Safe for any profile whose display value is already sign-agnostic
+    // (`positive`'s asymmetric stretch, `abslog`'s `log10|amplitude|`).
+    // For a plain signed-linear profile it would change what the image
+    // means rather than just how it is anti-aliased.
     LanczosRectified,
 }
 
+/// How images are encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub enum ImageFormat {
-    /// Chosen over WebP for v1: `image` 0.25's WebP encoder
-    /// (`image-webp` 0.2.4) is lossless-only in every released version:
-    /// its own README states "only supports lossless encoding", and its
-    /// `EncoderParams` has no `use_lossy` field. JPEG needs no new
-    /// dependency -- `image` 0.24 already encodes it.
-    Jpeg {
-        quality: u8,
-    },
+    /// JPEG, at a quality from 1 to 100.
+    // Chosen over WebP for v1: `image` 0.25's WebP encoder (`image-webp`
+    // 0.2.4) is lossless-only in every released version: its own README
+    // states "only supports lossless encoding", and its `EncoderParams` has
+    // no `use_lossy` field. JPEG needs no new dependency -- `image` 0.24
+    // already encodes it.
+    Jpeg { quality: u8 },
+    /// PNG, losslessly.
     Png,
 }
 
@@ -85,95 +93,118 @@ impl ImageFormat {
     }
 }
 
-/// How raw amplitude is mapped into the domain that limits and
-/// normalization operate in, both for percentile estimation (`stats.rs`)
-/// and for the pixel value that actually gets normalized (`colormap.rs`).
-///
-/// `AbsLog` uses the same domain (`log10|x|`) for both purposes. `Positive`
-/// does not: PFA_website's `normalize()` estimates percentile bounds from
-/// `|x|` but stretches the *signed* value against those bounds, which is
-/// what pushes negative returns toward black while favoring positive ones.
-/// That asymmetry is why `Positive` needs its own variant rather than
-/// reusing a single "domain" transform for both stats and display.
+/// How a value is mapped before it is stretched between the limits.
+// Raw amplitude is mapped into the domain that limits and normalization
+// operate in, both for percentile estimation (`stats.rs`) and for the pixel
+// value that actually gets normalized (`colormap.rs`).
+//
+// `AbsLog` uses the same domain (`log10|x|`) for both purposes. `Positive`
+// does not: PFA_website's `normalize()` estimates percentile bounds from
+// `|x|` but stretches the *signed* value against those bounds, which is
+// what pushes negative returns toward black while favoring positive ones.
+// That asymmetry is why `Positive` needs its own variant rather than
+// reusing a single "domain" transform for both stats and display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub enum AmplitudeTransform {
-    /// Plain linear amplitude, no transform.
+    /// Amplitude as it is.
     Linear,
-    /// `log10(|amplitude|)`, matching svalbard_radar's "Absolute" display
-    /// mode.
+    /// `log10(|amplitude|)`.
+    // Matching svalbard_radar's "Absolute" display mode.
     AbsLog,
-    /// Percentile bounds from `|amplitude|`, signed amplitude displayed --
-    /// PFA_website's (mis-named there) "abslog" stretch.
+    /// Percentile limits estimated from `|amplitude|`, against which the
+    /// signed amplitude is stretched: negative returns go dark, positive
+    /// ones bright.
+    // PFA_website's (mis-named there) "abslog" stretch.
     Positive,
 }
 
-/// A transform applied to each **source** sample *before* resampling, as
-/// distinct from [`AmplitudeTransform`], which maps the already-resampled
-/// value to the display domain afterwards. Order matters.
-///
-/// The motivating case is `siglog`: the processing step compresses each
-/// sample before anything averages traces, so `mean(siglog(raw))` stays
-/// meaningful at every scale. Folding the compression into the display
-/// transform instead would leave it until *after* resampling, i.e.
-/// `siglog(mean(raw))`, and the footprint mean of oscillating signed data
-/// collapses toward zero, which the log then truncates to a flat overview.
-/// Doing it here reproduces the processing order at render time and needs
-/// no special resampler.
-///
-/// Pointwise and `NaN`-preserving, so it can be applied to a read window or
-/// an overview band without affecting banding.
+/// What is done to each sample before anything is resampled.
+// Distinct from `AmplitudeTransform`, which maps the already-resampled
+// value to the display domain afterwards. Order matters.
+//
+// The motivating case is `siglog`: the processing step compresses each
+// sample before anything averages traces, so `mean(siglog(raw))` stays
+// meaningful at every scale. Folding the compression into the display
+// transform instead would leave it until *after* resampling, i.e.
+// `siglog(mean(raw))`, and the footprint mean of oscillating signed data
+// collapses toward zero, which the log then truncates to a flat overview.
+// Doing it here reproduces the processing order at render time and needs
+// no special resampler.
+//
+// Pointwise and `NaN`-preserving, so it can be applied to a read window or
+// an overview band without affecting banding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub enum SourceTransform {
     /// The sample unchanged.
     #[default]
     None,
-    /// `(log10(|amplitude|) - offset).max(0) * sign(amplitude)`: the
-    /// sign-corrected log transform `gpr.rs`'s `siglog` processing step
-    /// applies. The offset is the profile's
-    /// [`siglog_minval_log10`](RenderProfile::siglog_minval_log10),
-    /// defaulting to [`crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`].
+    /// The `siglog` processing step, at the profile's
+    /// `siglog_minval_log10`: `(log10(|amplitude|) - strength)`, at least
+    /// zero, with the amplitude's sign.
+    // The sign-corrected log transform `gpr.rs`'s `siglog` processing step
+    // applies, defaulting to `crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`.
     SigLog,
-    /// [`SigLog`](Self::SigLog) at a strength set from the radargram's own
-    /// noise floor: `log10(noise) + offset`, with the offset from
-    /// [`siglog_noise_offset`](RenderProfile::siglog_noise_offset) --
-    /// what the `adaptive_siglog` processing step does (#254).
-    ///
-    /// The strength depends on the data, so a profile carrying this cannot
-    /// be rendered as-is. The render entry points estimate the noise floor
-    /// once per radargram, next to the percentile limits, and
-    /// [`RenderProfile::pin_siglog_strength`] turns it into a fixed
-    /// `SigLog` profile that the renderer and the limit estimate share.
+    /// `SigLog` at a strength set from each radargram's noise floor:
+    /// `log10(noise) + siglog_noise_offset`, as the `adaptive_siglog`
+    /// processing step does.
+    // #254. The strength depends on the data, so a profile carrying this
+    // cannot be rendered as-is. The render entry points estimate the noise
+    // floor once per radargram, next to the percentile limits, and
+    // `RenderProfile::pin_siglog_strength` turns it into a fixed `SigLog`
+    // profile that the renderer and the limit estimate share.
     AdaptiveSigLog,
 }
 
-/// How amplitude limits are determined for normalization.
+/// The amplitudes that map to the two ends of the scale.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub enum AmplitudeLimits {
-    /// User-specified; requires no radargram-wide estimate.
+    /// Fixed amplitudes, in the transformed domain.
     Explicit { min: f32, max: f32 },
-    /// Estimated once per revision+profile via sampled percentiles (#119),
-    /// then reused for every chunk -- never estimated independently per
-    /// chunk, which would make adjacent chunks normalize differently and
-    /// produce visible seams.
+    /// Quantiles of the radargram's amplitude, between 0 and 1, estimated
+    /// once per radargram from a sample of it.
+    // Estimated once per revision+profile via sampled percentiles (#119),
+    // then reused for every chunk -- never estimated independently per
+    // chunk, which would make adjacent chunks normalize differently and
+    // produce visible seams.
     Percentile { low: f32, high: f32 },
 }
 
-/// Which vertical transform of the source `data` array a render draws
-/// from.
+/// Which vertical arrangement of the radargram a render draws.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub enum DatasetView {
+    /// Time or depth downwards, as recorded.
     Standard,
-    /// A render-time-only vertical topographic correction (#168): traces
-    /// are sheared so a given output row is one elevation everywhere,
-    /// resolved from the `elevation`/`depth` axes into a
-    /// [`crate::render::topo::TopoGeometry`] and applied by
-    /// [`crate::render::topo::TopoSource`]. Never precomputed or stored,
-    /// and never the coordinate space an interpretation is saved in --
-    /// distinct from `gpr.rs::correct_topography`'s `data_topocorr`, which
-    /// writes a NetCDF product. The catalog's own index overviews stay
-    /// [`Standard`](Self::Standard); only the viewer offers this.
+    /// Corrected for topography: each row is one elevation.
+    // A render-time-only vertical topographic correction (#168): traces are
+    // sheared so a given output row is one elevation everywhere, resolved
+    // from the `elevation`/`depth` axes into a
+    // `crate::render::topo::TopoGeometry` and applied by
+    // `crate::render::topo::TopoSource`. Never precomputed or stored, and
+    // never the coordinate space an interpretation is saved in -- distinct
+    // from `gpr.rs::correct_topography`'s `data_topocorr`, which writes a
+    // NetCDF product. The catalog's own index overviews stay `Standard`;
+    // only the viewer offers this.
     Topographic,
 }
+
+/// What every personal render profile's name starts with, and so what no
+/// built-in or project profile's may (#183). A personal profile and a
+/// shared one can then never have the same name, whoever made which first.
+pub const PERSONAL_PROFILE_PREFIX: &str = "personal-";
+
+/// Largest [`RenderProfile::contrast`] [`RenderProfile::validate`] accepts.
+/// Already far past anything useful: at 10 the stretch saturates all but
+/// the middle tenth of the limit window.
+const MAX_CONTRAST: f32 = 10.0;
+
+/// Largest magnitude [`RenderProfile::validate`] accepts for either siglog
+/// field, in log10 units: twenty decades either way of any amplitude scale
+/// a radargram is stored in.
+const MAX_SIGLOG_LOG10: f32 = 20.0;
 
 /// Serde default for [`RenderProfile::siglog_minval_log10`]: the shared
 /// `siglog` step default.
@@ -188,76 +219,96 @@ fn default_siglog_noise_offset() -> f32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct RenderProfile {
+    // The doc comments on these fields are the public description of a
+    // render profile in the HTTP API (#183); rationale is in `//` comments.
+    // Fields with a serde default are still `required` in the schema: the
+    // server always sends them, and a client reading one should not have to
+    // treat it as missing. A request may still leave them out.
+    /// What the profile is called.
     pub name: String,
+    /// Which vertical arrangement of the radargram it draws.
     pub view: DatasetView,
-    /// Applied to each source sample before resampling. `#[serde(default)]`
-    /// (`None`) so profile files written before this field existed keep
-    /// loading.
+    /// Applied to each sample before anything is resampled. Unset is
+    /// `None`.
+    // `#[serde(default)]` so profile files written before this field
+    // existed keep loading.
+    #[cfg_attr(feature = "server", schema(required = true))]
     #[serde(default)]
     pub source_transform: SourceTransform,
-    /// Strength of [`SourceTransform::SigLog`]: the `minval_log10`
-    /// exponent below which magnitudes truncate to zero. Ignored when
-    /// `source_transform` is not `SigLog`.
-    ///
-    /// Defaults to [`crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`], the
-    /// same default the `siglog` processing step uses, so a profile
-    /// reproduces the step without stating a strength. A profile can
-    /// override it for its data's scale; `siglog-seismic` does, because a
-    /// linear colour ramp needs the noise floor near white and the
-    /// default does not truncate enough of a high-dynamic-range noise
-    /// floor.
-    ///
-    /// `#[serde(default = ...)]` so profile files written before the
-    /// field existed keep loading at the default strength.
+    /// The strength of a `SigLog` source transform: the log10 magnitude
+    /// below which samples truncate to zero. Only for `SigLog`; unset is
+    /// the `siglog` processing step's default.
+    // The same default the `siglog` processing step uses
+    // (`crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`), so a profile
+    // reproduces the step without stating a strength. A profile can
+    // override it for its data's scale. `#[serde(default = ...)]` so
+    // profile files written before the field existed keep loading at the
+    // default strength.
+    #[cfg_attr(feature = "server", schema(required = true))]
     #[serde(default = "default_siglog_minval_log10")]
     pub siglog_minval_log10: f32,
-    /// Offset of [`SourceTransform::AdaptiveSigLog`] from the noise floor,
-    /// in log10 units: the strength is `log10(noise) + offset`. Ignored
-    /// when `source_transform` is not `AdaptiveSigLog`.
-    ///
-    /// Defaults to
-    /// [`crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET`], the
-    /// `adaptive_siglog` step's default and the grayscale profiles'
-    /// value. `siglog-seismic` overrides it with
-    /// [`crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET`].
-    ///
-    /// `#[serde(default = ...)]` so profile files written before the
-    /// field existed keep loading.
+    /// The offset of an `AdaptiveSigLog` source transform from the
+    /// radargram's noise floor, in log10 units: the strength is
+    /// `log10(noise) + offset`. Only for `AdaptiveSigLog`; unset is the
+    /// `adaptive_siglog` processing step's default.
+    // `crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET`, the
+    // grayscale profiles' value; `siglog-seismic` overrides it with
+    // `DIVERGING_ADAPTIVE_SIGLOG_OFFSET`. `#[serde(default = ...)]` so
+    // profile files written before the field existed keep loading.
+    #[cfg_attr(feature = "server", schema(required = true))]
     #[serde(default = "default_siglog_noise_offset")]
     pub siglog_noise_offset: f32,
+    /// How a resampled value is mapped before it is stretched between the
+    /// limits.
     pub transform: AmplitudeTransform,
+    /// The amplitudes that map to the two ends of the scale.
     pub limits: AmplitudeLimits,
+    /// How samples are combined where a pixel covers several (tiles only;
+    /// overviews and figures average colours).
     pub resampling: ResamplingMethod,
+    /// How images are encoded.
     pub format: ImageFormat,
-    /// Post-normalization contrast multiplier: `1.0` (the default profile's
-    /// value) leaves the plain min-max stretch untouched.
+    /// Multiplies the stretched value, after `black_level` is subtracted.
+    /// `1` leaves the stretch between the limits as it is.
     pub contrast: f32,
-    /// Post-normalization black-level offset, subtracted before the
-    /// contrast multiplier: `0.0` (the default profile's value) leaves the
-    /// plain min-max stretch untouched.
+    /// Subtracted from the stretched value (0 to 1) before `contrast`. `0`
+    /// leaves the stretch as it is.
     pub black_level: f32,
-    /// Optional named gradient (#246). `None` (the default, and every
-    /// grayscale profile) renders through the original single-channel
-    /// path, byte-identical to before this field existed; `Some` maps the
-    /// normalized byte through the colormap's 256-entry RGB LUT.
-    ///
-    /// `#[serde(default)]` so profile files written before the field
-    /// existed keep loading, and omitting it can only mean "grayscale".
+    /// A colour scale. Unset is grey, from black at the low limit to white
+    /// at the high one.
+    // `None` renders through the original single-channel path,
+    // byte-identical to before #246 added the field; `Some` maps the
+    // normalized byte through the colormap's 256-entry RGB LUT.
+    // `#[serde(default)]` so profile files written before the field
+    // existed keep loading, and omitting it can only mean "grayscale".
+    #[cfg_attr(feature = "server", schema(required = true))]
     #[serde(default)]
     pub colormap: Option<Colormap>,
-    /// Force the resolved limits to `(-vmax, vmax)` after estimation, so
-    /// a diverging colormap's midpoint sits at zero amplitude. See
-    /// [`super::colormap::resolve_limits`] for why this composes with
-    /// both limit kinds. `false` for every grayscale profile, which is
-    /// also what a file without the field means.
+    /// Make the limits symmetric about zero, `(-max, max)` with the larger
+    /// of the two magnitudes, so that a diverging colour scale's middle is
+    /// zero amplitude. Unset is `false`.
+    // See `super::colormap::resolve_limits` for why this composes with
+    // both limit kinds. `false` for every grayscale profile, which is also
+    // what a file without the field means.
+    #[cfg_attr(feature = "server", schema(required = true))]
     #[serde(default)]
     pub symmetric_limits: bool,
-    /// Sample rows dropped from the top of every trace before estimating
-    /// percentile limits (`stats.rs`), excluding the direct-wave band from
-    /// the estimate. `0` (the default profile's value) samples whole
-    /// traces, unchanged from before this field existed.
+    /// Samples left out at the top of every trace when estimating
+    /// percentile limits, to keep the direct wave out of the estimate.
+    // `stats.rs` reads it. `0` (the default profile's value) samples whole
+    // traces, unchanged from before this field existed.
     pub stats_skip_first_samples: usize,
+    /// The colour, as `[red, green, blue]` from 0 to 255, of a tile or
+    /// overview pixel with no data under it. Unset is mid-grey. Figures
+    /// leave such pixels transparent instead.
+    // #183. A grey profile with a colour here renders as RGB; see
+    // `Self::rgb_lut`. Figures leave it transparent so their background
+    // shows through.
+    #[cfg_attr(feature = "server", schema(required = true))]
+    #[serde(default)]
+    pub nodata_color: Option<[u8; 3]>,
 }
 
 impl RenderProfile {
@@ -281,6 +332,7 @@ impl RenderProfile {
             colormap: None,
             symmetric_limits: false,
             stats_skip_first_samples: 0,
+            nodata_color: None,
         }
     }
 
@@ -520,9 +572,9 @@ impl RenderProfile {
     /// which `#[serde(default)]` so profile files written before each field
     /// existed keep loading unchanged; omitting them can only mean "no
     /// source preprocessing", "grayscale", "asymmetric" and the shared
-    /// siglog defaults, which is what those files did. A `colormap` that is
-    /// present is checked by [`Colormap::validate`], since that is the
-    /// only field with structural invariants the type cannot express.
+    /// siglog defaults, which is what those files did; `nodata_color`
+    /// likewise defaults to the pad grey. The parsed profile is checked by
+    /// [`Self::validate`].
     /// Profiles that inherit from a built-in and override a field or two
     /// are the obvious next step and deliberately not guessed at here -- whether
     /// that is a `base = "default"` key, a separate
@@ -534,13 +586,86 @@ impl RenderProfile {
             .map_err(|e| format!("Could not read render profile {}: {e}", path.display()))?;
         let profile: Self = toml::from_str(&text)
             .map_err(|e| format!("Could not parse render profile {}: {e}", path.display()))?;
+        profile
+            .validate()
+            .map_err(|e| format!("Could not use render profile {}: {e}", path.display()))?;
+        Ok(profile)
+    }
+
+    /// Check what the types cannot express, for a profile that did not come
+    /// from [`Self::built_in_profiles`]: a TOML file, or a project's profile
+    /// sent over HTTP (#183). The built-ins are constructed valid.
+    ///
+    /// Rejected rather than clamped, because each of these would otherwise
+    /// render something other than what the profile says, or nothing at
+    /// all, without a word: a NaN limit normalizes every pixel to NaN, a
+    /// colormap without stops panics in its LUT, and a siglog field without
+    /// its transform does nothing.
+    ///
+    /// The ranges are generous on purpose. They exist to refuse values that
+    /// cannot be meant (a contrast of 1e9, a percentile window of 0.5-0.5),
+    /// not to second-guess a choice; an odd-looking picture is for the
+    /// person tuning the profile to judge.
+    pub fn validate(&self) -> Result<(), String> {
         // The colormap is the one part of a profile with structural
-        // invariants the type cannot express, so a malformed file is
-        // rejected here rather than panicking in the render path.
-        if let Some(colormap) = &profile.colormap {
-            colormap
-                .validate()
-                .map_err(|e| format!("Could not use render profile {}: {e}", path.display()))?;
+        // invariants, so a malformed one is rejected here rather than
+        // panicking in the render path.
+        if let Some(colormap) = &self.colormap {
+            colormap.validate()?;
+        }
+        match self.limits {
+            AmplitudeLimits::Percentile { low, high } => {
+                if !(low.is_finite() && high.is_finite() && 0.0 <= low && low < high && high <= 1.0)
+                {
+                    return Err(format!(
+                        "the percentile limits must satisfy 0 <= low < high <= 1, \
+                         not low = {low}, high = {high}"
+                    ));
+                }
+            }
+            AmplitudeLimits::Explicit { min, max } => {
+                if !(min.is_finite() && max.is_finite() && min < max) {
+                    return Err(format!(
+                        "the explicit limits must be finite with min < max, \
+                         not min = {min}, max = {max}"
+                    ));
+                }
+            }
+        }
+        if !(self.contrast.is_finite() && self.contrast > 0.0 && self.contrast <= MAX_CONTRAST) {
+            return Err(format!(
+                "contrast must be above 0 and at most {MAX_CONTRAST}, not {}",
+                self.contrast
+            ));
+        }
+        if !(self.black_level.is_finite() && (-1.0..1.0).contains(&self.black_level)) {
+            return Err(format!(
+                "black_level must be at least -1 and below 1, not {}",
+                self.black_level
+            ));
+        }
+        if let ImageFormat::Jpeg { quality } = self.format {
+            if !(1..=100).contains(&quality) {
+                return Err(format!("JPEG quality must be 1 to 100, not {quality}"));
+            }
+        }
+        if !(self.siglog_minval_log10.is_finite()
+            && self.siglog_minval_log10.abs() <= MAX_SIGLOG_LOG10)
+        {
+            return Err(format!(
+                "siglog_minval_log10 must be between -{MAX_SIGLOG_LOG10} and \
+                 {MAX_SIGLOG_LOG10}, not {}",
+                self.siglog_minval_log10
+            ));
+        }
+        if !(self.siglog_noise_offset.is_finite()
+            && self.siglog_noise_offset.abs() <= MAX_SIGLOG_LOG10)
+        {
+            return Err(format!(
+                "siglog_noise_offset must be between -{MAX_SIGLOG_LOG10} and \
+                 {MAX_SIGLOG_LOG10}, not {}",
+                self.siglog_noise_offset
+            ));
         }
         // The strength is inert without the transform it is the strength
         // *of*, so a file setting one and not the other renders at no
@@ -550,27 +675,42 @@ impl RenderProfile {
         // being paid silently by whoever wrote the file.
         // The same holds for the adaptive offset, and each of the two
         // fields belongs to exactly one of the two siglog transforms.
-        if profile.source_transform != SourceTransform::SigLog
-            && profile.siglog_minval_log10 != default_siglog_minval_log10()
+        if self.source_transform != SourceTransform::SigLog
+            && self.siglog_minval_log10 != default_siglog_minval_log10()
         {
             return Err(format!(
-                "Could not use render profile {}: siglog_minval_log10 is set to {} \
-                 but source_transform is not SigLog, so the strength would do nothing.",
-                path.display(),
-                profile.siglog_minval_log10
+                "siglog_minval_log10 is set to {} but source_transform is not SigLog, \
+                 so the strength would do nothing.",
+                self.siglog_minval_log10
             ));
         }
-        if profile.source_transform != SourceTransform::AdaptiveSigLog
-            && profile.siglog_noise_offset != default_siglog_noise_offset()
+        if self.source_transform != SourceTransform::AdaptiveSigLog
+            && self.siglog_noise_offset != default_siglog_noise_offset()
         {
             return Err(format!(
-                "Could not use render profile {}: siglog_noise_offset is set to {} \
-                 but source_transform is not AdaptiveSigLog, so the offset would do nothing.",
-                path.display(),
-                profile.siglog_noise_offset
+                "siglog_noise_offset is set to {} but source_transform is not \
+                 AdaptiveSigLog, so the offset would do nothing.",
+                self.siglog_noise_offset
             ));
         }
-        Ok(profile)
+        Ok(())
+    }
+
+    /// The 256-entry LUT an RGB render maps the normalized byte through,
+    /// or `None` for the single-channel grey path.
+    ///
+    /// A grey profile goes RGB only when it has a [`nodata_color`]
+    /// (#183): the pad must be that colour, which one channel cannot hold.
+    /// Its LUT is then the identity grey ramp, so its data pixels are the
+    /// same greys the single-channel path gives.
+    ///
+    /// [`nodata_color`]: Self::nodata_color
+    pub fn rgb_lut(&self) -> Option<[[u8; 3]; 256]> {
+        match (&self.colormap, self.nodata_color) {
+            (Some(colormap), _) => Some(colormap.lut()),
+            (None, Some(_)) => Some(std::array::from_fn(|i| [i as u8; 3])),
+            (None, None) => None,
+        }
     }
 
     /// A stable string identifying everything about this profile that
@@ -627,7 +767,43 @@ impl RenderProfile {
                 fragment.push_str(&format!("|siglog-adaptive:{}", self.siglog_noise_offset));
             }
         }
+        // Last and only when set, on the same terms as the colormap: every
+        // profile without one keeps the fragment it had before #183.
+        if let Some([r, g, b]) = self.nodata_color {
+            fragment.push_str(&format!("|nodata:{r},{g},{b}"));
+        }
         fragment
+    }
+
+    /// A stable string identifying everything about this profile that
+    /// changes its resolved amplitude limits, and nothing else: the key the
+    /// render service keeps limits under (#183).
+    ///
+    /// Narrower than [`Self::cache_key_fragment`] on purpose. Tuning a
+    /// profile's colours, contrast, black level, resampling or no-data
+    /// colour does not move its limits, and keying them on the whole
+    /// profile re-sampled the radargram for every such change.
+    ///
+    /// Meant for a profile already pinned
+    /// ([`Self::pin_siglog_strength`]), whose fixed strength is part of
+    /// what the samples are estimated from.
+    pub fn limits_key_fragment(&self) -> String {
+        let limits = match self.limits {
+            AmplitudeLimits::Explicit { min, max } => format!("explicit:{min}:{max}"),
+            AmplitudeLimits::Percentile { low, high } => format!("pct:{low}:{high}"),
+        };
+        let siglog = match self.source_transform {
+            SourceTransform::None => String::new(),
+            SourceTransform::SigLog => self.siglog_minval_log10.to_string(),
+            SourceTransform::AdaptiveSigLog => self.siglog_noise_offset.to_string(),
+        };
+        format!(
+            "{:?}:{siglog}|{:?}|{limits}|{}|{}",
+            self.source_transform,
+            self.transform,
+            self.symmetric_limits,
+            self.stats_skip_first_samples
+        )
     }
 
     /// Pin an [`AdaptiveSigLog`](SourceTransform::AdaptiveSigLog) profile
@@ -1224,5 +1400,187 @@ stats_skip_first_samples = 0
             colormapped.cache_key_fragment(),
             symmetric_colormapped.cache_key_fragment()
         );
+    }
+
+    #[test]
+    fn every_built_in_is_valid() {
+        for profile in RenderProfile::built_in_profiles() {
+            assert_eq!(profile.validate(), Ok(()), "{}", profile.name);
+        }
+    }
+
+    #[test]
+    fn validate_refuses_what_a_profile_cannot_mean() {
+        let base = RenderProfile::default_profile;
+        let cases = [
+            (
+                RenderProfile {
+                    limits: AmplitudeLimits::Percentile {
+                        low: 0.5,
+                        high: 0.5,
+                    },
+                    ..base()
+                },
+                "percentile",
+            ),
+            (
+                RenderProfile {
+                    limits: AmplitudeLimits::Percentile {
+                        low: f32::NAN,
+                        high: 0.9,
+                    },
+                    ..base()
+                },
+                "percentile",
+            ),
+            (
+                RenderProfile {
+                    limits: AmplitudeLimits::Explicit {
+                        min: 3.0,
+                        max: -3.0,
+                    },
+                    ..base()
+                },
+                "explicit",
+            ),
+            (
+                RenderProfile {
+                    contrast: 0.0,
+                    ..base()
+                },
+                "contrast",
+            ),
+            (
+                RenderProfile {
+                    contrast: 1e9,
+                    ..base()
+                },
+                "contrast",
+            ),
+            (
+                RenderProfile {
+                    black_level: 1.0,
+                    ..base()
+                },
+                "black_level",
+            ),
+            (
+                RenderProfile {
+                    format: ImageFormat::Jpeg { quality: 0 },
+                    ..base()
+                },
+                "quality",
+            ),
+            (
+                RenderProfile {
+                    source_transform: SourceTransform::SigLog,
+                    siglog_minval_log10: f32::INFINITY,
+                    ..base()
+                },
+                "siglog_minval_log10",
+            ),
+            (
+                RenderProfile {
+                    colormap: Some(Colormap {
+                        name: "many".to_string(),
+                        stops: (0..=super::super::colormap::MAX_COLOR_STOPS)
+                            .map(|i| super::super::colormap::ColorStop {
+                                position: i as f32 / 100.0,
+                                color: [0, 0, 0],
+                            })
+                            .collect(),
+                    }),
+                    ..base()
+                },
+                "stops",
+            ),
+        ];
+        for (profile, expect) in cases {
+            let error = profile.validate().unwrap_err();
+            assert!(error.contains(expect), "expected '{expect}': {error}");
+        }
+    }
+
+    #[test]
+    fn a_no_data_colour_is_part_of_the_key_only_when_set() {
+        // Every profile without one keeps the fragment it had, so no cached
+        // render is invalidated by the field existing.
+        let plain = RenderProfile::default_profile();
+        assert!(!plain.cache_key_fragment().contains("nodata"));
+        let coloured = RenderProfile {
+            nodata_color: Some([255, 0, 255]),
+            ..plain.clone()
+        };
+        assert_ne!(coloured.cache_key_fragment(), plain.cache_key_fragment());
+        assert!(coloured.cache_key_fragment().ends_with("|nodata:255,0,255"));
+    }
+
+    #[test]
+    fn a_grey_profile_goes_rgb_only_with_a_no_data_colour() {
+        assert!(RenderProfile::default_profile().rgb_lut().is_none());
+        let lut = RenderProfile {
+            nodata_color: Some([1, 2, 3]),
+            ..RenderProfile::default_profile()
+        }
+        .rgb_lut()
+        .unwrap();
+        // The identity grey ramp: the same greys the one-channel path gives.
+        assert!(lut.iter().enumerate().all(|(i, c)| *c == [i as u8; 3]));
+        assert_eq!(
+            RenderProfile::seismic_profile().rgb_lut(),
+            Some(Colormap::seismic().lut())
+        );
+    }
+
+    #[test]
+    fn the_limits_key_ignores_what_does_not_move_the_limits() {
+        let base = RenderProfile::seismic_profile();
+        let looks_different = RenderProfile {
+            name: "other".to_string(),
+            colormap: None,
+            contrast: 2.0,
+            black_level: 0.2,
+            resampling: ResamplingMethod::Lanczos,
+            format: ImageFormat::Png,
+            nodata_color: Some([0, 0, 0]),
+            ..base.clone()
+        };
+        assert_eq!(
+            looks_different.limits_key_fragment(),
+            base.limits_key_fragment()
+        );
+        for moves in [
+            RenderProfile {
+                limits: AmplitudeLimits::Percentile {
+                    low: 0.05,
+                    high: 0.95,
+                },
+                ..base.clone()
+            },
+            RenderProfile {
+                symmetric_limits: false,
+                ..base.clone()
+            },
+            RenderProfile {
+                transform: AmplitudeTransform::AbsLog,
+                ..base.clone()
+            },
+            RenderProfile {
+                stats_skip_first_samples: 50,
+                ..base.clone()
+            },
+            RenderProfile {
+                source_transform: SourceTransform::SigLog,
+                siglog_minval_log10: 1.0,
+                ..base.clone()
+            },
+            RenderProfile {
+                source_transform: SourceTransform::SigLog,
+                siglog_minval_log10: 2.0,
+                ..base.clone()
+            },
+        ] {
+            assert_ne!(moves.limits_key_fragment(), base.limits_key_fragment());
+        }
     }
 }

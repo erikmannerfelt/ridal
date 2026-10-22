@@ -30,19 +30,27 @@ use super::profile::{
 };
 use crate::filters;
 
+/// Most stops a [`Colormap`] may have (#183). Generous: matplotlib's
+/// smoothest built-in ramps are described in far fewer, and the LUT has only
+/// 256 entries to spread them over.
+pub const MAX_COLOR_STOPS: usize = 32;
+
 /// One colour stop: a position in `[0, 1]` and its 8-bit sRGB colour.
-///
-/// Positions are explicit even though the built-in ramp is evenly
-/// spaced, so a future editor (#183) is a UI problem rather than a
-/// data-model migration.
+// Positions are explicit even though the built-in ramp is evenly spaced, so
+// an editor (#183) is a UI problem rather than a data-model migration.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct ColorStop {
+    /// Where on the scale, from 0 (the low limit) to 1 (the high one).
     pub position: f32,
+    /// `[red, green, blue]`, each 0 to 255.
     pub color: [u8; 3],
 }
 
-/// A named gradient as a list of stops, linearly interpolated in sRGB.
+/// A named colour scale: up to 32 stops in increasing position, with
+/// colours interpolated linearly in sRGB between them.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
 pub struct Colormap {
     pub name: String,
     pub stops: Vec<ColorStop>,
@@ -129,6 +137,13 @@ impl Colormap {
     pub fn validate(&self) -> Result<(), String> {
         if self.stops.is_empty() {
             return Err(format!("colormap '{}' has no stops", self.name));
+        }
+        if self.stops.len() > MAX_COLOR_STOPS {
+            return Err(format!(
+                "colormap '{}' has {} stops; at most {MAX_COLOR_STOPS} are allowed",
+                self.name,
+                self.stops.len()
+            ));
         }
         let mut previous = f32::NEG_INFINITY;
         for stop in &self.stops {

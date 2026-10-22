@@ -8285,7 +8285,7 @@
         "tags": [
           "Server"
         ],
-        "summary": "The names of the built-in render profiles.",
+        "summary": "The names of the render profiles to choose from: the built-ins the\nproject does not hide, then its own. `GET /api/v1/render-profiles` has\nthem in full.",
         "operationId": "list_profiles",
         "responses": {
           "200": {
@@ -8511,6 +8511,284 @@
         "x-ridal-needs": {
           "who": "anyone",
           "download": "all"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/render-profiles": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "Every render profile this project can render with, each in full.",
+        "operationId": "list_render_profiles",
+        "responses": {
+          "200": {
+            "description": "The profiles.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderProfileList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      }
+    },
+    "/api/v1/projects/{key}/render-profiles/{name}": {
+      "parameters": [
+        {
+          "name": "key",
+          "in": "path",
+          "description": "The project's key. `ridal gui` serves its one project as `default`.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "name",
+          "in": "path",
+          "description": "An account name.",
+          "required": true,
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "One render profile. A project profile comes with an `ETag`.",
+        "operationId": "get_render_profile",
+        "parameters": [
+          {
+            "name": "format",
+            "in": "query",
+            "description": "`toml` for a profile file, as `ridal render --render-profile FILE`\nand the Python package read; JSON otherwise.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The profile; with `?format=toml`, the profile as a file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderProfileView"
+                }
+              },
+              "application/toml": {}
+            }
+          },
+          "400": {
+            "description": "`unknown_format`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: the project requires a login to read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_render_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "anyone"
+        }
+      },
+      "put": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "Create or replace one of the project's render profiles. The body's\n`name` must be the one in the path. Takes `If-Match`, and\n`If-None-Match: *` to only create.",
+        "operationId": "put_render_profile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderProfile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The profile as saved, with its `ETag`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderProfileView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "`invalid_render_profile`, `invalid_render_profile_name`, `reserved_render_profile_name` or `render_profile_name_mismatch`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`built_in_render_profile`: the name is a built-in's.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
+        }
+      },
+      "delete": {
+        "tags": [
+          "Render profiles"
+        ],
+        "summary": "Delete one of the project's render profiles. Refused for a built-in, and\nfor the project's default. People and links that use it fall back to\nthe next profile they would have used.",
+        "operationId": "delete_render_profile",
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          },
+          "401": {
+            "description": "`authentication_required`: sign in first.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role is too low (`insufficient_role`), or the server is read-only (`read_only`), or the project is archived (`archived`), or an API token's grant is below it (`token_limit`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no_such_render_profile`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`built_in_render_profile`, or `render_profile_is_default`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "`version_conflict`: the `If-Match` is not the current version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "x-ridal-needs": {
+          "who": "operator"
         }
       }
     },
@@ -10284,6 +10562,74 @@
           }
         }
       },
+      "AmplitudeLimits": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Fixed amplitudes, in the transformed domain.",
+            "required": [
+              "Explicit"
+            ],
+            "properties": {
+              "Explicit": {
+                "type": "object",
+                "description": "Fixed amplitudes, in the transformed domain.",
+                "required": [
+                  "min",
+                  "max"
+                ],
+                "properties": {
+                  "min": {
+                    "type": "number",
+                    "format": "float"
+                  },
+                  "max": {
+                    "type": "number",
+                    "format": "float"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Quantiles of the radargram's amplitude, between 0 and 1, estimated\nonce per radargram from a sample of it.",
+            "required": [
+              "Percentile"
+            ],
+            "properties": {
+              "Percentile": {
+                "type": "object",
+                "description": "Quantiles of the radargram's amplitude, between 0 and 1, estimated\nonce per radargram from a sample of it.",
+                "required": [
+                  "low",
+                  "high"
+                ],
+                "properties": {
+                  "low": {
+                    "type": "number",
+                    "format": "float"
+                  },
+                  "high": {
+                    "type": "number",
+                    "format": "float"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "description": "The amplitudes that map to the two ends of the scale."
+      },
+      "AmplitudeTransform": {
+        "type": "string",
+        "description": "How a value is mapped before it is stretched between the limits.",
+        "enum": [
+          "Linear",
+          "AbsLog",
+          "Positive"
+        ]
+      },
       "AnchorAxis": {
         "type": "object",
         "description": "An anchor axis: a named, invariant quantity plus the mapping from index to it (SPEC §7.4.2). The mapping's fields (SPEC §7.5) sit alongside `name`, `unit` and `synthetic`; which of them are present depends on `type`.",
@@ -11211,6 +11557,49 @@
           }
         }
       },
+      "ColorStop": {
+        "type": "object",
+        "description": "One colour stop: a position in `[0, 1]` and its 8-bit sRGB colour.",
+        "required": [
+          "position",
+          "color"
+        ],
+        "properties": {
+          "position": {
+            "type": "number",
+            "format": "float",
+            "description": "Where on the scale, from 0 (the low limit) to 1 (the high one)."
+          },
+          "color": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "`[red, green, blue]`, each 0 to 255."
+          }
+        }
+      },
+      "Colormap": {
+        "type": "object",
+        "description": "A named colour scale: up to 32 stops in increasing position, with\ncolours interpolated linearly in sRGB between them.",
+        "required": [
+          "name",
+          "stops"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "stops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ColorStop"
+            }
+          }
+        }
+      },
       "ConsequenceReport": {
         "type": "object",
         "description": "Everything a replace would do, before it does any of it.",
@@ -11794,6 +12183,14 @@
             "minimum": 0
           }
         }
+      },
+      "DatasetView": {
+        "type": "string",
+        "description": "Which vertical arrangement of the radargram a render draws.",
+        "enum": [
+          "Standard",
+          "Topographic"
+        ]
       },
       "Dem": {
         "type": "object",
@@ -13532,6 +13929,41 @@
             "description": "Ignore decisions with nothing to act on, because the radargram is\nnot anywhere Ridal currently looks."
           }
         }
+      },
+      "ImageFormat": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "JPEG, at a quality from 1 to 100.",
+            "required": [
+              "Jpeg"
+            ],
+            "properties": {
+              "Jpeg": {
+                "type": "object",
+                "description": "JPEG, at a quality from 1 to 100.",
+                "required": [
+                  "quality"
+                ],
+                "properties": {
+                  "quality": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "string",
+            "description": "PNG, losslessly.",
+            "enum": [
+              "Png"
+            ]
+          }
+        ],
+        "description": "How images are encoded."
       },
       "InfoRecord": {
         "type": "object",
@@ -15915,6 +16347,14 @@
           }
         }
       },
+      "ProfileScope": {
+        "type": "string",
+        "description": "Where a profile comes from.",
+        "enum": [
+          "built_in",
+          "project"
+        ]
+      },
       "ProfileVersion": {
         "type": "object",
         "description": "One version of a profile.",
@@ -16105,6 +16545,7 @@
           "default_profile",
           "processing_crs",
           "profiles",
+          "hidden_profiles",
           "default_xscale",
           "xscales",
           "my_profile",
@@ -16238,7 +16679,14 @@
             "items": {
               "type": "string"
             },
-            "description": "The built-in render profiles, by name."
+            "description": "The render profiles to choose from, by name: the built-ins that are\nnot hidden, then the project's own (#183)."
+          },
+          "hidden_profiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The built-in render profiles this project does not offer."
           },
           "default_xscale": {
             "type": [
@@ -16839,6 +17287,152 @@
           "level2"
         ]
       },
+      "RenderProfile": {
+        "type": "object",
+        "required": [
+          "name",
+          "view",
+          "source_transform",
+          "siglog_minval_log10",
+          "siglog_noise_offset",
+          "transform",
+          "limits",
+          "resampling",
+          "format",
+          "contrast",
+          "black_level",
+          "colormap",
+          "symmetric_limits",
+          "stats_skip_first_samples",
+          "nodata_color"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "What the profile is called."
+          },
+          "view": {
+            "$ref": "#/components/schemas/DatasetView",
+            "description": "Which vertical arrangement of the radargram it draws."
+          },
+          "source_transform": {
+            "$ref": "#/components/schemas/SourceTransform",
+            "description": "Applied to each sample before anything is resampled. Unset is\n`None`."
+          },
+          "siglog_minval_log10": {
+            "type": "number",
+            "format": "float",
+            "description": "The strength of a `SigLog` source transform: the log10 magnitude\nbelow which samples truncate to zero. Only for `SigLog`; unset is\nthe `siglog` processing step's default."
+          },
+          "siglog_noise_offset": {
+            "type": "number",
+            "format": "float",
+            "description": "The offset of an `AdaptiveSigLog` source transform from the\nradargram's noise floor, in log10 units: the strength is\n`log10(noise) + offset`. Only for `AdaptiveSigLog`; unset is the\n`adaptive_siglog` processing step's default."
+          },
+          "transform": {
+            "$ref": "#/components/schemas/AmplitudeTransform",
+            "description": "How a resampled value is mapped before it is stretched between the\nlimits."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/AmplitudeLimits",
+            "description": "The amplitudes that map to the two ends of the scale."
+          },
+          "resampling": {
+            "$ref": "#/components/schemas/ResamplingMethod",
+            "description": "How samples are combined where a pixel covers several (tiles only;\noverviews and figures average colours)."
+          },
+          "format": {
+            "$ref": "#/components/schemas/ImageFormat",
+            "description": "How images are encoded."
+          },
+          "contrast": {
+            "type": "number",
+            "format": "float",
+            "description": "Multiplies the stretched value, after `black_level` is subtracted.\n`1` leaves the stretch between the limits as it is."
+          },
+          "black_level": {
+            "type": "number",
+            "format": "float",
+            "description": "Subtracted from the stretched value (0 to 1) before `contrast`. `0`\nleaves the stretch as it is."
+          },
+          "colormap": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Colormap",
+                "description": "A colour scale. Unset is grey, from black at the low limit to white\nat the high one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "symmetric_limits": {
+            "type": "boolean",
+            "description": "Make the limits symmetric about zero, `(-max, max)` with the larger\nof the two magnitudes, so that a diverging colour scale's middle is\nzero amplitude. Unset is `false`."
+          },
+          "stats_skip_first_samples": {
+            "type": "integer",
+            "description": "Samples left out at the top of every trace when estimating\npercentile limits, to keep the direct wave out of the estimate.",
+            "minimum": 0
+          },
+          "nodata_color": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "The colour, as `[red, green, blue]` from 0 to 255, of a tile or\noverview pixel with no data under it. Unset is mid-grey. Figures\nleave such pixels transparent instead."
+          }
+        }
+      },
+      "RenderProfileList": {
+        "type": "object",
+        "required": [
+          "profiles",
+          "default"
+        ],
+        "properties": {
+          "profiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RenderProfileView"
+            },
+            "description": "Built-ins first, then the project's own, hidden ones included."
+          },
+          "default": {
+            "type": "string",
+            "description": "The profile a request that names none renders with: the project's\ndefault, or `default`."
+          }
+        }
+      },
+      "RenderProfileView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RenderProfile"
+          },
+          {
+            "type": "object",
+            "required": [
+              "scope",
+              "hidden"
+            ],
+            "properties": {
+              "scope": {
+                "$ref": "#/components/schemas/ProfileScope"
+              },
+              "hidden": {
+                "type": "boolean",
+                "description": "Left out of the lists people choose from, but still rendered when\nasked for by name. Only a built-in can be hidden."
+              }
+            }
+          }
+        ],
+        "description": "A render profile, as the list and the single view give it."
+      },
       "Replaced": {
         "type": "object",
         "description": "`POST /api/v1/datasets/{radargram_id}/replace/{token}`: the replace is done.",
@@ -16878,6 +17472,16 @@
             "description": "Only these of the profile's radargrams, such as one catalog group's.\nOmitted, every one."
           }
         }
+      },
+      "ResamplingMethod": {
+        "type": "string",
+        "description": "How a tile combines the samples a pixel covers.",
+        "enum": [
+          "Mean",
+          "Peak",
+          "Lanczos",
+          "LanczosRectified"
+        ]
       },
       "RestoredInterpretation": {
         "type": "object",
@@ -17225,6 +17829,7 @@
         "required": [
           "default_profile",
           "default_xscale",
+          "hidden_profiles",
           "default_spacing",
           "default_format",
           "default_show_group_radargrams",
@@ -17251,6 +17856,12 @@
               "null"
             ],
             "format": "double"
+          },
+          "hidden_profiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "default_spacing": {
             "type": [
@@ -17404,6 +18015,16 @@
             ],
             "format": "double",
             "description": "Horizontal stretch to open radargrams at. Clearing it restores 1x."
+          },
+          "hidden_profiles": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Built-in render profiles to leave out of the lists people choose\nfrom (#183). An empty array hides none. The project's default cannot\nbe hidden."
           },
           "basemaps": {
             "type": [
@@ -17832,6 +18453,15 @@
             ]
           }
         }
+      },
+      "SourceTransform": {
+        "type": "string",
+        "description": "What is done to each sample before anything is resampled.",
+        "enum": [
+          "None",
+          "SigLog",
+          "AdaptiveSigLog"
+        ]
       },
       "SourceView": {
         "type": "object",

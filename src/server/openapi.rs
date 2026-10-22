@@ -30,7 +30,8 @@ use utoipa::{OpenApi, PartialSchema};
 use super::needs::{self, Needs, Who};
 use super::{
     app, batch_routes, dem_routes, draft_routes, ingest_routes, interp_routes, lifecycle_routes,
-    pick_routes, processing_routes, raw_routes, replace_routes, routes, site,
+    pick_routes, processing_routes, raw_routes, render_profile_routes, replace_routes, routes,
+    site,
 };
 use crate::interp::carry::{CarryReport, Displacement, Dropped, Severity};
 use crate::interp::source::RevisionDeclarations;
@@ -111,6 +112,8 @@ use crate::site::tokens;
         dem_routes::DemView,
         draft_routes::DraftList,
         draft_routes::DraftView,
+        render_profile_routes::RenderProfileList,
+        render_profile_routes::RenderProfileView,
         processing_routes::ProfileList,
         processing_routes::ProfileView,
         processing_routes::StatusList,

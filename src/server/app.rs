@@ -174,6 +174,11 @@ pub struct AppState {
     /// The chunked uploads a request is sending to or taking right now
     /// ([`super::upload_routes`]), so two cannot append to one at once.
     pub uploads: super::upload_routes::Sending,
+    /// The project's own render profiles (#183), read from its store at
+    /// startup and at every rediscovery, and replaced by every edit made
+    /// through [`Self::edit_render_profiles`]. In memory because every
+    /// chunk request looks its profile up.
+    project_render_profiles: RwLock<Arc<Vec<crate::render::profile::RenderProfile>>>,
 }
 
 /// Record a project's catalog size after a scan, for the site landing
@@ -192,12 +197,14 @@ fn record_catalog_summary(project: Option<&crate::project::Project>, catalog: &C
 }
 
 /// The project's on-disk overview store (#180), after clearing out the
-/// revisions `catalog` no longer has. `None` without a project: a bare
-/// directory has nowhere of its own to keep a cache, so its overviews stay
-/// in memory as before.
+/// revisions `catalog` no longer has and the overviews of profiles that are
+/// not in `profiles` (#183). `None` without a project: a bare directory has
+/// nowhere of its own to keep a cache, so its overviews stay in memory as
+/// before.
 fn overview_disk_cache(
     project: Option<&crate::project::Project>,
     catalog: &Catalog,
+    profiles: &super::render_profile_routes::ProfileSet,
 ) -> Option<OverviewDiskCache> {
     let project = project?;
     // Creates and tags the directory, so a project made before the cache
@@ -215,7 +222,7 @@ fn overview_disk_cache(
         .iter()
         .map(|entry| entry.revision_id.to_string())
         .collect();
-    cache.harvest(&live);
+    cache.harvest(&live, &profiles.overview_tags());
     Some(cache)
 }
 
@@ -383,7 +390,17 @@ impl AppState {
         let catalog = Catalog::discover_roots(&roots, &overrides, &tracks);
         tracks.retain(&live_paths(&roots, &catalog));
         record_catalog_summary(project.as_ref(), &catalog);
-        let overview_disk = overview_disk_cache(project.as_ref(), &catalog);
+        let project_render_profiles = Arc::new(
+            super::render_profile_routes::load_project_profiles(project.as_ref()),
+        );
+        let overview_disk = overview_disk_cache(
+            project.as_ref(),
+            &catalog,
+            &super::render_profile_routes::ProfileSet::of_project(
+                project.as_ref(),
+                Arc::clone(&project_render_profiles),
+            ),
+        );
         let mut radargrams = HashMap::new();
 
         for entry in &catalog.entries {
@@ -445,6 +462,7 @@ impl AppState {
             tracks,
             dem_links: Mutex::new(()),
             uploads: Default::default(),
+            project_render_profiles: RwLock::new(project_render_profiles),
         };
         // At startup too, not only on rediscovery. Most projects never
         // add or remove anything through the GUI, and those are exactly
@@ -572,7 +590,9 @@ impl AppState {
         let catalog = Catalog::discover_roots(&self.roots, &overrides, &self.tracks);
         self.tracks.retain(&live_paths(&self.roots, &catalog));
         record_catalog_summary(self.project.as_ref(), &catalog);
-        let overview_disk = overview_disk_cache(self.project.as_ref(), &catalog);
+        self.reload_render_profiles();
+        let overview_disk =
+            overview_disk_cache(self.project.as_ref(), &catalog, &self.render_profiles());
 
         let existing = self.catalog();
         let mut radargrams = HashMap::new();
@@ -619,6 +639,40 @@ impl AppState {
         self.sweep_axes(&catalog, Some(&changed));
         self.replace_catalog(catalog, radargrams);
         Ok(())
+    }
+
+    /// Every render profile this project can render with (#183).
+    pub fn render_profiles(&self) -> super::render_profile_routes::ProfileSet {
+        let project = Arc::clone(
+            &self
+                .project_render_profiles
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        super::render_profile_routes::ProfileSet::of_project(self.project.as_ref(), project)
+    }
+
+    /// Read the project's render profiles again, so a profile file edited
+    /// by hand is picked up by whatever rediscovers the catalog, not only
+    /// by a restart.
+    fn reload_render_profiles(&self) {
+        self.edit_render_profiles(|| ());
+    }
+
+    /// Run `edit`, a change to the project's render profile store, and then
+    /// re-read the store into memory, both under one lock: two edits at once
+    /// must not each re-read before the other has written, or the later
+    /// re-read to land would be missing the earlier edit.
+    pub fn edit_render_profiles<T>(&self, edit: impl FnOnce() -> T) -> T {
+        let mut profiles = self
+            .project_render_profiles
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let result = edit();
+        *profiles = Arc::new(super::render_profile_routes::load_project_profiles(
+            self.project.as_ref(),
+        ));
+        result
     }
 
     /// Give every catalogued radargram a current revision in the ledger.
@@ -1101,6 +1155,12 @@ pub fn static_router() -> Router {
 pub(super) fn project_api() -> OpenApiRouter<std::sync::Arc<AppState>> {
     OpenApiRouter::new()
         .routes(routes!(super::routes::list_profiles))
+        .routes(routes!(super::render_profile_routes::list_render_profiles))
+        .routes(routes!(
+            super::render_profile_routes::get_render_profile,
+            super::render_profile_routes::put_render_profile,
+            super::render_profile_routes::delete_render_profile
+        ))
         .routes(routes!(
             super::preference_routes::get_preferences,
             super::preference_routes::put_preferences
@@ -1804,8 +1864,14 @@ mod tests {
             // directly in the scannable part of the card.
             assert!(html.contains("More info"));
 
-            let (status, _) = get(&app, "/?profile=nonexistent").await;
-            assert_eq!(status, StatusCode::BAD_REQUEST);
+            // A name nothing answers to -- a project profile deleted since
+            // the link was made (#183) -- falls back, rather than leaving a
+            // page with nothing on it to choose another.
+            let (status, body) = get(&app, "/?profile=nonexistent").await;
+            assert_eq!(status, StatusCode::OK);
+            let html = String::from_utf8(body.to_vec()).unwrap();
+            assert!(html.contains("value=\"default\" selected"));
+            assert!(!html.contains("nonexistent"));
         });
     }
 

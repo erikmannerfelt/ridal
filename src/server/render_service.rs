@@ -16,7 +16,6 @@
 // `render/mod.rs`.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use crate::render::colormap;
 use crate::render::grid::{Chunk, OverviewSpec, CHUNK_SIZE};
 use crate::render::interrupt::Interrupt;
-use crate::render::profile::{AmplitudeLimits, DatasetView, RenderProfile};
+use crate::render::profile::{AmplitudeLimits, DatasetView, RenderProfile, SourceTransform};
 use crate::render::renderer::Renderer;
 use crate::render::stats::sampled_amplitude_limits;
 use crate::render::topo::{self, ElevationRange, TopoGeometry, TopoSource, TopoUnavailable};
@@ -47,6 +46,17 @@ const RENDERER_VERSION: u32 = 2;
 /// width up to full resolution, and every such download persisted would be
 /// a multi-megabyte file nobody is likely to ask for twice.
 const MAX_PERSISTED_OVERVIEW_WIDTH: usize = 1024;
+
+/// Most limit estimates one radargram's service keeps; see
+/// [`RenderService::limits_cache`]. Comfortably above the built-in
+/// profiles' distinct estimates, so ordinary viewing never evicts one.
+const LIMITS_CACHE_ENTRIES: usize = 32;
+
+fn new_limits_cache() -> lru::LruCache<String, (f32, f32)> {
+    lru::LruCache::new(
+        std::num::NonZeroUsize::new(LIMITS_CACHE_ENTRIES).expect("the bound is not zero"),
+    )
+}
 
 fn blake3_hex32(parts: &[&[u8]]) -> String {
     let mut hasher = blake3::Hasher::new();
@@ -551,10 +561,17 @@ pub struct RenderService {
     /// become unreachable and age out under the budget instead of being
     /// served.
     scope: u64,
-    /// Per profile: the profile to render with (an adaptive siglog
-    /// strength pinned to this revision's noise floor, see
-    /// [`crate::render::stats::pin_profile`]) and its amplitude limits.
-    limits_cache: HashMap<RenderVariantId, (RenderProfile, (f32, f32))>,
+    /// This revision's noise floor (log10), for pinning an adaptive siglog
+    /// profile's strength ([`RenderProfile::pin_siglog_strength`]).
+    /// Estimated on the first such profile and kept: it depends on the data
+    /// and the sample seed, and on no profile.
+    noise_floor_log10: Option<f32>,
+    /// Amplitude limits, keyed on [`RenderProfile::limits_key_fragment`] of
+    /// the pinned profile rather than on the whole profile (#183), so
+    /// profiles differing only in colour, contrast, black level, resampling
+    /// or no-data colour share one estimate. Bounded, because a person
+    /// tuning a profile makes a new key with every window they try.
+    limits_cache: lru::LruCache<String, (f32, f32)>,
     /// The topographic geometry resolved for the most recently requested
     /// elevation range, memoized so a burst of chunk/overview requests for
     /// the same range resolves it once. Constructed lazily -- never at
@@ -633,7 +650,8 @@ impl RenderService {
             revision_id,
             cache: config.cache.clone(),
             scope: NEXT_SCOPE.fetch_add(1, Ordering::Relaxed),
-            limits_cache: HashMap::new(),
+            noise_floor_log10: None,
+            limits_cache: new_limits_cache(),
             topo_geometry: None,
             overview_disk: None,
         }
@@ -662,7 +680,8 @@ impl RenderService {
             revision_id,
             cache: config.cache.clone(),
             scope: NEXT_SCOPE.fetch_add(1, Ordering::Relaxed),
-            limits_cache: HashMap::new(),
+            noise_floor_log10: None,
+            limits_cache: new_limits_cache(),
             topo_geometry: None,
             overview_disk: None,
         }
@@ -725,22 +744,37 @@ impl RenderService {
     /// always computed as if the view were [`DatasetView::Standard`] and
     /// the elevation range [`ElevationRange::NONE`], so a toggle between
     /// views (or an elevation-range edit) never invalidates it.
+    ///
+    /// The key holds only what moves the limits
+    /// ([`RenderProfile::limits_key_fragment`]), so a profile that differs
+    /// in colour or contrast alone reuses the estimate rather than sampling
+    /// the file again (#183).
     fn resolve_limits(
         &mut self,
         profile: &RenderProfile,
     ) -> Result<(RenderProfile, (f32, f32)), String> {
-        let key = RenderVariantId::compute(
-            &self.revision_id,
-            DatasetView::Standard,
-            profile,
-            ElevationRange::NONE,
-        );
-        if let Some(resolved) = self.limits_cache.get(&key) {
-            return Ok(resolved.clone());
+        let pinned = if profile.source_transform == SourceTransform::AdaptiveSigLog {
+            let floor = match self.noise_floor_log10 {
+                Some(floor) => floor,
+                None => {
+                    let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
+                    let floor = crate::render::stats::sampled_noise_floor_log10(
+                        reader,
+                        crate::render::stats::SAMPLE_SEED,
+                    )?;
+                    self.noise_floor_log10 = Some(floor);
+                    floor
+                }
+            };
+            profile.pin_siglog_strength(floor)
+        } else {
+            profile.clone()
+        };
+        let key = pinned.limits_key_fragment();
+        if let Some(limits) = self.limits_cache.get(&key) {
+            return Ok((pinned, *limits));
         }
         let reader = open_reader(&mut self.reader, self.source_path.as_deref())?;
-        let pinned =
-            crate::render::stats::pin_profile(reader, profile, crate::render::stats::SAMPLE_SEED)?;
         let sampled = match pinned.limits {
             AmplitudeLimits::Percentile { low, high } => Some(sampled_amplitude_limits(
                 reader,
@@ -755,7 +789,7 @@ impl RenderService {
             AmplitudeLimits::Explicit { .. } => None,
         };
         let limits = colormap::resolve_limits(&pinned, sampled)?;
-        self.limits_cache.insert(key, (pinned.clone(), limits));
+        self.limits_cache.put(key, limits);
         Ok((pinned, limits))
     }
 
@@ -894,7 +928,7 @@ impl RenderService {
             stamp,
             spec.width,
             spec.height,
-            profile.format,
+            profile,
         )?;
         self.cache.insert(key, bytes.clone());
         Some(bytes)
@@ -940,7 +974,7 @@ impl RenderService {
                 *stamp,
                 spec.width,
                 spec.height,
-                profile.format,
+                profile,
                 bytes,
             ),
             None => bytes,
@@ -1819,6 +1853,74 @@ mod tests {
         // A second chunk under the SAME variant must not add a second
         // limits entry -- it reuses the one computed for chunk (0,0).
         assert_eq!(service.limits_cache.len(), 1);
+
+        // Nor does a profile that differs only in how it looks (#183): a
+        // person tuning colours must not re-sample the file per change.
+        let recoloured = RenderProfile {
+            name: "tuned".to_string(),
+            colormap: Some(crate::render::colormap::Colormap::seismic()),
+            contrast: 1.7,
+            nodata_color: Some([0, 0, 0]),
+            ..profile.clone()
+        };
+        service
+            .get_or_render_chunk(
+                &grid.chunk(0, 0).unwrap(),
+                DatasetView::Standard,
+                &recoloured,
+                ElevationRange::NONE,
+            )
+            .unwrap();
+        assert_eq!(service.limits_cache.len(), 1);
+
+        // A different window does need its own.
+        let wider = RenderProfile {
+            limits: AmplitudeLimits::Percentile {
+                low: 0.05,
+                high: 0.95,
+            },
+            ..profile.clone()
+        };
+        service
+            .get_or_render_chunk(
+                &grid.chunk(0, 0).unwrap(),
+                DatasetView::Standard,
+                &wider,
+                ElevationRange::NONE,
+            )
+            .unwrap();
+        assert_eq!(service.limits_cache.len(), 2);
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn the_limits_kept_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.nc");
+        write_test_nc(&path, 300, 300);
+        let reader = SourceReader::open(&path).unwrap();
+        let mut service =
+            RenderService::new(reader, test_revision_id(), &RenderServiceConfig::default());
+        let raster = ViewerRaster::new(300, 300);
+        let chunk = raster.grid().chunk(0, 0).unwrap();
+        for i in 0..(LIMITS_CACHE_ENTRIES + 5) {
+            let profile = RenderProfile {
+                limits: AmplitudeLimits::Percentile {
+                    low: 0.001 * i as f32,
+                    high: 0.99,
+                },
+                ..RenderProfile::default_profile()
+            };
+            service
+                .get_or_render_chunk(
+                    &chunk,
+                    DatasetView::Standard,
+                    &profile,
+                    ElevationRange::NONE,
+                )
+                .unwrap();
+        }
+        assert_eq!(service.limits_cache.len(), LIMITS_CACHE_ENTRIES);
     }
 
     #[test]
