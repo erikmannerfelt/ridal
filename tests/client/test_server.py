@@ -141,6 +141,52 @@ def test_a_project_render_profile_draws_as_its_file_does(
     assert drawn.read_text() == served.read_text()
 
 
+def test_a_personal_render_profile_is_shared_with_the_project(
+    gui: Server, radargram: Path, tmp_path: Path
+) -> None:
+    # #183: someone tunes a profile of their own, draws with it, and an
+    # operator makes it the project's by saving it under a shared name.
+    (local,) = ridal.info(radargram)
+    radargram_id = local["radargram_id"]
+    with ridal_client.Client(gui.url) as client:
+        start = client.render_profile("high-contrast")
+        mine = client.save_personal_render_profile(
+            dataclasses.replace(start, name="personal-tuned", contrast=1.4),
+            thumbnail_profile="high-contrast",
+        )
+        try:
+            assert mine.scope == "personal"
+            assert mine.thumbnail_profile == "high-contrast"
+            kept = client.personal_render_profiles()
+            assert kept.allowed
+            assert [p.name for p in kept.profiles] == ["personal-tuned"]
+            assert "personal-tuned" in {
+                p.name for p in client.render_profiles().profiles
+            }
+            with pytest.raises(errors.BadRequest):
+                client.save_personal_render_profile(
+                    dataclasses.replace(start, name="tuned"), overwrite=True
+                )
+            figure = client.figure(
+                radargram_id,
+                tmp_path / "mine.png",
+                {"profile": "personal-tuned", "size": {"width": 600, "unit": "px"}},
+            )
+            assert figure.read_bytes().startswith(b"\x89PNG")
+
+            shared = client.save_render_profile(
+                dataclasses.replace(
+                    client.personal_render_profile("personal-tuned"), name="tuned"
+                )
+            )
+            assert shared.scope == "project"
+            assert shared.contrast == mine.contrast
+            client.delete_render_profile("tuned")
+        finally:
+            client.delete_personal_render_profile("personal-tuned")
+        assert client.personal_render_profiles().profiles == ()
+
+
 def test_a_token_reaches_its_projects_on_a_site(site: Site) -> None:
     with ridal_client.Client(site.url, project="glac", token=site.token) as client:
         me = client.me()

@@ -1261,6 +1261,8 @@ pub(super) struct ProjectSettings {
     profiles: Vec<String>,
     /// The built-in render profiles this project does not offer.
     hidden_profiles: Vec<String>,
+    /// Whether people may keep render profiles of their own.
+    personal_profiles: bool,
     /// The horizontal stretch radargrams open at.
     #[schema(required = true)]
     default_xscale: Option<f64>,
@@ -1411,9 +1413,10 @@ pub async fn get_settings(
         // The caller's own choice is listed even when it is hidden, so the
         // dropdown shows what they have rather than nothing.
         profiles: state
-            .render_profiles()
+            .render_profiles_for(&caller)
             .offered_names(mine.render_profile.as_deref().unwrap_or_default()),
         hidden_profiles: project.map(|p| p.hidden_profiles()).unwrap_or_default(),
+        personal_profiles: project.is_some_and(|p| p.personal_profiles()),
         default_xscale: project.and_then(|p| p.default_xscale()),
         xscales: crate::server::routes::x_scale_options(),
         my_profile: mine.render_profile,
@@ -1479,6 +1482,11 @@ pub struct SettingsUpdate {
     /// be hidden.
     #[serde(default)]
     hidden_profiles: Option<Vec<String>>,
+    /// Whether people may keep render profiles of their own (#183).
+    /// Turning it off keeps the ones they have, unused, until it is turned
+    /// on again.
+    #[serde(default)]
+    personal_profiles: Option<bool>,
     /// The project's own basemaps, in the order the layer control should
     /// list them (#177). An empty array removes them all.
     #[serde(default)]
@@ -1535,6 +1543,7 @@ pub(super) struct SavedSettings {
     #[schema(required = true)]
     default_xscale: Option<f64>,
     hidden_profiles: Vec<String>,
+    personal_profiles: bool,
     #[schema(required = true)]
     default_spacing: Option<String>,
     #[schema(required = true)]
@@ -1619,6 +1628,7 @@ pub async fn put_settings(
     if update.default_profile.is_some()
         || update.default_xscale.is_some()
         || update.hidden_profiles.is_some()
+        || update.personal_profiles.is_some()
         || update.default_spacing.is_some()
         || update.default_format.is_some()
         || update.default_show_group_radargrams.is_some()
@@ -1761,6 +1771,11 @@ pub async fn put_settings(
                     profile,
                     xscale,
                     hidden_profiles,
+                    // Allowed is the neutral answer, so it stores nothing.
+                    personal_profiles: match update.personal_profiles {
+                        Some(allowed) => (!allowed).then_some(false),
+                        None => (!project.personal_profiles()).then_some(false),
+                    },
                 },
                 &crate::project::ExportDefaults { spacing, format },
                 &crate::project::CatalogDefaults {
@@ -1885,6 +1900,7 @@ pub async fn put_settings(
         default_profile: project.default_profile(),
         default_xscale: project.default_xscale(),
         hidden_profiles: project.hidden_profiles(),
+        personal_profiles: project.personal_profiles(),
         default_spacing: project.default_spacing(),
         default_format: project.default_format(),
         default_show_group_radargrams: project.default_show_group_radargrams(),

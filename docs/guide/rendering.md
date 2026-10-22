@@ -110,6 +110,30 @@ used. The project's default cannot be deleted. Built-ins the project does not
 want offered can be hidden with `[render] hidden_profiles` in `ridal.toml`;
 a hidden profile still draws when a link names it.
 
+### Personal render profiles
+
+Anyone with an account can also keep up to 20 render profiles of their own
+in a project, whose names start with `personal-`. They are offered only to
+their owner, next to the built-ins and the project's, and two people can
+each have one of the same name. With the Python client:
+
+```python
+start = client.render_profile("high-contrast")
+client.save_personal_render_profile(
+    dataclasses.replace(start, name="personal-faint", contrast=1.4),
+    thumbnail_profile="high-contrast",
+)
+```
+
+A personal profile draws the viewer, figures and downloads. The catalog's
+thumbnails are drawn with its `thumbnail_profile` instead, a built-in or
+project profile (the project's default if it names none): thumbnails are
+kept on disk, and only the profiles everyone shares may fill that space. An
+operator makes a personal profile the project's by saving it under a name
+without the prefix. A project can turn personal profiles off with `[render]
+personal_profiles = false` in `ridal.toml`; the ones people have are kept,
+unused, until they are allowed again.
+
 ## Horizontal scale
 
 A long radargram has many more traces than samples, so drawn at one pixel

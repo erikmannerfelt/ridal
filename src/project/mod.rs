@@ -365,6 +365,13 @@ pub struct RenderSection {
     /// Plain strings for the reason `default_profile` is one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden_profiles: Vec<String>,
+
+    /// Whether people may keep render profiles of their own in this project
+    /// (#183). Unset means they may; `false` keeps the ones they have but
+    /// stops them being offered, rendered or added to, which is the bound
+    /// on how many different tiles a class can make the server render.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_profiles: Option<bool>,
 }
 
 /// Defaults for the layer-point downloads (#166).
@@ -536,6 +543,8 @@ pub struct RenderDefaults {
     pub xscale: Option<f64>,
     /// Empty clears the key.
     pub hidden_profiles: Vec<String>,
+    /// `None` clears the key, which allows personal profiles.
+    pub personal_profiles: Option<bool>,
 }
 
 /// The `[export]` defaults a project can carry, as one value (#166).
@@ -1254,6 +1263,12 @@ impl Project {
         self.read_config().render.hidden_profiles.clone()
     }
 
+    /// Whether people may keep, use and add render profiles of their own.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn personal_profiles(&self) -> bool {
+        self.read_config().render.personal_profiles.unwrap_or(true)
+    }
+
     /// The horizontal stretch to open radargrams at. `None` means 1x.
     ///
     /// Only the viewer reads it, so a CLI-only build has no caller -- the
@@ -1295,6 +1310,12 @@ impl Project {
                 "render",
                 "default_xscale",
                 render.xscale.map(toml_edit::value),
+            );
+            set_or_clear(
+                document,
+                "render",
+                "personal_profiles",
+                render.personal_profiles.map(toml_edit::value),
             );
             set_or_clear(
                 document,
@@ -2309,6 +2330,7 @@ mod tests {
                     profile: profile.map(str::to_string),
                     xscale: None,
                     hidden_profiles: Vec::new(),
+                    personal_profiles: None,
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2572,6 +2594,7 @@ mod tests {
                     profile: Some("abslog".to_string()),
                     xscale: Some(2.0),
                     hidden_profiles: Vec::new(),
+                    personal_profiles: None,
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2699,6 +2722,7 @@ mod tests {
                     profile: Some("positive".to_string()),
                     xscale: None,
                     hidden_profiles: Vec::new(),
+                    personal_profiles: None,
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2721,6 +2745,7 @@ mod tests {
                     profile: Some("abslog".to_string()),
                     xscale: Some(2.0),
                     hidden_profiles: Vec::new(),
+                    personal_profiles: None,
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2746,6 +2771,7 @@ mod tests {
                     profile: Some("abslog".to_string()),
                     xscale: Some(4.0),
                     hidden_profiles: Vec::new(),
+                    personal_profiles: None,
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2758,6 +2784,7 @@ mod tests {
                     profile: Some("abslog".to_string()),
                     xscale: None,
                     hidden_profiles: Vec::new(),
+                    personal_profiles: None,
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),

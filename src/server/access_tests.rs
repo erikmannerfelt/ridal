@@ -1098,6 +1098,23 @@ async fn a_departed_users_picks_survive_the_account() {
         Some(&student),
     )
     .await;
+    // A personal render profile (#183), which is a setting too.
+    let mut personal = serde_json::to_value(crate::render::profile::RenderProfile {
+        name: "personal-mine".to_string(),
+        ..crate::render::profile::RenderProfile::default_profile()
+    })
+    .unwrap();
+    personal["thumbnail_profile"] = json!(null);
+    let saved = put(
+        &app,
+        "/api/v1/preferences/render-profiles/personal-mine",
+        &personal,
+        Some(&student),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text);
+    let profile_file = data(dir.path()).join("render/personal/student/personal-mine.json");
+    assert!(profile_file.exists());
 
     let removed = delete(&app, "/api/v1/accounts/student", Some(&admin)).await;
     assert_eq!(removed.status, StatusCode::NO_CONTENT, "{}", removed.text);
@@ -1122,6 +1139,7 @@ async fn a_departed_users_picks_survive_the_account() {
         !data(dir.path()).join("preferences/student.json").exists(),
         "a departed account's preferences should not linger"
     );
+    assert!(!profile_file.exists(), "nor its personal render profiles");
 }
 
 #[tokio::test]

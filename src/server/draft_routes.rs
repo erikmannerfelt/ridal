@@ -743,8 +743,11 @@ pub async fn draft_overview(
 ) -> Result<Response, ApiError> {
     let output = finished_output(&state, &caller, job)?;
     let dataset_view = super::routes::lookup_view(&view)?;
-    let profile =
-        super::routes::lookup_profile(&state, query.profile.as_deref().unwrap_or("default"))?;
+    let profile = super::routes::lookup_profile(
+        &state,
+        &caller,
+        query.profile.as_deref().unwrap_or("default"),
+    )?;
 
     let opened = with_draft(&state, &caller, job, |draft| draft.view.clone())?;
     let radargram = match opened {

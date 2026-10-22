@@ -449,3 +449,234 @@ async fn a_hand_edited_profile_is_read_at_startup() {
     assert!(!listed.contains(&"broken".to_string()));
     assert_eq!(get(&app, &chunk("survey")).await.status, StatusCode::OK);
 }
+
+const MINE: &str = "/api/v1/preferences/render-profiles/personal-mine";
+
+/// A personal profile, drawn in the viewer, with seismic thumbnails.
+fn mine(thumbnail: Option<&str>) -> Value {
+    let mut body = serde_json::to_value(RenderProfile {
+        name: "personal-mine".to_string(),
+        contrast: 1.8,
+        ..RenderProfile::high_contrast_profile()
+    })
+    .unwrap();
+    body["thumbnail_profile"] = json!(thumbnail);
+    body
+}
+
+/// The overview files the project keeps on disk.
+fn overview_files(dir: &StdPath) -> Vec<String> {
+    let root = dir
+        .join(crate::project::DEFAULT_DATA_DIR)
+        .join("cache/overviews");
+    let mut files = Vec::new();
+    for revision in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        for file in std::fs::read_dir(revision.path()).unwrap().flatten() {
+            files.push(file.file_name().into_string().unwrap());
+        }
+    }
+    files
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_personal_profile_draws_tiles_and_leaves_thumbnails_to_a_shared_one() {
+    let (dir, app) = project_app();
+    let saved = send(&app, "PUT", MINE, Some(&mine(Some("seismic"))), None).await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    assert_eq!(saved.json()["scope"], "personal");
+    assert_eq!(saved.json()["thumbnail_profile"], "seismic");
+    assert!(saved.etag.is_some());
+
+    // Offered to its owner wherever a profile is chosen, and listed last.
+    let listed = names(&get(&app, PROFILES).await.json());
+    assert_eq!(listed.last().map(String::as_str), Some("personal-mine"));
+    let mine_list = get(&app, "/api/v1/preferences/render-profiles")
+        .await
+        .json();
+    assert_eq!(mine_list["allowed"], true);
+    assert_eq!(names(&mine_list), vec!["personal-mine".to_string()]);
+    assert_eq!(
+        get(&app, &chunk("personal-mine")).await.status,
+        StatusCode::OK
+    );
+    let page = get(&app, "/view/line-01?profile=personal-mine")
+        .await
+        .text();
+    assert!(page.contains(r#"value="personal-mine" selected"#));
+
+    // A thumbnail asked for in it is the seismic one, and only that is kept.
+    let overview = |profile: &str| {
+        format!("/api/v1/datasets/line-01/views/standard/overview?profile={profile}")
+    };
+    let personal = get(&app, &overview("personal-mine")).await;
+    assert_eq!(personal.status, StatusCode::OK);
+    assert_eq!(personal.bytes, get(&app, &overview("seismic")).await.bytes);
+    let seismic_tag = super::overview_cache::profile_tag(&RenderProfile::seismic_profile());
+    let files = overview_files(dir.path());
+    assert!(!files.is_empty());
+    assert!(
+        files.iter().all(|f| f.starts_with(&seismic_tag)),
+        "{files:?}"
+    );
+
+    // Nor does a download drawn in it go to disk.
+    let image = get(
+        &app,
+        "/api/v1/datasets/line-01/views/standard/image?profile=personal-mine&width=20",
+    )
+    .await;
+    assert_eq!(image.status, StatusCode::OK, "{}", image.text());
+    assert_eq!(overview_files(dir.path()), files);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_personal_thumbnail_falls_back_to_the_project_default() {
+    let (_dir, app) = project_app();
+    send(&app, "PUT", MINE, Some(&mine(None)), None).await;
+    send(
+        &app,
+        "PUT",
+        SETTINGS,
+        Some(&json!({"default_profile": "abslog"})),
+        None,
+    )
+    .await;
+    let overview = |profile: &str| {
+        format!("/api/v1/datasets/line-01/views/standard/overview?profile={profile}")
+    };
+    assert_eq!(
+        get(&app, &overview("personal-mine")).await.bytes,
+        get(&app, &overview("abslog")).await.bytes
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_personal_profile_is_checked_like_a_project_one() {
+    let (_dir, app) = project_app();
+    for (uri, body, code) in [
+        (
+            "/api/v1/preferences/render-profiles/mine",
+            {
+                let mut b = mine(None);
+                b["name"] = json!("mine");
+                b
+            },
+            "not_a_personal_profile_name",
+        ),
+        (MINE, mine(Some("nonexistent")), "unknown_thumbnail_profile"),
+        (
+            MINE,
+            mine(Some("personal-mine")),
+            "unknown_thumbnail_profile",
+        ),
+        (
+            MINE,
+            {
+                let mut b = mine(None);
+                b["contrast"] = json!(-1.0);
+                b
+            },
+            "invalid_render_profile",
+        ),
+    ] {
+        let answer = send(&app, "PUT", uri, Some(&body), None).await;
+        assert_eq!(answer.status, StatusCode::BAD_REQUEST, "{uri} {body}");
+        assert_eq!(answer.json()["error"]["code"], code, "{uri} {body}");
+    }
+    // A personal profile can be someone's choice but not the project's.
+    send(&app, "PUT", MINE, Some(&mine(None)), None).await;
+    let preference = send(
+        &app,
+        "PUT",
+        "/api/v1/preferences",
+        Some(&json!({"render_profile": "personal-mine"})),
+        None,
+    )
+    .await;
+    assert_eq!(preference.status, StatusCode::OK, "{}", preference.text());
+    assert!(get(&app, "/")
+        .await
+        .text()
+        .contains(r#"value="personal-mine" selected"#));
+    let default = send(
+        &app,
+        "PUT",
+        SETTINGS,
+        Some(&json!({"default_profile": "personal-mine"})),
+        None,
+    )
+    .await;
+    assert_eq!(default.status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn turning_personal_profiles_off_keeps_them_unused() {
+    let (dir, app) = project_app();
+    send(&app, "PUT", MINE, Some(&mine(None)), None).await;
+    let off = send(
+        &app,
+        "PUT",
+        SETTINGS,
+        Some(&json!({"personal_profiles": false})),
+        None,
+    )
+    .await;
+    assert_eq!(off.status, StatusCode::OK, "{}", off.text());
+    assert_eq!(off.json()["personal_profiles"], false);
+    let toml = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    assert!(toml.contains("personal_profiles = false"), "{toml}");
+
+    // Not rendered, not offered, not added to; but kept, and listed to
+    // their owner as kept.
+    assert_eq!(
+        get(&app, &chunk("personal-mine")).await.status,
+        StatusCode::BAD_REQUEST
+    );
+    assert!(!names(&get(&app, PROFILES).await.json()).contains(&"personal-mine".to_string()));
+    let page = get(&app, "/view/line-01?profile=personal-mine").await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains(r#"value="default" selected"#));
+    let refused = send(&app, "PUT", MINE, Some(&mine(None)), None).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(refused.json()["error"]["code"], "personal_profiles_off");
+    let kept = get(&app, "/api/v1/preferences/render-profiles")
+        .await
+        .json();
+    assert_eq!(kept["allowed"], false);
+    assert_eq!(names(&kept), vec!["personal-mine".to_string()]);
+
+    // Back on, back as they were; and allowed is the default, stored as
+    // nothing.
+    send(
+        &app,
+        "PUT",
+        SETTINGS,
+        Some(&json!({"personal_profiles": true})),
+        None,
+    )
+    .await;
+    assert_eq!(
+        get(&app, &chunk("personal-mine")).await.status,
+        StatusCode::OK
+    );
+    let toml = std::fs::read_to_string(dir.path().join("ridal.toml")).unwrap();
+    assert!(!toml.contains("personal_profiles"), "{toml}");
+
+    // What someone keeps is theirs to delete, whatever the switch says.
+    send(
+        &app,
+        "PUT",
+        SETTINGS,
+        Some(&json!({"personal_profiles": false})),
+        None,
+    )
+    .await;
+    assert_eq!(
+        send(&app, "DELETE", MINE, None, None).await.status,
+        StatusCode::NO_CONTENT
+    );
+}

@@ -114,6 +114,8 @@ use crate::site::tokens;
         draft_routes::DraftView,
         render_profile_routes::RenderProfileList,
         render_profile_routes::RenderProfileView,
+        render_profile_routes::PersonalProfileList,
+        crate::project::render_profiles::PersonalProfile,
         processing_routes::ProfileList,
         processing_routes::ProfileView,
         processing_routes::StatusList,

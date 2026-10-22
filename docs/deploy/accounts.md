@@ -59,7 +59,7 @@ above it can:
 
 | Role | Can |
 |---|---|
-| `viewer` | Browse the catalog, open radargrams, and set their own display preferences. |
+| `viewer` | Browse the catalog, open radargrams, set their own display preferences, and keep render profiles of their own. |
 | `picker` | Pick and save their own interpretations, and make private derived items. |
 | `operator` | Upload, replace and remove radargrams, correct their metadata, define layers, project-wide derived items and the project's render profiles, change the project's settings, and see in the pick manager how much everyone has picked. |
 | `admin` | Manage this project's members and access settings, release derived results computed from everyone's picks, set the project's size limit, archive someone's picks, restore archived picks, and permanently delete archived picks. |
@@ -141,8 +141,9 @@ locks anyone out.
 
 Removing an account keeps that person's interpretations, still under their
 name, since picks are part of the results rather than of the account. Their
-memberships are removed from every project, so an account created later
-under the same name starts with none of them.
+memberships are removed from every project, and so are their preferences and
+personal render profiles, so an account created later under the same name
+starts with none of them.
 
 A project administrator cannot create an account under a name that any
 project on the site still has a membership for, since whoever holds that

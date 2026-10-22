@@ -1208,8 +1208,8 @@ and changed by operators through `/api/v1/render-profiles`.
   nothing. Keys are content-derived, so an edit is never served a stale
   image.
 - **Three namespaces that cannot collide.** A project profile may not take a
-  built-in's name or start with `personal-`, which is reserved for personal
-  profiles (#183's next part). Lookup is built-ins first, so a project
+  built-in's name or start with `personal-`, which only personal profiles'
+  names do. Lookup is built-ins first, so a project
   profile made before a release added a built-in of its name is shadowed,
   not mistaken for it, and a warning names it.
 - **`server::render_profile_routes::ProfileSet`** is the one answer to
@@ -1233,6 +1233,29 @@ and changed by operators through `/api/v1/render-profiles`.
   contrast of 0 or over 10, a colormap without stops or with more than 32,
   a siglog field without its transform). It does not judge combinations
   that are merely unwise, such as a colormap with `LanczosRectified`.
+- **Personal profiles** (`render/personal/<user>/<name>.json`, a
+  `PersonalProfile`) are one person's, in one project. A name is looked up
+  among the caller's own, so two people can each have `personal-faint`.
+  `AppState::render_profiles_for(caller)` adds them to the set for pages
+  and lists; a tile reads its one profile with
+  `render_profile_routes::lookup_personal`, a single small file, rather than
+  listing them all.
+  - **They never fill the disk.** Overviews are kept on disk, and only shared
+    profiles, whose number the project controls, may make them: the overview
+    route draws a personal profile's `thumbnail_profile` (a built-in or
+    project profile, else the project's default) instead, and
+    `RenderService::overview_keys` keeps a personal profile's overview (an
+    image download) in memory only. Their tiles go through the in-memory
+    cache like any other, which its byte bound already limits; the cost of
+    many people's profiles is fewer shared cache hits, not more storage.
+  - **`[render] personal_profiles = false`** keeps them but stops them
+    being offered, drawn or added to (a 409); listing and deleting your own
+    still work. It is the bound on how many different tile sets one class can
+    have the server render.
+  - At most `MAX_PERSONAL_PROFILES` (20) per person per project. They go
+    with the account, as preferences do (`Site::remove_account`).
+  - Making one the project's is a `PUT` of it under a shared name; there is
+    no separate "share" route, since that is all one would do.
 - **`nodata_color`** paints empty footprints in tiles and overviews.
   A grey profile with one renders RGB through an identity grey LUT
   (`RenderProfile::rgb_lut`), so its data pixels match the one-channel

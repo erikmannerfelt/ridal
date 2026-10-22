@@ -115,7 +115,10 @@ The spec's `profile` is any render profile the project offers:
 `operator` adds one with `save_render_profile` and removes it with
 `delete_render_profile`, and `render_profile_file` gives any profile as the
 TOML file `ridal render` reads, so the same picture can be drawn locally
-(see {doc}`rendering`).
+(see {doc}`rendering`). Anyone signed in can keep profiles of their own
+with `save_personal_render_profile`, list them with
+`personal_render_profiles` and remove them with
+`delete_personal_render_profile`.
 
 ## Uploading and replacing many files
 

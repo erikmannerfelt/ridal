@@ -1436,6 +1436,61 @@ class Client:
         Refused for the project's default and for a built-in."""
         self._http.request("DELETE", self._project_path("render-profiles", name))
 
+    def personal_render_profiles(self) -> models.PersonalProfileList:
+        """The caller's own render profiles in the project, and whether the
+        project lets them use them."""
+        return models.PersonalProfileList.from_json(
+            self._http.json("GET", self._project_path("preferences", "render-profiles"))
+        )
+
+    def personal_render_profile(self, name: str) -> models.RenderProfile:
+        """One of the caller's own render profiles, with its ``etag``."""
+        response = self._http.request(
+            "GET", self._project_path("preferences", "render-profiles", name)
+        )
+        return models.RenderProfile.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def save_personal_render_profile(
+        self,
+        profile: Mapping[str, Any] | models.RenderProfile,
+        *,
+        thumbnail_profile: str | None = None,
+        etag: str | None = None,
+        overwrite: bool = False,
+    ) -> models.RenderProfile:
+        """Create or replace one of the caller's own render profiles, in this
+        project only.
+
+        As :meth:`save_render_profile`, except that the name starts with
+        ``personal-`` and any signed-in account may keep its own, while the
+        project allows it. ``thumbnail_profile`` is the built-in or project
+        profile the catalog's thumbnails are drawn with while this one is
+        chosen; ``None`` is the project's default.
+        """
+        body = (
+            profile.definition()
+            if isinstance(profile, models.RenderProfile)
+            else dict(profile)
+        )
+        body["thumbnail_profile"] = thumbnail_profile
+        response = self._http.request(
+            "PUT",
+            self._project_path("preferences", "render-profiles", body["name"]),
+            json=body,
+            headers=_preconditions(etag, overwrite),
+        )
+        return models.RenderProfile.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def delete_personal_render_profile(self, name: str) -> None:
+        """Delete one of the caller's own render profiles."""
+        self._http.request(
+            "DELETE", self._project_path("preferences", "render-profiles", name)
+        )
+
     def profiles(self) -> tuple[models.Profile, ...]:
         """The project's processing profiles."""
         answer = self._http.json("GET", self._project_path("processing", "profiles"))

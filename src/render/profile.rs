@@ -696,6 +696,11 @@ impl RenderProfile {
         Ok(())
     }
 
+    /// Whether this is someone's personal profile (#183), by its name.
+    pub fn is_personal(&self) -> bool {
+        self.name.starts_with(PERSONAL_PROFILE_PREFIX)
+    }
+
     /// The 256-entry LUT an RGB render maps the normalized byte through,
     /// or `None` for the single-channel grey path.
     ///
