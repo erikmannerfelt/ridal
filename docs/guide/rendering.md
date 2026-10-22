@@ -134,6 +134,48 @@ without the prefix. A project can turn personal profiles off with `[render]
 personal_profiles = false` in `ridal.toml`; the ones people have are kept,
 unused, until they are allowed again.
 
+### Tuning a profile in the viewer
+
+In the viewer, **Display**, then **Edit profile…** opens the profile
+editor. It is offered to anyone who may keep profiles of their own, and to
+an `operator`, who may change the project's. It starts from the profile the
+viewer is using, and **Start from** loads another.
+
+The form has the fields that decide what the picture looks like: the colour
+scale (grey, or a list of colour stops with a preset to start from), the
+no-data colour, the source transform and its strength, the transform, the
+limits, contrast and black level, and, for one of your own, the profile
+that draws the catalog's thumbnails while it is chosen. Under it are
+warnings for combinations that rarely do what is meant, such as a colour
+scale for signed amplitude with a transform that discards the sign.
+
+Two fields are left out. How tiles are resampled only shows when zoomed
+out, where one pixel covers several samples, and a preview cannot show it,
+so the editor sets it from the transform as the built-ins do: `Mean` for
+`Linear`, and `LanczosRectified` for `AbsLog` and `Positive`. How tiles are
+encoded is kept from the profile it started from. Both can be set in a
+[profile file](#a-profile-of-your-own) or through the HTTP API.
+
+The preview beside the form is one image of what the viewer showed when the
+editor opened, drawn with the profile as the form has it. It is drawn when
+**Update preview** is pressed, or after every change when **Auto update** is
+ticked. **Show previous** switches to the preview before the last update,
+for comparing, and **Use current view** draws the part the viewer shows now.
+Nothing is kept until the profile is saved.
+
+**Save** writes the profile under the name and in the place at the bottom:
+**My profiles** or, for an `operator`, **Project**. Saving over the profile
+being edited needs no more; saving under another name keeps a copy and
+leaves the original as it was, which is also how a built-in is duplicated
+and how an operator shares a profile of their own with the project. The
+viewer then draws with the saved profile. **Delete** removes the profile
+being edited, unless it is the project's default.
+
+On the settings page, **My render profiles** lists your own, with a
+**Delete** for each, also while the project does not allow them. An
+operator can hide built-ins, delete the project's profiles and turn
+personal profiles off there.
+
 ## Horizontal scale
 
 A long radargram has many more traces than samples, so drawn at one pixel

@@ -208,7 +208,7 @@ const FIGURE_PERMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// Take one of the server's figure permits (#473), before the render
 /// permit: an export waiting for another export then holds nothing the
 /// viewer needs.
-async fn acquire_figure_permit(
+pub(super) async fn acquire_figure_permit(
     state: &AppState,
 ) -> Result<tokio::sync::OwnedSemaphorePermit, ApiError> {
     tokio::time::timeout(

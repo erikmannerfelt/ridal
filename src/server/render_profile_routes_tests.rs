@@ -680,3 +680,148 @@ async fn turning_personal_profiles_off_keeps_them_unused() {
         StatusCode::NO_CONTENT
     );
 }
+
+const PREVIEW: &str = "/api/v1/datasets/line-01/render-profile-preview";
+
+fn preview_body(profile: Value) -> Value {
+    json!({"profile": profile, "traces": [0, 40], "rows": [0, 8], "x_scale": 0.5, "width": 400})
+}
+
+fn png_size(bytes: &[u8]) -> (u32, u32) {
+    let image = image::load_from_memory(bytes).unwrap();
+    (image.width(), image.height())
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_preview_draws_an_unsaved_profile_and_keeps_nothing() {
+    let (dir, app) = project_app();
+    let grey = send(
+        &app,
+        "POST",
+        PREVIEW,
+        Some(&preview_body(
+            serde_json::to_value(RenderProfile::default_profile()).unwrap(),
+        )),
+        None,
+    )
+    .await;
+    assert_eq!(grey.status, StatusCode::OK, "{}", grey.text());
+    assert_eq!(grey.content_type.as_deref(), Some("image/png"));
+    // 40 traces at x_scale 0.5 for 8 rows: 400 px wide is 160 px tall.
+    assert_eq!(png_size(&grey.bytes), (400, 160));
+
+    // A profile nobody saved, under a name nobody has: drawn as sent.
+    let draft = send(&app, "POST", PREVIEW, Some(&preview_body(survey())), None).await;
+    assert_eq!(draft.status, StatusCode::OK, "{}", draft.text());
+    assert_ne!(draft.bytes, grey.bytes);
+    assert!(overview_files(dir.path()).is_empty());
+    assert!(!names(&get(&app, PROFILES).await.json()).contains(&"survey".to_string()));
+
+    // Checked as a saved profile would be, and bounded in size.
+    let mut bad = survey();
+    bad["contrast"] = json!(-1.0);
+    let refused = send(&app, "POST", PREVIEW, Some(&preview_body(bad)), None).await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST);
+    assert_eq!(refused.json()["error"]["code"], "invalid_render_profile");
+    let mut huge = preview_body(survey());
+    huge["width"] = json!(5000);
+    let refused = send(&app, "POST", PREVIEW, Some(&huge), None).await;
+    assert_eq!(refused.json()["error"]["code"], "invalid_preview");
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn previews_follow_the_personal_profile_switch_below_operator() {
+    let (dir, app) = project_app();
+    let read_only = || {
+        let project = Project::discover(dir.path()).unwrap().unwrap();
+        build_router(Arc::new(
+            AppState::build_with_project(
+                dir.path(),
+                &RenderServiceConfig::default(),
+                Some(project),
+                AccessOptions {
+                    read_only: true,
+                    ..AccessOptions::default()
+                },
+            )
+            .unwrap(),
+        ))
+    };
+    let body = preview_body(survey());
+    // A viewer may tune a profile of their own...
+    let viewer = send(&read_only(), "POST", PREVIEW, Some(&body), None).await;
+    assert_eq!(viewer.status, StatusCode::OK, "{}", viewer.text());
+
+    send(
+        &app,
+        "PUT",
+        SETTINGS,
+        Some(&json!({"personal_profiles": false})),
+        None,
+    )
+    .await;
+    // ...while the project lets them keep one; an operator still may.
+    let viewer = send(&read_only(), "POST", PREVIEW, Some(&body), None).await;
+    assert_eq!(viewer.status, StatusCode::FORBIDDEN, "{}", viewer.text());
+    let operator = send(&app, "POST", PREVIEW, Some(&body), None).await;
+    assert_eq!(operator.status, StatusCode::OK, "{}", operator.text());
+}
+
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn the_pages_group_profiles_and_offer_the_editor() {
+    let (_dir, app) = project_app();
+    send(&app, "PUT", SURVEY, Some(&survey()), None).await;
+    send(&app, "PUT", MINE, Some(&mine(None)), None).await;
+
+    let viewer = get(&app, "/view/line-01?profile=personal-mine").await;
+    assert_eq!(viewer.status, StatusCode::OK, "{}", viewer.text());
+    let html = viewer.text();
+    for group in ["Built-in", "Project", "Mine"] {
+        assert!(
+            html.contains(&format!(r#"<optgroup label="{group}">"#)),
+            "{group}"
+        );
+    }
+    // Listed under "Mine" without its prefix, and the colormapped project
+    // profile marked for the display adjustment.
+    assert!(html.contains(r#"<option value="personal-mine" selected>mine</option>"#));
+    assert!(html.contains(r#"<option value="survey" data-colormap>survey</option>"#));
+    assert!(html.contains(r#"id="profile-dialog""#));
+    assert!(html.contains(r#"data-edit-personal="true""#));
+    assert!(html.contains(r#"data-offset-default="-1.7""#));
+    assert!(html.contains("<summary>Display: mine</summary>"));
+
+    // A personal name a shared profile also has is told apart.
+    let mut seismic = mine(None);
+    seismic["name"] = json!("personal-seismic");
+    let saved = send(
+        &app,
+        "PUT",
+        "/api/v1/preferences/render-profiles/personal-seismic",
+        Some(&seismic),
+        None,
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    let html = get(&app, "/view/line-01?profile=personal-seismic")
+        .await
+        .text();
+    assert!(html.contains("<summary>Display: Personal: seismic</summary>"));
+    assert!(html.contains("/static/profile_editor.js"));
+
+    // The catalog's thumbnails are never personal, so neither are its
+    // choices, but for the one the page is on.
+    let catalog = get(&app, "/").await.text();
+    assert!(catalog.contains(r#"value="survey""#));
+    assert!(!catalog.contains("personal-mine"));
+    let catalog = get(&app, "/?profile=personal-mine").await.text();
+    assert!(catalog.contains(r#"value="personal-mine""#));
+
+    let settings = get(&app, "/settings").await;
+    assert_eq!(settings.status, StatusCode::OK);
+    assert!(settings.text().contains(r#"id="render-profiles-section""#));
+    assert!(settings.text().contains(r#"id="my-render-profiles""#));
+}

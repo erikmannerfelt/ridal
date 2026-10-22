@@ -1518,7 +1518,7 @@ const RIDAL = Object.freeze({
         </label>
         <p>
           <button id="derived-save" type="button">Save</button>
-          <button id="derived-cancel" type="button">Close</button>
+          <button id="derived-cancel" type="button">Cancel</button>
         </p>`;
       document.body.appendChild(dialog);
       fields = {

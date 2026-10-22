@@ -352,6 +352,15 @@ fn render_profile_body(_: &Fixture, _: &[Value]) -> Payload {
     )
 }
 
+fn preview_body(_: &Fixture, _: &[Value]) -> Payload {
+    Payload::Json(json!({
+        "profile": crate::render::profile::RenderProfile::default_profile(),
+        "traces": [0.0, 4.0],
+        "rows": [0.0, 4.0],
+        "width": 40,
+    }))
+}
+
 fn render_profile() -> Vec<Step> {
     vec![send(
         "PUT",
@@ -618,6 +627,7 @@ const CASES: &[Case] = &[
     Case::new("chunk_image").params(&[("profile", "default")]),
     Case::new("dataset_image"),
     Case::new("render_figure").body(|_, _| Payload::Json(json!({}))),
+    Case::new("preview_render_profile").body(preview_body),
     // Downloads.
     Case::new("dataset_download"),
     Case::new("dataset_track_geojson"),

@@ -136,6 +136,7 @@ embedded_asset!(login_js, "login.js", "text/javascript");
 embedded_asset!(picker_js, "picker.js", "text/javascript");
 embedded_asset!(panel_js, "panel.js", "text/javascript");
 embedded_asset!(figure_js, "figure.js", "text/javascript");
+embedded_asset!(profile_editor_js, "profile_editor.js", "text/javascript");
 
 // Repo-root, first-party. Shown beside the "Ridal" wordmark in the shared
 // header (base.html.jinja); logo.png doubles as the favicon.
@@ -369,6 +370,10 @@ mod tests {
                 include_str!("assets/radargram_edit.js"),
             ),
             ("figure.js", include_str!("assets/figure.js")),
+            (
+                "profile_editor.js",
+                include_str!("assets/profile_editor.js"),
+            ),
             ("layers.js", include_str!("assets/layers.js")),
             ("processing.js", include_str!("assets/processing.js")),
             ("settings.js", include_str!("assets/settings.js")),
@@ -683,6 +688,10 @@ mod tests {
                         include_str!("assets/radargram_edit.js"),
                     ),
                     ("figure.js", include_str!("assets/figure.js")),
+                    (
+                        "profile_editor.js",
+                        include_str!("assets/profile_editor.js"),
+                    ),
                 ],
             ),
             (
@@ -792,6 +801,10 @@ mod tests {
                 include_str!("assets/radargram_edit.js"),
             ),
             ("figure.js", include_str!("assets/figure.js")),
+            (
+                "profile_editor.js",
+                include_str!("assets/profile_editor.js"),
+            ),
             ("layers.js", include_str!("assets/layers.js")),
             ("processing.js", include_str!("assets/processing.js")),
             ("settings.js", include_str!("assets/settings.js")),
