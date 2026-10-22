@@ -397,6 +397,7 @@ slug_newtype!(GroupId, "group");
 slug_newtype!(UserId, "user");
 slug_newtype!(ProjectKey, "project key");
 slug_newtype!(ProfileId, "processing profile id");
+slug_newtype!(RenderProfileName, "render profile name");
 slug_newtype!(DemId, "DEM id");
 
 /// The author recorded when Ridal has no authentication to ask.

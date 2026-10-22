@@ -61,7 +61,7 @@ above it can:
 |---|---|
 | `viewer` | Browse the catalog, open radargrams, and set their own display preferences. |
 | `picker` | Pick and save their own interpretations, and make private derived items. |
-| `operator` | Upload, replace and remove radargrams, correct their metadata, define layers and project-wide derived items, change the project's settings, and see in the pick manager how much everyone has picked. |
+| `operator` | Upload, replace and remove radargrams, correct their metadata, define layers, project-wide derived items and the project's render profiles, change the project's settings, and see in the pick manager how much everyone has picked. |
 | `admin` | Manage this project's members and access settings, release derived results computed from everyone's picks, set the project's size limit, archive someone's picks, restore archived picks, and permanently delete archived picks. |
 
 Nobody can change someone else's picks, not even an administrator. An

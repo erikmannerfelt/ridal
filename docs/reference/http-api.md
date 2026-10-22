@@ -118,6 +118,26 @@ described in {doc}`../guide/rendering`.
 :::{http-endpoints} Images
 :::
 
+## Render profiles
+
+A **render profile** says how amplitude becomes an image: the limits, the
+transforms, the colours. The built-in profiles are Ridal's; a project can add
+its own, which an `operator` makes and changes, and which every member can
+choose wherever a built-in is offered. A project profile cannot take a
+built-in's name, nor start with `personal-`. The body of a `PUT` is the same
+profile that `?format=toml` gives as a file and `ridal render
+--render-profile FILE` reads, in JSON, with `name` matching the path.
+
+Editing a profile changes how everything rendered with it looks from then on;
+there are no versions. Deleting one is refused while it is the project's
+default; a link or preference that names a deleted profile falls back to the
+next profile it would have used. A built-in cannot be changed or deleted, but
+an `operator` can hide it with `hidden_profiles` in the project settings,
+which leaves it out of the lists while links that name it keep working.
+
+:::{http-endpoints} Render profiles
+:::
+
 ## Downloads
 
 :::{http-endpoints} Downloads

@@ -1256,8 +1256,11 @@ pub(super) struct ProjectSettings {
     /// `null` for the UTM zone that suits each track.
     #[schema(required = true)]
     processing_crs: Option<String>,
-    /// The built-in render profiles, by name.
+    /// The render profiles to choose from, by name: the built-ins that are
+    /// not hidden, then the project's own (#183).
     profiles: Vec<String>,
+    /// The built-in render profiles this project does not offer.
+    hidden_profiles: Vec<String>,
     /// The horizontal stretch radargrams open at.
     #[schema(required = true)]
     default_xscale: Option<f64>,
@@ -1345,10 +1348,6 @@ pub async fn get_settings(
     State(state): State<Arc<AppState>>,
     caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
-    let profiles: Vec<String> = crate::render::profile::RenderProfile::built_in_profiles()
-        .into_iter()
-        .map(|p| p.name)
-        .collect();
     let project = state.project.as_ref();
 
     // The caller's own preferences, which are what the "My settings"
@@ -1409,7 +1408,12 @@ pub async fn get_settings(
         // What a radargram whose raw data names no CRS is processed in
         // (#382); `null` for the UTM zone that suits each track.
         processing_crs: project.and_then(|p| p.processing_crs().ok().flatten()),
-        profiles,
+        // The caller's own choice is listed even when it is hidden, so the
+        // dropdown shows what they have rather than nothing.
+        profiles: state
+            .render_profiles()
+            .offered_names(mine.render_profile.as_deref().unwrap_or_default()),
+        hidden_profiles: project.map(|p| p.hidden_profiles()).unwrap_or_default(),
         default_xscale: project.and_then(|p| p.default_xscale()),
         xscales: crate::server::routes::x_scale_options(),
         my_profile: mine.render_profile,
@@ -1470,6 +1474,11 @@ pub struct SettingsUpdate {
     /// Horizontal stretch to open radargrams at. Clearing it restores 1x.
     #[serde(default, deserialize_with = "present")]
     default_xscale: Option<Option<f64>>,
+    /// Built-in render profiles to leave out of the lists people choose
+    /// from (#183). An empty array hides none. The project's default cannot
+    /// be hidden.
+    #[serde(default)]
+    hidden_profiles: Option<Vec<String>>,
     /// The project's own basemaps, in the order the layer control should
     /// list them (#177). An empty array removes them all.
     #[serde(default)]
@@ -1525,6 +1534,7 @@ pub(super) struct SavedSettings {
     default_profile: Option<String>,
     #[schema(required = true)]
     default_xscale: Option<f64>,
+    hidden_profiles: Vec<String>,
     #[schema(required = true)]
     default_spacing: Option<String>,
     #[schema(required = true)]
@@ -1608,11 +1618,13 @@ pub async fn put_settings(
     // save that touches neither does not rewrite the file at all.
     if update.default_profile.is_some()
         || update.default_xscale.is_some()
+        || update.hidden_profiles.is_some()
         || update.default_spacing.is_some()
         || update.default_format.is_some()
         || update.default_show_group_radargrams.is_some()
         || update.default_show_group_maps.is_some()
     {
+        let profiles = state.render_profiles();
         // Validated here rather than in `Project`: which profiles exist is a
         // server concept, and a CLI-only build has no way to check it. Storing
         // a name nothing renders would leave every page 400ing with no obvious
@@ -1625,7 +1637,7 @@ pub async fn put_settings(
             Some(None) => None,
             Some(Some(name)) if name.is_empty() => None,
             Some(Some(name)) => {
-                if crate::render::profile::RenderProfile::by_name(&name).is_none() {
+                if profiles.lookup(&name).is_none() {
                     return Err(ApiError::bad_request(
                         "unknown_profile",
                         format!("There is no render profile called '{name}'."),
@@ -1634,6 +1646,40 @@ pub async fn put_settings(
                 Some(name)
             }
         };
+
+        // Only a built-in can be hidden: a project profile nobody should
+        // choose can be deleted. Checked against the default as it will be
+        // once this save lands, since the two can change together.
+        let hidden_profiles = match update.hidden_profiles.clone() {
+            None => project.hidden_profiles(),
+            Some(names) => {
+                let mut hidden: Vec<String> = Vec::new();
+                for name in names {
+                    if !profiles.is_built_in(&name) {
+                        return Err(ApiError::bad_request(
+                            "unknown_profile",
+                            format!("There is no built-in render profile called '{name}' to hide."),
+                        ));
+                    }
+                    if !hidden.contains(&name) {
+                        hidden.push(name);
+                    }
+                }
+                hidden
+            }
+        };
+        let effective_default = profile
+            .clone()
+            .unwrap_or_else(|| super::render_profile_routes::FALLBACK_PROFILE.to_string());
+        if hidden_profiles.contains(&effective_default) {
+            return Err(ApiError::bad_request(
+                "hidden_default_profile",
+                format!(
+                    "'{effective_default}' is the project's default render profile, so it \
+                     cannot be hidden. Choose another default first."
+                ),
+            ));
+        }
 
         // Same reasoning as the profile above: which factors the viewer offers
         // is a server concept. Storing one it does not offer would open every
@@ -1711,7 +1757,11 @@ pub async fn put_settings(
         // interleave their halves.
         project
             .set_defaults(
-                &crate::project::RenderDefaults { profile, xscale },
+                &crate::project::RenderDefaults {
+                    profile,
+                    xscale,
+                    hidden_profiles,
+                },
                 &crate::project::ExportDefaults { spacing, format },
                 &crate::project::CatalogDefaults {
                     show_group_radargrams,
@@ -1834,6 +1884,7 @@ pub async fn put_settings(
     Ok(Json(SavedSettings {
         default_profile: project.default_profile(),
         default_xscale: project.default_xscale(),
+        hidden_profiles: project.hidden_profiles(),
         default_spacing: project.default_spacing(),
         default_format: project.default_format(),
         default_show_group_radargrams: project.default_show_group_radargrams(),

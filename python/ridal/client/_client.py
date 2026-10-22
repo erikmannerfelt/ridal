@@ -1371,6 +1371,71 @@ class Client:
             raise errors.ReplacementRefused(reason, committed.report)
         return self.commit_replacement(radargram_id, committed.token)
 
+    def render_profiles(self) -> models.RenderProfileList:
+        """Every render profile the project can render with: Ridal's
+        built-ins and the project's own (#183)."""
+        return models.RenderProfileList.from_json(
+            self._http.json("GET", self._project_path("render-profiles"))
+        )
+
+    def render_profile(self, name: str) -> models.RenderProfile:
+        """One render profile. A project profile comes with its ``etag``."""
+        response = self._http.request(
+            "GET", self._project_path("render-profiles", name)
+        )
+        return models.RenderProfile.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def render_profile_file(self, name: str) -> str:
+        """A render profile as the TOML file ``ridal render --render-profile``
+        and :func:`ridal.render` read."""
+        response = self._http.request(
+            "GET",
+            self._project_path("render-profiles", name),
+            params={"format": "toml"},
+        )
+        return response.text
+
+    def save_render_profile(
+        self,
+        profile: Mapping[str, Any] | models.RenderProfile,
+        *,
+        etag: str | None = None,
+        overwrite: bool = False,
+    ) -> models.RenderProfile:
+        """Create or replace one of the project's render profiles. Needs
+        ``operator``.
+
+        ``profile`` is a whole profile, its ``name`` included: a mapping of
+        the fields of :class:`~ridal.client.RenderProfile`, or one of those,
+        such as a built-in to start from with a new name
+        (``dataclasses.replace(client.render_profile("seismic"),
+        name="survey")``). A built-in's name, or one starting with
+        ``personal-``, is refused. ``etag`` and ``overwrite`` work as for
+        :meth:`save_layers`: without an ``etag`` only a new profile is
+        created, unless ``overwrite`` is set.
+        """
+        body = (
+            profile.definition()
+            if isinstance(profile, models.RenderProfile)
+            else dict(profile)
+        )
+        response = self._http.request(
+            "PUT",
+            self._project_path("render-profiles", body["name"]),
+            json=body,
+            headers=_preconditions(etag, overwrite),
+        )
+        return models.RenderProfile.from_json(
+            _json_of(response), etag=response.headers.get("ETag")
+        )
+
+    def delete_render_profile(self, name: str) -> None:
+        """Delete one of the project's render profiles. Needs ``operator``.
+        Refused for the project's default and for a built-in."""
+        self._http.request("DELETE", self._project_path("render-profiles", name))
+
     def profiles(self) -> tuple[models.Profile, ...]:
         """The project's processing profiles."""
         answer = self._http.json("GET", self._project_path("processing", "profiles"))

@@ -973,10 +973,11 @@ normalize → colormap → encode.** Everything lives under
     source's true sign. Any future nonlinear or order-sensitive
     resampling method must have this same graceful-degradation property
     or it will reproduce that bug.
-- **Profiles** (`profile.rs`) are the one server-defined, non-free-form
-  configuration surface — never client-defined, per the explicit
-  warning against unbounded client-driven render work. Nine built-ins,
-  each `siglog-*` sitting next to the profile it is the log view of:
+- **Profiles** (`profile.rs`) are typed configuration, never free-form
+  render parameters on a request, per the explicit warning against
+  unbounded client-driven render work. Nine built-ins, each `siglog-*`
+  sitting next to the profile it is the log view of, plus a project's own
+  (see [Project render profiles](#project-render-profiles-183) below):
 
   | Profile | Source transform | Display transform | Resampling | Notes |
   |---|---|---|---|---|
@@ -1048,8 +1049,9 @@ normalize → colormap → encode.** Everything lives under
   floor from the same fixed-seed trace runs as the limits (whole traces,
   independent of the profile) and turns the profile into a fixed-strength
   `SigLog` one via `RenderProfile::pin_siglog_strength`; the limits and
-  the renderer both use that pinned profile, and the server caches it
-  with the limits. Cache keys are computed from the requested profile, so
+  the renderer both use that pinned profile. The server keeps the noise
+  floor once per radargram, since it depends on no profile. Image cache
+  keys are computed from the requested profile, so
   they carry the offset (`|siglog-adaptive:…`) and never the resolved
   strength, which is a function of the revision the key already names.
   Rendering an unpinned adaptive profile panics in `to_source_domain`
@@ -1088,7 +1090,7 @@ normalize → colormap → encode.** Everything lives under
   signed value, so negatives can clip). `colormap.rs`'s
   `to_stats_domain`/`to_display_domain` keep that split explicit.
 - **Statistics** (`stats.rs`) estimates percentile bounds **once per
-  revision+profile**, never per chunk — per-chunk estimation would let
+  revision and limit settings**, never per chunk — per-chunk estimation would let
   adjacent chunks normalize differently and turn every chunk boundary
   into a visible seam. Sampling reads 128 runs of 16 contiguous traces
   each (a fixed seed derived from the revision ID, so limits are
@@ -1103,7 +1105,12 @@ normalize → colormap → encode.** Everything lives under
   images) → check the in-memory cache → render on a miss → insert →
   return. Cache keys fold in `RevisionId` plus every profile field that
   affects pixels, so a reprocessed file or a changed profile can never
-  return a stale image.
+  return a stale image. The limits are keyed on
+  `RenderProfile::limits_key_fragment` instead, the fields that move them
+  (source transform and its strength, display transform, window, symmetry,
+  skipped rows), so profiles differing only in colour, contrast, black
+  level, resampling or no-data colour share one estimate (#183), in an LRU
+  of 32 per radargram.
 - **Overviews are also kept on disk** (#180), in
   `cache/overviews/<revision>/` of the project (`server/overview_cache.rs`),
   between the memory cache and a render. A hit reads one small file and
@@ -1115,7 +1122,10 @@ normalize → colormap → encode.** Everything lives under
   and could otherwise serve a file rewritten in place its old image.
   Writes are temp-plus-rename; a failed write is reported once and the
   render is still served. Revision directories the catalog no longer has
-  are removed at every discovery. A bare directory without a project has
+  are removed at every discovery, and so are files whose name does not
+  start with the `profile_tag` (a hash of the profile's cache fragment) of
+  a profile the project still has: an edited or deleted project
+  profile's overviews go then (#183). A bare directory without a project has
   nowhere to keep them and stays memory-only. Chunks are not persisted.
 - **One image cache per server** (#288). Every `RenderService` built from
   one `RenderServiceConfig` shares its `RenderCache`, so
@@ -1182,6 +1192,51 @@ normalize → colormap → encode.** Everything lives under
     factor, so it is the download in proportion. Its extent is kept in raster
     trace/row and sent as elevation in the topographic view. Settings persist
     in localStorage per project, the extent in sessionStorage per radargram.
+
+### Project render profiles (#183)
+
+A project can keep render profiles of its own beside the built-ins, in
+`ridal_data/render/profiles/<name>.json` (`project::render_profiles`), made
+and changed by operators through `/api/v1/render-profiles`.
+
+- **Whole profiles, not overrides.** A project profile is a complete
+  `RenderProfile`, usually started from a copy of a built-in. Inheriting
+  from one would let a later release that tunes the built-in change the
+  project's picture.
+- **Edited in place, with no versions.** A render is made again from the
+  profile whenever it is asked for, so an old version would reproduce
+  nothing. Keys are content-derived, so an edit is never served a stale
+  image.
+- **Three namespaces that cannot collide.** A project profile may not take a
+  built-in's name or start with `personal-`, which is reserved for personal
+  profiles (#183's next part). Lookup is built-ins first, so a project
+  profile made before a release added a built-in of its name is shadowed,
+  not mistaken for it, and a warning names it.
+- **`server::render_profile_routes::ProfileSet`** is the one answer to
+  "which profiles are there": every lookup (`routes::lookup_profile`), every
+  dropdown, the settings validation and the overview harvest go through it.
+  `AppState` keeps the project's profiles in memory, because every chunk
+  looks its profile up, and reloads them after each write under the same
+  lock as the write, and at every rediscovery so a hand edit is picked up.
+  A file that does not parse or validate is skipped with a warning.
+- **Hiding, not deleting, built-ins.** `[render] hidden_profiles` leaves a
+  built-in out of the lists while it still resolves by name, so links and
+  stored preferences keep working. The effective default can be neither
+  hidden nor (for a project profile) deleted.
+- **A name that stops resolving falls back.** `routes::resolve_profile`
+  skips a name nothing answers to at every layer of the cascade, as
+  `resolve_x_scale` skips a retired scale, so a deleted profile in a link or
+  a preference opens the page on the next choice rather than a 400. A tile
+  URL names its profile in its path and still gets a 400.
+- **`RenderProfile::validate`** is shared by the TOML loader and the HTTP
+  store and refuses what cannot be meant (NaN or inverted limits, a
+  contrast of 0 or over 10, a colormap without stops or with more than 32,
+  a siglog field without its transform). It does not judge combinations
+  that are merely unwise, such as a colormap with `LanczosRectified`.
+- **`nodata_color`** paints empty footprints in tiles and overviews.
+  A grey profile with one renders RGB through an identity grey LUT
+  (`RenderProfile::rgb_lut`), so its data pixels match the one-channel
+  path; figures keep no-data transparent.
 
 ## Concurrency and resource bounds
 

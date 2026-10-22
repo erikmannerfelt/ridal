@@ -233,7 +233,7 @@ pub async fn put_preferences(
         stored.render_profile = match sent.as_deref() {
             None | Some("") => None,
             Some(name) => {
-                if crate::render::profile::RenderProfile::by_name(name).is_none() {
+                if state.render_profiles().lookup(name).is_none() {
                     return Err(ApiError::bad_request(
                         "unknown_profile",
                         format!("There is no render profile called '{name}'."),

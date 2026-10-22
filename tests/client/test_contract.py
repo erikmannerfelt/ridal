@@ -13,6 +13,7 @@ must be in :data:`NOT_WRAPPED`, with the reason, so a new endpoint is either
 wrapped or deliberately left to the browser.
 """
 
+import dataclasses
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -37,7 +38,7 @@ NOT_WRAPPED: Final[dict[str, str]] = {
     # Signing in by invite happens in the browser, from the link.
     "redeem_invite": "an invite is redeemed in the browser",
     "openapi_json": "this description itself",
-    "list_profiles": "render profiles are the viewer's",
+    "list_profiles": "render_profiles() lists them in full",
     "get_preferences": "a person's display preferences are the viewer's",
     "put_preferences": "a person's display preferences are the viewer's",
     "get_settings": "the settings page's",
@@ -134,6 +135,7 @@ FORMATS: Final = {
     "csv": "text/csv",
     "png": "image/png",
     "svg": "image/svg+xml",
+    "toml": "application/toml",
 }
 
 
@@ -440,6 +442,13 @@ CALLS: Final[dict[str, Callable[[Any, Files], Any]]] = {
     "commit_draft": lambda c, f: c.commit_draft(1),
     "delete_draft": lambda c, f: c.delete_draft(1),
     "process": lambda c, f: c.process("line-01", [RECORDING], ["zero_corr"]),
+    "render_profiles": lambda c, f: c.render_profiles(),
+    "render_profile": lambda c, f: c.render_profile("survey"),
+    "render_profile_file": lambda c, f: c.render_profile_file("survey"),
+    "save_render_profile": lambda c, f: c.save_render_profile(
+        dataclasses.replace(c.render_profile("seismic"), name="survey")
+    ),
+    "delete_render_profile": lambda c, f: c.delete_render_profile("survey"),
     "profiles": lambda c, f: c.profiles(),
     "profile": lambda c, f: c.profile("standard"),
     "save_profile": lambda c, f: c.save_profile(

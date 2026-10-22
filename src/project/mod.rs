@@ -95,6 +95,7 @@ pub mod pick_summary;
 pub mod preferences;
 pub mod processing;
 pub mod raw;
+pub mod render_profiles;
 pub mod revisions;
 pub mod roles;
 pub mod store;
@@ -355,6 +356,15 @@ pub struct RenderSection {
     /// checked at the HTTP boundary where a bad one can be refused clearly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_xscale: Option<f64>,
+
+    /// Built-in render profiles this project does not offer (#183). A
+    /// hidden profile still renders when asked for by name, so links and
+    /// stored preferences that use it keep working; it is only left out of
+    /// the lists people choose from.
+    ///
+    /// Plain strings for the reason `default_profile` is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_profiles: Vec<String>,
 }
 
 /// Defaults for the layer-point downloads (#166).
@@ -524,6 +534,8 @@ impl utoipa::ToSchema for GroupMaps {}
 pub struct RenderDefaults {
     pub profile: Option<String>,
     pub xscale: Option<f64>,
+    /// Empty clears the key.
+    pub hidden_profiles: Vec<String>,
 }
 
 /// The `[export]` defaults a project can carry, as one value (#166).
@@ -1236,6 +1248,12 @@ impl Project {
         self.read_config().render.default_profile.clone()
     }
 
+    /// The built-in render profiles this project does not offer.
+    #[cfg_attr(not(feature = "server"), allow(dead_code))]
+    pub fn hidden_profiles(&self) -> Vec<String> {
+        self.read_config().render.hidden_profiles.clone()
+    }
+
     /// The horizontal stretch to open radargrams at. `None` means 1x.
     ///
     /// Only the viewer reads it, so a CLI-only build has no caller -- the
@@ -1277,6 +1295,14 @@ impl Project {
                 "render",
                 "default_xscale",
                 render.xscale.map(toml_edit::value),
+            );
+            set_or_clear(
+                document,
+                "render",
+                "hidden_profiles",
+                (!render.hidden_profiles.is_empty()).then(|| {
+                    toml_edit::value(render.hidden_profiles.iter().collect::<toml_edit::Array>())
+                }),
             );
             set_or_clear(
                 document,
@@ -2282,6 +2308,7 @@ mod tests {
                 &RenderDefaults {
                     profile: profile.map(str::to_string),
                     xscale: None,
+                    hidden_profiles: Vec::new(),
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2544,6 +2571,7 @@ mod tests {
                 &RenderDefaults {
                     profile: Some("abslog".to_string()),
                     xscale: Some(2.0),
+                    hidden_profiles: Vec::new(),
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2670,6 +2698,7 @@ mod tests {
                 &RenderDefaults {
                     profile: Some("positive".to_string()),
                     xscale: None,
+                    hidden_profiles: Vec::new(),
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2691,6 +2720,7 @@ mod tests {
                 &RenderDefaults {
                     profile: Some("abslog".to_string()),
                     xscale: Some(2.0),
+                    hidden_profiles: Vec::new(),
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2715,6 +2745,7 @@ mod tests {
                 &RenderDefaults {
                     profile: Some("abslog".to_string()),
                     xscale: Some(4.0),
+                    hidden_profiles: Vec::new(),
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),
@@ -2726,6 +2757,7 @@ mod tests {
                 &RenderDefaults {
                     profile: Some("abslog".to_string()),
                     xscale: None,
+                    hidden_profiles: Vec::new(),
                 },
                 &ExportDefaults::default(),
                 &CatalogDefaults::default(),

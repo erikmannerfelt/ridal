@@ -1,5 +1,6 @@
 """The client against real servers: ``ridal gui`` and a site with tokens."""
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -97,6 +98,47 @@ def test_a_figure_is_drawn_by_the_server(
     local_svg = tmp_path / "local.svg"
     ridal.render(radargram, local_svg, figure=spec)
     assert local_svg.read_text() == svg.read_text()
+
+
+def test_a_project_render_profile_draws_as_its_file_does(
+    gui: Server, radargram: Path, tmp_path: Path
+) -> None:
+    # #183: a project's own profile, started from a built-in, renders on the
+    # server exactly as the file it downloads as renders on the command line.
+    (local,) = ridal.info(radargram)
+    radargram_id = local["radargram_id"]
+    spec = {
+        "extent": {"traces": [100, 400]},
+        "size": {"width": 400, "unit": "px", "dpi": 96},
+        "profile": "survey",
+    }
+    with ridal_client.Client(gui.url) as client:
+        seismic = client.render_profile("seismic")
+        assert seismic.scope == "built_in"
+        saved = client.save_render_profile(
+            dataclasses.replace(seismic, name="survey", contrast=1.5)
+        )
+        try:
+            assert saved.scope == "project"
+            assert saved.etag is not None
+            listed = client.render_profiles()
+            assert listed.profiles[-1].name == "survey"
+            # Only a new profile, unless asked to replace one.
+            with pytest.raises(errors.PreconditionFailed):
+                client.save_render_profile(saved)
+            client.save_render_profile(saved, etag=saved.etag)
+            with pytest.raises(errors.Conflict):
+                client.save_render_profile(seismic, overwrite=True)
+
+            profile_file = tmp_path / "survey.toml"
+            profile_file.write_text(client.render_profile_file("survey"))
+            served = client.figure(radargram_id, tmp_path / "served.svg", spec)
+        finally:
+            client.delete_render_profile("survey")
+        assert "survey" not in {p.name for p in client.render_profiles().profiles}
+    drawn = tmp_path / "local.svg"
+    ridal.render(radargram, drawn, figure={**spec, "profile": str(profile_file)})
+    assert drawn.read_text() == served.read_text()
 
 
 def test_a_token_reaches_its_projects_on_a_site(site: Site) -> None:

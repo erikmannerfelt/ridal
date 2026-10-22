@@ -36,6 +36,8 @@ RECORDS: Final[dict[type, tuple[str, dict[str, str]]]] = {
     models.LayerSummary: ("LayerSummary", {}),
     models.UnreadableInterpretation: ("UnreadableInterpretation", {}),
     models.Grant: ("Grant", {}),
+    models.RenderProfile: ("RenderProfileView", {}),
+    models.RenderProfileList: ("RenderProfileList", {}),
     models.TokenSummary: ("TokenSummary", {}),
     # Processing on the server (#382).
     models.HashedFile: ("HashedFile", {}),

@@ -1343,6 +1343,116 @@ class Profile:
         )
 
 
+RenderProfileScope: TypeAlias = Literal["built_in", "project"]
+
+#: The fields of a render profile itself, as a ``PUT`` sends them and a
+#: profile file holds them: everything in :class:`RenderProfile` but where it
+#: comes from.
+_RENDER_PROFILE_FIELDS: tuple[str, ...] = (
+    "name",
+    "view",
+    "source_transform",
+    "siglog_minval_log10",
+    "siglog_noise_offset",
+    "transform",
+    "limits",
+    "resampling",
+    "format",
+    "contrast",
+    "black_level",
+    "colormap",
+    "symmetric_limits",
+    "stats_skip_first_samples",
+    "nodata_color",
+)
+
+
+@dataclass(frozen=True)
+class RenderProfile:
+    """A render profile: how amplitude becomes an image (#183).
+
+    The enumerated fields are the server's names (``"Linear"``,
+    ``"AdaptiveSigLog"``), and ``limits``, ``format`` and ``colormap`` are
+    as the server sends them, for instance ``{"Percentile": {"low": 0.01,
+    "high": 0.99}}``; :meth:`definition` gives them back in the shape a save
+    takes.
+    """
+
+    name: str
+    view: str
+    source_transform: str
+    siglog_minval_log10: float
+    siglog_noise_offset: float
+    transform: str
+    limits: Mapping[str, Any]
+    resampling: str
+    format: Any
+    """``"Png"``, or ``{"Jpeg": {"quality": 85}}``."""
+    contrast: float
+    black_level: float
+    colormap: Mapping[str, Any] | None
+    """``{"name": ..., "stops": [{"position": 0.0, "color": [r, g, b]}, ...]}``,
+    or ``None`` for grey."""
+    symmetric_limits: bool
+    stats_skip_first_samples: int
+    nodata_color: tuple[int, int, int] | None
+    scope: RenderProfileScope
+    """``built_in`` (Ridal's) or ``project`` (the project's own)."""
+    hidden: bool
+    """Left out of the lists to choose from; still renders by name."""
+    etag: str | None = None
+
+    def definition(self) -> dict[str, Any]:
+        """The profile itself, as :meth:`ridal.client.Client.save_render_profile`
+        takes it: without ``scope``, ``hidden`` and ``etag``."""
+        out = {name: getattr(self, name) for name in _RENDER_PROFILE_FIELDS}
+        out["limits"] = dict(self.limits)
+        out["colormap"] = None if self.colormap is None else dict(self.colormap)
+        out["nodata_color"] = (
+            None if self.nodata_color is None else list(self.nodata_color)
+        )
+        return out
+
+    @classmethod
+    def from_json(cls, data: Any, etag: str | None = None) -> "RenderProfile":
+        def build(d: Mapping[str, Any]) -> "RenderProfile":
+            nodata = d["nodata_color"]
+            return cls(
+                **{
+                    name: d[name]
+                    for name in _RENDER_PROFILE_FIELDS
+                    if name != "nodata_color"
+                },
+                nodata_color=None if nodata is None else tuple(nodata),
+                scope=d["scope"],
+                hidden=d["hidden"],
+                etag=etag,
+            )
+
+        return _parse("render profile", data, build)
+
+
+@dataclass(frozen=True)
+class RenderProfileList:
+    """Every render profile a project can render with."""
+
+    profiles: tuple[RenderProfile, ...]
+    """The built-ins first, then the project's own; hidden ones included."""
+    default: str
+    """What a request that names no profile renders with."""
+
+    @classmethod
+    def from_json(cls, data: Any) -> "RenderProfileList":
+        return _parse(
+            "render profile list",
+            data,
+            lambda d: cls(
+                profiles=tuple(RenderProfile.from_json(p) for p in d["profiles"]),
+                default=d["default"],
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class Assignment:
     """Which processing profile a radargram is in, and its own steps, which

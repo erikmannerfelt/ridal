@@ -23,6 +23,8 @@ my_survey/
     processing/
       profiles/<profile>.json     a processing profile, every version of it
       assignments.json            which radargram uses which profile
+    render/
+      profiles/<name>.json        one of the project's own render profiles
     users.json                    this project's members, and its access policy
     overrides.json                corrected radargram and group metadata
     revisions/, revisions.json    earlier revisions of replaced radargrams
@@ -45,7 +47,8 @@ gui` never writes it, and ignores it when it is there.
 
 ## What to keep
 
-`interpretations/`, `layers/`, `derived/` and `processing/` are **authored**:
+`interpretations/`, `layers/`, `derived/`, `processing/` and `render/` are
+**authored**:
 people made them, and nothing can recreate them. Back them up, and keep them
 in version control if the project is in a git repository. The `.gitignore`
 that `ridal project init` writes already leaves them in.
@@ -69,8 +72,9 @@ radargram, render profile and size, so that the index and map do not reread
 every radargram after a restart, and each radargram's track, one small file
 per radargram file, so that the server does not reread every radargram's
 coordinates when it starts. Overviews and tracks of a radargram that has
-since been reprocessed or removed are deleted when the server next scans the
-catalog.
+since been reprocessed or removed, and overviews made with a render profile
+that has since been changed or deleted, are deleted when the server next
+scans the catalog.
 `catalog-summary.json` is derived too: it is the catalog's size, rewritten
 whenever the catalog is scanned, and read by the site landing page so that it
 does not have to open every project.
@@ -149,6 +153,7 @@ dir = "/var/cache/ridal/dronbreen"
 [render]
 default_profile = "default"
 default_xscale = 2.0
+hidden_profiles = ["abslog"]
 
 [export]
 default_spacing = "10"
@@ -233,7 +238,13 @@ name_field = "Stake"
 ### `[render]`
 
 `default_profile`
-: The render profile used when a request does not name one.
+: The render profile used when a request does not name one: a built-in or
+  one of the project's own (`render/profiles/`).
+
+`hidden_profiles`
+: Built-in render profiles left out of the lists to choose from. A hidden
+  profile still draws when a link or a person's setting names it. The
+  default profile cannot be hidden. Default: none.
 
 `default_xscale`
 : The horizontal stretch a radargram opens with. Default: `1.0`. A

@@ -340,6 +340,26 @@ fn batch() -> Vec<Step> {
     steps
 }
 
+/// A project render profile (#183) called `survey`.
+fn render_profile_body(_: &Fixture, _: &[Value]) -> Payload {
+    Payload::Json(
+        serde_json::to_value(crate::render::profile::RenderProfile {
+            name: "survey".to_string(),
+            contrast: 1.5,
+            ..crate::render::profile::RenderProfile::default_profile()
+        })
+        .unwrap(),
+    )
+}
+
+fn render_profile() -> Vec<Step> {
+    vec![send(
+        "PUT",
+        "/api/v1/projects/{key}/render-profiles/survey",
+        render_profile_body,
+    )]
+}
+
 fn draft_body(_: &Fixture, _: &[Value]) -> Payload {
     Payload::Json(json!({"steps": [STEPS]}))
 }
@@ -614,6 +634,15 @@ const CASES: &[Case] = &[
     Case::new("download_dem").setup(dem),
     Case::new("put_dem").setup(upload_dem).body(dem_body),
     Case::new("delete_dem").setup(dem),
+    // Render profiles (#183).
+    Case::new("list_render_profiles"),
+    Case::new("get_render_profile").params(&[("name", "survey")]).setup(render_profile),
+    Case::new("put_render_profile")
+        .params(&[("name", "survey")])
+        .body(render_profile_body),
+    Case::new("delete_render_profile")
+        .params(&[("name", "survey")])
+        .setup(render_profile),
     // Processing profiles.
     Case::new("list_processing_profiles"),
     Case::new("get_processing_profile").setup(profile),
