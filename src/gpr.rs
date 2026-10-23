@@ -2912,69 +2912,93 @@ fn derive_output_path(
     }
 }
 
+/// A recording's header and its positions, read from the positions file
+/// `resolved` names: the format's own, or a Ridal coordinate CSV for any
+/// format (#13). Apply `--cor` with [`formats::with_coordinates`] first.
 fn load_meta_and_location(
     resolved: &ResolvedInput,
     medium_velocity: f32,
     crs: Option<&String>,
-    cor_path: Option<&PathBuf>,
     dem_path: Option<&PathBuf>,
     override_antenna_mhz: Option<f32>,
     override_antenna_separation: Option<f32>,
 ) -> Result<(GPRMeta, GPRLocation), Box<dyn Error>> {
-    let (gpr_meta, mut gpr_location) = match resolved.kind {
-        FormatKind::Ramac => {
-            if !resolved.header.is_file() {
-                return Err(format!("File not found: {:?}", resolved.header).into());
-            }
-            let meta = io::load_rad(
-                &resolved.header,
-                medium_velocity,
-                override_antenna_mhz,
-                override_antenna_separation,
-            )?;
-            let cor_source = match cor_path {
-                Some(path) => path.clone(),
-                None => resolved.coordinates.clone(),
-            };
-            let location = io::load_cor(&cor_source, crs)?;
-            (meta, location)
+    if !resolved.header.is_file() {
+        return Err(format!("File not found: {:?}", resolved.header).into());
+    }
+    let gpr_meta = match resolved.kind {
+        FormatKind::Ramac => io::load_rad(
+            &resolved.header,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+        )?,
+        FormatKind::PulseEkko => io::load_pe_hd(
+            &resolved.header,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+        )?,
+        FormatKind::Gssi => io::load_gssi_dzt(
+            &resolved.header,
+            medium_velocity,
+            override_antenna_mhz,
+            override_antenna_separation,
+        )?,
+    };
+
+    let positions = &resolved.coordinates;
+    let native = formats::format_info(resolved.kind).files.coordinates;
+    if !positions.is_file() {
+        return Err(format!(
+            "No positions for {}: {} does not exist. Ridal needs a position for \
+             every trace. Give another positions file with --cor (cor= in \
+             Python): a {native} or a Ridal coordinate CSV of trace, time, lon, \
+             lat and alt, or put the CSV beside the recording as \
+             <stem>{}.",
+            resolved.header.display(),
+            positions.display(),
+            formats::COORDS_CSV_SUFFIX,
+        )
+        .into());
+    }
+    let mut gpr_location = if formats::is_coords_csv(positions) {
+        io::load_coords_csv(positions, crs)?
+    } else {
+        let is_native = positions
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(native.trim_start_matches('.')));
+        if !is_native {
+            return Err(format!(
+                "{} cannot hold the positions of {}: a {} recording's positions \
+                 are a {native} or a Ridal coordinate CSV (.csv).",
+                positions.display(),
+                resolved.header.display(),
+                formats::format_info(resolved.kind).name,
+            )
+            .into());
         }
-        FormatKind::PulseEkko => {
-            if cor_path.is_some() {
-                return Err("The --cor option is only supported for RAMAC inputs.".into());
-            }
-            if !resolved.header.is_file() {
-                return Err(format!("File not found: {:?}", resolved.header).into());
-            }
-            let meta = io::load_pe_hd(
-                &resolved.header,
-                medium_velocity,
-                override_antenna_mhz,
-                override_antenna_separation,
-            )?;
-            let location = io::load_pe_gp2(&resolved.coordinates, crs)?;
-            (meta, location)
-        }
-        FormatKind::Gssi => {
-            if cor_path.is_some() {
-                return Err("The --cor option is only supported for RAMAC inputs.".into());
-            }
-            if !resolved.header.is_file() {
-                return Err(format!("File not found: {:?}", resolved.header).into());
-            }
-            let meta = io::load_gssi_dzt(
-                &resolved.header,
-                medium_velocity,
-                override_antenna_mhz,
-                override_antenna_separation,
-            )?;
-            let location = io::load_gssi_dzg(&resolved.coordinates, crs)?;
-            (meta, location)
+        match resolved.kind {
+            FormatKind::Ramac => io::load_cor(positions, crs)?,
+            FormatKind::PulseEkko => io::load_pe_gp2(positions, crs)?,
+            FormatKind::Gssi => io::load_gssi_dzg(positions, crs)?,
         }
     };
 
     if let Some(dem_path) = dem_path {
         gpr_location.get_dem_elevations(dem_path)?;
+    } else if gpr_location
+        .cor_points
+        .iter()
+        .any(|point| !point.altitude.is_finite())
+    {
+        return Err(format!(
+            "{} gives no altitude. Add an alt column, or give a DEM with --dem \
+             (dem= in Python) to take the elevations from.",
+            positions.display()
+        )
+        .into());
     }
 
     Ok((gpr_meta, gpr_location))
@@ -3154,17 +3178,24 @@ pub fn inspect(params: InfoParams) -> Result<Vec<Inspected>, Box<dyn Error>> {
         }
     }
 
+    let mut raw = expanded
+        .iter()
+        .filter(|input| !is_netcdf(input))
+        .map(|input| formats::resolve_input(input))
+        .collect::<Result<Vec<_>, String>>()?;
+    formats::with_coordinates(&mut raw, params.cor_path.as_deref())?;
+    let mut raw = raw.into_iter();
+
     for input in expanded {
         if is_netcdf(&input) {
             records.push(Inspected::Processed(processed_info_record(&input)?));
             continue;
         }
-        let resolved = formats::resolve_input(&input)?;
+        let resolved = raw.next().expect("one resolved recording per raw input");
         let (meta, location) = load_meta_and_location(
             &resolved,
             params.medium_velocity,
             params.crs.as_ref(),
-            params.cor_path.as_ref(),
             params.dem_path.as_ref(),
             params.override_antenna_mhz,
             params.override_antenna_separation,
@@ -3199,15 +3230,23 @@ pub fn build_processed_gpr_with_progress(
     if resolved_inputs.is_empty() {
         return Err("No input files were resolved.".into());
     }
+    formats::with_coordinates(&mut resolved_inputs, params.cor_path.as_deref())?;
+    if !params.quiet {
+        for resolved in &resolved_inputs {
+            println!(
+                "Positions for {:?} from {:?}",
+                resolved.header, resolved.coordinates
+            );
+        }
+    }
 
     let output_path = derive_output_path(params.output_path.as_ref(), &resolved_inputs[0])?;
     // Hashed here, from the same resolution the readers use, so the recipe
-    // names exactly the files that were read: the `--cor` override in
-    // place of each recording's own, as `load_meta_and_location` does.
+    // names exactly the files that were read, `--cor` applied.
     let inputs = crate::recipe::Inputs {
         bundles: resolved_inputs
             .iter()
-            .map(|resolved| crate::recipe::bundle_of(resolved, params.cor_path.as_deref()))
+            .map(crate::recipe::bundle_of)
             .collect::<Result<Vec<_>, String>>()?,
         dem: params
             .dem_path
@@ -3222,7 +3261,6 @@ pub fn build_processed_gpr_with_progress(
         &first_resolved,
         params.medium_velocity,
         params.crs.as_ref(),
-        params.cor_path.as_ref(),
         params.dem_path.as_ref(),
         params.override_antenna_mhz,
         params.override_antenna_separation,
@@ -3241,7 +3279,6 @@ pub fn build_processed_gpr_with_progress(
             &resolved,
             params.medium_velocity,
             params.crs.as_ref(),
-            params.cor_path.as_ref(),
             params.dem_path.as_ref(),
             params.override_antenna_mhz,
             params.override_antenna_separation,
@@ -3502,6 +3539,7 @@ pub struct BatchPlan {
 
 pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     let expanded_filepaths = expand_cli_inputs(&params.filepaths)?;
+    formats::check_cor_count(expanded_filepaths.len(), params.cor_path.as_deref())?;
     let threshold = params
         .merge
         .as_deref()
@@ -3610,7 +3648,7 @@ pub fn read_header_and_positions(
     dem: Option<&PathBuf>,
     antenna_mhz: Option<f32>,
 ) -> Result<(GPRMeta, GPRLocation), HeaderReadError> {
-    load_meta_and_location(resolved, 0.168, crs, None, dem, antenna_mhz, None).map_err(|e| {
+    load_meta_and_location(resolved, 0.168, crs, dem, antenna_mhz, None).map_err(|e| {
         match e.downcast::<crate::io::UnknownAntennaFrequency>() {
             Ok(unknown) => HeaderReadError::UnknownFrequency(*unknown),
             Err(other) => HeaderReadError::Other(other.to_string()),
@@ -3628,13 +3666,16 @@ pub enum HeaderReadError {
 
 /// One input's header and positions, as planning a batch reads them.
 fn read_for_grouping(path: &Path, params: &BatchRunParams) -> Result<GroupingRecording, String> {
-    let resolved = formats::resolve_input(path)
+    let mut resolved = formats::resolve_input(path)
         .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
+    formats::with_coordinates(
+        std::slice::from_mut(&mut resolved),
+        params.cor_path.as_deref(),
+    )?;
     let (meta, location) = load_meta_and_location(
         &resolved,
         params.medium_velocity,
         params.crs.as_ref(),
-        params.cor_path.as_ref(),
         None,
         params.override_antenna_mhz,
         params.override_antenna_separation,
@@ -5985,5 +6026,179 @@ pub mod tests {
             "{message}"
         );
         assert!(super::check_mergeable(&[header("a.rad", 25.0), header("b.rad", 25.0)]).is_ok());
+    }
+}
+
+/// Positions from a Ridal coordinate CSV and how `--cor` finds them (#13).
+#[cfg(test)]
+mod coordinate_tests {
+    use std::path::{Path, PathBuf};
+
+    use crate::formats;
+
+    const LINE: &str = "dronbreen-20250327-DAT_0066_A1";
+
+    /// The fixture's `.cor` as a coordinate CSV, row for row.
+    fn csv_of_cor(cor: &Path, with_alt: bool) -> String {
+        let mut csv = String::from(if with_alt {
+            "trace,time,lon,lat,alt\n"
+        } else {
+            "trace,time,lon,lat\n"
+        });
+        for line in std::fs::read_to_string(cor).unwrap().lines() {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!((f[4], f[6]), ("N", "E"));
+            let trace = f[0].parse::<u32>().unwrap() - 1;
+            let time = format!("{}T{:0>8}Z", f[1], f[2]);
+            csv += &format!("{trace},{time},{},{}", f[5], f[3]);
+            if with_alt {
+                csv += &format!(",{}", f[7]);
+            }
+            csv += "\n";
+        }
+        csv
+    }
+
+    /// The fixture's header and data in a directory of their own, with no
+    /// positions file beside them.
+    fn recording_without_positions(dir: &Path) -> PathBuf {
+        for ext in ["rad", "rd3"] {
+            std::fs::copy(
+                format!("assets/mala/{LINE}.{ext}"),
+                dir.join(format!("{LINE}.{ext}")),
+            )
+            .unwrap();
+        }
+        dir.join(format!("{LINE}.rad"))
+    }
+
+    fn info_params(filepaths: Vec<PathBuf>) -> super::InfoParams {
+        super::InfoParams {
+            filepaths,
+            dem_path: None,
+            cor_path: None,
+            medium_velocity: 0.168,
+            crs: None,
+            override_antenna_mhz: None,
+            override_antenna_separation: None,
+        }
+    }
+
+    fn read(resolved: &formats::ResolvedInput) -> Result<super::GPRLocation, String> {
+        super::load_meta_and_location(resolved, 0.168, None, None, None, None)
+            .map(|(_, location)| location)
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_csv_of_the_cor_reads_as_the_cor_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let cor = PathBuf::from(format!("assets/mala/{LINE}.cor"));
+        let csv = dir.path().join("positions.csv");
+        std::fs::write(&csv, csv_of_cor(&cor, true)).unwrap();
+
+        let original = formats::resolve_input(&cor).unwrap();
+        let mut replaced = [original.clone()];
+        formats::with_coordinates(&mut replaced, Some(&csv)).unwrap();
+        let (from_cor, from_csv) = (read(&original).unwrap(), read(&replaced[0]).unwrap());
+
+        assert_eq!(from_csv.crs, from_cor.crs);
+        assert_eq!(from_csv.cor_points.len(), from_cor.cor_points.len());
+        for (a, b) in from_csv.cor_points.iter().zip(&from_cor.cor_points) {
+            assert_eq!(
+                (a.trace_n, a.time_seconds, a.easting, a.northing, a.altitude),
+                (b.trace_n, b.time_seconds, b.easting, b.northing, b.altitude)
+            );
+        }
+        // And the recipe names the file that was read.
+        let bundle = crate::recipe::bundle_of(&replaced[0]).unwrap();
+        assert_eq!(bundle.files[2].file.name, "positions.csv");
+    }
+
+    #[test]
+    fn a_coords_csv_beside_the_recording_is_found_and_stands_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let rad = recording_without_positions(dir.path());
+        let csv = dir.path().join(format!("{LINE}.coords.csv"));
+        std::fs::write(
+            &csv,
+            csv_of_cor(Path::new(&format!("assets/mala/{LINE}.cor")), true),
+        )
+        .unwrap();
+        // Preferred to the format's own, when both are there.
+        std::fs::copy(
+            format!("assets/mala/{LINE}.cor"),
+            dir.path().join(format!("{LINE}.cor")),
+        )
+        .unwrap();
+
+        for input in [&rad, &csv] {
+            let resolved = formats::resolve_input(input).unwrap();
+            assert_eq!(resolved.header, rad);
+            assert_eq!(resolved.coordinates, csv);
+            assert!(read(&resolved).is_ok());
+        }
+
+        let records = super::inspect(info_params(vec![rad])).unwrap();
+        let Some(super::Inspected::Raw(record)) = records.first() else {
+            panic!("expected a raw record, got {records:?}");
+        };
+        assert_eq!(record.related_files.coordinates, csv.display().to_string());
+    }
+
+    #[test]
+    fn missing_positions_say_what_to_do() {
+        let dir = tempfile::tempdir().unwrap();
+        let rad = recording_without_positions(dir.path());
+        let error = read(&formats::resolve_input(&rad).unwrap()).unwrap_err();
+        assert!(error.contains("No positions for"), "{error}");
+        assert!(error.contains("--cor"), "{error}");
+        assert!(error.contains(".coords.csv"), "{error}");
+    }
+
+    #[test]
+    fn a_csv_without_alt_needs_a_dem() {
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("positions.csv");
+        std::fs::write(
+            &csv,
+            csv_of_cor(Path::new(&format!("assets/mala/{LINE}.cor")), false),
+        )
+        .unwrap();
+        let mut resolved =
+            [formats::resolve_input(Path::new(&format!("assets/mala/{LINE}.rad"))).unwrap()];
+        formats::with_coordinates(&mut resolved, Some(&csv)).unwrap();
+        let error = read(&resolved[0]).unwrap_err();
+        assert!(error.contains("gives no altitude"), "{error}");
+        assert!(error.contains("--dem"), "{error}");
+    }
+
+    #[test]
+    fn another_formats_positions_file_is_refused() {
+        let mut resolved =
+            [formats::resolve_input(Path::new(&format!("assets/mala/{LINE}.rad"))).unwrap()];
+        let dir = tempfile::tempdir().unwrap();
+        let dzg = dir.path().join("track.DZG");
+        std::fs::write(&dzg, "").unwrap();
+        formats::with_coordinates(&mut resolved, Some(&dzg)).unwrap();
+        let error = read(&resolved[0]).unwrap_err();
+        assert!(error.contains("a ramac recording's positions"), "{error}");
+    }
+
+    #[test]
+    fn one_positions_file_for_several_recordings_is_refused() {
+        let line = |name: &str| PathBuf::from(format!("assets/mala/{name}.rad"));
+        let cor = PathBuf::from(format!("assets/mala/{LINE}.cor"));
+        let two = vec![line(LINE), line("dronbreen-20220329-DAT_0237_A1")];
+
+        let mut params = info_params(two.clone());
+        params.cor_path = Some(cor.clone());
+        let error = super::inspect(params).unwrap_err().to_string();
+        assert!(error.contains("2 recordings were given"), "{error}");
+
+        // A directory works for both, each by its stem.
+        let mut params = info_params(two);
+        params.cor_path = Some(PathBuf::from("assets/mala"));
+        assert_eq!(super::inspect(params).unwrap().len(), 2);
     }
 }
