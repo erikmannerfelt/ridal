@@ -911,9 +911,10 @@ CSV (`src/io/coords_csv.rs`) are interchangeable readers.
   only, since trace numbers restart in each), `--cor DIR` by stem, else a
   `<stem>.coords.csv` beside the header, else the format's own. A server
   source names its files explicitly, and the same resolution gives a
-  `.coords.csv` among them the coordinates role. The GUI's **Add data** does
-  not attach one yet: `ingest.js` groups files by their last extension, so
-  `X.coords.csv` is a recording of its own there.
+  `.coords.csv` among them the coordinates role. The GUI's uploads group
+  files the same way (`RIDAL.recordingStem`), and leave out a recording's
+  own positions file when a CSV replaces it (`RIDAL.sourceFiles`), since a
+  source names only what a radargram is made from.
 - **Each row says where its time and altitude came from**
   (`time_source`, `alt_source`). Processing keeps only what matters
   downstream: a `synthetic` time anywhere makes `TimeSource::Synthetic`,

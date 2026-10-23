@@ -92,10 +92,7 @@
    * the `.cor` a recording lacked does not upload its `.rd3` again. */
   const stored = new Map();
   const fileKey = (f) => `${f.name}\u0000${f.size}\u0000${f.lastModified}`;
-  const stemOf = (name) => {
-    const dot = name.lastIndexOf('.');
-    return dot > 0 ? name.slice(0, dot) : name;
-  };
+  const stemOf = (name) => RIDAL.recordingStem(name);
   let uploading = null;
   let stopped = false;
   let queue = Promise.resolve();
@@ -260,7 +257,7 @@
     const minutes = Number(threshold.value);
     const text = (box) => box.value.trim() || null;
     return {
-      recordings: uploaded().map((e) => ({ files: e.stored })),
+      recordings: uploaded().map((e) => ({ files: RIDAL.sourceFiles(e.stored) })),
       merge_threshold_seconds: never.checked || !Number.isFinite(minutes) ? null : minutes * 60,
       excluded: [...edits.excluded],
       joins: [...edits.joins],

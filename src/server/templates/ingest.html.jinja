@@ -50,11 +50,13 @@
         Every file of each recording: <code>.rad</code>, <code>.rd3</code>
         and <code>.cor</code> for RAMAC, <code>.hd</code>, <code>.dt1</code>
         and <code>.gp2</code> for pulseEKKO, <code>.dzt</code> and
-        <code>.dzg</code> for GSSI. Files are grouped into recordings by
-        their names without the extension, and uploaded one at a time.
+        <code>.dzg</code> for GSSI. A <code>&lt;name&gt;.coords.csv</code>
+        from <code>ridal coords</code> is used in place of a recording's own
+        positions file. Files are grouped into recordings by their names
+        without the extension, and uploaded one at a time.
       </p>
       <input type="file" id="ingest-input" multiple hidden
-             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx">
+             accept=".rad,.rd3,.rd7,.cor,.hd,.dt1,.gp2,.dzt,.dzg,.dzx,.csv">
     </div>
     <p id="ingest-upload" class="hint" aria-live="polite"></p>
     <p><button type="button" id="ingest-cancel" hidden>Stop uploading</button></p>

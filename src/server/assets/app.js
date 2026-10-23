@@ -600,6 +600,24 @@ const RIDAL = Object.freeze({
     return text.charAt(0).toUpperCase() + text.slice(1);
   },
 
+  /** The recording a raw file belongs to: its name without the extension,
+   * where `ridal coords`' `<name>.coords.csv` belongs to `<name>` (#13),
+   * as `formats::resolve_input` reads it. */
+  recordingStem(name) {
+    const coords = /\.coords\.csv$/i;
+    if (coords.test(name)) return name.replace(coords, '');
+    const dot = name.lastIndexOf('.');
+    return dot > 0 ? name.slice(0, dot) : name;
+  },
+
+  /** The stored files a source names for one recording: all of them, but
+   * the recording's own positions file when a `.coords.csv` replaces it,
+   * since a source names only what a radargram is made from. */
+  sourceFiles(stored) {
+    if (!stored.some((f) => /\.coords\.csv$/i.test(f.name))) return stored;
+    return stored.filter((f) => !/\.(cor|gp2|dzg)$/i.test(f.name));
+  },
+
   /** Derive an id from a display name, the way Ridal derives one from a
    * filename.
    *
