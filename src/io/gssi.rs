@@ -245,6 +245,7 @@ pub fn load_gssi_dzg(
     Ok(gpr::GPRLocation {
         cor_points: points,
         correction: gpr::LocationCorrection::None,
+        time_source: gpr::TimeSource::Recorded,
         crs,
     })
 }

@@ -561,6 +561,7 @@ mod tests {
                 },
             ],
             correction: gpr::LocationCorrection::None,
+            time_source: gpr::TimeSource::Recorded,
             crs: "EPSG:4326".to_string(),
         };
 

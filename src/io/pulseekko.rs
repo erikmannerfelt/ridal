@@ -186,6 +186,7 @@ pub fn load_pe_gp2(
     Ok(gpr::GPRLocation {
         cor_points: points,
         correction: gpr::LocationCorrection::None,
+        time_source: gpr::TimeSource::Recorded,
         crs,
     })
 }

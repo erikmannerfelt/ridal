@@ -28,6 +28,7 @@ mod identity;
 mod interp;
 mod io;
 mod job;
+mod positions;
 mod project;
 mod recipe;
 mod render;

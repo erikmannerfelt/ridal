@@ -158,6 +158,12 @@ pub enum LocationCorrection {
         path: PathBuf,
         resampling: crate::dem::Resampling,
     },
+    /// Elevations a DEM gave when `ridal coords --dem` wrote the coordinate
+    /// CSV at `path` (#13): the CSV names the DEM in a comment, and the
+    /// recipe hashes the CSV.
+    InCoordinates {
+        path: PathBuf,
+    },
 }
 
 /// How many fixes at an end of a track set the rate its times are
@@ -170,6 +176,31 @@ pub struct GPRLocation {
     pub cor_points: Vec<CorPoint>,
     pub correction: LocationCorrection,
     pub crs: String,
+    /// Whether `time_seconds` is when each trace was recorded.
+    pub time_source: TimeSource,
+}
+
+/// Where a radargram's trace times come from (#13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimeSource {
+    /// Recorded with the positions, and interpolated between them.
+    #[default]
+    Recorded,
+    /// Made up by `ridal coords`, from a start time and a trace interval,
+    /// for a recording whose times are unknown: they order the traces but
+    /// say nothing about when the radar stood still.
+    Synthetic,
+}
+
+impl TimeSource {
+    /// The source of a merge of two: synthetic if either is.
+    pub fn and(self, other: TimeSource) -> TimeSource {
+        if self == TimeSource::Synthetic || other == TimeSource::Synthetic {
+            TimeSource::Synthetic
+        } else {
+            TimeSource::Recorded
+        }
+    }
 }
 
 impl GPRLocation {
@@ -306,7 +337,7 @@ impl GPRLocation {
     ///
     /// # Arguments
     /// - `header_seconds_per_trace`: the header's trace interval (s).
-    fn range_fill(
+    pub(crate) fn range_fill(
         &self,
         start_trace: u32,
         end_trace: u32,
@@ -342,6 +373,7 @@ impl GPRLocation {
         GPRLocation {
             cor_points: new_points,
             correction: self.correction.clone(),
+            time_source: self.time_source,
             crs: self.crs.clone(),
         }
     }
@@ -629,7 +661,9 @@ impl GPR {
             dem: inputs.dem.clone(),
             dem_resampling: match &self.location.correction {
                 LocationCorrection::Dem { resampling, .. } => *resampling,
-                LocationCorrection::None => crate::dem::Resampling::default(),
+                LocationCorrection::None | LocationCorrection::InCoordinates { .. } => {
+                    crate::dem::Resampling::default()
+                }
             },
             crs: self.location.crs.clone(),
             medium_velocity: self.metadata.medium_velocity,
@@ -796,6 +830,7 @@ impl GPR {
             cor_points: self.location.cor_points[min_trace_ as usize..max_trace_ as usize]
                 .to_owned(),
             correction: self.location.correction.clone(),
+            time_source: self.location.time_source,
             crs: self.location.crs.clone(),
         };
 
@@ -2246,6 +2281,13 @@ impl GPR {
         };
         let (gps, gps_note) = match gps_uncertainty {
             None => (None, String::new()),
+            // Times made up from a trace interval say nothing about when
+            // the radar stood still, and nor do positions interpolated
+            // along with them.
+            Some(_) if self.location.time_source == TimeSource::Synthetic => (
+                None,
+                " Warning: the trace times are synthetic, so the GPS was not used.".to_string(),
+            ),
             Some(uncertainty) => {
                 match filters::standstill::gps::Gps::new(track, uncertainty as f64) {
                     Ok(gps) => {
@@ -2549,6 +2591,7 @@ impl GPR {
             self.location
                 .cor_points
                 .append(other.location.cor_points.clone().as_mut());
+            self.location.time_source = self.location.time_source.and(other.location.time_source);
 
             self.data.append(Axis(1), other.data.view()).unwrap();
             // Per trace, so it concatenates with the traces. Two inputs
@@ -2923,10 +2966,59 @@ fn load_meta_and_location(
     override_antenna_mhz: Option<f32>,
     override_antenna_separation: Option<f32>,
 ) -> Result<(GPRMeta, GPRLocation), Box<dyn Error>> {
+    let gpr_meta = load_meta(
+        resolved,
+        medium_velocity,
+        override_antenna_mhz,
+        override_antenna_separation,
+    )?;
+
+    let positions = &resolved.coordinates;
+    if !positions.is_file() {
+        return Err(format!(
+            "No positions for {}: {} does not exist. Ridal needs a position for \
+             every trace. Give another positions file with --cor (cor= in \
+             Python): a {} or a Ridal coordinate CSV of trace, time, lon, \
+             lat and alt, or put the CSV beside the recording as \
+             <stem>{}.",
+            resolved.header.display(),
+            positions.display(),
+            formats::format_info(resolved.kind).files.coordinates,
+            formats::COORDS_CSV_SUFFIX,
+        )
+        .into());
+    }
+    let mut gpr_location = load_positions(resolved, positions, crs)?;
+
+    if let Some(dem_path) = dem_path {
+        gpr_location.get_dem_elevations(dem_path)?;
+    } else if gpr_location
+        .cor_points
+        .iter()
+        .any(|point| !point.altitude.is_finite())
+    {
+        return Err(format!(
+            "{} gives no altitude. Add an alt column, or give a DEM with --dem \
+             (dem= in Python) to take the elevations from.",
+            positions.display()
+        )
+        .into());
+    }
+
+    Ok((gpr_meta, gpr_location))
+}
+
+/// A recording's header alone.
+pub(crate) fn load_meta(
+    resolved: &ResolvedInput,
+    medium_velocity: f32,
+    override_antenna_mhz: Option<f32>,
+    override_antenna_separation: Option<f32>,
+) -> Result<GPRMeta, Box<dyn Error>> {
     if !resolved.header.is_file() {
         return Err(format!("File not found: {:?}", resolved.header).into());
     }
-    let gpr_meta = match resolved.kind {
+    Ok(match resolved.kind {
         FormatKind::Ramac => io::load_rad(
             &resolved.header,
             medium_velocity,
@@ -2945,63 +3037,39 @@ fn load_meta_and_location(
             override_antenna_mhz,
             override_antenna_separation,
         )?,
-    };
+    })
+}
 
-    let positions = &resolved.coordinates;
+/// The positions in `positions`, for the recording `resolved`: a Ridal
+/// coordinate CSV, or the positions file of the recording's format.
+pub(crate) fn load_positions(
+    resolved: &ResolvedInput,
+    positions: &Path,
+    crs: Option<&String>,
+) -> Result<GPRLocation, Box<dyn Error>> {
+    if formats::is_coords_csv(positions) {
+        return io::load_coords_csv(positions, crs);
+    }
     let native = formats::format_info(resolved.kind).files.coordinates;
-    if !positions.is_file() {
+    let is_native = positions
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(native.trim_start_matches('.')));
+    if !is_native {
         return Err(format!(
-            "No positions for {}: {} does not exist. Ridal needs a position for \
-             every trace. Give another positions file with --cor (cor= in \
-             Python): a {native} or a Ridal coordinate CSV of trace, time, lon, \
-             lat and alt, or put the CSV beside the recording as \
-             <stem>{}.",
-            resolved.header.display(),
+            "{} cannot hold the positions of {}: a {} recording's positions \
+             are a {native} or a Ridal coordinate CSV (.csv).",
             positions.display(),
-            formats::COORDS_CSV_SUFFIX,
+            resolved.header.display(),
+            formats::format_info(resolved.kind).name,
         )
         .into());
     }
-    let mut gpr_location = if formats::is_coords_csv(positions) {
-        io::load_coords_csv(positions, crs)?
-    } else {
-        let is_native = positions
-            .extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case(native.trim_start_matches('.')));
-        if !is_native {
-            return Err(format!(
-                "{} cannot hold the positions of {}: a {} recording's positions \
-                 are a {native} or a Ridal coordinate CSV (.csv).",
-                positions.display(),
-                resolved.header.display(),
-                formats::format_info(resolved.kind).name,
-            )
-            .into());
-        }
-        match resolved.kind {
-            FormatKind::Ramac => io::load_cor(positions, crs)?,
-            FormatKind::PulseEkko => io::load_pe_gp2(positions, crs)?,
-            FormatKind::Gssi => io::load_gssi_dzg(positions, crs)?,
-        }
-    };
-
-    if let Some(dem_path) = dem_path {
-        gpr_location.get_dem_elevations(dem_path)?;
-    } else if gpr_location
-        .cor_points
-        .iter()
-        .any(|point| !point.altitude.is_finite())
-    {
-        return Err(format!(
-            "{} gives no altitude. Add an alt column, or give a DEM with --dem \
-             (dem= in Python) to take the elevations from.",
-            positions.display()
-        )
-        .into());
+    match resolved.kind {
+        FormatKind::Ramac => io::load_cor(positions, crs),
+        FormatKind::PulseEkko => io::load_pe_gp2(positions, crs),
+        FormatKind::Gssi => io::load_gssi_dzg(positions, crs),
     }
-
-    Ok((gpr_meta, gpr_location))
 }
 
 fn metadata_summary(meta: &GPRMeta) -> MetadataSummary {
@@ -3027,6 +3095,10 @@ fn correction_summary(location: &GPRLocation) -> CorrectionSummary {
         },
         LocationCorrection::Dem { path, .. } => CorrectionSummary {
             kind: "dem".to_string(),
+            source: Some(path.to_string_lossy().to_string()),
+        },
+        LocationCorrection::InCoordinates { path } => CorrectionSummary {
+            kind: "dem_in_coordinates".to_string(),
             source: Some(path.to_string_lossy().to_string()),
         },
     }
@@ -4081,6 +4153,7 @@ pub mod tests {
         GPRLocation {
             cor_points,
             correction: correction.unwrap_or(LocationCorrection::None),
+            time_source: super::TimeSource::Recorded,
             crs,
         }
     }
@@ -4181,6 +4254,7 @@ pub mod tests {
         GPRLocation {
             cor_points,
             correction: LocationCorrection::None,
+            time_source: super::TimeSource::Recorded,
             crs: "EPSG:32633".to_string(),
         }
         .range_fill(0, 60, header)
@@ -4223,6 +4297,7 @@ pub mod tests {
                 altitude: 0.,
             }],
             correction: LocationCorrection::None,
+            time_source: super::TimeSource::Recorded,
             crs: "EPSG:32633".to_string(),
         };
         let held = location.range_fill(0, 6, 0.);
@@ -4315,6 +4390,7 @@ pub mod tests {
         let location = GPRLocation {
             cor_points,
             correction: LocationCorrection::None,
+            time_source: super::TimeSource::Recorded,
             crs: "EPSG:32633".to_string(),
         };
 
@@ -5853,6 +5929,49 @@ pub mod tests {
             gps.steps.last().unwrap(),
             "remove_standstills(strength=8, min_duration=5s, gps_uncertainty=1)"
         );
+    }
+
+    #[test]
+    fn remove_standstills_does_not_trust_synthetic_times() {
+        // #13: times made up by `ridal coords` say nothing about stops, so
+        // the GPS is left out, as with unusable positions.
+        let stops = [(500, 620), (1200, 1350)];
+        let mut radar = make_gpr_with_positions(&stops, &[(500, 620)]);
+        let mut synthetic = make_gpr_with_positions(&stops, &[(500, 620)]);
+        synthetic.location.time_source = super::TimeSource::Synthetic;
+        radar.process("remove_standstills").unwrap();
+        synthetic
+            .process("remove_standstills(gps_uncertainty=1)")
+            .unwrap();
+        assert_eq!(synthetic.width(), radar.width());
+        let log = synthetic.log.last().unwrap();
+        assert!(
+            log.contains("the trace times are synthetic, so the GPS was not used"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn synthetic_times_are_said_in_the_file_and_survive_a_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let attribute = |gpr: &super::GPR, name: &str| {
+            let path = dir.path().join(format!("{name}.nc"));
+            gpr.export(&path).unwrap();
+            let file = netcdf::open(&path).unwrap();
+            file.attribute("time_source")
+                .map(|a| format!("{:?}", a.value().unwrap()))
+        };
+        let recorded = make_dummy_gpr(20, 10, Some(1.));
+        assert_eq!(attribute(&recorded, "recorded"), None);
+
+        let mut merged = make_dummy_gpr(20, 10, Some(1.));
+        let mut synthetic = make_dummy_gpr(20, 10, Some(1.));
+        synthetic.location.time_source = super::TimeSource::Synthetic;
+        merged.merge(&synthetic).unwrap();
+        assert_eq!(merged.location.time_source, super::TimeSource::Synthetic);
+        let said = attribute(&merged, "merged").expect("a time_source attribute");
+        assert!(said.contains("synthetic"), "{said}");
     }
 
     #[test]

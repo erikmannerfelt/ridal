@@ -407,6 +407,17 @@ impl GPR {
             ExportAttr::String(elevation_correction(&self.location.correction)),
         );
 
+        // Only when made up (#13), so a file with recorded times is as
+        // before.
+        if self.location.time_source == crate::gpr::TimeSource::Synthetic {
+            attrs.insert(
+                "time_source".into(),
+                ExportAttr::String(
+                    "synthetic: a start time plus a trace interval, from ridal coords".into(),
+                ),
+            );
+        }
+
         // CRS (kept as a global attr for now; CF grid_mapping deferred)
         attrs.insert("crs".into(), ExportAttr::String(self.location.crs.clone()));
 
@@ -882,7 +893,8 @@ impl GPR {
     }
 }
 
-/// The `elevation_correction` attribute: `None`, or the DEM's file name.
+/// The `elevation_correction` attribute: `None`, or the DEM's file name, or
+/// the coordinate CSV's when `ridal coords` sampled the DEM.
 ///
 /// Bilinear says nothing more, as before #462, so a file made with a GDAL
 /// that has it is unchanged.
@@ -897,6 +909,10 @@ fn elevation_correction(correction: &LocationCorrection) -> String {
                     format!("DEM-corrected: {name:?} (nearest cell, GDAL before 3.10)")
                 }
             }
+        }
+        LocationCorrection::InCoordinates { path } => {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            format!("DEM-corrected by ridal coords: {name:?}")
         }
     }
 }
