@@ -1,6 +1,7 @@
 # Type stubs for the Rust extension. Exact for what the client calls (`info`,
 # `_preflight_body`); the processing functions take many keyword options that
 # their docstrings describe, and are typed loosely here rather than restated.
+import datetime
 from collections.abc import Sequence
 from os import PathLike
 from typing import Any, TypeAlias
@@ -14,6 +15,21 @@ all_step_descriptions: dict[str, str]
 all_formats: list[str]
 all_format_descriptions: dict[str, Any]
 
+def coords(
+    input: _Path,
+    output: _Path | None = ...,
+    *,
+    positions: _Path | None = ...,
+    start: tuple[float, float] | tuple[float, float, float] | None = ...,
+    end: tuple[float, float] | tuple[float, float, float] | None = ...,
+    track: _Path | None = ...,
+    time_offset: float | None = ...,
+    src_crs: str | None = ...,
+    start_time: str | datetime.datetime | None = ...,
+    time_interval: float | None = ...,
+    dem: _Path | None = ...,
+    overwrite: bool = ...,
+) -> str: ...
 def info(
     inputs: _Path | Sequence[_Path],
     *,

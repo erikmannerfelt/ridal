@@ -892,6 +892,53 @@ nothing else in the server treats these files differently.
   sets 36. Elevation-corrected data is refused: its vertical axis is not
   time.
 
+## Positions and the coordinate CSV (#13)
+
+A recording's positions are a sparse `GPRLocation` (fixes at some traces)
+that `range_fill` interpolates by trace. Every source of positions produces
+one, so a `.cor`, a pulseEKKO `.gp2`, a GSSI `.DZG` and Ridal's coordinate
+CSV (`src/io/coords_csv.rs`) are interchangeable readers.
+
+- **`ridal process` infers nothing; `ridal coords` infers everything.**
+  `process` reads one positions file per recording and has no flags for
+  start points, tracks or made-up times. All of that is in
+  `src/positions.rs` (`ridal coords`, `ridal.coords`), which writes a CSV a
+  person can read, edit and pass back. The CSV is then an ordinary input,
+  hashed into the recipe like a `.cor`.
+- **Which positions file a recording uses is decided in input resolution**
+  (`formats::resolve_input`, `formats::with_coordinates`), so the reader and
+  `recipe::bundle_of` cannot disagree about it: `--cor FILE` (one recording
+  only, since trace numbers restart in each), `--cor DIR` by stem, else a
+  `<stem>.coords.csv` beside the header, else the format's own. A server
+  source names its files explicitly, and the same resolution gives a
+  `.coords.csv` among them the coordinates role. The GUI's **Add data** does
+  not attach one yet: `ingest.js` groups files by their last extension, so
+  `X.coords.csv` is a recording of its own there.
+- **Each row says where its time and altitude came from**
+  (`time_source`, `alt_source`). Processing keeps only what matters
+  downstream: a `synthetic` time anywhere makes `TimeSource::Synthetic`,
+  written as a `time_source` attribute only then (so files with real times
+  are unchanged) and making `remove_standstills` leave the GPS out; a `dem`
+  altitude makes `LocationCorrection::InCoordinates`, named in
+  `elevation_correction`.
+- **Precedence in `ridal coords`.** Positions: `--positions`, `--start`/
+  `--end` or `--track`, else the recording's own. Times: the given ones,
+  else the recording's clock, else a start time plus the trace interval
+  (synthetic). Altitudes: `--dem` always first. A track is matched by time
+  on the recording's clock (plus `--time-offset`), so it needs the
+  recording's own times or an explicit start time, and one track can cover
+  many recordings.
+- **Positions are interpolated where processing would.** Given positions
+  and the recording's own go through the same `range_fill` that processing
+  uses, in the working UTM zone, so `ridal coords` with no options writes
+  exactly what `process` reads from the `.cor`. Tracks are interpolated in
+  degrees by time: fixes are seconds apart, where the difference is far
+  below a fix's error.
+- **Missing positions are an error, not an empty location.** Processing
+  without positions (#13's original request) would need every step that
+  uses them to check; a clear error that names `ridal coords` was chosen
+  instead.
+
 ## Render pipeline
 
 Fixed order, enforced by module structure rather than just convention:

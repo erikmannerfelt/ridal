@@ -65,6 +65,9 @@ const PROGRAM_AUTHORS: &str = env!("CARGO_PKG_AUTHORS");
 ///     workflow.
 /// info(...)
 ///     Inspect one or more GPR files and return metadata summaries.
+/// coords(...)
+///     Write a recording's positions as a coordinate CSV, from partial
+///     positions, a GNSS track, a DEM and a start time.
 /// process(...)
 ///     Process one or more GPR files into a single output or an in-memory
 ///     dataset.
@@ -1177,6 +1180,159 @@ pub mod ridal {
         out.set_item("height", h)?;
         out.set_item("profile", resolved.name)?;
         Ok(out.into_any().unbind())
+    }
+
+    /// Write a recording's positions as a coordinate CSV.
+    ///
+    /// The CSV has one row per trace, and ``process()`` reads it in place of
+    /// the recording's own positions when it is ``<stem>.coords.csv`` beside
+    /// the recording (the default here) or given as ``cor``. Positions come
+    /// from ``positions``, from ``start`` and ``end``, from a GNSS ``track``,
+    /// or from the recording's own positions file, and are interpolated
+    /// between. Times come from the given positions, else the recording, else
+    /// they are made up from ``start_time`` and ``time_interval`` and marked
+    /// synthetic. Altitudes come from ``dem`` first. Every row says where its
+    /// time and altitude came from. This is ``ridal coords`` on the command
+    /// line.
+    ///
+    /// Parameters
+    /// ----------
+    /// input : path-like
+    ///     Any one of the recording's files.
+    /// output : path-like, optional
+    ///     The CSV to write. Defaults to ``<stem>.coords.csv`` beside the
+    ///     recording.
+    /// positions : path-like, optional
+    ///     A CSV of known positions: ``trace`` (0-based) and ``lon,lat`` (or
+    ///     ``x,y`` with ``src_crs``), and optionally ``alt`` and ``time``.
+    /// start, end : tuple of float, optional
+    ///     The first and last trace's positions, ``(lon, lat)`` or
+    ///     ``(lon, lat, alt)`` (``x, y`` with ``src_crs``). Give both or
+    ///     neither.
+    /// track : path-like, optional
+    ///     A GNSS track: ``time`` and ``lon,lat`` (or ``x,y``), and optionally
+    ///     ``alt``. Each trace gets the position at its time on the
+    ///     recording's clock.
+    /// time_offset : float, optional
+    ///     Seconds to add to the recording's clock to get the track's.
+    /// src_crs : str, optional
+    ///     The CRS of ``x,y`` positions. Without it, positions are WGS84
+    ///     longitude and latitude.
+    /// start_time : str or datetime.datetime, optional
+    ///     When the first trace was recorded. Makes the times up from it and
+    ///     the trace interval. A time without a UTC offset is taken as UTC.
+    /// time_interval : float, optional
+    ///     Seconds between traces for made-up times. Defaults to the header's.
+    /// dem : path-like, optional
+    ///     A DEM to take every altitude from, before any other.
+    /// overwrite : bool, default False
+    ///     Replace ``output`` if it exists.
+    ///
+    /// Returns
+    /// -------
+    /// str
+    ///     The path of the CSV.
+    ///
+    /// Warns
+    /// -----
+    /// UserWarning
+    ///     For what a person should know about the result: times made up from
+    ///     1970-01-01, an interval taken from the header, traces outside a
+    ///     track, or no altitudes.
+    ///
+    /// Raises
+    /// ------
+    /// RuntimeError
+    ///     If the positions cannot be built: nothing gives them, a file is
+    ///     malformed, a track's times do not overlap the recording's, or
+    ///     ``output`` exists without ``overwrite``.
+    #[pyfunction]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (
+        input,
+        output=None,
+        *,
+        positions=None,
+        start=None,
+        end=None,
+        track=None,
+        time_offset=None,
+        src_crs=None,
+        start_time=None,
+        time_interval=None,
+        dem=None,
+        overwrite=false,
+    ))]
+    fn coords(
+        py: Python<'_>,
+        input: Py<PyAny>,
+        output: Option<Py<PyAny>>,
+        positions: Option<Py<PyAny>>,
+        start: Option<Vec<f64>>,
+        end: Option<Vec<f64>>,
+        track: Option<Py<PyAny>>,
+        time_offset: Option<f64>,
+        src_crs: Option<String>,
+        start_time: Option<Py<PyAny>>,
+        time_interval: Option<f64>,
+        dem: Option<Py<PyAny>>,
+        overwrite: bool,
+    ) -> PyResult<String> {
+        let point = |values: Vec<f64>, name: &str| match values[..] {
+            [a, b] => Ok(crate::positions::Point { a, b, alt: None }),
+            [a, b, alt] => Ok(crate::positions::Point {
+                a,
+                b,
+                alt: Some(alt),
+            }),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{name} is (lon, lat) or (lon, lat, alt), not {} numbers",
+                values.len()
+            ))),
+        };
+        let endpoints = match (start, end) {
+            (Some(start), Some(end)) => Some((point(start, "start")?, point(end, "end")?)),
+            (None, None) => None,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "give both start and end, or neither",
+                ))
+            }
+        };
+        // A datetime is given as its ISO 8601 text, which keeps its offset
+        // if it has one.
+        let start_time = start_time
+            .map(|value| {
+                let value = value.bind(py);
+                if value.hasattr("isoformat")? {
+                    value.call_method0("isoformat")?.extract::<String>()
+                } else {
+                    value.extract::<String>()
+                }
+            })
+            .transpose()?;
+        let recording = fspath(py, input.bind(py))?;
+        let output =
+            crate::positions::output_path(&recording, optional_path(py, output)?.as_deref(), None)
+                .map_err(PyRuntimeError::new_err)?;
+        let request = crate::positions::Request {
+            recording,
+            positions: optional_path(py, positions)?,
+            endpoints,
+            track: optional_path(py, track)?,
+            time_offset,
+            src_crs,
+            start_time,
+            time_interval,
+            dem: optional_path(py, dem)?,
+        };
+        let built = crate::positions::write(&request, &output, overwrite)
+            .map_err(PyRuntimeError::new_err)?;
+        let warn = py.import("warnings")?.getattr("warn")?;
+        for warning in built.warnings {
+            warn.call1((warning,))?;
+        }
+        Ok(output.display().to_string())
     }
 
     /// Inspect one or more GPR files and return metadata summaries.

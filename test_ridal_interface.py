@@ -1,3 +1,4 @@
+import datetime
 import shutil
 from pathlib import Path
 
@@ -181,3 +182,41 @@ def test_return_dataset_refuses_render_true_but_not_false():
         ridal.process(str(FIXTURE), return_dataset=True, render=True)
     with pytest.raises(ValueError, match="track"):
         ridal.process(str(FIXTURE), return_dataset=True, track=True)
+
+
+def test_coords_writes_a_csv_that_process_reads(tmp_path):
+    # #13: a recording without positions, its start and end given to
+    # `coords`, then processed with nothing else.
+    line = "dronbreen-20250327-DAT_0066_A1"
+    for ext in ["rad", "rd3"]:
+        shutil.copy(Path("assets/mala") / f"{line}.{ext}", tmp_path)
+    rad = tmp_path / f"{line}.rad"
+    start = datetime.datetime(
+        2025, 3, 27, 14, 10, 20, tzinfo=datetime.timezone(datetime.timedelta(hours=2))
+    )
+
+    with pytest.warns(UserWarning, match="header's 0.2 s"):
+        written = ridal.coords(
+            rad,
+            start=(16.648, 78.1019, 715),
+            end=(16.661, 78.1034, 720),
+            start_time=start,
+        )
+    assert written == str(tmp_path / f"{line}.coords.csv")
+    rows = [
+        row for row in Path(written).read_text().splitlines() if not row.startswith("#")
+    ]
+    assert rows[0] == "trace,time,lon,lat,alt,time_source,alt_source"
+    assert rows[1].startswith(
+        "0,2025-03-27T12:10:20Z,16.648000000,78.101900000,715.000,synthetic,"
+    )
+
+    with pytest.raises(RuntimeError, match="overwrite=True"):
+        ridal.coords(rad, start=(16.648, 78.1019), end=(16.661, 78.1034))
+    with pytest.raises(ValueError, match="both start and end"):
+        ridal.coords(rad, start=(16.648, 78.1019), overwrite=True)
+
+    output = tmp_path / "line.nc"
+    ridal.process(str(rad), str(output), steps=["subset(0 100)"], quiet=True)
+    (record,) = ridal.info(output)
+    assert record["traces"] == 100
