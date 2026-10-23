@@ -33,7 +33,9 @@ use serde::{Deserialize, Serialize};
 /// file's contents. See the module documentation for when to bump it.
 ///
 /// - 2: `antenna_frequency` written (#412).
-pub const CORE_PROCESSING_VERSION: u32 = 2;
+/// - 3: UTM converted to WGS84 accurately (#480): `latitude` and
+///   `longitude`, and where a DEM is sampled, moved by up to 4.6 m.
+pub const CORE_PROCESSING_VERSION: u32 = 3;
 
 /// The layout of [`Recipe`] as serialized into `ridal_recipe`.
 pub const RECIPE_FORMAT: u32 = 1;
