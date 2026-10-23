@@ -83,7 +83,8 @@ elevations as sampled from a DEM, which `elevation_correction` names.
 (ridal-coords)=
 ### Writing the CSV with `ridal coords`
 
-`ridal coords` writes a recording's coordinate CSV, one row per trace, as
+`ridal coords` (`ridal.coords` in Python) writes a recording's coordinate
+CSV, one row per trace, as
 `<stem>.coords.csv` beside it (or `-o FILE`, or in `--output-dir`). It fills
 in what is not known, and says in the file's opening comments and in each
 row where every value came from:

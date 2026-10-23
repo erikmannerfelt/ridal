@@ -15,6 +15,14 @@ Generated from the docstrings of the installed `ridal` package. The
 .. autofunction:: ridal.info
 ```
 
+## Positions
+
+See {ref}`ridal-coords`.
+
+```{eval-rst}
+.. autofunction:: ridal.coords
+```
+
 ## Processing
 
 ```{eval-rst}
