@@ -327,14 +327,16 @@ mod tests {
                     x: 553802.,
                     y: 8639550.,
                 },
-                Ok(422.0352_f32),
+                // GDAL's bilinear value at this point (#480); before, the
+                // conversion to WGS84 sampled 4.4 m north of it (422.0352).
+                Ok(421.68707_f32),
             ),
             (
                 Coord {
                     x: 553820.,
                     y: 8639550.,
                 },
-                Ok(423.3629_f32),
+                Ok(422.8686_f32),
             ),
             (
                 Coord { x: 0., y: 8639550. },

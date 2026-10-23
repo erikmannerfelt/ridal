@@ -13,43 +13,139 @@ impl Coord {
         }
     }
 
-    fn to_geomorph_utm(self, crs: &UtmCrs) -> geomorph::Utm {
-        let band = match crs.north {
-            true => 'N',
-            false => 'S',
-        };
-        geomorph::Utm {
-            easting: self.x,
-            northing: self.y,
-            north: crs.north,
-            zone: crs.zone as i32,
-            band,
-            ups: false,
-        }
-    }
-
     fn to_wgs84(self, crs: &UtmCrs) -> Self {
-        let crd: geomorph::Coord = self.to_geomorph_utm(crs).into();
-        Self {
-            x: crd.lon,
-            y: crd.lat,
-        }
+        let (lon, lat) = transverse_mercator::inverse(
+            self.x - transverse_mercator::FALSE_EASTING,
+            self.y - crs.false_northing(),
+            crs.central_meridian(),
+        );
+        Self { x: lon, y: lat }
     }
 
     fn conv_from_wgs84(self, crs: &UtmCrs) -> Self {
-        let (mut northing, easting, _) = utm::to_utm_wgs84(self.y, self.x, crs.zone as u8);
-
-        // Edge case exceptions since the utm crate doesn't care about N/S
-        if !crs.north & (self.y > 0.) {
-            northing += 10000000.;
-        } else if crs.north & (self.y < 0.) {
-            northing -= 10000000.;
-        }
-
+        // Signed from the equator, so a position in the other hemisphere
+        // than the zone's still has a northing in it, as PROJ gives.
+        let (x, y) = transverse_mercator::forward(self.x, self.y, crs.central_meridian());
         Self {
-            x: easting,
-            y: northing,
+            x: transverse_mercator::FALSE_EASTING + x,
+            y: crs.false_northing() + y,
         }
+    }
+}
+
+/// The UTM projection on WGS84, both ways, to PROJ's accuracy (#480).
+///
+/// Krüger's series to sixth order in the third flattening, as given by
+/// Karney (2011), "Transverse Mercator with an accuracy of a few
+/// nanometers", J. Geodesy 85, 475-485, and as PROJ implements it (`tmerc`,
+/// its default algorithm). It is accurate to well under a millimetre within
+/// 3900 km of the central meridian, which covers a whole zone and any
+/// position a survey forced into a neighbouring one.
+///
+/// Before #480 the inverse came from the `geomorph` crate, whose latitudes
+/// were off by an amount that grows with latitude (4.4 m at 78 °N), and the
+/// forward from the `utm` crate, whose own inverse loses metres away from
+/// the central meridian.
+mod transverse_mercator {
+    /// WGS84 semi-major axis (m) and flattening.
+    const A: f64 = 6_378_137.0;
+    const F: f64 = 1.0 / 298.257_223_563;
+    /// UTM's scale on the central meridian.
+    const K0: f64 = 0.9996;
+    pub const FALSE_EASTING: f64 = 500_000.0;
+
+    /// The third flattening, the first eccentricity, and the rectifying
+    /// radius times `K0`.
+    fn constants() -> (f64, f64, f64) {
+        let n = F / (2.0 - F);
+        let e = (F * (2.0 - F)).sqrt();
+        let n2 = n * n;
+        let rectifying = A / (1.0 + n) * (1.0 + n2 / 4.0 + n2 * n2 / 64.0 + n2 * n2 * n2 / 256.0);
+        (n, e, K0 * rectifying)
+    }
+
+    fn alpha(n: f64) -> [f64; 6] {
+        let (n2, n3, n4, n5, n6) = (n.powi(2), n.powi(3), n.powi(4), n.powi(5), n.powi(6));
+        [
+            n / 2.0 - 2.0 * n2 / 3.0 + 5.0 * n3 / 16.0 + 41.0 * n4 / 180.0 - 127.0 * n5 / 288.0
+                + 7891.0 * n6 / 37800.0,
+            13.0 * n2 / 48.0 - 3.0 * n3 / 5.0 + 557.0 * n4 / 1440.0 + 281.0 * n5 / 630.0
+                - 1983433.0 * n6 / 1935360.0,
+            61.0 * n3 / 240.0 - 103.0 * n4 / 140.0
+                + 15061.0 * n5 / 26880.0
+                + 167603.0 * n6 / 181440.0,
+            49561.0 * n4 / 161280.0 - 179.0 * n5 / 168.0 + 6601661.0 * n6 / 7257600.0,
+            34729.0 * n5 / 80640.0 - 3418889.0 * n6 / 1995840.0,
+            212378941.0 * n6 / 319334400.0,
+        ]
+    }
+
+    fn beta(n: f64) -> [f64; 6] {
+        let (n2, n3, n4, n5, n6) = (n.powi(2), n.powi(3), n.powi(4), n.powi(5), n.powi(6));
+        [
+            n / 2.0 - 2.0 * n2 / 3.0 + 37.0 * n3 / 96.0 - n4 / 360.0 - 81.0 * n5 / 512.0
+                + 96199.0 * n6 / 604800.0,
+            n2 / 48.0 + n3 / 15.0 - 437.0 * n4 / 1440.0 + 46.0 * n5 / 105.0
+                - 1118711.0 * n6 / 3870720.0,
+            17.0 * n3 / 480.0 - 37.0 * n4 / 840.0 - 209.0 * n5 / 4480.0 + 5569.0 * n6 / 90720.0,
+            4397.0 * n4 / 161280.0 - 11.0 * n5 / 504.0 - 830251.0 * n6 / 7257600.0,
+            4583.0 * n5 / 161280.0 - 108847.0 * n6 / 3991680.0,
+            20648693.0 * n6 / 638668800.0,
+        ]
+    }
+
+    /// The conformal latitude's tangent from the geodetic latitude's.
+    fn conformal_tan(tau: f64, e: f64) -> f64 {
+        let sigma = (e * (e * tau / (1.0 + tau * tau).sqrt()).atanh()).sinh();
+        tau * (1.0 + sigma * sigma).sqrt() - sigma * (1.0 + tau * tau).sqrt()
+    }
+
+    /// WGS84 longitude and latitude (degrees) to x and y (m) from the
+    /// central meridian `lon0` and the equator, before false easting and
+    /// northing.
+    pub fn forward(lon: f64, lat: f64, lon0: f64) -> (f64, f64) {
+        let (n, e, scaled) = constants();
+        let lambda = (lon - lon0).to_radians();
+        let tau_prime = conformal_tan(lat.to_radians().tan(), e);
+        let xi_prime = tau_prime.atan2(lambda.cos());
+        let eta_prime =
+            (lambda.sin() / (tau_prime * tau_prime + lambda.cos().powi(2)).sqrt()).asinh();
+        let (mut xi, mut eta) = (xi_prime, eta_prime);
+        for (j, a) in alpha(n).iter().enumerate() {
+            let k = 2.0 * (j + 1) as f64;
+            xi += a * (k * xi_prime).sin() * (k * eta_prime).cosh();
+            eta += a * (k * xi_prime).cos() * (k * eta_prime).sinh();
+        }
+        (scaled * eta, scaled * xi)
+    }
+
+    /// [`forward`]'s inverse.
+    pub fn inverse(x: f64, y: f64, lon0: f64) -> (f64, f64) {
+        let (n, e, scaled) = constants();
+        let (xi, eta) = (y / scaled, x / scaled);
+        let (mut xi_prime, mut eta_prime) = (xi, eta);
+        for (j, b) in beta(n).iter().enumerate() {
+            let k = 2.0 * (j + 1) as f64;
+            xi_prime -= b * (k * xi).sin() * (k * eta).cosh();
+            eta_prime -= b * (k * xi).cos() * (k * eta).sinh();
+        }
+        let tau_prime = xi_prime.sin() / (eta_prime.sinh().powi(2) + xi_prime.cos().powi(2)).sqrt();
+        // Newton's method on the conformal latitude, which converges in a
+        // few steps everywhere (Karney 2011, eq. 19-21).
+        let e2 = e * e;
+        let mut tau = tau_prime;
+        for _ in 0..10 {
+            let tau_i_prime = conformal_tan(tau, e);
+            let step = (tau_prime - tau_i_prime) / (1.0 + tau_i_prime * tau_i_prime).sqrt()
+                * (1.0 + (1.0 - e2) * tau * tau)
+                / ((1.0 - e2) * (1.0 + tau * tau).sqrt());
+            tau += step;
+            if step.abs() < 1e-14 {
+                break;
+            }
+        }
+        let lambda = eta_prime.sinh().atan2(xi_prime.cos());
+        (lon0 + lambda.to_degrees(), tau.atan().to_degrees())
     }
 }
 
@@ -60,6 +156,21 @@ pub struct UtmCrs {
 }
 
 impl UtmCrs {
+    /// The longitude of the zone's central meridian (degrees).
+    fn central_meridian(&self) -> f64 {
+        self.zone as f64 * 6.0 - 183.0
+    }
+
+    /// What is added to a northing in this zone: 10 000 km south of the
+    /// equator.
+    fn false_northing(&self) -> f64 {
+        if self.north {
+            0.0
+        } else {
+            10_000_000.0
+        }
+    }
+
     pub fn optimal_crs(coord: &Coord) -> Self {
         let utm: geomorph::Utm = coord.to_geomorph_coord().into();
         Self {
@@ -809,6 +920,42 @@ mod tests {
             }
             _ => panic!(),
         };
+    }
+
+    #[test]
+    fn utm_agrees_with_proj_both_ways_to_a_millimetre() {
+        // #480. From `cs2cs EPSG:4326 EPSG:326xx/327xx` (PROJ 9).
+        for (lon, lat, crs, easting, northing) in [
+            (17.2, 77.81, "EPSG:32633", 551846.0855, 8638138.6911),
+            (13.0, 78.9, "EPSG:32633", 457023.5639, 8759549.3573),
+            (
+                18.42406,
+                -33.92487,
+                "WGS84 UTM Zone 34S",
+                261877.8164,
+                6243185.5892,
+            ),
+        ] {
+            let crs = Crs::from_user_input(crs).unwrap();
+            let projected = super::from_wgs84(&[Coord { x: lon, y: lat }], &crs).unwrap()[0];
+            assert!(
+                (projected.x - easting).abs() < 0.001 && (projected.y - northing).abs() < 0.001,
+                "{lon} {lat} -> {projected:?}"
+            );
+            let back = super::to_wgs84(
+                &[Coord {
+                    x: easting,
+                    y: northing,
+                }],
+                &crs,
+            )
+            .unwrap()[0];
+            // 1e-8 degrees is about a millimetre.
+            assert!(
+                (back.x - lon).abs() < 1e-8 && (back.y - lat).abs() < 1e-8,
+                "{easting} {northing} -> {back:?}"
+            );
+        }
     }
 
     #[test]
