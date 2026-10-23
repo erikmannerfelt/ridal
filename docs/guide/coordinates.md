@@ -9,7 +9,8 @@ where these values come from and how they can be corrected.
 
 The positions come from the recording's own positions file (`.cor`, `.gp2`
 or `.DZG`), which holds GNSS fixes for some of the traces, and Ridal
-interpolates them to every trace (see {doc}`file-formats`). `ridal info`
+interpolates them to every trace (see {doc}`file-formats`), or from a
+coordinate CSV given in its place (see {ref}`coordinate-csv`). `ridal info`
 summarizes them with the number of fixes, the time span, the track length and
 the elevation range.
 
@@ -31,6 +32,45 @@ Three steps correct the positions during processing (see
 `equidistant_traces`
 : Resamples the traces onto an even spacing along the track, so that each
   trace is the same distance from the next.
+
+(coordinate-csv)=
+### Positions from a CSV
+
+Positions from another source, such as a better GNSS or a survey that only
+noted where each line started and ended, are given as a coordinate CSV. It
+has one header line, and its columns may come in any order:
+
+| Column | Required | Meaning |
+|---|---|---|
+| `trace` | yes | The trace number, counted from 0 |
+| `time` | yes | ISO 8601 with a UTC offset, such as `2025-03-27T12:10:20Z` or `2025-03-27T14:10:20+02:00` |
+| `lon`, `lat` | yes | WGS84 longitude and latitude in degrees |
+| `alt` | no | Elevation in meters, used as given |
+
+```text
+trace,time,lon,lat,alt
+0,2025-03-27T12:10:20Z,16.64838,78.10189,715.2
+250,2025-03-27T12:11:05Z,16.65120,78.10342,721.8
+```
+
+The rows need not cover every trace: traces between two rows are
+interpolated, as between the fixes of a `.cor`. Traces must increase from
+row to row, and times must not decrease. Lines starting with `#` are
+comments. Without an `alt` column, `--dem` is required, and the elevations
+are sampled from the DEM.
+
+Ridal uses a CSV in two ways:
+
+- Beside the recording, named after it (`DAT_0066_A1.coords.csv` for
+  `DAT_0066_A1.rad`), it is used in place of the recording's own positions
+  file, which is then ignored.
+- With `--cor FILE` (`cor=` in Python), for a single recording.
+
+`--cor` also takes a format's own positions file with another name, such as
+another `.cor`. When several recordings are processed or merged at once,
+`--cor` takes a directory instead, which holds a `<stem>.coords.csv` or
+positions file for each recording. Which file was read is part of the
+processing recipe, so a new positions file gives a new revision.
 
 ## Coordinate reference systems
 

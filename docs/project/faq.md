@@ -22,11 +22,11 @@ with the command you ran, the full message and the output of
   {doc}`../guide/file-formats`), and the input has to be the header, data or
   positions file of one of them.
 
-**"No such file or directory (os error 2)" for a file that exists**
-: The positions file (`.cor`, `.gp2` or `.DZG`) is usually missing beside the
-  data. Ridal currently needs it, and the message does not yet say so
-  ([#13](https://github.com/erikmannerfelt/ridal/issues/13)). For RAMAC,
-  `--cor` reads a positions file with another name.
+**"No positions for …"**
+: The positions file (`.cor`, `.gp2` or `.DZG`) is missing beside the data.
+  `--cor` reads a positions file with another name, and positions from any
+  other source can be given as a coordinate CSV (see
+  {ref}`coordinate-csv`).
 
 **"Could not read frequency from the antenna field … Try using the antenna MHz override"**
 : The header names the antenna in a way that Ridal does not recognize. Give

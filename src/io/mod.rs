@@ -6,6 +6,8 @@
 //! - [`mala`]: Malå RAMAC (`.rad` / `.rd3` / `.cor`).
 //! - [`pulseekko`]: Sensors & Software pulseEKKO (`.hd` / `.dt1` / `.gp2`).
 //! - [`gssi`]: GSSI (`.DZT` / `.DZG`).
+//! - [`coords_csv`]: Ridal's coordinate CSV, which `--cor` reads in place of
+//!   any format's own positions file (#13).
 //! - [`ridal`]: Ridal's own products -- the processed NetCDF and the track
 //!   CSV -- and the recogniser that reads the NetCDF back.
 //!
@@ -14,11 +16,13 @@
 //! sidecars, and [`project_points`], which turns parsed WGS84 positions into
 //! the projected CRS a [`crate::gpr::GPRLocation`] carries.
 
+mod coords_csv;
 mod gssi;
 mod mala;
 mod pulseekko;
 mod ridal;
 
+pub use coords_csv::load_coords_csv;
 pub use gssi::{load_dzt, load_gssi_dzg, load_gssi_dzt};
 pub use mala::{load_cor, load_rad, load_rd3};
 pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd};

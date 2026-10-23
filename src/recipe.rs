@@ -222,23 +222,19 @@ pub fn hash_file(path: &Path) -> Result<HashedFile, String> {
     })
 }
 
-/// The files of one recording, as `resolved` and an optional coordinate
-/// override name them.
+/// The files of one recording, as `resolved` names them (with `--cor`
+/// applied by [`crate::formats::with_coordinates`]).
 ///
 /// A role whose file does not exist is left out rather than refused: the
 /// readers decide what a recording needs, and one that loaded without it
 /// did not need it. A data file that is the header itself (GSSI's `.DZT`)
 /// is listed once.
-pub fn bundle_of(
-    resolved: &crate::formats::ResolvedInput,
-    coordinates_override: Option<&Path>,
-) -> Result<Bundle, String> {
-    let coordinates = coordinates_override.unwrap_or(&resolved.coordinates);
+pub fn bundle_of(resolved: &crate::formats::ResolvedInput) -> Result<Bundle, String> {
     let mut files = Vec::new();
     for (role, path) in [
         (FileRole::Header, resolved.header.as_path()),
         (FileRole::Data, resolved.data.as_path()),
-        (FileRole::Coordinates, coordinates),
+        (FileRole::Coordinates, resolved.coordinates.as_path()),
     ] {
         if role == FileRole::Data && path == resolved.header {
             continue;
@@ -419,7 +415,7 @@ mod tests {
     fn a_ramac_bundle_lists_its_three_files_and_takes_the_override() {
         let rad = Path::new("assets/mala/dronbreen-20250327-DAT_0066_A1.rad");
         let resolved = crate::formats::resolve_input(rad).unwrap();
-        let bundle = bundle_of(&resolved, None).unwrap();
+        let bundle = bundle_of(&resolved).unwrap();
         assert_eq!(bundle.format, "ramac");
         let roles: Vec<FileRole> = bundle.files.iter().map(|f| f.role).collect();
         assert_eq!(
@@ -433,7 +429,9 @@ mod tests {
         assert_eq!(bundle.files[0].file.blake3.len(), 64);
 
         let other_cor = Path::new("assets/mala/dronbreen-20220329-DAT_0237_A1.cor");
-        let overridden = bundle_of(&resolved, Some(other_cor)).unwrap();
+        let mut with_other = [resolved.clone()];
+        crate::formats::with_coordinates(&mut with_other, Some(other_cor)).unwrap();
+        let overridden = bundle_of(&with_other[0]).unwrap();
         assert_eq!(overridden.files[..2], bundle.files[..2]);
         assert_eq!(overridden.files[2].file, hash_file(other_cor).unwrap());
         assert_ne!(overridden.files[2], bundle.files[2]);

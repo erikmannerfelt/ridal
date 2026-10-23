@@ -665,10 +665,7 @@ mod tests {
         // The same as the recipe a run from these files would record.
         let resolved =
             crate::formats::resolve_input(Path::new(&format!("assets/mala/{LINE}.rad"))).unwrap();
-        assert_eq!(
-            bundles[0],
-            crate::recipe::bundle_of(&resolved, None).unwrap()
-        );
+        assert_eq!(bundles[0], crate::recipe::bundle_of(&resolved).unwrap());
 
         // A file the recording does not use is refused.
         let mut extra = files;
@@ -676,6 +673,30 @@ mod tests {
         let refused =
             bundles_of(dir.path(), &[extra], tempfile::tempdir().unwrap().path()).unwrap_err();
         assert!(refused.contains("README.md is not part of"), "{refused}");
+    }
+
+    #[test]
+    fn a_coords_csv_is_a_recordings_positions_whichever_file_comes_first() {
+        // #13: a source names a `<stem>.coords.csv` in place of the `.cor`.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let csv_path = scratch.path().join(format!("{LINE}.coords.csv"));
+        std::fs::write(
+            &csv_path,
+            "trace,time,lon,lat,alt\n0,2025-03-27T12:10:20Z,16.6,78.1,715\n",
+        )
+        .unwrap();
+        let csv = upload(dir.path(), csv_path.to_str().unwrap());
+        let mut files: Vec<NamedFile> = ["rad", "rd3"]
+            .iter()
+            .map(|ext| upload(dir.path(), &format!("assets/mala/{LINE}.{ext}")))
+            .collect();
+        files.insert(0, csv.clone());
+
+        let work = tempfile::tempdir().unwrap();
+        let bundles = bundles_of(dir.path(), &[files], work.path()).unwrap();
+        assert_eq!(bundles[0].files[2].role, FileRole::Coordinates);
+        assert_eq!(bundles[0].files[2].file.name, csv.name);
     }
 
     #[test]
@@ -697,11 +718,10 @@ mod tests {
         let resolved = materialize(dir.path(), &[files], work.path()).unwrap();
         let laid = crate::formats::resolve_input(&resolved[0].header).unwrap();
         assert_eq!(
-            crate::recipe::bundle_of(&laid, None).unwrap().files,
+            crate::recipe::bundle_of(&laid).unwrap().files,
             crate::recipe::bundle_of(
                 &crate::formats::resolve_input(Path::new(&format!("assets/mala/{LINE}.rad")))
-                    .unwrap(),
-                None
+                    .unwrap()
             )
             .unwrap()
             .files

@@ -25,7 +25,8 @@ pub struct JobSpec {
     pub medium_velocity: f32,
     pub crs: Option<String>,
     pub dem: Option<PathBuf>,
-    /// A RAMAC `.cor` in place of each recording's own.
+    /// Positions in place of the recordings' own: a file for one recording,
+    /// or a directory (see [`crate::formats::with_coordinates`]).
     pub cor: Option<PathBuf>,
     pub antenna_mhz_override: Option<f32>,
     pub antenna_separation_override: Option<f32>,

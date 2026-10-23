@@ -276,8 +276,12 @@ pub mod ridal {
     /// velocity : float, default 0.168
     ///     Propagation velocity in meters per nanosecond.
     /// cor : path-like, optional
-    ///     Coordinate file to use instead of any coordinate information implied by
-    ///     the input format.
+    ///     Positions to use instead of the recording's own. A file (the
+    ///     format's own positions file, such as a ``.cor``, or a Ridal
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
+    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     positions file for each. Without it, a ``<stem>.coords.csv``
+    ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
     ///     Digital elevation model to sample for topographic information.
     /// crs : str, optional
@@ -601,8 +605,12 @@ pub mod ridal {
     /// velocity : float, default 0.168
     ///     Propagation velocity in meters per nanosecond.
     /// cor : path-like, optional
-    ///     Coordinate file to use instead of any coordinate information implied by
-    ///     the input format.
+    ///     Positions to use instead of the recording's own. A file (the
+    ///     format's own positions file, such as a ``.cor``, or a Ridal
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
+    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     positions file for each. Without it, a ``<stem>.coords.csv``
+    ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
     ///     Digital elevation model to sample for topographic information.
     /// crs : str, optional
@@ -727,8 +735,12 @@ pub mod ridal {
     /// velocity : float, default 0.168
     ///     Propagation velocity in meters per nanosecond.
     /// cor : path-like, optional
-    ///     Coordinate file to use instead of any coordinate information implied by
-    ///     the input format.
+    ///     Positions to use instead of the recording's own. A file (the
+    ///     format's own positions file, such as a ``.cor``, or a Ridal
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
+    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     positions file for each. Without it, a ``<stem>.coords.csv``
+    ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
     ///     Digital elevation model to sample for topographic information.
     /// crs : str, optional
@@ -1180,8 +1192,12 @@ pub mod ridal {
     /// velocity : float, default 0.168
     ///     Propagation velocity in meters per nanosecond.
     /// cor : path-like, optional
-    ///     Coordinate file to use instead of any coordinate information implied by
-    ///     the input format.
+    ///     Positions to use instead of the recording's own. A file (the
+    ///     format's own positions file, such as a ``.cor``, or a Ridal
+    ///     coordinate CSV of ``trace,time,lon,lat[,alt]``) for one recording,
+    ///     or a directory holding ``<stem>.coords.csv`` or the format's own
+    ///     positions file for each. Without it, a ``<stem>.coords.csv``
+    ///     beside a recording is used before its own positions file.
     /// dem : path-like, optional
     ///     Digital elevation model to sample for topographic information.
     /// crs : str, optional

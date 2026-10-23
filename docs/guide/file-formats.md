@@ -17,12 +17,12 @@ regardless of the case of their extensions.
 holds it in Python. A path without an extension also works, as long as only
 one format's header sits beside it.
 
-The positions file is required, because a radargram without positions
-cannot be placed on a map, and Ridal currently refuses to read a recording
-without one (see [#13](https://github.com/erikmannerfelt/ridal/issues/13)).
-For RAMAC, `--cor` (or `cor=` in Python) reads the positions from a `.cor`
-file with another name, while GSSI and pulseEKKO positions are read from the
-NMEA sentences (`$GPGGA`) in their sidecar files.
+Positions are required, because a radargram without positions cannot be
+placed on a map, and Ridal refuses to read a recording without them. GSSI and
+pulseEKKO positions are read from the NMEA sentences (`$GPGGA`) in their
+sidecar files. Positions from anywhere else, for any format, can be given as
+a coordinate CSV, either beside the recording as `<stem>.coords.csv` or with
+`--cor` (see {ref}`coordinate-csv`).
 
 Ridal reads but does not yet write these formats (see
 {doc}`../background/scope`).

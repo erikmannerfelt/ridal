@@ -33,7 +33,7 @@ Default: `0.168`.
 ```
 
 ```{option} -c <COR>, --cor <COR>
-Load a separate ".cor" file (RAMAC only). If not given, it will be searched for automatically
+Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file
 ```
 
 ```{option} -d <DEM>, --dem <DEM>
@@ -148,7 +148,7 @@ Default: `0.168`.
 ```
 
 ```{option} -c <COR>, --cor <COR>
-Load a separate ".cor" file (RAMAC only). If not given, it will be searched for automatically
+Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file
 ```
 
 ```{option} -d <DEM>, --dem <DEM>
@@ -271,7 +271,7 @@ Default: `0.168`.
 ```
 
 ```{option} -c <COR>, --cor <COR>
-Load a separate ".cor" file (RAMAC only). If not given, it will be searched for automatically
+Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file
 ```
 
 ```{option} -d <DEM>, --dem <DEM>
