@@ -2023,7 +2023,7 @@ mod tests {
         let text = |name: &str| format!("{:?}", file.attribute(name).unwrap().value().unwrap());
         assert!(text("time_source").contains("synthetic"));
         let latitude: Vec<f64> = file.variable("latitude").unwrap().get_values(..).unwrap();
-        assert!((latitude[0] - 78.1019).abs() < 1e-7, "{}", latitude[0]);
+        assert!((latitude[0] - 78.1019).abs() < 1e-7);
     }
 
     /// Run `ridal site token …` against the site at `dir`.
