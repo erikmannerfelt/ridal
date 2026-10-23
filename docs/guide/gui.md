@@ -181,7 +181,9 @@ at before it is added.
 
 1. **Drop the files**, every file of each recording (`.rad`, `.rd3` and
    `.cor` for RAMAC, for example). They are grouped into recordings by
-   name and uploaded one at a time.
+   name and uploaded one at a time. A `<name>.coords.csv` from `ridal
+   coords` (see {ref}`ridal-coords`) belongs to the recording of that name
+   and is used in place of its own positions file.
 2. **Check the radargrams.** Recordings made less than the threshold apart
    (ten minutes unless changed), with the same antenna and settings, are
    merged into one radargram. The timeline shows one row per radargram:

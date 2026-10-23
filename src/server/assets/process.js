@@ -358,10 +358,7 @@
   mhzBox.addEventListener('change', saveAntenna);
   separationBox.addEventListener('change', saveAntenna);
 
-  const stemOf = (file) => {
-    const dot = file.name.lastIndexOf('.');
-    return dot > 0 ? file.name.slice(0, dot) : file.name;
-  };
+  const stemOf = (file) => RIDAL.recordingStem(file.name);
 
   /** The chosen files as recordings: grouped by name without extension,
    * in name order. */
@@ -520,7 +517,7 @@
           uploaded.set(fileKey(file), stored);
           bundle.push(stored);
         }
-        named.push(bundle);
+        named.push(RIDAL.sourceFiles(bundle));
       }
       cancelUpload.hidden = true;
       uploading = null;

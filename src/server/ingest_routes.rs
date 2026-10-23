@@ -1535,6 +1535,45 @@ mod tests {
     }
 
     #[test]
+    fn a_coords_csv_gives_a_recording_its_positions() {
+        // #13: what Add data sends when a `.coords.csv` replaces the `.cor`,
+        // the CSV first, as the browser may list it.
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path();
+        let stem = "dronbreen-20250327-DAT_0066_A1";
+        let scratch = tempfile::tempdir().unwrap();
+        let csv = scratch.path().join(format!("{stem}.coords.csv"));
+        std::fs::write(
+            &csv,
+            "trace,time,lon,lat,alt\n\
+             0,2025-03-27T12:10:20Z,16.6484,78.1019,715\n\
+             3547,2025-03-27T12:22:10Z,16.6612,78.1034,720\n",
+        )
+        .unwrap();
+        let mut files = vec![upload(data_dir, csv.to_str().unwrap())];
+        files.extend(
+            ["rad", "rd3"]
+                .iter()
+                .map(|ext| upload(data_dir, &format!("assets/mala/{stem}.{ext}"))),
+        );
+        let recordings = vec![RecordingFiles { files }];
+
+        let reads = read_all(
+            data_dir,
+            &recordings,
+            None,
+            None,
+            &BTreeMap::new(),
+            &ReadCache::default(),
+        )
+        .unwrap();
+        assert_eq!(reads[0].name, format!("{stem}.rad"));
+        let read = reads[0].outcome.as_ref().unwrap();
+        assert_eq!(read.traces, 3548);
+        assert_eq!(read.grouping.start_seconds, 1_743_077_420.);
+    }
+
+    #[test]
     fn reads_are_kept_and_keep_their_files_from_the_sweep() {
         let dir = tempfile::tempdir().unwrap();
         let data_dir = dir.path();
