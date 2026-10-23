@@ -290,6 +290,75 @@ Override the antenna center frequency (in MHz) from file metadata
 Override the antenna separation (in m) from file metadata
 ```
 
+## `ridal coords`
+
+```{program} ridal coords
+```
+
+Write a recording's positions as a coordinate CSV, from its own positions file or from positions, start and end points, a DEM and a start time given here (#13)
+
+```console
+$ ridal coords [OPTIONS] <INPUTS>...
+```
+
+**Arguments**
+
+```{option} <INPUTS>
+Recordings to write positions for (any of their files). Several only without --positions, --start and --end, which describe one: with --track, or to write each recording's own positions
+
+Required.
+```
+
+**Options**
+
+```{option} -o <OUTPUT>, --output <OUTPUT>
+The CSV to write, for one recording. Defaults to "<stem>.coords.csv" beside the recording, which ridal process then reads in place of its own positions
+```
+
+```{option} --output-dir <OUTPUT_DIR>
+A directory to write each recording's "<stem>.coords.csv" in
+```
+
+```{option} --overwrite
+Replace a CSV that exists already
+```
+
+```{option} --positions <POSITIONS>
+A CSV of known positions: "trace" (0-based) and "lon,lat" (or "x,y" with --src-crs), and optionally "alt" and "time". Traces between rows are interpolated
+```
+
+```{option} --track <TRACK>
+A GNSS track: "time" and "lon,lat" (or "x,y" with --src-crs), and optionally "alt"; other columns are ignored. Each trace gets the position at its time on the recording's clock, so one track can position a whole day of recordings
+```
+
+```{option} --time-offset <TIME_OFFSET>
+Seconds to add to the recording's clock to get the track's, such as 7200 for a radar set to UTC+2 against a UTC track
+```
+
+```{option} --start <START>
+The first trace's position: lon,lat[,alt] (or x,y[,alt] with --src-crs). Traces up to --end are interpolated
+```
+
+```{option} --end <END>
+The last trace's position: lon,lat[,alt] (or x,y[,alt] with --src-crs)
+```
+
+```{option} --src-crs <SRC_CRS>
+The CRS of x,y positions given in --positions, --start and --end. Without it, positions are WGS84 longitude and latitude
+```
+
+```{option} --start-time <START_TIME>
+When the first trace was recorded (ISO 8601). Makes the times up from it and the trace interval, marked synthetic, when no times are known or to replace them
+```
+
+```{option} --time-interval <TIME_INTERVAL>
+Seconds between traces, for made-up times. Defaults to the header's
+```
+
+```{option} -d <DEM>, --dem <DEM>
+A DEM to take every altitude from, before any other
+```
+
 ## `ridal steps`
 
 ```{program} ridal steps

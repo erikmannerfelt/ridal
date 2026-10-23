@@ -185,6 +185,14 @@ pub fn resolve_input(input: &Path) -> Result<ResolvedInput, String> {
     Ok(resolved)
 }
 
+/// The format's own positions file of a recording, beside its header,
+/// whether or not it exists, and whatever [`resolve_input`] or `--cor`
+/// chose instead.
+pub fn own_positions(resolved: &ResolvedInput) -> PathBuf {
+    let native = format_info(resolved.kind).files.coordinates;
+    resolve_sidecar(&resolved.header, native.trim_start_matches('.'))
+}
+
 /// Refuse one positions file for several recordings: trace numbers start
 /// over in each, so it could not be right for more than one.
 pub fn check_cor_count(n_recordings: usize, cor: Option<&Path>) -> Result<(), String> {

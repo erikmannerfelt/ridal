@@ -324,6 +324,7 @@ pub fn read_track_from_netcdf(path: &std::path::Path) -> Result<Track, String> {
     let location = GPRLocation {
         cor_points,
         correction: crate::gpr::LocationCorrection::None,
+        time_source: crate::gpr::TimeSource::Recorded,
         crs,
     };
     Track::from_location(&location)
@@ -515,6 +516,7 @@ mod tests {
                 })
                 .collect(),
             correction: LocationCorrection::None,
+            time_source: crate::gpr::TimeSource::Recorded,
             crs: "EPSG:32633".to_string(),
         }
     }

@@ -22,7 +22,7 @@ mod mala;
 mod pulseekko;
 mod ridal;
 
-pub use coords_csv::load_coords_csv;
+pub use coords_csv::{load_coords_csv, write_coords_csv, AltOrigin, CoordsRow, TimeOrigin};
 pub use gssi::{load_dzt, load_gssi_dzg, load_gssi_dzt};
 pub use mala::{load_cor, load_rad, load_rd3};
 pub use pulseekko::{load_pe_dt1, load_pe_gp2, load_pe_hd};

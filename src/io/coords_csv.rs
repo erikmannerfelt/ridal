@@ -9,6 +9,13 @@
 //! | `time` | yes | ISO 8601 with a UTC offset, such as `2025-03-27T10:15:02.5Z` |
 //! | `lon`, `lat` | yes | WGS84 degrees |
 //! | `alt` | no | elevation (m), passed through as given |
+//! | `time_source` | no | `recorded`, `interpolated` or `synthetic` |
+//! | `alt_source` | no | `recorded`, `interpolated` or `dem` |
+//!
+//! The two source columns are what `ridal coords` says about each value it
+//! wrote. A `synthetic` time marks the whole radargram's times as made up
+//! ([`gpr::TimeSource::Synthetic`]), and a `dem` altitude its elevations as
+//! sampled from a DEM ([`gpr::LocationCorrection::InCoordinates`]).
 //!
 //! Rows may be sparse: traces between two rows are interpolated, as between
 //! the fixes of a `.cor`. Blank lines and lines starting with `#` are
@@ -23,7 +30,73 @@ use crate::gpr;
 
 /// The columns a coordinate CSV may have, required ones first.
 const REQUIRED: [&str; 4] = ["trace", "time", "lon", "lat"];
-const OPTIONAL: [&str; 1] = ["alt"];
+const OPTIONAL: [&str; 3] = ["alt", "time_source", "alt_source"];
+
+/// Where a row's time came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeOrigin {
+    /// At a fix that was recorded with a time.
+    Recorded,
+    /// Between or beyond recorded fixes.
+    Interpolated,
+    /// Made up from a start time and a trace interval.
+    Synthetic,
+}
+
+/// Where a row's altitude came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AltOrigin {
+    Recorded,
+    Interpolated,
+    /// Sampled from a DEM.
+    Dem,
+}
+
+impl TimeOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TimeOrigin::Recorded => "recorded",
+            TimeOrigin::Interpolated => "interpolated",
+            TimeOrigin::Synthetic => "synthetic",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        [Self::Recorded, Self::Interpolated, Self::Synthetic]
+            .into_iter()
+            .find(|origin| origin.as_str() == text)
+    }
+}
+
+impl AltOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AltOrigin::Recorded => "recorded",
+            AltOrigin::Interpolated => "interpolated",
+            AltOrigin::Dem => "dem",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        [Self::Recorded, Self::Interpolated, Self::Dem]
+            .into_iter()
+            .find(|origin| origin.as_str() == text)
+    }
+}
+
+/// One row of a coordinate CSV, as [`write_coords_csv`] writes it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoordsRow {
+    pub trace: u32,
+    /// Seconds since the UNIX epoch, UTC.
+    pub time_seconds: f64,
+    pub time_source: TimeOrigin,
+    /// WGS84 degrees.
+    pub lon: f64,
+    pub lat: f64,
+    /// `None` in every row or in none.
+    pub alt: Option<(f64, AltOrigin)>,
+}
 
 /// Load a Ridal coordinate CSV.
 ///
@@ -90,6 +163,13 @@ pub fn load_coords_csv(
     }
     let [trace_col, time_col, lon_col, lat_col] = REQUIRED.map(|name| column(name).unwrap());
     let alt_col = column("alt");
+    let time_source_col = column("time_source");
+    let alt_source_col = column("alt_source");
+    if alt_source_col.is_some() && alt_col.is_none() {
+        return Err(at(header_line, "alt_source without alt".to_string()).into());
+    }
+    let mut synthetic_time = false;
+    let mut dem_altitude = false;
 
     let mut coords = Vec::<crate::coords::Coord>::new();
     let mut points = Vec::<gpr::CorPoint>::new();
@@ -146,6 +226,31 @@ pub fn load_coords_csv(
             None => f64::NAN,
         };
 
+        if let Some(col) = time_source_col {
+            let origin = TimeOrigin::parse(fields[col]).ok_or_else(|| {
+                at(
+                    line,
+                    format!(
+                        "time_source '{}' is not recorded, interpolated or synthetic",
+                        fields[col]
+                    ),
+                )
+            })?;
+            synthetic_time |= origin == TimeOrigin::Synthetic;
+        }
+        if let Some(col) = alt_source_col {
+            let origin = AltOrigin::parse(fields[col]).ok_or_else(|| {
+                at(
+                    line,
+                    format!(
+                        "alt_source '{}' is not recorded, interpolated or dem",
+                        fields[col]
+                    ),
+                )
+            })?;
+            dem_altitude |= origin == AltOrigin::Dem;
+        }
+
         if let Some(previous) = points.last() {
             if trace_n <= previous.trace_n {
                 return Err(at(
@@ -188,9 +293,83 @@ pub fn load_coords_csv(
 
     Ok(gpr::GPRLocation {
         cor_points: points,
-        correction: gpr::LocationCorrection::None,
+        correction: if dem_altitude {
+            gpr::LocationCorrection::InCoordinates {
+                path: filepath.to_path_buf(),
+            }
+        } else {
+            gpr::LocationCorrection::None
+        },
+        time_source: if synthetic_time {
+            gpr::TimeSource::Synthetic
+        } else {
+            gpr::TimeSource::Recorded
+        },
         crs,
     })
+}
+
+/// Write a coordinate CSV that [`load_coords_csv`] reads back, with
+/// `comments` as `#` lines above the header and times to the millisecond.
+///
+/// Written beside `filepath` and renamed into place, so a file that exists
+/// is complete.
+///
+/// # Errors
+/// The file could not be written, a time is outside what a date can hold,
+/// or some rows have an altitude and others not.
+pub fn write_coords_csv(
+    filepath: &Path,
+    rows: &[CoordsRow],
+    comments: &[String],
+) -> Result<(), String> {
+    let with_alt = rows.first().is_some_and(|row| row.alt.is_some());
+    let mut text = String::new();
+    for comment in comments {
+        for line in comment.lines() {
+            text += &format!("# {line}\n");
+        }
+    }
+    text += if with_alt {
+        "trace,time,lon,lat,alt,time_source,alt_source\n"
+    } else {
+        "trace,time,lon,lat,time_source\n"
+    };
+    for row in rows {
+        // To the millisecond: the times are interpolated in floating point,
+        // and nothing that positions a trace is finer.
+        let millis = (row.time_seconds * 1000.).round();
+        let time = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(millis as i64)
+            .ok_or_else(|| {
+                format!(
+                    "trace {}: time {} is out of range",
+                    row.trace, row.time_seconds
+                )
+            })?
+            .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true);
+        text += &format!("{},{time},{:.9},{:.9}", row.trace, row.lon, row.lat);
+        match (with_alt, row.alt) {
+            (true, Some((alt, origin))) => {
+                text += &format!(",{alt:.3},{},{}", row.time_source.as_str(), origin.as_str())
+            }
+            (false, None) => text += &format!(",{}", row.time_source.as_str()),
+            _ => return Err(format!("trace {}: alt in some rows but not all", row.trace)),
+        }
+        text += "\n";
+    }
+
+    let name = filepath
+        .file_name()
+        .ok_or_else(|| format!("{} is not a file name", filepath.display()))?
+        .to_string_lossy();
+    let temporary = filepath.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    let written = std::fs::write(&temporary, text)
+        .and_then(|()| std::fs::rename(&temporary, filepath))
+        .map_err(|e| format!("could not write {}: {e}", filepath.display()));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -234,6 +413,63 @@ mod tests {
     }
 
     #[test]
+    fn what_is_written_reads_back_with_its_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("line.coords.csv");
+        let row = |trace, time_source, alt| CoordsRow {
+            trace,
+            time_seconds: 1_743_070_220.25 + f64::from(trace),
+            time_source,
+            lon: 16.648388333,
+            lat: 78.101888333,
+            alt,
+        };
+        let comments = vec!["written by a test".to_string()];
+
+        let rows = [
+            row(0, TimeOrigin::Recorded, Some((715.2, AltOrigin::Recorded))),
+            row(
+                1,
+                TimeOrigin::Interpolated,
+                Some((715.3, AltOrigin::Interpolated)),
+            ),
+        ];
+        write_coords_csv(&path, &rows, &comments).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# written by a test\ntrace,time,lon,lat,alt,"));
+        assert!(
+            text.contains(
+                "\n0,2025-03-27T10:10:20.250Z,16.648388333,78.101888333,715.200,recorded,recorded\n"
+            ),
+            "{text}"
+        );
+        let read = load_coords_csv(&path, None).unwrap();
+        assert_eq!(read.time_source, gpr::TimeSource::Recorded);
+        assert!(matches!(read.correction, gpr::LocationCorrection::None));
+        assert_eq!(read.cor_points[1].time_seconds, rows[1].time_seconds);
+        assert_eq!(read.cor_points[1].altitude, 715.3);
+
+        let rows = [
+            row(0, TimeOrigin::Synthetic, Some((700., AltOrigin::Dem))),
+            row(5, TimeOrigin::Synthetic, Some((701., AltOrigin::Dem))),
+        ];
+        write_coords_csv(&path, &rows, &[]).unwrap();
+        let read = load_coords_csv(&path, None).unwrap();
+        assert_eq!(read.time_source, gpr::TimeSource::Synthetic);
+        assert!(matches!(
+            &read.correction,
+            gpr::LocationCorrection::InCoordinates { path: p } if *p == path
+        ));
+
+        let rows = [row(0, TimeOrigin::Recorded, None)];
+        write_coords_csv(&path, &rows, &[]).unwrap();
+        let read = load_coords_csv(&path, None).unwrap();
+        assert!(read.cor_points[0].altitude.is_nan());
+        // Nothing but the file itself is left in the directory.
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     fn bad_files_are_refused_with_the_line_and_the_reason() {
         let header = "trace,time,lon,lat";
         let row0 = "0,2025-03-27T10:00:00Z,16,78.5";
@@ -270,6 +506,14 @@ mod tests {
             (
                 format!("{header}\n{row0}\n{row0}\n"),
                 ":3: trace 0 follows trace 0",
+            ),
+            (
+                format!("{header},alt_source\n{row0},dem\n"),
+                "alt_source without alt",
+            ),
+            (
+                format!("{header},time_source\n{row0},guessed\n"),
+                "time_source 'guessed' is not",
             ),
             (
                 format!("{header}\n{row0}\n1,2025-03-27T09:59:59Z,16,78.5\n"),

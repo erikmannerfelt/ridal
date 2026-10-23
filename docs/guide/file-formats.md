@@ -152,8 +152,14 @@ Measurement
   `vertical_sampling_frequency` (MHz), `time_interval` (s between traces),
   `frequency_steps`, `medium_velocity` (m/ns), `start_datetime`,
   `stop_datetime`, `total_distance` (m), `crs` and `elevation_correction`
-  (`None`, or the DEM that the elevations were sampled from). Each quantity
-  with a unit has a `_unit` attribute beside it.
+  (`None`, or the DEM that the elevations were sampled from, by `ridal
+  process --dem` or by `ridal coords --dem`). Each quantity with a unit has a
+  `_unit` attribute beside it.
+
+`time_source`
+: Only present when the trace times were made up by `ridal coords` from a
+  start time and a trace interval (see {ref}`ridal-coords`). Such times order
+  the traces, but say nothing about when the radar stood still.
 
 `antenna_separation_effective`
 : The antenna separation that the travel times still include, which is the

@@ -18,6 +18,10 @@ pub enum Commands {
     BatchProcess(BatchProcessArgs),
     /// Show metadata/location information for one or more GPR profiles
     Info(InfoArgs),
+    /// Write a recording's positions as a coordinate CSV, from its own
+    /// positions file or from positions, start and end points, a DEM and a
+    /// start time given here (#13)
+    Coords(CoordsArgs),
     /// Inspect available processing steps
     Steps(StepsArgs),
     /// Inspect supported formats
@@ -976,6 +980,76 @@ pub struct InfoArgs {
 }
 
 #[derive(Debug, clap::Args)]
+pub struct CoordsArgs {
+    /// Recordings to write positions for (any of their files). Several only
+    /// without --positions, --start and --end, which describe one: with
+    /// --track, or to write each recording's own positions.
+    #[arg(required = true)]
+    pub inputs: Vec<PathBuf>,
+
+    /// The CSV to write, for one recording. Defaults to "<stem>.coords.csv"
+    /// beside the recording, which ridal process then reads in place of
+    /// its own positions.
+    #[arg(short, long, conflicts_with = "output_dir")]
+    pub output: Option<PathBuf>,
+
+    /// A directory to write each recording's "<stem>.coords.csv" in.
+    #[arg(long)]
+    pub output_dir: Option<PathBuf>,
+
+    /// Replace a CSV that exists already.
+    #[arg(long)]
+    pub overwrite: bool,
+
+    /// A CSV of known positions: "trace" (0-based) and "lon,lat" (or "x,y"
+    /// with --src-crs), and optionally "alt" and "time". Traces between
+    /// rows are interpolated.
+    #[arg(long, conflicts_with_all = ["start", "end", "track"])]
+    pub positions: Option<PathBuf>,
+
+    /// A GNSS track: "time" and "lon,lat" (or "x,y" with --src-crs), and
+    /// optionally "alt"; other columns are ignored. Each trace gets the
+    /// position at its time on the recording's clock, so one track can
+    /// position a whole day of recordings.
+    #[arg(long, conflicts_with_all = ["start", "end"])]
+    pub track: Option<PathBuf>,
+
+    /// Seconds to add to the recording's clock to get the track's, such as
+    /// 7200 for a radar set to UTC+2 against a UTC track.
+    #[arg(long, requires = "track", allow_hyphen_values = true)]
+    pub time_offset: Option<f64>,
+
+    /// The first trace's position: lon,lat[,alt] (or x,y[,alt] with
+    /// --src-crs). Traces up to --end are interpolated.
+    #[arg(long, requires = "end", allow_hyphen_values = true)]
+    pub start: Option<crate::positions::Point>,
+
+    /// The last trace's position: lon,lat[,alt] (or x,y[,alt] with
+    /// --src-crs).
+    #[arg(long, requires = "start", allow_hyphen_values = true)]
+    pub end: Option<crate::positions::Point>,
+
+    /// The CRS of x,y positions given in --positions, --start and --end.
+    /// Without it, positions are WGS84 longitude and latitude.
+    #[arg(long)]
+    pub src_crs: Option<String>,
+
+    /// When the first trace was recorded (ISO 8601). Makes the times up
+    /// from it and the trace interval, marked synthetic, when no times are
+    /// known or to replace them.
+    #[arg(long)]
+    pub start_time: Option<String>,
+
+    /// Seconds between traces, for made-up times. Defaults to the header's.
+    #[arg(long)]
+    pub time_interval: Option<f64>,
+
+    /// A DEM to take every altitude from, before any other.
+    #[arg(short, long)]
+    pub dem: Option<PathBuf>,
+}
+
+#[derive(Debug, clap::Args)]
 #[command(group(
     ArgGroup::new("steps_mode")
         .required(false)
@@ -1137,6 +1211,7 @@ pub fn run(arguments: Args) -> Result<(), String> {
         Commands::Process(args) => process_command(&args),
         Commands::BatchProcess(args) => batch_process_command(&args),
         Commands::Info(args) => info_command(args),
+        Commands::Coords(args) => coords_command(&args),
         Commands::Steps(args) => steps_command(args),
         Commands::Formats(args) => formats_command(args),
         Commands::Render(args) => render_command(args),
@@ -1343,6 +1418,51 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
     }
     Ok(())
 }
+fn coords_command(args: &CoordsArgs) -> Result<(), String> {
+    let inputs = gpr::expand_input_paths(&args.inputs)?;
+    let describes_one = args.positions.is_some() || args.start.is_some();
+    if inputs.len() > 1 && (describes_one || args.output.is_some()) {
+        return Err(format!(
+            "{} recordings were given, but --positions, --start/--end and --output \
+             describe one (a --track can be given for several)",
+            inputs.len()
+        ));
+    }
+    if let Some(dir) = &args.output_dir {
+        if !dir.is_dir() {
+            return Err(format!("{} is not a directory", dir.display()));
+        }
+    }
+    for input in inputs {
+        let output = crate::positions::output_path(
+            &input,
+            args.output.as_deref(),
+            args.output_dir.as_deref(),
+        )?;
+        let request = crate::positions::Request {
+            recording: input,
+            positions: args.positions.clone(),
+            endpoints: args.start.zip(args.end),
+            track: args.track.clone(),
+            time_offset: args.time_offset,
+            src_crs: args.src_crs.clone(),
+            start_time: args.start_time.clone(),
+            time_interval: args.time_interval,
+            dem: args.dem.clone(),
+        };
+        let built = crate::positions::write(&request, &output, args.overwrite)?;
+        for warning in &built.warnings {
+            eprintln!("Warning: {warning}");
+        }
+        println!(
+            "Wrote {} positions to {}",
+            built.rows.len(),
+            output.display()
+        );
+    }
+    Ok(())
+}
+
 fn info_command(args: InfoArgs) -> Result<(), String> {
     let params = gpr::InfoParams {
         filepaths: args.inputs,
@@ -1785,6 +1905,125 @@ mod tests {
             .unwrap()
             .unwrap()
             .0
+    }
+
+    /// The Drønbreen fixture's header and data, without positions, in `dir`.
+    fn recording_without_positions(dir: &std::path::Path) -> PathBuf {
+        const LINE: &str = "dronbreen-20250327-DAT_0066_A1";
+        for ext in ["rad", "rd3"] {
+            std::fs::copy(
+                format!("assets/mala/{LINE}.{ext}"),
+                dir.join(format!("{LINE}.{ext}")),
+            )
+            .unwrap();
+        }
+        dir.join(format!("{LINE}.rad"))
+    }
+
+    #[test]
+    fn coords_takes_points_with_negative_coordinates() {
+        let argv = [
+            "ridal",
+            "coords",
+            "a.rad",
+            "--start",
+            "-70.5,-45.1",
+            "--end",
+            "-70.6,-45.2,12",
+        ];
+        match Args::try_parse_from(argv).unwrap().command {
+            Commands::Coords(args) => {
+                assert_eq!(args.start.unwrap().a, -70.5);
+                assert_eq!(args.end.unwrap().alt, Some(12.));
+            }
+            _ => panic!("Expected coords command"),
+        }
+        // A negative offset, and only with a track.
+        let argv = [
+            "ridal",
+            "coords",
+            "a.rad",
+            "b.rad",
+            "--track",
+            "t.csv",
+            "--time-offset",
+            "-3600",
+        ];
+        match Args::try_parse_from(argv).unwrap().command {
+            Commands::Coords(args) => assert_eq!(args.time_offset, Some(-3600.)),
+            _ => panic!("Expected coords command"),
+        }
+        assert!(Args::try_parse_from(["ridal", "coords", "a.rad", "--time-offset", "1"]).is_err());
+        // Both ends or neither, and not with --positions.
+        assert!(Args::try_parse_from(["ridal", "coords", "a.rad", "--start", "1,2"]).is_err());
+        assert!(Args::try_parse_from([
+            "ridal",
+            "coords",
+            "a.rad",
+            "--positions",
+            "p.csv",
+            "--start",
+            "1,2",
+            "--end",
+            "3,4"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    #[serial_test::serial(netcdf)]
+    fn coords_writes_a_csv_that_process_finds_and_marks_synthetic() {
+        // #13 end to end: a recording with no positions, its start and end
+        // given to `ridal coords`, then `ridal process` with no --cor.
+        let dir = tempfile::tempdir().unwrap();
+        let rad = recording_without_positions(dir.path());
+        let rad_arg = rad.to_str().unwrap();
+        let coords = |start: &str, extra: &[&str]| {
+            let mut argv = vec![
+                "ridal",
+                "coords",
+                rad_arg,
+                "--start",
+                start,
+                "--end",
+                "16.661,78.1034,720",
+                "--start-time",
+                "2025-03-27T12:10:20Z",
+            ];
+            argv.extend_from_slice(extra);
+            super::run(Args::try_parse_from(argv).unwrap())
+        };
+        let error = coords("16.648,78.1019", &[]).unwrap_err();
+        assert!(error.contains("for both the start and the end"), "{error}");
+
+        let start = "16.648,78.1019,715";
+        coords(start, &[]).unwrap();
+        let csv = dir.path().join("dronbreen-20250327-DAT_0066_A1.coords.csv");
+        assert!(csv.is_file());
+        let error = coords(start, &[]).unwrap_err();
+        assert!(error.contains("give --overwrite"), "{error}");
+        coords(start, &["--overwrite"]).unwrap();
+
+        let output = dir.path().join("out.nc");
+        super::run(
+            Args::try_parse_from([
+                "ridal",
+                "process",
+                rad_arg,
+                "--quiet",
+                "-o",
+                output.to_str().unwrap(),
+                "--steps",
+                "subset(0 100)",
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let file = netcdf::open(&output).unwrap();
+        let text = |name: &str| format!("{:?}", file.attribute(name).unwrap().value().unwrap());
+        assert!(text("time_source").contains("synthetic"));
+        let latitude: Vec<f64> = file.variable("latitude").unwrap().get_values(..).unwrap();
+        assert!((latitude[0] - 78.1019).abs() < 1e-7, "{}", latitude[0]);
     }
 
     /// Run `ridal site token …` against the site at `dir`.

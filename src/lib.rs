@@ -19,6 +19,7 @@ mod interp;
 mod io;
 /// One processing job, run in a child process for the server (#382).
 mod job;
+mod positions;
 mod project;
 /// What a processed radargram was made from (#382): raw file checksums,
 /// settings and versioned steps, hashed into its revision id.

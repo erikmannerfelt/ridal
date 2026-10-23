@@ -46,6 +46,8 @@ has one header line, and its columns may come in any order:
 | `time` | yes | ISO 8601 with a UTC offset, such as `2025-03-27T12:10:20Z` or `2025-03-27T14:10:20+02:00` |
 | `lon`, `lat` | yes | WGS84 longitude and latitude in degrees |
 | `alt` | no | Elevation in meters, used as given |
+| `time_source` | no | `recorded`, `interpolated` or `synthetic` |
+| `alt_source` | no | `recorded`, `interpolated` or `dem` |
 
 ```text
 trace,time,lon,lat,alt
@@ -71,6 +73,69 @@ another `.cor`. When several recordings are processed or merged at once,
 `--cor` takes a directory instead, which holds a `<stem>.coords.csv` or
 positions file for each recording. Which file was read is part of the
 processing recipe, so a new positions file gives a new revision.
+
+The two source columns say where each value came from, and are written by
+`ridal coords` (below). A `synthetic` time in any row marks the radargram's
+times as made up: the output then has a `time_source` attribute, and
+`remove_standstills` does not use the GPS for it. A `dem` altitude marks its
+elevations as sampled from a DEM, which `elevation_correction` names.
+
+(ridal-coords)=
+### Writing the CSV with `ridal coords`
+
+`ridal coords` writes a recording's coordinate CSV, one row per trace, as
+`<stem>.coords.csv` beside it (or `-o FILE`, or in `--output-dir`). It fills
+in what is not known, and says in the file's opening comments and in each
+row where every value came from:
+
+Positions
+: From `--positions FILE`, a CSV with `trace` and `lon,lat` and optionally
+  `alt` and `time`; from `--start lon,lat[,alt]` and `--end lon,lat[,alt]`,
+  the first and last trace; from `--track FILE`, a GNSS track (below); or,
+  with none of these, from the recording's own positions file. Traces
+  between known ones are interpolated by trace number, which is exact for a
+  wheel-triggered recording and assumes a steady speed for a time-triggered
+  one. Positions in another CRS are given as `x,y` with `--src-crs`.
+
+Times
+: From the given positions if they have times, else from the recording's
+  own positions file. When neither has any, or with `--start-time` or
+  `--time-interval`, the times are made up as the start time plus the trace
+  interval (the header's unless `--time-interval` gives another), and marked
+  `synthetic`. Without `--start-time`, they start at 1970-01-01, with a
+  warning. A time without a UTC offset is taken as UTC, with a warning.
+
+Altitudes
+: From `--dem` before anything else, then from the given positions, then
+  from the recording's own positions file.
+
+Track
+: `--track FILE` is a CSV with `time` and `lon,lat` (or `x,y`), and
+  optionally `alt`, such as a separate GNSS receiver's log, where other
+  columns are ignored. Each trace gets the track's position at its time on
+  the recording's clock, which comes from its own positions file (or from
+  `--start-time`). When the two clocks differ, `--time-offset` gives the
+  seconds to add to the recording's to get the track's, and the CSV's times
+  are then the track's. Traces before the track's first fix or after its
+  last are held at its ends, with a warning, and if no trace falls within
+  the track at all, the clocks are almost certainly apart and `ridal coords`
+  refuses. Since a track carries no trace numbers, one track can position a
+  whole day of recordings: `ridal coords *.rad --track day.csv`.
+
+For example, a recording whose positions file was lost, but whose start and
+end points and start time are in a field notebook:
+
+```bash
+ridal coords DAT_0066_A1.rad --start 16.6484,78.1019 --end 16.6612,78.1034 \
+  --start-time 2025-03-27T12:10:20Z --dem svalbard_dem.tif
+ridal process DAT_0066_A1.rad --default
+```
+
+With no position options, `ridal coords` writes the recording's own
+positions, interpolated to every trace: a template to correct by hand, or a
+way to read a `.cor` anywhere else. It takes several recordings at once in
+that case and with `--track`, writing a CSV for each. It refuses to replace a CSV that exists
+unless given `--overwrite`.
 
 ## Coordinate reference systems
 

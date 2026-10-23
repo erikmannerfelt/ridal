@@ -198,6 +198,7 @@ fn build_from(arrays: Arrays) -> Result<GPR, String> {
     let location = GPRLocation {
         cor_points,
         correction: LocationCorrection::None,
+        time_source: crate::gpr::TimeSource::Recorded,
         crs,
     };
 
