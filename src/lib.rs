@@ -1312,12 +1312,9 @@ pub mod ridal {
             })
             .transpose()?;
         let recording = fspath(py, input.bind(py))?;
-        let output = crate::positions::output_path(
-            &recording,
-            optional_path(py, output)?.as_deref(),
-            None,
-        )
-        .map_err(PyRuntimeError::new_err)?;
+        let output =
+            crate::positions::output_path(&recording, optional_path(py, output)?.as_deref(), None)
+                .map_err(PyRuntimeError::new_err)?;
         let request = crate::positions::Request {
             recording,
             positions: optional_path(py, positions)?,
