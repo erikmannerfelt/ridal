@@ -297,15 +297,22 @@ pub async fn put_dem(
             })?;
         // Checked here, once, rather than by every draft that would fail
         // on it later. GDAL runs as a child process: off the executor.
-        tokio::task::spawn_blocking(move || crate::dem::check_readable(&path))
-            .await
-            .map_err(|e| ApiError::internal("dem_check_failed", e.to_string()))?
-            .map_err(|e| {
-                ApiError::bad_request(
-                    "dem_unreadable",
-                    format!("{} cannot be used as a DEM: {e}.", file.name),
-                )
-            })?;
+        //
+        // An uploaded DEM is attacker-controlled, so it is held to the fixed
+        // GeoTIFF allowlist: a VRT or a network/external-link driver could
+        // otherwise read arbitrary files off the server or make it fetch URLs
+        // (see `dem::DemDrivers`). The environment never widens this.
+        tokio::task::spawn_blocking(move || {
+            crate::dem::check_readable(&path, &crate::dem::DemDrivers::geotiff_only())
+        })
+        .await
+        .map_err(|e| ApiError::internal("dem_check_failed", e.to_string()))?
+        .map_err(|e| {
+            ApiError::bad_request(
+                "dem_unreadable",
+                format!("{} cannot be used as a DEM: {e}.", file.name),
+            )
+        })?;
     }
 
     let (view, version, created, replaced) = {

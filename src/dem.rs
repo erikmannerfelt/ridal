@@ -243,12 +243,83 @@ pub fn sample_dem(dem_path: &Path, coords_wgs84: &[Coord]) -> Result<DemSample, 
     })
 }
 
-/// Check that GDAL reads `dem_path` as a raster, so a DEM that is not one
-/// is refused when it is added rather than when the first radargram is
-/// processed with it.
-pub fn check_readable(dem_path: &Path) -> Result<(), String> {
+/// The environment variable that widens the CLI's DEM driver allowlist.
+pub const DRIVERS_ENV: &str = "RIDAL_DEM_GDAL_DRIVERS";
+
+/// GDAL raster drivers a DEM may be opened with.
+///
+/// GDAL chooses a driver by sniffing a file's *content*, not its name, and
+/// several drivers follow references embedded in that content to other files
+/// or URLs: VRT (`<SourceFilename>`, `/vsicurl/…`, raw bands), the network
+/// drivers (WMS, WCS, WMTS, HTTP), PostGISRaster, the STAC drivers, MRF, and
+/// the HDF5/netCDF external-link mechanisms, among others -- and GDAL adds
+/// more with each release. An uploaded DEM is attacker-controlled, so opening
+/// it with one of those would let whoever supplied it read arbitrary files
+/// off the server or make the server fetch arbitrary URLs.
+///
+/// Rather than enumerate the dangerous drivers -- a denylist that rots on
+/// every GDAL upgrade -- a DEM is opened only with an explicit allowlist,
+/// passed to GDAL as `-if`. Over HTTP the allowlist is fixed to GeoTIFF
+/// ([`DemDrivers::geotiff_only`]); the CLI starts there too but may widen it
+/// through [`DRIVERS_ENV`] ([`DemDrivers::from_env`]), because the local user
+/// running the CLI is the trust boundary, not an uploaded file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DemDrivers(Vec<String>);
+
+impl DemDrivers {
+    /// GeoTIFF only: the allowlist every DEM uploaded over HTTP is held to.
+    pub fn geotiff_only() -> Self {
+        Self(vec!["GTiff".to_string()])
+    }
+
+    /// GeoTIFF, widened by any driver short names in [`DRIVERS_ENV`]
+    /// (comma- or whitespace-separated). For CLI use only; never resolve an
+    /// uploaded DEM's drivers from the environment.
+    pub fn from_env() -> Self {
+        Self::from_env_value(std::env::var(DRIVERS_ENV).ok().as_deref())
+    }
+
+    /// The pure core of [`DemDrivers::from_env`], so the parsing is testable
+    /// without touching process-wide environment.
+    fn from_env_value(value: Option<&str>) -> Self {
+        let mut drivers = vec!["GTiff".to_string()];
+        if let Some(value) = value {
+            for name in value.split([',', ' ', '\t', '\n']) {
+                let name = name.trim();
+                if !name.is_empty() && !drivers.iter().any(|d| d == name) {
+                    drivers.push(name.to_string());
+                }
+            }
+        }
+        Self(drivers)
+    }
+
+    /// The driver short names, for messages and documentation.
+    pub fn names(&self) -> &[String] {
+        &self.0
+    }
+
+    /// The `-if <driver>` arguments restricting GDAL to this allowlist.
+    fn if_args(&self) -> Vec<&str> {
+        self.0
+            .iter()
+            .flat_map(|name| ["-if", name.as_str()])
+            .collect()
+    }
+}
+
+/// Check that GDAL reads `dem_path` as a raster in one of `drivers`, so a
+/// DEM that is not one, or is in a format outside the allowlist, is refused
+/// when it is added rather than when the first radargram is processed with
+/// it.
+///
+/// The `-if` allowlist is a security boundary, not a convenience: see
+/// [`DemDrivers`]. Pass [`DemDrivers::geotiff_only`] for anything an
+/// untrusted client uploaded.
+pub fn check_readable(dem_path: &Path, drivers: &DemDrivers) -> Result<(), String> {
     let output = crate::tools::spawn_tool(
         std::process::Command::new("gdalinfo")
+            .args(drivers.if_args())
             .args(["-nomd", "-norat", "-noct"])
             .arg(dem_path)
             .stdin(std::process::Stdio::null())
@@ -285,10 +356,57 @@ mod tests {
 
     #[test]
     fn a_raster_is_readable_and_anything_else_is_not() {
-        super::check_readable(&get_dem_path()).unwrap();
-        let refused = super::check_readable(Path::new("assets/mala/README.md")).unwrap_err();
+        let gtiff = super::DemDrivers::geotiff_only();
+        super::check_readable(&get_dem_path(), &gtiff).unwrap();
+        let refused =
+            super::check_readable(Path::new("assets/mala/README.md"), &gtiff).unwrap_err();
         assert!(refused.contains("not a raster"), "{refused}");
         assert!(!refused.contains("README"), "{refused}");
+    }
+
+    #[test]
+    fn from_env_value_widens_geotiff_without_duplicating() {
+        assert_eq!(super::DemDrivers::from_env_value(None).names(), ["GTiff"]);
+        // Comma- or whitespace-separated, trimmed, GTiff kept first and never
+        // repeated.
+        let widened = super::DemDrivers::from_env_value(Some(" VRT, HFA GTiff\tVRT "));
+        assert_eq!(widened.names(), ["GTiff", "VRT", "HFA"]);
+    }
+
+    #[test]
+    fn the_geotiff_allowlist_refuses_a_vrt_that_a_widened_one_accepts() {
+        // A VRT is how the DEM upload hole was reached: its content can name
+        // another file or a URL for GDAL to open. The server's fixed GeoTIFF
+        // allowlist must refuse one; a CLI user may opt back into VRT.
+        let dir = std::env::temp_dir().join(format!("ridal-dem-vrt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let vrt = dir.join("dem.vrt");
+        // A plain VRT wrapping the real test DEM, by absolute path, with no
+        // extension on disk so only content sniffing identifies it as VRT --
+        // exactly the upload case.
+        let tif = std::fs::canonicalize(get_dem_path()).unwrap();
+        std::fs::write(
+            &vrt,
+            format!(
+                "<VRTDataset rasterXSize=\"367\" rasterYSize=\"333\">\
+                 <VRTRasterBand dataType=\"Float32\" band=\"1\">\
+                 <SimpleSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename>\
+                 <SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>",
+                tif.display()
+            ),
+        )
+        .unwrap();
+        let no_ext = dir.join("uploaded-blob");
+        std::fs::copy(&vrt, &no_ext).unwrap();
+
+        let refused =
+            super::check_readable(&no_ext, &super::DemDrivers::geotiff_only()).unwrap_err();
+        assert!(refused.contains("not a raster"), "{refused}");
+
+        let widened = super::DemDrivers::from_env_value(Some("VRT"));
+        super::check_readable(&no_ext, &widened).expect("a widened allowlist opens the VRT");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     use crate::coords::{Coord, Crs, UtmCrs};
