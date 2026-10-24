@@ -85,15 +85,32 @@ fn read_gga(gga_str: &str, date: &str) -> Result<(f64, crate::coords::Coord, f64
 
     let parts: Vec<&str> = gga_str.split(",").collect();
 
-    let lat_str = parts.get(2).unwrap();
-    let mut lat = lat_str[..2].parse::<f64>()? + (lat_str[2..].parse::<f64>()? / 60.);
+    // A GGA sentence is attacker-controlled for an uploaded file, so every
+    // field and every fixed-width split is fallible rather than a panic. `at`
+    // names a missing field; `slice` refuses a byte range that is out of
+    // bounds or splits a multi-byte character.
+    let at = |i: usize| -> Result<&str, Box<dyn Error>> {
+        parts
+            .get(i)
+            .copied()
+            .ok_or_else(|| format!("GGA field {i} is missing").into())
+    };
+    fn slice(s: &str, range: std::ops::Range<usize>) -> Result<&str, Box<dyn Error>> {
+        s.get(range.clone())
+            .ok_or_else(|| format!("GGA field {s:?} is too short for {range:?}").into())
+    }
+
+    let lat_str = at(2)?;
+    let mut lat = slice(lat_str, 0..2)?.parse::<f64>()?
+        + (slice(lat_str, 2..lat_str.len())?.parse::<f64>()? / 60.);
 
     if parts.get(3) == Some(&"S") {
         lat *= -1.;
     }
 
-    let lon_str = parts.get(4).unwrap();
-    let mut lon = lon_str[..3].parse::<f64>()? + (lon_str[3..].parse::<f64>()? / 60.);
+    let lon_str = at(4)?;
+    let mut lon = slice(lon_str, 0..3)?.parse::<f64>()?
+        + (slice(lon_str, 3..lon_str.len())?.parse::<f64>()? / 60.);
 
     if parts.get(5) == Some(&"W") {
         lon *= -1.;
@@ -101,12 +118,12 @@ fn read_gga(gga_str: &str, date: &str) -> Result<(f64, crate::coords::Coord, f64
 
     let coord = crate::coords::Coord { x: lon, y: lat };
 
-    let elev = parts.get(9).unwrap().parse::<f64>()?;
+    let elev = at(9)?.parse::<f64>()?;
 
-    let time_str = parts.get(1).unwrap();
-    let hr = time_str[..2].to_string();
-    let min = time_str[2..4].to_string();
-    let sec = time_str[4..].to_string();
+    let time_str = at(1)?;
+    let hr = slice(time_str, 0..2)?.to_string();
+    let min = slice(time_str, 2..4)?.to_string();
+    let sec = slice(time_str, 4..time_str.len())?.to_string();
 
     let datetime =
         chrono::DateTime::parse_from_rfc3339(&format!("{}T{}:{}:{}+00:00", date, hr, min, sec))?
@@ -142,4 +159,34 @@ fn project_points(
         point.northing = coord.y;
     }
     Ok(projected_crs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_gga;
+
+    /// A GGA sentence from an uploaded file is untrusted. Short field counts
+    /// and short or non-ASCII fixed-width fields used to panic on `.unwrap()`
+    /// and on byte-index slicing; each must now be a graceful error.
+    #[test]
+    fn a_malformed_gga_errors_rather_than_panicking() {
+        let date = "2025-Apr-04";
+        for gga in [
+            "",                                   // no fields at all
+            "$GPGGA,130857.30",                   // too few fields for lat/lon/elev
+            "$GPGGA,130857.30,7,N,0,E,,,,",       // lat/lon too short for the fixed split
+            "$GPGGA,1,7719.19,N,01522.64,E,,,,9", // time field too short
+            "$GPGGA,130857.30,7é,N,0é9,E,,,,100", // multi-byte char across a split boundary
+        ] {
+            // The assertion is simply that the call returns; a panic would
+            // fail the test.
+            let _ = read_gga(gga, date);
+        }
+        // A well-formed sentence still parses.
+        let ok = read_gga(
+            "$GPGGA,130857.30,7719.1908439,N,01522.6497456,E,2,42,0.8,625.490,M",
+            date,
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+    }
 }
