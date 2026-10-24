@@ -1809,6 +1809,41 @@ mod tests {
     use super::*;
     use clap::Parser;
 
+    #[test]
+    fn a_cli_dem_outside_the_allowlist_is_refused_up_front() {
+        // No `--dem` is always fine.
+        validate_cli_dem(None).unwrap();
+
+        // A VRT (identified by content, under a non-`.vrt` name) is outside
+        // the default GeoTIFF allowlist, so the CLI refuses it before any
+        // processing, and the error points at the way to widen it. This
+        // mirrors the server's upload gate; the CLI's is just widenable.
+        let dir = std::env::temp_dir().join(format!("ridal-cli-dem-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let blob = dir.join("looks-like-a-dem.bin");
+        let tif = std::fs::canonicalize("assets/test_dem_dtm20_mettebreen.tif").unwrap();
+        std::fs::write(
+            &blob,
+            format!(
+                "<VRTDataset rasterXSize=\"367\" rasterYSize=\"333\">\
+                 <VRTRasterBand dataType=\"Float32\" band=\"1\"><SimpleSource>\
+                 <SourceFilename relativeToVRT=\"0\">{}</SourceFilename>\
+                 <SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>",
+                tif.display()
+            ),
+        )
+        .unwrap();
+
+        let err = validate_cli_dem(Some(&blob)).unwrap_err();
+        assert!(err.contains("not a raster"), "{err}");
+        assert!(err.contains(crate::dem::DRIVERS_ENV), "{err}");
+
+        // A real GeoTIFF is accepted.
+        validate_cli_dem(Some(&tif)).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[cfg(feature = "server")]
     fn project_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
