@@ -1405,12 +1405,7 @@ mod tests {
         let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
         let data: Vec<f32> = (0..(20 * 300)).map(|i| (i % 100) as f32).collect();
         var.put_values(&data, ..).unwrap();
-        file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
-            .unwrap();
-        file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
-            .unwrap();
-        file.add_attribute("ridal_radargram_id", radargram_id)
-            .unwrap();
+        crate::server::test_support::mark_as_ridal(&mut file, radargram_id);
     }
 
     /// Like `write_test_nc`, but with `elevation`/`depth` axes (#168) so
@@ -1436,12 +1431,7 @@ mod tests {
         let depth: Vec<f32> = (0..height).map(|i| i as f32 * 0.1).collect();
         depth_var.put_values(&depth, ..).unwrap();
 
-        file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
-            .unwrap();
-        file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
-            .unwrap();
-        file.add_attribute("ridal_radargram_id", radargram_id)
-            .unwrap();
+        crate::server::test_support::mark_as_ridal(&mut file, radargram_id);
     }
 
     /// Like `write_test_nc`, but with real track variables (crs, easting,
@@ -1471,12 +1461,7 @@ mod tests {
         time_var.put_values(&time, ..).unwrap();
 
         file.add_attribute("crs", "EPSG:32633").unwrap();
-        file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
-            .unwrap();
-        file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
-            .unwrap();
-        file.add_attribute("ridal_radargram_id", radargram_id)
-            .unwrap();
+        crate::server::test_support::mark_as_ridal(&mut file, radargram_id);
         if let Some(group) = group {
             file.add_attribute("ridal_group_name", group).unwrap();
             file.add_attribute("ridal_group_id", group).unwrap();

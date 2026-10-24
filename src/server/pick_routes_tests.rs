@@ -8,7 +8,6 @@
 //! same `#[serial_test::serial(netcdf)]` guard as the other route tests.
 
 use std::path::Path as StdPath;
-use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -16,40 +15,27 @@ use axum::Router;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use super::app::{build_router, AccessOptions, AppState};
+use super::app::AccessOptions;
 use super::interp_routes_tests::write_test_nc_with_axes;
+use super::test_support::{self, project_data, project_router};
 use crate::project::Project;
-use crate::server::render_service::RenderServiceConfig;
 
 const RADARGRAM: &str = "line-01";
 const SUMMARY: &str = "/api/v1/interpretations";
-
-fn data(root: &StdPath) -> std::path::PathBuf {
-    root.join(crate::project::DEFAULT_DATA_DIR)
-}
 
 /// A project with one 40-trace radargram, `line-01`.
 fn project_app() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
     write_test_nc_with_axes(
-        &data(dir.path())
+        &project_data(dir.path())
             .join(crate::project::DEFAULT_RADARGRAM_DIR)
             .join("line-01.nc"),
         RADARGRAM,
         None,
     );
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
-    (dir, build_router(state))
+    let app = project_router(dir.path(), AccessOptions::default());
+    (dir, app)
 }
 
 /// Two lines on `bed`, over traces 5..=14 and 16..=24, and one `surface`
@@ -78,21 +64,14 @@ fn document(key: &str, revision: Option<&str>) -> Value {
 /// Put a document on disk the way a hand copy or a converter would, past the
 /// API's checks.
 fn place(root: &StdPath, relative: &str, body: &str) {
-    let path = data(root).join("interpretations").join(relative);
+    let path = project_data(root).join("interpretations").join(relative);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, body).unwrap();
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Value) {
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    )
+    let response = test_support::send(app, request).await;
+    (response.status, response.body)
 }
 
 async fn summary(app: &Router) -> Value {
@@ -356,7 +335,7 @@ async fn a_bulk_download_zips_live_and_archived_picks_as_they_are_stored() {
     // Byte for byte, as the one-file downloads are.
     assert_eq!(files[0].1, archived);
     let live = std::fs::read_to_string(
-        data(dir.path()).join("interpretations/line-01/default.gprinterp.json"),
+        project_data(dir.path()).join("interpretations/line-01/default.gprinterp.json"),
     )
     .unwrap();
     assert_eq!(files[1].1, live);

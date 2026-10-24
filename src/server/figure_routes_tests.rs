@@ -4,60 +4,18 @@
 //! route lets a caller draw, which has to match what the routes serving the
 //! same data already allow.
 
-use axum::body::Body;
-use axum::http::{header, StatusCode};
+use axum::http::StatusCode;
 use axum::Router;
 use serde_json::{json, Value};
-use tower::ServiceExt;
 
-use super::access_tests::{activated, password_hash};
-use super::derived_routes_tests::{
-    app_with_picks, derived_set, item, put, request, sign_in, RADARGRAM,
-};
+use super::access_tests::{activated, put, scoped};
+use super::derived_routes_tests::{app_with_picks, derived_set, item, RADARGRAM};
+use super::test_support::{json_request, password_hash, send, sign_in, Response};
 use crate::project::roles::{DownloadScope, Role};
 
-struct Figure {
-    status: StatusCode,
-    content_type: String,
-    disposition: String,
-    warnings: Option<Vec<String>>,
-    text: String,
-}
-
-async fn figure(app: &Router, spec: &Value, format: &str, session: Option<&str>) -> Figure {
+async fn figure(app: &Router, spec: &Value, format: &str, session: Option<&str>) -> Response {
     let uri = format!("/api/v1/datasets/{RADARGRAM}/figure?format={format}");
-    let response = app
-        .clone()
-        .oneshot(
-            request("POST", &uri, session)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(spec.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let header_text = |name: &str| {
-        response
-            .headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    };
-    let content_type = header_text("content-type").unwrap_or_default();
-    let disposition = header_text("content-disposition").unwrap_or_default();
-    let warnings = header_text(super::figure_routes::WARNINGS_HEADER)
-        .map(|text| serde_json::from_str(&text).unwrap());
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    Figure {
-        status,
-        content_type,
-        disposition,
-        warnings,
-        text: String::from_utf8_lossy(&bytes).to_string(),
-    }
+    send(app, json_request("POST", &scoped(&uri), spec, session)).await
 }
 
 /// The number of picked lines in an SVG figure: the test layer has no colour
@@ -103,18 +61,26 @@ async fn an_operator_draws_everyones_picks_and_the_consensus() {
     }));
     let svg = figure(&app, &spec, "svg", Some(&op)).await;
     assert_eq!(svg.status, StatusCode::OK, "{}", svg.text);
-    assert_eq!(svg.content_type, "image/svg+xml");
-    assert!(svg.disposition.contains("line-01-figure.svg"));
+    assert_eq!(svg.content_type.as_deref(), Some("image/svg+xml"));
+    assert!(svg
+        .disposition
+        .as_deref()
+        .unwrap()
+        .contains("line-01-figure.svg"));
     assert_eq!(pick_lines(&svg.text), 2 + 1, "two picks and the median");
 
     let png = figure(&app, &spec, "png", Some(&op)).await;
     assert_eq!(png.status, StatusCode::OK);
-    assert_eq!(png.content_type, "image/png");
+    assert_eq!(png.content_type.as_deref(), Some("image/png"));
 
     // The test picks name no revision, so they are drawn as stored, the
     // median is evaluated over them as stored (#434), and the response says
     // both.
-    let warnings = svg.warnings.expect("a warnings header");
+    let warnings: Vec<String> = serde_json::from_str(
+        &svg.header(super::figure_routes::WARNINGS_HEADER)
+            .expect("a warnings header"),
+    )
+    .unwrap();
     assert_eq!(warnings.len(), 3, "{warnings:?}");
     assert_eq!(
         warnings
@@ -258,7 +224,7 @@ async fn the_sidecar_of_a_figure_without_axes_is_json() {
     let raw = small(json!({"axes": false, "extent": {"traces": [10, 30]}}));
     let sidecar = figure(&app, &raw, "json", Some(&op)).await;
     assert_eq!(sidecar.status, StatusCode::OK, "{}", sidecar.text);
-    assert_eq!(sidecar.content_type, "application/json");
+    assert_eq!(sidecar.content_type.as_deref(), Some("application/json"));
     let body: Value = serde_json::from_str(&sidecar.text).unwrap();
     assert_eq!(body["traces"], json!([10.0, 30.0]));
     assert_eq!(body["x"]["unit"], "distance");

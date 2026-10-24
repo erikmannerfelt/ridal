@@ -15,17 +15,16 @@
 
 use std::path::Path as StdPath;
 
-use axum::body::Body;
-use axum::http::{header, Request, StatusCode};
+use axum::http::StatusCode;
 use axum::Router;
 use serde_json::{json, Value};
-use tower::ServiceExt;
 
 use super::access_tests::{
-    activated, data, id, new_site, open_project, password, password_hash, scoped, site_router,
-    write_people, User, UserSet,
+    activated, data, get, id, new_site, open_project, post, put, site_router, write_people, User,
+    UserSet,
 };
 use super::app::AccessOptions;
+use super::test_support::{password_hash, sign_in};
 use crate::identity::RadargramId;
 use crate::project::interpretations;
 use crate::project::roles::{DownloadScope, Role};
@@ -132,92 +131,6 @@ pub(super) fn app_with_picks(
 
     let router = site_router(dir.path(), AccessOptions::default());
     (dir, router)
-}
-
-pub(super) struct Response {
-    pub(super) status: StatusCode,
-    pub(super) cookie: Option<String>,
-    pub(super) body: Value,
-    pub(super) text: String,
-    pub(super) disposition: Option<String>,
-}
-
-pub(super) async fn send(app: &Router, request: Request<Body>) -> Response {
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let cookie = response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let disposition = response
-        .headers()
-        .get(header::CONTENT_DISPOSITION)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    Response {
-        status,
-        cookie,
-        body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        text,
-        disposition,
-    }
-}
-
-pub(super) fn request(
-    method: &str,
-    uri: &str,
-    session: Option<&str>,
-) -> axum::http::request::Builder {
-    let mut builder = Request::builder().method(method).uri(scoped(uri));
-    if let Some(session) = session {
-        builder = builder.header(header::COOKIE, session);
-    }
-    builder
-}
-
-async fn get(app: &Router, uri: &str, session: Option<&str>) -> Response {
-    send(
-        app,
-        request("GET", uri, session).body(Body::empty()).unwrap(),
-    )
-    .await
-}
-
-pub(super) async fn put(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
-    send(
-        app,
-        request("PUT", uri, session)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap(),
-    )
-    .await
-}
-
-pub(super) async fn sign_in(app: &Router, name: &str) -> String {
-    let response = send(
-        app,
-        request("POST", "/api/v1/auth/login", None)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                json!({"name": name, "password": password()}).to_string(),
-            ))
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    response
-        .cookie
-        .expect("a login must set a cookie")
-        .split(';')
-        .next()
-        .unwrap()
-        .to_string()
 }
 
 pub(super) fn derived_set(items: Value) -> Value {
@@ -684,17 +597,6 @@ async fn the_contributor_route_respects_visibility() {
     assert_eq!(documents.len(), 1, "{}", as_alice.text);
     assert_eq!(documents[0]["user"], json!("alice"));
     assert_eq!(documents[0]["own"], json!(true));
-}
-
-async fn post(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
-    send(
-        app,
-        request("POST", uri, session)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap(),
-    )
-    .await
 }
 
 /// The preview route must not let its caller choose whose picks it evaluates

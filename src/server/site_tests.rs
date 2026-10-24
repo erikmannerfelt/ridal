@@ -13,31 +13,16 @@ use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use axum::Router;
 use serde_json::{json, Value};
-use tower::ServiceExt;
 
 use super::app::AccessOptions;
 use super::site::{build_site_router, SiteState};
+use super::test_support::{json_request, password, password_hash, request, send, sign_in};
 use crate::identity::{ProjectKey, UserId};
 use crate::project::members;
 use crate::project::roles::{DownloadScope, Role};
 use crate::server::render_service::RenderServiceConfig;
 use crate::site::accounts::{self, invite, Account};
 use crate::site::Site;
-
-fn password() -> &'static str {
-    static PASSWORD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PASSWORD.get_or_init(|| {
-        let mut bytes = [0u8; 12];
-        getrandom::fill(&mut bytes).expect("system randomness");
-        format!("passphrase-{:x?}", bytes)
-    })
-}
-
-/// The hash of [`password`], computed once per run rather than per test.
-fn password_hash() -> &'static str {
-    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HASH.get_or_init(|| accounts::hash_password(password()).expect("hashing the shared password"))
-}
 
 fn id(name: &str) -> UserId {
     UserId::new(name).unwrap()
@@ -85,97 +70,20 @@ fn site_with(
     (dir, build_site_router(state))
 }
 
-struct Response {
-    status: StatusCode,
-    cookie: Option<String>,
-    location: Option<String>,
-    body: Value,
-    text: String,
-}
-
-async fn send(app: &Router, request: Request<Body>) -> Response {
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let cookie = response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let location = response
-        .headers()
-        .get(header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    Response {
-        status,
-        cookie,
-        location,
-        body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        text,
-    }
-}
-
 fn get(uri: &str, cookie: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder().method("GET").uri(uri);
-    if let Some(cookie) = cookie {
-        builder = builder.header(header::COOKIE, cookie);
-    }
-    builder.body(Body::empty()).unwrap()
+    request("GET", uri, cookie).body(Body::empty()).unwrap()
 }
 
 fn post_json(uri: &str, body: &Value, cookie: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header(header::CONTENT_TYPE, "application/json");
-    if let Some(cookie) = cookie {
-        builder = builder.header(header::COOKIE, cookie);
-    }
-    builder.body(Body::from(body.to_string())).unwrap()
+    json_request("POST", uri, body, cookie)
 }
 
 fn put_json(uri: &str, body: &Value, cookie: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method("PUT")
-        .uri(uri)
-        .header(header::CONTENT_TYPE, "application/json");
-    if let Some(cookie) = cookie {
-        builder = builder.header(header::COOKIE, cookie);
-    }
-    builder.body(Body::from(body.to_string())).unwrap()
+    json_request("PUT", uri, body, cookie)
 }
 
 fn patch_json(uri: &str, body: &Value, cookie: Option<&str>) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method("PATCH")
-        .uri(uri)
-        .header(header::CONTENT_TYPE, "application/json");
-    if let Some(cookie) = cookie {
-        builder = builder.header(header::COOKIE, cookie);
-    }
-    builder.body(Body::from(body.to_string())).unwrap()
-}
-
-fn cookie_pair(set_cookie: &str) -> String {
-    set_cookie.split(';').next().unwrap().to_string()
-}
-
-async fn sign_in(app: &Router, name: &str) -> String {
-    let response = send(
-        app,
-        post_json(
-            "/api/v1/auth/login",
-            &json!({ "name": name, "password": password() }),
-            None,
-        ),
-    )
-    .await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    cookie_pair(&response.cookie.expect("a session cookie"))
+    json_request("PATCH", uri, body, cookie)
 }
 
 #[tokio::test]

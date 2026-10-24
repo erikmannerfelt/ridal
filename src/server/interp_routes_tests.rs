@@ -20,42 +20,13 @@ use serde_json::Value;
 use tower::ServiceExt;
 
 use super::app::{build_router, AccessOptions, AppState};
+use super::test_support::{
+    self, project_data, project_radargrams, project_router, project_state, write_test_nc,
+};
 use crate::project::Project;
 use crate::server::render_service::RenderServiceConfig;
 
 const RADARGRAM: &str = "line-01";
-
-/// Where a project keeps everything Ridal owns, since #187 moved it out of
-/// the project root. Tests reach past the API to assert on files on disk --
-/// the layout is part of the contract -- so they need the same answer the
-/// code has.
-fn data(root: &StdPath) -> std::path::PathBuf {
-    root.join(crate::project::DEFAULT_DATA_DIR)
-}
-
-/// Where a freshly initialized project keeps its radargrams, and where an
-/// upload from the browser lands.
-fn radargrams(root: &StdPath) -> std::path::PathBuf {
-    data(root).join(crate::project::DEFAULT_RADARGRAM_DIR)
-}
-
-fn write_test_nc(path: &StdPath, radargram_id: &str) {
-    let mut file = netcdf::create(path).unwrap();
-    file.add_dimension("y", 8).unwrap();
-    file.add_dimension("x", 40).unwrap();
-    let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
-    // Varying, not constant: the renderer refuses an array whose amplitude
-    // percentiles collapse to a single value, because there is no contrast
-    // to stretch. A flat fixture is not a realistic radargram anyway.
-    let data: Vec<f32> = (0..(8 * 40)).map(|i| (i % 97) as f32).collect();
-    var.put_values(&data, ..).unwrap();
-    file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
-        .unwrap();
-    file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
-        .unwrap();
-    file.add_attribute("ridal_radargram_id", radargram_id)
-        .unwrap();
-}
 
 /// A valid NetCDF file with none of ridal's attributes at all -- genuinely
 /// unrelated, as opposed to old ridal output (#167). Distinct from posting
@@ -228,21 +199,12 @@ fn write_test_nc_full(
 fn group_app() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let radargrams = radargrams(dir.path());
+    let radargrams = project_radargrams(dir.path());
     for id in ["line-01", "line-02"] {
         write_test_nc_with_axes(&radargrams.join(format!("{id}.nc")), id, Some("survey"));
     }
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
-    (dir, build_router(state))
+    let app = project_router(dir.path(), AccessOptions::default());
+    (dir, app)
 }
 
 /// A catalog holding both a group and a radargram belonging to no group.
@@ -252,40 +214,26 @@ fn group_app() -> (tempfile::TempDir, Router) {
 fn mixed_catalog_app() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let radargrams = radargrams(dir.path());
+    let radargrams = project_radargrams(dir.path());
     for id in ["line-01", "line-02"] {
         write_test_nc_with_axes(&radargrams.join(format!("{id}.nc")), id, Some("survey"));
     }
     write_test_nc_with_axes(&radargrams.join("loose-01.nc"), "loose-01", None);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
-    (dir, build_router(state))
+    let app = project_router(dir.path(), AccessOptions::default());
+    (dir, app)
 }
 
 /// A writable project whose radargram carries full coordinate axes.
 fn project_app_with_axes() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc_with_axes(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM, None);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
+    write_test_nc_with_axes(
+        &project_radargrams(dir.path()).join("line-01.nc"),
+        RADARGRAM,
+        None,
     );
-    (dir, build_router(state))
+    let app = project_router(dir.path(), AccessOptions::default());
+    (dir, app)
 }
 
 /// A project containing one radargram, served writable unless stated.
@@ -297,7 +245,10 @@ fn project_app_with_axes() -> (tempfile::TempDir, Router) {
 fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
+    write_test_nc(
+        &project_radargrams(dir.path()).join("line-01.nc"),
+        RADARGRAM,
+    );
     let app = app_for(dir.path(), writable);
     (dir, app)
 }
@@ -308,19 +259,13 @@ fn project_app(writable: bool) -> (tempfile::TempDir, Router) {
 /// then open it, which is the only way to reach the config-reading paths:
 /// the API refuses to store what those have to survive.
 fn app_for(dir: &StdPath, writable: bool) -> Router {
-    let project = Project::discover(dir).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir,
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions {
-                read_only: !writable,
-                ..AccessOptions::default()
-            },
-        )
-        .unwrap(),
-    );
+    let state = Arc::new(project_state(
+        dir,
+        AccessOptions {
+            read_only: !writable,
+            ..AccessOptions::default()
+        },
+    ));
     build_router(state)
 }
 
@@ -352,18 +297,8 @@ fn document(key: &str) -> Value {
 }
 
 async fn send(app: &Router, request: Request<Body>) -> (StatusCode, Option<String>, Value) {
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let etag = response
-        .headers()
-        .get(header::ETAG)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-    (status, etag, body)
+    let response = test_support::send(app, request).await;
+    (response.status, response.etag, response.body)
 }
 
 async fn get(app: &Router, uri: &str) -> (StatusCode, Option<String>, Value) {
@@ -472,7 +407,9 @@ async fn writing_to_an_unknown_radargram_is_404_not_a_stray_directory() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(
-        !data(dir.path()).join("interpretations/not-here").exists(),
+        !project_data(dir.path())
+            .join("interpretations/not-here")
+            .exists(),
         "a typo in the URL must not create an interpretation directory"
     );
 }
@@ -1285,19 +1222,10 @@ fn mixed_catalog_app_with_permits(
 ) -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let radargrams = radargrams(dir.path());
+    let radargrams = project_radargrams(dir.path());
     write_test_nc_with_axes(&radargrams.join("line-01.nc"), "line-01", Some("survey"));
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap()
-        .with_render_permits(permits),
-    );
+    let state =
+        Arc::new(project_state(dir.path(), AccessOptions::default()).with_render_permits(permits));
     (dir, build_router(state))
 }
 
@@ -1363,7 +1291,7 @@ async fn the_radargram_downloads_byte_for_byte() {
         Some("attachment; filename=\"line-01.nc\"")
     );
 
-    let source = std::fs::read(radargrams(dir.path()).join("line-01.nc")).unwrap();
+    let source = std::fs::read(project_radargrams(dir.path()).join("line-01.nc")).unwrap();
     assert_eq!(
         bytes, source,
         "the download must be the file, not a re-write"
@@ -1551,7 +1479,7 @@ async fn an_export_against_the_wrong_radargram_is_refused() {
     // file -- which is exactly the case the export path has to survive.
     let mut doc = document("line-01");
     doc["key"] = serde_json::json!("some-other-line");
-    let dir = data(_dir.path()).join("interpretations/line-01");
+    let dir = project_data(_dir.path()).join("interpretations/line-01");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("default.gprinterp.json"),
@@ -1660,7 +1588,7 @@ async fn a_write_cannot_target_another_users_interpretation() {
     assert_eq!(body["error"]["code"], "not_your_interpretation");
     // Nothing was created for them.
     assert!(
-        !data(dir.path())
+        !project_data(dir.path())
             .join("interpretations/line-01/someone-else.gprinterp.json")
             .exists(),
         "a refused write must not leave a document behind"
@@ -1852,7 +1780,7 @@ async fn the_catalog_shows_the_description_and_a_group_jump_list() {
     // and every group heading is an anchor it can reach.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let radargrams = radargrams(dir.path());
+    let radargrams = project_radargrams(dir.path());
     write_test_nc_with_axes(&radargrams.join("a.nc"), "dron-a", Some("Drønbreen"));
     write_test_nc_with_axes(&radargrams.join("b.nc"), "kropp-b", Some("Kroppbreen"));
     let app = app_for(dir.path(), true);
@@ -2694,7 +2622,7 @@ async fn an_anchor_name_cannot_break_out_of_the_script_block() {
     // anyone opens the viewer.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let path = radargrams(dir.path()).join("nasty.nc");
+    let path = project_radargrams(dir.path()).join("nasty.nc");
     write_test_nc_with_axes(&path, "nasty", None);
     {
         let mut file = netcdf::append(&path).unwrap();
@@ -2702,16 +2630,7 @@ async fn an_anchor_name_cannot_break_out_of_the_script_block() {
         twtt.put_attribute("anchor_name", "twtt</script><script>alert(1)</script>")
             .unwrap();
     }
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
+    let state = Arc::new(project_state(dir.path(), AccessOptions::default()));
     let app = build_router(state);
 
     let response = app
@@ -2834,7 +2753,11 @@ async fn axes_are_withheld_when_the_file_changed_under_the_catalog() {
             file.add_attribute("ridal_processing_datetime", "2099-01-01T00:00:00Z")
                 .unwrap();
         }
-        std::fs::rename(&replacement, radargrams(dir.path()).join("line-01.nc")).unwrap();
+        std::fs::rename(
+            &replacement,
+            project_radargrams(dir.path()).join("line-01.nc"),
+        )
+        .unwrap();
     }
 
     let response = app
@@ -2878,17 +2801,11 @@ async fn a_save_waits_while_a_radargram_is_being_removed() {
     // proceed until it is released.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    write_test_nc(&radargrams(dir.path()).join("line-01.nc"), RADARGRAM);
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
+    write_test_nc(
+        &project_radargrams(dir.path()).join("line-01.nc"),
+        RADARGRAM,
     );
+    let state = Arc::new(project_state(dir.path(), AccessOptions::default()));
     let app = build_router(Arc::clone(&state));
 
     let removal = state.lifecycle_lock().await;
@@ -2913,7 +2830,9 @@ async fn a_save_waits_while_a_radargram_is_being_removed() {
         "the save went through while a removal held the lifecycle lock"
     );
     assert!(
-        !data(dir.path()).join("interpretations/line-01").exists(),
+        !project_data(dir.path())
+            .join("interpretations/line-01")
+            .exists(),
         "and it wrote nothing in the meantime"
     );
 
@@ -3051,7 +2970,7 @@ async fn a_document_from_another_revision_is_carried_and_the_stored_one_is_untou
     // The file on disk still says what it said.
     let stored: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(
-            data(dir.path()).join("interpretations/line-01/default.gprinterp.json"),
+            project_data(dir.path()).join("interpretations/line-01/default.gprinterp.json"),
         )
         .unwrap(),
     )
@@ -3189,7 +3108,7 @@ async fn contributors_are_carried_like_the_callers_own_picks() {
     let (dir, app) = project_app_with_axes();
     let axes = offered_axes(&app).await;
     let revision = revision_of(&app).await;
-    let folder = data(dir.path()).join("interpretations/line-01");
+    let folder = project_data(dir.path()).join("interpretations/line-01");
     std::fs::create_dir_all(&folder).unwrap();
     let current = document_with_axes(&axes, &[[5.0, 2.0], [30.0, 3.0]], revision);
     std::fs::write(folder.join("anna.gprinterp.json"), current.to_string()).unwrap();
@@ -3248,18 +3167,9 @@ async fn picks_without_anchors_survive_a_file_replaced_on_disk() {
     // Discovery now keeps the axes of every revision it sees.
     let dir = tempfile::tempdir().unwrap();
     Project::init(dir.path(), Some("test")).unwrap();
-    let path = radargrams(dir.path()).join("line-01.nc");
+    let path = project_radargrams(dir.path()).join("line-01.nc");
     write_test_nc_with_axes_at(&path, RADARGRAM, None, "2020-01-01T00:00:00Z");
-    let project = Project::discover(dir.path()).unwrap().unwrap();
-    let state = Arc::new(
-        AppState::build_with_project(
-            dir.path(),
-            &RenderServiceConfig::default(),
-            Some(project),
-            AccessOptions::default(),
-        )
-        .unwrap(),
-    );
+    let state = Arc::new(project_state(dir.path(), AccessOptions::default()));
     let app = build_router(state.clone());
     let drawn_on = revision_of(&app).await;
 
@@ -3269,7 +3179,7 @@ async fn picks_without_anchors_survive_a_file_replaced_on_disk() {
         .as_object_mut()
         .unwrap()
         .remove("axes");
-    let folder = data(dir.path()).join("interpretations/line-01");
+    let folder = project_data(dir.path()).join("interpretations/line-01");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("anna.gprinterp.json"), anchorless.to_string()).unwrap();
 
@@ -3337,7 +3247,7 @@ async fn derived_layers_are_evaluated_over_carried_picks() {
     // Cleo's picks name a revision nothing describes: refused.
     let mut cleo = document_with_axes(&axes, &[[0.0, 5.0], [39.0, 5.0]], "rev-vanished");
     cleo["coordinates"].as_object_mut().unwrap().remove("axes");
-    let folder = data(dir.path()).join("interpretations/line-01");
+    let folder = project_data(dir.path()).join("interpretations/line-01");
     std::fs::create_dir_all(&folder).unwrap();
     std::fs::write(folder.join("ben.gprinterp.json"), ben.to_string()).unwrap();
     std::fs::write(folder.join("cleo.gprinterp.json"), cleo.to_string()).unwrap();

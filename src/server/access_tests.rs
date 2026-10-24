@@ -26,6 +26,9 @@ use tower::ServiceExt;
 
 use super::app::{AccessOptions, AppState};
 use super::site::{build_site_router, SiteState};
+use super::test_support::{
+    self, cookie_pair, password, password_hash, send, sign_in, write_test_nc, Response,
+};
 use crate::identity::{ProjectKey, UserId};
 use crate::project::members;
 use crate::project::roles::{DownloadScope, Role};
@@ -56,47 +59,6 @@ pub(super) fn data(root: &StdPath) -> std::path::PathBuf {
 /// upload from the browser lands.
 pub(super) fn radargrams(root: &StdPath) -> std::path::PathBuf {
     data(root).join(crate::project::DEFAULT_RADARGRAM_DIR)
-}
-
-/// The passphrase every account in this file is activated with.
-///
-/// Generated once per run rather than written down. Nothing here asserts
-/// on the value -- only on what signing in with it and without it does --
-/// and the code scanner over this repository cannot tell a fixture from a
-/// credential shipped by mistake, so a literal costs a real alert
-/// somewhere else its attention.
-pub(super) fn password() -> &'static str {
-    static PASSWORD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    PASSWORD.get_or_init(|| {
-        let mut bytes = [0u8; 12];
-        getrandom::fill(&mut bytes).expect("system randomness");
-        format!("passphrase-{:x?}", bytes)
-    })
-}
-
-/// The hash of [`password`], computed once per run.
-///
-/// Every account in these suites shares one passphrase, so hashing it per
-/// test -- hundreds of times -- bought nothing. Tests that assert on the
-/// *cost* of hashing still call [`accounts::hash_password`] directly.
-pub(super) fn password_hash() -> &'static str {
-    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    HASH.get_or_init(|| accounts::hash_password(password()).expect("hashing the shared password"))
-}
-
-fn write_test_nc(path: &StdPath, radargram_id: &str) {
-    let mut file = netcdf::create(path).unwrap();
-    file.add_dimension("y", 8).unwrap();
-    file.add_dimension("x", 40).unwrap();
-    let mut var = file.add_variable::<f32>("data", &["y", "x"]).unwrap();
-    let data: Vec<f32> = (0..(8 * 40)).map(|i| (i % 97) as f32).collect();
-    var.put_values(&data, ..).unwrap();
-    file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
-        .unwrap();
-    file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
-        .unwrap();
-    file.add_attribute("ridal_radargram_id", radargram_id)
-        .unwrap();
 }
 
 pub(super) fn id(name: &str) -> UserId {
@@ -249,47 +211,6 @@ pub(super) fn gui_router(root: &StdPath, access: AccessOptions) -> Router {
     ))
 }
 
-/// The parts of a response these tests assert on.
-pub(super) struct Response {
-    pub(super) status: StatusCode,
-    cookie: Option<String>,
-    pub(super) body: Value,
-    pub(super) text: String,
-    /// The version the document is now at, for the routes that offer one.
-    etag: Option<String>,
-}
-
-pub(super) async fn send(app: &Router, request: Request<Body>) -> Response {
-    let response = app.clone().oneshot(request).await.unwrap();
-    let status = response.status();
-    let cookie = response
-        .headers()
-        .get(header::SET_COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let etag = response
-        .headers()
-        .get(header::ETAG)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let text = String::from_utf8_lossy(&bytes).to_string();
-    Response {
-        status,
-        cookie,
-        body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        text,
-        etag,
-    }
-}
-
-/// The `name=value` part of a `Set-Cookie`, ready to send back as `Cookie`.
-fn cookie_pair(set_cookie: &str) -> String {
-    set_cookie.split(';').next().unwrap().to_string()
-}
-
 /// Put a project-relative path under [`PROJECT`]'s key, as the page's base
 /// URLs do. The site's own routes, and a path already under a key, are left
 /// as they are.
@@ -320,11 +241,7 @@ pub(super) fn request(
     uri: &str,
     session: Option<&str>,
 ) -> axum::http::request::Builder {
-    let mut builder = Request::builder().method(method).uri(scoped(uri));
-    if let Some(session) = session {
-        builder = builder.header(header::COOKIE, session);
-    }
-    builder
+    test_support::request(method, &scoped(uri), session)
 }
 
 pub(super) async fn get(app: &Router, uri: &str, session: Option<&str>) -> Response {
@@ -365,7 +282,7 @@ pub(super) async fn post(app: &Router, uri: &str, body: &Value, session: Option<
     .await
 }
 
-async fn put(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
+pub(super) async fn put(app: &Router, uri: &str, body: &Value, session: Option<&str>) -> Response {
     send(
         app,
         request("PUT", uri, session)
@@ -382,19 +299,6 @@ pub(super) async fn delete(app: &Router, uri: &str, session: Option<&str>) -> Re
         request("DELETE", uri, session).body(Body::empty()).unwrap(),
     )
     .await
-}
-
-/// Sign in and return the cookie to send back.
-pub(super) async fn sign_in(app: &Router, name: &str) -> String {
-    let response = post(
-        app,
-        "/api/v1/auth/login",
-        &json!({"name": name, "password": password()}),
-        None,
-    )
-    .await;
-    assert_eq!(response.status, StatusCode::OK, "{}", response.text);
-    cookie_pair(&response.cookie.expect("a login must set a cookie"))
 }
 
 /// The caller's role in the project, as its settings report it.
@@ -3479,12 +3383,7 @@ async fn a_bad_elevation_window_is_reported_as_a_window_problem_not_an_unsupport
                 ..,
             )
             .unwrap();
-        file.add_attribute("ridal_processing_datetime", "2020-01-01T00:00:00Z")
-            .unwrap();
-        file.add_attribute("ridal_version", "ridal version 0.0.0 by test")
-            .unwrap();
-        file.add_attribute("ridal_radargram_id", "topo-line")
-            .unwrap();
+        test_support::mark_as_ridal(&mut file, "topo-line");
     }
 
     let hash = password_hash();
