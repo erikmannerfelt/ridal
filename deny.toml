@@ -1,0 +1,32 @@
+# cargo-deny configuration for the dependency-advisory audit (rust.yml).
+#
+# CI runs `cargo deny check advisories`, which fails on any RustSec advisory
+# against the crates in Cargo.lock. This is a blocking check: a new advisory
+# fails the build, so an unpatched vulnerability cannot merge unnoticed.
+#
+# The point is to force a decision on every advisory. The usual answer is to
+# upgrade the crate; an entry in `ignore` below is the exception, for an
+# advisory with no fix available, and each one says why it is tolerable and
+# what would retire it. Only advisories are checked here; bans, licenses and
+# sources are out of scope for this job.
+
+[advisories]
+version = 2
+# Advisories with no fixed version, accepted deliberately. Revisit whenever a
+# fix ships (a bumped `cargo deny` tells us, because an ignored-but-now-
+# fixable advisory would otherwise just be upgraded away).
+ignore = [
+    # parse_duration DoS: a crafted duration string with a huge exponent
+    # (`5e999999s`) makes parsing spin on a BigInt `pow`. No fixed release
+    # exists. Ridal only parses durations from operator-set CLI flags and
+    # `ridal.toml` (`--processing-timeout`, `--draft-ttl`, a merge window) --
+    # never from an anonymous HTTP client -- so reaching it already means
+    # control over the server's own configuration. Retire by replacing
+    # parse_duration with a maintained parser.
+    "RUSTSEC-2021-0041",
+    # smartstring is unmaintained. It reaches the tree only through `rhai`
+    # (the derived-item expression engine); Ridal does not depend on it
+    # directly. Unmaintained, not a known vulnerability, and no fixed release.
+    # Retire when `rhai` drops it or offers a build without it.
+    "RUSTSEC-2026-0249",
+]
