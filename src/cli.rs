@@ -1318,7 +1318,28 @@ fn server_command(args: ServerArgs) -> Result<(), String> {
     }
 }
 
+/// Reject a `--dem` GDAL cannot open with an allowed driver, up front.
+///
+/// The allowlist is GeoTIFF, widened by [`crate::dem::DRIVERS_ENV`]. Unlike
+/// the HTTP upload gate, the CLI may widen it, because the person running the
+/// CLI chose the file: the restriction keeps a *server* from opening an
+/// uploaded VRT or network driver (see [`crate::dem::DemDrivers`]), and the
+/// CLI default matches it so both agree on what a DEM is by default.
+fn validate_cli_dem(dem: Option<&Path>) -> Result<(), String> {
+    let Some(dem) = dem else { return Ok(()) };
+    let drivers = crate::dem::DemDrivers::from_env();
+    crate::dem::check_readable(dem, &drivers).map_err(|e| {
+        format!(
+            "{} cannot be used as a DEM: {e}. Allowed drivers: {} (widen with {}).",
+            dem.display(),
+            drivers.names().join(", "),
+            crate::dem::DRIVERS_ENV,
+        )
+    })
+}
+
 fn process_command(args: &ProcessArgs) -> Result<(), String> {
+    validate_cli_dem(args.dem.as_deref())?;
     let resolved_steps =
         resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
     let user_metadata = user_metadata::parse_cli_metadata(&args.metadata)?;
@@ -1354,6 +1375,7 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
     Ok(())
 }
 fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
+    validate_cli_dem(args.dem.as_deref())?;
     // Without --output, clap has already required --no-export, so nothing is
     // written there: it is only where a bare --render or --track puts files.
     let output = args.output.clone().unwrap_or_else(|| PathBuf::from("."));
@@ -1419,6 +1441,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
     Ok(())
 }
 fn coords_command(args: &CoordsArgs) -> Result<(), String> {
+    validate_cli_dem(args.dem.as_deref())?;
     let inputs = gpr::expand_input_paths(&args.inputs)?;
     let describes_one = args.positions.is_some() || args.start.is_some();
     if inputs.len() > 1 && (describes_one || args.output.is_some()) {
@@ -1464,6 +1487,7 @@ fn coords_command(args: &CoordsArgs) -> Result<(), String> {
 }
 
 fn info_command(args: InfoArgs) -> Result<(), String> {
+    validate_cli_dem(args.dem.as_deref())?;
     let params = gpr::InfoParams {
         filepaths: args.inputs,
         dem_path: args.dem,

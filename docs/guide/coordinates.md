@@ -172,8 +172,16 @@ from a digital elevation model (DEM) at each fix:
 ridal process DAT_0066_A1.rad --default --dem svalbard_dem.tif
 ```
 
-The DEM can be any raster that GDAL reads, in any CRS, since Ridal samples it
+The DEM must be a **GeoTIFF** (`.tif`), in any CRS, since Ridal samples it
 with GDAL's `gdallocationinfo`, which therefore has to be on the `PATH`.
+GDAL opens many other raster formats, but several of them — a VRT, the
+network drivers, external-link HDF5 — follow references inside the file to
+other files or URLs, so a DEM uploaded to a server is held to GeoTIFF alone
+and nothing else is accepted. On the command line you can widen the
+allowlist, since the file is one you chose rather than one uploaded to you:
+set `RIDAL_DEM_GDAL_DRIVERS` to the GDAL driver short names to also accept,
+comma- or space-separated (for example `RIDAL_DEM_GDAL_DRIVERS=VRT`). This
+never affects what a server accepts.
 GDAL 3.10 and later sample it bilinearly; older versions can only take the
 nearest cell, so the elevations step from one cell to the next along the
 track. Ridal then warns: `ridal process` when it samples, `ridal gui` and

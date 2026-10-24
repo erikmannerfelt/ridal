@@ -7105,6 +7105,53 @@ async fn a_dem_is_added_once_linked_per_radargram_and_kept_while_linked() {
     );
 }
 
+/// A VRT names other files and URLs in its content, so opening an uploaded
+/// one would let an operator read arbitrary files off the server or make it
+/// fetch arbitrary URLs. The upload gate opens a DEM only as GeoTIFF, so a
+/// VRT is refused however it is named on disk.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_vrt_dem_is_refused_because_the_upload_gate_is_geotiff_only() {
+    let hash = password_hash();
+    let (dir, _archive, app) = lifecycle_app(vec![activated(
+        "erik",
+        Role::Operator,
+        DownloadScope::All,
+        &hash,
+    )]);
+    let erik = sign_in(&app, "erik").await;
+
+    // A real VRT wrapping the test DEM, uploaded under a name that is not
+    // `.vrt`: GDAL identifies it by content, not extension, exactly as the
+    // content-addressed store holds it.
+    let vrt = dir.path().join("dem.vrt");
+    let status = std::process::Command::new("gdal_translate")
+        .args(["-q", "-of", "VRT"])
+        .arg("assets/test_dem_dtm20_mettebreen.tif")
+        .arg(&vrt)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let blob = dir.path().join("looks-like-a-dem.bin");
+    std::fs::copy(&vrt, &blob).unwrap();
+
+    let vrt_file = upload_file(&app, blob.to_str().unwrap(), &erik).await;
+    let refused = put(
+        &app,
+        "/api/v1/dems/sneaky",
+        &json!({"name": "Sneaky", "file": vrt_file}),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(
+        refused.status,
+        StatusCode::BAD_REQUEST,
+        "a VRT must not be accepted as a DEM: {}",
+        refused.text
+    );
+    assert_eq!(refused.body["error"]["code"], "dem_unreadable");
+}
+
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn recordings_that_cannot_be_merged_are_refused_as_a_source() {
