@@ -893,25 +893,16 @@ mod tests {
             let params = crate::gpr::RunParams {
                 filepaths: vec![std::path::PathBuf::from(input_path)],
                 output_path: None,
-                dem_path: None,
-                cor_path: None,
-                medium_velocity: 0.168,
-                crs: None,
-                quiet: true,
                 track_path: None,
-                steps: vec![subset_step.to_string()],
-                no_export: true,
                 render_path: None,
-                render_profile: None,
-                render_width: None,
-                render_topo: false,
-                override_antenna_mhz: None,
-                override_antenna_separation: None,
-                user_metadata: Default::default(),
                 radargram_id: None,
                 display_name: None,
-                group: None,
-                group_id: None,
+                options: crate::gpr::ProcessingOptions {
+                    quiet: true,
+                    steps: vec![subset_step.to_string()],
+                    no_export: true,
+                    ..Default::default()
+                },
             };
             let (gpr, _) = crate::gpr::build_processed_gpr(params).unwrap();
             let location = &gpr.location;
@@ -975,25 +966,15 @@ mod tests {
                 "/assets/mala/dronbreen-20220329-DAT_0237_A1.rad"
             ))],
             output_path: Some(nc_path.clone()),
-            dem_path: None,
-            cor_path: None,
-            medium_velocity: 0.168,
-            crs: None,
-            quiet: true,
             track_path: None,
-            steps: vec!["subset(0 300 0 50)".to_string()],
-            no_export: false,
             render_path: None,
-            render_profile: None,
-            render_width: None,
-            render_topo: false,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            user_metadata: Default::default(),
             radargram_id: Some("track-read-test".to_string()),
             display_name: None,
-            group: None,
-            group_id: None,
+            options: crate::gpr::ProcessingOptions {
+                quiet: true,
+                steps: vec!["subset(0 300 0 50)".to_string()],
+                ..Default::default()
+            },
         };
         let (gpr, _) = crate::gpr::build_processed_gpr(params.clone()).unwrap();
         crate::gpr::run(params).unwrap();

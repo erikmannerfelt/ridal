@@ -43,25 +43,16 @@ fn processed_geometry(directory: &std::path::Path) -> RadargramGeometry {
     let params = crate::gpr::RunParams {
         filepaths: vec![manifest_dir().join("assets/mala/dronbreen-20250327-DAT_0066_A1.rd3")],
         output_path: Some(output.clone()),
-        dem_path: None,
-        cor_path: None,
-        medium_velocity: 0.168,
-        crs: Some("EPSG:32633".to_string()),
-        quiet: true,
         track_path: None,
-        steps: crate::tools::parse_step_list(STEPS).expect("valid steps"),
-        no_export: false,
         render_path: None,
-        render_profile: None,
-        render_width: None,
-        render_topo: false,
-        override_antenna_mhz: None,
-        override_antenna_separation: None,
-        user_metadata: Default::default(),
         radargram_id: Some(RADARGRAM_ID.to_string()),
         display_name: None,
-        group: None,
-        group_id: None,
+        options: crate::gpr::ProcessingOptions {
+            crs: Some("EPSG:32633".to_string()),
+            quiet: true,
+            steps: crate::tools::parse_step_list(STEPS).expect("valid steps"),
+            ..Default::default()
+        },
     };
     crate::gpr::run(params).expect("processing the committed Malå file");
     crate::interp::source::read_geometry(&output).expect("reading the processed geometry")

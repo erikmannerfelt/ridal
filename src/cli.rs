@@ -1,4 +1,4 @@
-use crate::{formats, gpr, tools, user_metadata};
+use crate::{formats, gpr, user_metadata};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -686,19 +686,12 @@ pub struct ServerStartArgs {
     pub log: LogArgs,
 }
 
+/// How a raw recording is read: shared by `process`, `batch-process` and
+/// `info`.
 #[derive(Debug, clap::Args)]
-#[command(group(
-    ArgGroup::new("step_choice")
-        .required(false)
-        .args(["steps", "default", "default_with_topo"]),
-))]
-pub struct ProcessArgs {
-    /// Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded.
-    #[arg(required = true)]
-    pub inputs: Vec<PathBuf>,
-
+pub struct RecordingArgs {
     /// Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice.
-    #[arg(short, long, default_value = "0.168")]
+    #[arg(short, long, default_value_t = gpr::DEFAULT_MEDIUM_VELOCITY)]
     pub velocity: f32,
 
     /// Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file.
@@ -713,9 +706,26 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub crs: Option<String>,
 
-    /// Export the location track to CSV. If no value is given, a sidecar path is derived from the output path.
-    #[arg(short, long)]
-    pub track: Option<Option<PathBuf>>,
+    /// Override the antenna center frequency (in MHz) from file metadata
+    #[arg(long)]
+    pub override_antenna_mhz: Option<f32>,
+
+    /// Override the antenna separation (in m) from file metadata
+    #[arg(long)]
+    pub override_antenna_separation: Option<f32>,
+}
+
+/// How a recording is processed and what is written: shared by `process`
+/// and `batch-process`.
+#[derive(Debug, clap::Args)]
+#[command(group(
+    ArgGroup::new("step_choice")
+        .required(false)
+        .args(["steps", "default", "default_with_topo"]),
+))]
+pub struct RunArgs {
+    #[command(flatten)]
+    pub recording: RecordingArgs,
 
     /// Process with the default profile.
     #[arg(long)]
@@ -731,17 +741,9 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub steps: Option<String>,
 
-    /// Output filename or directory. Defaults to the first input with a ".nc" extension.
-    #[arg(short, long)]
-    pub output: Option<PathBuf>,
-
     /// Suppress progress messages
     #[arg(short, long)]
     pub quiet: bool,
-
-    /// Render an image of the profile and save it to the specified path. If no path is given, a JPG sidecar is used.
-    #[arg(short, long)]
-    pub render: Option<Option<PathBuf>>,
 
     /// Render profile for --render: a built-in name, or a path to a TOML
     /// file. Distinct from the *processing* profile selected by --default
@@ -760,21 +762,66 @@ pub struct ProcessArgs {
     #[arg(long)]
     pub render_topo: bool,
 
-    /// Don't export an nc file
+    /// Don't export nc files
     #[arg(long)]
     pub no_export: bool,
-
-    /// Override the antenna center frequency (in MHz) from file metadata
-    #[arg(long)]
-    pub override_antenna_mhz: Option<f32>,
-
-    /// Override the antenna separation (in m) from file metadata
-    #[arg(long)]
-    pub override_antenna_separation: Option<f32>,
 
     /// Add user metadata as key=value. Repeatable.
     #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
     pub metadata: Vec<String>,
+}
+
+impl RunArgs {
+    /// The processing options these arguments describe, in the group
+    /// `group` and `group_id`: each command's own, since a group means
+    /// something different for one output and for a batch.
+    fn options(
+        &self,
+        group: Option<String>,
+        group_id: Option<String>,
+    ) -> Result<gpr::ProcessingOptions, String> {
+        let recording = &self.recording;
+        validate_cli_dem(recording.dem.as_deref())?;
+        Ok(gpr::ProcessingOptions {
+            dem_path: recording.dem.clone(),
+            cor_path: recording.cor.clone(),
+            medium_velocity: recording.velocity,
+            crs: recording.crs.clone(),
+            quiet: self.quiet,
+            steps: gpr::resolve_steps(self.default, self.default_with_topo, self.steps.as_deref())?,
+            no_export: self.no_export,
+            render_profile: self.render_profile.clone(),
+            render_width: self.render_width,
+            render_topo: self.render_topo,
+            override_antenna_mhz: recording.override_antenna_mhz,
+            override_antenna_separation: recording.override_antenna_separation,
+            user_metadata: user_metadata::parse_cli_metadata(&self.metadata)?,
+            group,
+            group_id,
+        })
+    }
+}
+
+#[derive(Debug, clap::Args)]
+pub struct ProcessArgs {
+    /// Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded.
+    #[arg(required = true)]
+    pub inputs: Vec<PathBuf>,
+
+    /// Output filename or directory. Defaults to the first input with a ".nc" extension.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub run: RunArgs,
+
+    /// Export the location track to CSV. If no value is given, a sidecar path is derived from the output path.
+    #[arg(short, long)]
+    pub track: Option<Option<PathBuf>>,
+
+    /// Render an image of the profile and save it to the specified path. If no path is given, a JPG sidecar is used.
+    #[arg(short, long)]
+    pub render: Option<Option<PathBuf>>,
 
     /// Stable, unique identifier for this radargram (lowercase ASCII, digits, '-', '_').
     /// Defaults to the output file stem if not given.
@@ -802,11 +849,6 @@ pub struct ProcessArgs {
 }
 
 #[derive(Debug, clap::Args)]
-#[command(group(
-    ArgGroup::new("step_choice")
-        .required(false)
-        .args(["steps", "default", "default_with_topo"]),
-))]
 pub struct BatchProcessArgs {
     /// Input header/data path(s). Explicit paths are preferred, but glob patterns are also expanded.
     #[arg(required = true)]
@@ -818,87 +860,23 @@ pub struct BatchProcessArgs {
     #[arg(short, long, required_unless_present = "no_export")]
     pub output: Option<PathBuf>,
 
-    /// Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice.
-    #[arg(short, long, default_value = "0.168")]
-    pub velocity: f32,
-
-    /// Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file.
-    #[arg(short, long)]
-    pub cor: Option<PathBuf>,
-
-    /// Correct elevation values with a DEM
-    #[arg(short, long)]
-    pub dem: Option<PathBuf>,
-
-    /// Which coordinate reference system to project coordinates in.
-    #[arg(long)]
-    pub crs: Option<String>,
+    #[command(flatten)]
+    pub run: RunArgs,
 
     /// Export location tracks to CSV in the given directory. If no directory
     /// is given, they go in the output directory.
     #[arg(short, long)]
     pub track: Option<Option<PathBuf>>,
 
-    /// Process with the default profile.
-    #[arg(long)]
-    pub default: bool,
-
-    /// Process with the default profile plus `correct_topography`, which
-    /// stores a corrected copy of the data and more than doubles the file.
-    /// For a corrected image, `--render-topo` needs no stored copy.
-    #[arg(long = "default-with-topo")]
-    pub default_with_topo: bool,
-
-    /// Processing steps to run, separated by commas. Can also be a filepath to a newline-separated step file.
-    #[arg(long)]
-    pub steps: Option<String>,
-
-    /// Suppress progress messages
-    #[arg(short, long)]
-    pub quiet: bool,
-
     /// Render images into the given directory. If no directory is given,
     /// they go in the output directory.
     #[arg(short, long)]
     pub render: Option<Option<PathBuf>>,
 
-    /// Render profile for --render: a built-in name, or a path to a TOML
-    /// file. Distinct from the *processing* profile selected by --default
-    /// and --steps.
-    #[arg(long)]
-    pub render_profile: Option<String>,
-
-    /// Output width in pixels for --render. Defaults to one pixel per
-    /// trace.
-    #[arg(long)]
-    pub render_width: Option<usize>,
-
-    /// Render the topographically corrected view for --render, as
-    /// `ridal render --topo` does. Fails when the radargram has no usable
-    /// elevation and depth axes.
-    #[arg(long)]
-    pub render_topo: bool,
-
-    /// Don't export nc files
-    #[arg(long)]
-    pub no_export: bool,
-
     /// Merge neighboring chronological profiles that are closer than the given threshold
     /// (e.g. "10 min"). Incompatible neighbors remain separate outputs.
     #[arg(long)]
     pub merge: Option<String>,
-
-    /// Override the antenna center frequency (in MHz) from file metadata
-    #[arg(long)]
-    pub override_antenna_mhz: Option<f32>,
-
-    /// Override the antenna separation (in m) from file metadata
-    #[arg(long)]
-    pub override_antenna_separation: Option<f32>,
-
-    /// Add user metadata as key=value. Repeatable.
-    #[arg(long = "metadata", value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
-    pub metadata: Vec<String>,
 
     /// Human-readable name of the group all outputs in this batch belong to
     /// (survey, campaign, location), for catalog grouping. Non-ASCII is
@@ -954,29 +932,8 @@ pub struct InfoArgs {
     #[arg(long)]
     pub json: bool,
 
-    /// Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice.
-    #[arg(short, long, default_value = "0.168")]
-    pub velocity: f32,
-
-    /// Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file.
-    #[arg(short, long)]
-    pub cor: Option<PathBuf>,
-
-    /// Correct elevation values with a DEM
-    #[arg(short, long)]
-    pub dem: Option<PathBuf>,
-
-    /// Which coordinate reference system to project coordinates in.
-    #[arg(long)]
-    pub crs: Option<String>,
-
-    /// Override the antenna center frequency (in MHz) from file metadata
-    #[arg(long)]
-    pub override_antenna_mhz: Option<f32>,
-
-    /// Override the antenna separation (in m) from file metadata
-    #[arg(long)]
-    pub override_antenna_separation: Option<f32>,
+    #[command(flatten)]
+    pub recording: RecordingArgs,
 }
 
 #[derive(Debug, clap::Args)]
@@ -1078,27 +1035,6 @@ pub struct FormatsArgs {
     /// Emit JSON instead of human-readable text
     #[arg(long)]
     pub json: bool,
-}
-
-fn resolve_steps(
-    default: bool,
-    default_with_topo: bool,
-    steps: Option<&str>,
-) -> Result<Vec<String>, String> {
-    let resolved_steps = if default_with_topo {
-        let mut profile = gpr::default_processing_profile();
-        profile.push("correct_topography".to_string());
-        profile
-    } else if default {
-        gpr::default_processing_profile()
-    } else if let Some(step_text) = steps {
-        tools::parse_step_list(step_text)?
-    } else {
-        vec![]
-    };
-
-    gpr::validate_steps(&resolved_steps)?;
-    Ok(resolved_steps)
 }
 
 /// A duration as people say it: `25 s`, `14 min 3 s`, `2 h 5 min`.
@@ -1339,43 +1275,25 @@ fn validate_cli_dem(dem: Option<&Path>) -> Result<(), String> {
 }
 
 fn process_command(args: &ProcessArgs) -> Result<(), String> {
-    validate_cli_dem(args.dem.as_deref())?;
-    let resolved_steps =
-        resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
-    let user_metadata = user_metadata::parse_cli_metadata(&args.metadata)?;
-
     let params = gpr::RunParams {
         filepaths: args.inputs.clone(),
         output_path: args.output.clone(),
-        dem_path: args.dem.clone(),
-        cor_path: args.cor.clone(),
-        medium_velocity: args.velocity,
-        crs: args.crs.clone(),
-        quiet: args.quiet,
         track_path: args.track.clone(),
-        steps: resolved_steps,
-        no_export: args.no_export,
         render_path: args.render.clone(),
-        render_profile: args.render_profile.clone(),
-        render_width: args.render_width,
-        render_topo: args.render_topo,
-        override_antenna_mhz: args.override_antenna_mhz,
-        override_antenna_separation: args.override_antenna_separation,
-        user_metadata,
         radargram_id: args.radargram_id.clone(),
         display_name: args.display_name.clone(),
-        group: args.group.clone(),
-        group_id: args.group_id.clone(),
+        options: args
+            .run
+            .options(args.group.clone(), args.group_id.clone())?,
     };
 
     let result = gpr::run(params).map_err(|e| e.to_string())?;
-    if !args.quiet {
+    if !args.run.quiet {
         println!("{}", result.output_path.display());
     }
     Ok(())
 }
 fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
-    validate_cli_dem(args.dem.as_deref())?;
     // Without --output, clap has already required --no-export, so nothing is
     // written there: it is only where a bare --render or --track puts files.
     let output = args.output.clone().unwrap_or_else(|| PathBuf::from("."));
@@ -1389,33 +1307,17 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
     let render_dir = optional_existing_dir(&args.render, "render", &output)?;
     let track_dir = optional_existing_dir(&args.track, "track", &output)?;
 
-    let resolved_steps =
-        resolve_steps(args.default, args.default_with_topo, args.steps.as_deref())?;
-    let user_metadata = user_metadata::parse_cli_metadata(&args.metadata)?;
-
     let params = gpr::BatchRunParams {
         filepaths: args.inputs.clone(),
         output_dir: output,
-        dem_path: args.dem.clone(),
-        cor_path: args.cor.clone(),
-        medium_velocity: args.velocity,
-        crs: args.crs.clone(),
-        quiet: args.quiet,
         track_dir,
-        steps: resolved_steps,
-        no_export: args.no_export,
         render_dir,
-        render_profile: args.render_profile.clone(),
-        render_width: args.render_width,
-        render_topo: args.render_topo,
         merge: args.merge.clone(),
-        override_antenna_mhz: args.override_antenna_mhz,
-        override_antenna_separation: args.override_antenna_separation,
-        user_metadata,
-        group: args.group.clone(),
-        group_id: args.group_id.clone(),
         id_pattern: args.id_pattern.clone(),
         display_name_pattern: args.display_name_pattern.clone(),
+        options: args
+            .run
+            .options(args.group.clone(), args.group_id.clone())?,
     };
 
     if args.dry_run {
@@ -1433,7 +1335,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
 
     let result = gpr::run_batch(params)?;
     // Each listed path is a file written; with --no-export there are none.
-    if !args.quiet && !args.no_export {
+    if !args.run.quiet && !args.run.no_export {
         for path in result.output_paths {
             println!("{}", path.display());
         }
@@ -1487,15 +1389,15 @@ fn coords_command(args: &CoordsArgs) -> Result<(), String> {
 }
 
 fn info_command(args: InfoArgs) -> Result<(), String> {
-    validate_cli_dem(args.dem.as_deref())?;
+    validate_cli_dem(args.recording.dem.as_deref())?;
     let params = gpr::InfoParams {
         filepaths: args.inputs,
-        dem_path: args.dem,
-        cor_path: args.cor,
-        medium_velocity: args.velocity,
-        crs: args.crs,
-        override_antenna_mhz: args.override_antenna_mhz,
-        override_antenna_separation: args.override_antenna_separation,
+        dem_path: args.recording.dem,
+        cor_path: args.recording.cor,
+        medium_velocity: args.recording.velocity,
+        crs: args.recording.crs,
+        override_antenna_mhz: args.recording.override_antenna_mhz,
+        override_antenna_separation: args.recording.override_antenna_separation,
     };
     let records = gpr::inspect(params).map_err(|e| format!("{e:?}"))?;
     if args.json {
@@ -1668,27 +1570,6 @@ fn formats_command(args: FormatsArgs) -> Result<(), String> {
         println!();
     }
     Ok(())
-}
-
-// TODO: Might not be used anywhere (2026-03-28)
-#[allow(dead_code)]
-fn choose_steps(
-    default: bool,
-    default_with_topo: bool,
-    steps: Option<&str>,
-) -> Result<Vec<String>, String> {
-    if default_with_topo {
-        let mut profile = gpr::default_processing_profile();
-        profile.push("correct_topography".to_string());
-        return Ok(profile);
-    }
-    if default {
-        return Ok(gpr::default_processing_profile());
-    }
-    match steps {
-        Some(step_text) => tools::parse_step_list(step_text),
-        None => Ok(vec![]),
-    }
 }
 
 fn step_mapping(
@@ -2654,7 +2535,7 @@ mod tests {
                     process.inputs,
                     vec![PathBuf::from("a.rad"), PathBuf::from("b.rad")]
                 );
-                assert!(process.default);
+                assert!(process.run.default);
                 assert_eq!(process.output, Some(PathBuf::from("out.nc")));
             }
             _ => panic!("Expected process command"),
@@ -2684,16 +2565,138 @@ mod tests {
         ]);
         match args.command {
             Commands::Process(process) => {
-                assert_eq!(process.override_antenna_separation, Some(1.25));
+                assert_eq!(
+                    process.run.recording.override_antenna_separation,
+                    Some(1.25)
+                );
             }
             _ => panic!("Expected process command"),
         }
     }
 
     #[test]
-    fn test_choose_steps_default_with_topo() {
-        let steps = choose_steps(false, true, None).unwrap();
-        assert!(steps.iter().any(|step| step == "correct_topography"));
+    fn process_and_batch_process_share_their_processing_flags() {
+        // Every flag the two commands share, given to each: both must make
+        // the same options of them, so one cannot quietly lose a flag.
+        let shared = [
+            "--velocity",
+            "0.1",
+            "--cor",
+            "positions.cor",
+            "--crs",
+            "EPSG:32633",
+            "--steps",
+            "zero_corr,dewow",
+            "--quiet",
+            "--render-profile",
+            "siglog",
+            "--render-width",
+            "640",
+            "--render-topo",
+            "--no-export",
+            "--override-antenna-mhz",
+            "50",
+            "--override-antenna-separation",
+            "2.5",
+            "--metadata",
+            "site=Dronbreen",
+            "--group-name",
+            "Drønbreen",
+            "--group-id",
+            "dronbreen",
+        ];
+        let options = |command: &str| {
+            let mut argv = vec!["ridal", command, "a.rad"];
+            argv.extend_from_slice(&shared);
+            match Args::try_parse_from(argv).unwrap().command {
+                Commands::Process(args) => {
+                    args.run.options(args.group.clone(), args.group_id.clone())
+                }
+                Commands::BatchProcess(args) => {
+                    args.run.options(args.group.clone(), args.group_id.clone())
+                }
+                other => panic!("expected a processing command, got {other:?}"),
+            }
+            .unwrap()
+        };
+        for command in ["process", "batch-process"] {
+            let options = options(command);
+            assert_eq!(options.medium_velocity, 0.1, "{command}");
+            assert_eq!(options.cor_path, Some(PathBuf::from("positions.cor")));
+            assert_eq!(options.dem_path, None);
+            assert_eq!(options.crs.as_deref(), Some("EPSG:32633"));
+            assert_eq!(options.steps, ["zero_corr", "dewow"]);
+            assert!(options.quiet && options.no_export && options.render_topo);
+            assert_eq!(options.render_profile.as_deref(), Some("siglog"));
+            assert_eq!(options.render_width, Some(640));
+            assert_eq!(options.override_antenna_mhz, Some(50.0));
+            assert_eq!(options.override_antenna_separation, Some(2.5));
+            assert_eq!(
+                options.user_metadata.get("site"),
+                Some(&serde_json::json!("Dronbreen"))
+            );
+            assert_eq!(options.group.as_deref(), Some("Drønbreen"));
+            assert_eq!(options.group_id.as_deref(), Some("dronbreen"));
+        }
+    }
+
+    #[test]
+    fn the_steps_are_chosen_one_way_on_both_processing_commands() {
+        for command in ["process", "batch-process"] {
+            for choice in [
+                &["--default", "--steps", "zero_corr"][..],
+                &["--default", "--default-with-topo"],
+                &["--default-with-topo", "--steps", "zero_corr"],
+            ] {
+                let mut argv = vec!["ridal", command, "a.rad", "--no-export"];
+                argv.extend_from_slice(choice);
+                let error = Args::try_parse_from(argv).unwrap_err();
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "{command} {choice:?}"
+                );
+            }
+        }
+        // An invalid step is refused before anything is read.
+        let args = match Args::try_parse_from([
+            "ridal",
+            "batch-process",
+            "a.rad",
+            "--no-export",
+            "--steps",
+            "no_such_step",
+        ])
+        .unwrap()
+        .command
+        {
+            Commands::BatchProcess(args) => args,
+            other => panic!("expected batch-process, got {other:?}"),
+        };
+        assert!(args.run.options(None, None).is_err());
+    }
+
+    #[test]
+    fn info_reads_recordings_with_the_processing_commands_flags() {
+        let args = Args::parse_from([
+            "ridal",
+            "info",
+            "a.rad",
+            "--velocity",
+            "0.1",
+            "--crs",
+            "EPSG:32633",
+            "--override-antenna-mhz",
+            "50",
+        ]);
+        match args.command {
+            Commands::Info(info) => {
+                assert_eq!(info.recording.velocity, 0.1);
+                assert_eq!(info.recording.crs.as_deref(), Some("EPSG:32633"));
+                assert_eq!(info.recording.override_antenna_mhz, Some(50.0));
+            }
+            _ => panic!("Expected info command"),
+        }
     }
 }
 

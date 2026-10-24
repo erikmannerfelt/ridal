@@ -2622,68 +2622,89 @@ fn vertical_resolution_of(depths: &Array1<f32>) -> f32 {
     tools::quantiles(&diffs, &[0.8], None)[0]
 }
 
+/// How to process, shared by a single run ([`RunParams`]) and a batch
+/// ([`BatchRunParams`]): everything but where the inputs come from and
+/// where the outputs go.
+#[derive(Debug, Clone)]
+pub struct ProcessingOptions {
+    pub dem_path: Option<PathBuf>,
+    pub cor_path: Option<PathBuf>,
+    pub medium_velocity: f32,
+    pub crs: Option<String>,
+    pub quiet: bool,
+    pub steps: Vec<String>,
+    pub no_export: bool,
+    /// Render profile for the rendered image: a built-in name or a TOML
+    /// file. `None` means the built-in `default`.
+    pub render_profile: Option<String>,
+    /// Width of the rendered image. `None` means one pixel per trace.
+    pub render_width: Option<usize>,
+    /// Render the topographically corrected view (#289).
+    pub render_topo: bool,
+    pub override_antenna_mhz: Option<f32>,
+    pub override_antenna_separation: Option<f32>,
+    pub user_metadata: user_metadata::UserMetadata,
+    /// The group's display name. A group applies uniformly to a whole batch,
+    /// since batch runs typically process one survey or campaign.
+    pub group: Option<String>,
+    pub group_id: Option<String>,
+}
+
+impl Default for ProcessingOptions {
+    /// No steps, no DEM, no rendering, at the typical velocity in glacier ice.
+    fn default() -> Self {
+        Self {
+            dem_path: None,
+            cor_path: None,
+            medium_velocity: DEFAULT_MEDIUM_VELOCITY,
+            crs: None,
+            quiet: false,
+            steps: Vec::new(),
+            no_export: false,
+            render_profile: None,
+            render_width: None,
+            render_topo: false,
+            override_antenna_mhz: None,
+            override_antenna_separation: None,
+            user_metadata: user_metadata::UserMetadata::new(),
+            group: None,
+            group_id: None,
+        }
+    }
+}
+
+/// The velocity of the medium, in m/ns, when none is given: typical of most
+/// glacier ice.
+pub const DEFAULT_MEDIUM_VELOCITY: f32 = 0.168;
+
 #[derive(Debug, Clone)]
 pub struct RunParams {
     pub filepaths: Vec<PathBuf>,
     pub output_path: Option<PathBuf>,
-    pub dem_path: Option<PathBuf>,
-    pub cor_path: Option<PathBuf>,
-    pub medium_velocity: f32,
-    pub crs: Option<String>,
-    pub quiet: bool,
+    /// `Some(None)` derives a sidecar path from the output path.
     pub track_path: Option<Option<PathBuf>>,
-    pub steps: Vec<String>,
-    pub no_export: bool,
+    /// `Some(None)` derives a sidecar path from the output path.
     pub render_path: Option<Option<PathBuf>>,
-    /// Render profile for `render_path`: a built-in name or a TOML file.
-    /// `None` means the built-in `default`.
-    pub render_profile: Option<String>,
-    /// Output width for `render_path`. `None` means one pixel per trace.
-    pub render_width: Option<usize>,
-    /// Render the topographically corrected view to `render_path` (#289).
-    pub render_topo: bool,
-    pub override_antenna_mhz: Option<f32>,
-    pub override_antenna_separation: Option<f32>,
-    pub user_metadata: user_metadata::UserMetadata,
     pub radargram_id: Option<String>,
     pub display_name: Option<String>,
-    pub group: Option<String>,
-    pub group_id: Option<String>,
+    pub options: ProcessingOptions,
 }
+
 #[derive(Debug, Clone)]
 pub struct BatchRunParams {
     pub filepaths: Vec<PathBuf>,
     pub output_dir: PathBuf,
-    pub dem_path: Option<PathBuf>,
-    pub cor_path: Option<PathBuf>,
-    pub medium_velocity: f32,
-    pub crs: Option<String>,
-    pub quiet: bool,
     pub track_dir: Option<PathBuf>,
-    pub steps: Vec<String>,
-    pub no_export: bool,
     pub render_dir: Option<PathBuf>,
-    /// Render profile for `render_dir`, as in [`RunParams::render_profile`].
-    pub render_profile: Option<String>,
-    /// Output width for `render_dir`, as in [`RunParams::render_width`].
-    pub render_width: Option<usize>,
-    /// As in [`RunParams::render_topo`].
-    pub render_topo: bool,
     pub merge: Option<String>,
-    pub override_antenna_mhz: Option<f32>,
-    pub override_antenna_separation: Option<f32>,
-    pub user_metadata: user_metadata::UserMetadata,
     // Batch mode derives a radargram ID and (absent) display name per output
     // from each output's own stem -- an explicit single ID or display name
     // would collide across outputs -- unless patterns say otherwise (#368).
-    // A group applies uniformly to the whole batch, since batch runs
-    // typically process one survey or campaign.
-    pub group: Option<String>,
-    pub group_id: Option<String>,
     /// An id pattern (see [`crate::id_pattern`]). The outputs are then named
     /// after their ids, `<id>.nc`.
     pub id_pattern: Option<String>,
     pub display_name_pattern: Option<String>,
+    pub options: ProcessingOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -3291,6 +3312,7 @@ pub fn build_processed_gpr_with_progress(
     params: RunParams,
     on_step: &mut dyn FnMut(usize, usize, &str),
 ) -> Result<(GPR, PathBuf), Box<dyn std::error::Error>> {
+    let options = &params.options;
     let expanded = expand_input_paths(&params.filepaths)?;
     if expanded.is_empty() {
         return Err("No input files were provided.".into());
@@ -3302,8 +3324,8 @@ pub fn build_processed_gpr_with_progress(
     if resolved_inputs.is_empty() {
         return Err("No input files were resolved.".into());
     }
-    formats::with_coordinates(&mut resolved_inputs, params.cor_path.as_deref())?;
-    if !params.quiet {
+    formats::with_coordinates(&mut resolved_inputs, options.cor_path.as_deref())?;
+    if !options.quiet {
         for resolved in &resolved_inputs {
             println!(
                 "Positions for {:?} from {:?}",
@@ -3320,22 +3342,22 @@ pub fn build_processed_gpr_with_progress(
             .iter()
             .map(crate::recipe::bundle_of)
             .collect::<Result<Vec<_>, String>>()?,
-        dem: params
+        dem: options
             .dem_path
             .as_deref()
             .map(crate::recipe::hash_file)
             .transpose()?,
-        antenna_mhz_override: params.override_antenna_mhz,
-        antenna_separation_override: params.override_antenna_separation,
+        antenna_mhz_override: options.override_antenna_mhz,
+        antenna_separation_override: options.override_antenna_separation,
     };
     let first_resolved = resolved_inputs.remove(0);
     let (first_meta, first_location) = load_meta_and_location(
         &first_resolved,
-        params.medium_velocity,
-        params.crs.as_ref(),
-        params.dem_path.as_ref(),
-        params.override_antenna_mhz,
-        params.override_antenna_separation,
+        options.medium_velocity,
+        options.crs.as_ref(),
+        options.dem_path.as_ref(),
+        options.override_antenna_mhz,
+        options.override_antenna_separation,
     )?;
     let mut gpr = GPR::from_meta_and_loc(first_location, first_meta).map_err(|e| {
         format!(
@@ -3343,21 +3365,21 @@ pub fn build_processed_gpr_with_progress(
             first_resolved.data, e
         )
     })?;
-    gpr.user_metadata = params.user_metadata.clone();
+    gpr.user_metadata = options.user_metadata.clone();
     gpr.inputs = Some(inputs);
 
     for resolved in resolved_inputs {
         let (meta, location) = load_meta_and_location(
             &resolved,
-            params.medium_velocity,
-            params.crs.as_ref(),
-            params.dem_path.as_ref(),
-            params.override_antenna_mhz,
-            params.override_antenna_separation,
+            options.medium_velocity,
+            options.crs.as_ref(),
+            options.dem_path.as_ref(),
+            options.override_antenna_mhz,
+            options.override_antenna_separation,
         )?;
         let other = GPR::from_meta_and_loc(location, meta)
             .map_err(|e| format!("Error loading GPR data from {:?}: {:?}", resolved.data, e))?;
-        if !params.quiet {
+        if !options.quiet {
             println!(
                 "Merging {:?} -> {:?}",
                 resolved.header, first_resolved.header
@@ -3367,16 +3389,16 @@ pub fn build_processed_gpr_with_progress(
     }
 
     let start_time = std::time::SystemTime::now();
-    if !params.quiet {
+    if !options.quiet {
         println!("Processing {:?}", gpr.metadata.data_filepath);
     }
-    for (i, step) in params.steps.iter().enumerate() {
-        on_step(i, params.steps.len(), step);
-        if !params.quiet {
+    for (i, step) in options.steps.iter().enumerate() {
+        on_step(i, options.steps.len(), step);
+        if !options.quiet {
             println!(
                 "{}/{}, t+{:.2} s, Running step {}.",
                 i + 1,
-                params.steps.len(),
+                options.steps.len(),
                 std::time::SystemTime::now()
                     .duration_since(start_time)
                     .unwrap()
@@ -3401,14 +3423,14 @@ pub fn build_processed_gpr_with_progress(
     let (radargram_id, id_note) =
         crate::identity::resolve_radargram_id(params.radargram_id.as_deref(), None, output_stem)?;
     if let Some(note) = id_note {
-        if !params.quiet {
+        if !options.quiet {
             println!("{note}");
         }
     }
     let display_name = crate::identity::resolve_display_name(params.display_name.as_deref(), None);
     let group = crate::identity::resolve_group(
-        params.group.as_deref(),
-        params.group_id.as_deref(),
+        options.group.as_deref(),
+        options.group_id.as_deref(),
         None,
         None,
     )?;
@@ -3427,10 +3449,11 @@ pub fn build_processed_gpr_with_progress(
 }
 
 pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn std::error::Error>> {
+    let options = &params.options;
     let (gpr, output_path) = build_processed_gpr(params.clone())?;
 
-    if !params.no_export {
-        if !params.quiet {
+    if !options.no_export {
+        if !options.quiet {
             println!("Exporting to {:?}", output_path);
         }
         gpr.export(&output_path)
@@ -3450,9 +3473,9 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn std::error::Error
             None => output_path.with_extension("jpg"),
         };
         let profile = crate::render::profile::RenderProfile::resolve(
-            params.render_profile.as_deref().unwrap_or("default"),
+            options.render_profile.as_deref().unwrap_or("default"),
         )?;
-        if !params.quiet {
+        if !options.quiet {
             println!(
                 "Rendering image to {:?} with the '{}' profile",
                 render_filepath, profile.name
@@ -3461,8 +3484,8 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn std::error::Error
         gpr.render(
             &render_filepath,
             &profile,
-            params.render_width,
-            params.render_topo,
+            options.render_width,
+            options.render_topo,
         )
         .map_err(|e| format!("Error writing image: {:?}", e))?;
     }
@@ -3472,7 +3495,7 @@ pub fn run(params: RunParams) -> Result<ProcessResult, Box<dyn std::error::Error
             &gpr.location,
             potential_track_path.into(),
             &output_path,
-            !params.quiet,
+            !options.quiet,
         )?;
     }
 
@@ -3530,29 +3553,15 @@ pub fn run_batch(params: BatchRunParams) -> Result<BatchProcessResult, String> {
         let run_params = RunParams {
             filepaths: group.clone(),
             output_path: Some(output_nc.clone()),
-            dem_path: params.dem_path.clone(),
-            cor_path: params.cor_path.clone(),
-            medium_velocity: params.medium_velocity,
-            crs: params.crs.clone(),
-            quiet: params.quiet,
             track_path,
-            steps: params.steps.clone(),
-            no_export: params.no_export,
             render_path,
-            render_profile: params.render_profile.clone(),
-            render_width: params.render_width,
-            render_topo: params.render_topo,
-            override_antenna_mhz: params.override_antenna_mhz,
-            override_antenna_separation: params.override_antenna_separation,
-            user_metadata: params.user_metadata.clone(),
             // Always given, from the plan: without a pattern it is the id
             // process mode would fall back to, and giving it here keeps that
             // mode's advice to pass --radargram-id, which batch mode does not
             // have, from being printed once per output (#368).
             radargram_id,
             display_name,
-            group: params.group.clone(),
-            group_id: params.group_id.clone(),
+            options: params.options.clone(),
         };
 
         // process-mode semantics: one group -> one output, in the order we pass here.
@@ -3611,7 +3620,7 @@ pub struct BatchPlan {
 
 pub fn plan_batch(params: &BatchRunParams) -> Result<BatchPlan, String> {
     let expanded_filepaths = expand_cli_inputs(&params.filepaths)?;
-    formats::check_cor_count(expanded_filepaths.len(), params.cor_path.as_deref())?;
+    formats::check_cor_count(expanded_filepaths.len(), params.options.cor_path.as_deref())?;
     let threshold = params
         .merge
         .as_deref()
@@ -3742,15 +3751,15 @@ fn read_for_grouping(path: &Path, params: &BatchRunParams) -> Result<GroupingRec
         .map_err(|e| format!("Failed to resolve input '{}': {e}", path.display()))?;
     formats::with_coordinates(
         std::slice::from_mut(&mut resolved),
-        params.cor_path.as_deref(),
+        params.options.cor_path.as_deref(),
     )?;
     let (meta, location) = load_meta_and_location(
         &resolved,
-        params.medium_velocity,
-        params.crs.as_ref(),
+        params.options.medium_velocity,
+        params.options.crs.as_ref(),
         None,
-        params.override_antenna_mhz,
-        params.override_antenna_separation,
+        params.options.override_antenna_mhz,
+        params.options.override_antenna_separation,
     )
     .map_err(|e| format!("{}: {e}", path.display()))?;
     GroupingRecording::of(&meta, &location)
@@ -3815,8 +3824,8 @@ fn batch_names(
         .transpose()?;
 
     let group = crate::identity::resolve_group(
-        params.group.as_deref(),
-        params.group_id.as_deref(),
+        params.options.group.as_deref(),
+        params.options.group_id.as_deref(),
         None,
         None,
     )?;
@@ -4102,6 +4111,33 @@ pub fn default_processing_profile() -> Vec<String> {
         "background_removal".to_string(),
         format!("auto_gain({})", DEFAULT_AUTOGAIN_N_BINS),
     ]
+}
+
+/// The steps a run applies, from the three ways of choosing them: the
+/// default profile, the default profile plus `correct_topography`, or a step
+/// list (comma-separated, or a file of one step per line). At most one may
+/// be given, and none means no steps. Every step is validated.
+pub fn resolve_steps(
+    default: bool,
+    default_with_topo: bool,
+    steps: Option<&str>,
+) -> Result<Vec<String>, String> {
+    if usize::from(default) + usize::from(default_with_topo) + usize::from(steps.is_some()) > 1 {
+        return Err("Only one of steps, default and default_with_topo may be given".to_string());
+    }
+    let resolved = if default_with_topo {
+        let mut profile = default_processing_profile();
+        profile.push("correct_topography".to_string());
+        profile
+    } else if default {
+        default_processing_profile()
+    } else if let Some(steps) = steps {
+        tools::parse_step_list(steps)?
+    } else {
+        vec![]
+    };
+    validate_steps(&resolved)?;
+    Ok(resolved)
 }
 
 #[cfg(test)]
@@ -5399,6 +5435,36 @@ pub mod tests {
         Ok(())
     }
 
+    #[test]
+    fn steps_are_resolved_from_exactly_one_choice() {
+        let default = super::default_processing_profile();
+        assert_eq!(
+            super::resolve_steps(false, false, None).unwrap(),
+            Vec::<String>::new()
+        );
+        assert_eq!(super::resolve_steps(true, false, None).unwrap(), default);
+
+        let with_topo = super::resolve_steps(false, true, None).unwrap();
+        assert_eq!(with_topo[..default.len()], default[..]);
+        assert_eq!(with_topo[default.len()..], ["correct_topography"]);
+
+        assert_eq!(
+            super::resolve_steps(false, false, Some("zero_corr, dewow")).unwrap(),
+            ["zero_corr", "dewow"]
+        );
+
+        for (default, with_topo, steps) in [
+            (true, true, None),
+            (true, false, Some("zero_corr")),
+            (false, true, Some("zero_corr")),
+        ] {
+            let error = super::resolve_steps(default, with_topo, steps).unwrap_err();
+            assert!(error.contains("Only one of"), "{error}");
+        }
+        assert!(super::resolve_steps(false, false, Some("no_such_step")).is_err());
+        assert!(super::resolve_steps(false, false, Some("subset(1 2 3 4 5 6)")).is_err());
+    }
+
     fn batch_params(output: &std::path::Path, id_pattern: Option<&str>) -> super::BatchRunParams {
         super::BatchRunParams {
             filepaths: vec![
@@ -5407,26 +5473,17 @@ pub mod tests {
                 "assets/mala/scott_turnerbreen-20240207-DAT_0454_A1_2500-4000.rad".into(),
             ],
             output_dir: output.to_path_buf(),
-            dem_path: None,
-            cor_path: None,
-            medium_velocity: 0.168,
-            crs: None,
-            quiet: true,
             track_dir: None,
-            steps: vec!["subset(0 50 0 100)".to_string()],
-            no_export: false,
             render_dir: None,
-            render_profile: None,
-            render_width: None,
-            render_topo: false,
             merge: None,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            user_metadata: crate::user_metadata::UserMetadata::new(),
-            group: Some("Drønbreen".to_string()),
-            group_id: None,
             id_pattern: id_pattern.map(str::to_string),
             display_name_pattern: None,
+            options: super::ProcessingOptions {
+                quiet: true,
+                steps: vec!["subset(0 50 0 100)".to_string()],
+                group: Some("Drønbreen".to_string()),
+                ..Default::default()
+            },
         }
     }
 
@@ -5701,7 +5758,7 @@ pub mod tests {
         let run = |name: &str, steps: &[&str]| {
             let output = dir.path().join(name);
             let mut params = info_run_params(&output);
-            params.steps = steps.iter().map(|s| s.to_string()).collect();
+            params.options.steps = steps.iter().map(|s| s.to_string()).collect();
             super::run(params).unwrap();
             processed(super::inspect(info_params(vec![output])).unwrap())
         };
@@ -5747,25 +5804,14 @@ pub mod tests {
         super::RunParams {
             filepaths: vec!["assets/mala/dronbreen-20250327-DAT_0066_A1.rad".into()],
             output_path: Some(output.to_path_buf()),
-            dem_path: None,
-            cor_path: None,
-            medium_velocity: 0.168,
-            crs: None,
-            quiet: true,
             track_path: None,
-            steps: Vec::new(),
-            no_export: false,
             render_path: None,
-            render_profile: None,
-            render_width: None,
-            render_topo: false,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            user_metadata: crate::user_metadata::UserMetadata::new(),
             radargram_id: Some("line-01".to_string()),
             display_name: None,
-            group: None,
-            group_id: None,
+            options: super::ProcessingOptions {
+                quiet: true,
+                ..Default::default()
+            },
         }
     }
 

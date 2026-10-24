@@ -196,25 +196,15 @@ mod tests {
                 "/assets/mala/dronbreen-20220329-DAT_0237_A1.rad"
             ))],
             output_path: Some(nc_path.clone()),
-            dem_path: None,
-            cor_path: None,
-            medium_velocity: 0.168,
-            crs: None,
-            quiet: true,
             track_path: None,
-            steps: vec!["subset(0 300 0 50)".to_string()],
-            no_export: false,
             render_path: None,
-            render_profile: None,
-            render_width: None,
-            render_topo: false,
-            override_antenna_mhz: None,
-            override_antenna_separation: None,
-            user_metadata: Default::default(),
             radargram_id: Some(name.to_string()),
             display_name: None,
-            group: None,
-            group_id: None,
+            options: crate::gpr::ProcessingOptions {
+                quiet: true,
+                steps: vec!["subset(0 300 0 50)".to_string()],
+                ..Default::default()
+            },
         };
         crate::gpr::run(params).unwrap();
         nc_path

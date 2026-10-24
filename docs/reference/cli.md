@@ -26,6 +26,10 @@ Required.
 
 **Options**
 
+```{option} -o <OUTPUT>, --output <OUTPUT>
+Output filename or directory. Defaults to the first input with a ".nc" extension
+```
+
 ```{option} -v <VELOCITY>, --velocity <VELOCITY>
 Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice
 
@@ -44,8 +48,12 @@ Correct elevation values with a DEM
 Which coordinate reference system to project coordinates in
 ```
 
-```{option} -t <TRACK>, --track <TRACK>
-Export the location track to CSV. If no value is given, a sidecar path is derived from the output path
+```{option} --override-antenna-mhz <OVERRIDE_ANTENNA_MHZ>
+Override the antenna center frequency (in MHz) from file metadata
+```
+
+```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
+Override the antenna separation (in m) from file metadata
 ```
 
 ```{option} --default
@@ -60,16 +68,8 @@ Process with the default profile plus `correct_topography`, which stores a corre
 Processing steps to run, separated by commas. Can also be a filepath to a newline-separated step file
 ```
 
-```{option} -o <OUTPUT>, --output <OUTPUT>
-Output filename or directory. Defaults to the first input with a ".nc" extension
-```
-
 ```{option} -q, --quiet
 Suppress progress messages
-```
-
-```{option} -r <RENDER>, --render <RENDER>
-Render an image of the profile and save it to the specified path. If no path is given, a JPG sidecar is used
 ```
 
 ```{option} --render-profile <RENDER_PROFILE>
@@ -85,19 +85,19 @@ Render the topographically corrected view for --render, as `ridal render --topo`
 ```
 
 ```{option} --no-export
-Don't export an nc file
-```
-
-```{option} --override-antenna-mhz <OVERRIDE_ANTENNA_MHZ>
-Override the antenna center frequency (in MHz) from file metadata
-```
-
-```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
-Override the antenna separation (in m) from file metadata
+Don't export nc files
 ```
 
 ```{option} --metadata <KEY=VALUE>
 Add user metadata as key=value. Repeatable
+```
+
+```{option} -t <TRACK>, --track <TRACK>
+Export the location track to CSV. If no value is given, a sidecar path is derived from the output path
+```
+
+```{option} -r <RENDER>, --render <RENDER>
+Render an image of the profile and save it to the specified path. If no path is given, a JPG sidecar is used
 ```
 
 ```{option} --radargram-id <RADARGRAM_ID>
@@ -159,8 +159,12 @@ Correct elevation values with a DEM
 Which coordinate reference system to project coordinates in
 ```
 
-```{option} -t <TRACK>, --track <TRACK>
-Export location tracks to CSV in the given directory. If no directory is given, they go in the output directory
+```{option} --override-antenna-mhz <OVERRIDE_ANTENNA_MHZ>
+Override the antenna center frequency (in MHz) from file metadata
+```
+
+```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
+Override the antenna separation (in m) from file metadata
 ```
 
 ```{option} --default
@@ -179,10 +183,6 @@ Processing steps to run, separated by commas. Can also be a filepath to a newlin
 Suppress progress messages
 ```
 
-```{option} -r <RENDER>, --render <RENDER>
-Render images into the given directory. If no directory is given, they go in the output directory
-```
-
 ```{option} --render-profile <RENDER_PROFILE>
 Render profile for --render: a built-in name, or a path to a TOML file. Distinct from the *processing* profile selected by --default and --steps
 ```
@@ -199,20 +199,20 @@ Render the topographically corrected view for --render, as `ridal render --topo`
 Don't export nc files
 ```
 
-```{option} --merge <MERGE>
-Merge neighboring chronological profiles that are closer than the given threshold (e.g. "10 min"). Incompatible neighbors remain separate outputs
-```
-
-```{option} --override-antenna-mhz <OVERRIDE_ANTENNA_MHZ>
-Override the antenna center frequency (in MHz) from file metadata
-```
-
-```{option} --override-antenna-separation <OVERRIDE_ANTENNA_SEPARATION>
-Override the antenna separation (in m) from file metadata
-```
-
 ```{option} --metadata <KEY=VALUE>
 Add user metadata as key=value. Repeatable
+```
+
+```{option} -t <TRACK>, --track <TRACK>
+Export location tracks to CSV in the given directory. If no directory is given, they go in the output directory
+```
+
+```{option} -r <RENDER>, --render <RENDER>
+Render images into the given directory. If no directory is given, they go in the output directory
+```
+
+```{option} --merge <MERGE>
+Merge neighboring chronological profiles that are closer than the given threshold (e.g. "10 min"). Incompatible neighbors remain separate outputs
 ```
 
 ```{option} --group-name <GROUP>
