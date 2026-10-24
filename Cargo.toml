@@ -24,8 +24,8 @@ name = "ridal"
 path = "src/main.rs"
 
 [dependencies]
-pyo3 = { version = "0.28.3", optional = true}
-numpy = { version = "0.28", optional = true }
+pyo3 = { version = "0.29", optional = true}
+numpy = { version = "0.29", optional = true }
 ndarray = "0.17"   # For base ndarrays
 ndarray-stats = "0.7"  # For ndarray statistics
 futures-util = { version = "0.3", default-features = false, optional = true }  # Streaming an upload body to disk (#147)
@@ -120,7 +120,7 @@ getrandom = "0.4"
 # ever accepts one, so a CLI-only build has nothing to do with them.
 argon2 = { version = "0.6", optional = true }
 walkdir = { version = "2", optional = true }  # Recursive catalog discovery
-lru = { version = "0.12", optional = true }  # Wrapped in a byte-bounded cache
+lru = { version = "0.18", optional = true }  # Wrapped in a byte-bounded cache
 webbrowser = { version = "1", optional = true }  # `ridal gui` browser opening
 # Project marker/config parsing (`ridal.toml`) and render profiles read from
 # a file. Not optional: projects are a CLI concept too -- `ridal project
