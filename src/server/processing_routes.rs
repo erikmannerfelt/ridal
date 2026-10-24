@@ -24,7 +24,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{expectation_from, parse_radargram, readable_project};
 use super::needs::{Needs, Who};
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{ApiError, ErrorBody, OrInternal};
 use crate::identity::{ProfileId, RadargramId};
 use crate::project::processing::{self, Assignment, Assignments, Profile, ProfileEdit};
 use crate::project::roles::Role;
@@ -302,7 +302,7 @@ pub async fn put_assignment(
     // nothing to run it on. A source removed later leaves the radargram in
     // its profile, shown as having no raw data.
     let has_source = crate::project::raw::read_source(project.documents(), &radargram)
-        .map_err(|e| ApiError::internal("source_read_failed", e))?
+        .or_internal("source_read_failed")?
         .is_some();
     if !has_source {
         return Err(ApiError::conflict(
@@ -507,7 +507,7 @@ pub(super) async fn statuses(
             continue;
         };
         let source = crate::project::raw::read_source(project.documents(), &radargram)
-            .map_err(|e| ApiError::internal("source_read_failed", e))?
+            .or_internal("source_read_failed")?
             .map(|(source, _)| source);
         let served = catalog
             .find_entry(radargram.as_str())
@@ -545,5 +545,5 @@ pub(super) async fn statuses(
             .collect()
     })
     .await
-    .map_err(|e| ApiError::internal("status_failed", e.to_string()))
+    .or_internal("status_failed")
 }

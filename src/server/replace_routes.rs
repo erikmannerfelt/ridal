@@ -63,7 +63,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::needs::{Needs, Who};
 use super::openapi::NetcdfFile;
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{entry_path, ApiError, ErrorBody, OrInternal};
 use crate::identity::{RadargramId, RevisionId};
 use crate::interp::carry::{CarryReport, Severity};
 use crate::interp::source::{AxisDeclarations, RevisionDeclarations};
@@ -375,9 +375,8 @@ fn consequences(
     // Skip and report (#213) rather than skip in silence. This one plans a
     // carry across a replacement, so a pick left out of the plan is a pick
     // that silently does not get carried.
-    let (users, unreadable) =
-        interpretations::list_users_checked(project.documents(), radargram)
-            .map_err(|e| ApiError::internal("interpretations_read_failed", e.to_string()))?;
+    let (users, unreadable) = interpretations::list_users_checked(project.documents(), radargram)
+        .or_internal("interpretations_read_failed")?;
     for stem in &unreadable {
         tracing::warn!(
             radargram = radargram.as_str(),
@@ -389,7 +388,7 @@ fn consequences(
     let mut documents = Vec::new();
     for user_id in users {
         let Some(stored) = interpretations::read(project.documents(), radargram, &user_id)
-            .map_err(|e| ApiError::internal("interpretations_read_failed", e.to_string()))?
+            .or_internal("interpretations_read_failed")?
         else {
             continue;
         };
@@ -523,9 +522,7 @@ fn replaceable_path(
             ),
         ));
     }
-    state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))
+    entry_path(state, entry)
 }
 
 /// A replacement has to be a replacement *of this radargram*. Without this,
@@ -758,7 +755,7 @@ pub async fn stage_replacement(
     let note = serde_json::to_string(&StagedFor {
         from_revision: from_revision.to_string(),
     })
-    .map_err(|e| ApiError::internal("replace_failed", e.to_string()))?;
+    .or_internal("replace_failed")?;
     std::fs::write(staged_note_path(&dir, &token)?, note).map_err(|e| {
         ApiError::internal(
             "replace_failed",
@@ -810,9 +807,7 @@ pub async fn commit_replacement(
             format!("'{radargram}' lives outside the project, which Ridal never writes to."),
         ));
     }
-    let from_path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let from_path = entry_path(&state, entry)?;
     drop(catalog);
 
     let dir = staging_dir(project)?;
@@ -856,8 +851,8 @@ pub async fn commit_replacement(
         }
     }
 
-    let RidalNetcdfKind::Supported(meta) = crate::io::inspect_ridal_netcdf(&staged)
-        .map_err(|e| ApiError::internal("staging_unreadable", e.to_string()))?
+    let RidalNetcdfKind::Supported(meta) =
+        crate::io::inspect_ridal_netcdf(&staged).or_internal("staging_unreadable")?
     else {
         return Err(ApiError::internal(
             "staging_unreadable",
@@ -950,7 +945,7 @@ pub async fn commit_replacement(
         // index. So the replace stops, and the operator can export the
         // picks or reprocess the current revision so it declares its axes.
         let picked = interpretations::list_users(project.documents(), &radargram)
-            .map_err(|e| ApiError::internal("interpretations_read_failed", e.to_string()))?;
+            .or_internal("interpretations_read_failed")?;
         if !picked.is_empty() {
             return Err(ApiError::conflict(
                 "no_outgoing_axes",
@@ -995,9 +990,7 @@ pub async fn commit_replacement(
         eprintln!("Warning: could not record the supersession: {e}");
     }
 
-    state
-        .rediscover()
-        .map_err(|e| ApiError::internal("rediscover_failed", e))?;
+    state.rediscover().or_internal("rediscover_failed")?;
 
     audit::record(
         project.documents(),

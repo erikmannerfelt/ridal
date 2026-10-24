@@ -31,7 +31,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::readable_project;
 use super::needs::Needs;
-use super::routes::{attachment, lookup_dataset, ApiError, ErrorBody};
+use super::routes::{attachment, entry_path, lookup_dataset, ApiError, ErrorBody};
 use crate::project::derived::Audience;
 use crate::project::roles::DownloadScope;
 use crate::render::figure::overlays::{LayerAccess, Readable};
@@ -100,9 +100,7 @@ pub async fn render_figure(
     let radargram_key = entry.radargram_id.clone();
     let revision = entry.revision_id.clone();
     let range = entry.elevation_range();
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let path = entry_path(&state, entry)?;
     let radargram = catalog
         .radargram(entry.radargram_id.as_str())
         .ok_or_else(|| {

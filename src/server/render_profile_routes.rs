@@ -36,7 +36,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{expectation_from, readable_project};
 use super::needs::{Needs, Who};
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{ApiError, ErrorBody, OrInternal};
 use crate::project::render_profiles::{self, PersonalProfile, RenderProfileError};
 use crate::project::roles::Role;
 use crate::project::store::StoreError;
@@ -396,8 +396,7 @@ pub async fn get_render_profile(
     match query.format.as_deref() {
         None | Some("json") => {}
         Some("toml") => {
-            let text = toml::to_string(profile)
-                .map_err(|e| ApiError::internal("render_profile_encode_failed", e.to_string()))?;
+            let text = toml::to_string(profile).or_internal("render_profile_encode_failed")?;
             return Ok((
                 [
                     (header::CONTENT_TYPE, "application/toml".to_string()),

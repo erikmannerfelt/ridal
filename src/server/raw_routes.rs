@@ -31,7 +31,7 @@ use super::auth::Caller;
 use super::interp_routes::{expectation_from, parse_radargram, readable_project};
 use super::needs::{Needs, Who};
 use super::openapi::NetcdfFile;
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{ApiError, ErrorBody, OrInternal};
 use crate::project::raw::{self, NamedFile, Source, SourceNames};
 use crate::project::roles::{DownloadScope, Role};
 use crate::project::store::{StoreError, Version};
@@ -147,8 +147,7 @@ pub async fn upload_raw_file(
         }
         room
     };
-    let incoming = raw::incoming_path(project.data_dir())
-        .map_err(|e| ApiError::internal("upload_failed", e))?;
+    let incoming = raw::incoming_path(project.data_dir()).or_internal("upload_failed")?;
     let cleanup = super::lifecycle_routes::TempFile(incoming.clone());
     // A body stops at `room`, so a wrong Content-Length cannot overfill.
     let bytes = super::upload_routes::receive(claimed, project, body, &incoming, room, cap).await?;
@@ -157,8 +156,8 @@ pub async fn upload_raw_file(
         let incoming = incoming.clone();
         tokio::task::spawn_blocking(move || crate::recipe::hash_file(&incoming))
             .await
-            .map_err(|e| ApiError::internal("upload_failed", e.to_string()))?
-            .map_err(|e| ApiError::internal("upload_failed", e))?
+            .or_internal("upload_failed")?
+            .or_internal("upload_failed")?
     };
 
     let lifecycle = state.lifecycle_lock().await;
@@ -178,8 +177,8 @@ pub async fn upload_raw_file(
         raw::install_hashed(&data_dir, &incoming, &name, &hashed.blake3)
     })
     .await
-    .map_err(|e| ApiError::internal("upload_failed", e.to_string()))?
-    .map_err(|e| ApiError::internal("upload_failed", e))?;
+    .or_internal("upload_failed")?
+    .or_internal("upload_failed")?;
     cleanup.installed();
     drop(lifecycle);
     Ok((
@@ -218,12 +217,12 @@ pub async fn download_raw_file(
         })?;
     let file = tokio::fs::File::open(&path)
         .await
-        .map_err(|e| ApiError::internal("raw_open_failed", e.to_string()))?;
+        .or_internal("raw_open_failed")?;
     let length = file
         .metadata()
         .await
         .map(|m| m.len())
-        .map_err(|e| ApiError::internal("raw_stat_failed", e.to_string()))?;
+        .or_internal("raw_stat_failed")?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
@@ -264,8 +263,7 @@ fn source_zip_entries(
     let mut entries = Vec::new();
     for (index, bundle) in source.bundles.iter().enumerate() {
         for file in &bundle.files {
-            let name = raw::plain_name(&file.file.name)
-                .map_err(|e| ApiError::internal("source_read_failed", e))?;
+            let name = raw::plain_name(&file.file.name).or_internal("source_read_failed")?;
             let stored = raw::file_path(data_dir, &file.file.blake3)
                 .filter(|path| path.is_file())
                 .ok_or_else(|| {
@@ -398,7 +396,7 @@ pub async fn download_source(
     let project = readable_project(&state)?;
     let id = parse_radargram(&radargram_id)?;
     let (source, _) = raw::read_source(project.documents(), &id)
-        .map_err(|e| ApiError::internal("source_read_failed", e))?
+        .or_internal("source_read_failed")?
         .ok_or_else(|| {
             ApiError::not_found(
                 "no_source",
@@ -465,16 +463,16 @@ pub async fn list_sources(
 ) -> Result<Json<SourceList>, ApiError> {
     caller.require(Role::Viewer, "see which radargrams have raw data")?;
     let project = readable_project(&state)?;
-    let mut radargram_ids = raw::source_ids(project.documents())
-        .map_err(|e| ApiError::internal("source_read_failed", e))?;
+    let mut radargram_ids =
+        raw::source_ids(project.documents()).or_internal("source_read_failed")?;
     radargram_ids.sort();
     let mut names = std::collections::BTreeMap::new();
     for id in &radargram_ids {
         let Ok(id) = crate::identity::RadargramId::new(id) else {
             continue;
         };
-        if let Some((Source { names: Some(n), .. }, _)) = raw::read_source(project.documents(), &id)
-            .map_err(|e| ApiError::internal("source_read_failed", e))?
+        if let Some((Source { names: Some(n), .. }, _)) =
+            raw::read_source(project.documents(), &id).or_internal("source_read_failed")?
         {
             names.insert(id.to_string(), n);
         }
@@ -515,7 +513,7 @@ pub async fn get_source(
     let project = readable_project(&state)?;
     let id = parse_radargram(&radargram_id)?;
     let (source, version) = raw::read_source(project.documents(), &id)
-        .map_err(|e| ApiError::internal("source_read_failed", e))?
+        .or_internal("source_read_failed")?
         .ok_or_else(|| {
             ApiError::not_found(
                 "no_source",
@@ -674,7 +672,7 @@ pub async fn put_source(
         // processed yet does not forget what it is to be called. Compared
         // against `expected` with the rest when it is written.
         None => raw::read_source(project.documents(), &id)
-            .map_err(|e| ApiError::internal("source_read_failed", e))?
+            .or_internal("source_read_failed")?
             .and_then(|(source, _)| source.names),
     };
     let dem = body
@@ -714,7 +712,7 @@ pub async fn put_source(
         outcome
     })
     .await
-    .map_err(|e| ApiError::internal("source_failed", e.to_string()))?;
+    .or_internal("source_failed")?;
     let (source, recordings) = result.map_err(|e| ApiError::bad_request("source_unreadable", e))?;
     // Refused now rather than when the first draft fails to merge them.
     crate::gpr::check_mergeable(&recordings)

@@ -27,7 +27,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::needs::{Needs, Who};
 use super::raw_routes::project_for;
-use super::routes::ApiError;
+use super::routes::{ApiError, OrInternal};
 use crate::gpr::{GroupingEdits, GroupingRecording, Split};
 use crate::id_pattern::{BatchFacts, OutputFacts, Pattern, PatternKind};
 use crate::identity::{DisplayName, RadargramId};
@@ -534,7 +534,7 @@ pub async fn plan_ingest(
             .map(|e| e.radargram_id.to_string())
             .collect(),
         sources: raw::source_ids(project.documents())
-            .map_err(|e| ApiError::internal("source_read_failed", e))?
+            .or_internal("source_read_failed")?
             .into_iter()
             .collect(),
     };
@@ -555,8 +555,8 @@ pub async fn plan_ingest(
         )
     })
     .await
-    .map_err(|e| ApiError::internal("plan_failed", e.to_string()))?
-    .map_err(|e| ApiError::internal("plan_failed", e))?;
+    .or_internal("plan_failed")?
+    .or_internal("plan_failed")?;
 
     let mut seen = HashSet::new();
     for read in &reads {

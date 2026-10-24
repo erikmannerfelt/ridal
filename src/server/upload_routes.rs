@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 use super::app::AppState;
 use super::auth::Caller;
 use super::needs::{Needs, Who};
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{ApiError, ErrorBody, OrInternal};
 use crate::project::roles::Role;
 use crate::project::uploads::{self, Upload};
 
@@ -127,7 +127,7 @@ fn caller_upload(
     id: &str,
 ) -> Result<Upload, ApiError> {
     let upload = uploads::read(project.documents(), project.data_dir(), id)
-        .map_err(|e| ApiError::internal("upload_read_failed", e))?
+        .or_internal("upload_read_failed")?
         .ok_or_else(no_such_upload)?;
     if upload.owner != owner(caller) {
         return Err(no_such_upload());
@@ -180,8 +180,8 @@ fn status(
     upload: &Upload,
 ) -> Result<impl IntoResponse, ApiError> {
     let offset = offset_of(project, id)?;
-    let expires_at = uploads::expires_at(project.data_dir(), id)
-        .map_err(|e| ApiError::internal("upload_read_failed", e.to_string()))?;
+    let expires_at =
+        uploads::expires_at(project.data_dir(), id).or_internal("upload_read_failed")?;
     Ok((
         [(UPLOAD_OFFSET, offset.to_string())],
         Json(UploadStatus {
@@ -241,7 +241,7 @@ pub async fn create_upload(
         created: chrono::Utc::now().to_rfc3339(),
     };
     let id = uploads::create(project.documents(), project.data_dir(), &upload)
-        .map_err(|e| ApiError::internal("upload_failed", e))?;
+        .or_internal("upload_failed")?;
     Ok((StatusCode::CREATED, status(project, &id, &upload)?))
 }
 
@@ -466,8 +466,7 @@ pub async fn delete_upload(
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "upload a file")?;
     caller_upload(project, &caller, &id)?;
-    uploads::remove(project.documents(), project.data_dir(), &id)
-        .map_err(|e| ApiError::internal("upload_failed", e))?;
+    uploads::remove(project.documents(), project.data_dir(), &id).or_internal("upload_failed")?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -525,10 +524,10 @@ impl Claimed<'_> {
         // a large file is not something to do on the async runtime.
         tokio::task::spawn_blocking(move || uploads::move_part(&data_dir, &id, &to))
             .await
-            .map_err(|e| ApiError::internal("upload_failed", e.to_string()))?
-            .map_err(|e| ApiError::internal("upload_failed", e))?;
+            .or_internal("upload_failed")?
+            .or_internal("upload_failed")?;
         uploads::remove(project.documents(), project.data_dir(), &self.id)
-            .map_err(|e| ApiError::internal("upload_failed", e))?;
+            .or_internal("upload_failed")?;
         Ok(self.upload.size)
     }
 }

@@ -40,7 +40,7 @@ use super::auth::Caller;
 use super::interp_routes::parse_radargram;
 use super::needs::{Needs, Who};
 use super::processing::{JobRequest, JobState, JobStatus, Priority};
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{ApiError, ErrorBody, OrInternal};
 use crate::identity::RadargramId;
 use crate::project::raw;
 use crate::project::roles::{DownloadScope, Role};
@@ -342,7 +342,7 @@ pub(super) async fn prepare(
     output_dir: &std::path::Path,
 ) -> Result<Prepared, ApiError> {
     let (source, source_version) = raw::read_source(project.documents(), id)
-        .map_err(|e| ApiError::internal("source_read_failed", e))?
+        .or_internal("source_read_failed")?
         .ok_or_else(|| {
             ApiError::not_found(
                 "no_source",
@@ -389,8 +389,7 @@ pub(super) async fn prepare(
     let data_dir = project.data_dir().to_path_buf();
     let name = super::lifecycle_routes::uuid();
     let work = data_dir.join(raw::RAW_DIR).join("jobs").join(&name);
-    std::fs::create_dir_all(output_dir)
-        .map_err(|e| ApiError::internal("job_failed", e.to_string()))?;
+    std::fs::create_dir_all(output_dir).or_internal("job_failed")?;
     let output = output_dir.join(format!("{name}.nc"));
 
     let recordings = source.recordings();
@@ -407,7 +406,7 @@ pub(super) async fn prepare(
             Ok::<_, String>((laid_out, dem))
         })
         .await
-        .map_err(|e| ApiError::internal("job_failed", e.to_string()))?
+        .or_internal("job_failed")?
         .map_err(|e| ApiError::conflict("source_unavailable", e))?
     };
     // A processing job holds the whole radargram and works on copies of
@@ -705,12 +704,12 @@ pub async fn download_draft(
     let radargram = with_draft(&state, &caller, job, |d| d.radargram.to_string())?;
     let file = tokio::fs::File::open(&output)
         .await
-        .map_err(|e| ApiError::internal("draft_open_failed", e.to_string()))?;
+        .or_internal("draft_open_failed")?;
     let length = file
         .metadata()
         .await
         .map(|m| m.len())
-        .map_err(|e| ApiError::internal("draft_open_failed", e.to_string()))?;
+        .or_internal("draft_open_failed")?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/x-netcdf".to_string()),
@@ -759,7 +758,7 @@ pub async fn draft_overview(
             let config = state.render_config();
             let (service, shape) =
                 super::render_service::RenderService::open_lazily(&output, revision, &config)
-                    .map_err(|e| ApiError::internal("draft_unreadable", e))?;
+                    .or_internal("draft_unreadable")?;
             let radargram = Arc::new(OpenRadargram {
                 service: Arc::new(std::sync::Mutex::new(service)),
                 shape,
@@ -846,7 +845,7 @@ pub async fn commit_draft(
 
     let file = tokio::fs::File::open(&output)
         .await
-        .map_err(|e| ApiError::internal("draft_open_failed", e.to_string()))?;
+        .or_internal("draft_open_failed")?;
     let length = file.metadata().await.map(|m| m.len()).unwrap_or_default();
     let body = axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(file));
     let mut headers = HeaderMap::new();

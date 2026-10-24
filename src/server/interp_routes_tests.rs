@@ -430,6 +430,44 @@ async fn a_user_name_cannot_escape_the_interpretations_directory() {
     }
 }
 
+/// Every route that needs the interpretation to exist refuses its absence
+/// with the same envelope, so a client can tell "nothing drawn yet" from
+/// "no such radargram" by its code.
+#[tokio::test]
+#[serial_test::serial(netcdf)]
+async fn a_missing_interpretation_is_one_404_on_every_route() {
+    let (_dir, app) = project_app(true);
+    let request = |method: &str, uri: String| Request::builder().method(method).uri(uri);
+    let requests = [
+        request("GET", URI.to_string()).body(Body::empty()),
+        request("GET", format!("{URI}/carried")).body(Body::empty()),
+        request("DELETE", URI.to_string()).body(Body::empty()),
+        request("POST", format!("{URI}/promote"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(document(RADARGRAM).to_string())),
+    ];
+    for request in requests {
+        let request = request.unwrap();
+        let route = format!("{} {}", request.method(), request.uri());
+        let (status, _, body) = send(&app, request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{route}: {body}");
+        assert_eq!(body["error"]["code"], "interpretation_not_found", "{route}");
+        assert_eq!(
+            body["error"]["message"], "'default' has no interpretation of 'line-01'",
+            "{route}"
+        );
+    }
+
+    // A radargram that is not there is a different 404.
+    let (status, _, body) = get(
+        &app,
+        "/api/v1/datasets/line-99/interpretations/default/carried",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "dataset_not_found");
+}
+
 #[tokio::test]
 #[serial_test::serial(netcdf)]
 async fn deleting_removes_the_document_and_then_404s() {
