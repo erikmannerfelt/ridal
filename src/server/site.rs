@@ -38,7 +38,7 @@ use super::app::{AccessOptions, AppState, SiteContext};
 use super::auth::{self, SessionKey, SESSION_TTL_DAYS};
 use super::needs::{Needs, Who};
 use super::render_service::RenderServiceConfig;
-use super::routes::{ApiError, ErrorBody, PageError};
+use super::routes::{ApiError, ErrorBody, OrInternal, PageError};
 use super::templates;
 use crate::identity::{ProjectKey, UserId};
 use crate::project::members;
@@ -282,7 +282,7 @@ impl SiteState {
         let root = project.root().to_path_buf();
         let state =
             AppState::build_with_project(&root, &self.render_config, Some(project), self.access)
-                .map_err(|e| ApiError::internal("project_open_failed", e))?
+                .or_internal("project_open_failed")?
                 .with_site(
                     key.clone(),
                     Arc::new(SiteContext {
@@ -1305,9 +1305,7 @@ fn issue_session(
     site: &SiteState,
     account: &Account,
 ) -> Result<[(header::HeaderName, String); 1], ApiError> {
-    let key = site
-        .session_key()
-        .map_err(|e| ApiError::internal("session_key_failed", e))?;
+    let key = site.session_key().or_internal("session_key_failed")?;
     let ttl = SESSION_TTL_DAYS * 24 * 60 * 60;
     let value = key.mint(&account.name, account.credential_version, auth::now() + ttl);
     Ok([(header::SET_COOKIE, auth::session_cookie(&value, ttl))])
@@ -1818,7 +1816,7 @@ async fn redeem_invite(
                         set.upsert(&account.name, role, download);
                         Ok(())
                     })
-                    .map_err(|e| ApiError::internal("membership_write_failed", e.to_string()))?;
+                    .or_internal("membership_write_failed")?;
                 }
                 Err(SiteError::NotFound(_)) => {}
                 Err(e) => return Err(site_error(e)),
@@ -1914,8 +1912,7 @@ async fn site_audit_log(
     caller: SiteCaller,
 ) -> Result<impl IntoResponse, ApiError> {
     site.require_server_admin(&caller, "read the history")?;
-    let log = site_audit::read(site.site()?.store())
-        .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
+    let log = site_audit::read(site.site()?.store()).or_internal("audit_read_failed")?;
     let entries: Vec<&site_audit::Entry> = log.entries.iter().rev().take(AUDIT_PAGE).collect();
     Ok(Json(AuditLog {
         entries: entries.into_iter().cloned().collect(),
@@ -2046,8 +2043,7 @@ async fn project_audit_log(
 ) -> Result<impl IntoResponse, ApiError> {
     let key = parse_key(&key)?;
     require_project_admin(&site, &key, &caller, "read the history")?;
-    let log = site_audit::read(site.site()?.store())
-        .map_err(|e| ApiError::internal("audit_read_failed", e.to_string()))?;
+    let log = site_audit::read(site.site()?.store()).or_internal("audit_read_failed")?;
     let entries: Vec<&site_audit::Entry> = log
         .entries
         .iter()
@@ -2098,8 +2094,8 @@ async fn get_site_preferences(
         ));
     };
     let store = site.preferences_store().ok_or_else(no_preferences)?;
-    let preferences = crate::project::preferences::read(store, user)
-        .map_err(|e| ApiError::internal("preferences_read_failed", e.to_string()))?;
+    let preferences =
+        crate::project::preferences::read(store, user).or_internal("preferences_read_failed")?;
     Ok(Json(SitePreferences {
         user: user.as_str().to_string(),
         theme: preferences.theme,
@@ -2149,7 +2145,7 @@ async fn put_site_preferences(
         }
     };
     crate::project::preferences::write(store, user, &stored, &Expectation::Any)
-        .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
+        .or_internal("preferences_write_failed")?;
     Ok(Json(SitePreferences {
         user: user.as_str().to_string(),
         theme: stored.theme,
@@ -2309,7 +2305,7 @@ async fn update_project(
         .project(&key)
         .map_err(site_error)?
         .set_name(body.name.as_deref())
-        .map_err(|e| ApiError::internal("project_write_failed", e.to_string()))?;
+        .or_internal("project_write_failed")?;
     site.evict(&key);
     audit(
         &site,
@@ -2680,7 +2676,7 @@ async fn invite_member(
     reusable_name(&site, &name)?;
 
     let (token, invite) = invite::mint_for_project(auth::now(), key.clone(), role, download)
-        .map_err(|e| ApiError::internal("invite_failed", e))?;
+        .or_internal("invite_failed")?;
 
     // Created without server administration, whatever else this route can
     // carry. The invite would otherwise hand the whole site to whoever
@@ -3106,7 +3102,7 @@ async fn create_account(
         Some(key) => invite::mint_for_project(auth::now(), key.clone(), role, download),
         None => invite::mint(auth::now(), None, None, None),
     }
-    .map_err(|e| ApiError::internal("invite_failed", e))?;
+    .or_internal("invite_failed")?;
     let expires = invite.expires;
 
     let created = accounts::update(site.site()?.store(), |set| {
@@ -3299,8 +3295,8 @@ async fn reissue_account_invite(
     site.require_server_admin(&caller, "reset a password")?;
     site.require_writable("reset a password")?;
     let name = parse_name(&name, "invalid_account")?;
-    let (token, invite) = invite::mint(auth::now(), None, None, None)
-        .map_err(|e| ApiError::internal("invite_failed", e))?;
+    let (token, invite) =
+        invite::mint(auth::now(), None, None, None).or_internal("invite_failed")?;
     let expires = invite.expires;
 
     accounts::update(site.site()?.store(), |set| {
@@ -3555,7 +3551,7 @@ async fn bulk_passwords(
             .map_err(site_error)
     })
     .await
-    .map_err(|e| ApiError::internal("password_hash_task_failed", e.to_string()))??;
+    .or_internal("password_hash_task_failed")??;
 
     for (name, _) in &generated {
         let mut entry =

@@ -19,7 +19,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{self, expectation_from, parse_radargram, parse_user, readable_project};
 use super::needs::{Needs, Who};
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{ApiError, ErrorBody, OrInternal};
 use crate::identity::{RadargramId, UserId};
 use crate::interp::carry;
 use crate::project::interpretations::{self, InterpretationError, StoredInterpretation};
@@ -279,8 +279,7 @@ const NOT_A_USER_ID: &str = "the file name is not a valid user id";
 pub(super) fn scan_live(state: &AppState, project: &Project) -> Result<Scan, ApiError> {
     let store = project.documents();
     let catalog = state.catalog();
-    let (stored_overrides, _) = overrides::read(store)
-        .map_err(|e| ApiError::internal("overrides_read_failed", e.to_string()))?;
+    let (stored_overrides, _) = overrides::read(store).or_internal("overrides_read_failed")?;
     let (radargrams, bad_directories) =
         interpretations::list_radargrams(store).map_err(store_failed)?;
 
@@ -706,7 +705,7 @@ pub async fn download_archived(
     let bytes = project
         .documents()
         .read(&interpretations::archived_path(&item))
-        .map_err(|e| ApiError::internal("store_failed", e.to_string()))?
+        .or_internal("store_failed")?
         .ok_or_else(|| {
             ApiError::not_found(
                 "archived_interpretation_not_found",
@@ -1031,7 +1030,7 @@ pub(super) async fn download_bulk(
         bulk_zip(project, &items)
     })
     .await
-    .map_err(|e| ApiError::internal("download_task_failed", e.to_string()))??;
+    .or_internal("download_task_failed")??;
 
     let filename = format!("picks-{}.zip", chrono::Utc::now().format("%Y-%m-%d"));
     Ok((
@@ -1086,7 +1085,7 @@ fn bulk_zip(project: &Project, items: &BTreeSet<BulkDownloadItem>) -> Result<Vec
         let text = match &path {
             Some(path) => store
                 .read(path)
-                .map_err(|e| ApiError::internal("store_failed", e.to_string()))?
+                .or_internal("store_failed")?
                 .map(|stored| stored.text),
             None => None,
         };
@@ -1108,8 +1107,7 @@ fn bulk_zip(project: &Project, items: &BTreeSet<BulkDownloadItem>) -> Result<Vec
             .collect::<Vec<_>>()
             .join("/");
         zip.start_file(name.as_str(), options).map_err(zip_failed)?;
-        zip.write_all(text.as_bytes())
-            .map_err(|e| ApiError::internal("zip_failed", e.to_string()))?;
+        zip.write_all(text.as_bytes()).or_internal("zip_failed")?;
         files.push(ManifestEntry {
             path: Some(name),
             ..entry
@@ -1128,6 +1126,6 @@ fn bulk_zip(project: &Project, items: &BTreeSet<BulkDownloadItem>) -> Result<Vec
             .expect("a manifest serializes")
             .as_bytes(),
     )
-    .map_err(|e| ApiError::internal("zip_failed", e.to_string()))?;
+    .or_internal("zip_failed")?;
     Ok(zip.finish().map_err(zip_failed)?.into_inner())
 }

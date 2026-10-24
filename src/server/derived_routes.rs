@@ -32,7 +32,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::interp_routes::{expectation_from, layer_error, parse_radargram, readable_project};
 use super::needs::{Needs, Who};
-use super::routes::{lookup_dataset, ApiError, ErrorBody};
+use super::routes::{entry_path, lookup_dataset, ApiError, ErrorBody, OrInternal};
 use crate::identity::UserId;
 use crate::interp::derive::{self, GridPosition, ReducedPicks};
 use crate::interp::derived_points::{self, DerivedPointsExport};
@@ -144,17 +144,14 @@ fn visible_documents(
     let target = {
         let catalog = state.catalog();
         let entry = lookup_dataset(&catalog, radargram.as_str())?;
-        let path = state
-            .absolute_path(entry)
-            .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+        let path = entry_path(state, entry)?;
         let axes = super::interp_routes::current_axes(project, &path, entry);
         (entry.revision_id.clone(), axes)
     };
     // Skip and report (#213): a filename that is not a valid `UserId` used to
     // fail the whole request, so one bad name hid every good one.
-    let (users, unreadable) =
-        interpretations::list_users_checked(project.documents(), radargram)
-            .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+    let (users, unreadable) = interpretations::list_users_checked(project.documents(), radargram)
+        .or_internal("interpretation_read_failed")?;
     for stem in &unreadable {
         tracing::warn!(
             radargram = radargram.as_str(),
@@ -175,7 +172,7 @@ fn visible_documents(
             continue;
         }
         if let Some(stored) = interpretations::read(project.documents(), radargram, &parsed)
-            .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?
+            .or_internal("interpretation_read_failed")?
         {
             let (document, refused) = crate::interp::carry::for_evaluation(
                 project,
@@ -276,10 +273,8 @@ fn geometry_for(
 ) -> Result<crate::interp::level2::RadargramGeometry, ApiError> {
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, radargram.as_str())?;
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
-    source::read_geometry(&path).map_err(|e| ApiError::internal("radargram_read_failed", e))
+    let path = entry_path(state, entry)?;
+    source::read_geometry(&path).or_internal("radargram_read_failed")
 }
 
 fn load_set(
@@ -618,7 +613,7 @@ pub async fn get_contributors(
     let can_see_others = may_see_others_picks(&caller);
     let project = readable_project(&state)?;
     let (users, unreadable) = interpretations::list_users_checked(project.documents(), &radargram)
-        .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+        .or_internal("interpretation_read_failed")?;
     for stem in &unreadable {
         tracing::warn!(
             radargram = radargram.as_str(),
@@ -651,10 +646,10 @@ pub async fn get_contributors(
             continue;
         }
         if let Some(stored) = interpretations::read(project.documents(), &radargram, &parsed)
-            .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?
+            .or_internal("interpretation_read_failed")?
         {
-            let document = serde_json::to_value(&stored.document)
-                .map_err(|e| ApiError::internal("interpretation_read_failed", e.to_string()))?;
+            let document =
+                serde_json::to_value(&stored.document).or_internal("interpretation_read_failed")?;
             // Carried exactly as `GET .../carried` carries the caller's own
             // (#434). Drawing a stored document at its stored indices is
             // only right on the revision it was drawn on; anywhere else the

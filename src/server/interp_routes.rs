@@ -27,7 +27,7 @@ use axum::Json;
 use super::app::{AppState, MergeScope};
 use super::auth::Caller;
 use super::needs::{Needs, Who};
-use super::routes::{lookup_dataset, ApiError, ErrorBody};
+use super::routes::{entry_path, lookup_dataset, ApiError, ErrorBody, OrInternal};
 use crate::identity::{RadargramId, UserId};
 use crate::interp::checks;
 use crate::project::roles::{DownloadScope, Role};
@@ -163,6 +163,28 @@ fn store_error(error: &StoreError) -> ApiError {
     }
 }
 
+/// `user`'s interpretation of `radargram`, or a 404 when there is none.
+fn stored_interpretation(
+    project: &Project,
+    radargram: &RadargramId,
+    user: &UserId,
+) -> Result<interpretations::StoredInterpretation, ApiError> {
+    interpretations::read(project.documents(), radargram, user)
+        .map_err(interpretation_error)?
+        .ok_or_else(|| no_interpretation(radargram, user))
+}
+
+fn no_interpretation(radargram: &RadargramId, user: &UserId) -> ApiError {
+    ApiError::not_found(
+        "interpretation_not_found",
+        format!(
+            "'{}' has no interpretation of '{}'",
+            user.as_str(),
+            radargram.as_str()
+        ),
+    )
+}
+
 fn interpretation_error(error: interpretations::InterpretationError) -> ApiError {
     match &error {
         interpretations::InterpretationError::Store(e) => store_error(e),
@@ -249,21 +271,9 @@ pub async fn get_interpretation(
     let user = parse_user(&user)?;
     may_read_interpretation(&caller, &user)?;
 
-    let stored = interpretations::read(project.documents(), &radargram, &user)
-        .map_err(interpretation_error)?
-        .ok_or_else(|| {
-            ApiError::not_found(
-                "interpretation_not_found",
-                format!(
-                    "'{}' has no interpretation of '{}'",
-                    user.as_str(),
-                    radargram.as_str()
-                ),
-            )
-        })?;
+    let stored = stored_interpretation(project, &radargram, &user)?;
 
-    let body = serde_json::to_value(&stored.document)
-        .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+    let body = serde_json::to_value(&stored.document).or_internal("serialize_failed")?;
     Ok((
         [(header::ETAG, format!("\"{}\"", stored.version))],
         Json(body),
@@ -302,24 +312,11 @@ pub async fn get_interpretation_carried(
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, radargram.as_str())?;
     let revision = entry.revision_id.clone();
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let path = entry_path(&state, entry)?;
     let axes = current_axes(project, &path, entry);
     drop(catalog);
 
-    let stored = interpretations::read(project.documents(), &radargram, &user)
-        .map_err(interpretation_error)?
-        .ok_or_else(|| {
-            ApiError::not_found(
-                "interpretation_not_found",
-                format!(
-                    "'{}' has no interpretation of '{}'",
-                    user.as_str(),
-                    radargram.as_str()
-                ),
-            )
-        })?;
+    let stored = stored_interpretation(project, &radargram, &user)?;
 
     let source = crate::interp::carry::with_kept_axes(project, &radargram, &stored.document);
     let mut carried = crate::interp::carry::carry(&source, &axes, revision.as_str());
@@ -466,23 +463,10 @@ pub async fn promote_interpretation(
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, radargram.as_str())?;
     let revision = entry.revision_id.clone();
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let path = entry_path(&state, entry)?;
     drop(catalog);
 
-    let stored = interpretations::read(project.documents(), &radargram, &user)
-        .map_err(interpretation_error)?
-        .ok_or_else(|| {
-            ApiError::not_found(
-                "interpretation_not_found",
-                format!(
-                    "'{}' has no interpretation of '{}'",
-                    user.as_str(),
-                    radargram.as_str()
-                ),
-            )
-        })?;
+    let stored = stored_interpretation(project, &radargram, &user)?;
 
     // The page has to say which revision it was looking at. Without this a
     // tab left open across a replace would adopt coordinates validated
@@ -854,14 +838,7 @@ pub async fn delete_interpretation(
     let existed = interpretations::remove(project.documents(), &radargram, &user, &expected)
         .map_err(interpretation_error)?;
     if !existed {
-        return Err(ApiError::not_found(
-            "interpretation_not_found",
-            format!(
-                "'{}' has no interpretation of '{}'",
-                user.as_str(),
-                radargram.as_str()
-            ),
-        ));
+        return Err(no_interpretation(&radargram, &user));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1074,13 +1051,11 @@ pub async fn interpretation_level2(
 
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, radargram.as_str())?;
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let path = entry_path(&state, entry)?;
     let spacing = crate::cli::parse_spacing(query.spacing.as_deref().unwrap_or("auto"))
         .map_err(|e| ApiError::bad_request("invalid_spacing", e))?;
-    let geometry = crate::interp::source::read_geometry(&path)
-        .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
+    let geometry =
+        crate::interp::source::read_geometry(&path).or_internal("radargram_read_failed")?;
     let (layer_set, _) = layers::read(project.documents()).map_err(layer_error)?;
     let allows = |label: Option<&str>| layer_set.allows_overhangs(label);
 
@@ -1357,7 +1332,7 @@ pub async fn get_settings(
     // get the empty set and the section is not offered.
     let mine = match (project, caller.user.as_ref()) {
         (Some(project), Some(user)) => crate::project::preferences::read(project.documents(), user)
-            .map_err(|e| ApiError::internal("preferences_read_failed", e.to_string()))?,
+            .or_internal("preferences_read_failed")?,
         _ => crate::project::preferences::Preferences::default(),
     };
 
@@ -1783,7 +1758,7 @@ pub async fn put_settings(
                     show_group_maps,
                 },
             )
-            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+            .or_internal("settings_write_failed")?;
     }
 
     if update.basemaps.is_some()
@@ -1839,7 +1814,7 @@ pub async fn put_settings(
                     built_in_basemap: Some(built_in),
                 },
             )
-            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+            .or_internal("settings_write_failed")?;
     }
 
     if let Some(entries) = &update.overlays {
@@ -1847,7 +1822,7 @@ pub async fn put_settings(
             .map_err(|e| ApiError::bad_request("invalid_overlay", e.to_string()))?;
         project
             .set_overlays(entries)
-            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+            .or_internal("settings_write_failed")?;
     }
 
     // The cap is an administrator's decision even though the section it
@@ -1857,7 +1832,7 @@ pub async fn put_settings(
         caller.require(Role::Admin, "change the project size limit")?;
         project
             .set_max_bytes(max_bytes)
-            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+            .or_internal("settings_write_failed")?;
     }
 
     // The descriptions are also an administrator's decision (#285), for the
@@ -1892,7 +1867,7 @@ pub async fn put_settings(
         }
         project
             .set_description(short.as_deref(), long.as_deref())
-            .map_err(|e| ApiError::internal("settings_write_failed", e.to_string()))?;
+            .or_internal("settings_write_failed")?;
     }
 
     let map = project.map_section();
@@ -2074,11 +2049,9 @@ fn merged_level2(
     let mut derived_points = 0usize;
     for entry in &entries {
         let radargram = &entry.radargram_id;
-        let path = state
-            .absolute_path(entry)
-            .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
-        let geometry = crate::interp::source::read_geometry(&path)
-            .map_err(|e| ApiError::internal("radargram_read_failed", e))?;
+        let path = entry_path(state, entry)?;
+        let geometry =
+            crate::interp::source::read_geometry(&path).or_internal("radargram_read_failed")?;
 
         if query.derived {
             let export = super::derived_routes::export_derived_points(

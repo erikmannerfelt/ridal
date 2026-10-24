@@ -36,7 +36,7 @@ use super::app::AppState;
 use super::auth::Caller;
 use super::needs::{Needs, Who};
 use super::openapi::NetcdfFile;
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{entry_path, ApiError, ErrorBody, OrInternal};
 use crate::identity::RadargramId;
 use crate::io::RidalNetcdfKind;
 use crate::project::revisions::{self, ledger};
@@ -279,8 +279,7 @@ pub async fn upload_dataset(
     // served, so without this the upload was accepted, installed, and then
     // hidden again by the very ignore that made the id look available --
     // 201 Created for a radargram that never appeared.
-    let (stored, _) = overrides::read(project.documents())
-        .map_err(|e| ApiError::internal("overrides_read_failed", e.to_string()))?;
+    let (stored, _) = overrides::read(project.documents()).or_internal("overrides_read_failed")?;
     if stored.ignored.contains_key(&meta.radargram_id) {
         return Err(ApiError::conflict(
             "radargram_ignored",
@@ -300,7 +299,7 @@ pub async fn upload_dataset(
     // response and the log both do.
     let archived_interpretations =
         interpretations::count_archived(project.documents(), &meta.radargram_id)
-            .map_err(|e| ApiError::internal("archive_read_failed", e.to_string()))?;
+            .or_internal("archive_read_failed")?;
 
     // The name comes out of the uploaded file, so this is the one place a
     // path is built from something the client controls. `RadargramId` is a
@@ -385,9 +384,7 @@ pub async fn upload_dataset(
         );
     }
 
-    state
-        .rediscover()
-        .map_err(|e| ApiError::internal("rediscover_failed", e))?;
+    state.rediscover().or_internal("rediscover_failed")?;
 
     audit::record(
         project.documents(),
@@ -470,9 +467,7 @@ pub async fn remove_dataset(
     let id = entry.radargram_id.clone();
     let revision = entry.revision_id.to_string();
     let in_project = state.is_writable(entry);
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let path = entry_path(&state, entry)?;
     drop(catalog);
 
     let at = now();
@@ -507,7 +502,7 @@ pub async fn remove_dataset(
     // catalog still has the radargram and the picks are one directory over,
     // which is recoverable; the other order could lose them outright.
     let archive = interpretations::archive_all(project.documents(), &id, &at)
-        .map_err(|e| ApiError::internal("archive_failed", e.to_string()))?;
+        .or_internal("archive_failed")?;
     let archived = archive.moved;
     // Left in place because the filename is not a valid user id (#213). Said
     // out loud, because the point of archiving is that no orphan stays behind
@@ -567,7 +562,7 @@ pub async fn remove_dataset(
             );
             Ok(())
         })
-        .map_err(|e| ApiError::internal("overrides_write_failed", e.to_string()))?;
+        .or_internal("overrides_write_failed")?;
         "ignored"
     };
 
@@ -585,9 +580,7 @@ pub async fn remove_dataset(
         eprintln!("Warning: could not record the supersession: {e}");
     }
 
-    state
-        .rediscover()
-        .map_err(|e| ApiError::internal("rediscover_failed", e))?;
+    state.rediscover().or_internal("rediscover_failed")?;
 
     audit::record(
         project.documents(),
@@ -639,7 +632,7 @@ pub async fn restore_dataset(
     let lifted = overrides::update(project.documents(), |stored| {
         Ok(stored.ignored.remove(&id).is_some())
     })
-    .map_err(|e| ApiError::internal("overrides_write_failed", e.to_string()))?;
+    .or_internal("overrides_write_failed")?;
 
     if !lifted {
         return Err(ApiError::not_found(
@@ -648,9 +641,7 @@ pub async fn restore_dataset(
         ));
     }
 
-    state
-        .rediscover()
-        .map_err(|e| ApiError::internal("rediscover_failed", e))?;
+    state.rediscover().or_internal("rediscover_failed")?;
 
     // Whatever is back is current again. The ignore marked its revision
     // superseded, and leaving that standing would have the history say a
@@ -698,8 +689,7 @@ pub async fn list_ignored(
     caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
     let project = project_for(&state, &caller, "see what is not being served")?;
-    let (stored, _) = overrides::read(project.documents())
-        .map_err(|e| ApiError::internal("overrides_read_failed", e.to_string()))?;
+    let (stored, _) = overrides::read(project.documents()).or_internal("overrides_read_failed")?;
     let catalog = state.catalog();
     let vestigial: Vec<String> = catalog
         .vestigial_ignores()
@@ -1079,8 +1069,7 @@ pub async fn list_revisions(
     let id = RadargramId::new(&radargram_id)
         .map_err(|e| ApiError::bad_request("invalid_radargram_id", e))?;
 
-    let (history, _) = ledger::read(project.documents())
-        .map_err(|e| ApiError::internal("ledger_read_failed", e.to_string()))?;
+    let (history, _) = ledger::read(project.documents()).or_internal("ledger_read_failed")?;
     let current = history.current(id.as_str()).map(|r| r.revision_id.clone());
     let records = history
         .radargrams

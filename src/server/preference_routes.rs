@@ -14,7 +14,7 @@ use axum::Json;
 use super::app::AppState;
 use super::auth::Caller;
 use super::needs::{Needs, Who};
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{ApiError, ErrorBody, OrInternal};
 use crate::identity::UserId;
 use crate::project::preferences;
 use crate::project::store::Expectation;
@@ -109,8 +109,8 @@ pub async fn get_preferences(
     caller: Caller,
 ) -> Result<impl IntoResponse, ApiError> {
     let (project, user) = my_preferences_target(&state, &caller)?;
-    let preferences = preferences::read(project.documents(), user)
-        .map_err(|e| ApiError::internal("preferences_read_failed", e.to_string()))?;
+    let preferences =
+        preferences::read(project.documents(), user).or_internal("preferences_read_failed")?;
     Ok(Json(MyPreferences::new(user, preferences)))
 }
 
@@ -348,7 +348,7 @@ pub async fn put_preferences(
     }
 
     preferences::write(project.documents(), user, &stored, &Expectation::Any)
-        .map_err(|e| ApiError::internal("preferences_write_failed", e.to_string()))?;
+        .or_internal("preferences_write_failed")?;
 
     Ok(Json(MyPreferences::new(user, stored)))
 }

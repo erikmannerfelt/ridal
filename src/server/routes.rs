@@ -139,6 +139,18 @@ pub(super) struct ErrorDetail {
     message: String,
 }
 
+/// A failure the caller can do nothing about, as a 500 with `code` and the
+/// error's own message: `ApiError::internal(code, error.to_string())`.
+pub(super) trait OrInternal<T> {
+    fn or_internal(self, code: &'static str) -> Result<T, ApiError>;
+}
+
+impl<T, E: std::fmt::Display> OrInternal<T> for Result<T, E> {
+    fn or_internal(self, code: &'static str) -> Result<T, ApiError> {
+        self.map_err(|e| ApiError::internal(code, e.to_string()))
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = ErrorBody {
@@ -926,6 +938,31 @@ pub(super) fn lookup_dataset<'a>(
     })
 }
 
+/// The open render service for `radargram_id`, from the snapshot its
+/// catalog entry came from, so the two describe one generation of the
+/// catalog.
+fn open_radargram(
+    catalog: &super::app::CatalogSnapshot,
+    radargram_id: &str,
+) -> Result<Arc<super::app::OpenRadargram>, ApiError> {
+    catalog.radargram(radargram_id).ok_or_else(|| {
+        ApiError::internal(
+            "dataset_unavailable",
+            "Dataset is cataloged but its render service failed to initialize.",
+        )
+    })
+}
+
+/// Where `entry`'s file is on disk.
+pub(super) fn entry_path(
+    state: &AppState,
+    entry: &super::catalog::CatalogEntry,
+) -> Result<std::path::PathBuf, ApiError> {
+    state
+        .absolute_path(entry)
+        .or_internal("path_resolve_failed")
+}
+
 /// One radargram's summary metadata.
 #[utoipa::path(
     get,
@@ -1369,14 +1406,7 @@ pub async fn overview_image(
 
     // From the same snapshot the entry came out of, so the service and the
     // entry describe one generation of the catalog.
-    let radargram = catalog
-        .radargram(entry.radargram_id.as_str())
-        .ok_or_else(|| {
-            ApiError::internal(
-                "dataset_unavailable",
-                "Dataset is cataloged but its render service failed to initialize.",
-            )
-        })?;
+    let radargram = open_radargram(&catalog, entry.radargram_id.as_str())?;
 
     let (source_height, width) = radargram.shape;
     let elevation_range = entry.elevation_range();
@@ -1479,14 +1509,7 @@ pub async fn chunk_image(
 
     // From the same snapshot the entry came out of, so the service and the
     // entry describe one generation of the catalog.
-    let radargram = catalog
-        .radargram(entry.radargram_id.as_str())
-        .ok_or_else(|| {
-            ApiError::internal(
-                "dataset_unavailable",
-                "Dataset is cataloged but its render service failed to initialize.",
-            )
-        })?;
+    let radargram = open_radargram(&catalog, entry.radargram_id.as_str())?;
 
     let (source_height, width) = radargram.shape;
     let elevation_range = entry.elevation_range();
@@ -1516,7 +1539,7 @@ pub async fn chunk_image(
         move |service| {
             service
                 .get_or_render_chunk(&chunk, dataset_view, &render_profile, elevation_range)
-                .map_err(|e| ApiError::internal("render_failed", e))
+                .or_internal("render_failed")
         },
     )
     .await?;
@@ -1930,14 +1953,7 @@ pub async fn viewer_page(
 
     // From the same snapshot the entry came out of, so the service and the
     // entry describe one generation of the catalog.
-    let radargram = catalog
-        .radargram(entry.radargram_id.as_str())
-        .ok_or_else(|| {
-            PageError(ApiError::internal(
-                "dataset_unavailable",
-                "Dataset is cataloged but its render service failed to initialize.",
-            ))
-        })?;
+    let radargram = open_radargram(&catalog, entry.radargram_id.as_str()).map_err(PageError)?;
     let (height, width) = radargram.shape;
     let raster = ViewerRaster::new(width, height);
     let grid = ChunkGrid::new(raster);
@@ -2218,13 +2234,8 @@ pub async fn dataset_track(
 ) -> Result<impl IntoResponse, ApiError> {
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
-    let track = state
-        .tracks
-        .get(&path)
-        .map_err(|e| ApiError::internal("track_read_failed", e))?;
+    let path = entry_path(&state, entry)?;
+    let track = state.tracks.get(&path).or_internal("track_read_failed")?;
     Ok(Json(track_to_json(&track)))
 }
 
@@ -2316,14 +2327,7 @@ pub async fn dataset_image(
 
     // From the same snapshot the entry came out of, so the service and the
     // entry describe one generation of the catalog.
-    let radargram = catalog
-        .radargram(entry.radargram_id.as_str())
-        .ok_or_else(|| {
-            ApiError::internal(
-                "dataset_unavailable",
-                "Dataset is cataloged but its render service failed to initialize.",
-            )
-        })?;
+    let radargram = open_radargram(&catalog, entry.radargram_id.as_str())?;
     let (source_height, source_width) = radargram.shape;
     let elevation_range = entry.elevation_range();
     let radargram_id_owned = entry.radargram_id.to_string();
@@ -2468,13 +2472,8 @@ pub async fn dataset_track_geojson(
     caller.require_download(crate::project::roles::DownloadScope::All, "the track")?;
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
-    let track = state
-        .tracks
-        .get(&path)
-        .map_err(|e| ApiError::internal("track_read_failed", e))?;
+    let path = entry_path(&state, entry)?;
+    let track = state.tracks.get(&path).or_internal("track_read_failed")?;
 
     let id = entry.radargram_id.to_string();
     let features = track_features(entry, &track);
@@ -2483,7 +2482,7 @@ pub async fn dataset_track_geojson(
         "type": "FeatureCollection",
         "features": features,
     }))
-    .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+    .or_internal("serialize_failed")?;
 
     Ok((
         [
@@ -2568,7 +2567,7 @@ fn merged_track_geojson(
         "type": "FeatureCollection",
         "features": features,
     }))
-    .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+    .or_internal("serialize_failed")?;
 
     let mut response = (
         [
@@ -2666,18 +2665,16 @@ pub async fn dataset_download(
     )?;
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let path = entry_path(&state, entry)?;
 
     let file = tokio::fs::File::open(&path)
         .await
-        .map_err(|e| ApiError::internal("radargram_open_failed", e.to_string()))?;
+        .or_internal("radargram_open_failed")?;
     let length = file
         .metadata()
         .await
         .map(|m| m.len())
-        .map_err(|e| ApiError::internal("radargram_stat_failed", e.to_string()))?;
+        .or_internal("radargram_stat_failed")?;
 
     let stream = tokio_util::io::ReaderStream::new(file);
     let id = entry.radargram_id.to_string();
@@ -3164,9 +3161,7 @@ pub async fn dataset_attributes(
 ) -> Result<impl IntoResponse, ApiError> {
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let path = entry_path(&state, entry)?;
     let file = netcdf::open(&path)
         .map_err(|e| ApiError::internal("attributes_read_failed", format!("{e}")))?;
     let mut raw = serde_json::Map::new();
@@ -3283,7 +3278,7 @@ pub async fn dataset_gprinterp_axes(
         .filter(|axes| axes.is_usable())
         .map(|axes| serde_json::to_value(&axes))
         .transpose()
-        .map_err(|e| ApiError::internal("serialize_failed", e.to_string()))?;
+        .or_internal("serialize_failed")?;
     Ok(Json(GprinterpAxes {
         radargram_id: entry.radargram_id.to_string(),
         revision_id: entry.revision_id.to_string(),
@@ -3322,9 +3317,7 @@ pub async fn dataset_axes(
 ) -> Result<impl IntoResponse, ApiError> {
     let catalog = state.catalog();
     let entry = lookup_dataset(&catalog, &radargram_id)?;
-    let path = state
-        .absolute_path(entry)
-        .map_err(|e| ApiError::internal("path_resolve_failed", e))?;
+    let path = entry_path(&state, entry)?;
     let file =
         netcdf::open(&path).map_err(|e| ApiError::internal("axes_read_failed", format!("{e}")))?;
     Ok(Json(DatasetAxes {
@@ -3384,25 +3377,14 @@ pub async fn dataset_trace(
     })?;
     // From the same snapshot the entry came out of, so the service and the
     // entry describe one generation of the catalog.
-    let radargram = catalog
-        .radargram(entry.radargram_id.as_str())
-        .ok_or_else(|| {
-            ApiError::internal(
-                "dataset_unavailable",
-                "Dataset is cataloged but its render service failed to initialize.",
-            )
-        })?;
+    let radargram = open_radargram(&catalog, entry.radargram_id.as_str())?;
 
     let column = with_render_service(
         state.clone(),
         radargram,
         super::activity::RenderKind::Trace,
         entry.radargram_id.to_string(),
-        move |service| {
-            service
-                .read_trace(trace)
-                .map_err(|e| ApiError::internal("trace_read_failed", e))
-        },
+        move |service| service.read_trace(trace).or_internal("trace_read_failed"),
     )
     .await?
     .ok_or_else(|| {
@@ -3502,12 +3484,7 @@ pub async fn dataset_topo_geometry(
     let elevation_range = entry.elevation_range();
     let radargram_id = entry.radargram_id.to_string();
 
-    let radargram = catalog.radargram(&radargram_id).ok_or_else(|| {
-        ApiError::internal(
-            "dataset_unavailable",
-            "Dataset is cataloged but its render service failed to initialize.",
-        )
-    })?;
+    let radargram = open_radargram(&catalog, &radargram_id)?;
 
     let readers = state.render_config().open_readers;
     let geometry = tokio::task::spawn_blocking(move || {
@@ -3585,6 +3562,25 @@ mod tests {
         let (interrupt, guard) = Interrupt::on_drop();
         drop(guard);
         assert!(super::interrupted_error(&interrupt).is_some());
+    }
+
+    #[test]
+    fn or_internal_is_a_500_with_the_errors_own_message() {
+        use super::OrInternal;
+
+        let failed: Result<(), String> = Err("disk full".to_string());
+        let error = failed.or_internal("write_failed").unwrap_err();
+        assert_eq!(error.status_code(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(error.code, "write_failed");
+        assert_eq!(error.message(), "disk full");
+
+        let failed: Result<(), std::io::Error> = Err(std::io::Error::other("no such file"));
+        assert_eq!(
+            failed.or_internal("read_failed").unwrap_err().message(),
+            "no such file"
+        );
+
+        assert!(matches!(Ok::<_, String>(7).or_internal("unused"), Ok(7)));
     }
 
     #[test]

@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use super::app::AppState;
 use super::auth::Caller;
 use super::needs::{Needs, Who};
-use super::routes::{lookup_dataset, ApiError, ErrorBody};
+use super::routes::{lookup_dataset, ApiError, ErrorBody, OrInternal};
 use crate::identity::{DisplayName, GroupId, GroupName, RadargramId};
 use crate::project::overrides::{
     self, CatalogOverrides, GroupMembership, GroupOverride, RadargramOverride,
@@ -195,8 +195,7 @@ pub async fn get_properties(
     // Strict rather than lenient: an operator opening the dialog over an
     // unparsable document must be told, not shown an empty form whose save
     // would discard whatever it held.
-    let (stored, _) = overrides::read(project.documents())
-        .map_err(|e| ApiError::internal("overrides_read_failed", e.to_string()))?;
+    let (stored, _) = overrides::read(project.documents()).or_internal("overrides_read_failed")?;
     let over = stored.radargram(&entry.radargram_id);
 
     let mut groups: Vec<GroupChoice> = catalog
@@ -321,7 +320,7 @@ pub async fn put_properties(
         apply(stored, &id, &over, group_name.as_ref());
         Ok(())
     })
-    .map_err(|e| ApiError::internal("overrides_write_failed", e.to_string()))?;
+    .or_internal("overrides_write_failed")?;
 
     refresh_catalog(&state)?;
 
@@ -504,8 +503,7 @@ pub async fn get_group_properties(
         .get(&id)
         .map(|name| name.as_str().to_string());
 
-    let (stored, _) = overrides::read(project.documents())
-        .map_err(|e| ApiError::internal("overrides_read_failed", e.to_string()))?;
+    let (stored, _) = overrides::read(project.documents()).or_internal("overrides_read_failed")?;
 
     Ok(Json(GroupProperties {
         group_id: id.as_str().to_string(),
@@ -571,7 +569,7 @@ pub async fn put_group_properties(
         }
         Ok(())
     })
-    .map_err(|e| ApiError::internal("overrides_write_failed", e.to_string()))?;
+    .or_internal("overrides_write_failed")?;
 
     refresh_catalog(&state)?;
 

@@ -36,7 +36,7 @@ use super::auth::Caller;
 use super::interp_routes::{expectation_from, parse_radargram, readable_project};
 use super::needs::{Needs, Who};
 use super::raw_routes::{project_for, read_recordings, store_error, write_with_dem, SourceView};
-use super::routes::{ApiError, ErrorBody};
+use super::routes::{ApiError, ErrorBody, OrInternal};
 use crate::identity::{DemId, RadargramId};
 use crate::project::raw::{self, Dem, NamedFile, SourceDem};
 use crate::project::roles::{DownloadScope, Role};
@@ -218,12 +218,12 @@ pub async fn download_dem(
         })?;
     let file = tokio::fs::File::open(&path)
         .await
-        .map_err(|e| ApiError::internal("raw_open_failed", e.to_string()))?;
+        .or_internal("raw_open_failed")?;
     let length = file
         .metadata()
         .await
         .map(|m| m.len())
-        .map_err(|e| ApiError::internal("raw_stat_failed", e.to_string()))?;
+        .or_internal("raw_stat_failed")?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
@@ -306,7 +306,7 @@ pub async fn put_dem(
             crate::dem::check_readable(&path, &crate::dem::DemDrivers::geotiff_only())
         })
         .await
-        .map_err(|e| ApiError::internal("dem_check_failed", e.to_string()))?
+        .or_internal("dem_check_failed")?
         .map_err(|e| {
             ApiError::bad_request(
                 "dem_unreadable",
@@ -455,7 +455,7 @@ pub async fn link_dem(
     let dem = body.dem.as_deref().map(parse_dem).transpose()?;
 
     let (mut source, version) = raw::read_source(project.documents(), &radargram)
-        .map_err(|e| ApiError::internal("source_read_failed", e))?
+        .or_internal("source_read_failed")?
         .ok_or_else(|| {
             ApiError::not_found(
                 "no_source",
@@ -486,7 +486,7 @@ pub async fn link_dem(
                 read
             })
             .await
-            .map_err(|e| ApiError::internal("source_failed", e.to_string()))?
+            .or_internal("source_failed")?
             .map_err(|e| ApiError::bad_request("source_unreadable", e))?
         }
     };
