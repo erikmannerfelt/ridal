@@ -104,6 +104,8 @@ pub mod site;
 mod site_tests;
 pub mod telemetry;
 pub mod templates;
+#[cfg(test)]
+mod test_support;
 pub mod track;
 pub mod track_cache;
 pub mod upload_routes;

@@ -8,9 +8,10 @@ use axum::Router;
 use serde_json::json;
 
 use super::access_tests::{
-    activated, data, delete, distinct_bytes, get, lifecycle_app_with_cap, open_project,
-    password_hash, post, post_bytes, radargram_bytes, request, send, sign_in, Response,
+    activated, data, delete, distinct_bytes, get, lifecycle_app_with_cap, open_project, post,
+    post_bytes, radargram_bytes, request,
 };
+use super::test_support::{password_hash, send, sign_in, Response};
 use crate::project::roles::{DownloadScope, Role};
 
 fn app() -> (tempfile::TempDir, tempfile::TempDir, Router) {

@@ -25,12 +25,13 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use super::access_tests::{
-    activated, id, new_site, password, password_hash, project_key, radargrams,
-    site_router_processing, write_people, UserSet, PROJECT,
+    activated, id, new_site, project_key, radargrams, site_router_processing, write_people,
+    UserSet, PROJECT,
 };
 use super::app::AccessOptions;
 use super::auth::{self, SessionKey, SESSION_COOKIE};
 use super::needs::{Needs, Who};
+use super::test_support::{password, password_hash};
 use crate::project::roles::{DownloadScope, Role};
 use crate::site::accounts::{self, invite};
 use crate::site::Site;
