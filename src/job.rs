@@ -70,25 +70,24 @@ pub fn run(spec: &JobSpec, emit: &mut dyn FnMut(Event)) -> Result<String, String
     let params = crate::gpr::RunParams {
         filepaths: spec.inputs.clone(),
         output_path: Some(temporary.clone()),
-        dem_path: spec.dem.clone(),
-        cor_path: spec.cor.clone(),
-        medium_velocity: spec.medium_velocity,
-        crs: spec.crs.clone(),
-        quiet: true,
         track_path: None,
-        steps: spec.steps.clone(),
-        no_export: false,
         render_path: None,
-        render_profile: None,
-        render_width: None,
-        render_topo: false,
-        override_antenna_mhz: spec.antenna_mhz_override,
-        override_antenna_separation: spec.antenna_separation_override,
-        user_metadata: crate::user_metadata::UserMetadata::new(),
         radargram_id: Some(spec.radargram_id.clone()),
         display_name: spec.display_name.clone(),
-        group: spec.group_name.clone(),
-        group_id: spec.group_id.clone(),
+        options: crate::gpr::ProcessingOptions {
+            dem_path: spec.dem.clone(),
+            cor_path: spec.cor.clone(),
+            medium_velocity: spec.medium_velocity,
+            crs: spec.crs.clone(),
+            quiet: true,
+            steps: spec.steps.clone(),
+            override_antenna_mhz: spec.antenna_mhz_override,
+            override_antenna_separation: spec.antenna_separation_override,
+            group: spec.group_name.clone(),
+            group_id: spec.group_id.clone(),
+            // Exported, and nothing rendered: the server renders on demand.
+            ..Default::default()
+        },
     };
     let result = (|| {
         let (gpr, _) =

@@ -30,11 +30,13 @@ FIXTURE = (
     Path(__file__).parent / "assets" / "mala" / "dronbreen-20250327-DAT_0066_A1.rd3"
 )
 
-
-@pytest.mark.skipif(
+needs_proj = pytest.mark.skipif(
     not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists(),
     reason="processing the fixture's coordinates needs PROJ, and the fixture",
 )
+
+
+@needs_proj
 def test_render_topo_matches_between_process_and_render(tmp_path):
     # #289: the corrected view from `process(render_topo=True)` (the array in
     # memory) and from `render(topo=True)` (the exported file) is one picture.
@@ -57,10 +59,7 @@ def test_render_topo_matches_between_process_and_render(tmp_path):
     assert topo["height"] > standard["height"], "the corrected raster is taller"
 
 
-@pytest.mark.skipif(
-    not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists(),
-    reason="processing the fixture's coordinates needs PROJ, and the fixture",
-)
+@needs_proj
 def test_info_reads_a_processed_file_and_its_preflight_body(tmp_path):
     # #11: the HTTP client (#328) matches a local file to a served radargram
     # by its ids, and asks the server what replacing it would do (#331).
@@ -84,10 +83,7 @@ def test_info_reads_a_processed_file_and_its_preflight_body(tmp_path):
         ridal.info(output, crs="EPSG:32633")
 
 
-@pytest.mark.skipif(
-    not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists(),
-    reason="processing the fixture's coordinates needs PROJ, and the fixture",
-)
+@needs_proj
 def test_batch_process_names_outputs_after_an_id_pattern(tmp_path):
     # #368: the same patterns as `batch-process --id-pattern`.
     outputs = ridal.batch_process(
@@ -112,10 +108,7 @@ def test_batch_process_names_outputs_after_an_id_pattern(tmp_path):
         )
 
 
-@pytest.mark.skipif(
-    not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists(),
-    reason="processing the fixture's coordinates needs PROJ, and the fixture",
-)
+@needs_proj
 def test_render_figure_from_a_dict_or_a_spec_file(tmp_path):
     # #142: `render(figure=...)` is `ridal render --figure`, with the spec
     # given inline or as a file.
@@ -154,10 +147,7 @@ def test_render_figure_from_a_dict_or_a_spec_file(tmp_path):
     assert svg["warnings"] == []
 
 
-@pytest.mark.skipif(
-    not (shutil.which("cs2cs") and shutil.which("projinfo")) or not FIXTURE.exists(),
-    reason="processing the fixture's coordinates needs PROJ, and the fixture",
-)
+@needs_proj
 def test_render_and_track_true_derive_paths_beside_the_output(tmp_path):
     # #93: `True` means what `ridal process -r` and `--track` without a value
     # mean, and `False` means leaving the argument out.
@@ -220,3 +210,92 @@ def test_coords_writes_a_csv_that_process_reads(tmp_path):
     ridal.process(str(rad), str(output), steps=["subset(0 100)"], quiet=True)
     (record,) = ridal.info(output)
     assert record["traces"] == 100
+
+
+@needs_proj
+def test_steps_may_be_a_string_a_list_or_a_tuple(tmp_path):
+    # The recipe hash covers the steps that ran: the same hash from each
+    # spelling means each ran the same steps.
+    spellings = {
+        "text": "subset(0 50 0 100), zero_corr",
+        "list": ["subset(0 50 0 100)", "zero_corr"],
+        "tuple": ("subset(0 50 0 100)", "zero_corr"),
+    }
+    revisions = {}
+    for name, steps in spellings.items():
+        output = tmp_path / f"{name}.nc"
+        ridal.process(str(FIXTURE), str(output), steps=steps, quiet=True)
+        (record,) = ridal.info(output)
+        revisions[name] = record["recipe_hash"]
+    assert len(set(revisions.values())) == 1, revisions
+
+    other = tmp_path / "other.nc"
+    ridal.process(str(FIXTURE), str(other), steps="subset(0 50 0 100)", quiet=True)
+    (record,) = ridal.info(other)
+    assert record["recipe_hash"] != revisions["text"]
+
+
+@needs_proj
+def test_batch_process_applies_the_shared_options(tmp_path):
+    # Group, metadata and steps reach every output of a batch, as they do
+    # the one output of `process`.
+    (output,) = ridal.batch_process(
+        [str(FIXTURE.with_suffix(".rad"))],
+        str(tmp_path),
+        steps=("subset(0 50 0 100)",),
+        quiet=True,
+        metadata={"campaign": "spring"},
+        group_name="Drønbreen",
+        group_id="dronbreen",
+    )
+    (record,) = ridal.info(output)
+    assert record["group_name"] == "Drønbreen"
+    assert record["group_id"] == "dronbreen"
+    assert record["traces"] == 50
+
+    dataset = ridal.process(
+        str(FIXTURE),
+        steps=["subset(0 50 0 100)"],
+        metadata={"campaign": "spring"},
+        quiet=True,
+        return_dataset=True,
+    )
+    assert "campaign" in str(dataset["attrs"])
+
+
+@pytest.mark.parametrize("function", ["process", "batch_process"])
+def test_steps_are_chosen_one_way(function, tmp_path):
+    run = getattr(ridal, function)
+    args = (
+        (str(FIXTURE), str(tmp_path))
+        if function == "batch_process"
+        else (str(FIXTURE),)
+    )
+    for choice in [
+        {"steps": "zero_corr", "default": True},
+        {"default": True, "default_with_topo": True},
+        {"steps": ["zero_corr"], "default_with_topo": True},
+    ]:
+        with pytest.raises(ValueError, match="Only one of"):
+            run(*args, quiet=True, **choice)
+    with pytest.raises(ValueError, match="steps must be a string"):
+        run(*args, steps=5, quiet=True)
+    with pytest.raises(ValueError, match="no_such_step"):
+        run(*args, steps=["no_such_step"], quiet=True)
+
+
+def test_batch_process_side_outputs_must_be_directories(tmp_path):
+    not_a_directory = tmp_path / "file.txt"
+    not_a_directory.write_text("")
+    for side_output in ["track", "render"]:
+        with pytest.raises(
+            ValueError, match=f"{side_output} must be an existing directory"
+        ):
+            ridal.batch_process(
+                [str(FIXTURE)],
+                str(tmp_path),
+                quiet=True,
+                **{side_output: str(not_a_directory)},
+            )
+    with pytest.raises(ValueError, match="output must be an existing directory"):
+        ridal.batch_process([str(FIXTURE)], str(not_a_directory), quiet=True)

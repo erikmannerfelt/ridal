@@ -248,25 +248,15 @@ fn load() -> GPR {
     let params = crate::gpr::RunParams {
         filepaths: vec![RECORDING.into()],
         output_path: Some(std::env::temp_dir().join("ridal-golden.nc")),
-        dem_path: None,
-        cor_path: None,
-        medium_velocity: 0.168,
-        crs: None,
-        quiet: true,
         track_path: None,
-        steps: Vec::new(),
-        no_export: true,
         render_path: None,
-        render_profile: None,
-        render_width: None,
-        render_topo: false,
-        override_antenna_mhz: None,
-        override_antenna_separation: None,
-        user_metadata: crate::user_metadata::UserMetadata::new(),
         radargram_id: Some("golden".to_string()),
         display_name: None,
-        group: None,
-        group_id: None,
+        options: crate::gpr::ProcessingOptions {
+            quiet: true,
+            no_export: true,
+            ..Default::default()
+        },
     };
     crate::gpr::build_processed_gpr(params)
         .expect("the golden recording loads")

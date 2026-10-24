@@ -182,6 +182,94 @@ pub mod ridal {
         Ok(Some(Some(fspath(py, bound)?)))
     }
 
+    /// The `steps=` argument as the CLI's `--steps` text: a string as it is,
+    /// or a list or tuple of steps joined with commas.
+    fn steps_text(py: Python<'_>, steps: Option<Py<PyAny>>) -> PyResult<Option<String>> {
+        let Some(steps) = steps else {
+            return Ok(None);
+        };
+        let bound = steps.bind(py);
+        if let Ok(text) = bound.extract::<String>() {
+            return Ok(Some(text));
+        }
+        let parts: PyResult<Vec<String>> = if let Ok(list) = bound.cast::<PyList>() {
+            list.iter().map(|item| item.extract::<String>()).collect()
+        } else if let Ok(tuple) = bound.cast::<PyTuple>() {
+            tuple.iter().map(|item| item.extract::<String>()).collect()
+        } else {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "steps must be a string or a list/tuple of strings",
+            ));
+        };
+        Ok(Some(parts?.join(",")))
+    }
+
+    /// The processing options `process()` and `batch_process()` share.
+    #[allow(clippy::too_many_arguments)]
+    fn processing_options(
+        py: Python<'_>,
+        steps: Option<Py<PyAny>>,
+        default: bool,
+        default_with_topo: bool,
+        velocity: f32,
+        cor: Option<Py<PyAny>>,
+        dem: Option<Py<PyAny>>,
+        crs: Option<String>,
+        quiet: bool,
+        render_profile: Option<String>,
+        render_width: Option<usize>,
+        render_topo: bool,
+        no_export: bool,
+        override_antenna_mhz: Option<f32>,
+        override_antenna_separation: Option<f32>,
+        metadata: Option<Py<PyAny>>,
+        group_name: Option<String>,
+        group_id: Option<String>,
+    ) -> PyResult<gpr::ProcessingOptions> {
+        let steps = gpr::resolve_steps(
+            default,
+            default_with_topo,
+            steps_text(py, steps)?.as_deref(),
+        )
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
+        Ok(gpr::ProcessingOptions {
+            dem_path: optional_path(py, dem)?,
+            cor_path: optional_path(py, cor)?,
+            medium_velocity: velocity,
+            crs,
+            quiet,
+            steps,
+            no_export,
+            render_profile,
+            render_width,
+            render_topo,
+            override_antenna_mhz,
+            override_antenna_separation,
+            user_metadata: optional_metadata(py, metadata)?,
+            group: group_name,
+            group_id,
+        })
+    }
+
+    /// A `batch_process()` side output's `path-like` argument: an existing
+    /// directory.
+    fn existing_dir(
+        py: Python<'_>,
+        value: Option<Py<PyAny>>,
+        what: &str,
+    ) -> PyResult<Option<PathBuf>> {
+        let Some(path) = optional_path(py, value)? else {
+            return Ok(None);
+        };
+        if !path.is_dir() {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{what} must be an existing directory in batch_process(): {}",
+                path.display()
+            )));
+        }
+        Ok(Some(path))
+    }
+
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         let py = m.py();
@@ -467,125 +555,50 @@ pub mod ridal {
                 ));
             }
         }
-        let profile_flags =
-            usize::from(steps.is_some()) + usize::from(default) + usize::from(default_with_topo);
-
-        if profile_flags > 1 {
-            return Err(PyValueError::new_err(
-                "Only one of steps=..., default=True, and default_with_topo=True may be provided",
-            ));
-        }
-        let input_paths = inputs_to_paths(py, inputs.bind(py))?;
-        let output_path = optional_path(py, output)?;
-        let cor_path = optional_path(py, cor)?;
-        let dem_path = optional_path(py, dem)?;
-
-        let steps_text = match steps {
-            Some(step_obj) => {
-                let bound = step_obj.bind(py);
-                if let Ok(step_text) = bound.extract::<String>() {
-                    Some(step_text)
-                } else if let Ok(step_list) = bound.cast::<PyList>() {
-                    let parts = step_list
-                        .iter()
-                        .map(|item| item.extract::<String>())
-                        .collect::<PyResult<Vec<String>>>()?;
-                    Some(parts.join(","))
-                } else if let Ok(step_tuple) = bound.cast::<PyTuple>() {
-                    let parts = step_tuple
-                        .iter()
-                        .map(|item| item.extract::<String>())
-                        .collect::<PyResult<Vec<String>>>()?;
-                    Some(parts.join(","))
-                } else {
-                    return Err(PyValueError::new_err(
-                        "steps must be a string or a list/tuple of strings",
-                    ));
-                }
-            }
-            None => None,
-        };
-
-        let resolved_steps = if default_with_topo {
-            let mut profile = gpr::default_processing_profile();
-            profile.push("correct_topography".to_string());
-            profile
-        } else if default {
-            gpr::default_processing_profile()
-        } else if let Some(step_text) = steps_text.as_deref() {
-            crate::tools::parse_step_list(step_text).map_err(PyValueError::new_err)?
-        } else {
-            vec![]
-        };
-
-        gpr::validate_steps(&resolved_steps).map_err(PyValueError::new_err)?;
-
-        let user_metadata = optional_metadata(py, metadata)?;
-
-        if return_dataset {
-            // Build but do not export
-            let params2 = gpr::RunParams {
-                filepaths: input_paths,
-                output_path: None,
-                dem_path,
-                cor_path,
-                medium_velocity: velocity,
-                crs,
-                quiet,
-                track_path: None,
-                steps: resolved_steps,
-                no_export: true,
-                render_path: None,
-                render_profile: None,
-                render_width: None,
-                render_topo: false,
-                override_antenna_mhz,
-                override_antenna_separation,
-                user_metadata,
-                radargram_id,
-                display_name: radargram_name,
-                group: group_name,
-                group_id,
-            };
-            let (gpr_obj, _default_path) = gpr::build_processed_gpr(params2)
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
-            let ds = gpr_obj
-                .export_dataset()
-                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
-            let ds_py = ds.to_python(py);
-            if return_dataset_format == "xarray_dict" {
-                return ds_py;
-            } else if return_dataset_format == "xarray" {
-                return xarray_dict_to_ds(py, ds_py?);
-            } else {
-                unreachable!()
-            }
-        }
-
-        // file/export mode (unchanged)
-        let params = gpr::RunParams {
-            filepaths: input_paths,
-            output_path,
-            dem_path,
-            cor_path,
-            medium_velocity: velocity,
+        let options = processing_options(
+            py,
+            steps,
+            default,
+            default_with_topo,
+            velocity,
+            cor,
+            dem,
             crs,
             quiet,
-            track_path,
-            steps: resolved_steps,
-            no_export,
-            render_path,
             render_profile,
             render_width,
             render_topo,
+            // A returned dataset is built but not written.
+            no_export || return_dataset,
             override_antenna_mhz,
             override_antenna_separation,
-            user_metadata,
+            metadata,
+            group_name,
+            group_id,
+        )?;
+        let params = gpr::RunParams {
+            filepaths: inputs_to_paths(py, inputs.bind(py))?,
+            output_path: optional_path(py, output)?,
+            track_path,
+            render_path,
             radargram_id,
             display_name: radargram_name,
-            group: group_name,
-            group_id,
+            options,
         };
+
+        if return_dataset {
+            let (gpr_obj, _default_path) = gpr::build_processed_gpr(params)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+            let ds_py = gpr_obj
+                .export_dataset()
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?
+                .to_python(py);
+            return match return_dataset_format {
+                "xarray" => xarray_dict_to_ds(py, ds_py?),
+                _ => ds_py,
+            };
+        }
+
         let result = gpr::run(params)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
         // Ok(result.output_path.to_string_lossy().to_string())
@@ -897,7 +910,6 @@ pub mod ridal {
     ) -> PyResult<Vec<String>> {
         use pyo3::exceptions::{PyRuntimeError, PyValueError};
 
-        let input_paths = inputs_to_paths(py, inputs.bind(py))?;
         let output_dir = fspath(py, output.bind(py))?;
         if !output_dir.is_dir() {
             return Err(PyValueError::new_err(format!(
@@ -905,108 +917,34 @@ pub mod ridal {
                 output_dir.display()
             )));
         }
-
-        let cor_path = optional_path(py, cor)?;
-        let dem_path = optional_path(py, dem)?;
-        let track_dir = match track {
-            Some(obj) => {
-                let p = fspath(py, obj.bind(py))?;
-                if !p.is_dir() {
-                    return Err(PyValueError::new_err(format!(
-                        "track must be an existing directory in batch_process(): {}",
-                        p.display()
-                    )));
-                }
-                Some(p)
-            }
-            None => None,
-        };
-        let render_dir = match render {
-            Some(obj) => {
-                let p = fspath(py, obj.bind(py))?;
-                if !p.is_dir() {
-                    return Err(PyValueError::new_err(format!(
-                        "render must be an existing directory in batch_process(): {}",
-                        p.display()
-                    )));
-                }
-                Some(p)
-            }
-            None => None,
-        };
-
-        let profile_flags =
-            usize::from(steps.is_some()) + usize::from(default) + usize::from(default_with_topo);
-
-        if profile_flags > 1 {
-            return Err(PyValueError::new_err(
-                "Only one of steps=..., default=True, and default_with_topo=True may be provided",
-            ));
-        }
-        let steps_text = match steps {
-            Some(step_obj) => {
-                let bound = step_obj.bind(py);
-                if let Ok(step_text) = bound.extract::<String>() {
-                    Some(step_text)
-                } else if let Ok(step_list) = bound.cast::<PyList>() {
-                    let parts = step_list
-                        .iter()
-                        .map(|item| item.extract::<String>())
-                        .collect::<PyResult<Vec<String>>>()?;
-                    Some(parts.join(","))
-                } else if let Ok(step_tuple) = bound.cast::<PyTuple>() {
-                    let parts = step_tuple
-                        .iter()
-                        .map(|item| item.extract::<String>())
-                        .collect::<PyResult<Vec<String>>>()?;
-                    Some(parts.join(","))
-                } else {
-                    return Err(PyValueError::new_err(
-                        "steps must be a string or a list/tuple of strings",
-                    ));
-                }
-            }
-            None => None,
-        };
-
-        let resolved_steps = if default_with_topo {
-            let mut profile = gpr::default_processing_profile();
-            profile.push("correct_topography".to_string());
-            profile
-        } else if default {
-            gpr::default_processing_profile()
-        } else if let Some(step_text) = steps_text.as_deref() {
-            crate::tools::parse_step_list(step_text).map_err(PyValueError::new_err)?
-        } else {
-            vec![]
-        };
-
-        gpr::validate_steps(&resolved_steps).map_err(PyValueError::new_err)?;
-        let user_metadata = optional_metadata(py, metadata)?;
-
         let params = gpr::BatchRunParams {
-            filepaths: input_paths,
+            filepaths: inputs_to_paths(py, inputs.bind(py))?,
             output_dir,
-            dem_path,
-            cor_path,
-            medium_velocity: velocity,
-            crs,
-            quiet,
-            track_dir,
-            steps: resolved_steps,
-            no_export,
-            render_dir,
-            render_profile,
-            render_width,
-            render_topo,
+            track_dir: existing_dir(py, track, "track")?,
+            render_dir: existing_dir(py, render, "render")?,
             merge,
-            override_antenna_mhz,
-            override_antenna_separation,
-            user_metadata,
-            group: group_name,
-            group_id,
             id_pattern,
             display_name_pattern,
+            options: processing_options(
+                py,
+                steps,
+                default,
+                default_with_topo,
+                velocity,
+                cor,
+                dem,
+                crs,
+                quiet,
+                render_profile,
+                render_width,
+                render_topo,
+                no_export,
+                override_antenna_mhz,
+                override_antenna_separation,
+                metadata,
+                group_name,
+                group_id,
+            )?,
         };
 
         let result =
