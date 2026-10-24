@@ -225,6 +225,12 @@ pub fn load_cor(
 /// - The file cannot be read
 /// - The length does not work with the expected shape
 pub fn load_rd3(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn std::error::Error>> {
+    // `height` is the sample count from the `.rad` header, which is attacker-
+    // controlled for an uploaded file. Zero would divide by zero below.
+    if height == 0 {
+        return Err("trace height (SAMPLES) must be greater than zero".into());
+    }
+
     let bytes = std::fs::read(filepath)?;
 
     let mut data: Vec<f32> = Vec::new();
@@ -245,7 +251,18 @@ pub fn load_rd3(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn s
 
 #[cfg(test)]
 mod tests {
-    use super::{load_cor, load_rad};
+    use super::{load_cor, load_rad, load_rd3};
+
+    #[test]
+    fn load_rd3_rejects_zero_height_without_panicking() {
+        // A `.rad` with `SAMPLES:0` reached `data.len() / height` here and
+        // panicked with a divide-by-zero. It must be a graceful error.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.rd3");
+        std::fs::write(&path, [0u8; 16]).unwrap();
+        let err = load_rd3(&path, 0).unwrap_err().to_string();
+        assert!(err.contains("greater than zero"), "{err}");
+    }
 
     /// Fake some data. One point is in the northern hemisphere and one is in the southern
     fn fake_cor_text() -> String {

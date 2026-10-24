@@ -150,21 +150,31 @@ pub fn load_pe_gp2(
     // Loop over the lines of the file and parse CorPoints from it
     for line in content.lines() {
         if line.starts_with(";") | line.starts_with("traces") {
-            if line.contains("Date=") {
-                date_str = Some(line.split_once("=").unwrap().1.split_once(" ").unwrap().0);
+            if let Some((_, after_eq)) = line.split_once("Date=") {
+                // The date runs up to the next space, or to the end of the
+                // line if there is none.
+                date_str = Some(after_eq.split_once(' ').map_or(after_eq, |(d, _)| d));
             }
             continue;
         };
 
         let data: Vec<&str> = line.splitn(5, ",").collect();
 
-        let trace_n = (data[0].parse::<i64>()? - 1) as u32; // The ".cor"-files are 1-indexed whereas this is 0-indexed
+        // A data line needs all five fields; the GGA string is the fifth.
+        let [trace, _, _, _, gga] = data[..] else {
+            continue;
+        };
+
+        let trace_n = (trace.parse::<i64>()? - 1) as u32; // The ".cor"-files are 1-indexed whereas this is 0-indexed
 
         if points.last().map(|p| p.trace_n == trace_n) == Some(true) {
             continue;
         }
 
-        let (datetime, coord, altitude) = super::read_gga(data[4], date_str.unwrap())?;
+        // A data line before any `Date=` header cannot be dated, rather than
+        // panicking on a missing date.
+        let date = date_str.ok_or("a position line appeared before any Date= header")?;
+        let (datetime, coord, altitude) = super::read_gga(gga, date)?;
 
         coords.push(coord);
 
@@ -194,6 +204,44 @@ pub fn load_pe_gp2(
 #[cfg(test)]
 mod tests {
     use super::{load_pe_gp2, load_pe_hd};
+
+    /// Malformed `.gp2` lines used to panic rather than error: a short data
+    /// line indexed `data[4]` out of bounds, a data line before any `Date=`
+    /// unwrapped a `None`, and a `Date=` with no trailing space unwrapped a
+    /// failed `split_once(' ')`. Each must now be a graceful error or a
+    /// skipped line, never a panic.
+    fn load_gp2(text: &str) -> Result<(), String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad.gp2");
+        std::fs::write(&path, text).unwrap();
+        load_pe_gp2(&path, Some(&"EPSG:4326".to_string()))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_short_gp2_data_line_is_skipped_rather_than_panicking() {
+        // Fewer than five comma fields: no GGA to read, so the line is
+        // skipped and, with nothing left, parsing fails cleanly.
+        assert!(load_gp2(";Date=2025-Apr-04 02:08:52\n1,0,0.0").is_err());
+    }
+
+    #[test]
+    fn a_gp2_position_before_any_date_errors_rather_than_panicking() {
+        let text = "1,0,0.0,0.1,\"$GPGGA,130857.30,7719.19,N,01522.64,E\"";
+        let err = load_gp2(text).unwrap_err();
+        assert!(err.contains("before any Date="), "{err}");
+    }
+
+    #[test]
+    fn a_gp2_date_header_without_a_trailing_space_does_not_panic() {
+        // `;Date=2025-Apr-04` with nothing after it: the date runs to the end
+        // of the line instead of panicking on a missing space.
+        let text = ";Date=2025-Apr-04\n1,0,0.0,0.1,\"$GPGGA,130857.30,7719.19,N,01522.64,E\"";
+        // It parses the date; whether the rest succeeds is beside the point --
+        // the test is that it returns instead of panicking.
+        let _ = load_gp2(text);
+    }
 
     #[test]
     #[cfg(not(target_os = "windows"))] // Added 2026-02-17 because gdal is hard to install in CI

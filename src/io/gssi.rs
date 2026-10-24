@@ -150,6 +150,12 @@ pub fn load_gssi_dzt(
 }
 
 pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn Error>> {
+    // Attacker-controlled for an uploaded file; zero would divide by zero
+    // when the width is computed below.
+    if height == 0 {
+        return Err("trace height (samples) must be greater than zero".into());
+    }
+
     let bytes = std::fs::read(filepath)?;
     let (data, nsamp, bits, _sps, _spm, _position, _range, nchan, _antenna) =
         read_gssi_header(&bytes)?;
@@ -253,6 +259,16 @@ pub fn load_gssi_dzg(
 #[cfg(test)]
 mod tests {
     use super::{gssi_antenna_mhz, load_dzt, load_gssi_dzg, load_gssi_dzt};
+
+    #[test]
+    fn load_dzt_rejects_zero_height_without_panicking() {
+        // Same divide-by-zero as the Malå reader: `width = data.len() / 0`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.dzt");
+        std::fs::write(&path, [0u8; 256]).unwrap();
+        let err = load_dzt(&path, 0).unwrap_err().to_string();
+        assert!(err.contains("greater than zero"), "{err}");
+    }
 
     fn make_gssi_dzt(bytes_per_sample: usize) -> Vec<u8> {
         let samples = 4usize;
