@@ -1818,19 +1818,17 @@ mod tests {
         // the default GeoTIFF allowlist, so the CLI refuses it before any
         // processing, and the error points at the way to widen it. This
         // mirrors the server's upload gate; the CLI's is just widenable.
+        // GeoTIFF-only refuses a VRT at the driver-identification stage, so
+        // the `<SourceFilename>` is never resolved and need not exist.
         let dir = std::env::temp_dir().join(format!("ridal-cli-dem-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let blob = dir.join("looks-like-a-dem.bin");
-        let tif = std::fs::canonicalize("assets/test_dem_dtm20_mettebreen.tif").unwrap();
         std::fs::write(
             &blob,
-            format!(
-                "<VRTDataset rasterXSize=\"367\" rasterYSize=\"333\">\
-                 <VRTRasterBand dataType=\"Float32\" band=\"1\"><SimpleSource>\
-                 <SourceFilename relativeToVRT=\"0\">{}</SourceFilename>\
-                 <SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>",
-                tif.display()
-            ),
+            "<VRTDataset rasterXSize=\"2\" rasterYSize=\"2\">\
+             <VRTRasterBand dataType=\"Float32\" band=\"1\"><SimpleSource>\
+             <SourceFilename relativeToVRT=\"0\">nowhere.tif</SourceFilename>\
+             <SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>",
         )
         .unwrap();
 
@@ -1838,8 +1836,10 @@ mod tests {
         assert!(err.contains("not a raster"), "{err}");
         assert!(err.contains(crate::dem::DRIVERS_ENV), "{err}");
 
-        // A real GeoTIFF is accepted.
-        validate_cli_dem(Some(&tif)).unwrap();
+        // A real GeoTIFF is accepted. The relative path is what GDAL opens;
+        // a canonicalized one is a `\\?\` extended-length path on Windows
+        // that GDAL will not open.
+        validate_cli_dem(Some(Path::new("assets/test_dem_dtm20_mettebreen.tif"))).unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
     }
