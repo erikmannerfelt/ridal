@@ -14,13 +14,16 @@ use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag};
 /// Deliberately a named list rather than `Options::all()`: a future extension
 /// that emits HTML or interprets embedded content should be a decision, not
 /// something that arrives by upgrading the crate.
+///
+/// `ENABLE_HEADING_ATTRIBUTES` is left out on purpose: it accepts arbitrary
+/// `key=value` pairs (`# Title {onmouseover=...}`) and writes them onto the
+/// heading as attributes, so it is an HTML escape hatch, not markup.
 fn options() -> Options {
     Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_SMART_PUNCTUATION
         | Options::ENABLE_FOOTNOTES
-        | Options::ENABLE_HEADING_ATTRIBUTES
 }
 
 /// Whether `url` is safe to emit into `href`/`src`.
@@ -102,6 +105,24 @@ mod tests {
         let html = render("<img src=x onerror=alert(1)>");
         assert!(!html.contains("<img"), "{html}");
         assert!(html.contains("&lt;img"), "{html}");
+    }
+
+    #[test]
+    fn heading_attributes_are_not_emitted() {
+        // With heading attributes enabled, this rendered as
+        // `<h1 class="x" onmouseover="alert(1)">`: a stored XSS in a field
+        // shown to every visitor of the site page, site admins included.
+        for markdown in [
+            "# Hi {onmouseover=alert(1) .x}",
+            "# Hi {#a\" onclick=alert(1)}",
+            "Hi {onclick=alert(1)}\n===",
+        ] {
+            // The braces stay in the heading as text; the tag itself carries
+            // no attributes.
+            let html = render(markdown);
+            assert!(html.starts_with("<h1>"), "{html}");
+            assert!(!html.contains("=\""), "{html}");
+        }
     }
 
     #[test]
