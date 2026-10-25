@@ -233,7 +233,10 @@ scope, as the rendered image does.
   the extent and the horizontal scale, which starts at the viewer's.
 - **Axes and style** are those of a figure spec (see {doc}`rendering`):
   units, tick spacing and anchor, titles, font size, colors, and a
-  transparent background. **Radargram** off draws only the layers.
+  transparent background. **x zero at** and **Count x labels down**
+  relabel the x axis from another zero point, **Mirror left to right**
+  flips the figure, and **Halo** draws an outline around the labels, ticks and frame.
+  **Radargram** off draws only the layers.
 - **Layers.** Off until **Show layers** is ticked. **Picks** lists the
   contributors whose picks you may see,
   with a box per layer they picked (and one for lines with no layer);

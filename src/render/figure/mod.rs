@@ -431,6 +431,16 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
             table(&kilometres, "distance", "distance")?
         }
         XUnit::Time => table(&input.coordinates.time, "time", "time")?,
+    }
+    .relabelled(spec.x_axis.zero_at, spec.x_axis.descending);
+    let y_values = y_values.relabelled(spec.y_axis.zero_at, spec.y_axis.descending);
+    // The trace at the plot's left and right edges. Everything that places
+    // something on the page maps through these, so a mirrored figure only
+    // has to swap them and flip the raster.
+    let edges = if spec.x_axis.reverse {
+        [traces[1], traces[0]]
+    } else {
+        traces
     };
 
     let x_ticks = axis_ticks(
@@ -472,13 +482,13 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
             view: spec.view,
             width: layout.plot_w,
             height: layout.plot_h,
-            traces,
+            traces: edges,
             rows,
             x: SidecarAxis {
                 unit: unit_name(&x_unit),
                 label: x_label.clone(),
-                extent: [x_values.value_at(traces[0]), x_values.value_at(traces[1])],
-                centres: centres(&x_values, traces, layout.plot_w),
+                extent: [x_values.value_at(edges[0]), x_values.value_at(edges[1])],
+                centres: centres(&x_values, edges, layout.plot_w),
             },
             y: SidecarAxis {
                 unit: unit_name(&y_unit),
@@ -511,12 +521,14 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
             col0: traces[0],
             col1: traces[1],
         };
-        Some(
-            Renderer::new(drawn)
-                .with_interrupt(input.interrupt.clone())
-                .render_window_rgba(&window, layout.plot_w, layout.plot_h, &pinned, limits)
-                .map_err(FigureError::Render)?,
-        )
+        let mut image = Renderer::new(drawn)
+            .with_interrupt(input.interrupt.clone())
+            .render_window_rgba(&window, layout.plot_w, layout.plot_h, &pinned, limits)
+            .map_err(FigureError::Render)?;
+        if spec.x_axis.reverse {
+            image::imageops::flip_horizontal_in_place(&mut image);
+        }
+        Some(image)
     } else {
         None
     };
@@ -533,7 +545,7 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
                         (layout.plot_x + layout.plot_w) as f64,
                         (layout.plot_y + layout.plot_h) as f64,
                     ],
-                    traces,
+                    traces: edges,
                     rows,
                     shift,
                 },
@@ -547,9 +559,19 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
         })
         .unwrap_or_default();
 
+    let halo = spec
+        .style
+        .halo
+        .as_ref()
+        .map(|halo| {
+            spec::parse_colour("style.halo.color", &halo.color)
+                .map(|colour| (colour, halo.width * ppt))
+        })
+        .transpose()
+        .map_err(FigureError::Spec)?;
     let annotations = Annotations {
         layout: &layout,
-        traces,
+        traces: edges,
         rows,
         axes: spec.axes,
         x_ticks: &x_ticks,
@@ -557,6 +579,7 @@ fn draw<D: AmplitudeSource, S: AmplitudeSource, T: AmplitudeSource>(
         x_label: &x_label,
         y_label: &y_label,
         color: spec::parse_colour("style.color", &spec.style.color).map_err(FigureError::Spec)?,
+        halo,
         overlays: &overlay_svg,
     };
     // A figure without axes is the radargram as data, so it keeps the
@@ -675,6 +698,7 @@ impl Layout {
         let pad_px = PAD_PT * ppt;
         let line_px = LINE_PT * ppt;
         let total_w = spec.size.width_px();
+        let halo_px = spec.style.halo.as_ref().map_or(0.0, |h| h.width * ppt);
 
         let widest = |ticks: &[Tick]| {
             ticks
@@ -696,8 +720,9 @@ impl Layout {
             (
                 (pad_px + y_title + widest(y_ticks) + pad_px + tick_px).ceil(),
                 // Half the widest x label: the last one is centred on a
-                // tick that can be at the plot's right edge.
-                (widest(x_ticks) / 2.0).max(pad_px).ceil(),
+                // tick that can be at the plot's right edge. Its halo
+                // reaches half the stroke past it.
+                (widest(x_ticks) / 2.0 + halo_px / 2.0).max(pad_px).ceil(),
                 (font_px / 2.0).max(pad_px).ceil(),
                 (tick_px + pad_px + font_px + x_title + pad_px).ceil(),
             )
@@ -766,6 +791,8 @@ impl Layout {
 /// Everything drawn over the raster.
 struct Annotations<'a> {
     layout: &'a Layout,
+    /// The trace at the plot's left and right edges, which is
+    /// `[last, first]` for a mirrored figure.
     traces: [f64; 2],
     rows: [f64; 2],
     /// `false` draws no frame, ticks or labels: only the overlays.
@@ -775,6 +802,9 @@ struct Annotations<'a> {
     x_label: &'a str,
     y_label: &'a str,
     color: String,
+    /// The outline around text, ticks and the frame, as its colour and
+    /// width in pixels.
+    halo: Option<(String, f64)>,
     /// The picks and derived layers, already drawn as SVG elements.
     overlays: &'a str,
 }
@@ -846,6 +876,55 @@ impl Annotations<'_> {
             let y = l.y_px(self.rows, tick.position);
             let _ = write!(ticks, "M{x0:.2} {y:.2}H{:.2}", x0 - l.tick_px);
         }
+        // The halo goes under the frame and ticks too, reaching half its
+        // width past them as it does past the glyphs, but only outward, so
+        // it covers none of the radargram. The frame's halo is a band from
+        // the line's centre, which is the plot's edge, to `h / 2` past its
+        // outer edge: the frame line hides its inner edge, so not even
+        // antialiasing lets it show inside the plot. The ticks' start at the
+        // frame's outer edge and run `h / 2` past their ends.
+        if let Some((halo, h)) = &self.halo {
+            let (lw, h) = (l.line_px, *h);
+            let band = lw / 2.0 + h / 2.0;
+            let grow = band / 2.0;
+            let mut halo_ticks = String::new();
+            for tick in self.x_ticks {
+                let x = l.x_px(self.traces, tick.position);
+                let _ = write!(
+                    halo_ticks,
+                    "M{x:.2} {:.2}V{:.2}",
+                    y1 + lw / 2.0,
+                    y1 + l.tick_px + h / 2.0
+                );
+            }
+            for tick in self.y_ticks {
+                let y = l.y_px(self.rows, tick.position);
+                let _ = write!(
+                    halo_ticks,
+                    "M{:.2} {y:.2}H{:.2}",
+                    x0 - lw / 2.0,
+                    x0 - l.tick_px - h / 2.0
+                );
+            }
+            let _ = writeln!(s, r#"<g fill="none" stroke="{halo}">"#);
+            let _ = writeln!(
+                s,
+                r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" stroke-width="{:.2}"/>"#,
+                x0 - grow,
+                y0 - grow,
+                l.plot_w as f64 + 2.0 * grow,
+                l.plot_h as f64 + 2.0 * grow,
+                band
+            );
+            if !halo_ticks.is_empty() {
+                let _ = writeln!(
+                    s,
+                    r#"<path d="{halo_ticks}" stroke-width="{:.2}" stroke-linecap="butt"/>"#,
+                    lw + h
+                );
+            }
+            let _ = writeln!(s, "</g>");
+        }
         let _ = writeln!(
             s,
             r#"<g fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="square">"#,
@@ -861,19 +940,17 @@ impl Annotations<'_> {
         }
         let _ = writeln!(s, "</g>");
 
-        // Labels.
+        // Labels, written once and drawn twice when they have a halo: a
+        // stroked copy under the filled one. A copy rather than
+        // `paint-order`, which is SVG 2 and which Office ignores, drawing
+        // the stroke over the glyphs instead.
         let fs = l.font_px;
-        let _ = writeln!(
-            s,
-            r#"<g font-family="{}" font-size="{fs:.2}" fill="{}">"#,
-            font::SVG_FONT_FAMILY,
-            self.color
-        );
+        let mut text = String::new();
         let x_label_baseline = y1 + l.tick_px + l.pad_px + DIGIT_HEIGHT_EM * fs;
         for tick in self.x_ticks {
             let x = l.x_px(self.traces, tick.position);
             let _ = writeln!(
-                s,
+                text,
                 r#"<text x="{x:.2}" y="{x_label_baseline:.2}" text-anchor="middle">{}</text>"#,
                 escape(&tick.label)
             );
@@ -882,7 +959,7 @@ impl Annotations<'_> {
         for tick in self.y_ticks {
             let y = l.y_px(self.rows, tick.position) + DIGIT_HEIGHT_EM * fs / 2.0;
             let _ = writeln!(
-                s,
+                text,
                 r#"<text x="{y_label_right:.2}" y="{y:.2}" text-anchor="end">{}</text>"#,
                 escape(&tick.label)
             );
@@ -891,7 +968,7 @@ impl Annotations<'_> {
             // One line below the tick labels.
             let baseline = x_label_baseline + fs + l.pad_px;
             let _ = writeln!(
-                s,
+                text,
                 r#"<text x="{:.2}" y="{baseline:.2}" text-anchor="middle">{}</text>"#,
                 (x0 + x1) / 2.0,
                 escape(self.x_label)
@@ -904,11 +981,27 @@ impl Annotations<'_> {
             let x = l.pad_px + DIGIT_HEIGHT_EM * fs;
             let y = (y0 + y1) / 2.0;
             let _ = writeln!(
-                s,
+                text,
                 r#"<text x="{x:.2}" y="{y:.2}" text-anchor="middle" transform="rotate(-90 {x:.2} {y:.2})">{}</text>"#,
                 escape(self.y_label)
             );
         }
+        if let Some((halo, width)) = &self.halo {
+            let _ = writeln!(
+                s,
+                r#"<g font-family="{}" font-size="{fs:.2}" fill="{halo}" stroke="{halo}" stroke-width="{width:.2}" stroke-linejoin="round">"#,
+                font::SVG_FONT_FAMILY,
+            );
+            s.push_str(&text);
+            let _ = writeln!(s, "</g>");
+        }
+        let _ = writeln!(
+            s,
+            r#"<g font-family="{}" font-size="{fs:.2}" fill="{}">"#,
+            font::SVG_FONT_FAMILY,
+            self.color
+        );
+        s.push_str(&text);
         let _ = writeln!(s, "</g>");
         s.push_str("</svg>\n");
         s

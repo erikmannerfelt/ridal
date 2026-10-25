@@ -250,9 +250,11 @@ with distance and travel-time axes when the file has them.
   "x_scale": 1.0,
   "extent": {"traces": [100, 400], "rows": [0, 600]},
   "size": {"width": 16, "unit": "cm", "dpi": 300},
-  "x_axis": {"unit": "distance", "spacing": 25, "anchor": 0, "label": null},
+  "x_axis": {"unit": "distance", "spacing": 25, "anchor": 0, "label": null,
+             "zero_at": 0, "descending": false, "reverse": false},
   "y_axis": {"unit": "twtt", "spacing": null, "anchor": 0, "label": null},
-  "style": {"font_size": 10, "color": "#000000", "background": "#ffffff"},
+  "style": {"font_size": 10, "color": "#000000", "background": "#ffffff",
+            "halo": null},
   "axes": true,
   "radargram": true,
   "picks": {"items": [{"layer": "bed"}], "width": 1.0, "opacity": 0.85},
@@ -309,9 +311,31 @@ A misspelt field is an error rather than being ignored.
   gives 10, 20, 30 m wherever the excerpt starts. `label` replaces the axis
   title; `""` draws none.
 
+  `zero_at` is the value labelled 0, in the axis unit, and `descending`
+  counts the labels down from it: each label is `value − zero_at`, or
+  `zero_at − value` when descending. `spacing` and `anchor` apply to the
+  labels, so ticks stay on round numbers. A 4 km profile surveyed from the
+  terminus is labelled from the glacier head, with the head at 0 km, by
+  `"zero_at": 4, "descending": true`. The extent is still in the file's own
+  coordinates. Neither is for a `time` axis.
+
+  `reverse: true` mirrors the figure left to right: the radargram, the picks
+  and derived layers, and the ticks, so the last trace of the extent is at
+  the left edge. Together with `descending`, every profile of a glacier can
+  run from head to terminus whichever way it was driven. Only the x axis can
+  be reversed.
+
 `style`
 : `font_size` in points, `color` for text, ticks and the frame, and
   `background`, or `null` for a transparent one. Colors are hex, `#rrggbb`.
+
+  `halo` draws an outline around the tick labels, axis titles, ticks
+  and frame, as matplotlib's `patheffects.withStroke` does: `{"color":
+  "#ffffff", "width": 1}`, with the width in points (half of it shows
+  outside the glyphs and lines). The outline around the frame reaches
+  outward only, so it covers none of the radargram. It keeps a transparent
+  figure readable on both a light and a dark page. `{}` is that white 1 pt
+  outline; `null`, the default, draws none.
 
 `axes`
 : `false` writes the radargram alone as PNG, with no margins, and a `.json`

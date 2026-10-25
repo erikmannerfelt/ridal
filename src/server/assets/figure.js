@@ -82,7 +82,9 @@
     'fig-x-label', 'fig-y-label', 'fig-axes', 'fig-font', 'fig-color',
     'fig-background', 'fig-transparent', 'fig-picks-width',
     'fig-picks-opacity', 'fig-derived-width', 'fig-derived-opacity',
-    'fig-fills', 'fig-format', 'fig-layers',
+    'fig-fills', 'fig-format', 'fig-layers', 'fig-x-zero',
+    'fig-x-descending', 'fig-x-reverse', 'fig-halo', 'fig-halo-color',
+    'fig-halo-width',
   ];
 
   function savePrefs() {
@@ -456,6 +458,13 @@
    * no layer is drawn. */
   function syncLayerControls() {
     $('fig-layer-controls').disabled = !layersShown();
+    // A time axis cannot be counted from a zero point, and an outline's
+    // colour and width mean nothing without the outline.
+    const time = $('fig-x-unit').value === 'time';
+    $('fig-x-zero').disabled = time;
+    $('fig-x-descending').disabled = time;
+    $('fig-halo-color').disabled = !$('fig-halo').checked;
+    $('fig-halo-width').disabled = !$('fig-halo').checked;
   }
 
   function summarise() {
@@ -555,12 +564,21 @@
         dpi: numberOr('fig-dpi', 300),
       },
       axes: $('fig-axes').checked,
-      x_axis: axis('x', $('fig-x-unit').value),
+      x_axis: {
+        ...axis('x', $('fig-x-unit').value),
+        // A time axis has neither: its labels are times of day.
+        zero_at: $('fig-x-unit').value === 'time' ? 0 : numberOr('fig-x-zero', 0),
+        descending: $('fig-x-unit').value !== 'time' && $('fig-x-descending').checked,
+        reverse: $('fig-x-reverse').checked,
+      },
       y_axis: axis('y', topo ? 'elevation' : $('fig-y-unit').value),
       style: {
         font_size: numberOr('fig-font', 10),
         color: $('fig-color').value,
         background: $('fig-transparent').checked ? null : $('fig-background').value,
+        halo: $('fig-halo').checked
+          ? { color: $('fig-halo-color').value, width: numberOr('fig-halo-width', 1) }
+          : null,
       },
       radargram: $('fig-radargram').checked,
       // "Show layers" off draws none, whatever the lists say, and keeps
