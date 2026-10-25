@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::error::Error;
+use std::ops::Range;
 /// Functions to process GPR data
 use std::path::{Path, PathBuf};
 
@@ -599,6 +600,19 @@ pub struct GPR {
     pub inputs: Option<crate::recipe::Inputs>,
 }
 
+/// New traces and everything that describes them per trace, for
+/// [`GPR::replace_traces`].
+///
+/// Named fields rather than arguments, because `crop_ns` and `time_zero_ns`
+/// have the same type and a swap would go unnoticed.
+pub(crate) struct Traces {
+    pub data: Array2<f32>,
+    pub topo_data: Option<Array2<f32>>,
+    pub cor_points: Vec<CorPoint>,
+    pub crop_ns: Vec<f32>,
+    pub time_zero_ns: Vec<f32>,
+}
+
 /// Persistent identity metadata for one processed output. See
 /// [`crate::identity`] for the concepts and their precedence rules.
 #[derive(Debug, Clone, Default)]
@@ -697,17 +711,22 @@ impl GPR {
 
     /// Every per-trace vector has one entry per trace.
     ///
-    /// Each step that changes the trace count has to keep these in step by
-    /// hand; this catches the one that does not, at the step that broke it
-    /// rather than at export.
+    /// The trace primitives (`select_traces`, `replace_traces`, ...) keep
+    /// these in step; this catches a step that changes `data` or the
+    /// positions around them, at the step that broke it rather than at
+    /// export.
     fn check_trace_metadata(&self, step_name: &str) -> Result<(), String> {
         let width = self.width();
         for (what, len) in [
-            ("coordinates", self.location.cor_points.len()),
-            ("crop offsets", self.crop_ns.len()),
-            ("time-zero offsets", self.time_zero_ns.len()),
+            ("coordinates", Some(self.location.cor_points.len())),
+            ("crop offsets", Some(self.crop_ns.len())),
+            ("time-zero offsets", Some(self.time_zero_ns.len())),
+            (
+                "topographically corrected traces",
+                self.topo_data.as_ref().map(|topo| topo.ncols()),
+            ),
         ] {
-            if len != width {
+            if let Some(len) = len.filter(|len| *len != width) {
                 return Err(format!(
                     "Internal error after `{step_name}`: {len} {what} for {width} traces"
                 ));
@@ -818,59 +837,10 @@ impl GPR {
             }
         }
 
-        let data_subset = self
-            .data
-            .slice(ndarray::s![
-                min_sample_ as isize..max_sample_ as isize,
-                min_trace_ as isize..max_trace_ as isize
-            ])
-            .to_owned();
-
-        let location_subset = GPRLocation {
-            cor_points: self.location.cor_points[min_trace_ as usize..max_trace_ as usize]
-                .to_owned(),
-            correction: self.location.correction.clone(),
-            time_source: self.location.time_source,
-            crs: self.location.crs.clone(),
-        };
-
-        // Cropping leading samples moves the origin of the travel-time
-        // axis just as a zero correction does, so it adds to the same
-        // offset. Measured against the pre-subset window and height, which
-        // are what `min_sample_` indexes into; `metadata.time_window` is
-        // rescaled a few lines below.
-        let removed_ns =
-            min_sample_ as f32 * self.metadata.time_window / self.height().max(1) as f32;
-
-        let mut metadata = self.metadata.clone();
-
-        metadata.last_trace = max_trace_;
-        metadata.time_window *= (max_sample_ - min_sample_) as f32 / metadata.samples as f32;
-        metadata.samples = max_sample_ - min_sample_;
-
-        let log = self.log.clone();
-
-        let mut new_gpr = GPR {
-            data: data_subset,
-            location: location_subset,
-            metadata,
-            log,
-            steps: self.steps.clone(),
-            topo_data: self.topo_data.clone(),
-            antenna_separation_effective: self.antenna_separation_effective,
-            crop_ns: self.crop_ns[min_trace_ as usize..max_trace_ as usize]
-                .iter()
-                .map(|crop| crop + removed_ns)
-                .collect(),
-            // Time zero does not move: the direct wave arrived when it
-            // arrived, whatever is later done to the record. This is where
-            // the two quantities part company, and the gap is exactly the
-            // travel time of the new sample 0.
-            time_zero_ns: self.time_zero_ns[min_trace_ as usize..max_trace_ as usize].to_vec(),
-            user_metadata: self.user_metadata.clone(),
-            identity: self.identity.clone(),
-            inputs: self.inputs.clone(),
-        };
+        let mut new_gpr = self.window(
+            min_trace_ as usize..max_trace_ as usize,
+            min_sample_ as usize..max_sample_ as usize,
+        );
         new_gpr.log_event(
             "subset",
             &format!(
@@ -1148,8 +1118,7 @@ impl GPR {
             if scope != zero_corr::Scope::Global {
                 return Err("the legacy method only has a global scope".into());
             }
-            self.zero_corr_legacy(factor);
-            return Ok(());
+            return self.zero_corr_legacy(factor);
         }
         let start_time = SystemTime::now();
         let name = format!("zero_corr({method}, {scope})");
@@ -1164,21 +1133,18 @@ impl GPR {
         };
         let crops = picks.crops();
 
-        // Both on the recording clock. The crop is accumulated because a
-        // pipeline may crop more than once; time zero is a position and is
-        // assigned. Computed before `update_data`, so `step_ns` is still
-        // the interval the picks were made at.
-        for (((crop, time_zero), removed), t0) in self
-            .crop_ns
-            .iter_mut()
-            .zip(self.time_zero_ns.iter_mut())
-            .zip(crops.iter())
-            .zip(picks.time_zero.iter())
-        {
-            *time_zero = *crop + *t0 as f32 * step_ns;
-            *crop += *removed as f32 * step_ns;
-        }
-        self.update_data(zero_corr::apply_shifts(&self.data, &crops));
+        // On the recording clock, from the crop before this one, because the
+        // picks index the data as it is now. Time zero is a position and is
+        // assigned; the crop accumulates, since a pipeline may crop more
+        // than once.
+        let time_zero_ns: Vec<f32> = self
+            .twtt_crop_ns()
+            .iter()
+            .zip(&picks.time_zero)
+            .map(|(crop, t0)| crop + *t0 as f32 * step_ns)
+            .collect();
+        self.crop_samples(zero_corr::apply_shifts(&self.data, &crops), &crops)?;
+        self.set_time_zero_ns(time_zero_ns)?;
 
         let (min, max) = (
             crops.iter().copied().min().unwrap_or(0),
@@ -1242,6 +1208,9 @@ impl GPR {
         Ok(())
     }
 
+    /// Put `data` in place and make the sample count, time window and trace
+    /// count say what it is. The trace-count invariants are the caller's;
+    /// only the primitives below call this.
     fn update_data(&mut self, data: Array2<f32>) {
         self.data = data;
 
@@ -1250,22 +1219,200 @@ impl GPR {
         self.metadata.last_trace = self.width() as u32;
     }
 
+    // The primitives below are the only writers of the per-trace state
+    // (`crop_ns`, `time_zero_ns`, `cor_points`, `topo_data`'s columns),
+    // apart from construction and `merge`. Each keeps one entry per trace,
+    // so a step built on them cannot leave the metadata describing traces
+    // that are no longer there (#85).
+
+    /// A copy of the traces `traces` and samples `samples`.
+    ///
+    /// Cropping leading samples moves the origin of the travel-time axis
+    /// just as a zero correction does, so it adds to the crop. Time zero
+    /// does not move: the direct wave arrived when it arrived, whatever is
+    /// later done to the record. This is where the two quantities part
+    /// company, and the gap is exactly the travel time of the new sample 0.
+    ///
+    /// A copy rather than a change in place, because `GPR` is deliberately
+    /// not `Clone` and cutting several windows from one recording is what
+    /// the step digests do.
+    ///
+    /// # Panics
+    ///
+    /// If either range reaches past the data; `subset` checks first.
+    pub(crate) fn window(&self, traces: Range<usize>, samples: Range<usize>) -> GPR {
+        // Measured against the window and height before the cut, which are
+        // what `samples` indexes into.
+        let removed_ns =
+            samples.start as f32 * self.metadata.time_window / self.height().max(1) as f32;
+        let mut metadata = self.metadata.clone();
+        metadata.time_window *= samples.len() as f32 / metadata.samples as f32;
+        metadata.samples = samples.len() as u32;
+        metadata.last_trace = traces.len() as u32;
+        GPR {
+            data: self
+                .data
+                .slice(ndarray::s![samples, traces.clone()])
+                .to_owned(),
+            topo_data: self
+                .topo_data
+                .as_ref()
+                .map(|topo| topo.slice(ndarray::s![.., traces.clone()]).to_owned()),
+            location: GPRLocation {
+                cor_points: self.location.cor_points[traces.clone()].to_vec(),
+                correction: self.location.correction.clone(),
+                time_source: self.location.time_source,
+                crs: self.location.crs.clone(),
+            },
+            metadata,
+            log: self.log.clone(),
+            steps: self.steps.clone(),
+            antenna_separation_effective: self.antenna_separation_effective,
+            crop_ns: self.crop_ns[traces.clone()]
+                .iter()
+                .map(|crop| crop + removed_ns)
+                .collect(),
+            time_zero_ns: self.time_zero_ns[traces].to_vec(),
+            user_metadata: self.user_metadata.clone(),
+            identity: self.identity.clone(),
+            inputs: self.inputs.clone(),
+        }
+    }
+
+    /// Keep the traces `indices`, in that order, with everything that
+    /// describes them.
+    ///
+    /// # Panics
+    ///
+    /// If an index is not a trace; callers check their indices first.
+    pub(crate) fn select_traces(&mut self, indices: &[usize]) {
+        self.data = self.data.select(Axis(1), indices);
+        if let Some(topo_data) = &self.topo_data {
+            self.topo_data = Some(topo_data.select(Axis(1), indices));
+        }
+        self.location.cor_points = indices
+            .iter()
+            .map(|&i| self.location.cor_points[i])
+            .collect();
+        self.crop_ns = indices.iter().map(|&i| self.crop_ns[i]).collect();
+        self.time_zero_ns = indices.iter().map(|&i| self.time_zero_ns[i]).collect();
+        self.metadata.last_trace = self.width() as u32;
+    }
+
+    /// Replace the traces, and everything that describes them, with new
+    /// ones the step computed.
+    ///
+    /// Refused unless every per-trace quantity has one entry per trace of
+    /// `traces.data`.
+    pub(crate) fn replace_traces(&mut self, traces: Traces) -> Result<(), String> {
+        let width = traces.data.ncols();
+        let topo_width = traces.topo_data.as_ref().map(|topo| topo.ncols());
+        for (what, len) in [
+            ("coordinates", Some(traces.cor_points.len())),
+            ("crop offsets", Some(traces.crop_ns.len())),
+            ("time-zero offsets", Some(traces.time_zero_ns.len())),
+            ("topographically corrected traces", topo_width),
+        ] {
+            if let Some(len) = len.filter(|len| *len != width) {
+                return Err(format!(
+                    "Internal error: {len} {what} for {width} new traces"
+                ));
+            }
+        }
+        self.topo_data = traces.topo_data;
+        self.location.cor_points = traces.cor_points;
+        self.crop_ns = traces.crop_ns;
+        self.time_zero_ns = traces.time_zero_ns;
+        self.update_data(traces.data);
+        Ok(())
+    }
+
+    /// Replace the samples of every trace, keeping the traces.
+    ///
+    /// The number of samples may change, and the time window follows it.
+    /// Refused if the number of traces changes.
+    pub(crate) fn replace_samples(&mut self, data: Array2<f32>) -> Result<(), String> {
+        if data.ncols() != self.width() {
+            return Err(format!(
+                "Internal error: {} traces replaced by {}",
+                self.width(),
+                data.ncols()
+            ));
+        }
+        self.update_data(data);
+        Ok(())
+    }
+
+    /// Replace the samples with `data`, which is these traces with the
+    /// first `removed_rows[i]` samples of trace `i` taken off (and the
+    /// bottom trimmed as the step chose), and add what was taken off to the
+    /// crop. Time zero does not move; see [`GPR::window`].
+    pub(crate) fn crop_samples(
+        &mut self,
+        data: Array2<f32>,
+        removed_rows: &[usize],
+    ) -> Result<(), String> {
+        if removed_rows.len() != self.width() {
+            return Err(format!(
+                "Internal error: {} crops for {} traces",
+                removed_rows.len(),
+                self.width()
+            ));
+        }
+        // Measured against the window and height before the crop, which
+        // are what the rows index into.
+        let ns_per_row = self.metadata.time_window / self.height().max(1) as f32;
+        let crop_ns: Vec<f32> = self
+            .crop_ns
+            .iter()
+            .zip(removed_rows)
+            .map(|(crop, rows)| crop + *rows as f32 * ns_per_row)
+            .collect();
+        self.replace_samples(data)?;
+        self.crop_ns = crop_ns;
+        Ok(())
+    }
+
+    /// Say where time zero is on the recording clock, in nanoseconds, per
+    /// trace. Only a zero correction locates it.
+    pub(crate) fn set_time_zero_ns(&mut self, time_zero_ns: Vec<f32>) -> Result<(), String> {
+        if time_zero_ns.len() != self.width() {
+            return Err(format!(
+                "Internal error: {} time-zero offsets for {} traces",
+                time_zero_ns.len(),
+                self.width()
+            ));
+        }
+        self.time_zero_ns = time_zero_ns;
+        Ok(())
+    }
+
+    /// Record that the antenna separation has been taken out of the data,
+    /// so that `twtt` now refers to a coincident antenna.
+    pub(crate) fn mark_separation_corrected(&mut self) {
+        self.antenna_separation_effective = 0.;
+    }
+
     /// Resample each trace onto an even depth grid, taking the antenna
     /// separation out of the geometry.
     ///
     /// `direct_velocity` is the velocity (m/ns) of the wave time zero was
     /// picked on; see [`tools::return_time_to_depth`]. [`SeparationMethod::Legacy`]
     /// ignores it.
-    pub fn correct_antenna_separation(&mut self, method: SeparationMethod, direct_velocity: f32) {
+    pub fn correct_antenna_separation(
+        &mut self,
+        method: SeparationMethod,
+        direct_velocity: f32,
+    ) -> Result<(), String> {
         let start_time = SystemTime::now();
 
-        if self.antenna_separation_effective == 0. {
+        if self.antenna_separation_effective() == 0. {
             self.log_event(
                 "correct_antenna_separation",
                 "Skipping antenna separation correction since the antenna separation is 0 m.",
                 start_time,
             );
-            return;
+            return Ok(());
         };
 
         let height_before = self.height();
@@ -1278,7 +1425,7 @@ impl GPR {
         let min_depth = depths.iter().cloned().fold(f32::INFINITY, f32::min);
 
         if max_depth == 0.0 {
-            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.antenna_separation_effective);
+            eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", self.antenna_separation_effective());
             panic!("");
         }
 
@@ -1333,16 +1480,14 @@ impl GPR {
             }
         };
 
-        //resampler.resample_along_axis(&mut self.data, tools::Axis2D::Row);
-        self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row));
-        //tools::groupby_average(&mut self.data, tools::Axis2D::Row, &depths, *max_diff);
-        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m with the {} geometry (height changed from {} px to {} px).{}", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.antenna_separation_effective, match method {
+        self.replace_samples(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Row))?;
+        self.log_event("correct_antenna_separation", &format!("Standardized depths to {} m ({} ns) per pixel by accounting for an antenna separation of {} m with the {} geometry (height changed from {} px to {} px).{}", resolution, resolution / (self.metadata.time_window / self.height() as f32), self.antenna_separation_effective(), match method {
             SeparationMethod::Slant => format!("slant (direct wave at {direct_velocity} m/ns)"),
             SeparationMethod::Legacy => method.to_string(),
         }, height_before, self.height(), origin_note), start_time);
 
-        self.antenna_separation_effective = 0.;
-        self.metadata.samples = self.height() as u32;
+        self.mark_separation_corrected();
+        Ok(())
     }
 
     pub fn abslog(&mut self) {
@@ -1450,7 +1595,7 @@ impl GPR {
     /// The pre-0.7 `zero_corr`: crop every trace at the first sample where
     /// the mean trace jumps by more than `factor` times half its standard
     /// deviation, and subtract the mean of what came before.
-    pub fn zero_corr_legacy(&mut self, factor: f32) {
+    pub fn zero_corr_legacy(&mut self, factor: f32) -> Result<(), String> {
         let start_time = SystemTime::now();
 
         let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
@@ -1472,7 +1617,7 @@ impl GPR {
                 "Found no first rise in the mean trace; nothing was cropped",
                 start_time,
             );
-            return;
+            return Ok(());
         };
 
         let mean_silent_val = mean_trace
@@ -1480,16 +1625,14 @@ impl GPR {
             .mean()
             .unwrap();
 
-        let removed = self.metadata.time_window * (first_rise as f32) / self.height() as f32;
-        for (crop, time_zero) in self.crop_ns.iter_mut().zip(self.time_zero_ns.iter_mut()) {
-            *crop += removed;
-            *time_zero = *crop;
-        }
-        self.update_data(
+        // Time zero is taken to be the first sample kept.
+        self.crop_samples(
             self.data
                 .slice_axis(Axis(0), Slice::new(first_rise, None, 1))
                 .to_owned(),
-        );
+            &vec![first_rise as usize; self.width()],
+        )?;
+        self.set_time_zero_ns(self.twtt_crop_ns().to_vec())?;
         self.data -= mean_silent_val;
 
         self.log_event(
@@ -1500,6 +1643,7 @@ impl GPR {
             ),
             start_time,
         );
+        Ok(())
     }
 
     /// Subtract from each sample the running median or mean of the samples
@@ -1573,7 +1717,7 @@ impl GPR {
         // The tone is a sinusoid in the recorded samples. Resampling them
         // onto a depth grid bends it, and the fit then removes less.
         let resampled =
-            if self.antenna_separation_effective == 0. && self.metadata.antenna_separation > 0. {
+            if self.antenna_separation_effective() == 0. && self.metadata.antenna_separation > 0. {
                 " Warning: the traces were resampled by correct_antenna_separation, which \
              distorts the tones; run remove_tones before it."
             } else {
@@ -1780,7 +1924,7 @@ impl GPR {
         );
     }
 
-    pub fn make_equidistant(&mut self, step: Option<f32>) {
+    pub fn make_equidistant(&mut self, step: Option<f32>) -> Result<(), String> {
         let start_time = SystemTime::now();
         let distances = self.location.distances().mapv(|v| v as f32);
         let max_distance = distances.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -1810,114 +1954,56 @@ impl GPR {
                 "Traces were already equidistant.",
                 start_time,
             );
-            return;
+            return Ok(());
         };
 
+        // The topographically corrected traces are not resampled, so they
+        // would no longer match; refused here rather than at export.
+        if self.topo_data.is_some() {
+            return Err(
+                "equidistant_traces cannot run after correct_topography; run it before".into(),
+            );
+        }
         let resampler = tools::Resampler::<f32>::new(distances, step);
-        //resampler.resample_along_axis(&mut self.data, tools::Axis2D::Col);
-        self.update_data(resampler.resample_along_axis_par(&self.data, tools::Axis2D::Col));
-
-        //let eastings = resampler.resample(&Array1::from_vec(self.location.cor_points.iter().map(|p| p.easting).collect::<Vec<f64>>()).view());
-        let eastings = resampler.resample_convert::<f64>(
-            &Array1::from_vec(
-                self.location
-                    .cor_points
-                    .iter()
-                    .map(|p| p.easting)
-                    .collect::<Vec<f64>>(),
-            )
-            .view(),
-        );
-        let northings = resampler.resample_convert::<f64>(
-            &Array1::from_vec(
-                self.location
-                    .cor_points
-                    .iter()
-                    .map(|p| p.northing)
-                    .collect::<Vec<f64>>(),
-            )
-            .view(),
-        );
+        let resample = |values: Vec<f64>| -> Vec<f64> {
+            resampler
+                .resample_convert::<f64>(&Array1::from_vec(values).view())
+                .to_vec()
+        };
+        let cor_points = &self.location.cor_points;
+        let eastings = resample(cor_points.iter().map(|p| p.easting).collect());
+        let northings = resample(cor_points.iter().map(|p| p.northing).collect());
+        let times = resample(cor_points.iter().map(|p| p.time_seconds).collect());
+        let altitudes = resample(cor_points.iter().map(|p| p.altitude).collect());
         // Resampled onto the new trace positions like every other
         // per-trace quantity here.
-        let crops = resampler.resample_convert::<f64>(
-            &Array1::from_vec(self.crop_ns.iter().map(|v| *v as f64).collect::<Vec<f64>>()).view(),
-        );
-        let time_zeros = resampler.resample_convert::<f64>(
-            &Array1::from_vec(
-                self.time_zero_ns
-                    .iter()
-                    .map(|v| *v as f64)
-                    .collect::<Vec<f64>>(),
-            )
-            .view(),
-        );
-        let times = resampler.resample_convert::<f64>(
-            &Array1::from_vec(
-                self.location
-                    .cor_points
-                    .iter()
-                    .map(|p| p.time_seconds)
-                    .collect::<Vec<f64>>(),
-            )
-            .view(),
-        );
-        let altitudes = resampler.resample_convert::<f64>(
-            &Array1::from_vec(
-                self.location
-                    .cor_points
-                    .iter()
-                    .map(|p| p.altitude)
-                    .collect::<Vec<f64>>(),
-            )
-            .view(),
-        );
+        let crops = resample(self.twtt_crop_ns().iter().map(|v| *v as f64).collect());
+        let time_zeros = resample(self.twtt_time_zero_ns().iter().map(|v| *v as f64).collect());
 
-        let mut cor_points = Vec::<CorPoint>::new();
-
-        for i in 0..eastings.len() {
-            let cor = CorPoint {
+        let cor_points = (0..eastings.len())
+            .map(|i| CorPoint {
                 trace_n: i as u32,
                 time_seconds: times[i],
                 easting: eastings[i],
                 northing: northings[i],
                 altitude: altitudes[i],
-            };
-            cor_points.push(cor);
-        }
+            })
+            .collect();
 
-        self.metadata.last_trace = self.data.shape()[1] as u32;
-        self.location.cor_points = cor_points;
-        self.crop_ns = crops.iter().map(|v| *v as f32).collect();
-        self.time_zero_ns = time_zeros.iter().map(|v| *v as f32).collect();
+        let traces = Traces {
+            data: resampler.resample_along_axis_par(&self.data, tools::Axis2D::Col),
+            topo_data: None,
+            cor_points,
+            crop_ns: crops.iter().map(|v| *v as f32).collect(),
+            time_zero_ns: time_zeros.iter().map(|v| *v as f32).collect(),
+        };
+        self.replace_traces(traces)?;
         self.log_event(
             "equidistant_traces",
             &format!("Ran equidistant traces with a spacing of {step} m"),
             start_time,
         );
-        /*
-        let breaks = tools::groupby_average(&mut self.data, tools::Axis2D::Col, &distances, step);
-
-        self.metadata.last_trace = self.data.shape()[1] as u32;
-
-        self.location.cor_points = breaks
-            .iter()
-            .map(|i| self.location.cor_points[*i].clone())
-            .collect::<Vec<CorPoint>>();
-        self.location
-            .cor_points
-            .insert(0, self.location.cor_points[0].clone());
-
-        if self.width() != self.location.cor_points.len() {
-            panic!(
-                "Data width {} != cor points width {}. Was equidistant traces run twice?",
-                self.width(),
-                self.location.cor_points.len()
-            )
-        };
-
-        self.log_event("equidistant_traces", "Ran equidistant traces", start_time);
-        */
+        Ok(())
     }
 
     pub(crate) fn shift_coordinates(
@@ -1956,7 +2042,7 @@ impl GPR {
         ));
     }
 
-    pub fn kirchhoff_migration2d(&mut self) {
+    pub fn kirchhoff_migration2d(&mut self) -> Result<(), String> {
         let start_time = SystemTime::now();
         let x_coords = self.location.distances().mapv(|v| v as f32);
         let mut x_diff = 0_f32;
@@ -2086,7 +2172,7 @@ impl GPR {
             })
             .collect();
 
-        self.update_data(Array2::from_shape_vec((height, width), output).unwrap());
+        self.replace_samples(Array2::from_shape_vec((height, width), output).unwrap())?;
         self.log_event(
             "kirchhoff_migration2d",
             &format!(
@@ -2095,6 +2181,7 @@ impl GPR {
             ),
             start_time,
         );
+        Ok(())
     }
 
     /// Remove traces based on their integer index
@@ -2116,35 +2203,11 @@ impl GPR {
             }
         }
 
-        // Make a vec of all traces to keep (faster to subset than to explicitly remove in ndarray)
-        // This is done before the index trick below, because the trick below is only needed for vecs.
+        // Faster to keep the rest than to remove these one by one.
         let traces_to_keep: Vec<usize> =
             (0..width).filter(|i| !unique_traces.contains(i)).collect();
-
-        // Sort them, and then subtract the amount of removals that are done before this index.
-        // For example, if trace 0,1 and 2 should be removed, by the time the loop reaches 2, it's now the zeroth index.
-        // Therefore, the true index is index - i, where i is the count of indices before
+        self.select_traces(&traces_to_keep);
         unique_traces.sort_unstable();
-        for i in 0..unique_traces.len() {
-            // This is ugly but makes cargo clippy happy. Sorry, future developers!
-            let i2 = i;
-            unique_traces[i2] -= i;
-        }
-
-        // Remove each selected trace from the data, (potentially) topo. corr. data, and the location info.
-        self.data = self.data.select(Axis(1), &traces_to_keep);
-        if let Some(data) = self.topo_data.as_mut() {
-            self.topo_data = Some(data.select(Axis(1), &traces_to_keep));
-        };
-        self.crop_ns = traces_to_keep.iter().map(|i| self.crop_ns[*i]).collect();
-        self.time_zero_ns = traces_to_keep
-            .iter()
-            .map(|i| self.time_zero_ns[*i])
-            .collect();
-        for trace in &unique_traces {
-            self.location.cor_points.remove(*trace);
-        }
-        self.metadata.last_trace = self.width() as u32;
 
         if log {
             self.log_event(
@@ -2161,21 +2224,21 @@ impl GPR {
         let start_time = SystemTime::now();
 
         let initial_width = self.width();
-        let averaged_data = filters::average_traces(&self.data, window)?;
-
-        if let Some(topo_data) = &self.topo_data {
-            self.topo_data = Some(filters::average_traces(topo_data, window)?);
-        }
-
-        self.location.cor_points =
-            filters::window_subset_vec(self.location.cor_points.clone(), window);
-        // The same window rule as the positions, for the same reason: what
-        // survives has to describe the traces that survive.
-        self.crop_ns = filters::window_subset_vec(self.crop_ns.clone(), window);
-        self.time_zero_ns = filters::window_subset_vec(self.time_zero_ns.clone(), window);
+        // The same window rule for every per-trace quantity, so that what
+        // survives describes the traces that survive.
+        let traces = Traces {
+            data: filters::average_traces(&self.data, window)?,
+            topo_data: self
+                .topo_data
+                .as_ref()
+                .map(|topo_data| filters::average_traces(topo_data, window))
+                .transpose()?,
+            cor_points: filters::window_subset_vec(self.location.cor_points.clone(), window),
+            crop_ns: filters::window_subset_vec(self.twtt_crop_ns().to_vec(), window),
+            time_zero_ns: filters::window_subset_vec(self.twtt_time_zero_ns().to_vec(), window),
+        };
+        self.replace_traces(traces)?;
         self.metadata.time_interval *= window as f32;
-
-        self.update_data(averaged_data);
 
         self.log_event(
             "average_traces",
@@ -2414,32 +2477,35 @@ impl GPR {
         }
         representatives.extend(next..width);
 
-        let replace = |data: &Array2<f32>| {
-            let mut out = data.select(Axis(1), &representatives);
-            for (column, standstill) in &medians {
-                let stretch = data.slice(ndarray::s![.., standstill.start..standstill.end]);
-                for (out_value, row) in out.column_mut(*column).iter_mut().zip(stretch.rows()) {
-                    let mut values = row.to_vec();
-                    let middle = values.len() / 2;
-                    *out_value = *values.select_nth_unstable_by(middle, f32::total_cmp).1;
-                }
-            }
-            out
+        // The median trace of each standstill, from the traces before
+        // selection, which are what a standstill's range indexes.
+        let median_traces = |data: &Array2<f32>| -> Vec<Array1<f32>> {
+            medians
+                .iter()
+                .map(|(_, standstill)| {
+                    data.slice(ndarray::s![.., standstill.start..standstill.end])
+                        .rows()
+                        .into_iter()
+                        .map(|row| {
+                            let mut values = row.to_vec();
+                            let middle = values.len() / 2;
+                            *values.select_nth_unstable_by(middle, f32::total_cmp).1
+                        })
+                        .collect()
+                })
+                .collect()
         };
-        self.data = replace(&self.data);
-        if let Some(topo_data) = &self.topo_data {
-            self.topo_data = Some(replace(topo_data));
+        let data_medians = median_traces(&self.data);
+        let topo_medians = self.topo_data.as_ref().map(median_traces);
+        self.select_traces(&representatives);
+        for ((column, _), median) in medians.iter().zip(&data_medians) {
+            self.data.column_mut(*column).assign(median);
         }
-        self.location.cor_points = representatives
-            .iter()
-            .map(|&i| self.location.cor_points[i])
-            .collect();
-        self.crop_ns = representatives.iter().map(|&i| self.crop_ns[i]).collect();
-        self.time_zero_ns = representatives
-            .iter()
-            .map(|&i| self.time_zero_ns[i])
-            .collect();
-        self.metadata.last_trace = self.width() as u32;
+        if let (Some(topo_data), Some(topo_medians)) = (&mut self.topo_data, &topo_medians) {
+            for ((column, _), median) in medians.iter().zip(topo_medians) {
+                topo_data.column_mut(*column).assign(median);
+            }
+        }
 
         let listed: Vec<String> = detection
             .standstills
@@ -4700,7 +4766,8 @@ pub mod tests {
         gpr.correct_antenna_separation(
             super::SeparationMethod::Slant,
             crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
-        );
+        )
+        .unwrap();
         let after = gpr.export_dataset().unwrap();
 
         // The acquisition fact survives -- it is still true that the survey
@@ -4724,21 +4791,21 @@ pub mod tests {
     #[test]
     fn successive_crops_accumulate_into_one_crop() {
         let mut accumulating = make_gpr_with_first_break(64, 512);
-        accumulating.zero_corr_legacy(1.);
+        accumulating.zero_corr_legacy(1.).unwrap();
         let first = accumulating.twtt_crop_uniform_ns().unwrap();
         assert!(first > 0., "the fixture must have a first break to find");
 
         // The same second crop, measured on a radargram that arrives at
         // the same data carrying no history.
         let mut in_isolation = make_gpr_with_first_break(64, 512);
-        in_isolation.zero_corr_legacy(1.);
+        in_isolation.zero_corr_legacy(1.).unwrap();
         in_isolation.crop_ns.fill(0.);
         in_isolation.time_zero_ns.fill(0.);
-        in_isolation.zero_corr_legacy(1.);
+        in_isolation.zero_corr_legacy(1.).unwrap();
         let second = in_isolation.twtt_crop_uniform_ns().unwrap();
         assert!(second > 0., "the second crop must remove something too");
 
-        accumulating.zero_corr_legacy(1.);
+        accumulating.zero_corr_legacy(1.).unwrap();
 
         // Assigning instead of accumulating would report `second` alone and
         // describe the file as starting at the later offset — the same
@@ -4824,7 +4891,7 @@ pub mod tests {
         // the new first sample -- which is precisely the gprinterp anchor
         // `t0` that neither of them is.
         let mut gpr = make_gpr_with_first_break(16, 512);
-        gpr.zero_corr_legacy(1.);
+        gpr.zero_corr_legacy(1.).unwrap();
         let at_zero = gpr.twtt_crop_uniform_ns().unwrap();
         assert!(at_zero > 0.);
         assert_eq!(
@@ -4929,7 +4996,7 @@ pub mod tests {
         // A uniform crop still reports one number, which is the common case
         // and what keeps the ordinary file simple.
         let mut uniform = make_gpr_with_first_break(64, 512);
-        uniform.zero_corr_legacy(1.);
+        uniform.zero_corr_legacy(1.).unwrap();
         assert!(uniform.twtt_crop_uniform_ns().is_some());
     }
 
@@ -4988,7 +5055,7 @@ pub mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let mut uniform = make_gpr_with_first_break(48, 512);
-        uniform.zero_corr_legacy(1.);
+        uniform.zero_corr_legacy(1.).unwrap();
         let uniform_expected = uniform.twtt_crop_uniform_ns().unwrap();
         assert!(uniform_expected > 0., "a crop of zero would prove nothing");
         let uniform_path = dir.path().join("uniform.nc");
@@ -5055,7 +5122,7 @@ pub mod tests {
         let path = dir.path().join("line.nc");
 
         let mut gpr = make_gpr_with_first_break(64, 512);
-        gpr.zero_corr_legacy(1.);
+        gpr.zero_corr_legacy(1.).unwrap();
         gpr.export(&path).unwrap();
 
         let declared = crate::interp::source::read_axis_declarations(&path).unwrap();
@@ -5107,7 +5174,8 @@ pub mod tests {
         gpr.correct_antenna_separation(
             super::SeparationMethod::Slant,
             crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
-        );
+        )
+        .unwrap();
         gpr.export(&path).unwrap();
 
         let geometry = crate::interp::source::read_geometry(&path).unwrap();
@@ -5132,7 +5200,8 @@ pub mod tests {
         gpr.correct_antenna_separation(
             super::SeparationMethod::Slant,
             crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
-        );
+        )
+        .unwrap();
         let ds = gpr.export_dataset().unwrap();
         assert_eq!(str_attr(&ds.coords["twtt"].attrs, "anchor_name"), "twtt");
         assert_eq!(f32_attr(&ds, "antenna_separation_effective"), 0.);
@@ -5183,7 +5252,8 @@ pub mod tests {
         gpr.correct_antenna_separation(
             super::SeparationMethod::Slant,
             crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
-        );
+        )
+        .unwrap();
         assert!(gpr
             .log
             .last()
@@ -5208,7 +5278,8 @@ pub mod tests {
         gpr.correct_antenna_separation(
             super::SeparationMethod::Slant,
             crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
-        );
+        )
+        .unwrap();
         let after = gpr.depths();
         let resolution = after[1] - after[0];
         assert!(
@@ -5258,7 +5329,7 @@ pub mod tests {
             point.altitude = first.altitude;
         }
         assert_eq!(gpr.width(), width);
-        gpr.make_equidistant(None);
+        gpr.make_equidistant(None).unwrap();
 
         // The stationary run collapses to a single trace: the whole cluster
         // sits at distance 0, so only the first target-grid position can
@@ -5319,6 +5390,121 @@ pub mod tests {
             gpr.remove_traces(&[18], true),
             Err("Trace index 18 is out of bounds (number of traces: 18)".to_string())
         );
+    }
+
+    /// A radargram whose per-trace quantities all say which input trace
+    /// they came from, so a test can see that they moved together.
+    fn make_labelled_gpr(width: usize, height: usize) -> super::GPR {
+        let mut gpr = make_dummy_gpr(width, height, Some(1.));
+        gpr.topo_data = Some(gpr.data.clone());
+        gpr.crop_ns = (0..width).map(|i| i as f32).collect();
+        gpr.time_zero_ns = (0..width).map(|i| 100. + i as f32).collect();
+        gpr
+    }
+
+    #[test]
+    fn selected_traces_keep_everything_that_describes_them() {
+        let mut gpr = make_labelled_gpr(10, 5);
+        gpr.select_traces(&[7, 2, 3]);
+
+        assert_eq!(gpr.width(), 3);
+        assert_eq!(gpr.metadata.last_trace, 3);
+        assert_eq!(gpr.data.row(0).to_vec(), vec![7., 2., 3.]);
+        assert_eq!(
+            gpr.topo_data.as_ref().unwrap().row(0).to_vec(),
+            vec![7., 2., 3.]
+        );
+        assert_eq!(gpr.crop_ns, vec![7., 2., 3.]);
+        assert_eq!(gpr.time_zero_ns, vec![107., 102., 103.]);
+        let easting = |i: usize| gpr.location.cor_points[i].easting;
+        assert_eq!((easting(0), easting(1), easting(2)), (7., 2., 3.));
+    }
+
+    #[test]
+    fn replaced_traces_must_all_have_one_entry_per_trace() {
+        let traces = |width: usize, crops: usize, topo: usize| super::Traces {
+            data: ndarray::Array2::zeros((5, width)),
+            topo_data: Some(ndarray::Array2::zeros((8, topo))),
+            cor_points: make_dummy_gpr(width, 5, Some(1.)).location.cor_points,
+            crop_ns: vec![0.; crops],
+            time_zero_ns: vec![0.; width],
+        };
+        let mut gpr = make_labelled_gpr(10, 5);
+
+        let refusal = gpr.replace_traces(traces(4, 3, 4)).unwrap_err();
+        assert!(refusal.contains("3 crop offsets for 4"), "{refusal}");
+        let refusal = gpr.replace_traces(traces(4, 4, 10)).unwrap_err();
+        assert!(
+            refusal.contains("10 topographically corrected traces for 4"),
+            "{refusal}"
+        );
+        // Refused means unchanged.
+        assert_eq!(gpr.width(), 10);
+        assert_eq!(gpr.crop_ns.len(), 10);
+
+        gpr.replace_traces(traces(4, 4, 4)).unwrap();
+        assert_eq!(gpr.width(), 4);
+        assert_eq!(gpr.metadata.last_trace, 4);
+        assert_eq!(gpr.crop_ns.len(), 4);
+    }
+
+    #[test]
+    fn replacing_samples_keeps_the_traces() {
+        let mut gpr = make_labelled_gpr(10, 5);
+        let window = gpr.metadata.time_window;
+
+        assert!(gpr.replace_samples(ndarray::Array2::zeros((5, 9))).is_err());
+        gpr.replace_samples(ndarray::Array2::zeros((10, 10)))
+            .unwrap();
+        assert_eq!(gpr.metadata.samples, 10);
+        assert_eq!(gpr.metadata.time_window, 2. * window);
+    }
+
+    #[test]
+    fn cropping_adds_to_each_traces_crop_and_leaves_time_zero() {
+        let mut gpr = make_labelled_gpr(3, 10);
+        let ns_per_row = gpr.metadata.time_window / 10.;
+        let time_zero = gpr.time_zero_ns.clone();
+
+        assert!(gpr
+            .crop_samples(ndarray::Array2::zeros((8, 3)), &[2, 2])
+            .is_err());
+        gpr.crop_samples(ndarray::Array2::zeros((7, 3)), &[1, 2, 3])
+            .unwrap();
+        assert_eq!(gpr.height(), 7);
+        assert_eq!(
+            gpr.crop_ns,
+            vec![ns_per_row, 1. + 2. * ns_per_row, 2. + 3. * ns_per_row]
+        );
+        assert_eq!(gpr.time_zero_ns, time_zero);
+
+        assert!(gpr.set_time_zero_ns(vec![0.; 2]).is_err());
+        gpr.set_time_zero_ns(vec![1., 2., 3.]).unwrap();
+        assert_eq!(gpr.time_zero_ns, vec![1., 2., 3.]);
+    }
+
+    #[test]
+    fn a_subset_cuts_the_topographically_corrected_traces_too() {
+        let gpr = make_labelled_gpr(10, 5);
+        let subset = gpr.subset(Some(4), Some(7), None, None).unwrap();
+
+        assert_eq!(subset.width(), 3);
+        assert_eq!(subset.metadata.last_trace, 3);
+        assert_eq!(
+            subset.topo_data.as_ref().unwrap().row(0).to_vec(),
+            vec![4., 5., 6.]
+        );
+    }
+
+    #[test]
+    fn equidistant_traces_after_a_topographic_correction_is_refused() {
+        // The corrected traces are not resampled, so carrying on would only
+        // fail later, at export, with a shape error.
+        let mut gpr = make_dummy_gpr(20, 30, Some(1.));
+        gpr.location.cor_points[10].easting += 5.;
+        gpr.correct_topography();
+        let refusal = gpr.make_equidistant(Some(2.)).unwrap_err();
+        assert!(refusal.contains("after correct_topography"), "{refusal}");
     }
 
     #[test]
