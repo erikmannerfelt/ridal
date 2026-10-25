@@ -1023,7 +1023,18 @@ pub(crate) fn run_zero_corr(
 /// the mean trace jumps by more than `factor` times half its standard
 /// deviation, and subtract the mean of what came before.
 pub(crate) fn run_zero_corr_legacy(gpr: &mut GPR, factor: f32) -> Result<StepReport, String> {
-    let mean_trace = gpr.data.mean_axis(Axis(1)).unwrap();
+    // A rise needs two samples, and the standard deviation below one more
+    // than its one degree of freedom.
+    if gpr.height() < 2 {
+        return Ok(StepReport::warning(
+            "zero_corr(legacy, global)",
+            "A trace of one sample has no first rise to find; nothing was cropped",
+        ));
+    }
+    let mean_trace = gpr
+        .data
+        .mean_axis(Axis(1))
+        .ok_or("zero_corr(legacy) needs at least one trace")?;
 
     let threshold = 0.5 * mean_trace.std(1.0) * factor;
 

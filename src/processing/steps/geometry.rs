@@ -40,9 +40,19 @@ pub(crate) fn run_correct_antenna_separation(
     let max_depth = depths.iter().cloned().fold(0.0f32, f32::max);
     let min_depth = depths.iter().cloned().fold(f32::INFINITY, f32::min);
 
-    if max_depth == 0.0 {
-        eprintln!("correct_antenna_separation failed. Max depth after antenna correction ({} m) would be 0 m", gpr.antenna_separation_effective());
-        panic!("");
+    // A record no deeper than the antenna separation, or a header with a
+    // time window that is not positive, leaves nothing below it to put on
+    // a grid.
+    if gpr.height() < 2 || max_depth.is_nan() || max_depth <= 0. {
+        return Ok(StepReport::warning(
+            "correct_antenna_separation",
+            format!(
+                "The {} samples reach no deeper than {max_depth} m with an antenna separation \
+                 of {} m, so there is nothing to correct. The data were left as they are.",
+                gpr.height(),
+                gpr.antenna_separation_effective()
+            ),
+        ));
     }
 
     // The grid the corrected radargram is resampled onto.
@@ -121,16 +131,25 @@ pub(crate) fn run_correct_topography(gpr: &mut GPR) -> StepReport {
     // above time zero.
     let depths = gpr.depths();
     let max_depth = depths[depths.len() - 1] - depths[0];
+    if max_depth.is_nan() || max_depth <= 0. {
+        return StepReport::warning(
+            "correct_topography",
+            format!(
+                "The {} samples span {max_depth} m of depth, too little to place on an \
+                 elevation grid. No topographically corrected profile was made.",
+                gpr.height()
+            ),
+        );
+    }
 
     let sample_per_meter = gpr.height() as f32 / max_depth;
 
     let start_indices = altitudes.mapv(|altitude| (altitude * sample_per_meter) as isize);
 
-    let mut topo_data = Array2::<f32>::zeros((
-        ((max_depth + altitudes.iter().cloned().fold(f32::NEG_INFINITY, f32::max))
-            * sample_per_meter) as usize,
-        gpr.width(),
-    ));
+    // Tall enough for the lowest trace's samples. Derived from the start
+    // indices themselves, so rounding cannot leave it a row short of them.
+    let lowest_start = start_indices.iter().copied().max().unwrap_or(0).max(0) as usize;
+    let mut topo_data = Array2::<f32>::zeros((lowest_start + gpr.height(), gpr.width()));
 
     for (i, col) in gpr.data.columns().into_iter().enumerate() {
         topo_data

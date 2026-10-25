@@ -53,7 +53,7 @@ const BASE_SAMPLES: (u32, u32) = (0, 600);
 /// What runs on the window. Every registered step appears at least once
 /// (`every_step_has_a_digest`), and a step whose arguments choose between
 /// algorithms appears once for each.
-const RUNS: &[&str] = &[
+pub(super) const RUNS: &[&str] = &[
     "subset(10 300 5 500)",
     "remove_traces(0 5-9)",
     "remove_empty_traces",
@@ -245,8 +245,13 @@ fn subset_version() -> u32 {
 }
 
 fn load() -> GPR {
+    load_recording(RECORDING)
+}
+
+/// `recording`, read and positioned but not processed.
+pub(super) fn load_recording(recording: &str) -> GPR {
     let params = crate::processing::RunParams {
-        filepaths: vec![RECORDING.into()],
+        filepaths: vec![recording.into()],
         output_path: Some(std::env::temp_dir().join("ridal-golden.nc")),
         track_path: None,
         render_path: None,

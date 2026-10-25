@@ -346,6 +346,9 @@ impl GPR {
         }?;
 
         let n_traces = data.shape()[1];
+        if n_traces == 0 {
+            return Err("the data file holds no traces".into());
+        }
         let location_data = match data.shape()[1] == location.cor_points.len() {
             true => location,
             false => location.range_fill(0, data.shape()[1] as u32, metadata.time_interval),
