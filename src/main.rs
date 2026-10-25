@@ -20,15 +20,16 @@ mod export;
 /// run in this target.
 #[allow(dead_code)]
 mod external;
-mod filters;
 mod formats;
 mod gpr;
 mod id_pattern;
 mod identity;
+mod inspect;
 mod interp;
 mod io;
 mod job;
 mod positions;
+mod processing;
 mod project;
 mod recipe;
 mod render;
@@ -36,7 +37,6 @@ mod render;
 mod server;
 mod site;
 mod source;
-mod steps;
 #[cfg(feature = "server")]
 mod survey;
 mod tools;

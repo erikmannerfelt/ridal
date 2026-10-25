@@ -28,7 +28,6 @@ use ndarray::Array2;
 use super::profile::{
     AmplitudeLimits, AmplitudeTransform, ImageFormat, RenderProfile, SourceTransform,
 };
-use crate::filters;
 
 /// Most stops a [`Colormap`] may have (#183). Generous: matplotlib's
 /// smoothest built-in ramps are described in far fewer, and the LUT has only
@@ -225,9 +224,9 @@ fn log_abs(v: f32) -> f32 {
 /// `None` is the identity, so a profile with no source preprocessing reads
 /// exactly as it did before this stage existed. `SigLog` reproduces the
 /// `siglog` processing step's `(log10|v| - offset).max(0) * sign(v)` via
-/// [`filters::siglog::siglog_value`], at `siglog_minval_log10` -- the profile's
+/// [`crate::processing::steps::siglog::siglog_value`], at `siglog_minval_log10` -- the profile's
 /// own strength, defaulting to
-/// [`filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`]. `siglog_minval_log10` is
+/// [`crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`]. `siglog_minval_log10` is
 /// ignored for `None`.
 ///
 /// `AdaptiveSigLog` has no strength until the radargram's noise floor is
@@ -247,7 +246,7 @@ pub fn to_source_domain(v: f32, transform: SourceTransform, siglog_minval_log10:
             if v.is_nan() {
                 return v;
             }
-            filters::siglog::siglog_value(sanitize(v), siglog_minval_log10)
+            crate::processing::steps::siglog::siglog_value(sanitize(v), siglog_minval_log10)
         }
         SourceTransform::AdaptiveSigLog => panic!(
             "an AdaptiveSigLog profile must be pinned with \
@@ -519,7 +518,7 @@ mod tests {
     fn source_domain_siglog_keeps_the_sign_and_truncates_small_magnitudes() {
         // The default offset is 0, so magnitudes below 10^0 == 1 truncate
         // to zero. 1000 -> log10(1000) == 3, and the sign survives.
-        let d = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let d = crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         assert!((to_source_domain(1000.0, SourceTransform::SigLog, d) - 3.0).abs() < 1e-6);
         assert!((to_source_domain(-1000.0, SourceTransform::SigLog, d) + 3.0).abs() < 1e-6);
         assert!((to_source_domain(10.0, SourceTransform::SigLog, d) - 1.0).abs() < 1e-6);
@@ -549,7 +548,7 @@ mod tests {
         // The render must reproduce the `siglog` step, so pin it against
         // the filter's own scalar and confirm the offset arithmetic and
         // the sign together.
-        let offset = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let offset = crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         for v in [1000.0f32, 1.0, -1000.0, -1.0, 0.05, -0.05, 0.0] {
             let expected = (v.abs().log10() - offset).max(0.0) * v.signum();
             let got = to_source_domain(v, SourceTransform::SigLog, offset);
@@ -566,7 +565,7 @@ mod tests {
         // A profile with no source preprocessing must read exactly as it
         // did before the stage existed, NaN and infinity included, and the
         // strength is ignored.
-        let d = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let d = crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         for v in [
             3.0f32,
             -3.0,
@@ -588,7 +587,7 @@ mod tests {
         // NaN is the resampler's "no data" signal and must survive so the
         // footprint is dropped, not averaged in as zero. An infinity is a
         // data anomaly, sanitized to zero like the display domain does.
-        let d = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let d = crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         assert!(to_source_domain(f32::NAN, SourceTransform::SigLog, d).is_nan());
         assert_eq!(
             to_source_domain(f32::INFINITY, SourceTransform::SigLog, d),
@@ -629,7 +628,7 @@ mod tests {
 
     #[test]
     fn display_domain_nan_passes_through_untouched() {
-        let d = filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
+        let d = crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10;
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::Linear).is_nan());
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::AbsLog).is_nan());
         assert!(to_display_domain(f32::NAN, AmplitudeTransform::Positive).is_nan());

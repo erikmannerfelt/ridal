@@ -2041,8 +2041,8 @@ pub async fn viewer_page(
             edit_project => edit_project,
             // As text: an `f32` as a template value prints its `f64` widening,
             // -1.7000000476837158, where the profile's JSON says -1.7.
-            siglog_default => crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10.to_string(),
-            offset_default => crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET.to_string(),
+            siglog_default => crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10.to_string(),
+            offset_default => crate::processing::steps::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET.to_string(),
             max_color_stops => crate::render::colormap::MAX_COLOR_STOPS,
             active_profile => active_profile,
             chunk_size => crate::render::grid::CHUNK_SIZE,

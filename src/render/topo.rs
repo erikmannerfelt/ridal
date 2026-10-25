@@ -1,7 +1,7 @@
 //! Topographic correction as a render-time decorator over `AmplitudeSource`
 //! (#168).
 //!
-//! This is deliberately **not** `gpr.rs::correct_topography`'s
+//! This is deliberately **not** the `correct_topography` step's
 //! `data_topocorr`: nothing here is precomputed or stored, and no
 //! interpretation is ever saved in the corrected coordinate space. The
 //! correction is a vertical shear applied to the existing `data` array on
@@ -12,7 +12,7 @@
 //! `height / max_depth`. `GPR::depths` clamps early samples to depth 0
 //! through the antenna-separation correction, so the top of the axis is
 //! non-linear; the median of the *positive* diffs is robust against that
-//! clamped region. `gpr.rs::correct_topography` uses the `height /
+//! clamped region. `correct_topography` uses the `height /
 //! max_depth` approximation instead, so this view and the saved
 //! `data_topocorr` product differ very slightly -- intended, not
 //! reconciled.

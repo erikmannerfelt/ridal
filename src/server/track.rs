@@ -890,21 +890,21 @@ mod tests {
         let mut any_old_method_failure = false;
 
         for (input_path, subset_step) in cases {
-            let params = crate::gpr::RunParams {
+            let params = crate::processing::RunParams {
                 filepaths: vec![std::path::PathBuf::from(input_path)],
                 output_path: None,
                 track_path: None,
                 render_path: None,
                 radargram_id: None,
                 display_name: None,
-                options: crate::gpr::ProcessingOptions {
+                options: crate::processing::ProcessingOptions {
                     quiet: true,
                     steps: vec![subset_step.to_string()],
                     no_export: true,
                     ..Default::default()
                 },
             };
-            let (gpr, _) = crate::gpr::build_processed_gpr(params).unwrap();
+            let (gpr, _) = crate::processing::build_processed_gpr(params).unwrap();
             let location = &gpr.location;
             let n = location.cor_points.len();
             assert!(n > 100, "expected a substantial subset, got {n} traces");
@@ -960,7 +960,7 @@ mod tests {
     fn read_track_from_netcdf_matches_in_memory_extraction() {
         let dir = tempfile::tempdir().unwrap();
         let nc_path = dir.path().join("t.nc");
-        let params = crate::gpr::RunParams {
+        let params = crate::processing::RunParams {
             filepaths: vec![std::path::PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/assets/mala/dronbreen-20220329-DAT_0237_A1.rad"
@@ -970,14 +970,14 @@ mod tests {
             render_path: None,
             radargram_id: Some("track-read-test".to_string()),
             display_name: None,
-            options: crate::gpr::ProcessingOptions {
+            options: crate::processing::ProcessingOptions {
                 quiet: true,
                 steps: vec!["subset(0 300 0 50)".to_string()],
                 ..Default::default()
             },
         };
-        let (gpr, _) = crate::gpr::build_processed_gpr(params.clone()).unwrap();
-        crate::gpr::run(params).unwrap();
+        let (gpr, _) = crate::processing::build_processed_gpr(params.clone()).unwrap();
+        crate::processing::run(params).unwrap();
 
         let from_memory = Track::from_location(&gpr.location).unwrap();
         let from_file = read_track_from_netcdf(&nc_path).unwrap();

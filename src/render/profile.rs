@@ -143,8 +143,8 @@ pub enum SourceTransform {
     /// The `siglog` processing step, at the profile's
     /// `siglog_minval_log10`: `(log10(|amplitude|) - strength)`, at least
     /// zero, with the amplitude's sign.
-    // The sign-corrected log transform `gpr.rs`'s `siglog` processing step
-    // applies, defaulting to `crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`.
+    // The sign-corrected log transform `siglog` processing step
+    // applies, defaulting to `crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`.
     SigLog,
     /// `SigLog` at a strength set from each radargram's noise floor:
     /// `log10(noise) + siglog_noise_offset`, as the `adaptive_siglog`
@@ -185,7 +185,7 @@ pub enum DatasetView {
     // `crate::render::topo::TopoGeometry` and applied by
     // `crate::render::topo::TopoSource`. Never precomputed or stored, and
     // never the coordinate space an interpretation is saved in -- distinct
-    // from `gpr.rs::correct_topography`'s `data_topocorr`, which writes a
+    // from `correct_topography`'s `data_topocorr`, which writes a
     // NetCDF product. The catalog's own index overviews stay `Standard`;
     // only the viewer offers this.
     Topographic,
@@ -209,13 +209,13 @@ const MAX_SIGLOG_LOG10: f32 = 20.0;
 /// Serde default for [`RenderProfile::siglog_minval_log10`]: the shared
 /// `siglog` step default.
 fn default_siglog_minval_log10() -> f32 {
-    crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10
+    crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10
 }
 
 /// Serde default for [`RenderProfile::siglog_noise_offset`]: the shared
 /// `adaptive_siglog` step default.
 fn default_siglog_noise_offset() -> f32 {
-    crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET
+    crate::processing::steps::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -241,7 +241,7 @@ pub struct RenderProfile {
     /// below which samples truncate to zero. Only for `SigLog`; unset is
     /// the `siglog` processing step's default.
     // The same default the `siglog` processing step uses
-    // (`crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`), so a profile
+    // (`crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`), so a profile
     // reproduces the step without stating a strength. A profile can
     // override it for its data's scale. `#[serde(default = ...)]` so
     // profile files written before the field existed keep loading at the
@@ -253,7 +253,7 @@ pub struct RenderProfile {
     /// radargram's noise floor, in log10 units: the strength is
     /// `log10(noise) + offset`. Only for `AdaptiveSigLog`; unset is the
     /// `adaptive_siglog` processing step's default.
-    // `crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET`, the
+    // `crate::processing::steps::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET`, the
     // grayscale profiles' value; `siglog-seismic` overrides it with
     // `DIVERGING_ADAPTIVE_SIGLOG_OFFSET`. `#[serde(default = ...)]` so
     // profile files written before the field existed keep loading.
@@ -494,7 +494,7 @@ impl RenderProfile {
     /// speckle and leaves no white at all. Widening the limits does not
     /// help: it rescales noise and signal alike. The strength therefore
     /// sits just below the noise floor
-    /// ([`crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET`]),
+    /// ([`crate::processing::steps::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET`]),
     /// adaptively, because the fixed strength 1 this profile first used
     /// suited one radargram's amplitude scale and not the next (#251,
     /// #254).
@@ -502,7 +502,7 @@ impl RenderProfile {
         Self {
             name: "siglog-seismic".to_string(),
             source_transform: SourceTransform::AdaptiveSigLog,
-            siglog_noise_offset: crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET,
+            siglog_noise_offset: crate::processing::steps::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET,
             ..Self::seismic_profile()
         }
     }
@@ -729,7 +729,7 @@ impl RenderProfile {
     ///
     /// The siglog strength is appended for every `SigLog` profile,
     /// default included, so a change to
-    /// [`crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`] re-keys those
+    /// [`crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10`] re-keys those
     /// profiles rather than serving renders of the old strength from
     /// cache. Grayscale profiles still carry no siglog fragment.
     pub fn cache_key_fragment(&self) -> String {
@@ -826,7 +826,7 @@ impl RenderProfile {
         }
         Self {
             source_transform: SourceTransform::SigLog,
-            siglog_minval_log10: crate::filters::siglog::adaptive_strength(
+            siglog_minval_log10: crate::processing::steps::siglog::adaptive_strength(
                 noise_floor_log10,
                 self.siglog_noise_offset,
             ),
@@ -998,7 +998,7 @@ stats_skip_first_samples = 0
         assert_eq!(pinned.source_transform, SourceTransform::SigLog);
         assert!(
             (pinned.siglog_minval_log10
-                - (1.5 + crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET))
+                - (1.5 + crate::processing::steps::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET))
                 .abs()
                 < 1e-6
         );
@@ -1122,7 +1122,7 @@ stats_skip_first_samples = 0
         for name in ["siglog-default", "siglog-positive", "siglog-high-contrast"] {
             assert_eq!(
                 RenderProfile::by_name(name).unwrap().siglog_noise_offset,
-                crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET,
+                crate::processing::steps::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET,
                 "{name} should use the shared default adaptive offset"
             );
         }
@@ -1168,11 +1168,11 @@ stats_skip_first_samples = 0
         // truncation. See the constructor for why.
         assert_eq!(
             RenderProfile::siglog_seismic_profile().siglog_noise_offset,
-            crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET
+            crate::processing::steps::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET
         );
         assert_eq!(
             RenderProfile::seismic_profile().siglog_noise_offset,
-            crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET,
+            crate::processing::steps::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET,
             "the plain seismic profile should not state an offset of its own"
         );
         // The base profile itself stays grayscale and asymmetric.
@@ -1203,7 +1203,7 @@ stats_skip_first_samples = 0
         assert!(!profile.symmetric_limits);
         assert_eq!(
             profile.siglog_minval_log10,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10
         );
         // A file that does set them round-trips.
         let text = text.replace(
@@ -1320,7 +1320,7 @@ stats_skip_first_samples = 0
         // profiles rather than serving stale pixels from cache.
         let default_offset = format!(
             "|siglog-adaptive:{}",
-            crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET
+            crate::processing::steps::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET
         );
         for name in ["siglog-default", "siglog-positive", "siglog-high-contrast"] {
             let fragment = RenderProfile::by_name(name).unwrap().cache_key_fragment();
@@ -1334,7 +1334,7 @@ stats_skip_first_samples = 0
                 .cache_key_fragment()
                 .contains(&format!(
                     "|siglog-adaptive:{}",
-                    crate::filters::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET
+                    crate::processing::steps::siglog::DIVERGING_ADAPTIVE_SIGLOG_OFFSET
                 )),
             "siglog-seismic's override must be part of its key"
         );

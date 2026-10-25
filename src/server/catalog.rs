@@ -925,7 +925,7 @@ mod tests {
     /// asset here bought nothing but ten megabytes and a full filter chain
     /// per call, so these tests export a dummy instead. The identity
     /// precedence they exercise is resolved by the same
-    /// `identity::resolve_*` functions `gpr::run` uses.
+    /// `identity::resolve_*` functions `crate::processing::run` uses.
     fn write_processed_nc(
         output: &std::path::Path,
         radargram_id: Option<&str>,
@@ -945,7 +945,7 @@ mod tests {
                 Some((name, id)) => (Some(name), Some(id)),
                 None => (None, None),
             };
-        let mut gpr = crate::gpr::tests::make_dummy_gpr(8, 50, Some(1.0));
+        let mut gpr = crate::gpr::test_fixtures::make_dummy_gpr(8, 50, Some(1.0));
         gpr.identity = crate::gpr::RidalIdentity {
             radargram_id: Some(id),
             display_name: None,

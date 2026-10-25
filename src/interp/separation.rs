@@ -55,8 +55,8 @@ impl SeparationDeclarations {
     /// The first one: a second finds no separation left and does nothing.
     pub fn correction(&self) -> Option<(SeparationMethod, f64)> {
         self.processing_steps.iter().find_map(|step| {
-            match crate::steps::parse_one(step).ok()?.step {
-                crate::steps::Step::CorrectAntennaSeparation {
+            match crate::processing::steps::parse_one(step).ok()?.step {
+                crate::processing::steps::Step::CorrectAntennaSeparation {
                     method,
                     direct_velocity,
                 } => Some((method, f64::from(direct_velocity))),
@@ -74,8 +74,8 @@ impl SeparationDeclarations {
     pub fn is_migrated(&self) -> bool {
         self.processing_steps.iter().any(|step| {
             matches!(
-                crate::steps::parse_one(step).map(|parsed| parsed.step),
-                Ok(crate::steps::Step::KirchhoffMigration2d)
+                crate::processing::steps::parse_one(step).map(|parsed| parsed.step),
+                Ok(crate::processing::steps::Step::KirchhoffMigration2d)
             )
         })
     }

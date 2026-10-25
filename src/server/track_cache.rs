@@ -190,7 +190,7 @@ mod tests {
     /// file tests make one.
     fn processed(dir: &Path, name: &str) -> PathBuf {
         let nc_path = dir.join(format!("{name}.nc"));
-        let params = crate::gpr::RunParams {
+        let params = crate::processing::RunParams {
             filepaths: vec![PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/assets/mala/dronbreen-20220329-DAT_0237_A1.rad"
@@ -200,13 +200,13 @@ mod tests {
             render_path: None,
             radargram_id: Some(name.to_string()),
             display_name: None,
-            options: crate::gpr::ProcessingOptions {
+            options: crate::processing::ProcessingOptions {
                 quiet: true,
                 steps: vec!["subset(0 300 0 50)".to_string()],
                 ..Default::default()
             },
         };
-        crate::gpr::run(params).unwrap();
+        crate::processing::run(params).unwrap();
         nc_path
     }
 

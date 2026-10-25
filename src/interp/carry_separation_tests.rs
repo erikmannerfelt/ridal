@@ -10,7 +10,7 @@ const BASE: &str = "remove_empty_traces,zero_corr";
 
 pub(super) fn process(directory: &Path, name: &str, steps: &str) -> PathBuf {
     let output = directory.join(format!("{name}.nc"));
-    let params = crate::gpr::RunParams {
+    let params = crate::processing::RunParams {
         filepaths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("assets/mala/dronbreen-20250327-DAT_0066_A1.rd3")],
         output_path: Some(output.clone()),
@@ -18,14 +18,14 @@ pub(super) fn process(directory: &Path, name: &str, steps: &str) -> PathBuf {
         render_path: None,
         radargram_id: Some("dronbreen".to_string()),
         display_name: None,
-        options: crate::gpr::ProcessingOptions {
+        options: crate::processing::ProcessingOptions {
             crs: Some("EPSG:32633".to_string()),
             quiet: true,
             steps: crate::tools::parse_step_list(steps).expect("valid steps"),
             ..Default::default()
         },
     };
-    crate::gpr::run(params).expect("processing the committed Malå file");
+    crate::processing::run(params).expect("processing the committed Malå file");
     output
 }
 

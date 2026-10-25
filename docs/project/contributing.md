@@ -75,9 +75,10 @@ and `ruff check python tests` for changes to the Python package.
 | `src/main.rs`, `src/cli.rs` | The command line. |
 | `src/lib.rs` | The Python bindings. |
 | `src/io/`, `src/formats.rs` | Reading raw formats, and writing the NetCDF output. |
-| `src/gpr.rs` | The radargram in memory, and most of the processing. |
-| `src/steps/` | The registry of processing steps, with their names, arguments, help and versions. |
-| `src/filters/` | The larger filters, one per module. |
+| `src/gpr/` | The radargram in memory, with its positions and the operations that keep its per-trace state consistent. |
+| `src/processing/` | Processing raw recordings: reading the inputs, running the steps, and planning and naming batches. |
+| `src/processing/steps/` | The processing steps: the registry, with their names, arguments, help and versions, in `mod.rs`, and the code of each step or family of steps in a module of its own. |
+| `src/inspect.rs` | `ridal info`. |
 | `src/coords.rs`, `src/dem.rs` | CRS handling and DEM sampling. |
 | `src/render/` | The renderer, shared by `ridal render` and the server. |
 | `src/interp/` | Interpretations, i.e. checks, carrying, export and derived items. |
@@ -93,7 +94,7 @@ renderer and the interpretation model, and why they are the way they are.
 
 A processed file records the recipe that made it, and revisions are named
 after their recipes. A change to what a step writes therefore has to bump
-that step's version in `src/steps/mod.rs`, and a change elsewhere that
+that step's version in `src/processing/steps/mod.rs`, and a change elsewhere that
 reaches the output (reading, merging, coordinates, depth or export) has to
 bump `recipe::CORE_PROCESSING_VERSION`. The `step_digests` test catches a
 change that was not declared, and the digests are regenerated after a bump
@@ -105,10 +106,12 @@ UPDATE_STEP_DIGESTS=1 cargo test --no-default-features -F cli --bin ridal step_d
 
 ### Adding a processing step
 
-A step is a variant of the `Step` enum in `src/steps/mod.rs`, and its doc
-comment is its help text, which `ridal steps`, the GUI and
+A step is a variant of the `Step` enum in `src/processing/steps/mod.rs`,
+and its doc comment is its help text, which `ridal steps`, the GUI and
 {doc}`../reference/steps` all show, so it should be written for users. A new
-step also needs a run in the digest test (`RUNS` in `src/steps/digests.rs`).
+step also needs a run in the digest test (`RUNS` in
+`src/processing/steps/digests.rs`). Its code goes in the module of
+`src/processing/steps/` for it or its family.
 
 ## Documentation
 

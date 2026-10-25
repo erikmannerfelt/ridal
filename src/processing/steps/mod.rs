@@ -4,8 +4,10 @@
 //! definition: its name, its documentation (the doc comment), its typed
 //! arguments with their defaults and validation (the fields), and what it
 //! does ([`Step::apply`]). The CLI help, the Python descriptions and
-//! `steps.md` are all generated from it, so none of them can drift from
-//! what actually runs.
+//! `docs/reference/steps.md` are all generated from it, so none of them can
+//! drift from what actually runs. The code a step runs lives in the
+//! submodule for it or its family (`bandpass`, `traces`, `zero_corr`, ...),
+//! together with any array kernels it is built on.
 //!
 //! clap does the argument work. A step call is turned into an argv --
 //! `dewow(10)` becomes `["dewow", "--window=10"]` -- and parsed as a clap
@@ -14,11 +16,25 @@
 //! code path for `dewow(10)` and `dewow(window=10)`, and the `--name=value`
 //! form means a negative value such as `-1` is never mistaken for a flag.
 //!
-//! [`crate::gpr::GPR::process`] runs a step through here, then checks that
-//! it logged what it did and that the per-trace metadata still lines up
-//! with the data.
+//! [`GPR::process`], defined here, runs a step, then checks that it
+//! logged what it did and that the per-trace metadata still lines up with
+//! the data.
 
+pub mod balance;
+pub mod bandpass;
+pub mod coordinates;
+pub mod gain;
+pub mod geometry;
+pub mod migration;
 pub mod parse;
+pub mod rolling;
+pub mod siglog;
+pub mod standstill;
+pub mod tones;
+pub mod traces;
+pub mod zero_corr;
+#[cfg(test)]
+mod zero_corr_asset_tests;
 
 use std::error::Error;
 use std::fmt;
@@ -27,11 +43,19 @@ use std::str::FromStr;
 use clap::error::{ContextKind, ContextValue, ErrorKind};
 use clap::{CommandFactory, FromArgMatches, Parser};
 
-use crate::filters::{rolling, zero_corr};
 use crate::gpr::GPR;
 use parse::{RawStep, Span};
 
-/// Every registered step, in the order `steps.md` lists them.
+pub(crate) const DEFAULT_ZERO_CORR_FACTOR: f32 = 1.0;
+pub(crate) const DEFAULT_ZERO_CORR_SIGMA: f32 = 5.0;
+pub(crate) const DEFAULT_ZERO_CORR_SMOOTH_WINDOW: u32 = 51;
+pub(crate) const DEFAULT_EMPTY_TRACE_STRENGTH: f32 = 1.0;
+pub(crate) const DEFAULT_AUTOGAIN_N_BINS: usize = 100;
+pub(crate) const DEFAULT_BANDPASS_LOW_CUTOFF: f32 = 0.1;
+pub(crate) const DEFAULT_BANDPASS_HIGH_CUTOFF: f32 = 0.9;
+pub(crate) const DEFAULT_BANDPASS_Q: f32 = 0.707;
+
+/// Every registered step, in the order the steps page lists them.
 ///
 /// The doc comment of a variant is its user-facing documentation: the first
 /// paragraph is the summary, the rest is detail. Examples in backticks that
@@ -86,7 +110,7 @@ pub enum Step {
     #[command(rename_all = "snake_case")]
     RemoveEmptyTraces {
         /// Mean absolute trace value below which a trace counts as empty.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_EMPTY_TRACE_STRENGTH)]
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_EMPTY_TRACE_STRENGTH)]
         strength: f32,
     },
     /// Replace each stretch recorded while the radar stood still with its
@@ -146,12 +170,12 @@ pub enum Step {
     RemoveStandstills {
         /// How far a standstill must stand out from the rest of the profile,
         /// as a robust z. Lower finds more.
-        #[arg(long, default_value_t = crate::filters::standstill::DEFAULT_STRENGTH,
+        #[arg(long, default_value_t = crate::processing::steps::standstill::DEFAULT_STRENGTH,
               value_parser = finite_positive)]
         strength: f32,
         /// The shortest standstill: seconds (`5s`) or traces (`25`).
         #[arg(long, default_value = "5s")]
-        min_duration: crate::filters::balance::Span,
+        min_duration: crate::processing::steps::balance::Span,
         /// Use the positions too, which may be this far off, in m. Left out,
         /// only the radar data are used.
         #[arg(long, value_parser = finite_positive)]
@@ -228,15 +252,15 @@ pub enum Step {
         margin: zero_corr::Margin,
         /// `legacy` only: multiplier on the first-rise threshold; lower
         /// picks earlier.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_FACTOR)]
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_ZERO_CORR_FACTOR)]
         factor: f32,
         /// `first_break` only: how many noise standard deviations count as
         /// signal.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_SIGMA)]
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_ZERO_CORR_SIGMA)]
         sigma: f32,
         /// `smooth` only: how many traces the running median of the picks
         /// spans.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_ZERO_CORR_SMOOTH_WINDOW,
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_ZERO_CORR_SMOOTH_WINDOW,
               value_parser = clap::value_parser!(u32).range(2..))]
         window: u32,
     },
@@ -252,13 +276,13 @@ pub enum Step {
     #[command(rename_all = "snake_case")]
     Bandpass {
         /// Lower cutoff, as a fraction of the Nyquist frequency.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_BANDPASS_LOW_CUTOFF)]
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_BANDPASS_LOW_CUTOFF)]
         low: f32,
         /// Upper cutoff, as a fraction of the Nyquist frequency.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_BANDPASS_HIGH_CUTOFF)]
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_BANDPASS_HIGH_CUTOFF)]
         high: f32,
         /// Filter strength (quality factor). Must be above 0.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_BANDPASS_Q)]
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_BANDPASS_Q)]
         q: f32,
     },
     /// Apply a zero-phase bandpass filter to each trace individually, with
@@ -275,7 +299,7 @@ pub enum Step {
         #[arg(long)]
         high: f32,
         /// Filter strength (quality factor). Must be above 0.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_BANDPASS_Q)]
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_BANDPASS_Q)]
         q: f32,
     },
     /// Make all traces equidistant by resampling them in a fixed horizontal
@@ -448,11 +472,11 @@ pub enum Step {
         /// How much of the profile the power is averaged over before it is
         /// compared: seconds (`10s`) or traces (`51`).
         #[arg(long, default_value = "10s")]
-        traces: crate::filters::balance::Span,
+        traces: crate::processing::steps::balance::Span,
         /// How much of the profile the reference (running median) spans:
         /// seconds (`400s`) or traces (`2001`).
         #[arg(long, default_value = "400s")]
-        reference: crate::filters::balance::Span,
+        reference: crate::processing::steps::balance::Span,
     },
     /// Measure the gain that levels the amplitude below the direct wave, and
     /// apply it with `gain`.
@@ -468,7 +492,7 @@ pub enum Step {
     #[command(rename_all = "snake_case")]
     AutoGain {
         /// Number of vertical bins. At least 2.
-        #[arg(long, default_value_t = crate::gpr::DEFAULT_AUTOGAIN_N_BINS,
+        #[arg(long, default_value_t = crate::processing::steps::DEFAULT_AUTOGAIN_N_BINS,
               value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(2..))]
         n_bins: usize,
     },
@@ -512,7 +536,7 @@ pub enum Step {
     #[command(rename_all = "snake_case")]
     Siglog {
         /// Exponent offset (log10 of the smallest magnitude kept).
-        #[arg(long, default_value_t = crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10)]
+        #[arg(long, default_value_t = crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10)]
         minval_log10: f32,
     },
     /// Run `siglog` at a strength set from the data's own noise floor instead
@@ -528,7 +552,7 @@ pub enum Step {
     #[command(rename_all = "snake_case")]
     AdaptiveSiglog {
         /// Offset from the noise floor, in log10 units.
-        #[arg(long, default_value_t = crate::filters::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET)]
+        #[arg(long, default_value_t = crate::processing::steps::siglog::DEFAULT_ADAPTIVE_SIGLOG_OFFSET)]
         offset: f32,
     },
     /// Store a topographically corrected copy of the data in the file. Rarely
@@ -1361,28 +1385,13 @@ pub fn descriptions() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Markdown documentation for every registered step: the source of
-/// `steps.md`, which the staleness test regenerates.
-#[cfg(test)]
-fn markdown() -> String {
-    let mut out = String::from(
-        "<!-- Generated from src/steps/mod.rs; edit the doc comments there, then run\n     \
-         UPDATE_STEPS_MD=1 cargo test --no-default-features -F cli steps_md -->\n\n\
-         Below is the documentation for all steps in ridal\n",
-    );
-    for (name, description) in descriptions() {
-        out.push_str(&format!("\n## {name}\n{description}"));
-    }
-    out
-}
-
 /// The processing steps page of the documentation, as Sphinx `step`
 /// directives (`docs/_ext/ridal_steps.py`) so that each step renders like a
-/// function in the Python reference. Regenerated with `steps.md`.
+/// function in the Python reference.
 #[cfg(test)]
 fn docs_markdown() -> String {
     let mut out = String::from(
-        "<!-- Generated from src/steps/mod.rs; edit the doc comments there, then run\n     \
+        "<!-- Generated from src/processing/steps/mod.rs; edit the doc comments there,\n     then run \
          UPDATE_STEPS_MD=1 cargo test --no-default-features -F cli steps_md -->\n\n\
          # Processing steps\n\n\
          Every processing step, generated from Ridal itself. `ridal steps --describe-all` \
@@ -1445,12 +1454,100 @@ fn describe(command: &clap::Command) -> String {
     out
 }
 
+impl GPR {
+    /// Run one step, given as written (e.g. `dewow(10)`).
+    ///
+    /// The step's own definition lives in [`crate::processing::steps::Step`]; this is
+    /// the part every step shares: after it runs, the per-trace metadata
+    /// must still describe the data, and the call is recorded.
+    ///
+    /// The record is the canonical form, every argument named and defaults
+    /// filled in (`dewow(window=10)`), not what was typed: `dewow` alone
+    /// would stop saying what ran the day its default changes.
+    pub fn process(&mut self, step_name: &str) -> Result<(), Box<dyn Error>> {
+        let parsed = crate::processing::steps::parse_one(step_name)?;
+        let log_len = self.log.len();
+        let non_finite_before = self.count_non_finite();
+        parsed.step.apply(self)?;
+        // Every step says what it did, including when it did nothing (#85).
+        if self.log.len() == log_len {
+            return Err(format!("Internal error: `{step_name}` ran without logging").into());
+        }
+        self.check_trace_metadata(step_name)?;
+        self.check_finite(step_name, non_finite_before)?;
+        self.steps.push(parsed.canonical);
+        Ok(())
+    }
+
+    fn count_non_finite(&self) -> usize {
+        self.data.iter().filter(|v| !v.is_finite()).count()
+    }
+
+    /// The step did not add NaN or infinite samples.
+    ///
+    /// A NaN spreads through every later step and still exports, so without
+    /// this the first sign of it is a renderer with nothing to draw (#266).
+    /// Only samples the step *added* count, so input that was already
+    /// non-finite is not blamed on whichever step happens to run first.
+    fn check_finite(&self, step_name: &str, before: usize) -> Result<(), String> {
+        let after = self.count_non_finite();
+        if after > before {
+            return Err(format!(
+                "`{step_name}` made {} of {} samples NaN or infinite",
+                after - before,
+                self.data.len()
+            ));
+        }
+        Ok(())
+    }
+
+    /// Every per-trace vector has one entry per trace.
+    ///
+    /// The trace primitives (`select_traces`, `replace_traces`, ...) keep
+    /// these in step; this catches a step that changes `data` or the
+    /// positions around them, at the step that broke it rather than at
+    /// export.
+    fn check_trace_metadata(&self, step_name: &str) -> Result<(), String> {
+        let width = self.width();
+        for (what, len) in [
+            ("coordinates", Some(self.location.cor_points.len())),
+            ("crop offsets", Some(self.twtt_crop_ns().len())),
+            ("time-zero offsets", Some(self.twtt_time_zero_ns().len())),
+            (
+                "topographically corrected traces",
+                self.topo_data.as_ref().map(|topo| topo.ncols()),
+            ),
+        ] {
+            if let Some(len) = len.filter(|len| *len != width) {
+                return Err(format!(
+                    "Internal error after `{step_name}`: {len} {what} for {width} traces"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub fn all_available_steps() -> Vec<(String, String)> {
+    crate::processing::steps::descriptions()
+}
+
+/// Check that every entry is exactly one registered step with valid
+/// arguments.
+pub fn validate_steps(steps: &[String]) -> Result<(), String> {
+    for step in steps {
+        crate::processing::steps::parse_one(step)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod digests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpr::test_fixtures::*;
 
     fn one(source: &str) -> Result<ParsedStep, StepError> {
         parse_steps(source).map(|mut v| v.remove(0))
@@ -1624,7 +1721,7 @@ mod tests {
     #[test]
     fn every_documented_example_parses() {
         // Backticked snippets in a step's doc that call a registered step.
-        let docs = markdown();
+        let docs: String = descriptions().into_iter().map(|(_, text)| text).collect();
         let examples: Vec<&str> = docs
             .split('`')
             .skip(1)
@@ -1843,8 +1940,8 @@ mod tests {
 
     #[test]
     fn docs_steps_md_is_up_to_date() {
-        // The documentation's steps page, kept in step with the registry the
-        // same way `steps.md` is, and regenerated by the same command.
+        // The documentation's steps page, which this keeps in step with the
+        // registry.
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("docs")
             .join("reference")
@@ -1870,27 +1967,32 @@ mod tests {
     }
 
     #[test]
-    fn steps_md_is_up_to_date() {
-        // `steps.md` is generated so that the README's link keeps working;
-        // this is what stops it drifting from the registry.
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("steps.md");
-        let expected = markdown();
-        if std::env::var_os("UPDATE_STEPS_MD").is_some() {
-            // CI must check the committed file, never regenerate it.
-            assert!(
-                std::env::var_os("CI").is_none(),
-                "UPDATE_STEPS_MD is set in CI"
-            );
-            std::fs::write(&path, &expected).unwrap();
+    fn a_step_that_makes_nan_fails_at_that_step() {
+        let mut gpr = make_test_gpr(Some(5), Some(200));
+        let err = gpr.process("gain(nan)").unwrap_err().to_string();
+        assert!(err.contains("`gain(nan)` made"), "{err}");
+        assert!(err.contains("NaN or infinite"), "{err}");
+        assert!(gpr.steps.is_empty(), "a failed step must not be recorded");
+    }
+
+    #[test]
+    fn every_step_runs_logs_and_records_its_canonical_form() {
+        // Each step once, with its first documented example or bare if it
+        // has none, on a fresh radargram: `process` itself enforces the log
+        // entry and the per-trace metadata, so this proves both for all of
+        // them, not just the steps other tests happen to exercise.
+        for (name, description) in crate::processing::steps::descriptions() {
+            let call = description
+                .split('`')
+                .skip(1)
+                .step_by(2)
+                .find(|s| s.starts_with(&format!("{name}(")))
+                .unwrap_or(&name)
+                .to_string();
+            let mut gpr = make_dummy_gpr(40, 600, Some(1.));
+            gpr.process(&call).unwrap_or_else(|e| panic!("{call}: {e}"));
+            let recorded = gpr.steps.last().unwrap();
+            assert!(recorded.starts_with(&name), "{call} recorded as {recorded}");
         }
-        // A Windows checkout may have converted the line endings.
-        let actual = std::fs::read_to_string(&path)
-            .unwrap_or_default()
-            .replace("\r\n", "\n");
-        assert!(
-            actual == expected,
-            "steps.md is stale. Regenerate it with\n  \
-             UPDATE_STEPS_MD=1 cargo test --no-default-features -F cli steps_md"
-        );
     }
 }

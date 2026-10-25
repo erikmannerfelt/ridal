@@ -49,9 +49,12 @@
 //! or weak, while driving are as coherent as standstills. That is what the
 //! positions are for.
 
-use ndarray::{s, Array2, ArrayView2};
+use std::time::SystemTime;
+
+use ndarray::{s, Array1, Array2, ArrayView2};
 
 use super::rolling::{self, Statistic};
+use crate::gpr::{TimeSource, GPR};
 
 pub mod gps;
 
@@ -547,9 +550,271 @@ fn merge(mut standstills: Vec<Standstill>) -> Vec<Standstill> {
     merged
 }
 
+impl GPR {
+    /// Replace each stretch recorded while the radar stood still with its
+    /// median trace. See [`crate::processing::steps::standstill`].
+    ///
+    /// With `gps_uncertainty` (m), the positions are used as well
+    /// ([`gps`]). Positions that cannot help (too few
+    /// fixes, or a track that never moves) are left out with a warning.
+    ///
+    /// Never fails on the data: too little to measure, or a duration in
+    /// seconds without a usable trace interval, leaves the data unchanged
+    /// and the log says why.
+    pub fn remove_standstills(
+        &mut self,
+        strength: f32,
+        min_duration: crate::processing::steps::balance::Span,
+        gps_uncertainty: Option<f32>,
+    ) {
+        let start_time = SystemTime::now();
+        let seconds_per_trace = self.metadata.time_interval;
+        let min_traces = match min_duration.traces(seconds_per_trace) {
+            Ok(n) => n,
+            Err(reason) => {
+                self.log_event(
+                    "remove_standstills",
+                    &format!("Warning: {reason}; changed nothing"),
+                    start_time,
+                );
+                return;
+            }
+        };
+
+        // One period of the antenna's nominal frequency, in samples, puts the
+        // first sample used below the direct wave.
+        let step_ns = self.vertical_resolution_ns();
+        let antenna_mhz = self.metadata.antenna_mhz;
+        let period = (antenna_mhz > 0. && antenna_mhz.is_finite() && step_ns > 0.)
+            .then(|| ((1000. / antenna_mhz) / step_ns).round() as usize);
+        let no_frequency = if period.is_none() {
+            format!(
+                " Warning: the antenna frequency is {antenna_mhz} MHz, so the direct wave was \
+                 taken to end where the mean trace falls below a tenth of its peak."
+            )
+        } else {
+            String::new()
+        };
+        let settings = Settings {
+            strength,
+            min_traces,
+            first_sample: below_direct_wave(self.data.view(), period),
+        };
+
+        let seconds: Vec<f64> = self
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.time_seconds)
+            .collect();
+        let easting: Vec<f64> = self.location.cor_points.iter().map(|p| p.easting).collect();
+        let northing: Vec<f64> = self
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.northing)
+            .collect();
+        let track = gps::Track {
+            seconds: &seconds,
+            easting: &easting,
+            northing: &northing,
+        };
+        let (gps, gps_note) = match gps_uncertainty {
+            None => (None, String::new()),
+            // Times made up from a trace interval say nothing about when
+            // the radar stood still, and nor do positions interpolated
+            // along with them.
+            Some(_) if self.location.time_source == TimeSource::Synthetic => (
+                None,
+                " Warning: the trace times are synthetic, so the GPS was not used.".to_string(),
+            ),
+            Some(uncertainty) => match gps::Gps::new(track, uncertainty as f64) {
+                Ok(gps) => {
+                    let note = format!(
+                        " GPS uncertainty {uncertainty} m: stretches of {:.1} s or more can be \
+                         judged.",
+                        gps.window_s
+                    );
+                    (Some(gps), note)
+                }
+                Err(reason) => (
+                    None,
+                    format!(" Warning: {reason}, so the GPS was not used."),
+                ),
+            },
+        };
+
+        let detection = match detect(self.data.view(), &settings, gps.as_ref()) {
+            Ok(detection) => detection,
+            Err(reason) => {
+                self.log_event(
+                    "remove_standstills",
+                    &format!("Warning: {reason}; changed nothing.{no_frequency}{gps_note}"),
+                    start_time,
+                );
+                return;
+            }
+        };
+
+        let width = self.width();
+        // A duration in seconds where the trace interval gives one.
+        let duration = |n: usize| {
+            if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
+                format!("{:.1} s", n as f32 * seconds_per_trace)
+            } else {
+                format!("{n} traces")
+            }
+        };
+        let elsewhere = detection.highest_elsewhere.map_or(String::new(), |z| {
+            format!(" Highest strength elsewhere: {z:.1}.")
+        });
+        // The minimum duration as it was given.
+        let shortest = match min_duration {
+            crate::processing::steps::balance::Span::Seconds(s) => format!("{s} s"),
+            crate::processing::steps::balance::Span::Traces(n) => format!("{n} traces"),
+        };
+        let threshold = match gps_uncertainty {
+            None => format!("strength >= {strength}, >= {shortest}"),
+            Some(u) => format!("strength >= {strength}, >= {shortest}, gps_uncertainty = {u} m"),
+        };
+        // What the GPS changed.
+        let mut gps_changes = String::new();
+        if !detection.ruled_out.is_empty() {
+            let listed: Vec<String> = detection
+                .ruled_out
+                .iter()
+                .map(|s| format!("{}-{} ({:.1})", s.start, s.end - 1, s.peak))
+                .collect();
+            gps_changes += &format!(
+                " The GPS showed movement through {} that reached the strength (traces \
+                 (strength): {}).",
+                listed.len(),
+                listed.join(", ")
+            );
+        }
+        if detection.cut > 0 {
+            gps_changes += &format!(
+                " The GPS showed movement in part of {}, which kept only the rest.",
+                detection.cut
+            );
+        }
+        if detection.unjudged > 0 {
+            gps_changes += &format!(
+                " {} had too few fixes for the GPS to judge.",
+                detection.unjudged
+            );
+        }
+        let vouched = detection
+            .standstills
+            .iter()
+            .filter(|s| s.peak < strength)
+            .count();
+        if vouched > 0 {
+            gps_changes += &format!(
+                " {vouched} below the strength {} kept because the GPS showed standing still.",
+                if vouched == 1 { "was" } else { "were" }
+            );
+        }
+        let skipped = match detection.too_short.as_slice() {
+            [] => String::new(),
+            short => format!(
+                " Skipped {} shorter than {shortest} (strongest {:.1}).",
+                short.len(),
+                short
+                    .iter()
+                    .map(|s| s.peak)
+                    .fold(f32::NEG_INFINITY, f32::max)
+            ),
+        };
+        if detection.standstills.is_empty() {
+            self.log_event(
+                "remove_standstills",
+                &format!(
+                    "Found no standstills ({threshold}).{skipped}{elsewhere}{gps_changes}\
+                     {no_frequency}{gps_note}"
+                ),
+                start_time,
+            );
+            return;
+        }
+
+        // Each output trace stands for one input trace (its time, position
+        // and offsets) and, inside a standstill, for the whole stretch.
+        let mut representatives = Vec::with_capacity(width);
+        let mut medians = Vec::with_capacity(detection.standstills.len());
+        let mut next = 0;
+        for standstill in &detection.standstills {
+            representatives.extend(next..standstill.start);
+            medians.push((representatives.len(), *standstill));
+            representatives.push(standstill.representative(width));
+            next = standstill.end;
+        }
+        representatives.extend(next..width);
+
+        // The median trace of each standstill, from the traces before
+        // selection, which are what a standstill's range indexes.
+        let median_traces = |data: &Array2<f32>| -> Vec<Array1<f32>> {
+            medians
+                .iter()
+                .map(|(_, standstill)| {
+                    data.slice(ndarray::s![.., standstill.start..standstill.end])
+                        .rows()
+                        .into_iter()
+                        .map(|row| {
+                            let mut values = row.to_vec();
+                            let middle = values.len() / 2;
+                            *values.select_nth_unstable_by(middle, f32::total_cmp).1
+                        })
+                        .collect()
+                })
+                .collect()
+        };
+        let data_medians = median_traces(&self.data);
+        let topo_medians = self.topo_data.as_ref().map(median_traces);
+        self.select_traces(&representatives);
+        for ((column, _), median) in medians.iter().zip(&data_medians) {
+            self.data.column_mut(*column).assign(median);
+        }
+        if let (Some(topo_data), Some(topo_medians)) = (&mut self.topo_data, &topo_medians) {
+            for ((column, _), median) in medians.iter().zip(topo_medians) {
+                topo_data.column_mut(*column).assign(median);
+            }
+        }
+
+        let listed: Vec<String> = detection
+            .standstills
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}-{} ({}, {:.1})",
+                    s.start,
+                    s.end - 1,
+                    duration(s.len()),
+                    s.peak
+                )
+            })
+            .collect();
+        let replaced = match detection.standstills.len() {
+            1 => "1 standstill with its median trace".to_string(),
+            n => format!("{n} standstills with their median trace"),
+        };
+        self.log_event(
+            "remove_standstills",
+            &format!(
+                "Replaced {replaced} ({threshold}). Traces (duration, strength): {}. {width} -> {} \
+                 traces.{skipped}{elsewhere}{gps_changes}{no_frequency}{gps_note}",
+                listed.join(", "),
+                self.width()
+            ),
+            start_time,
+        );
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::gpr::test_fixtures::*;
 
     pub(crate) const HEIGHT: usize = 300;
     pub(crate) const WIDTH: usize = 2000;
@@ -893,5 +1158,238 @@ pub(crate) mod tests {
         let found = detect(data.view(), &settings(), Some(&with_gps(&track, 50.))).unwrap();
         assert_eq!(ranges(&found), ranges(&radar));
         assert!(found.ruled_out.is_empty());
+    }
+
+    /// A radargram with the synthetic standstills of
+    /// `tests`, on a grid where one antenna period is
+    /// ten samples.
+    fn make_gpr_with_standstills(stops: &[(usize, usize)]) -> super::GPR {
+        use tests::{radargram, HEIGHT, WIDTH};
+        let mut gpr = make_dummy_gpr(WIDTH, HEIGHT, None);
+        gpr.data = radargram(stops);
+        // 500 MHz is a 2 ns period: ten samples at 0.2 ns.
+        gpr.metadata.time_window = HEIGHT as f32 * 0.2;
+        gpr
+    }
+
+    #[test]
+    fn remove_standstills_replaces_each_with_its_median_trace_and_logs_it() {
+        let stops = [(0, 80), (500, 620), (1900, 2000)];
+        let mut gpr = make_gpr_with_standstills(&stops);
+        let before: Vec<f64> = gpr
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.time_seconds)
+            .collect();
+        gpr.process("remove_standstills").unwrap();
+
+        // About 79 + 119 + 99 traces fewer, give or take the edges.
+        let removed = before.len() - gpr.width();
+        assert!((280..=310).contains(&removed), "removed {removed}");
+        let log = gpr.log.last().unwrap();
+        assert!(log.contains("Replaced 3 standstills"), "{log}");
+        assert!(log.contains("(strength >= 8, >= 5 s)"), "{log}");
+        assert!(log.contains("Traces (duration, strength): 0-"), "{log}");
+        assert!(log.contains("Highest strength elsewhere"), "{log}");
+
+        // Times stay strictly increasing, and the ends of the profile keep
+        // their times: what keeps interpretations carryable.
+        let after: Vec<f64> = gpr
+            .location
+            .cor_points
+            .iter()
+            .map(|p| p.time_seconds)
+            .collect();
+        assert!(after.windows(2).all(|w| w[1] > w[0]));
+        assert_eq!(after.first(), before.first());
+        assert_eq!(after.last(), before.last());
+    }
+
+    #[test]
+    fn remove_standstills_with_nothing_to_find_changes_nothing() {
+        let mut gpr = make_gpr_with_standstills(&[]);
+        let data = gpr.data.clone();
+        gpr.process("remove_standstills").unwrap();
+        assert_eq!(gpr.data, data);
+        assert!(gpr.log.last().unwrap().contains("Found no standstills"));
+    }
+
+    #[test]
+    fn remove_standstills_without_a_trace_interval_warns_for_seconds_only() {
+        let mut gpr = make_gpr_with_standstills(&[(500, 620)]);
+        gpr.metadata.time_interval = 0.;
+        let width = gpr.width();
+        gpr.process("remove_standstills").unwrap();
+        assert_eq!(gpr.width(), width);
+        assert!(gpr.log.last().unwrap().contains("Warning"));
+        // In traces it needs no interval.
+        gpr.process("remove_standstills(min_duration=10)").unwrap();
+        assert!(gpr.width() < width);
+    }
+
+    /// `make_gpr_with_standstills`, with positions that stand still only in
+    /// `still` and drive at 4 m/s elsewhere, at 0.1 s per trace.
+    fn make_gpr_with_positions(stops: &[(usize, usize)], still: &[(usize, usize)]) -> super::GPR {
+        let mut gpr = make_gpr_with_standstills(stops);
+        let (seconds, easting, northing) = gps::tests::track(gpr.width(), still, 0.5);
+        gpr.metadata.time_interval = gps::tests::SECONDS_PER_TRACE as f32;
+        for (i, point) in gpr.location.cor_points.iter_mut().enumerate() {
+            point.time_seconds = seconds[i];
+            point.easting = easting[i];
+            point.northing = northing[i];
+        }
+        gpr
+    }
+
+    #[test]
+    fn remove_standstills_with_gps_keeps_only_what_stood_still_and_logs_it() {
+        // 1200..1350 is coherent, as lost signal is, while driving.
+        let stops = [(500, 620), (1200, 1350)];
+        let mut radar = make_gpr_with_positions(&stops, &[(500, 620)]);
+        let mut gps = make_gpr_with_positions(&stops, &[(500, 620)]);
+        radar.process("remove_standstills").unwrap();
+        gps.process("remove_standstills(gps_uncertainty=1)")
+            .unwrap();
+        assert!(
+            gps.width() > radar.width() + 100,
+            "{}",
+            gps.log.last().unwrap()
+        );
+
+        let log = gps.log.last().unwrap();
+        assert!(log.contains("Replaced 1 standstill"), "{log}");
+        assert!(log.contains("gps_uncertainty = 1 m"), "{log}");
+        assert!(log.contains("The GPS showed movement through 1"), "{log}");
+        assert!(
+            log.contains("stretches of 3.0 s or more can be judged"),
+            "{log}"
+        );
+        assert_eq!(
+            gps.steps.last().unwrap(),
+            "remove_standstills(strength=8, min_duration=5s, gps_uncertainty=1)"
+        );
+    }
+
+    #[test]
+    fn remove_standstills_does_not_trust_synthetic_times() {
+        // #13: times made up by `ridal coords` say nothing about stops, so
+        // the GPS is left out, as with unusable positions.
+        let stops = [(500, 620), (1200, 1350)];
+        let mut radar = make_gpr_with_positions(&stops, &[(500, 620)]);
+        let mut synthetic = make_gpr_with_positions(&stops, &[(500, 620)]);
+        synthetic.location.time_source = super::TimeSource::Synthetic;
+        radar.process("remove_standstills").unwrap();
+        synthetic
+            .process("remove_standstills(gps_uncertainty=1)")
+            .unwrap();
+        assert_eq!(synthetic.width(), radar.width());
+        let log = synthetic.log.last().unwrap();
+        assert!(
+            log.contains("the trace times are synthetic, so the GPS was not used"),
+            "{log}"
+        );
+    }
+
+    #[test]
+    fn remove_standstills_without_usable_positions_uses_the_radar() {
+        // `make_dummy_gpr` positions move one metre per trace; these do not.
+        let still = || {
+            let mut gpr = make_gpr_with_standstills(&[(500, 620)]);
+            for point in gpr.location.cor_points.iter_mut() {
+                point.easting = 0.;
+                point.northing = 0.;
+            }
+            gpr
+        };
+        let (mut gpr, mut radar) = (still(), still());
+        radar.process("remove_standstills").unwrap();
+        gpr.process("remove_standstills(gps_uncertainty=1)")
+            .unwrap();
+        assert_eq!(gpr.data, radar.data);
+        let log = gpr.log.last().unwrap();
+        // No bends in the track: no fixes, as without a GPS at all.
+        assert!(log.contains("Warning: there are only 2 fixes"), "{log}");
+        assert!(log.contains("so the GPS was not used"), "{log}");
+    }
+
+    /// Interpretations drawn before `remove_standstills` carry onto its
+    /// output through the `trace_time` anchor, with the real gprinterp
+    /// re-anchoring, including lines that start in an opening standstill or
+    /// end in a closing one (#327).
+    #[test]
+    fn interpretations_carry_across_remove_standstills() {
+        let stops = [(0, 80), (500, 620), (1900, 2000)];
+        let mut gpr = make_gpr_with_standstills(&stops);
+        let times = |gpr: &super::GPR| -> Vec<f64> {
+            gpr.location
+                .cor_points
+                .iter()
+                .map(|p| p.time_seconds)
+                .collect()
+        };
+        let before = times(&gpr);
+        gpr.process("remove_standstills").unwrap();
+        let after = times(&gpr);
+
+        let anchor = |times: &[f64]| -> gprinterp::AnchorAxis {
+            let axis = crate::interp::anchors::trace_time_axis(times).unwrap();
+            serde_json::from_value(serde_json::to_value(axis).unwrap()).unwrap()
+        };
+        let twtt: gprinterp::AnchorAxis = serde_json::from_value(serde_json::json!(
+            {"name": "twtt", "unit": "ns", "type": "regular", "t0": 0.0, "dt": 0.2}
+        ))
+        .unwrap();
+        let lines = [
+            (
+                "starts in the opening standstill",
+                vec![[5., 100.], [300., 110.]],
+            ),
+            (
+                "crosses the middle one",
+                vec![[400., 50.], [560., 55.], [700., 60.]],
+            ),
+            ("lies inside the middle one", vec![[520., 70.], [600., 72.]]),
+            (
+                "ends in the closing standstill",
+                vec![[1700., 40.], [1990., 45.]],
+            ),
+        ];
+        let features: Vec<serde_json::Value> = lines
+            .iter()
+            .map(|(label, coordinates)| {
+                serde_json::json!({
+                    "type": "Feature",
+                    "geometry": {"type": "LineString", "coordinates": coordinates},
+                    "properties": {"label": label},
+                })
+            })
+            .collect();
+        let document: gprinterp::Document = serde_json::from_value(serde_json::json!({
+            "key": "test-radargram",
+            "coordinates": {"space": "index2d", "axes": {
+                "x": {"primary": {"name": "trace", "unit": "index"}, "anchor": [anchor(&before)]},
+                "y": {"primary": {"name": "sample", "unit": "index"}, "anchor": [twtt.clone()]},
+            }},
+            "features": features,
+        }))
+        .unwrap();
+        let target = gprinterp::RevisionAxes {
+            x: vec![anchor(&after)],
+            y: vec![twtt],
+        };
+        let carried = gprinterp::reanchor(&document, &target).unwrap();
+        assert!(carried.dropped.is_empty(), "{:?}", carried.dropped);
+        for feature in &carried.document.features {
+            let gprinterp::Geometry::LineString(points) = &feature.geometry else {
+                panic!("not a line");
+            };
+            let x: Vec<f64> = points.iter().map(|p| p.0[0]).collect();
+            assert!(x.windows(2).all(|w| w[1] >= w[0]), "doubles back: {x:?}");
+            assert!(
+                x.iter().all(|&v| v >= 0. && v <= (gpr.width() - 1) as f64),
+                "{x:?}"
+            );
+        }
     }
 }

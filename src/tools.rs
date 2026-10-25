@@ -14,7 +14,7 @@ use std::path::PathBuf;
 /// # Returns
 /// Formatted steps either from the string itself or from the parsed file.
 pub fn parse_step_list(steps: &str) -> Result<Vec<String>, String> {
-    crate::steps::split_step_list(steps)
+    crate::processing::steps::split_step_list(steps)
 }
 
 /// Start an external tool (`projinfo`, `cs2cs`, the GDAL utilities)

@@ -9,7 +9,7 @@
 //!
 //! An **assignment** puts a radargram in a profile, optionally with steps
 //! of its own that run first. Those may only choose traces and samples
-//! ([`crate::steps::Step::selects_only`]): anything else would make the
+//! ([`crate::processing::steps::Step::selects_only`]): anything else would make the
 //! radargram processed differently from its profile while still claiming
 //! it.
 //!
@@ -165,7 +165,7 @@ pub fn canonical_steps(steps: &[String]) -> Result<Vec<String>, ProcessingError>
     steps
         .iter()
         .map(|step| {
-            crate::steps::parse_one(step)
+            crate::processing::steps::parse_one(step)
                 .map(|parsed| parsed.canonical)
                 .map_err(ProcessingError::Steps)
         })
@@ -177,14 +177,15 @@ pub fn canonical_pre_steps(steps: &[String]) -> Result<Vec<String>, ProcessingEr
     steps
         .iter()
         .map(|step| {
-            let parsed = crate::steps::parse_one(step).map_err(ProcessingError::Steps)?;
+            let parsed =
+                crate::processing::steps::parse_one(step).map_err(ProcessingError::Steps)?;
             if !parsed.step.selects_only() {
                 return Err(ProcessingError::Steps(format!(
                     "`{}` cannot run before a profile's steps: a radargram's own steps \
                      may only choose traces and samples ({}). \
                      For different processing, use another profile.",
                     parsed.canonical,
-                    crate::steps::PRE_PROFILE_STEPS
+                    crate::processing::steps::PRE_PROFILE_STEPS
                         .map(|name| format!("`{name}`"))
                         .join(", ")
                 )));
@@ -534,7 +535,7 @@ pub fn state_of(
         );
     }
     for step in &recipe.steps {
-        if let Ok(parsed) = crate::steps::parse_one(&step.step) {
+        if let Ok(parsed) = crate::processing::steps::parse_one(&step.step) {
             let now = parsed.step.version();
             if step.version < now {
                 let name = step.step.split('(').next().unwrap_or_default();
@@ -765,7 +766,10 @@ mod tests {
                 .iter()
                 .map(|s| crate::recipe::RecipeStep {
                     step: s.clone(),
-                    version: crate::steps::parse_one(s).unwrap().step.version(),
+                    version: crate::processing::steps::parse_one(s)
+                        .unwrap()
+                        .step
+                        .version(),
                 })
                 .collect(),
         }

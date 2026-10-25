@@ -1,4 +1,4 @@
-use crate::{formats, gpr, user_metadata};
+use crate::{formats, user_metadata};
 use clap::{ArgGroup, Parser, Subcommand};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -691,7 +691,7 @@ pub struct ServerStartArgs {
 #[derive(Debug, clap::Args)]
 pub struct RecordingArgs {
     /// Velocity of the medium in m/ns. Defaults to a typical velocity of most glacier ice.
-    #[arg(short, long, default_value_t = gpr::DEFAULT_MEDIUM_VELOCITY)]
+    #[arg(short, long, default_value_t = crate::processing::DEFAULT_MEDIUM_VELOCITY)]
     pub velocity: f32,
 
     /// Positions to use instead of the recording's own: a file (the format's own, such as a ".cor", or a Ridal coordinate CSV of trace,time,lon,lat[,alt]) for one recording, or a directory holding "<stem>.coords.csv" or the format's own positions file for each. Without it, a "<stem>.coords.csv" beside a recording is used before its own positions file.
@@ -779,16 +779,20 @@ impl RunArgs {
         &self,
         group: Option<String>,
         group_id: Option<String>,
-    ) -> Result<gpr::ProcessingOptions, String> {
+    ) -> Result<crate::processing::ProcessingOptions, String> {
         let recording = &self.recording;
         validate_cli_dem(recording.dem.as_deref())?;
-        Ok(gpr::ProcessingOptions {
+        Ok(crate::processing::ProcessingOptions {
             dem_path: recording.dem.clone(),
             cor_path: recording.cor.clone(),
             medium_velocity: recording.velocity,
             crs: recording.crs.clone(),
             quiet: self.quiet,
-            steps: gpr::resolve_steps(self.default, self.default_with_topo, self.steps.as_deref())?,
+            steps: crate::processing::resolve_steps(
+                self.default,
+                self.default_with_topo,
+                self.steps.as_deref(),
+            )?,
             no_export: self.no_export,
             render_profile: self.render_profile.clone(),
             render_width: self.render_width,
@@ -1061,7 +1065,7 @@ fn human_duration(seconds: f64) -> String {
 
 /// `batch-process --dry-run` as text: one block per output, each saying why
 /// it is not part of the one before.
-fn describe_batch_plan(plan: &gpr::BatchPlan) -> String {
+fn describe_batch_plan(plan: &crate::processing::batch::BatchPlan) -> String {
     let n_inputs: usize = plan.outputs.iter().map(|o| o.inputs.len()).sum();
     let mut out = format!(
         "{} output{} from {} input{}, {}.\n",
@@ -1275,7 +1279,7 @@ fn validate_cli_dem(dem: Option<&Path>) -> Result<(), String> {
 }
 
 fn process_command(args: &ProcessArgs) -> Result<(), String> {
-    let params = gpr::RunParams {
+    let params = crate::processing::RunParams {
         filepaths: args.inputs.clone(),
         output_path: args.output.clone(),
         track_path: args.track.clone(),
@@ -1287,7 +1291,7 @@ fn process_command(args: &ProcessArgs) -> Result<(), String> {
             .options(args.group.clone(), args.group_id.clone())?,
     };
 
-    let result = gpr::run(params).map_err(|e| e.to_string())?;
+    let result = crate::processing::run(params).map_err(|e| e.to_string())?;
     if !args.run.quiet {
         println!("{}", result.output_path.display());
     }
@@ -1307,7 +1311,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
     let render_dir = optional_existing_dir(&args.render, "render", &output)?;
     let track_dir = optional_existing_dir(&args.track, "track", &output)?;
 
-    let params = gpr::BatchRunParams {
+    let params = crate::processing::batch::BatchRunParams {
         filepaths: args.inputs.clone(),
         output_dir: output,
         track_dir,
@@ -1321,7 +1325,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
     };
 
     if args.dry_run {
-        let plan = gpr::plan_batch(&params)?;
+        let plan = crate::processing::batch::plan_batch(&params)?;
         if args.json {
             println!(
                 "{}",
@@ -1333,7 +1337,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
         return Ok(());
     }
 
-    let result = gpr::run_batch(params)?;
+    let result = crate::processing::batch::run_batch(params)?;
     // Each listed path is a file written; with --no-export there are none.
     if !args.run.quiet && !args.run.no_export {
         for path in result.output_paths {
@@ -1344,7 +1348,7 @@ fn batch_process_command(args: &BatchProcessArgs) -> Result<(), String> {
 }
 fn coords_command(args: &CoordsArgs) -> Result<(), String> {
     validate_cli_dem(args.dem.as_deref())?;
-    let inputs = gpr::expand_input_paths(&args.inputs)?;
+    let inputs = crate::processing::input::expand_input_paths(&args.inputs)?;
     let describes_one = args.positions.is_some() || args.start.is_some();
     if inputs.len() > 1 && (describes_one || args.output.is_some()) {
         return Err(format!(
@@ -1390,7 +1394,7 @@ fn coords_command(args: &CoordsArgs) -> Result<(), String> {
 
 fn info_command(args: InfoArgs) -> Result<(), String> {
     validate_cli_dem(args.recording.dem.as_deref())?;
-    let params = gpr::InfoParams {
+    let params = crate::inspect::InfoParams {
         filepaths: args.inputs,
         dem_path: args.recording.dem,
         cor_path: args.recording.cor,
@@ -1399,7 +1403,7 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
         override_antenna_mhz: args.recording.override_antenna_mhz,
         override_antenna_separation: args.recording.override_antenna_separation,
     };
-    let records = gpr::inspect(params).map_err(|e| format!("{e:?}"))?;
+    let records = crate::inspect::inspect(params).map_err(|e| format!("{e:?}"))?;
     if args.json {
         if records.len() == 1 {
             println!(
@@ -1418,8 +1422,8 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
                 println!();
             }
             match record {
-                gpr::Inspected::Raw(record) => print_info_record(record),
-                gpr::Inspected::Processed(record) => print_processed_info_record(record),
+                crate::inspect::Inspected::Raw(record) => print_info_record(record),
+                crate::inspect::Inspected::Processed(record) => print_processed_info_record(record),
             }
         }
     }
@@ -1427,12 +1431,12 @@ fn info_command(args: InfoArgs) -> Result<(), String> {
 }
 
 fn steps_command(args: StepsArgs) -> Result<(), String> {
-    let all_steps = gpr::all_available_steps();
+    let all_steps = crate::processing::steps::all_available_steps();
     if args.json {
         if args.default {
             println!(
                 "{}",
-                serde_json::to_string_pretty(&gpr::default_processing_profile())
+                serde_json::to_string_pretty(&crate::processing::default_processing_profile())
                     .map_err(|e| e.to_string())?
             );
             return Ok(());
@@ -1465,7 +1469,7 @@ fn steps_command(args: StepsArgs) -> Result<(), String> {
     }
 
     if args.default {
-        for step in gpr::default_processing_profile() {
+        for step in crate::processing::default_processing_profile() {
             println!("{step}");
         }
         return Ok(());
@@ -1593,7 +1597,7 @@ fn step_mapping(
     Ok(out)
 }
 
-fn print_processed_info_record(record: &gpr::ProcessedInfoRecord) {
+fn print_processed_info_record(record: &crate::inspect::ProcessedInfoRecord) {
     let or_none = |value: &Option<String>| value.clone().unwrap_or_else(|| "-".to_string());
     println!("Input:\t\t{}", record.input);
     println!(
@@ -1620,7 +1624,7 @@ fn print_processed_info_record(record: &gpr::ProcessedInfoRecord) {
     }
 }
 
-fn print_info_record(record: &gpr::InfoRecord) {
+fn print_info_record(record: &crate::inspect::InfoRecord) {
     println!("Input:\t\t{}", record.input);
     println!(
         "Format:\t\t{} ({})",
@@ -2369,21 +2373,23 @@ mod tests {
 
     #[test]
     fn a_plan_reads_as_one_block_per_output() {
-        let output = |id: &str, inputs: &[&str], split: Option<gpr::Split>| gpr::PlannedOutput {
-            radargram_id: id.to_string(),
-            display_name: None,
-            output: PathBuf::from(format!("out/{id}.nc")),
-            inputs: inputs.iter().map(PathBuf::from).collect(),
-            split,
+        let output = |id: &str, inputs: &[&str], split: Option<crate::processing::batch::Split>| {
+            crate::processing::batch::PlannedOutput {
+                radargram_id: id.to_string(),
+                display_name: None,
+                output: PathBuf::from(format!("out/{id}.nc")),
+                inputs: inputs.iter().map(PathBuf::from).collect(),
+                split,
+            }
         };
-        let plan = gpr::BatchPlan {
+        let plan = crate::processing::batch::BatchPlan {
             merge_threshold_seconds: Some(600.),
             outputs: vec![
                 output("line-01", &["a.rad", "b.rad"], None),
                 output(
                     "line-02",
                     &["c.rad"],
-                    Some(gpr::Split {
+                    Some(crate::processing::batch::Split {
                         gap_seconds: 843.,
                         over_threshold: true,
                         incompatible: None,
@@ -2393,7 +2399,7 @@ mod tests {
                 output(
                     "line-03",
                     &["d.rad"],
-                    Some(gpr::Split {
+                    Some(crate::processing::batch::Split {
                         gap_seconds: 1500.,
                         over_threshold: true,
                         incompatible: Some("Antenna frequencies are different: 100 vs 25".into()),
