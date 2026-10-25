@@ -22,7 +22,7 @@ Much of the functionality has been inspired from the projects [RGPR](https://git
 For example, Ridal currently only works on Malå (.rd3), GSSI (.dzt) and pulseEKKO (.dt1) radar formats.
 For many uses, these will more likely be the tools for you!
 
-![Image of a glacier radargram](https://raw.githubusercontent.com/erikmannerfelt/ridal/v0.5.0/images/kroppbreen_rgm.webp)
+![Image of a glacier radargram](https://raw.githubusercontent.com/erikmannerfelt/ridal/main/docs/_static/kroppbreen_rgm.webp)
 *Radargram (100 MHz Malå) of Kroppbreen in Svalbard. Collected 28 Feb. 2023.*
 
 ### Notes
