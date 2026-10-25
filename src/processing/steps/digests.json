@@ -1,5 +1,5 @@
 {
-  "core_version": 3,
+  "core_version": 4,
   "subset_version": 1,
   "core": {
     "attr:antenna_frequency": {"n":1,"non_finite":0,"first":100.0,"sum":0.0,"sum_abs":0.0,"sum_sq":0.0,"min":0.0,"max":0.0,"p1":0.0,"p2":0.0},

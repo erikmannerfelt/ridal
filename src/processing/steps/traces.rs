@@ -1,11 +1,10 @@
 //! Steps that select, average or resample traces.
 
-use std::time::SystemTime;
-
 use ndarray::{Array1, Array2};
 use num::{Float, FromPrimitive};
 
 use crate::gpr::{CorPoint, Traces, GPR};
+use crate::processing::steps::StepReport;
 use crate::tools;
 
 pub fn average_traces<T: Float + FromPrimitive>(
@@ -92,233 +91,204 @@ pub fn window_subset_vec<T>(mut v: Vec<T>, window: usize) -> Vec<T> {
     new_vec
 }
 
-impl GPR {
-    pub fn subset(
-        &self,
-        min_trace: Option<u32>,
-        max_trace: Option<u32>,
-        min_sample: Option<u32>,
-        max_sample: Option<u32>,
-    ) -> Result<GPR, String> {
-        let start_time = SystemTime::now();
-        let min_trace_ = min_trace.unwrap_or(0);
-        let max_trace_ = match max_trace {
-            Some(x) => x,
-            None => self.width() as u32,
-        };
-        let min_sample_ = min_sample.unwrap_or(0);
-        let max_sample_ = match max_sample {
-            Some(x) => x,
-            None => self.height() as u32,
-        };
+pub(crate) fn run_subset(
+    gpr: &mut GPR,
+    min_trace: Option<u32>,
+    max_trace: Option<u32>,
+    min_sample: Option<u32>,
+    max_sample: Option<u32>,
+) -> Result<StepReport, String> {
+    let min_trace_ = min_trace.unwrap_or(0);
+    let max_trace_ = match max_trace {
+        Some(x) => x,
+        None => gpr.width() as u32,
+    };
+    let min_sample_ = min_sample.unwrap_or(0);
+    let max_sample_ = match max_sample {
+        Some(x) => x,
+        None => gpr.height() as u32,
+    };
 
-        let checks = [
-            (min_trace_, self.width(), "min trace number"),
-            (max_trace_, self.width(), "max trace number"),
-            (min_sample_, self.height(), "min sample number"),
-            (max_sample_, self.height(), "max sample number"),
-        ];
+    let checks = [
+        (min_trace_, gpr.width(), "min trace number"),
+        (max_trace_, gpr.width(), "max trace number"),
+        (min_sample_, gpr.height(), "min sample number"),
+        (max_sample_, gpr.height(), "max sample number"),
+    ];
 
-        for (val, maxval, desc) in checks {
-            if val > maxval as u32 {
-                return Err(format!(
-                    "Subset failed: {desc} ({val}) out of the dataset bounds ({maxval})"
-                ));
-            }
+    for (val, maxval, desc) in checks {
+        if val > maxval as u32 {
+            return Err(format!(
+                "Subset failed: {desc} ({val}) out of the dataset bounds ({maxval})"
+            ));
         }
-
-        let mut new_gpr = self.window(
-            min_trace_ as usize..max_trace_ as usize,
-            min_sample_ as usize..max_sample_ as usize,
-        );
-        new_gpr.log_event(
-            "subset",
-            &format!(
-                "Subset data from {:?} to ({}:{}, {}:{})",
-                self.data.shape(),
-                min_sample_,
-                max_sample_,
-                min_trace_,
-                max_trace_
-            ),
-            start_time,
-        );
-
-        Ok(new_gpr)
     }
 
-    pub fn make_equidistant(&mut self, step: Option<f32>) -> Result<(), String> {
-        let start_time = SystemTime::now();
-        let distances = self.location.distances().mapv(|v| v as f32);
-        let max_distance = distances.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let event = format!(
+        "Subset data from {:?} to ({}:{}, {}:{})",
+        gpr.data.shape(),
+        min_sample_,
+        max_sample_,
+        min_trace_,
+        max_trace_
+    );
+    *gpr = gpr.window(
+        min_trace_ as usize..max_trace_ as usize,
+        min_sample_ as usize..max_sample_ as usize,
+    );
+    Ok(StepReport::new("subset", event))
+}
 
-        let step = step.unwrap_or({
-            let velocities = self.location.velocities().mapv(|v| v as f32);
+pub(crate) fn run_make_equidistant(gpr: &mut GPR, step: Option<f32>) -> Result<StepReport, String> {
+    let distances = gpr.location.distances().mapv(|v| v as f32);
+    let max_distance = distances.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-            let normal_velocity = tools::quantiles(&velocities, &[0.5], None)[0];
+    let step = step.unwrap_or({
+        let velocities = gpr.location.velocities().mapv(|v| v as f32);
 
-            let mut seconds_moving = 0_f32;
-            for i in 1..self.width() {
-                if velocities[i] < (0.3 * normal_velocity) {
-                    continue;
-                };
-                seconds_moving += self.metadata.time_interval;
-            }
+        let normal_velocity = tools::quantiles(&velocities, &[0.5], None)[0];
 
-            let nominal_data_width =
-                (seconds_moving / self.metadata.time_interval).floor() as usize;
-
-            max_distance / (nominal_data_width as f32)
-        });
-
-        if (max_distance / step).round() as usize == self.width() {
-            self.log_event(
-                "equidistant_traces",
-                "Traces were already equidistant.",
-                start_time,
-            );
-            return Ok(());
-        };
-
-        // The topographically corrected traces are not resampled, so they
-        // would no longer match; refused here rather than at export.
-        if self.topo_data.is_some() {
-            return Err(
-                "equidistant_traces cannot run after correct_topography; run it before".into(),
-            );
+        let mut seconds_moving = 0_f32;
+        for i in 1..gpr.width() {
+            if velocities[i] < (0.3 * normal_velocity) {
+                continue;
+            };
+            seconds_moving += gpr.metadata.time_interval;
         }
-        let resampler = tools::Resampler::<f32>::new(distances, step);
-        let resample = |values: Vec<f64>| -> Vec<f64> {
-            resampler
-                .resample_convert::<f64>(&Array1::from_vec(values).view())
-                .to_vec()
-        };
-        let cor_points = &self.location.cor_points;
-        let eastings = resample(cor_points.iter().map(|p| p.easting).collect());
-        let northings = resample(cor_points.iter().map(|p| p.northing).collect());
-        let times = resample(cor_points.iter().map(|p| p.time_seconds).collect());
-        let altitudes = resample(cor_points.iter().map(|p| p.altitude).collect());
-        // Resampled onto the new trace positions like every other
-        // per-trace quantity here.
-        let crops = resample(self.twtt_crop_ns().iter().map(|v| *v as f64).collect());
-        let time_zeros = resample(self.twtt_time_zero_ns().iter().map(|v| *v as f64).collect());
 
-        let cor_points = (0..eastings.len())
-            .map(|i| CorPoint {
-                trace_n: i as u32,
-                time_seconds: times[i],
-                easting: eastings[i],
-                northing: northings[i],
-                altitude: altitudes[i],
-            })
-            .collect();
+        let nominal_data_width = (seconds_moving / gpr.metadata.time_interval).floor() as usize;
 
-        let traces = Traces {
-            data: resampler.resample_along_axis_par(&self.data, tools::Axis2D::Col),
-            topo_data: None,
-            cor_points,
-            crop_ns: crops.iter().map(|v| *v as f32).collect(),
-            time_zero_ns: time_zeros.iter().map(|v| *v as f32).collect(),
-        };
-        self.replace_traces(traces)?;
-        self.log_event(
+        max_distance / (nominal_data_width as f32)
+    });
+
+    if (max_distance / step).round() as usize == gpr.width() {
+        return Ok(StepReport::new(
             "equidistant_traces",
-            &format!("Ran equidistant traces with a spacing of {step} m"),
-            start_time,
-        );
-        Ok(())
+            "Traces were already equidistant.",
+        ));
+    };
+
+    // The topographically corrected traces are not resampled, so they
+    // would no longer match; refused here rather than at export.
+    if gpr.topo_data.is_some() {
+        return Err("equidistant_traces cannot run after correct_topography; run it before".into());
     }
+    let resampler = tools::Resampler::<f32>::new(distances, step);
+    let resample = |values: Vec<f64>| -> Vec<f64> {
+        resampler
+            .resample_convert::<f64>(&Array1::from_vec(values).view())
+            .to_vec()
+    };
+    let cor_points = &gpr.location.cor_points;
+    let eastings = resample(cor_points.iter().map(|p| p.easting).collect());
+    let northings = resample(cor_points.iter().map(|p| p.northing).collect());
+    let times = resample(cor_points.iter().map(|p| p.time_seconds).collect());
+    let altitudes = resample(cor_points.iter().map(|p| p.altitude).collect());
+    // Resampled onto the new trace positions like every other
+    // per-trace quantity here.
+    let crops = resample(gpr.twtt_crop_ns().iter().map(|v| *v as f64).collect());
+    let time_zeros = resample(gpr.twtt_time_zero_ns().iter().map(|v| *v as f64).collect());
 
-    /// Remove traces based on their integer index
-    pub fn remove_traces(&mut self, traces: &[usize], log: bool) -> Result<(), String> {
-        let start_time = SystemTime::now();
-        // The width will be called multiple times, so it's better to assign it statically.
-        let width = self.width();
+    let cor_points = (0..eastings.len())
+        .map(|i| CorPoint {
+            trace_n: i as u32,
+            time_seconds: times[i],
+            easting: eastings[i],
+            northing: northings[i],
+            altitude: altitudes[i],
+        })
+        .collect();
 
-        // Make the traces unique, and validate that they are not out of bounds
-        let mut unique_traces = Vec::<usize>::new();
-        for trace in traces {
-            if trace >= &width {
-                return Err(format!(
-                    "Trace index {trace:?} is out of bounds (number of traces: {width})"
-                ));
-            }
-            if !unique_traces.contains(trace) {
-                unique_traces.push(*trace);
-            }
+    let traces = Traces {
+        data: resampler.resample_along_axis_par(&gpr.data, tools::Axis2D::Col),
+        topo_data: None,
+        cor_points,
+        crop_ns: crops.iter().map(|v| *v as f32).collect(),
+        time_zero_ns: time_zeros.iter().map(|v| *v as f32).collect(),
+    };
+    gpr.replace_traces(traces)?;
+    Ok(StepReport::new(
+        "equidistant_traces",
+        format!("Ran equidistant traces with a spacing of {step} m"),
+    ))
+}
+
+/// Remove traces based on their integer index
+pub(crate) fn run_remove_traces(gpr: &mut GPR, traces: &[usize]) -> Result<StepReport, String> {
+    // The width will be called multiple times, so it's better to assign it statically.
+    let width = gpr.width();
+
+    // Make the traces unique, and validate that they are not out of bounds
+    let mut unique_traces = Vec::<usize>::new();
+    for trace in traces {
+        if trace >= &width {
+            return Err(format!(
+                "Trace index {trace:?} is out of bounds (number of traces: {width})"
+            ));
         }
-
-        // Faster to keep the rest than to remove these one by one.
-        let traces_to_keep: Vec<usize> =
-            (0..width).filter(|i| !unique_traces.contains(i)).collect();
-        self.select_traces(&traces_to_keep);
-        unique_traces.sort_unstable();
-
-        if log {
-            self.log_event(
-                "remove_traces",
-                &format!("Removed trace indices {unique_traces:?}"),
-                start_time,
-            );
+        if !unique_traces.contains(trace) {
+            unique_traces.push(*trace);
         }
-
-        Ok(())
     }
 
-    pub fn average_traces(&mut self, window: usize) -> Result<(), String> {
-        let start_time = SystemTime::now();
+    // Faster to keep the rest than to remove these one by one.
+    let traces_to_keep: Vec<usize> = (0..width).filter(|i| !unique_traces.contains(i)).collect();
+    gpr.select_traces(&traces_to_keep);
+    unique_traces.sort_unstable();
 
-        let initial_width = self.width();
-        // The same window rule for every per-trace quantity, so that what
-        // survives describes the traces that survive.
-        let traces = Traces {
-            data: average_traces(&self.data, window)?,
-            topo_data: self
-                .topo_data
-                .as_ref()
-                .map(|topo_data| average_traces(topo_data, window))
-                .transpose()?,
-            cor_points: window_subset_vec(self.location.cor_points.clone(), window),
-            crop_ns: window_subset_vec(self.twtt_crop_ns().to_vec(), window),
-            time_zero_ns: window_subset_vec(self.twtt_time_zero_ns().to_vec(), window),
-        };
-        self.replace_traces(traces)?;
-        self.metadata.time_interval *= window as f32;
+    Ok(StepReport::new(
+        "remove_traces",
+        format!("Removed trace indices {unique_traces:?}"),
+    ))
+}
 
-        self.log_event(
-            "average_traces",
-            &format!("Averaged traces in a window={window}. Reduced trace number from {initial_width} to {}", self.width()),
-            start_time,
-        );
+pub(crate) fn run_average_traces(gpr: &mut GPR, window: usize) -> Result<StepReport, String> {
+    let initial_width = gpr.width();
+    // The same window rule for every per-trace quantity, so that what
+    // survives describes the traces that survive.
+    let traces = Traces {
+        data: average_traces(&gpr.data, window)?,
+        topo_data: gpr
+            .topo_data
+            .as_ref()
+            .map(|topo_data| average_traces(topo_data, window))
+            .transpose()?,
+        cor_points: window_subset_vec(gpr.location.cor_points.clone(), window),
+        crop_ns: window_subset_vec(gpr.twtt_crop_ns().to_vec(), window),
+        time_zero_ns: window_subset_vec(gpr.twtt_time_zero_ns().to_vec(), window),
+    };
+    gpr.replace_traces(traces)?;
+    gpr.metadata.time_interval *= window as f32;
 
-        Ok(())
-    }
+    Ok(StepReport::new(
+        "average_traces",
+        format!(
+            "Averaged traces in a window={window}. Reduced trace number from {initial_width} to {}",
+            gpr.width()
+        ),
+    ))
+}
 
-    // Remove all traces whose absolute mean is lower than the given "strength"
-    pub fn remove_empty_traces(&mut self, strength: f32) -> Result<(), String> {
-        let start_time = SystemTime::now();
-        let mut traces_to_remove = Vec::<usize>::new();
+// Remove all traces whose absolute mean is lower than the given "strength"
+pub(crate) fn run_remove_empty_traces(gpr: &mut GPR, strength: f32) -> Result<StepReport, String> {
+    let mut traces_to_remove = Vec::<usize>::new();
 
-        for (i, col) in self.data.columns().into_iter().enumerate() {
-            if let Some(mad) = col.mapv(|v| v.abs()).mean() {
-                if mad > strength {
-                    continue;
-                };
-                traces_to_remove.push(i);
-            }
+    for (i, col) in gpr.data.columns().into_iter().enumerate() {
+        if let Some(mad) = col.mapv(|v| v.abs()).mean() {
+            if mad > strength {
+                continue;
+            };
+            traces_to_remove.push(i);
         }
-
-        let n_removed = traces_to_remove.len();
-        self.remove_traces(&traces_to_remove, false)?;
-
-        self.log_event(
-            "remove_empty_traces",
-            &format!("Removed {n_removed} empty traces (strength: {strength})."),
-            start_time,
-        );
-
-        Ok(())
     }
+
+    let n_removed = traces_to_remove.len();
+    run_remove_traces(gpr, &traces_to_remove)?;
+
+    Ok(StepReport::new(
+        "remove_empty_traces",
+        format!("Removed {n_removed} empty traces (strength: {strength})."),
+    ))
 }
 
 #[cfg(test)]
@@ -344,7 +314,7 @@ mod tests {
             point.altitude = first.altitude;
         }
         assert_eq!(gpr.width(), width);
-        gpr.make_equidistant(None).unwrap();
+        crate::processing::steps::traces::run_make_equidistant(&mut gpr, None).unwrap();
 
         // The stationary run collapses to a single trace: the whole cluster
         // sits at distance 0, so only the first target-grid position can
@@ -385,7 +355,7 @@ mod tests {
             assert_eq!(topo_data[[0, 19]], 19.);
         };
         // Remove indices 5 and 6, and "accidentally" duplicate one trace
-        gpr.remove_traces(&[5, 5, 6], true).unwrap();
+        crate::processing::steps::traces::run_remove_traces(&mut gpr, &[5, 5, 6]).unwrap();
 
         // Validate that the dummy GPR is now shorter, and that the values are shifted correctly.
         assert_eq!(gpr.width(), 18);
@@ -402,7 +372,7 @@ mod tests {
 
         // Check that the out of bounds error works expectedly
         assert_eq!(
-            gpr.remove_traces(&[18], true),
+            crate::processing::steps::traces::run_remove_traces(&mut gpr, &[18]),
             Err("Trace index 18 is out of bounds (number of traces: 18)".to_string())
         );
     }
@@ -410,7 +380,7 @@ mod tests {
     #[test]
     fn a_subset_cuts_the_topographically_corrected_traces_too() {
         let gpr = make_labelled_gpr(10, 5);
-        let subset = gpr.subset(Some(4), Some(7), None, None).unwrap();
+        let subset = subset_of(&gpr, Some(4), Some(7), None, None).unwrap();
 
         assert_eq!(subset.width(), 3);
         assert_eq!(subset.metadata.last_trace, 3);
@@ -426,8 +396,9 @@ mod tests {
         // fail later, at export, with a shape error.
         let mut gpr = make_dummy_gpr(20, 30, Some(1.));
         gpr.location.cor_points[10].easting += 5.;
-        gpr.correct_topography();
-        let refusal = gpr.make_equidistant(Some(2.)).unwrap_err();
+        crate::processing::steps::geometry::run_correct_topography(&mut gpr);
+        let refusal =
+            crate::processing::steps::traces::run_make_equidistant(&mut gpr, Some(2.)).unwrap_err();
         assert!(refusal.contains("after correct_topography"), "{refusal}");
     }
 
@@ -444,7 +415,7 @@ mod tests {
                 col.mapv_inplace(|_| 0.);
             };
         }
-        gpr.remove_empty_traces(1.).unwrap();
+        crate::processing::steps::traces::run_remove_empty_traces(&mut gpr, 1.).unwrap();
 
         assert_eq!(gpr.width(), 17);
     }

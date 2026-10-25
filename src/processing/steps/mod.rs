@@ -27,6 +27,7 @@ pub mod gain;
 pub mod geometry;
 pub mod migration;
 pub mod parse;
+mod report;
 pub mod rolling;
 pub mod siglog;
 pub mod standstill;
@@ -45,6 +46,7 @@ use clap::{CommandFactory, FromArgMatches, Parser};
 
 use crate::gpr::GPR;
 use parse::{RawStep, Span};
+pub use report::StepReport;
 
 pub(crate) const DEFAULT_ZERO_CORR_FACTOR: f32 = 1.0;
 pub(crate) const DEFAULT_ZERO_CORR_SIGMA: f32 = 5.0;
@@ -1157,21 +1159,20 @@ impl Step {
     ///
     /// Arguments are already typed and range-checked here; what is left to
     /// fail is what depends on the data, such as a subset out of bounds.
-    pub fn apply(&self, gpr: &mut GPR) -> Result<(), Box<dyn Error>> {
-        match self {
+    pub fn apply(&self, gpr: &mut GPR) -> Result<StepReport, String> {
+        Ok(match self {
             Step::Subset {
                 min_trace,
                 max_trace,
                 min_sample,
                 max_sample,
-            } => {
-                *gpr = gpr.subset(
-                    Some(*min_trace),
-                    max_trace.0,
-                    Some(*min_sample),
-                    max_sample.0,
-                )?;
-            }
+            } => traces::run_subset(
+                gpr,
+                Some(*min_trace),
+                max_trace.0,
+                Some(*min_sample),
+                max_sample.0,
+            )?,
             Step::RemoveTraces { traces } => {
                 let indices: Vec<usize> = traces
                     .iter()
@@ -1180,15 +1181,19 @@ impl Step {
                         TraceSelection::Range(start, end) => start..=end,
                     })
                     .collect();
-                gpr.remove_traces(&indices, true)?;
+                traces::run_remove_traces(gpr, &indices)?
             }
-            Step::RemoveEmptyTraces { strength } => gpr.remove_empty_traces(*strength)?,
+            Step::RemoveEmptyTraces { strength } => {
+                traces::run_remove_empty_traces(gpr, *strength)?
+            }
             Step::RemoveStandstills {
                 strength,
                 min_duration,
                 gps_uncertainty,
-            } => gpr.remove_standstills(*strength, *min_duration, *gps_uncertainty),
-            Step::AverageTraces { window } => gpr.average_traces(*window)?,
+            } => {
+                standstill::run_remove_standstills(gpr, *strength, *min_duration, *gps_uncertainty)
+            }
+            Step::AverageTraces { window } => traces::run_average_traces(gpr, *window)?,
             Step::ZeroCorr {
                 method,
                 scope,
@@ -1197,7 +1202,8 @@ impl Step {
                 time_zero,
                 margin,
                 window,
-            } => gpr.zero_corr(
+            } => zero_corr::run_zero_corr(
+                gpr,
                 &zero_corr::Settings {
                     method: *method,
                     scope: *scope,
@@ -1208,43 +1214,53 @@ impl Step {
                 },
                 *factor,
             )?,
-            Step::Bandpass { low, high, q } => gpr.bandpass(*low, *high, *q, true)?,
-            Step::BandpassMhz { low, high, q } => gpr.bandpass(*low, *high, *q, false)?,
-            Step::EquidistantTraces { step } => gpr.make_equidistant(*step)?,
+            Step::Bandpass { low, high, q } => bandpass::run_bandpass(gpr, *low, *high, *q, true)?,
+            Step::BandpassMhz { low, high, q } => {
+                bandpass::run_bandpass(gpr, *low, *high, *q, false)?
+            }
+            Step::EquidistantTraces { step } => traces::run_make_equidistant(gpr, *step)?,
             Step::ShiftCoordinates {
                 along_track,
                 altitude,
                 cross_track,
-            } => gpr.shift_coordinates(*along_track, *altitude, *cross_track)?,
-            Step::Dewow { window, method } => gpr.dewow(*window, *method)?,
-            Step::BackgroundRemoval { traces, method } => gpr.background_removal(*traces, *method),
+            } => coordinates::run_shift_coordinates(gpr, *along_track, *altitude, *cross_track)?,
+            Step::Dewow { window, method } => rolling::run_dewow(gpr, *window, *method)?,
+            Step::BackgroundRemoval { traces, method } => {
+                rolling::run_background_removal(gpr, *traces, *method)
+            }
             Step::RemoveTones {
                 start,
                 max_tones,
                 traces,
                 prominence,
-            } => gpr.remove_tones(*start, *max_tones, *traces, *prominence),
+            } => tones::run_remove_tones(gpr, *start, *max_tones, *traces, *prominence),
             Step::BalanceTraces {
                 deep,
                 shallow_start,
                 shallow_end,
                 traces,
                 reference,
-            } => gpr.balance_traces(*deep, *shallow_start, *shallow_end, *traces, *reference),
-            Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins),
-            Step::Gain { factor } => gpr.gain(*factor),
-            Step::KirchhoffMigration2d => gpr.kirchhoff_migration2d()?,
-            Step::Abslog => gpr.abslog(),
-            Step::Siglog { minval_log10 } => gpr.siglog(*minval_log10),
-            Step::AdaptiveSiglog { offset } => gpr.adaptive_siglog(*offset)?,
-            Step::CorrectTopography => gpr.correct_topography(),
+            } => balance::run_balance_traces(
+                gpr,
+                *deep,
+                *shallow_start,
+                *shallow_end,
+                *traces,
+                *reference,
+            ),
+            Step::AutoGain { n_bins } => gain::run_auto_gain(gpr, *n_bins),
+            Step::Gain { factor } => gain::run_gain(gpr, *factor),
+            Step::KirchhoffMigration2d => migration::run_kirchhoff_migration2d(gpr)?,
+            Step::Abslog => siglog::run_abslog(gpr),
+            Step::Siglog { minval_log10 } => siglog::run_siglog(gpr, *minval_log10),
+            Step::AdaptiveSiglog { offset } => siglog::run_adaptive_siglog(gpr, *offset)?,
+            Step::CorrectTopography => geometry::run_correct_topography(gpr),
             Step::CorrectAntennaSeparation {
                 method,
                 direct_velocity,
-            } => gpr.correct_antenna_separation(*method, *direct_velocity)?,
-            Step::Multiply { factor } => gpr.multiply(*factor),
-        }
-        Ok(())
+            } => geometry::run_correct_antenna_separation(gpr, *method, *direct_velocity)?,
+            Step::Multiply { factor } => gain::run_multiply(gpr, *factor),
+        })
     }
 }
 
@@ -1455,28 +1471,31 @@ fn describe(command: &clap::Command) -> String {
 }
 
 impl GPR {
-    /// Run one step, given as written (e.g. `dewow(10)`).
+    /// Run one step, given as written (e.g. `dewow(10)`), and return what it
+    /// reported.
     ///
     /// The step's own definition lives in [`crate::processing::steps::Step`]; this is
     /// the part every step shares: after it runs, the per-trace metadata
-    /// must still describe the data, and the call is recorded.
-    ///
-    /// The record is the canonical form, every argument named and defaults
+    /// must still describe the data, and the call is recorded twice. Its
+    /// report, timed, goes to the log (#85); and the call itself to the
+    /// steps, in its canonical form, every argument named and defaults
     /// filled in (`dewow(window=10)`), not what was typed: `dewow` alone
     /// would stop saying what ran the day its default changes.
-    pub fn process(&mut self, step_name: &str) -> Result<(), Box<dyn Error>> {
+    pub fn process(&mut self, step_name: &str) -> Result<StepReport, Box<dyn Error>> {
         let parsed = crate::processing::steps::parse_one(step_name)?;
-        let log_len = self.log.len();
         let non_finite_before = self.count_non_finite();
-        parsed.step.apply(self)?;
-        // Every step says what it did, including when it did nothing (#85).
-        if self.log.len() == log_len {
-            return Err(format!("Internal error: `{step_name}` ran without logging").into());
-        }
+        let start = std::time::Instant::now();
+        let report = parsed.step.apply(self)?;
+        let duration = start.elapsed();
         self.check_trace_metadata(step_name)?;
         self.check_finite(step_name, non_finite_before)?;
+        self.log.push(crate::gpr::processing_log::line(
+            report.name(),
+            duration,
+            report.event(),
+        ));
         self.steps.push(parsed.canonical);
-        Ok(())
+        Ok(report)
     }
 
     fn count_non_finite(&self) -> usize {
@@ -1990,9 +2009,20 @@ mod tests {
                 .unwrap_or(&name)
                 .to_string();
             let mut gpr = make_dummy_gpr(40, 600, Some(1.));
-            gpr.process(&call).unwrap_or_else(|e| panic!("{call}: {e}"));
+            let report = gpr.process(&call).unwrap_or_else(|e| panic!("{call}: {e}"));
             let recorded = gpr.steps.last().unwrap();
             assert!(recorded.starts_with(&name), "{call} recorded as {recorded}");
+            // One line per step, which reads back as what it reported.
+            assert_eq!(gpr.log.len(), 1, "{call} logged {:?}", gpr.log);
+            let entry = crate::gpr::processing_log::parse(&gpr.log[0]);
+            assert!(
+                report.name().starts_with(&name),
+                "{call} logged as {}",
+                report.name()
+            );
+            assert_eq!(entry.name, Some(report.name()), "{call}");
+            assert_eq!(entry.event, report.event(), "{call}");
+            assert!(entry.seconds.is_some(), "{call}");
         }
     }
 }

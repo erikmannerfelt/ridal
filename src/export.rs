@@ -381,11 +381,14 @@ impl GPR {
             ExportAttr::Strings(self.steps.clone()),
         );
 
-        // original filepaths:
-        // first is the data_filepath, then any "Merged ..." from the log (as before)
+        // original filepaths: the data_filepath, then each file merged into
+        // it, as the merge logged it.
         let mut filepaths = vec![self.metadata.data_filepath.to_string_lossy().to_string()];
-        for log_str in &self.log {
-            if let Some((_, filename)) = log_str.split_once("Merged ") {
+        for line in &self.log {
+            let entry = crate::gpr::processing_log::parse(line);
+            if let (Some("merge"), Some(filename)) =
+                (entry.name, entry.event.strip_prefix("Merged "))
+            {
                 filepaths.push(filename.replace("\"", ""));
             }
         }

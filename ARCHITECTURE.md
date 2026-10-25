@@ -857,6 +857,44 @@ two ends of that request are one type.
   against a real `ridal gui` and site (`RIDAL_BIN`, plus PROJ to process
   the fixture), which run in CI's `client-integration` job.
 
+## Processing steps and the log (#8, #85)
+
+A step is a free function in its module of `src/processing/steps/`
+(`rolling::run_dewow`, `zero_corr::run_zero_corr`, ...), next to the array
+kernel it applies, which keeps the plain name (`rolling::dewow`), since
+`render/` and other steps call the kernels on arrays of their own. It takes
+`&mut GPR` and its typed arguments and returns a `StepReport`, or an error
+for an argument the data make impossible. `Step::apply` is the only caller;
+`GPR::process` parses the step, times `apply`, checks that the per-trace
+metadata still describe the data and that no sample became non-finite, and
+then records the call twice: the report as a line of `processing_log`, and
+the canonical step in `processing_steps`.
+
+- **One report, one line, per step.** A step cannot forget to log, because
+  the type requires a report, and it cannot log twice: `auto_gain` used to
+  add a `gain` line of its own, and now says "and applied it" (core
+  version 4). The timing is the dispatcher's, of the whole step.
+- **A warning is a flag, not only words.** `StepReport::warning` is for a
+  step that met data it could not handle as asked and fell back, usually
+  to changing nothing, rather than failing a batch over one file. Its
+  event starts `Warning: `, as before; `warn_if` flags a report whose
+  warning is a note after what was done. `processing::run` prints flagged
+  reports unless quiet.
+- **`processing_log` is a file format**, read back from files of any age,
+  and `gpr::processing_log` owns it: `line` writes
+  `{name} (duration: {s:.2}s):\t{event}`, the format since 2022, and
+  `parse` takes a line apart, including the nameless
+  `duration: {:?}\t{event}` lines from before then and lines another tool
+  wrote, which are all event. Readers go through `parse` and match on the
+  name: `export` takes the merged files from `merge` lines, and
+  `interp::separation::logged_resolution` the legacy grid spacing from
+  `correct_antenna_separation` lines. `GPR::merge` is not a step but
+  writes a line through `line` too.
+- The log is not covered by the step digests, and durations make it differ
+  between runs anyway, so a change to a step's wording needs no
+  `Step::version` bump. A change to which lines a file gets bumps
+  `CORE_PROCESSING_VERSION`.
+
 ## Radargrams from other tools
 
 `ridal.write_netcdf` writes data processed elsewhere as a Ridal NetCDF file,

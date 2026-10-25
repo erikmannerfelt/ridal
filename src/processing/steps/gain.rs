@@ -15,11 +15,10 @@
 //! A median of local slopes, unlike a line fit, is not pulled by the bed
 //! reflection or by a bright englacial layer.
 
-use std::time::SystemTime;
-
 use ndarray::{Array2, Axis, Slice};
 
 use crate::gpr::GPR;
+use crate::processing::steps::StepReport;
 
 /// A bin counts as past the ring-down once its envelope is within this many
 /// dB of the median envelope from the peak down.
@@ -171,101 +170,80 @@ fn median(values: &mut [f32]) -> Option<f32> {
     Some((lower + upper) / 2.)
 }
 
-impl GPR {
-    pub fn multiply(&mut self, factor: f32) {
-        let start_time = SystemTime::now();
+pub(crate) fn run_multiply(gpr: &mut GPR, factor: f32) -> StepReport {
+    gpr.data.mapv_inplace(|v| v * factor);
 
-        self.data.mapv_inplace(|v| v * factor);
+    StepReport::new(
+        "multiply",
+        format!("Multiplied all sample values by a constant factor of {factor}"),
+    )
+}
 
-        self.log_event(
-            "multiply",
-            &format!(
-                "Multiplied all sample values by a constant factor of {}",
-                factor
-            ),
-            start_time,
-        );
-    }
-
-    /// Measure the display gain that levels the amplitude envelope below the
-    /// direct wave, and apply it (#266).
-    ///
-    /// See [`estimate_display_gain`] for the measurement.
-    ///
-    /// Never fails on the data. When no gain can be measured (too short a
-    /// record, no amplitude, a non-finite result) or the envelope grows with
-    /// time, it applies no gain and the log says why: a radargram without
-    /// gain is still usable, and one bad file should not stop a batch.
-    pub fn auto_gain(&mut self, n_bins: usize) {
-        let start_time = SystemTime::now();
-
-        let est = match estimate_display_gain(&self.data, self.vertical_resolution_ns(), n_bins) {
-            Ok(est) if est.db_per_ns.is_finite() => est,
-            Ok(est) => {
-                self.log_event(
-                    "auto_gain",
-                    &format!(
-                        "Warning: measured a non-finite gain ({}); applied no gain",
-                        est.db_per_ns
-                    ),
-                    start_time,
-                );
-                return;
-            }
-            Err(reason) => {
-                self.log_event(
-                    "auto_gain",
-                    &format!("Warning: could not measure a gain ({reason}); applied no gain"),
-                    start_time,
-                );
-                return;
-            }
-        };
-        let window = format!(
-            "the median bin-to-bin change of the median |amplitude| over {:.0}-{:.0} ns \
-             ({} bin pairs of {n_bins} bins, below the direct wave's ring-down)",
-            est.fit_start_ns, est.fit_end_ns, est.bin_pairs,
-        );
-
-        if est.db_per_ns < 0. {
-            self.log_event(
+/// Measure the display gain that levels the amplitude envelope below the
+/// direct wave, and apply it (#266).
+///
+/// See [`estimate_display_gain`] for the measurement.
+///
+/// Never fails on the data. When no gain can be measured (too short a
+/// record, no amplitude, a non-finite result) or the envelope grows with
+/// time, it applies no gain and the log says why: a radargram without
+/// gain is still usable, and one bad file should not stop a batch.
+pub(crate) fn run_auto_gain(gpr: &mut GPR, n_bins: usize) -> StepReport {
+    let est = match estimate_display_gain(&gpr.data, gpr.vertical_resolution_ns(), n_bins) {
+        Ok(est) if est.db_per_ns.is_finite() => est,
+        Ok(est) => {
+            return StepReport::warning(
                 "auto_gain",
-                &format!(
-                    "Warning: the amplitude grows with time ({:.5} dB / ns, from {window}); \
-                     applied no gain",
+                format!(
+                    "measured a non-finite gain ({}); applied no gain",
                     est.db_per_ns
                 ),
-                start_time,
             );
-            return;
         }
-        self.log_event(
+        Err(reason) => {
+            return StepReport::warning(
+                "auto_gain",
+                format!("could not measure a gain ({reason}); applied no gain"),
+            );
+        }
+    };
+    let window = format!(
+        "the median bin-to-bin change of the median |amplitude| over {:.0}-{:.0} ns \
+         ({} bin pairs of {n_bins} bins, below the direct wave's ring-down)",
+        est.fit_start_ns, est.fit_end_ns, est.bin_pairs,
+    );
+
+    if est.db_per_ns < 0. {
+        return StepReport::warning(
             "auto_gain",
-            &format!(
-                "Measured a display gain of {:.5} dB / ns (TWT) from {window}",
+            format!(
+                "the amplitude grows with time ({:.5} dB / ns, from {window}); applied no gain",
                 est.db_per_ns
             ),
-            start_time,
         );
-        self.gain(est.db_per_ns);
     }
+    let ns_per_sample = gpr.vertical_resolution_ns();
+    apply_gain(&mut gpr.data, est.db_per_ns, ns_per_sample);
+    StepReport::new(
+        "auto_gain",
+        format!(
+            "Measured a display gain of {:.5} dB / ns (TWT) from {window}, and applied it",
+            est.db_per_ns
+        ),
+    )
+}
 
-    pub fn gain(&mut self, factor: f32) {
-        let start_time = SystemTime::now();
+pub(crate) fn run_gain(gpr: &mut GPR, factor: f32) -> StepReport {
+    let ns_per_sample = gpr.vertical_resolution_ns();
+    apply_gain(&mut gpr.data, factor, ns_per_sample);
+    StepReport::new("gain", format!("Applied gain of {factor} dB / ns (TWT)"))
+}
 
-        let ns_per_trace = self.vertical_resolution_ns();
-        for i in 0..self.height() as isize {
-            let mut view = self
-                .data
-                .slice_axis_mut(Axis(0), Slice::new(i, Some(i + 1), 1_isize));
-
-            view *= 10_f32.powf(factor * (i as f32) * ns_per_trace / 20.);
-        }
-        self.log_event(
-            "gain",
-            &format!("Applied gain of {factor} dB / ns (TWT)",),
-            start_time,
-        );
+/// Multiply each sample by `factor` dB per ns of two-way travel time below
+/// the first sample.
+fn apply_gain(data: &mut Array2<f32>, factor: f32, ns_per_sample: f32) {
+    for (i, mut row) in data.rows_mut().into_iter().enumerate() {
+        row *= 10_f32.powf(factor * (i as f32) * ns_per_sample / 20.);
     }
 }
 
@@ -406,6 +384,14 @@ mod tests {
         let entry = gpr.log.last().unwrap();
         assert!(entry.contains("could not measure a gain"), "{entry}");
         assert!(entry.contains("applied no gain"), "{entry}");
+        // Flagged, so `run` can say so, and still the old text in the log.
+        let report = gpr.process("auto_gain").unwrap();
+        assert!(report.is_warning());
+        assert!(
+            report.event().starts_with("Warning: "),
+            "{}",
+            report.event()
+        );
 
         // A bad argument is still an error, at parse time.
         let err = gpr.process("auto_gain(1)").unwrap_err().to_string();
@@ -424,10 +410,13 @@ mod tests {
                 (-(i as f32) / 50.).exp() * if i % 2 == 0 { 1. } else { -1. }
             }
         });
-        gpr.auto_gain(10);
+        gpr.process("auto_gain(10)").unwrap();
         assert!(gpr.data.iter().all(|v| v.is_finite()));
         // The gain undoes most of the decay.
         assert!(gpr.data[[199, 0]].abs() > 0.5 * gpr.data[[0, 0]].abs());
+        // Measured and applied in one step, so in one line.
+        assert_eq!(gpr.log.len(), 1, "{:?}", gpr.log);
+        assert!(gpr.log[0].ends_with(", and applied it"), "{}", gpr.log[0]);
     }
 
     #[test]
@@ -435,7 +424,7 @@ mod tests {
         let mut gpr = make_dummy_gpr(20, 30, Some(1.));
 
         let mean_pre = gpr.data.mean().unwrap();
-        gpr.multiply(5.);
+        crate::processing::steps::gain::run_multiply(&mut gpr, 5.);
         assert_eq!(gpr.data.mean(), Some(mean_pre * 5.));
 
         gpr.process("multiply(5e0)")?;

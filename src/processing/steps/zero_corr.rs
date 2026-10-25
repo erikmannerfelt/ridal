@@ -14,12 +14,12 @@
 
 use std::fmt;
 use std::str::FromStr;
-use std::time::SystemTime;
 
 use ndarray::{Array2, ArrayView1, Axis, Slice};
 use rayon::prelude::*;
 
 use crate::gpr::GPR;
+use crate::processing::steps::StepReport;
 
 /// How to pick time zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -915,169 +915,156 @@ pub fn apply_shifts(data: &Array2<f32>, shifts: &[usize]) -> Array2<f32> {
     out
 }
 
-impl GPR {
-    /// Pick time zero with `method` and crop each trace to it.
-    ///
-    /// With [`Scope::Trace`] each trace is cropped by its own
-    /// pick, and the bottom is trimmed to the shortest trace so that none
-    /// is padded with zeros (#6). `legacy` goes to
-    /// [`GPR::zero_corr_legacy`] and supports only the global scope.
-    pub fn zero_corr(&mut self, settings: &Settings, factor: f32) -> Result<(), String> {
-        let Settings {
-            method,
-            scope,
-            time_zero: reference,
-            margin,
-            window,
-            ..
-        } = *settings;
-        if method == Method::Legacy {
-            if scope != Scope::Global {
-                return Err("the legacy method only has a global scope".into());
-            }
-            return self.zero_corr_legacy(factor);
+/// Pick time zero with `method` and crop each trace to it.
+///
+/// With [`Scope::Trace`] each trace is cropped by its own
+/// pick, and the bottom is trimmed to the shortest trace so that none
+/// is padded with zeros (#6). `legacy` goes to
+/// [`run_zero_corr_legacy`] and supports only the global scope.
+pub(crate) fn run_zero_corr(
+    gpr: &mut GPR,
+    settings: &Settings,
+    factor: f32,
+) -> Result<StepReport, String> {
+    let Settings {
+        method,
+        scope,
+        time_zero: reference,
+        margin,
+        window,
+        ..
+    } = *settings;
+    if method == Method::Legacy {
+        if scope != Scope::Global {
+            return Err("the legacy method only has a global scope".into());
         }
-        let start_time = SystemTime::now();
-        let name = format!("zero_corr({method}, {scope})");
-        let step_ns = self.metadata.time_window / self.height() as f32;
-        let Some(picks) = pick(&self.data, settings, step_ns)? else {
-            self.log_event(
-                &name,
-                "Every trace is flat; nothing was cropped",
-                start_time,
-            );
-            return Ok(());
-        };
-        let crops = picks.crops();
+        return run_zero_corr_legacy(gpr, factor);
+    }
+    let name = format!("zero_corr({method}, {scope})");
+    let step_ns = gpr.metadata.time_window / gpr.height() as f32;
+    let Some(picks) = pick(&gpr.data, settings, step_ns)? else {
+        return Ok(StepReport::new(
+            name,
+            "Every trace is flat; nothing was cropped",
+        ));
+    };
+    let crops = picks.crops();
 
-        // On the recording clock, from the crop before this one, because the
-        // picks index the data as it is now. Time zero is a position and is
-        // assigned; the crop accumulates, since a pipeline may crop more
-        // than once.
-        let time_zero_ns: Vec<f32> = self
-            .twtt_crop_ns()
-            .iter()
-            .zip(&picks.time_zero)
-            .map(|(crop, t0)| crop + *t0 as f32 * step_ns)
-            .collect();
-        self.crop_samples(apply_shifts(&self.data, &crops), &crops)?;
-        self.set_time_zero_ns(time_zero_ns)?;
+    // On the recording clock, from the crop before this one, because the
+    // picks index the data as it is now. Time zero is a position and is
+    // assigned; the crop accumulates, since a pipeline may crop more
+    // than once.
+    let time_zero_ns: Vec<f32> = gpr
+        .twtt_crop_ns()
+        .iter()
+        .zip(&picks.time_zero)
+        .map(|(crop, t0)| crop + *t0 as f32 * step_ns)
+        .collect();
+    gpr.crop_samples(apply_shifts(&gpr.data, &crops), &crops)?;
+    gpr.set_time_zero_ns(time_zero_ns)?;
 
-        let (min, max) = (
-            crops.iter().copied().min().unwrap_or(0),
-            crops.iter().copied().max().unwrap_or(0),
+    let (min, max) = (
+        crops.iter().copied().min().unwrap_or(0),
+        crops.iter().copied().max().unwrap_or(0),
+    );
+    let removed = if min == max {
+        format!("removed the first {min} rows")
+    } else {
+        format!(
+            "removed the first {min}-{max} rows per trace and trimmed the bottom by up to {} \
+             rows so that no trace is zero-padded",
+            max - min
+        )
+    };
+    let placed = if picks.shift == 0 {
+        String::new()
+    } else {
+        format!(
+            "; time zero is at the {reference}, {} samples ({:.2} ns) from the traces' \
+             aligned picks (the median distance over the traces)",
+            picks.shift,
+            picks.shift as f32 * step_ns
+        )
+    };
+    let mut kept = format!(
+        "; kept {} rows ({:.2} ns) above time zero (margin={margin})",
+        picks.margin,
+        picks.margin as f32 * step_ns
+    );
+    if picks.margin < picks.margin_wanted {
+        kept += &format!(
+            ", not {}, because a trace has no more record above its time zero",
+            picks.margin_wanted
         );
-        let removed = if min == max {
-            format!("removed the first {min} rows")
-        } else {
-            format!(
-                "removed the first {min}-{max} rows per trace and trimmed the bottom by up to {} \
-                 rows so that no trace is zero-padded",
-                max - min
-            )
-        };
-        let placed = if picks.shift == 0 {
-            String::new()
-        } else {
-            format!(
-                "; time zero is at the {reference}, {} samples ({:.2} ns) from the traces' \
-                 aligned picks (the median distance over the traces)",
-                picks.shift,
-                picks.shift as f32 * step_ns
-            )
-        };
-        let mut kept = format!(
-            "; kept {} rows ({:.2} ns) above time zero (margin={margin})",
-            picks.margin,
-            picks.margin as f32 * step_ns
-        );
-        if picks.margin < picks.margin_wanted {
-            kept += &format!(
-                ", not {}, because a trace has no more record above its time zero",
-                picks.margin_wanted
-            );
+    }
+    let smoothed = match scope {
+        Scope::Smooth => {
+            format!("; picks smoothed by a running median over {window} traces")
         }
-        let smoothed = match scope {
-            Scope::Smooth => {
-                format!("; picks smoothed by a running median over {window} traces")
-            }
-            _ => String::new(),
+        _ => String::new(),
+    };
+    let outliers = match scope {
+        Scope::Global => String::new(),
+        Scope::Trace | Scope::Smooth => format!(
+            "; {} of {} picks were outliers or failed and were replaced by their neighbours' \
+             median",
+            picks.replaced,
+            picks.time_zero.len()
+        ),
+    };
+    let event = format!("Picked time zero and {removed}{placed}{kept}{outliers}{smoothed}");
+    Ok(match &picks.substituted {
+        Some(why) => StepReport::warning(name, format!("{why}. {event}")),
+        None => StepReport::new(name, event),
+    })
+}
+
+/// The pre-0.7 `zero_corr`: crop every trace at the first sample where
+/// the mean trace jumps by more than `factor` times half its standard
+/// deviation, and subtract the mean of what came before.
+pub(crate) fn run_zero_corr_legacy(gpr: &mut GPR, factor: f32) -> Result<StepReport, String> {
+    let mean_trace = gpr.data.mean_axis(Axis(1)).unwrap();
+
+    let threshold = 0.5 * mean_trace.std(1.0) * factor;
+
+    let mut first_rise = 0_isize;
+
+    for i in 1..mean_trace.shape()[0] {
+        if (mean_trace[i] - mean_trace[i - 1]).abs() > threshold {
+            first_rise = i as isize;
+            break;
         };
-        let outliers = match scope {
-            Scope::Global => String::new(),
-            Scope::Trace | Scope::Smooth => format!(
-                "; {} of {} picks were outliers or failed and were replaced by their neighbours' \
-                 median",
-                picks.replaced,
-                picks.time_zero.len()
-            ),
-        };
-        let warning = picks
-            .substituted
-            .as_ref()
-            .map(|why| format!("Warning: {why}. "))
-            .unwrap_or_default();
-        self.log_event(
-            &name,
-            &format!("{warning}Picked time zero and {removed}{placed}{kept}{outliers}{smoothed}"),
-            start_time,
-        );
-        Ok(())
     }
 
-    /// The pre-0.7 `zero_corr`: crop every trace at the first sample where
-    /// the mean trace jumps by more than `factor` times half its standard
-    /// deviation, and subtract the mean of what came before.
-    pub fn zero_corr_legacy(&mut self, factor: f32) -> Result<(), String> {
-        let start_time = SystemTime::now();
-
-        let mean_trace = self.data.mean_axis(Axis(1)).unwrap();
-
-        let threshold = 0.5 * mean_trace.std(1.0) * factor;
-
-        let mut first_rise = 0_isize;
-
-        for i in 1..mean_trace.shape()[0] {
-            if (mean_trace[i] - mean_trace[i - 1]).abs() > threshold {
-                first_rise = i as isize;
-                break;
-            };
-        }
-
-        if first_rise == 0 {
-            self.log_event(
-                "zero_corr(legacy, global)",
-                "Found no first rise in the mean trace; nothing was cropped",
-                start_time,
-            );
-            return Ok(());
-        };
-
-        let mean_silent_val = mean_trace
-            .slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1))
-            .mean()
-            .unwrap();
-
-        // Time zero is taken to be the first sample kept.
-        self.crop_samples(
-            self.data
-                .slice_axis(Axis(0), Slice::new(first_rise, None, 1))
-                .to_owned(),
-            &vec![first_rise as usize; self.width()],
-        )?;
-        self.set_time_zero_ns(self.twtt_crop_ns().to_vec())?;
-        self.data -= mean_silent_val;
-
-        self.log_event(
+    if first_rise == 0 {
+        return Ok(StepReport::new(
             "zero_corr(legacy, global)",
-            &format!(
-                "Applied a global zero-corr by removing the first {first_rise} rows (factor: \
-                 {factor})"
-            ),
-            start_time,
-        );
-        Ok(())
-    }
+            "Found no first rise in the mean trace; nothing was cropped",
+        ));
+    };
+
+    let mean_silent_val = mean_trace
+        .slice_axis(Axis(0), Slice::new(0, Some(first_rise), 1))
+        .mean()
+        .unwrap();
+
+    // Time zero is taken to be the first sample kept.
+    gpr.crop_samples(
+        gpr.data
+            .slice_axis(Axis(0), Slice::new(first_rise, None, 1))
+            .to_owned(),
+        &vec![first_rise as usize; gpr.width()],
+    )?;
+    gpr.set_time_zero_ns(gpr.twtt_crop_ns().to_vec())?;
+    gpr.data -= mean_silent_val;
+
+    Ok(StepReport::new(
+        "zero_corr(legacy, global)",
+        format!(
+            "Applied a global zero-corr by removing the first {first_rise} rows (factor: \
+             {factor})"
+        ),
+    ))
 }
 
 /// A synthetic trace: weak noise, then a decaying sine starting at
@@ -1765,7 +1752,7 @@ mod tests {
         // A uniform crop still reports one number, which is the common case
         // and what keeps the ordinary file simple.
         let mut uniform = make_gpr_with_first_break(64, 512);
-        uniform.zero_corr_legacy(1.).unwrap();
+        crate::processing::steps::zero_corr::run_zero_corr_legacy(&mut uniform, 1.).unwrap();
         assert!(uniform.twtt_crop_uniform_ns().is_some());
     }
 }

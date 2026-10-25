@@ -219,8 +219,12 @@ pub fn build_processed_gpr_with_progress(
                 step,
             );
         }
-        gpr.process(step)
+        let report = gpr
+            .process(step)
             .map_err(|e| format!("Error on step {}: {:?}", step, e))?;
+        if report.is_warning() && !options.quiet {
+            eprintln!("{}: {}", report.name(), report.event());
+        }
     }
 
     // Resolved once, here, from CLI arguments and the output stem. There is

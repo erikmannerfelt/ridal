@@ -49,12 +49,11 @@
 //! or weak, while driving are as coherent as standstills. That is what the
 //! positions are for.
 
-use std::time::SystemTime;
-
 use ndarray::{s, Array1, Array2, ArrayView2};
 
 use super::rolling::{self, Statistic};
 use crate::gpr::{TimeSource, GPR};
+use crate::processing::steps::StepReport;
 
 pub mod gps;
 
@@ -550,265 +549,252 @@ fn merge(mut standstills: Vec<Standstill>) -> Vec<Standstill> {
     merged
 }
 
-impl GPR {
-    /// Replace each stretch recorded while the radar stood still with its
-    /// median trace. See [`crate::processing::steps::standstill`].
-    ///
-    /// With `gps_uncertainty` (m), the positions are used as well
-    /// ([`gps`]). Positions that cannot help (too few
-    /// fixes, or a track that never moves) are left out with a warning.
-    ///
-    /// Never fails on the data: too little to measure, or a duration in
-    /// seconds without a usable trace interval, leaves the data unchanged
-    /// and the log says why.
-    pub fn remove_standstills(
-        &mut self,
-        strength: f32,
-        min_duration: crate::processing::steps::balance::Span,
-        gps_uncertainty: Option<f32>,
-    ) {
-        let start_time = SystemTime::now();
-        let seconds_per_trace = self.metadata.time_interval;
-        let min_traces = match min_duration.traces(seconds_per_trace) {
-            Ok(n) => n,
-            Err(reason) => {
-                self.log_event(
-                    "remove_standstills",
-                    &format!("Warning: {reason}; changed nothing"),
-                    start_time,
+/// Replace each stretch recorded while the radar stood still with its
+/// median trace. See [`crate::processing::steps::standstill`].
+///
+/// With `gps_uncertainty` (m), the positions are used as well
+/// ([`gps`]). Positions that cannot help (too few
+/// fixes, or a track that never moves) are left out with a warning.
+///
+/// Never fails on the data: too little to measure, or a duration in
+/// seconds without a usable trace interval, leaves the data unchanged
+/// and the log says why.
+pub(crate) fn run_remove_standstills(
+    gpr: &mut GPR,
+    strength: f32,
+    min_duration: crate::processing::steps::balance::Span,
+    gps_uncertainty: Option<f32>,
+) -> StepReport {
+    let seconds_per_trace = gpr.metadata.time_interval;
+    let min_traces = match min_duration.traces(seconds_per_trace) {
+        Ok(n) => n,
+        Err(reason) => {
+            return StepReport::warning("remove_standstills", format!("{reason}; changed nothing"));
+        }
+    };
+
+    // One period of the antenna's nominal frequency, in samples, puts the
+    // first sample used below the direct wave.
+    let step_ns = gpr.vertical_resolution_ns();
+    let antenna_mhz = gpr.metadata.antenna_mhz;
+    let period = (antenna_mhz > 0. && antenna_mhz.is_finite() && step_ns > 0.)
+        .then(|| ((1000. / antenna_mhz) / step_ns).round() as usize);
+    let no_frequency = if period.is_none() {
+        format!(
+            " Warning: the antenna frequency is {antenna_mhz} MHz, so the direct wave was \
+             taken to end where the mean trace falls below a tenth of its peak."
+        )
+    } else {
+        String::new()
+    };
+    let settings = Settings {
+        strength,
+        min_traces,
+        first_sample: below_direct_wave(gpr.data.view(), period),
+    };
+
+    let seconds: Vec<f64> = gpr
+        .location
+        .cor_points
+        .iter()
+        .map(|p| p.time_seconds)
+        .collect();
+    let easting: Vec<f64> = gpr.location.cor_points.iter().map(|p| p.easting).collect();
+    let northing: Vec<f64> = gpr.location.cor_points.iter().map(|p| p.northing).collect();
+    let track = gps::Track {
+        seconds: &seconds,
+        easting: &easting,
+        northing: &northing,
+    };
+    let (gps, gps_note) = match gps_uncertainty {
+        None => (None, String::new()),
+        // Times made up from a trace interval say nothing about when
+        // the radar stood still, and nor do positions interpolated
+        // along with them.
+        Some(_) if gpr.location.time_source == TimeSource::Synthetic => (
+            None,
+            " Warning: the trace times are synthetic, so the GPS was not used.".to_string(),
+        ),
+        Some(uncertainty) => match gps::Gps::new(track, uncertainty as f64) {
+            Ok(gps) => {
+                let note = format!(
+                    " GPS uncertainty {uncertainty} m: stretches of {:.1} s or more can be \
+                     judged.",
+                    gps.window_s
                 );
-                return;
+                (Some(gps), note)
             }
-        };
-
-        // One period of the antenna's nominal frequency, in samples, puts the
-        // first sample used below the direct wave.
-        let step_ns = self.vertical_resolution_ns();
-        let antenna_mhz = self.metadata.antenna_mhz;
-        let period = (antenna_mhz > 0. && antenna_mhz.is_finite() && step_ns > 0.)
-            .then(|| ((1000. / antenna_mhz) / step_ns).round() as usize);
-        let no_frequency = if period.is_none() {
-            format!(
-                " Warning: the antenna frequency is {antenna_mhz} MHz, so the direct wave was \
-                 taken to end where the mean trace falls below a tenth of its peak."
-            )
-        } else {
-            String::new()
-        };
-        let settings = Settings {
-            strength,
-            min_traces,
-            first_sample: below_direct_wave(self.data.view(), period),
-        };
-
-        let seconds: Vec<f64> = self
-            .location
-            .cor_points
-            .iter()
-            .map(|p| p.time_seconds)
-            .collect();
-        let easting: Vec<f64> = self.location.cor_points.iter().map(|p| p.easting).collect();
-        let northing: Vec<f64> = self
-            .location
-            .cor_points
-            .iter()
-            .map(|p| p.northing)
-            .collect();
-        let track = gps::Track {
-            seconds: &seconds,
-            easting: &easting,
-            northing: &northing,
-        };
-        let (gps, gps_note) = match gps_uncertainty {
-            None => (None, String::new()),
-            // Times made up from a trace interval say nothing about when
-            // the radar stood still, and nor do positions interpolated
-            // along with them.
-            Some(_) if self.location.time_source == TimeSource::Synthetic => (
+            Err(reason) => (
                 None,
-                " Warning: the trace times are synthetic, so the GPS was not used.".to_string(),
+                format!(" Warning: {reason}, so the GPS was not used."),
             ),
-            Some(uncertainty) => match gps::Gps::new(track, uncertainty as f64) {
-                Ok(gps) => {
-                    let note = format!(
-                        " GPS uncertainty {uncertainty} m: stretches of {:.1} s or more can be \
-                         judged.",
-                        gps.window_s
-                    );
-                    (Some(gps), note)
-                }
-                Err(reason) => (
-                    None,
-                    format!(" Warning: {reason}, so the GPS was not used."),
-                ),
-            },
-        };
+        },
+    };
 
-        let detection = match detect(self.data.view(), &settings, gps.as_ref()) {
-            Ok(detection) => detection,
-            Err(reason) => {
-                self.log_event(
-                    "remove_standstills",
-                    &format!("Warning: {reason}; changed nothing.{no_frequency}{gps_note}"),
-                    start_time,
-                );
-                return;
-            }
-        };
+    // Either note above is then a warning.
+    let warned = period.is_none() || (gps_uncertainty.is_some() && gps.is_none());
 
-        let width = self.width();
-        // A duration in seconds where the trace interval gives one.
-        let duration = |n: usize| {
-            if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
-                format!("{:.1} s", n as f32 * seconds_per_trace)
-            } else {
-                format!("{n} traces")
-            }
-        };
-        let elsewhere = detection.highest_elsewhere.map_or(String::new(), |z| {
-            format!(" Highest strength elsewhere: {z:.1}.")
-        });
-        // The minimum duration as it was given.
-        let shortest = match min_duration {
-            crate::processing::steps::balance::Span::Seconds(s) => format!("{s} s"),
-            crate::processing::steps::balance::Span::Traces(n) => format!("{n} traces"),
-        };
-        let threshold = match gps_uncertainty {
-            None => format!("strength >= {strength}, >= {shortest}"),
-            Some(u) => format!("strength >= {strength}, >= {shortest}, gps_uncertainty = {u} m"),
-        };
-        // What the GPS changed.
-        let mut gps_changes = String::new();
-        if !detection.ruled_out.is_empty() {
-            let listed: Vec<String> = detection
-                .ruled_out
-                .iter()
-                .map(|s| format!("{}-{} ({:.1})", s.start, s.end - 1, s.peak))
-                .collect();
-            gps_changes += &format!(
-                " The GPS showed movement through {} that reached the strength (traces \
-                 (strength): {}).",
-                listed.len(),
-                listed.join(", ")
-            );
-        }
-        if detection.cut > 0 {
-            gps_changes += &format!(
-                " The GPS showed movement in part of {}, which kept only the rest.",
-                detection.cut
-            );
-        }
-        if detection.unjudged > 0 {
-            gps_changes += &format!(
-                " {} had too few fixes for the GPS to judge.",
-                detection.unjudged
-            );
-        }
-        let vouched = detection
-            .standstills
-            .iter()
-            .filter(|s| s.peak < strength)
-            .count();
-        if vouched > 0 {
-            gps_changes += &format!(
-                " {vouched} below the strength {} kept because the GPS showed standing still.",
-                if vouched == 1 { "was" } else { "were" }
-            );
-        }
-        let skipped = match detection.too_short.as_slice() {
-            [] => String::new(),
-            short => format!(
-                " Skipped {} shorter than {shortest} (strongest {:.1}).",
-                short.len(),
-                short
-                    .iter()
-                    .map(|s| s.peak)
-                    .fold(f32::NEG_INFINITY, f32::max)
-            ),
-        };
-        if detection.standstills.is_empty() {
-            self.log_event(
+    let detection = match detect(gpr.data.view(), &settings, gps.as_ref()) {
+        Ok(detection) => detection,
+        Err(reason) => {
+            return StepReport::warning(
                 "remove_standstills",
-                &format!(
-                    "Found no standstills ({threshold}).{skipped}{elsewhere}{gps_changes}\
-                     {no_frequency}{gps_note}"
-                ),
-                start_time,
+                format!("{reason}; changed nothing.{no_frequency}{gps_note}"),
             );
-            return;
         }
+    };
 
-        // Each output trace stands for one input trace (its time, position
-        // and offsets) and, inside a standstill, for the whole stretch.
-        let mut representatives = Vec::with_capacity(width);
-        let mut medians = Vec::with_capacity(detection.standstills.len());
-        let mut next = 0;
-        for standstill in &detection.standstills {
-            representatives.extend(next..standstill.start);
-            medians.push((representatives.len(), *standstill));
-            representatives.push(standstill.representative(width));
-            next = standstill.end;
+    let width = gpr.width();
+    // A duration in seconds where the trace interval gives one.
+    let duration = |n: usize| {
+        if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
+            format!("{:.1} s", n as f32 * seconds_per_trace)
+        } else {
+            format!("{n} traces")
         }
-        representatives.extend(next..width);
-
-        // The median trace of each standstill, from the traces before
-        // selection, which are what a standstill's range indexes.
-        let median_traces = |data: &Array2<f32>| -> Vec<Array1<f32>> {
-            medians
-                .iter()
-                .map(|(_, standstill)| {
-                    data.slice(ndarray::s![.., standstill.start..standstill.end])
-                        .rows()
-                        .into_iter()
-                        .map(|row| {
-                            let mut values = row.to_vec();
-                            let middle = values.len() / 2;
-                            *values.select_nth_unstable_by(middle, f32::total_cmp).1
-                        })
-                        .collect()
-                })
-                .collect()
-        };
-        let data_medians = median_traces(&self.data);
-        let topo_medians = self.topo_data.as_ref().map(median_traces);
-        self.select_traces(&representatives);
-        for ((column, _), median) in medians.iter().zip(&data_medians) {
-            self.data.column_mut(*column).assign(median);
-        }
-        if let (Some(topo_data), Some(topo_medians)) = (&mut self.topo_data, &topo_medians) {
-            for ((column, _), median) in medians.iter().zip(topo_medians) {
-                topo_data.column_mut(*column).assign(median);
-            }
-        }
-
+    };
+    let elsewhere = detection.highest_elsewhere.map_or(String::new(), |z| {
+        format!(" Highest strength elsewhere: {z:.1}.")
+    });
+    // The minimum duration as it was given.
+    let shortest = match min_duration {
+        crate::processing::steps::balance::Span::Seconds(s) => format!("{s} s"),
+        crate::processing::steps::balance::Span::Traces(n) => format!("{n} traces"),
+    };
+    let threshold = match gps_uncertainty {
+        None => format!("strength >= {strength}, >= {shortest}"),
+        Some(u) => format!("strength >= {strength}, >= {shortest}, gps_uncertainty = {u} m"),
+    };
+    // What the GPS changed.
+    let mut gps_changes = String::new();
+    if !detection.ruled_out.is_empty() {
         let listed: Vec<String> = detection
-            .standstills
+            .ruled_out
             .iter()
-            .map(|s| {
-                format!(
-                    "{}-{} ({}, {:.1})",
-                    s.start,
-                    s.end - 1,
-                    duration(s.len()),
-                    s.peak
-                )
-            })
+            .map(|s| format!("{}-{} ({:.1})", s.start, s.end - 1, s.peak))
             .collect();
-        let replaced = match detection.standstills.len() {
-            1 => "1 standstill with its median trace".to_string(),
-            n => format!("{n} standstills with their median trace"),
-        };
-        self.log_event(
-            "remove_standstills",
-            &format!(
-                "Replaced {replaced} ({threshold}). Traces (duration, strength): {}. {width} -> {} \
-                 traces.{skipped}{elsewhere}{gps_changes}{no_frequency}{gps_note}",
-                listed.join(", "),
-                self.width()
-            ),
-            start_time,
+        gps_changes += &format!(
+            " The GPS showed movement through {} that reached the strength (traces \
+             (strength): {}).",
+            listed.len(),
+            listed.join(", ")
         );
     }
+    if detection.cut > 0 {
+        gps_changes += &format!(
+            " The GPS showed movement in part of {}, which kept only the rest.",
+            detection.cut
+        );
+    }
+    if detection.unjudged > 0 {
+        gps_changes += &format!(
+            " {} had too few fixes for the GPS to judge.",
+            detection.unjudged
+        );
+    }
+    let vouched = detection
+        .standstills
+        .iter()
+        .filter(|s| s.peak < strength)
+        .count();
+    if vouched > 0 {
+        gps_changes += &format!(
+            " {vouched} below the strength {} kept because the GPS showed standing still.",
+            if vouched == 1 { "was" } else { "were" }
+        );
+    }
+    let skipped = match detection.too_short.as_slice() {
+        [] => String::new(),
+        short => format!(
+            " Skipped {} shorter than {shortest} (strongest {:.1}).",
+            short.len(),
+            short
+                .iter()
+                .map(|s| s.peak)
+                .fold(f32::NEG_INFINITY, f32::max)
+        ),
+    };
+    if detection.standstills.is_empty() {
+        return StepReport::new(
+            "remove_standstills",
+            format!(
+                "Found no standstills ({threshold}).{skipped}{elsewhere}{gps_changes}\
+                 {no_frequency}{gps_note}"
+            ),
+        )
+        .warn_if(warned);
+    }
+
+    // Each output trace stands for one input trace (its time, position
+    // and offsets) and, inside a standstill, for the whole stretch.
+    let mut representatives = Vec::with_capacity(width);
+    let mut medians = Vec::with_capacity(detection.standstills.len());
+    let mut next = 0;
+    for standstill in &detection.standstills {
+        representatives.extend(next..standstill.start);
+        medians.push((representatives.len(), *standstill));
+        representatives.push(standstill.representative(width));
+        next = standstill.end;
+    }
+    representatives.extend(next..width);
+
+    // The median trace of each standstill, from the traces before
+    // selection, which are what a standstill's range indexes.
+    let median_traces = |data: &Array2<f32>| -> Vec<Array1<f32>> {
+        medians
+            .iter()
+            .map(|(_, standstill)| {
+                data.slice(ndarray::s![.., standstill.start..standstill.end])
+                    .rows()
+                    .into_iter()
+                    .map(|row| {
+                        let mut values = row.to_vec();
+                        let middle = values.len() / 2;
+                        *values.select_nth_unstable_by(middle, f32::total_cmp).1
+                    })
+                    .collect()
+            })
+            .collect()
+    };
+    let data_medians = median_traces(&gpr.data);
+    let topo_medians = gpr.topo_data.as_ref().map(median_traces);
+    gpr.select_traces(&representatives);
+    for ((column, _), median) in medians.iter().zip(&data_medians) {
+        gpr.data.column_mut(*column).assign(median);
+    }
+    if let (Some(topo_data), Some(topo_medians)) = (&mut gpr.topo_data, &topo_medians) {
+        for ((column, _), median) in medians.iter().zip(topo_medians) {
+            topo_data.column_mut(*column).assign(median);
+        }
+    }
+
+    let listed: Vec<String> = detection
+        .standstills
+        .iter()
+        .map(|s| {
+            format!(
+                "{}-{} ({}, {:.1})",
+                s.start,
+                s.end - 1,
+                duration(s.len()),
+                s.peak
+            )
+        })
+        .collect();
+    let replaced = match detection.standstills.len() {
+        1 => "1 standstill with its median trace".to_string(),
+        n => format!("{n} standstills with their median trace"),
+    };
+    StepReport::new(
+        "remove_standstills",
+        format!(
+            "Replaced {replaced} ({threshold}). Traces (duration, strength): {}. {width} -> {} \
+             traces.{skipped}{elsewhere}{gps_changes}{no_frequency}{gps_note}",
+            listed.join(", "),
+            gpr.width()
+        ),
+    )
+    .warn_if(warned)
 }
 
 #[cfg(test)]

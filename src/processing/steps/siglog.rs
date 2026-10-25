@@ -9,12 +9,11 @@
 //! `log10(noise floor) + offset`, so the same offset gives the same picture
 //! on any amplitude scale.
 
-use std::time::SystemTime;
-
 use ndarray::{Array, Array2};
 use num::Float;
 
 use crate::gpr::GPR;
+use crate::processing::steps::StepReport;
 use crate::tools;
 
 /// The `siglog` step's default magnitude offset (`minval_log10`), and the
@@ -156,42 +155,31 @@ pub fn abslog<T: Float>(data: &mut Array2<T>) {
     data.mapv_inplace(|v| (v + minval).log10());
 }
 
-impl GPR {
-    pub fn abslog(&mut self) {
-        let start_time = SystemTime::now();
+pub(crate) fn run_abslog(gpr: &mut GPR) -> StepReport {
+    abslog(&mut gpr.data);
+    StepReport::new("abslog", "Ran abslog (log10(abs(data))")
+}
 
-        abslog(&mut self.data);
-        self.log_event("abslog", "Ran abslog (log10(abs(data))", start_time);
-    }
+pub(crate) fn run_adaptive_siglog(gpr: &mut GPR, offset: f32) -> Result<StepReport, String> {
+    let strength = adaptive_siglog(&mut gpr.data, offset)?;
+    Ok(StepReport::new(
+        "adaptive_siglog",
+        format!(
+            "Ran adaptive siglog (noise floor: log10 {:.3}; offset: {offset}; resolved \
+             strength: {strength:.3})",
+            strength - offset
+        ),
+    ))
+}
 
-    pub fn adaptive_siglog(&mut self, offset: f32) -> Result<(), String> {
-        let start_time = SystemTime::now();
-
-        let strength = adaptive_siglog(&mut self.data, offset)?;
-        self.log_event(
-            "adaptive_siglog",
-            &format!(
-                "Ran adaptive siglog (noise floor: log10 {:.3}; offset: {offset}; resolved \
-                 strength: {strength:.3})",
-                strength - offset
-            ),
-            start_time,
-        );
-        Ok(())
-    }
-
-    pub fn siglog(&mut self, minval_log10: f32) {
-        let start_time = SystemTime::now();
-
-        siglog(&mut self.data, minval_log10);
-        self.log_event(
-            "siglog",
-            &format!(
-                "Ran siglog (sign-corrected log10 of absolute values) (minval: 10e{minval_log10}))"
-            ),
-            start_time,
-        );
-    }
+pub(crate) fn run_siglog(gpr: &mut GPR, minval_log10: f32) -> StepReport {
+    siglog(&mut gpr.data, minval_log10);
+    StepReport::new(
+        "siglog",
+        format!(
+            "Ran siglog (sign-corrected log10 of absolute values) (minval: 10e{minval_log10}))"
+        ),
+    )
 }
 
 #[cfg(test)]

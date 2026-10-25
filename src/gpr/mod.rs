@@ -4,7 +4,6 @@
 use std::error::Error;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use ndarray::{Array1, Array2, Axis};
 
@@ -12,6 +11,7 @@ use crate::processing::grouping::MergeKey;
 use crate::{io, tools, user_metadata};
 
 mod location;
+pub mod processing_log;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
 
@@ -144,7 +144,7 @@ pub struct GPR {
     /// The antenna separation that the data still needs correcting for (m).
     ///
     /// Starts as [`GPRMeta::antenna_separation`], the acquisition fact, and
-    /// is zeroed by [`GPR::correct_antenna_separation`] once the geometry
+    /// is zeroed by [`crate::processing::steps::geometry::run_correct_antenna_separation`] once the geometry
     /// has been taken out of the data. The two are therefore different
     /// quantities: one is what the instrument did, this is processing
     /// state, and only this one says what `twtt` currently refers to.
@@ -223,7 +223,7 @@ impl GPR {
     /// in metres.
     ///
     /// Equal to `metadata.antenna_separation` until
-    /// [`GPR::correct_antenna_separation`] runs, and zero afterwards. This
+    /// [`crate::processing::steps::geometry::run_correct_antenna_separation`] runs, and zero afterwards. This
     /// is the one that says what `twtt` currently refers to; the metadata
     /// field is acquisition provenance and never changes.
     pub fn antenna_separation_effective(&self) -> f32 {
@@ -646,18 +646,6 @@ impl GPR {
         self.antenna_separation_effective = 0.;
     }
 
-    pub(crate) fn log_event(&mut self, step_name: &str, event: &str, start_time: SystemTime) {
-        self.log.push(format!(
-            "{} (duration: {:.2}s):\t{}",
-            step_name,
-            SystemTime::now()
-                .duration_since(start_time)
-                .unwrap()
-                .as_secs_f32(),
-            event
-        ));
-    }
-
     pub fn height(&self) -> usize {
         self.data.shape()[0]
     }
@@ -762,7 +750,7 @@ impl GPR {
     /// time window, antenna separation (nominal and effective) or medium
     /// velocity.
     pub fn merge(&mut self, other: &GPR) -> Result<(), String> {
-        let start_time = SystemTime::now();
+        let start_time = std::time::Instant::now();
         if let Some(refusal) = MergeKey::of(&self.metadata, &self.location)
             .refusal(&MergeKey::of(&other.metadata, &other.location))
         {
@@ -793,11 +781,13 @@ impl GPR {
             self.metadata.last_trace = self.width() as u32;
             user_metadata::merge_prefer_first(&mut self.user_metadata, &other.user_metadata);
 
-            self.log_event(
+            // Not a step, but recorded like one: `export` reads the merged
+            // files back from these lines.
+            self.log.push(processing_log::line(
                 "merge",
+                start_time.elapsed(),
                 &format!("Merged {:?}", other.metadata.data_filepath),
-                start_time,
-            );
+            ));
 
             Ok(())
         }
@@ -918,7 +908,8 @@ mod tests {
             "twtt"
         );
 
-        gpr.correct_antenna_separation(
+        crate::processing::steps::geometry::run_correct_antenna_separation(
+            &mut gpr,
             super::SeparationMethod::Slant,
             crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
         )
@@ -946,21 +937,21 @@ mod tests {
     #[test]
     fn successive_crops_accumulate_into_one_crop() {
         let mut accumulating = make_gpr_with_first_break(64, 512);
-        accumulating.zero_corr_legacy(1.).unwrap();
+        crate::processing::steps::zero_corr::run_zero_corr_legacy(&mut accumulating, 1.).unwrap();
         let first = accumulating.twtt_crop_uniform_ns().unwrap();
         assert!(first > 0., "the fixture must have a first break to find");
 
         // The same second crop, measured on a radargram that arrives at
         // the same data carrying no history.
         let mut in_isolation = make_gpr_with_first_break(64, 512);
-        in_isolation.zero_corr_legacy(1.).unwrap();
+        crate::processing::steps::zero_corr::run_zero_corr_legacy(&mut in_isolation, 1.).unwrap();
         in_isolation.crop_ns.fill(0.);
         in_isolation.time_zero_ns.fill(0.);
-        in_isolation.zero_corr_legacy(1.).unwrap();
+        crate::processing::steps::zero_corr::run_zero_corr_legacy(&mut in_isolation, 1.).unwrap();
         let second = in_isolation.twtt_crop_uniform_ns().unwrap();
         assert!(second > 0., "the second crop must remove something too");
 
-        accumulating.zero_corr_legacy(1.).unwrap();
+        crate::processing::steps::zero_corr::run_zero_corr_legacy(&mut accumulating, 1.).unwrap();
 
         // Assigning instead of accumulating would report `second` alone and
         // describe the file as starting at the later offset — the same
@@ -1013,7 +1004,7 @@ mod tests {
         let step = gpr.metadata.time_window / gpr.height() as f32;
         assert_eq!(gpr.twtt_crop_uniform_ns().unwrap(), 0.);
 
-        let cropped = gpr.subset(None, None, Some(40), None).unwrap();
+        let cropped = subset_of(&gpr, None, None, Some(40), None).unwrap();
         let expected = 40.0 * step;
         assert!(
             (cropped.twtt_crop_uniform_ns().unwrap() - expected).abs() < 1e-4,
@@ -1023,7 +1014,7 @@ mod tests {
 
         // And it accumulates with everything else, so two crops in one
         // pipeline still describe one origin.
-        let twice = cropped.subset(None, None, Some(10), None).unwrap();
+        let twice = subset_of(&cropped, None, None, Some(10), None).unwrap();
         let second_step = cropped.metadata.time_window / cropped.height() as f32;
         let total = expected + 10.0 * second_step;
         assert!(
@@ -1033,7 +1024,7 @@ mod tests {
         );
 
         // Trimming the tail changes the window, not the origin.
-        let tail = gpr.subset(None, None, None, Some(100)).unwrap();
+        let tail = subset_of(&gpr, None, None, None, Some(100)).unwrap();
         assert_eq!(tail.twtt_crop_uniform_ns().unwrap(), 0.);
     }
 
@@ -1046,7 +1037,7 @@ mod tests {
         // the new first sample -- which is precisely the gprinterp anchor
         // `t0` that neither of them is.
         let mut gpr = make_gpr_with_first_break(16, 512);
-        gpr.zero_corr_legacy(1.).unwrap();
+        crate::processing::steps::zero_corr::run_zero_corr_legacy(&mut gpr, 1.).unwrap();
         let at_zero = gpr.twtt_crop_uniform_ns().unwrap();
         assert!(at_zero > 0.);
         assert_eq!(
@@ -1056,7 +1047,7 @@ mod tests {
         );
 
         let step = gpr.metadata.time_window / gpr.height() as f32;
-        let cropped = gpr.subset(None, None, Some(40), None).unwrap();
+        let cropped = subset_of(&gpr, None, None, Some(40), None).unwrap();
         assert!(
             (cropped.twtt_crop_uniform_ns().unwrap() - (at_zero + 40.0 * step)).abs() < 1e-3,
             "the crop grew"
@@ -1085,7 +1076,7 @@ mod tests {
         assert_eq!(gpr.twtt_time_zero_uniform_ns().unwrap(), 0.);
         assert_eq!(gpr.twtt_crop_uniform_ns().unwrap(), 0.);
 
-        let cropped = gpr.subset(None, None, Some(40), None).unwrap();
+        let cropped = subset_of(&gpr, None, None, Some(40), None).unwrap();
         assert_eq!(cropped.twtt_time_zero_uniform_ns().unwrap(), 0.);
         assert!(cropped.twtt_crop_uniform_ns().unwrap() > 0.);
     }
@@ -1100,7 +1091,7 @@ mod tests {
         per_trace_max_peak(&mut gpr);
         let before = gpr.twtt_crop_ns().to_vec();
 
-        let cropped = gpr.subset(Some(10), Some(40), None, None).unwrap();
+        let cropped = subset_of(&gpr, Some(10), Some(40), None, None).unwrap();
         assert_eq!(cropped.twtt_crop_ns().len(), cropped.width());
         assert_eq!(
             cropped.twtt_crop_ns(),
@@ -1110,12 +1101,12 @@ mod tests {
 
         let mut averaged = make_gpr_with_a_wandering_first_break(64, 512);
         per_trace_max_peak(&mut averaged);
-        averaged.average_traces(4).unwrap();
+        crate::processing::steps::traces::run_average_traces(&mut averaged, 4).unwrap();
         assert_eq!(averaged.twtt_crop_ns().len(), averaged.width());
 
         let mut thinned = make_gpr_with_a_wandering_first_break(64, 512);
         per_trace_max_peak(&mut thinned);
-        thinned.remove_traces(&[0, 1, 2], true).unwrap();
+        crate::processing::steps::traces::run_remove_traces(&mut thinned, &[0, 1, 2]).unwrap();
         assert_eq!(thinned.twtt_crop_ns().len(), thinned.width());
         assert_eq!(thinned.twtt_crop_ns()[0], before[3]);
 
@@ -1145,7 +1136,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let mut uniform = make_gpr_with_first_break(48, 512);
-        uniform.zero_corr_legacy(1.).unwrap();
+        crate::processing::steps::zero_corr::run_zero_corr_legacy(&mut uniform, 1.).unwrap();
         let uniform_expected = uniform.twtt_crop_uniform_ns().unwrap();
         assert!(uniform_expected > 0., "a crop of zero would prove nothing");
         let uniform_path = dir.path().join("uniform.nc");
@@ -1212,7 +1203,7 @@ mod tests {
         let path = dir.path().join("line.nc");
 
         let mut gpr = make_gpr_with_first_break(64, 512);
-        gpr.zero_corr_legacy(1.).unwrap();
+        crate::processing::steps::zero_corr::run_zero_corr_legacy(&mut gpr, 1.).unwrap();
         gpr.export(&path).unwrap();
 
         let declared = crate::interp::source::read_axis_declarations(&path).unwrap();
@@ -1261,7 +1252,8 @@ mod tests {
         let path = dir.path().join("line.nc");
 
         let mut gpr = make_gpr_with_first_break(48, 512);
-        gpr.correct_antenna_separation(
+        crate::processing::steps::geometry::run_correct_antenna_separation(
+            &mut gpr,
             super::SeparationMethod::Slant,
             crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
         )
@@ -1287,7 +1279,8 @@ mod tests {
         gpr.metadata.antenna_separation = 0.;
         gpr.antenna_separation_effective = 0.;
 
-        gpr.correct_antenna_separation(
+        crate::processing::steps::geometry::run_correct_antenna_separation(
+            &mut gpr,
             super::SeparationMethod::Slant,
             crate::tools::SPEED_OF_LIGHT_AIR_M_PER_NS,
         )

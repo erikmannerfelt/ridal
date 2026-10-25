@@ -6,12 +6,12 @@
 
 use std::fmt;
 use std::str::FromStr;
-use std::time::SystemTime;
 
 use ndarray::{Array2, Axis};
 use rayon::prelude::*;
 
 use crate::gpr::GPR;
+use crate::processing::steps::StepReport;
 
 /// What is subtracted: the mean or the median of the values in the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,41 +264,42 @@ fn global(mut values: Vec<f32>, statistic: Statistic) -> f32 {
     }
 }
 
-impl GPR {
-    /// Subtract from each sample the running median or mean of the samples
-    /// around it in the same trace, over `window` (#259).
-    pub fn dewow(&mut self, window: DewowWindow, statistic: Statistic) -> Result<(), String> {
-        let start_time = SystemTime::now();
-        let step_ns = self.metadata.time_window / self.height() as f32;
-        let half = window.half_samples(self.metadata.antenna_mhz, step_ns)?;
-        dewow(&mut self.data, half, statistic);
-        self.log_event(
-            "dewow",
-            &format!(
-                "Subtracted the running {statistic} over {} samples ({:.2} ns) in each trace",
-                2 * half + 1,
-                (2 * half + 1) as f32 * step_ns
-            ),
-            start_time,
-        );
-        Ok(())
-    }
+/// Subtract from each sample the running median or mean of the samples
+/// around it in the same trace, over `window` (#259).
+pub(crate) fn run_dewow(
+    gpr: &mut GPR,
+    window: DewowWindow,
+    statistic: Statistic,
+) -> Result<StepReport, String> {
+    let step_ns = gpr.metadata.time_window / gpr.height() as f32;
+    let half = window.half_samples(gpr.metadata.antenna_mhz, step_ns)?;
+    dewow(&mut gpr.data, half, statistic);
+    Ok(StepReport::new(
+        "dewow",
+        format!(
+            "Subtracted the running {statistic} over {} samples ({:.2} ns) in each trace",
+            2 * half + 1,
+            (2 * half + 1) as f32 * step_ns
+        ),
+    ))
+}
 
-    /// Subtract from each sample the median or mean of the same sample over
-    /// `traces` (#259).
-    pub fn background_removal(&mut self, traces: TraceWindow, statistic: Statistic) {
-        let start_time = SystemTime::now();
-        background_removal(&mut self.data, traces.half(), statistic);
-        let over = match traces {
-            TraceWindow::All => "all traces".to_string(),
-            TraceWindow::Traces(n) => format!("a running window of {n} traces"),
-        };
-        self.log_event(
-            "background_removal",
-            &format!("Subtracted the {statistic} trace over {over}"),
-            start_time,
-        );
-    }
+/// Subtract from each sample the median or mean of the same sample over
+/// `traces` (#259).
+pub(crate) fn run_background_removal(
+    gpr: &mut GPR,
+    traces: TraceWindow,
+    statistic: Statistic,
+) -> StepReport {
+    background_removal(&mut gpr.data, traces.half(), statistic);
+    let over = match traces {
+        TraceWindow::All => "all traces".to_string(),
+        TraceWindow::Traces(n) => format!("a running window of {n} traces"),
+    };
+    StepReport::new(
+        "background_removal",
+        format!("Subtracted the {statistic} trace over {over}"),
+    )
 }
 
 #[cfg(test)]

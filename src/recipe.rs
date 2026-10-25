@@ -37,7 +37,9 @@ use crate::gpr::{LocationCorrection, GPR};
 /// - 2: `antenna_frequency` written (#412).
 /// - 3: UTM converted to WGS84 accurately (#480): `latitude` and
 ///   `longitude`, and where a DEM is sampled, moved by up to 4.6 m.
-pub const CORE_PROCESSING_VERSION: u32 = 3;
+/// - 4: one `processing_log` line per step (#85): `auto_gain` no longer
+///   adds a `gain` line of its own. The data are unchanged.
+pub const CORE_PROCESSING_VERSION: u32 = 4;
 
 /// The layout of [`Recipe`] as serialized into `ridal_recipe`.
 pub const RECIPE_FORMAT: u32 = 1;
