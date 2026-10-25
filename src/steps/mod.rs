@@ -1186,7 +1186,7 @@ impl Step {
             )?,
             Step::Bandpass { low, high, q } => gpr.bandpass(*low, *high, *q, true)?,
             Step::BandpassMhz { low, high, q } => gpr.bandpass(*low, *high, *q, false)?,
-            Step::EquidistantTraces { step } => gpr.make_equidistant(*step),
+            Step::EquidistantTraces { step } => gpr.make_equidistant(*step)?,
             Step::ShiftCoordinates {
                 along_track,
                 altitude,
@@ -1209,7 +1209,7 @@ impl Step {
             } => gpr.balance_traces(*deep, *shallow_start, *shallow_end, *traces, *reference),
             Step::AutoGain { n_bins } => gpr.auto_gain(*n_bins),
             Step::Gain { factor } => gpr.gain(*factor),
-            Step::KirchhoffMigration2d => gpr.kirchhoff_migration2d(),
+            Step::KirchhoffMigration2d => gpr.kirchhoff_migration2d()?,
             Step::Abslog => gpr.abslog(),
             Step::Siglog { minval_log10 } => gpr.siglog(*minval_log10),
             Step::AdaptiveSiglog { offset } => gpr.adaptive_siglog(*offset)?,
@@ -1217,7 +1217,7 @@ impl Step {
             Step::CorrectAntennaSeparation {
                 method,
                 direct_velocity,
-            } => gpr.correct_antenna_separation(*method, *direct_velocity),
+            } => gpr.correct_antenna_separation(*method, *direct_velocity)?,
             Step::Multiply { factor } => gpr.multiply(*factor),
         }
         Ok(())
