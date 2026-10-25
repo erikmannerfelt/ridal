@@ -119,7 +119,7 @@ pub fn sampled_noise_floor_log10(reader: &impl AmplitudeSource, seed: u64) -> Re
     let step = (n_traces / N_RUNS).max(1);
     let offset = (seed as usize) % step;
     let samples = reader.sample_trace_runs(N_RUNS, TRACES_PER_RUN, offset, 0)?;
-    crate::filters::siglog::noise_floor_log10(samples).ok_or_else(|| {
+    crate::processing::steps::siglog::noise_floor_log10(samples).ok_or_else(|| {
         "cannot estimate a noise floor for adaptive siglog: every sampled amplitude is zero or \
          missing"
             .to_string()
@@ -186,7 +186,7 @@ mod tests {
         let (low, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             0,
             0.01,
@@ -218,7 +218,7 @@ mod tests {
         let (low_a, high_a) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             1,
             0.01,
@@ -229,7 +229,7 @@ mod tests {
         let (low_b, high_b) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             999,
             0.01,
@@ -252,7 +252,7 @@ mod tests {
         let a = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -263,7 +263,7 @@ mod tests {
         let b = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -287,7 +287,7 @@ mod tests {
         let (low_lin, high_lin) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             7,
             0.01,
@@ -298,7 +298,7 @@ mod tests {
         let (low_log, high_log) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::AbsLog,
             7,
             0.01,
@@ -315,7 +315,7 @@ mod tests {
     fn source_siglog_limits_match_limits_on_presigloged_data() {
         // The renderer compresses each source sample before resampling, so
         // limits must be estimated in that same domain -- and must equal
-        // what a caller who had run `filters::siglog` on the data first
+        // what a caller who had run `crate::processing::steps::siglog` on the data first
         // would get. No NetCDF: the two sources are in-memory arrays.
         let raw = ndarray::Array2::from_shape_fn((10, 200), |(r, c)| {
             let v = (r as f32 * 0.7 + c as f32 * 0.13).sin() * 100.0 + 10.0;
@@ -326,9 +326,9 @@ mod tests {
             }
         });
         let mut transformed = raw.clone();
-        crate::filters::siglog::siglog(
+        crate::processing::steps::siglog::siglog(
             &mut transformed,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
         );
 
         let raw_source = crate::source::ArraySource::new(raw.view());
@@ -337,7 +337,7 @@ mod tests {
         let from_raw = sampled_amplitude_limits(
             &raw_source,
             SourceTransform::SigLog,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -348,7 +348,7 @@ mod tests {
         let from_transformed = sampled_amplitude_limits(
             &transformed_source,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -363,7 +363,7 @@ mod tests {
         let plain = sampled_amplitude_limits(
             &raw_source,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             42,
             0.01,
@@ -402,7 +402,7 @@ mod tests {
             .unwrap()
         };
         let (low_default, high_default) =
-            limits(crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10);
+            limits(crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10);
         let (low_strong, high_strong) = limits(1.0);
         assert_ne!((low_default, high_default), (low_strong, high_strong));
         // A higher strength truncates more, so the range only shrinks.
@@ -432,7 +432,7 @@ mod tests {
         let (low, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Positive,
             7,
             0.01,
@@ -467,7 +467,7 @@ mod tests {
         let (_, high) = sampled_amplitude_limits(
             &reader,
             SourceTransform::None,
-            crate::filters::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
+            crate::processing::steps::siglog::DEFAULT_SIGLOG_MINVAL_LOG10,
             AmplitudeTransform::Linear,
             0,
             0.01,
@@ -501,7 +501,8 @@ mod tests {
         let data = noisy_radargram(300, 4000, 50.0);
         let source = crate::source::ArraySource::new(data.view());
         let sampled = sampled_noise_floor_log10(&source, SAMPLE_SEED).unwrap();
-        let whole = crate::filters::siglog::noise_floor_log10(data.iter().copied()).unwrap();
+        let whole =
+            crate::processing::steps::siglog::noise_floor_log10(data.iter().copied()).unwrap();
         assert!(
             (sampled - whole).abs() < 0.02,
             "sampled {sampled} vs whole-array {whole}"

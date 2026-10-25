@@ -18,16 +18,18 @@
 //! # Versions
 //!
 //! A change to what a step computes bumps that step's
-//! [`crate::steps::Step::version`]. A change to anything outside the steps
-//! that reaches the file -- reading a format, merging, coordinates, the
+//! [`crate::processing::steps::Step::version`]. A change to anything
+//! outside the steps that reaches the file -- reading a format, merging, coordinates, the
 //! travel-time and depth geometry, writing the NetCDF -- bumps
 //! [`CORE_PROCESSING_VERSION`]. Either gives every recipe that involves it
-//! a new hash. The golden test in `crate::steps::digests` fails when output
-//! changes without one.
+//! a new hash. The golden test in `crate::processing::steps::digests`
+//! fails when output changes without one.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+
+use crate::gpr::{LocationCorrection, GPR};
 
 /// The version of everything outside the steps that determines a processed
 /// file's contents. See the module documentation for when to bump it.
@@ -136,6 +138,45 @@ pub struct Recipe {
 }
 
 impl Recipe {
+    /// The recipe `gpr` was processed with (#382), or `None` when it was not
+    /// read from raw files and its inputs are unknown.
+    ///
+    /// Each step's version is that of the step as registered now, which is
+    /// the one that ran: [`GPR::steps`] holds only steps this process ran.
+    pub fn of(gpr: &GPR) -> Result<Option<Recipe>, String> {
+        let Some(inputs) = &gpr.inputs else {
+            return Ok(None);
+        };
+        let steps = gpr
+            .steps
+            .iter()
+            .map(|canonical| {
+                let parsed = crate::processing::steps::parse_one(canonical)?;
+                Ok(RecipeStep {
+                    step: canonical.clone(),
+                    version: parsed.step.version(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Some(Recipe {
+            format: RECIPE_FORMAT,
+            core_version: CORE_PROCESSING_VERSION,
+            bundles: inputs.bundles.clone(),
+            dem: inputs.dem.clone(),
+            dem_resampling: match &gpr.location.correction {
+                LocationCorrection::Dem { resampling, .. } => *resampling,
+                LocationCorrection::None | LocationCorrection::InCoordinates { .. } => {
+                    crate::dem::Resampling::default()
+                }
+            },
+            crs: gpr.location.crs.clone(),
+            medium_velocity: gpr.metadata.medium_velocity,
+            antenna_mhz_override: inputs.antenna_mhz_override,
+            antenna_separation_override: inputs.antenna_separation_override,
+            steps,
+        }))
+    }
+
     /// The recipe's fingerprint, as 64 hex characters.
     ///
     /// Every field is framed with its length, so no two different recipes

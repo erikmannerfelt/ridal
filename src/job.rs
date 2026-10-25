@@ -67,14 +67,14 @@ impl Event {
 /// file was written as.
 pub fn run(spec: &JobSpec, emit: &mut dyn FnMut(Event)) -> Result<String, String> {
     let temporary = temporary_sibling(&spec.output)?;
-    let params = crate::gpr::RunParams {
+    let params = crate::processing::RunParams {
         filepaths: spec.inputs.clone(),
         output_path: Some(temporary.clone()),
         track_path: None,
         render_path: None,
         radargram_id: Some(spec.radargram_id.clone()),
         display_name: spec.display_name.clone(),
-        options: crate::gpr::ProcessingOptions {
+        options: crate::processing::ProcessingOptions {
             dem_path: spec.dem.clone(),
             cor_path: spec.cor.clone(),
             medium_velocity: spec.medium_velocity,
@@ -91,7 +91,7 @@ pub fn run(spec: &JobSpec, emit: &mut dyn FnMut(Event)) -> Result<String, String
     };
     let result = (|| {
         let (gpr, _) =
-            crate::gpr::build_processed_gpr_with_progress(params, &mut |index, of, step| {
+            crate::processing::build_processed_gpr_with_progress(params, &mut |index, of, step| {
                 emit(Event::Step {
                     index,
                     of,

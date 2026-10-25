@@ -491,7 +491,7 @@ pub async fn create_draft(
     let steps = body
         .steps
         .iter()
-        .map(|step| crate::steps::parse_one(step).map(|parsed| parsed.canonical))
+        .map(|step| crate::processing::steps::parse_one(step).map(|parsed| parsed.canonical))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ApiError::bad_request("invalid_steps", e))?;
     let velocity = body.medium_velocity.unwrap_or(0.168);

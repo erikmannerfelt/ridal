@@ -20,7 +20,7 @@ def parse_step(
 ) -> str:
     """Render ``name(arg, [optional], arg=default)`` and return the name.
 
-    The signature is what ``src/steps/mod.rs`` writes, so the arguments are
+    The signature is what ``src/processing/steps/mod.rs`` writes, so the arguments are
     separated by ``", "`` and no default contains a comma.
     """
     name, _, rest = signature.partition("(")

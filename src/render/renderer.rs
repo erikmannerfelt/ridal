@@ -1150,16 +1150,19 @@ mod tests {
                 RenderProfile::seismic_profile(),
             ),
         ];
-        let noise = crate::filters::siglog::noise_floor_log10(raw.iter().copied()).unwrap();
+        let noise =
+            crate::processing::steps::siglog::noise_floor_log10(raw.iter().copied()).unwrap();
         for (name, siglog_base, plain_base) in pairs {
             let siglog_profile = with_explicit_limits(siglog_base.pin_siglog_strength(noise));
             let plain_profile = with_explicit_limits(plain_base.clone());
 
             // The "already ran the step" array, at this profile's offset.
             let mut pre = raw.clone();
-            let strength =
-                crate::filters::siglog::adaptive_siglog(&mut pre, siglog_base.siglog_noise_offset)
-                    .unwrap();
+            let strength = crate::processing::steps::siglog::adaptive_siglog(
+                &mut pre,
+                siglog_base.siglog_noise_offset,
+            )
+            .unwrap();
             assert_eq!(
                 strength, siglog_profile.siglog_minval_log10,
                 "'{name}' resolved a different strength than the step"
@@ -1241,7 +1244,7 @@ mod tests {
     fn manual_visual_check_against_real_asset() {
         let dir = tempfile::tempdir().unwrap();
         let nc_path = dir.path().join("real.nc");
-        let params = crate::gpr::RunParams {
+        let params = crate::processing::RunParams {
             filepaths: vec![std::path::PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/assets/mala/dronbreen-20220329-DAT_0237_A1.rad"
@@ -1251,13 +1254,13 @@ mod tests {
             render_path: None,
             radargram_id: Some("manual-check".to_string()),
             display_name: None,
-            options: crate::gpr::ProcessingOptions {
+            options: crate::processing::ProcessingOptions {
                 quiet: true,
-                steps: crate::gpr::default_processing_profile(),
+                steps: crate::processing::default_processing_profile(),
                 ..Default::default()
             },
         };
-        crate::gpr::run(params).unwrap();
+        crate::processing::run(params).unwrap();
 
         let reader = SourceReader::open(&nc_path).unwrap();
         let renderer = Renderer::new(&reader);

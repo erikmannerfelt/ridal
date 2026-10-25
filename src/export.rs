@@ -244,7 +244,7 @@ impl GPR {
         // how recipes are serialized cannot move the revision id of a file
         // already written; it is the id's only input besides the
         // radargram id.
-        if let Some(recipe) = self.recipe()? {
+        if let Some(recipe) = crate::recipe::Recipe::of(self)? {
             attrs.insert("ridal_recipe".into(), ExportAttr::String(recipe.to_json()));
             attrs.insert(
                 "ridal_recipe_hash".into(),

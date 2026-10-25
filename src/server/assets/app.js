@@ -1960,7 +1960,7 @@ const RIDAL = Object.freeze({
       return catalog;
     }
 
-    /* The structure of a step list, as src/steps/parse.rs reads it: steps
+    /* The structure of a step list, as src/processing/steps/parse.rs reads it: steps
      * separated by commas or new lines, each a word with its arguments in
      * parentheses, and the arguments separated by spaces or commas and
      * optionally named (`q=0.5`). Enough to colour it and to tell which

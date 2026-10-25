@@ -619,9 +619,9 @@ mod tests {
     // went once #324 fixed the subprocess half of that race.
     #[serial_test::serial(netcdf)]
     fn test_save_netcdf() {
-        let mut gpr = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
+        let mut gpr = crate::gpr::test_fixtures::make_dummy_gpr(100, 10, Some(1.));
 
-        let mut gpr2 = crate::gpr::tests::make_dummy_gpr(100, 10, Some(1.));
+        let mut gpr2 = crate::gpr::test_fixtures::make_dummy_gpr(100, 10, Some(1.));
         gpr2.metadata.data_filepath = PathBuf::from_str("other_filepath.rd3").unwrap();
 
         gpr.merge(&gpr2).unwrap();
@@ -716,7 +716,7 @@ mod tests {
     }
 
     fn export_dummy_ridal_nc(path: &std::path::Path) {
-        let gpr = crate::gpr::tests::make_dummy_gpr(20, 10, Some(1.));
+        let gpr = crate::gpr::test_fixtures::make_dummy_gpr(20, 10, Some(1.));
         gpr.export(path).unwrap();
     }
 
@@ -752,7 +752,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("unicode.nc");
 
-        let mut gpr = crate::gpr::tests::make_dummy_gpr(20, 10, Some(1.));
+        let mut gpr = crate::gpr::test_fixtures::make_dummy_gpr(20, 10, Some(1.));
         gpr.identity.display_name =
             crate::identity::DisplayName::from_input("Drønbreen line 2 \u{1f6f7}");
         gpr.identity.group_name = crate::identity::GroupName::from_input("Ålesund / Ærø");

@@ -42,7 +42,7 @@ use crate::recipe::CORE_PROCESSING_VERSION;
 
 use super::Step;
 
-const TABLE: &str = "src/steps/digests.json";
+const TABLE: &str = "src/processing/steps/digests.json";
 const RECORDING: &str = "assets/mala/dronbreen-20220329-DAT_0237_A1.rad";
 /// The window every step runs on: traces and samples, end exclusive. Big
 /// enough for the direct wave, the bed of this 100 MHz line, and the
@@ -245,20 +245,20 @@ fn subset_version() -> u32 {
 }
 
 fn load() -> GPR {
-    let params = crate::gpr::RunParams {
+    let params = crate::processing::RunParams {
         filepaths: vec![RECORDING.into()],
         output_path: Some(std::env::temp_dir().join("ridal-golden.nc")),
         track_path: None,
         render_path: None,
         radargram_id: Some("golden".to_string()),
         display_name: None,
-        options: crate::gpr::ProcessingOptions {
+        options: crate::processing::ProcessingOptions {
             quiet: true,
             no_export: true,
             ..Default::default()
         },
     };
-    crate::gpr::build_processed_gpr(params)
+    crate::processing::build_processed_gpr(params)
         .expect("the golden recording loads")
         .0
 }
@@ -513,7 +513,7 @@ fn every_step_has_a_digest() {
         assert!(
             run.contains(&name),
             "`{name}` is registered but not in steps::digests::RUNS. Add a call \
-             that exercises it, then regenerate the table (see src/steps/digests.rs)."
+             that exercises it, then regenerate the table (see src/processing/steps/digests.rs)."
         );
     }
 }

@@ -9,8 +9,13 @@
 //! `log10(noise floor) + offset`, so the same offset gives the same picture
 //! on any amplitude scale.
 
-use ndarray::Array;
+use std::time::SystemTime;
+
+use ndarray::{Array, Array2};
 use num::Float;
+
+use crate::gpr::GPR;
+use crate::tools;
 
 /// The `siglog` step's default magnitude offset (`minval_log10`), and the
 /// default strength of the render layer's `source_transform = SigLog`.
@@ -133,8 +138,65 @@ pub fn adaptive_siglog<D: ndarray::Dimension>(
     Ok(strength)
 }
 
+pub fn abslog<T: Float>(data: &mut Array2<T>) {
+    data.mapv_inplace(|v| v.abs());
+    let mut minval = T::one();
+    let subsampling = ((data.shape()[0] * data.shape()[1]) as f32 * 0.1).max(100.) as usize;
+    for quantile in [0.01, 0.05, 0.5, 0.9] {
+        let new_min = tools::quantiles(
+            data.iter().filter(|v| v >= &&T::zero()),
+            &[quantile],
+            Some(subsampling),
+        )[0];
+        if !new_min.is_zero() {
+            minval = new_min;
+            break;
+        }
+    }
+    data.mapv_inplace(|v| (v + minval).log10());
+}
+
+impl GPR {
+    pub fn abslog(&mut self) {
+        let start_time = SystemTime::now();
+
+        abslog(&mut self.data);
+        self.log_event("abslog", "Ran abslog (log10(abs(data))", start_time);
+    }
+
+    pub fn adaptive_siglog(&mut self, offset: f32) -> Result<(), String> {
+        let start_time = SystemTime::now();
+
+        let strength = adaptive_siglog(&mut self.data, offset)?;
+        self.log_event(
+            "adaptive_siglog",
+            &format!(
+                "Ran adaptive siglog (noise floor: log10 {:.3}; offset: {offset}; resolved \
+                 strength: {strength:.3})",
+                strength - offset
+            ),
+            start_time,
+        );
+        Ok(())
+    }
+
+    pub fn siglog(&mut self, minval_log10: f32) {
+        let start_time = SystemTime::now();
+
+        siglog(&mut self.data, minval_log10);
+        self.log_event(
+            "siglog",
+            &format!(
+                "Ran siglog (sign-corrected log10 of absolute values) (minval: 10e{minval_log10}))"
+            ),
+            start_time,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::gpr::test_fixtures::*;
     use ndarray::AssignElem;
 
     #[test]
@@ -214,5 +276,62 @@ mod tests {
     fn adaptive_siglog_refuses_data_without_a_noise_floor() {
         let mut data = ndarray::Array2::<f32>::zeros((3, 3));
         assert!(super::adaptive_siglog(&mut data, -1.7).is_err());
+    }
+
+    #[test]
+    fn adaptive_siglog_is_its_own_step() -> Result<(), Box<dyn std::error::Error>> {
+        // Steps are matched by substring, and "adaptive_siglog" contains
+        // "siglog": each name must still reach its own step.
+        let noisy = |row: usize, col: usize| ((row * 31 + col * 17) % 200) as f32 - 100.0;
+        let make = || {
+            let mut gpr = make_dummy_gpr(20, 30, None);
+            gpr.data = ndarray::Array2::from_shape_fn(gpr.data.dim(), |(r, c)| noisy(r, c));
+            gpr
+        };
+        let mut adaptive = make();
+        let mut fixed = make();
+
+        adaptive.process("adaptive_siglog(-0.5)")?;
+        let log = adaptive.log.last().unwrap();
+        assert!(log.starts_with("adaptive_siglog "), "{log}");
+        assert!(log.contains("offset: -0.5"), "{log}");
+        let mut expected = fixed.data.clone();
+        let strength = super::adaptive_siglog(&mut expected, -0.5)?;
+        assert!(
+            log.contains(&format!("resolved strength: {strength:.3}")),
+            "{log}"
+        );
+        assert_eq!(adaptive.data, expected);
+
+        fixed.process("siglog(1)")?;
+        assert!(fixed.log.last().unwrap().starts_with("siglog "));
+
+        crate::processing::steps::validate_steps(&[
+            "adaptive_siglog".to_string(),
+            "adaptive_siglog(-1)".to_string(),
+        ])?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_abslog() {
+        let mut data = ndarray::Array2::<f32>::from_shape_vec(
+            (10, 10),
+            (1..101).into_iter().map(|v| v as f32).collect::<Vec<f32>>(),
+        )
+        .unwrap();
+        super::abslog(&mut data);
+        let new_minval = *data
+            .iter()
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+        let new_maxval = *data
+            .iter()
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+        assert!(new_minval > 0.2);
+        assert!(new_minval < 1.);
+        assert!(new_maxval < 2.1);
+        assert!(new_maxval > 1.9);
     }
 }

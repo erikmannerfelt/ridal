@@ -1,5 +1,5 @@
-<!-- Generated from src/steps/mod.rs; edit the doc comments there, then run
-     UPDATE_STEPS_MD=1 cargo test --no-default-features -F cli steps_md -->
+<!-- Generated from src/processing/steps/mod.rs; edit the doc comments there,
+     then run UPDATE_STEPS_MD=1 cargo test --no-default-features -F cli steps_md -->
 
 # Processing steps
 

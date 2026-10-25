@@ -15,7 +15,11 @@
 //! A median of local slopes, unlike a line fit, is not pulled by the bed
 //! reflection or by a bright englacial layer.
 
+use std::time::SystemTime;
+
 use ndarray::{Array2, Axis, Slice};
+
+use crate::gpr::GPR;
 
 /// A bin counts as past the ring-down once its envelope is within this many
 /// dB of the median envelope from the peak down.
@@ -167,9 +171,108 @@ fn median(values: &mut [f32]) -> Option<f32> {
     Some((lower + upper) / 2.)
 }
 
+impl GPR {
+    pub fn multiply(&mut self, factor: f32) {
+        let start_time = SystemTime::now();
+
+        self.data.mapv_inplace(|v| v * factor);
+
+        self.log_event(
+            "multiply",
+            &format!(
+                "Multiplied all sample values by a constant factor of {}",
+                factor
+            ),
+            start_time,
+        );
+    }
+
+    /// Measure the display gain that levels the amplitude envelope below the
+    /// direct wave, and apply it (#266).
+    ///
+    /// See [`estimate_display_gain`] for the measurement.
+    ///
+    /// Never fails on the data. When no gain can be measured (too short a
+    /// record, no amplitude, a non-finite result) or the envelope grows with
+    /// time, it applies no gain and the log says why: a radargram without
+    /// gain is still usable, and one bad file should not stop a batch.
+    pub fn auto_gain(&mut self, n_bins: usize) {
+        let start_time = SystemTime::now();
+
+        let est = match estimate_display_gain(&self.data, self.vertical_resolution_ns(), n_bins) {
+            Ok(est) if est.db_per_ns.is_finite() => est,
+            Ok(est) => {
+                self.log_event(
+                    "auto_gain",
+                    &format!(
+                        "Warning: measured a non-finite gain ({}); applied no gain",
+                        est.db_per_ns
+                    ),
+                    start_time,
+                );
+                return;
+            }
+            Err(reason) => {
+                self.log_event(
+                    "auto_gain",
+                    &format!("Warning: could not measure a gain ({reason}); applied no gain"),
+                    start_time,
+                );
+                return;
+            }
+        };
+        let window = format!(
+            "the median bin-to-bin change of the median |amplitude| over {:.0}-{:.0} ns \
+             ({} bin pairs of {n_bins} bins, below the direct wave's ring-down)",
+            est.fit_start_ns, est.fit_end_ns, est.bin_pairs,
+        );
+
+        if est.db_per_ns < 0. {
+            self.log_event(
+                "auto_gain",
+                &format!(
+                    "Warning: the amplitude grows with time ({:.5} dB / ns, from {window}); \
+                     applied no gain",
+                    est.db_per_ns
+                ),
+                start_time,
+            );
+            return;
+        }
+        self.log_event(
+            "auto_gain",
+            &format!(
+                "Measured a display gain of {:.5} dB / ns (TWT) from {window}",
+                est.db_per_ns
+            ),
+            start_time,
+        );
+        self.gain(est.db_per_ns);
+    }
+
+    pub fn gain(&mut self, factor: f32) {
+        let start_time = SystemTime::now();
+
+        let ns_per_trace = self.vertical_resolution_ns();
+        for i in 0..self.height() as isize {
+            let mut view = self
+                .data
+                .slice_axis_mut(Axis(0), Slice::new(i, Some(i + 1), 1_isize));
+
+            view *= 10_f32.powf(factor * (i as f32) * ns_per_trace / 20.);
+        }
+        self.log_event(
+            "gain",
+            &format!("Applied gain of {factor} dB / ns (TWT)",),
+            start_time,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpr::test_fixtures::*;
 
     const STEP_NS: f32 = 2.;
     const HEIGHT: usize = 1000;
@@ -276,5 +379,94 @@ mod tests {
         assert_eq!(median(&mut []), None);
         assert_eq!(median(&mut [3., 1., 2.]), Some(2.));
         assert_eq!(median(&mut [4., 1., 3., 2.]), Some(2.5));
+    }
+
+    #[test]
+    fn auto_gain_applies_no_gain_when_amplitude_grows() {
+        let mut gpr = make_test_gpr(Some(5), Some(200));
+        gpr.data = ndarray::Array2::from_shape_fn((200, 5), |(i, j)| {
+            (i as f32 / 50.).exp() * if (i + j) % 2 == 0 { 1. } else { -1. }
+        });
+        let before = gpr.data.clone();
+        gpr.process("auto_gain(20)").unwrap();
+        assert_eq!(gpr.data, before);
+        let entry = gpr.log.last().unwrap();
+        assert!(entry.contains("grows with time"), "{entry}");
+        assert!(entry.contains("applied no gain"), "{entry}");
+    }
+
+    #[test]
+    fn auto_gain_skips_with_a_reason_instead_of_failing() {
+        // Nothing to measure: the step still succeeds, applies no gain and
+        // says why, so one bad file does not stop a batch.
+        let mut gpr = make_test_gpr(Some(5), Some(200));
+        gpr.data.fill(0.);
+        gpr.process("auto_gain").unwrap();
+        assert!(gpr.data.iter().all(|v| *v == 0.));
+        let entry = gpr.log.last().unwrap();
+        assert!(entry.contains("could not measure a gain"), "{entry}");
+        assert!(entry.contains("applied no gain"), "{entry}");
+
+        // A bad argument is still an error, at parse time.
+        let err = gpr.process("auto_gain(1)").unwrap_err().to_string();
+        assert!(err.contains("n_bins"), "{err}");
+    }
+
+    #[test]
+    fn auto_gain_ignores_exact_zeros() {
+        // A decaying signal with one trace that is exactly zero, as a median
+        // background removal leaves the median trace.
+        let mut gpr = make_test_gpr(Some(5), Some(200));
+        gpr.data = ndarray::Array2::from_shape_fn((200, 5), |(i, j)| {
+            if j == 2 {
+                0.
+            } else {
+                (-(i as f32) / 50.).exp() * if i % 2 == 0 { 1. } else { -1. }
+            }
+        });
+        gpr.auto_gain(10);
+        assert!(gpr.data.iter().all(|v| v.is_finite()));
+        // The gain undoes most of the decay.
+        assert!(gpr.data[[199, 0]].abs() > 0.5 * gpr.data[[0, 0]].abs());
+    }
+
+    #[test]
+    fn test_multiply() -> Result<(), Box<dyn std::error::Error>> {
+        let mut gpr = make_dummy_gpr(20, 30, Some(1.));
+
+        let mean_pre = gpr.data.mean().unwrap();
+        gpr.multiply(5.);
+        assert_eq!(gpr.data.mean(), Some(mean_pre * 5.));
+
+        gpr.process("multiply(5e0)")?;
+        assert_eq!(gpr.data.mean(), Some(mean_pre * 5. * 5.));
+        gpr.process("multiply(1e2)")?;
+        assert_eq!(gpr.data.mean(), Some(mean_pre * 5. * 5. * 100.));
+
+        let error = gpr.process("multiply(five)").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid value `five` for `factor`"),
+            "Unexpected error: {error:?}"
+        );
+
+        let error = gpr.process("multiply(0)").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`factor` in `multiply`: cannot be zero"),
+            "Unexpected error: {error:?}"
+        );
+
+        let error = gpr.process("multiply(inf)").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("`factor` in `multiply`: must be finite"),
+            "Unexpected error: {error:?}"
+        );
+
+        Ok(())
     }
 }

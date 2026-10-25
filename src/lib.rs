@@ -9,17 +9,18 @@ mod export;
 /// caller outside tests.
 #[cfg_attr(not(feature = "python"), allow(dead_code))]
 mod external;
-mod filters;
 mod formats;
 mod gpr;
 /// Radargram id and display name patterns for batches (#368).
 mod id_pattern;
 mod identity;
+mod inspect;
 mod interp;
 mod io;
 /// One processing job, run in a child process for the server (#382).
 mod job;
 mod positions;
+mod processing;
 mod project;
 /// What a processed radargram was made from (#382): raw file checksums,
 /// settings and versioned steps, hashed into its revision id.
@@ -38,7 +39,6 @@ mod site;
 /// Windowed NetCDF reads for the renderer above. Moved out of `server`
 /// with it: a chunk of a radargram is not a server concept.
 mod source;
-mod steps;
 /// Typical trace spacing and survey speed, for the viewer's metadata
 /// panel (#412); only the server shows them.
 #[cfg(feature = "server")]
@@ -225,14 +225,14 @@ pub mod ridal {
         metadata: Option<Py<PyAny>>,
         group_name: Option<String>,
         group_id: Option<String>,
-    ) -> PyResult<gpr::ProcessingOptions> {
-        let steps = gpr::resolve_steps(
+    ) -> PyResult<crate::processing::ProcessingOptions> {
+        let steps = crate::processing::resolve_steps(
             default,
             default_with_topo,
             steps_text(py, steps)?.as_deref(),
         )
         .map_err(pyo3::exceptions::PyValueError::new_err)?;
-        Ok(gpr::ProcessingOptions {
+        Ok(crate::processing::ProcessingOptions {
             dem_path: optional_path(py, dem)?,
             cor_path: optional_path(py, cor)?,
             medium_velocity: velocity,
@@ -276,7 +276,7 @@ pub mod ridal {
         m.add("version", crate::PROGRAM_VERSION)?;
         m.add("__version__", crate::PROGRAM_VERSION)?;
 
-        let all_steps = gpr::all_available_steps();
+        let all_steps = crate::processing::steps::all_available_steps();
         let step_names = all_steps
             .iter()
             .map(|(name, _)| name.clone())
@@ -576,7 +576,7 @@ pub mod ridal {
             group_name,
             group_id,
         )?;
-        let params = gpr::RunParams {
+        let params = crate::processing::RunParams {
             filepaths: inputs_to_paths(py, inputs.bind(py))?,
             output_path: optional_path(py, output)?,
             track_path,
@@ -587,7 +587,7 @@ pub mod ridal {
         };
 
         if return_dataset {
-            let (gpr_obj, _default_path) = gpr::build_processed_gpr(params)
+            let (gpr_obj, _default_path) = crate::processing::build_processed_gpr(params)
                 .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
             let ds_py = gpr_obj
                 .export_dataset()
@@ -599,7 +599,7 @@ pub mod ridal {
             };
         }
 
-        let result = gpr::run(params)
+        let result = crate::processing::run(params)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
         // Ok(result.output_path.to_string_lossy().to_string())
         Ok(py
@@ -917,7 +917,7 @@ pub mod ridal {
                 output_dir.display()
             )));
         }
-        let params = gpr::BatchRunParams {
+        let params = crate::processing::batch::BatchRunParams {
             filepaths: inputs_to_paths(py, inputs.bind(py))?,
             output_dir,
             track_dir: existing_dir(py, track, "track")?,
@@ -947,8 +947,8 @@ pub mod ridal {
             )?,
         };
 
-        let result =
-            gpr::run_batch(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
+        let result = crate::processing::batch::run_batch(params)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
 
         Ok(result
             .output_paths
@@ -1358,7 +1358,7 @@ pub mod ridal {
         let cor_path = optional_path(py, cor)?;
         let dem_path = optional_path(py, dem)?;
 
-        let params = gpr::InfoParams {
+        let params = crate::inspect::InfoParams {
             filepaths: input_paths,
             dem_path,
             cor_path,
@@ -1367,8 +1367,8 @@ pub mod ridal {
             override_antenna_mhz,
             override_antenna_separation,
         };
-        let records =
-            gpr::inspect(params).map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
+        let records = crate::inspect::inspect(params)
+            .map_err(|e| PyRuntimeError::new_err(format!("{e:?}")))?;
 
         records
             .iter()

@@ -26,12 +26,12 @@ pub fn environment() -> Environment<'static> {
     // steps box: `ridal process --default`, without the topographic variant.
     env.add_global(
         "default_processing_steps",
-        minijinja::Value::from_serialize(crate::gpr::default_processing_profile()),
+        minijinja::Value::from_serialize(crate::processing::default_processing_profile()),
     );
     // The step help in every steps box (#423): each step's signature,
     // summary and arguments, from the registry `docs/reference/steps.md` is
     // generated from too.
-    let step_catalog = crate::steps::catalog();
+    let step_catalog = crate::processing::steps::catalog();
     env.add_global(
         "step_catalog_json",
         serde_json::to_string(&step_catalog).expect("the step catalog serializes"),

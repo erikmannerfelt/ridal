@@ -40,21 +40,21 @@ fn manifest_dir() -> PathBuf {
 /// Process the committed Malå file into a tempdir and read the geometry.
 fn processed_geometry(directory: &std::path::Path) -> RadargramGeometry {
     let output = directory.join("r.nc");
-    let params = crate::gpr::RunParams {
+    let params = crate::processing::RunParams {
         filepaths: vec![manifest_dir().join("assets/mala/dronbreen-20250327-DAT_0066_A1.rd3")],
         output_path: Some(output.clone()),
         track_path: None,
         render_path: None,
         radargram_id: Some(RADARGRAM_ID.to_string()),
         display_name: None,
-        options: crate::gpr::ProcessingOptions {
+        options: crate::processing::ProcessingOptions {
             crs: Some("EPSG:32633".to_string()),
             quiet: true,
             steps: crate::tools::parse_step_list(STEPS).expect("valid steps"),
             ..Default::default()
         },
     };
-    crate::gpr::run(params).expect("processing the committed Malå file");
+    crate::processing::run(params).expect("processing the committed Malå file");
     crate::interp::source::read_geometry(&output).expect("reading the processed geometry")
 }
 

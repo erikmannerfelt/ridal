@@ -204,11 +204,11 @@ choose one); a change outside the steps that reaches the file (reading a
 format, merging, coordinates, travel time and depth geometry, writing the
 NetCDF) bumps `CORE_PROCESSING_VERSION`. A changed default needs neither,
 since the canonical call records defaults filled in. The golden test in
-`src/steps/digests.rs` processes `dronbreen-20220329-DAT_0237_A1`, digests
+`src/processing/steps/digests.rs` processes `dronbreen-20220329-DAT_0237_A1`, digests
 every exported variable and numeric attribute (relative to each
 variable's first value, with two projections onto fixed pseudo-random
 weights so that a shift by one sample cannot hide in unchanged sums), and
-compares against `src/steps/digests.json` with a tolerance that holds
+compares against `src/processing/steps/digests.json` with a tolerance that holds
 across thread counts and platforms. It fails when output moves and the
 guarding version does not, and `UPDATE_STEP_DIGESTS=1` refuses to record
 such a change; `=force` is for numerically insignificant ones only.
@@ -666,7 +666,7 @@ Many recordings in, the radargrams they would make out
   recording twice, which is refused. An output is named by its first
   recording's key, which is what typed ids and display names are keyed
   by.
-- **One grouping.** `gpr::group_chronologically` groups headers already
+- **One grouping.** `processing::grouping::group_chronologically` groups headers already
   read, applying joins, splits and exclusions; `batch-process` and the
   planner both call it, and neither reads the data to group. Whether two
   recordings merge is `MergeKey::refusal`, which `GPR::merge` asks too,
@@ -1073,7 +1073,7 @@ normalize → colormap → encode.** Everything lives under
   the noise of mV-scale 25 MHz data but truncates everything in data
   whose amplitudes are all below one. The noise floor is the
   median `log10|A|` over the whole radargram (zeros excluded;
-  `filters::siglog::noise_floor_log10`), with no depth window: noise is
+  `processing::steps::siglog::noise_floor_log10`), with no depth window: noise is
   most of any record that runs past the ice, and on the lines tested it
   sat 0.08–0.10 below a median taken only below the bed. The offset lives
   in `siglog_noise_offset`; `siglog_minval_log10` is still the fixed
@@ -1624,7 +1624,7 @@ so chunks, overview banding, `ridal render`, the GUI image download and
 even the amplitude-limits sampler (which deliberately does *not* read
 through it — see below) all work unchanged. Nothing is precomputed or
 stored, and no interpretation is ever saved in the corrected coordinate
-space — distinct from `gpr.rs::correct_topography`'s `data_topocorr`,
+space — distinct from `correct_topography`'s `data_topocorr`,
 which writes a NetCDF product on a slightly different (`height /
 max_depth`) vertical scale, by design (see `topo.rs`'s module docs).
 

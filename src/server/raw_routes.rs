@@ -490,7 +490,7 @@ pub struct SourceView {
     pub source: Source,
     /// What each recording's header and positions say, in merge order.
     /// Only `PUT` reads the recordings; `GET` leaves this empty.
-    pub recordings: Vec<crate::gpr::InfoRecord>,
+    pub recordings: Vec<crate::inspect::InfoRecord>,
 }
 
 /// What the radargram is made from, with an `ETag`.
@@ -715,7 +715,7 @@ pub async fn put_source(
     .or_internal("source_failed")?;
     let (source, recordings) = result.map_err(|e| ApiError::bad_request("source_unreadable", e))?;
     // Refused now rather than when the first draft fails to merge them.
-    crate::gpr::check_mergeable(&recordings)
+    crate::inspect::check_mergeable(&recordings)
         .map_err(|e| ApiError::bad_request("recordings_not_mergeable", e))?;
 
     let version = write_with_dem(&state, project, &id, &source, &expected)?;
@@ -745,12 +745,12 @@ pub(super) fn read_recordings(
     dem: Option<&raw::SourceDem>,
     antenna_mhz: Option<f32>,
     antenna_separation: Option<f32>,
-) -> Result<Vec<crate::gpr::InfoRecord>, String> {
+) -> Result<Vec<crate::inspect::InfoRecord>, String> {
     let headers: Vec<std::path::PathBuf> = raw::materialize(data_dir, recordings, work)?
         .into_iter()
         .map(|resolved| resolved.header)
         .collect();
-    let records = crate::gpr::inspect(crate::gpr::InfoParams {
+    let records = crate::inspect::inspect(crate::inspect::InfoParams {
         filepaths: headers,
         dem_path: dem.and_then(|d| raw::file_path(data_dir, &d.file.blake3)),
         cor_path: None,
@@ -769,8 +769,8 @@ pub(super) fn read_recordings(
     Ok(records
         .into_iter()
         .filter_map(|record| match record {
-            crate::gpr::Inspected::Raw(record) => Some(record),
-            crate::gpr::Inspected::Processed(_) => None,
+            crate::inspect::Inspected::Raw(record) => Some(record),
+            crate::inspect::Inspected::Processed(_) => None,
         })
         .collect())
 }

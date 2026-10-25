@@ -28,9 +28,10 @@ use super::auth::Caller;
 use super::needs::{Needs, Who};
 use super::raw_routes::project_for;
 use super::routes::{ApiError, OrInternal};
-use crate::gpr::{GroupingEdits, GroupingRecording, Split};
 use crate::id_pattern::{BatchFacts, OutputFacts, Pattern, PatternKind};
 use crate::identity::{DisplayName, RadargramId};
+use crate::processing::batch::Split;
+use crate::processing::grouping::{GroupingEdits, GroupingRecording};
 use crate::project::raw::{self, NamedFile};
 use crate::project::roles::Role;
 
@@ -381,18 +382,23 @@ fn read_recording(
         .unwrap_or_default();
     let key = recording_key(files);
     let outcome = (|| {
-        let (meta, location) =
-            crate::gpr::read_header_and_positions(&resolved, crs, dem, antenna_mhz).map_err(
-                |e| match e {
-                    crate::gpr::HeaderReadError::UnknownFrequency(unknown) => {
-                        Unread::FrequencyUnknown {
-                            reason: unknown.to_string(),
-                            antenna: unknown.antenna,
-                        }
-                    }
-                    crate::gpr::HeaderReadError::Other(reason) => Unread::Unreadable(reason),
-                },
-            )?;
+        let (meta, location) = crate::processing::grouping::read_header_and_positions(
+            &resolved,
+            crs,
+            dem,
+            antenna_mhz,
+        )
+        .map_err(|e| match e {
+            crate::processing::grouping::HeaderReadError::UnknownFrequency(unknown) => {
+                Unread::FrequencyUnknown {
+                    reason: unknown.to_string(),
+                    antenna: unknown.antenna,
+                }
+            }
+            crate::processing::grouping::HeaderReadError::Other(reason) => {
+                Unread::Unreadable(reason)
+            }
+        })?;
         let grouping = GroupingRecording::of(&meta, &location)
             .ok_or_else(|| Unread::Unreadable("it has no positions".to_string()))?;
         let track = crate::server::track::Track::from_location(&location)
@@ -703,8 +709,11 @@ pub fn plan(
         .iter()
         .map(|i| read_ok(&reads[*i]).grouping.clone())
         .collect();
-    let grouping =
-        crate::gpr::group_chronologically(&recordings, request.merge_threshold_seconds, &edits);
+    let grouping = crate::processing::grouping::group_chronologically(
+        &recordings,
+        request.merge_threshold_seconds,
+        &edits,
+    );
     for (position, reason) in &grouping.refused_joins {
         let read = &reads[grouped[*position]];
         problems.push(PlanProblem {
@@ -1121,7 +1130,7 @@ fn read_ok(read: &Read) -> &ReadRecording {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpr::MergeKey;
+    use crate::processing::grouping::MergeKey;
 
     /// A recording read, `start` and `stop` in seconds, named
     /// `DAT_<n>_A1.rad`.
