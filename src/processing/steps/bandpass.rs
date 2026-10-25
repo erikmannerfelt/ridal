@@ -1,10 +1,9 @@
-use std::time::SystemTime;
-
 use ndarray::{ArrayBase, DataMut, Ix1};
 use num::Float;
 use num_complex::Complex;
 
 use crate::gpr::GPR;
+use crate::processing::steps::StepReport;
 
 /// Apply a zero‑phase band‑pass: a **high‑pass at low_cutoff** then a **low‑pass at high_cutoff**,
 /// run forward and then backward over the trace (like `scipy.signal.filtfilt`).
@@ -259,74 +258,66 @@ fn complex_abs<T: Float>(c: Complex<T>) -> T {
     (c.re * c.re + c.im * c.im).sqrt()
 }
 
-impl GPR {
-    pub fn bandpass(
-        &mut self,
-        low_cutoff: f32,
-        high_cutoff: f32,
-        q: f32,
-        normalized: bool,
-    ) -> Result<(), String> {
-        let start_time = SystemTime::now();
-
-        if q <= 0. {
-            return Err(format!("Bandpass q needs to be above 0 (provided: {q})"));
-        }
-        if normalized {
-            if !(0. ..=1.).contains(&low_cutoff) {
-                return Err(format!(
-                    "Normalized low cutoff needs to be in the range 0-1 (provided: {low_cutoff})"
-                ));
-            }
-            if !(0. ..=1.).contains(&high_cutoff) {
-                return Err(format!(
-                    "Normalized high cutoff needs to be in the range 0-1 (provided: {high_cutoff})"
-                ));
-            }
-            if low_cutoff >= high_cutoff {
-                return Err(format!(
-                "Normalized low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
-            ));
-            }
-        } else if low_cutoff >= high_cutoff {
-            return Err(format!(
-                "Low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
-            ));
-        }
-
-        for mut col in self.data.columns_mut() {
-            bandpass_hpf_then_lpf(
-                &mut col,
-                low_cutoff,
-                high_cutoff,
-                (!normalized).then_some(self.metadata.frequency),
-                Some(q),
-                true,
-            )?;
-        }
-
-        if normalized {
-            self.log_event(
-                "bandpass",
-                &format!(
-                    "Applied a normalized zero-phase bandpass filter ({:.3}-{:.3}, q={:.3})",
-                    low_cutoff, high_cutoff, q,
-                ),
-                start_time,
-            );
-        } else {
-            self.log_event(
-                "bandpass_mhz",
-                &format!(
-                    "Applied a zero-phase bandpass filter ({:.3}-{:.3} MHz, q={:.3})",
-                    low_cutoff, high_cutoff, q
-                ),
-                start_time,
-            );
-        }
-
-        Ok(())
+pub(crate) fn run_bandpass(
+    gpr: &mut GPR,
+    low_cutoff: f32,
+    high_cutoff: f32,
+    q: f32,
+    normalized: bool,
+) -> Result<StepReport, String> {
+    if q <= 0. {
+        return Err(format!("Bandpass q needs to be above 0 (provided: {q})"));
     }
+    if normalized {
+        if !(0. ..=1.).contains(&low_cutoff) {
+            return Err(format!(
+                "Normalized low cutoff needs to be in the range 0-1 (provided: {low_cutoff})"
+            ));
+        }
+        if !(0. ..=1.).contains(&high_cutoff) {
+            return Err(format!(
+                "Normalized high cutoff needs to be in the range 0-1 (provided: {high_cutoff})"
+            ));
+        }
+        if low_cutoff >= high_cutoff {
+            return Err(format!(
+            "Normalized low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
+        ));
+        }
+    } else if low_cutoff >= high_cutoff {
+        return Err(format!(
+            "Low cutoff ({low_cutoff}) needs to be smaller than the high cutoff ({high_cutoff})."
+        ));
+    }
+
+    for mut col in gpr.data.columns_mut() {
+        bandpass_hpf_then_lpf(
+            &mut col,
+            low_cutoff,
+            high_cutoff,
+            (!normalized).then_some(gpr.metadata.frequency),
+            Some(q),
+            true,
+        )?;
+    }
+
+    Ok(if normalized {
+        StepReport::new(
+            "bandpass",
+            format!(
+                "Applied a normalized zero-phase bandpass filter ({:.3}-{:.3}, q={:.3})",
+                low_cutoff, high_cutoff, q,
+            ),
+        )
+    } else {
+        StepReport::new(
+            "bandpass_mhz",
+            format!(
+                "Applied a zero-phase bandpass filter ({:.3}-{:.3} MHz, q={:.3})",
+                low_cutoff, high_cutoff, q
+            ),
+        )
+    })
 }
 
 #[cfg(test)]

@@ -22,13 +22,13 @@
 
 use std::fmt;
 use std::str::FromStr;
-use std::time::SystemTime;
 
 use ndarray::{Array2, Axis};
 use rayon::prelude::*;
 
 use super::rolling::{self, Statistic};
 use crate::gpr::GPR;
+use crate::processing::steps::StepReport;
 
 /// A stretch of the profile: a number of traces, or seconds of recording.
 ///
@@ -179,90 +179,79 @@ pub fn balance_traces(data: &mut Array2<f32>, settings: &Settings) -> Result<Rep
     })
 }
 
-impl GPR {
-    /// Even out slow changes in trace amplitude along the profile, with the
-    /// gain measured in a shallow window and below `deep_ns` (travel times).
-    /// See [`crate::processing::steps::balance`].
-    ///
-    /// Never fails on the data: windows the record does not hold, or spans
-    /// in seconds without a usable trace interval, leave the data unchanged
-    /// and the log says why.
-    pub fn balance_traces(
-        &mut self,
-        deep_ns: f32,
-        shallow_start_ns: f32,
-        shallow_end_ns: f32,
-        traces: Span,
-        reference: Span,
+/// Even out slow changes in trace amplitude along the profile, with the
+/// gain measured in a shallow window and below `deep_ns` (travel times).
+/// See [`crate::processing::steps::balance`].
+///
+/// Never fails on the data: windows the record does not hold, or spans
+/// in seconds without a usable trace interval, leave the data unchanged
+/// and the log says why.
+pub(crate) fn run_balance_traces(
+    gpr: &mut GPR,
+    deep_ns: f32,
+    shallow_start_ns: f32,
+    shallow_end_ns: f32,
+    traces: Span,
+    reference: Span,
+) -> StepReport {
+    let seconds_per_trace = gpr.metadata.time_interval;
+    let (traces_n, reference_n) = match (
+        traces.traces(seconds_per_trace),
+        reference.traces(seconds_per_trace),
     ) {
-        let start_time = SystemTime::now();
-        let seconds_per_trace = self.metadata.time_interval;
-        let (traces_n, reference_n) = match (
-            traces.traces(seconds_per_trace),
-            reference.traces(seconds_per_trace),
-        ) {
-            // The windows are centred, so an even count is one trace longer.
-            (Ok(t), Ok(r)) => (2 * (t / 2) + 1, 2 * (r / 2) + 1),
-            (Err(reason), _) | (_, Err(reason)) => {
-                self.log_event(
-                    "balance_traces",
-                    &format!("Warning: {reason}; changed nothing"),
-                    start_time,
-                );
-                return;
-            }
-        };
-        // Both units, when the trace interval makes the seconds meaningful.
-        let span = |n: usize| {
-            if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
-                format!("{n} traces ({:.1} s)", n as f32 * seconds_per_trace)
-            } else {
-                format!("{n} traces")
-            }
-        };
-        // A window as long as the profile is cut to it at every trace.
-        let against = if reference_n >= self.width() {
-            format!("the median of all {} traces", self.width())
-        } else {
-            format!("the running median of {}", span(reference_n))
-        };
-
-        let twtt = self.twtt_ns();
-        let sample_at = |ns: f32| twtt.iter().position(|&t| t >= ns).unwrap_or(self.height());
-        let settings = Settings {
-            shallow: (sample_at(shallow_start_ns), sample_at(shallow_end_ns)),
-            deep_start: sample_at(deep_ns),
-            traces: traces_n,
-            reference: reference_n,
-        };
-        let windows = format!(
-            "{shallow_start_ns}-{shallow_end_ns} ns and from {deep_ns} ns, averaged over {} \
-             against {against}",
-            span(traces_n)
-        );
-        match balance_traces(&mut self.data, &settings) {
-            Ok(report) => {
-                let range = |(lo, median, hi): (f32, f32, f32)| {
-                    format!("{lo:.2}-{hi:.2} (median {median:.2})")
-                };
-                self.log_event(
-                    "balance_traces",
-                    &format!(
-                        "Scaled the traces by a gain measured at {windows}: amplitude factors of \
-                         {} in the shallow window and {} in the deep one, interpolated in \
-                         between",
-                        range(report.shallow_factor),
-                        range(report.deep_factor),
-                    ),
-                    start_time,
-                );
-            }
-            Err(reason) => self.log_event(
-                "balance_traces",
-                &format!("Warning: {reason} (windows at {windows}); changed nothing"),
-                start_time,
-            ),
+        // The windows are centred, so an even count is one trace longer.
+        (Ok(t), Ok(r)) => (2 * (t / 2) + 1, 2 * (r / 2) + 1),
+        (Err(reason), _) | (_, Err(reason)) => {
+            return StepReport::warning("balance_traces", format!("{reason}; changed nothing"));
         }
+    };
+    // Both units, when the trace interval makes the seconds meaningful.
+    let span = |n: usize| {
+        if seconds_per_trace > 0. && seconds_per_trace.is_finite() {
+            format!("{n} traces ({:.1} s)", n as f32 * seconds_per_trace)
+        } else {
+            format!("{n} traces")
+        }
+    };
+    // A window as long as the profile is cut to it at every trace.
+    let against = if reference_n >= gpr.width() {
+        format!("the median of all {} traces", gpr.width())
+    } else {
+        format!("the running median of {}", span(reference_n))
+    };
+
+    let twtt = gpr.twtt_ns();
+    let sample_at = |ns: f32| twtt.iter().position(|&t| t >= ns).unwrap_or(gpr.height());
+    let settings = Settings {
+        shallow: (sample_at(shallow_start_ns), sample_at(shallow_end_ns)),
+        deep_start: sample_at(deep_ns),
+        traces: traces_n,
+        reference: reference_n,
+    };
+    let windows = format!(
+        "{shallow_start_ns}-{shallow_end_ns} ns and from {deep_ns} ns, averaged over {} \
+         against {against}",
+        span(traces_n)
+    );
+    match balance_traces(&mut gpr.data, &settings) {
+        Ok(report) => {
+            let range =
+                |(lo, median, hi): (f32, f32, f32)| format!("{lo:.2}-{hi:.2} (median {median:.2})");
+            StepReport::new(
+                "balance_traces",
+                format!(
+                    "Scaled the traces by a gain measured at {windows}: amplitude factors of \
+                     {} in the shallow window and {} in the deep one, interpolated in \
+                     between",
+                    range(report.shallow_factor),
+                    range(report.deep_factor),
+                ),
+            )
+        }
+        Err(reason) => StepReport::warning(
+            "balance_traces",
+            format!("{reason} (windows at {windows}); changed nothing"),
+        ),
     }
 }
 

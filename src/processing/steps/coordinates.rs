@@ -1,6 +1,5 @@
-use std::time::SystemTime;
-
 use crate::gpr::{CorPoint, GPR};
+use crate::processing::steps::StepReport;
 
 #[derive(Debug, Clone)]
 struct TrackGeometry {
@@ -143,30 +142,20 @@ pub fn shift_coordinates(
         .collect()
 }
 
-impl GPR {
-    pub(crate) fn shift_coordinates(
-        &mut self,
-        along_track: f64,
-        altitude: f64,
-        cross_track: f64,
-    ) -> Result<(), String> {
-        let start_time = SystemTime::now();
-
-        if self.location.cor_points.len() < 2 {
-            return Err("shift_coordinates needs at least two valid coordinates".to_string());
-        }
-
-        self.location.cor_points = shift_coordinates(
-            &self.location.cor_points,
-            along_track,
-            altitude,
-            cross_track,
-        );
-
-        self.log_event("shift_coordinates", &format!("Shifted coordinates {along_track} m along the track (+ is forward), {altitude} in altitude (+ is up) and {cross_track} m across the track (+ is right)."), start_time);
-
-        Ok(())
+pub(crate) fn run_shift_coordinates(
+    gpr: &mut GPR,
+    along_track: f64,
+    altitude: f64,
+    cross_track: f64,
+) -> Result<StepReport, String> {
+    if gpr.location.cor_points.len() < 2 {
+        return Err("shift_coordinates needs at least two valid coordinates".to_string());
     }
+
+    gpr.location.cor_points =
+        shift_coordinates(&gpr.location.cor_points, along_track, altitude, cross_track);
+
+    Ok(StepReport::new("shift_coordinates", format!("Shifted coordinates {along_track} m along the track (+ is forward), {altitude} in altitude (+ is up) and {cross_track} m across the track (+ is right).")))
 }
 
 #[cfg(test)]

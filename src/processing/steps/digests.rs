@@ -270,7 +270,8 @@ fn compute() -> Table {
     // Cut afresh for every run rather than cloned: a GPR is deliberately
     // not `Clone`, and the cut is cheap.
     let window = || {
-        raw.subset(
+        crate::gpr::test_fixtures::subset_of(
+            &raw,
             Some(BASE_TRACES.0),
             Some(BASE_TRACES.1),
             Some(BASE_SAMPLES.0),

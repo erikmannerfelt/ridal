@@ -200,7 +200,8 @@ pub(crate) fn str_attr(
 }
 
 pub(crate) fn per_trace_max_peak(gpr: &mut super::GPR) {
-    gpr.zero_corr(
+    crate::processing::steps::zero_corr::run_zero_corr(
+        gpr,
         &crate::processing::steps::zero_corr::Settings {
             method: crate::processing::steps::zero_corr::Method::MaxPeak,
             scope: crate::processing::steps::zero_corr::Scope::Trace,
@@ -248,4 +249,19 @@ pub(crate) fn make_labelled_gpr(width: usize, height: usize) -> super::GPR {
 /// which only processing changes otherwise.
 pub(crate) fn set_separation_to_correct(gpr: &mut super::GPR, metres: f32) {
     gpr.antenna_separation_effective = metres;
+}
+
+/// `subset` on a copy, leaving `gpr` as it was.
+pub(crate) fn subset_of(
+    gpr: &super::GPR,
+    min_trace: Option<u32>,
+    max_trace: Option<u32>,
+    min_sample: Option<u32>,
+    max_sample: Option<u32>,
+) -> Result<super::GPR, String> {
+    let mut copy = gpr.window(0..gpr.width(), 0..gpr.height());
+    crate::processing::steps::traces::run_subset(
+        &mut copy, min_trace, max_trace, min_sample, max_sample,
+    )?;
+    Ok(copy)
 }

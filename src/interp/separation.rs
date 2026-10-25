@@ -84,13 +84,16 @@ impl SeparationDeclarations {
 /// The grid spacing the last `correct_antenna_separation` logged.
 ///
 /// "Standardized depths to 0.25669098 m (...) per pixel" is the only place
-/// a legacy-method spacing is recorded.
+/// a legacy-method spacing is recorded. Every file that ran the step says
+/// it in this form, so this reads files of any version.
 pub fn logged_resolution(processing_log: &str) -> Option<f64> {
     processing_log
         .lines()
         .rev()
-        .find_map(|line| line.split_once("Standardized depths to "))
-        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .map(crate::gpr::processing_log::parse)
+        .filter(|entry| entry.name == Some("correct_antenna_separation"))
+        .find_map(|entry| entry.event.strip_prefix("Standardized depths to "))
+        .and_then(|rest| rest.split_whitespace().next())
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
 }
