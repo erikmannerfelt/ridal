@@ -817,6 +817,13 @@ mod tests {
         assert_eq!(placement.shift_at(0.5), 1.0);
         assert_eq!(placement.shift_at(9.0), 4.0);
         assert_eq!(placement.to_px(1.0, 10.0), [10.0, 12.0]);
+        // A mirrored figure (#496) gives its edges the other way round, and
+        // the shift still follows the trace, not the pixel.
+        let mirrored = Placement {
+            traces: [10.0, 0.0],
+            ..placement
+        };
+        assert_eq!(mirrored.to_px(1.0, 10.0), [90.0, 12.0]);
     }
 
     #[test]

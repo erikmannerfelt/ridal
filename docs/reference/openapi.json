@@ -11338,6 +11338,22 @@
             ],
             "description": "The axis title. `None` uses the unit's own; `\"\"` draws none.",
             "default": null
+          },
+          "zero_at": {
+            "type": "number",
+            "format": "double",
+            "description": "The axis value that is labelled 0, in the axis unit: labels are\n`value - zero_at`, or `zero_at - value` when `descending`. `spacing`\nand `anchor` apply to the labels, so ticks stay on round numbers.\nNot for a time axis.",
+            "default": 0.0
+          },
+          "descending": {
+            "type": "boolean",
+            "description": "Count the labels down instead of up: a profile surveyed from the\nterminus can be labelled from the glacier head with\n`zero_at` at the profile's length. Not for a time axis.",
+            "default": false
+          },
+          "reverse": {
+            "type": "boolean",
+            "description": "Mirror the figure left to right: the radargram, the overlays and the\nticks, so the last trace of the extent is at the left edge. x axis\nonly.",
+            "default": false
           }
         },
         "additionalProperties": false
@@ -11377,6 +11393,22 @@
             ],
             "description": "The axis title. `None` uses the unit's own; `\"\"` draws none.",
             "default": null
+          },
+          "zero_at": {
+            "type": "number",
+            "format": "double",
+            "description": "The axis value that is labelled 0, in the axis unit: labels are\n`value - zero_at`, or `zero_at - value` when `descending`. `spacing`\nand `anchor` apply to the labels, so ticks stay on round numbers.\nNot for a time axis.",
+            "default": 0.0
+          },
+          "descending": {
+            "type": "boolean",
+            "description": "Count the labels down instead of up: a profile surveyed from the\nterminus can be labelled from the glacier head with\n`zero_at` at the profile's length. Not for a time axis.",
+            "default": false
+          },
+          "reverse": {
+            "type": "boolean",
+            "description": "Mirror the figure left to right: the radargram, the overlays and the\nticks, so the last trace of the extent is at the left edge. x axis\nonly.",
+            "default": false
           }
         },
         "additionalProperties": false
@@ -13237,6 +13269,18 @@
             ],
             "description": "Background colour as `#rrggbb`, or `null` for transparent.",
             "default": "#ffffff"
+          },
+          "halo": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/FigureHalo",
+                "description": "An outline drawn around tick labels, axis titles, ticks and the\nframe, so they stay readable on a transparent figure placed on\neither a light or a dark page. It reaches outward from the frame\nonly, never over the radargram. `null`, the default, draws none."
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "additionalProperties": false
@@ -13316,6 +13360,24 @@
             "default": null,
             "maxItems": 2,
             "minItems": 2
+          }
+        },
+        "additionalProperties": false
+      },
+      "FigureHalo": {
+        "type": "object",
+        "description": "An outline around text and axis lines, as matplotlib's\n`patheffects.withStroke(foreground=color, linewidth=width)`.",
+        "properties": {
+          "color": {
+            "type": "string",
+            "description": "Colour as `#rrggbb`.",
+            "default": "#ffffff"
+          },
+          "width": {
+            "type": "number",
+            "format": "double",
+            "description": "Width of the stroke in points, centred on the glyphs' outline, so\nhalf of it shows outside them; ticks and the frame get the same\n`width / 2` around them.",
+            "default": 1.0
           }
         },
         "additionalProperties": false
@@ -13543,7 +13605,10 @@
               "unit": null,
               "spacing": null,
               "anchor": 0.0,
-              "label": null
+              "label": null,
+              "zero_at": 0.0,
+              "descending": false,
+              "reverse": false
             }
           },
           "y_axis": {
@@ -13552,7 +13617,10 @@
               "unit": null,
               "spacing": null,
               "anchor": 0.0,
-              "label": null
+              "label": null,
+              "zero_at": 0.0,
+              "descending": false,
+              "reverse": false
             }
           },
           "style": {
@@ -13560,7 +13628,8 @@
             "default": {
               "font_size": 10.0,
               "color": "#000000",
-              "background": "#ffffff"
+              "background": "#ffffff",
+              "halo": null
             }
           },
           "radargram": {

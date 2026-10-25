@@ -42,6 +42,29 @@ impl AxisValues {
         }
     }
 
+    /// The axis relabelled to count from `zero_at`: `value - zero_at`, or
+    /// `zero_at - value` when `descending`. Positions are unchanged, so the
+    /// ticks of the relabelled axis are where its labels say.
+    pub fn relabelled(self, zero_at: f64, descending: bool) -> Self {
+        let sign = if descending { -1.0 } else { 1.0 };
+        if zero_at == 0.0 && !descending {
+            return self;
+        }
+        match self {
+            AxisValues::Index => AxisValues::Linear {
+                offset: -sign * zero_at,
+                slope: sign,
+            },
+            AxisValues::Linear { offset, slope } => AxisValues::Linear {
+                offset: sign * (offset - zero_at),
+                slope: sign * slope,
+            },
+            AxisValues::Table(values) => {
+                AxisValues::Table(values.into_iter().map(|v| sign * (v - zero_at)).collect())
+            }
+        }
+    }
+
     /// The raster position where the axis first reaches `value` inside
     /// `[p0, p1]`, or `None` if it does not.
     ///
@@ -278,6 +301,35 @@ pub fn ticks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relabelled_axis_counts_from_zero_at_in_either_direction() {
+        // #496: a 10 km profile surveyed from the terminus, labelled from
+        // the head.
+        let km = AxisValues::Table(vec![0.0, 4.0, 10.0]).relabelled(10.0, true);
+        assert_eq!(km.value_at(0.0), 10.0);
+        assert_eq!(km.value_at(1.5), 3.0);
+        assert_eq!(km.value_at(2.0), 0.0);
+        let ticks = ticks(&km, 0.0, 2.0, 2.0, 0.0, LabelFormat::Decimal(0)).unwrap();
+        let labels: Vec<&str> = ticks.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, ["10", "8", "6", "4", "2", "0"]);
+        assert_eq!(ticks[1].position, 0.5);
+
+        let traces = AxisValues::Index.relabelled(100.0, true);
+        assert_eq!(traces.value_at(30.0), 70.0);
+        let shifted = AxisValues::Index.relabelled(100.0, false);
+        assert_eq!(shifted.value_at(30.0), -70.0);
+        let linear = AxisValues::Linear {
+            offset: 500.0,
+            slope: -2.0,
+        }
+        .relabelled(400.0, true);
+        assert_eq!(linear.value_at(10.0), -80.0);
+        assert!(matches!(
+            AxisValues::Index.relabelled(0.0, false),
+            AxisValues::Index
+        ));
+    }
 
     #[test]
     fn ticks_are_multiples_of_the_spacing_from_the_anchor_not_from_the_extent() {

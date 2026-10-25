@@ -455,3 +455,282 @@ fn distance_can_be_in_kilometres() {
         Some(XUnit::DistanceKm)
     );
 }
+
+/// The x position of the first `<text>` that says exactly `label`.
+fn label_x(svg: &str, label: &str) -> f64 {
+    let line = svg
+        .lines()
+        .find(|l| l.starts_with("<text") && l.ends_with(&format!(">{label}</text>")))
+        .unwrap_or_else(|| panic!("no label {label}"));
+    let x = line
+        .split("x=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    x.parse().unwrap()
+}
+
+#[test]
+fn a_reversed_figure_is_the_mirror_image_of_the_plain_one() {
+    // #496. Amplitude rises with the trace, so a mirror is visible.
+    let data = ndarray::Array2::from_shape_fn((100, 200), |(_, trace)| trace as f32 / 2.0);
+    let coords = coordinates(200, 100);
+    let plain = FigureSpec {
+        axes: false,
+        ..px_spec()
+    };
+    let reversed = FigureSpec {
+        x_axis: AxisSpec {
+            reverse: true,
+            ..AxisSpec::default()
+        },
+        ..plain.clone()
+    };
+    let decode = |spec: &FigureSpec| {
+        let figure = render(&data, &coords, spec, FigureFormat::Png).unwrap();
+        image::load_from_memory(&figure.bytes).unwrap().to_rgba8()
+    };
+    let mut mirrored = decode(&plain);
+    image::imageops::flip_horizontal_in_place(&mut mirrored);
+    assert_eq!(decode(&reversed), mirrored);
+
+    let sidecar = |spec: &FigureSpec| {
+        render(&data, &coords, spec, FigureFormat::Sidecar)
+            .unwrap()
+            .sidecar
+            .unwrap()
+    };
+    let (plain, reversed) = (sidecar(&plain), sidecar(&reversed));
+    assert_eq!(reversed.traces, [200.0, 0.0]);
+    assert_eq!(reversed.x.extent, [plain.x.extent[1], plain.x.extent[0]]);
+    assert_eq!(reversed.x.centres.len(), plain.x.centres.len());
+    for (r, p) in reversed.x.centres.iter().zip(plain.x.centres.iter().rev()) {
+        assert!((r - p).abs() < 1e-9, "{r} {p}");
+    }
+    assert_eq!(reversed.y, plain.y);
+}
+
+#[test]
+fn a_reversed_figure_has_its_ticks_from_right_to_left() {
+    let data = ramp(200, 100);
+    let coords = coordinates(200, 100);
+    let spec = |reverse| FigureSpec {
+        x_axis: AxisSpec {
+            spacing: Some(20.0),
+            reverse,
+            ..AxisSpec::default()
+        },
+        ..px_spec()
+    };
+    let svg = |spec| {
+        String::from_utf8(
+            render(&data, &coords, &spec, FigureFormat::Svg)
+                .unwrap()
+                .bytes,
+        )
+        .unwrap()
+    };
+    let (plain, reversed) = (svg(spec(false)), svg(spec(true)));
+    assert!(label_x(&plain, "0") < label_x(&plain, "80"));
+    assert!(label_x(&reversed, "0") > label_x(&reversed, "80"));
+    // Mirrored about the plot's centre, so a label's x in one plus its x
+    // in the other is the same for every label.
+    let sum = label_x(&plain, "40") + label_x(&reversed, "40");
+    let edges = label_x(&plain, "0") + label_x(&reversed, "0");
+    assert!((sum - edges).abs() < 0.02, "{sum} {edges}");
+}
+
+#[test]
+fn a_descending_axis_counts_down_from_zero_at() {
+    // #496: the profile is 0 to 99.5 m; labelled from its far end, 100 m
+    // there is 0 and the start of the profile is 100.
+    let data = ramp(200, 100);
+    let coords = coordinates(200, 100);
+    let spec = |reverse| FigureSpec {
+        x_axis: AxisSpec {
+            spacing: Some(20.0),
+            zero_at: 100.0,
+            descending: true,
+            reverse,
+            ..AxisSpec::default()
+        },
+        ..px_spec()
+    };
+    let svg = |spec| {
+        String::from_utf8(
+            render(&data, &coords, &spec, FigureFormat::Svg)
+                .unwrap()
+                .bytes,
+        )
+        .unwrap()
+    };
+    let plain = svg(spec(false));
+    for label in ["100", "80", "60", "40", "20"] {
+        label_x(&plain, label);
+    }
+    assert!(label_x(&plain, "100") < label_x(&plain, "20"));
+    // Mirrored too, the labels increase from left to right again, now
+    // from the far end of the profile.
+    let reversed = svg(spec(true));
+    assert!(label_x(&reversed, "20") < label_x(&reversed, "100"));
+
+    let sidecar = render(
+        &data,
+        &coords,
+        &FigureSpec {
+            axes: false,
+            ..spec(false)
+        },
+        FigureFormat::Sidecar,
+    )
+    .unwrap()
+    .sidecar
+    .unwrap();
+    // The right edge is position 200, extrapolated to 100 m.
+    assert_eq!(sidecar.x.extent, [100.0, 0.0]);
+}
+
+#[test]
+fn a_halo_outlines_the_labels() {
+    // #495: on a transparent figure, white around black text.
+    let data = ramp(200, 100);
+    let coords = coordinates(200, 100);
+    let spec = |halo: Option<spec::Halo>| FigureSpec {
+        style: Style {
+            background: None,
+            halo: halo,
+            ..Style::default()
+        },
+        ..px_spec()
+    };
+    let halo = spec::Halo {
+        color: "#fff".to_string(),
+        width: 2.0,
+    };
+    let svg = String::from_utf8(
+        render(&data, &coords, &spec(Some(halo.clone())), FigureFormat::Svg)
+            .unwrap()
+            .bytes,
+    )
+    .unwrap();
+    // The stroked copy first, then the text itself.
+    let stroked = svg
+        .find(r##"stroke="#ffffff" stroke-width="2.67""##)
+        .unwrap();
+    let filled = svg.rfind(r##"fill="#000000">"##).unwrap();
+    assert!(stroked < filled);
+    assert_eq!(svg.matches(">Distance (m)</text>").count(), 2);
+    assert!(!svg.contains("paint-order"));
+
+    let white_below_plot = |spec: &FigureSpec| {
+        let figure = render(&data, &coords, spec, FigureFormat::Png).unwrap();
+        let image = image::load_from_memory(&figure.bytes).unwrap().to_rgba8();
+        let bottom = image.height() - 1;
+        (0..image.width())
+            .flat_map(|x| (bottom - 25..bottom).map(move |y| (x, y)))
+            .filter(|&(x, y)| {
+                let [r, g, b, a] = image.get_pixel(x, y).0;
+                a > 200 && r > 200 && g > 200 && b > 200
+            })
+            .count()
+    };
+    assert_eq!(white_below_plot(&spec(None)), 0);
+    assert!(white_below_plot(&spec(Some(halo))) > 50);
+}
+
+#[test]
+fn the_new_axis_and_halo_options_are_checked() {
+    for (json, needle) in [
+        (r#"{"y_axis": {"reverse": true}}"#, "y_axis.reverse"),
+        (
+            r#"{"x_axis": {"unit": "time", "descending": true}}"#,
+            "not for a time axis",
+        ),
+        (
+            r#"{"x_axis": {"unit": "time", "zero_at": 5}}"#,
+            "not for a time axis",
+        ),
+        (r#"{"style": {"halo": {"width": 0}}}"#, "halo.width"),
+        (r#"{"style": {"halo": {"color": "white"}}}"#, "halo.color"),
+    ] {
+        let err = FigureSpec::from_json(json).unwrap_err();
+        assert!(err.contains(needle), "{json}: {err}");
+    }
+    let spec = FigureSpec::from_json(r#"{"style": {"halo": {}}}"#).unwrap();
+    assert_eq!(spec.style.halo, Some(spec::Halo::default()));
+    FigureSpec::from_json(r#"{"y_axis": {"zero_at": 400, "descending": true}}"#).unwrap();
+}
+
+#[test]
+fn a_halo_outlines_the_frame_and_ticks_but_not_the_radargram() {
+    // #495: the frame and ticks need the outline too on a dark page, but
+    // the plot must look exactly as it does without one.
+    let data = ramp(200, 100);
+    let coords = coordinates(200, 100);
+    let spec = |halo: Option<spec::Halo>| FigureSpec {
+        style: Style {
+            background: None,
+            halo: halo,
+            ..Style::default()
+        },
+        ..px_spec()
+    };
+    // Two halos of one width share a layout, so their plots can be
+    // compared pixel for pixel: wherever the halo's colour shows, they
+    // differ.
+    let halo = |color: &str| spec::Halo {
+        color: color.to_string(),
+        width: 3.0,
+    };
+    let decode = |spec: &FigureSpec| {
+        let figure = render(&data, &coords, spec, FigureFormat::Png).unwrap();
+        image::load_from_memory(&figure.bytes).unwrap().to_rgba8()
+    };
+    let (plain, outlined) = (
+        decode(&spec(Some(halo("#000000")))),
+        decode(&spec(Some(halo("#ffffff")))),
+    );
+    assert_eq!(plain.dimensions(), outlined.dimensions());
+    // Where the plot is, from the raster's place in the SVG.
+    let svg = String::from_utf8(
+        render(
+            &data,
+            &coords,
+            &spec(Some(halo("#ffffff"))),
+            FigureFormat::Svg,
+        )
+        .unwrap()
+        .bytes,
+    )
+    .unwrap();
+    let image = svg.lines().find(|l| l.starts_with("<image")).unwrap();
+    let attr = |name: &str| -> u32 {
+        image
+            .split(&format!(" {name}=\""))
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    };
+    let (x0, y0) = (attr("x"), attr("y"));
+    let (x1, y1) = (x0 + attr("width"), y0 + attr("height"));
+    for y in y0..y1 {
+        for x in x0..x1 {
+            assert_eq!(
+                plain.get_pixel(x, y),
+                outlined.get_pixel(x, y),
+                "the halo shows at plot pixel ({x}, {y})"
+            );
+        }
+    }
+    // Just outside the frame, halfway along the top: the halo's colour.
+    let (mx, above) = ((x0 + x1) / 2, y0 - 2);
+    assert_eq!(plain.get_pixel(mx, above).0, [0, 0, 0, 255]);
+    let [r, g, b, a] = outlined.get_pixel(mx, above).0;
+    assert!(a > 200 && r > 200 && g > 200 && b > 200, "{r} {g} {b} {a}");
+}

@@ -187,6 +187,22 @@ pub struct AxisSpec<U> {
     /// The axis title. `None` uses the unit's own; `""` draws none.
     #[cfg_attr(feature = "server", schema(default = json!(null)))]
     pub label: Option<String>,
+    /// The axis value that is labelled 0, in the axis unit: labels are
+    /// `value - zero_at`, or `zero_at - value` when `descending`. `spacing`
+    /// and `anchor` apply to the labels, so ticks stay on round numbers.
+    /// Not for a time axis.
+    #[cfg_attr(feature = "server", schema(default = 0.0))]
+    pub zero_at: f64,
+    /// Count the labels down instead of up: a profile surveyed from the
+    /// terminus can be labelled from the glacier head with
+    /// `zero_at` at the profile's length. Not for a time axis.
+    #[cfg_attr(feature = "server", schema(default = false))]
+    pub descending: bool,
+    /// Mirror the figure left to right: the radargram, the overlays and the
+    /// ticks, so the last trace of the extent is at the left edge. x axis
+    /// only.
+    #[cfg_attr(feature = "server", schema(default = false))]
+    pub reverse: bool,
 }
 
 impl<U> Default for AxisSpec<U> {
@@ -196,6 +212,9 @@ impl<U> Default for AxisSpec<U> {
             spacing: None,
             anchor: 0.0,
             label: None,
+            zero_at: 0.0,
+            descending: false,
+            reverse: false,
         }
     }
 }
@@ -346,6 +365,35 @@ pub struct Style {
     pub color: String,
     /// Background colour as `#rrggbb`, or `null` for transparent.
     pub background: Option<String>,
+    /// An outline drawn around tick labels, axis titles, ticks and the
+    /// frame, so they stay readable on a transparent figure placed on
+    /// either a light or a dark page. It reaches outward from the frame
+    /// only, never over the radargram. `null`, the default, draws none.
+    pub halo: Option<Halo>,
+}
+
+/// An outline around text and axis lines, as matplotlib's
+/// `patheffects.withStroke(foreground=color, linewidth=width)`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "server", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "server", schema(as = FigureHalo))]
+#[serde(deny_unknown_fields, default)]
+pub struct Halo {
+    /// Colour as `#rrggbb`.
+    pub color: String,
+    /// Width of the stroke in points, centred on the glyphs' outline, so
+    /// half of it shows outside them; ticks and the frame get the same
+    /// `width / 2` around them.
+    pub width: f64,
+}
+
+impl Default for Halo {
+    fn default() -> Self {
+        Self {
+            color: "#ffffff".to_string(),
+            width: 1.0,
+        }
+    }
 }
 
 impl Default for Style {
@@ -354,6 +402,7 @@ impl Default for Style {
             font_size: 10.0,
             color: "#000000".to_string(),
             background: Some("#ffffff".to_string()),
+            halo: None,
         }
     }
 }
@@ -432,6 +481,15 @@ impl FigureSpec {
         if let Some(background) = &self.style.background {
             parse_colour("style.background", background)?;
         }
+        if let Some(halo) = &self.style.halo {
+            parse_colour("style.halo.color", &halo.color)?;
+            if !(halo.width.is_finite() && halo.width > 0.0 && halo.width <= 20.0) {
+                return Err(format!(
+                    "style.halo.width must be between 0 and 20 points, not {}.",
+                    halo.width
+                ));
+            }
+        }
         for (name, bounds) in [
             ("extent.traces", self.extent.traces),
             ("extent.rows", self.extent.rows),
@@ -461,9 +519,19 @@ impl FigureSpec {
                 );
             }
         }
-        for (name, spacing, anchor) in [
-            ("x_axis", self.x_axis.spacing, self.x_axis.anchor),
-            ("y_axis", self.y_axis.spacing, self.y_axis.anchor),
+        for (name, spacing, anchor, zero_at) in [
+            (
+                "x_axis",
+                self.x_axis.spacing,
+                self.x_axis.anchor,
+                self.x_axis.zero_at,
+            ),
+            (
+                "y_axis",
+                self.y_axis.spacing,
+                self.y_axis.anchor,
+                self.y_axis.zero_at,
+            ),
         ] {
             if let Some(spacing) = spacing {
                 if !(spacing.is_finite() && spacing > 0.0) {
@@ -473,6 +541,23 @@ impl FigureSpec {
             if !anchor.is_finite() {
                 return Err(format!("{name}.anchor must be finite."));
             }
+            if !zero_at.is_finite() {
+                return Err(format!("{name}.zero_at must be finite."));
+            }
+        }
+        if self.x_axis.unit == Some(XUnit::Time)
+            && (self.x_axis.zero_at != 0.0 || self.x_axis.descending)
+        {
+            return Err(
+                "x_axis.zero_at and x_axis.descending are not for a time axis, whose labels \
+                 are times of day."
+                    .to_string(),
+            );
+        }
+        if self.y_axis.reverse {
+            return Err(
+                "y_axis.reverse is not supported: only the x axis can be mirrored.".to_string(),
+            );
         }
         for (name, width, opacity) in [
             ("picks", self.picks.width, self.picks.opacity),
@@ -536,9 +621,16 @@ mod tests {
                 spacing: Some(60.0),
                 anchor: 0.0,
                 label: Some(String::new()),
+                zero_at: 0.0,
+                descending: false,
+                reverse: true,
             },
             style: Style {
                 background: None,
+                halo: Some(Halo {
+                    color: "#123456".into(),
+                    width: 0.5,
+                }),
                 ..Style::default()
             },
             ..FigureSpec::default()
