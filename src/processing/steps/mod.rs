@@ -310,11 +310,20 @@ pub enum Step {
     /// Unless provided, the step size is determined from the median moving
     /// velocity. Other step sizes in m can be given, e.g.
     /// `equidistant_traces(2.)` for 2 m.
+    ///
+    /// A step may make at most four times as many traces as there were, so
+    /// the smallest is about a quarter of the spacing they were recorded
+    /// at; a smaller one is refused, and the error gives the smallest
+    /// allowed. If a survey's speed varied
+    /// so much that this is too restrictive, split the line into its slower
+    /// and faster stretches and resample each on its own. A profile with no
+    /// track to resample along, such as one recorded standing still, is
+    /// left as it is, with a warning.
     #[command(rename_all = "snake_case")]
     EquidistantTraces {
         /// Distance between traces, in m. Determined from the data if left
         /// out.
-        #[arg(long)]
+        #[arg(long, value_parser = finite_positive)]
         step: Option<f32>,
     },
     /// Shift trace coordinates along the track.
@@ -1097,6 +1106,22 @@ impl Step {
             } if deep < shallow_end => Err(format!(
                 "`deep` ({deep} ns) is inside the shallow window, which ends at {shallow_end} ns"
             )),
+            Step::Subset {
+                min_trace,
+                max_trace: End(Some(max_trace)),
+                ..
+            } if max_trace <= min_trace => Err(format!(
+                "`max_trace` ({max_trace}) is not after `min_trace` ({min_trace}), so no traces \
+                 would be kept"
+            )),
+            Step::Subset {
+                min_sample,
+                max_sample: End(Some(max_sample)),
+                ..
+            } if max_sample <= min_sample => Err(format!(
+                "`max_sample` ({max_sample}) is not after `min_sample` ({min_sample}), so no \
+                 samples would be kept"
+            )),
             _ => Ok(()),
         }
     }
@@ -1487,6 +1512,7 @@ impl GPR {
         let start = std::time::Instant::now();
         let report = parsed.step.apply(self)?;
         let duration = start.elapsed();
+        self.check_not_empty(step_name)?;
         self.check_trace_metadata(step_name)?;
         self.check_finite(step_name, non_finite_before)?;
         self.log.push(crate::gpr::processing_log::line(
@@ -1496,6 +1522,21 @@ impl GPR {
         ));
         self.steps.push(parsed.canonical);
         Ok(report)
+    }
+
+    /// The step left at least one trace and one sample.
+    ///
+    /// Every step and the export assume a radargram has both, so one that
+    /// cropped or removed everything (`subset(10 10)`, a high
+    /// `remove_empty_traces` strength) is stopped here, before the next
+    /// step indexes into nothing (#7).
+    fn check_not_empty(&self, step_name: &str) -> Result<(), String> {
+        let what = match (self.width(), self.height()) {
+            (0, _) => "traces",
+            (_, 0) => "samples",
+            _ => return Ok(()),
+        };
+        Err(format!("`{step_name}` left no {what}"))
     }
 
     fn count_non_finite(&self) -> usize {
@@ -1562,6 +1603,8 @@ pub fn validate_steps(steps: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod digests;
+#[cfg(test)]
+mod small_input_tests;
 
 #[cfg(test)]
 mod tests {

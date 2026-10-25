@@ -123,6 +123,8 @@ Make all traces equidistant by resampling them in a fixed horizontal grid.
 
 Unless provided, the step size is determined from the median moving velocity. Other step sizes in m can be given, e.g. `equidistant_traces(2.)` for 2 m.
 
+A step may make at most four times as many traces as there were, so the smallest is about a quarter of the spacing they were recorded at; a smaller one is refused, and the error gives the smallest allowed. If a survey's speed varied so much that this is too restrictive, split the line into its slower and faster stretches and resample each on its own. A profile with no track to resample along, such as one recorded standing still, is left as it is, with a warning.
+
 **Arguments**
 
 - `step`: Distance between traces, in m. Determined from the data if left out

@@ -8,6 +8,21 @@ use crate::processing::steps::StepReport;
 
 pub(crate) fn run_kirchhoff_migration2d(gpr: &mut GPR) -> Result<StepReport, String> {
     let x_coords = gpr.location.distances().mapv(|v| v as f32);
+    // The Fresnel zone is measured in traces by dividing by the spacing,
+    // so a single trace, or traces recorded standing still, leave nothing
+    // to migrate across.
+    let track_length =
+        x_coords.last().copied().unwrap_or(0.) - x_coords.first().copied().unwrap_or(0.);
+    if gpr.width() < 2 || track_length.is_nan() || track_length <= 0. {
+        return Ok(StepReport::warning(
+            "kirchhoff_migration2d",
+            format!(
+                "The {} traces span {track_length} m, so there is no track to migrate along. \
+                 The data were left as they are.",
+                gpr.width()
+            ),
+        ));
+    }
     let mut x_diff = 0_f32;
     for i in 1..x_coords.shape()[0] {
         x_diff += x_coords[i] - x_coords[i - 1];

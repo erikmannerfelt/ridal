@@ -124,6 +124,18 @@ pub(crate) fn run_subset(
         }
     }
 
+    // `validate` refuses an empty range written out in full; one that is
+    // empty only against this radargram, such as `subset(400)` on 400
+    // traces, is refused here.
+    if max_trace_ <= min_trace_ || max_sample_ <= min_sample_ {
+        return Err(format!(
+            "Subset failed: traces {min_trace_}..{max_trace_} and samples \
+             {min_sample_}..{max_sample_} of a {} x {} radargram keep no data",
+            gpr.width(),
+            gpr.height()
+        ));
+    }
+
     let event = format!(
         "Subset data from {:?} to ({}:{}, {}:{})",
         gpr.data.shape(),
@@ -139,27 +151,79 @@ pub(crate) fn run_subset(
     Ok(StepReport::new("subset", event))
 }
 
+/// How many times as many traces `equidistant_traces` may make as it was
+/// given.
+///
+/// Four times is a quarter of the typical spacing. A step far below the
+/// spacing the radar recorded at adds no information, only traces: 1 mm
+/// on a 2.5 km line of 3 548 traces asks for 2.5 million of them, about
+/// 7 GB of samples, which ran for minutes before it was stopped.
+pub(crate) const MAX_TRACE_FACTOR: usize = 4;
+
 pub(crate) fn run_make_equidistant(gpr: &mut GPR, step: Option<f32>) -> Result<StepReport, String> {
+    const NAME: &str = "equidistant_traces";
     let distances = gpr.location.distances().mapv(|v| v as f32);
     let max_distance = distances.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
-    let step = step.unwrap_or({
-        let velocities = gpr.location.velocities().mapv(|v| v as f32);
+    // Bad data, not a bad argument: a single trace, or a profile recorded
+    // standing still, has no track to resample along.
+    if gpr.width() < 2 || max_distance.is_nan() || max_distance <= 0. {
+        return Ok(StepReport::warning(
+            NAME,
+            format!(
+                "The {} traces span {max_distance} m, so there is no track to resample \
+                 along. The traces were left as they are.",
+                gpr.width()
+            ),
+        ));
+    }
 
-        let normal_velocity = tools::quantiles(&velocities, &[0.5], None)[0];
+    let step = match step {
+        Some(step) => step,
+        None => {
+            let velocities = gpr.location.velocities().mapv(|v| v as f32);
 
-        let mut seconds_moving = 0_f32;
-        for i in 1..gpr.width() {
-            if velocities[i] < (0.3 * normal_velocity) {
-                continue;
-            };
-            seconds_moving += gpr.metadata.time_interval;
+            let normal_velocity = tools::quantiles(&velocities, &[0.5], None)[0];
+
+            let mut seconds_moving = 0_f32;
+            for i in 1..gpr.width() {
+                if velocities[i] < (0.3 * normal_velocity) {
+                    continue;
+                };
+                seconds_moving += gpr.metadata.time_interval;
+            }
+
+            let nominal_data_width = (seconds_moving / gpr.metadata.time_interval).floor() as usize;
+
+            let step = max_distance / (nominal_data_width as f32);
+            if !(step.is_finite() && step > 0.) {
+                return Ok(StepReport::warning(
+                    NAME,
+                    format!(
+                        "No step could be derived from how fast the radar moved (got \
+                         {step} m). The traces were left as they are; give a step to \
+                         resample anyway."
+                    ),
+                ));
+            }
+            step
         }
+    };
 
-        let nominal_data_width = (seconds_moving / gpr.metadata.time_interval).floor() as usize;
-
-        max_distance / (nominal_data_width as f32)
-    });
+    // As many as `Resampler::new` makes: one per step from the start of
+    // the track to past its end. Counted in floating point so a tiny step
+    // cannot overflow the count.
+    let new_width = (max_distance / step).ceil() + 1.;
+    let limit = MAX_TRACE_FACTOR * gpr.width();
+    if new_width > limit as f32 {
+        return Err(format!(
+            "A step of {step} m would make {new_width} traces from {} along {max_distance:.1} \
+             m, more than {MAX_TRACE_FACTOR} times as many. The smallest step allowed here \
+             is about {:.3} m.",
+            gpr.width(),
+            max_distance / (limit - 1) as f32,
+        ));
+    }
 
     if (max_distance / step).round() as usize == gpr.width() {
         return Ok(StepReport::new(
