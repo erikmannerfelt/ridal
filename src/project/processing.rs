@@ -162,14 +162,16 @@ impl From<StoreError> for ProcessingError {
 
 /// `steps`, each checked and written out in full.
 pub fn canonical_steps(steps: &[String]) -> Result<Vec<String>, ProcessingError> {
-    steps
+    let canonical = steps
         .iter()
         .map(|step| {
             crate::processing::steps::parse_one(step)
                 .map(|parsed| parsed.canonical)
                 .map_err(ProcessingError::Steps)
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    crate::processing::steps::check_step_order(&canonical).map_err(ProcessingError::Steps)?;
+    Ok(canonical)
 }
 
 /// `steps` as pre-steps: canonical, and each one that only selects.

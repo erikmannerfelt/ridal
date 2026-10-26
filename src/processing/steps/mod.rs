@@ -579,8 +579,9 @@ pub enum Step {
     ///
     /// In the output, the corrected data are the variable `data_topocorr`,
     /// on the `y2` dimension, with its own `elevation_topocorr` axis. Note
-    /// that the copying means any step run after this will not be reflected
-    /// in `data_topocorr`. This is thus recommended to run last.
+    /// that the copying means any step run after this would not be reflected
+    /// in `data_topocorr`, so it must be the last step, and a list with it
+    /// anywhere else is refused.
     #[command(rename_all = "snake_case")]
     CorrectTopography,
     /// Correct for the separation between the antenna transmitter and
@@ -1034,7 +1035,9 @@ impl Step {
             Step::ZeroCorr { .. } => 1,
             Step::Bandpass { .. } => 1,
             Step::BandpassMhz { .. } => 1,
-            Step::EquidistantTraces { .. } => 1,
+            // 2: resampled unless every step matches, and not past the
+            // track's end (#511).
+            Step::EquidistantTraces { .. } => 2,
             Step::ShiftCoordinates { .. } => 1,
             Step::Dewow { .. } => 1,
             Step::BackgroundRemoval { .. } => 1,
@@ -1043,7 +1046,8 @@ impl Step {
             Step::AutoGain { .. } => 1,
             Step::Gain { .. } => 1,
             Step::KirchhoffMigration2d => 1,
-            Step::Abslog => 1,
+            // 2: the offset from a sample of the whole array (#512).
+            Step::Abslog => 2,
             Step::Siglog { .. } => 1,
             Step::AdaptiveSiglog { .. } => 1,
             Step::CorrectTopography => 1,
@@ -1280,7 +1284,7 @@ impl Step {
             Step::AutoGain { n_bins } => gain::run_auto_gain(gpr, *n_bins),
             Step::Gain { factor } => gain::run_gain(gpr, *factor),
             Step::KirchhoffMigration2d => migration::run_kirchhoff_migration2d(gpr)?,
-            Step::Abslog => siglog::run_abslog(gpr),
+            Step::Abslog => siglog::run_abslog(gpr)?,
             Step::Siglog { minval_log10 } => siglog::run_siglog(gpr, *minval_log10),
             Step::AdaptiveSiglog { offset } => siglog::run_adaptive_siglog(gpr, *offset)?,
             Step::CorrectTopography => geometry::run_correct_topography(gpr),
@@ -1602,7 +1606,45 @@ pub fn validate_steps(steps: &[String]) -> Result<(), String> {
     for step in steps {
         crate::processing::steps::parse_one(step)?;
     }
-    Ok(())
+    check_step_order(steps)
+}
+
+/// Check what a list of steps needs of its order: `correct_topography`, if
+/// present, is the last step and runs once (#513).
+///
+/// It copies the data as they are when it runs, so a later step would
+/// change `data` and leave `data_topocorr` showing something else. Refused
+/// rather than reordered, so that what runs is what was asked for. Steps
+/// that do not parse are left to [`validate_steps`].
+pub fn check_step_order(steps: &[String]) -> Result<(), String> {
+    let positions: Vec<usize> = steps
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| {
+            matches!(
+                crate::processing::steps::parse_one(step).map(|parsed| parsed.step),
+                Ok(Step::CorrectTopography)
+            )
+        })
+        .map(|(i, _)| i + 1)
+        .collect();
+    match positions.as_slice() {
+        [] => Ok(()),
+        [last] if *last == steps.len() => Ok(()),
+        [only] => Err(format!(
+            "`correct_topography` must be the last step, but it is step {only} of {}. \
+             Move it to the end.",
+            steps.len()
+        )),
+        several => Err(format!(
+            "`correct_topography` may only run once, as the last step, but it is steps {}.",
+            several
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -1617,6 +1659,24 @@ mod tests {
 
     fn one(source: &str) -> Result<ParsedStep, StepError> {
         parse_steps(source).map(|mut v| v.remove(0))
+    }
+
+    #[test]
+    fn correct_topography_must_be_the_last_step_and_run_once() {
+        let steps = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let message = validate_steps(&steps(&["correct_topography", "dewow"])).unwrap_err();
+        assert!(message.contains("step 1 of 2"), "{message}");
+        let message = validate_steps(&steps(&[
+            "correct_topography",
+            "dewow",
+            "correct_topography()",
+        ]))
+        .unwrap_err();
+        assert!(message.contains("only run once"), "{message}");
+        assert!(message.contains("1, 3"), "{message}");
+        validate_steps(&steps(&["dewow", "correct_topography"])).unwrap();
+        validate_steps(&steps(&["correct_topography"])).unwrap();
+        validate_steps(&steps(&["dewow"])).unwrap();
     }
 
     #[test]

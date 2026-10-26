@@ -137,27 +137,42 @@ pub fn adaptive_siglog<D: ndarray::Dimension>(
     Ok(strength)
 }
 
-pub fn abslog<T: Float>(data: &mut Array2<T>) {
+/// `log10(|v| + offset)`, where `offset` is the lowest of the 1st, 5th,
+/// 50th and 90th percentiles of `|v|` that is not zero (one if all are),
+/// so that zero does not become `-inf`.
+///
+/// The percentiles come from a regular stride over the whole array of at
+/// most [`MAX_NOISE_SAMPLES`] values, as in [`adaptive_siglog`].
+///
+/// # Errors
+/// If `data` has no finite value to take a percentile of.
+pub fn abslog<T: Float>(data: &mut Array2<T>) -> Result<(), String> {
     data.mapv_inplace(|v| v.abs());
+    let stride = data.len().div_ceil(MAX_NOISE_SAMPLES).max(1);
+    let sample: Vec<T> = data
+        .iter()
+        .step_by(stride)
+        .copied()
+        .filter(|v| v.is_finite())
+        .collect();
+    if sample.is_empty() {
+        return Err("abslog needs at least one finite sample to take a percentile of".into());
+    }
     let mut minval = T::one();
-    let subsampling = ((data.shape()[0] * data.shape()[1]) as f32 * 0.1).max(100.) as usize;
     for quantile in [0.01, 0.05, 0.5, 0.9] {
-        let new_min = tools::quantiles(
-            data.iter().filter(|v| v >= &&T::zero()),
-            &[quantile],
-            Some(subsampling),
-        )[0];
+        let new_min = tools::quantiles(&sample, &[quantile], None)[0];
         if !new_min.is_zero() {
             minval = new_min;
             break;
         }
     }
     data.mapv_inplace(|v| (v + minval).log10());
+    Ok(())
 }
 
-pub(crate) fn run_abslog(gpr: &mut GPR) -> StepReport {
-    abslog(&mut gpr.data);
-    StepReport::new("abslog", "Ran abslog (log10(abs(data))")
+pub(crate) fn run_abslog(gpr: &mut GPR) -> Result<StepReport, String> {
+    abslog(&mut gpr.data)?;
+    Ok(StepReport::new("abslog", "Ran abslog (log10(abs(data))"))
 }
 
 pub(crate) fn run_adaptive_siglog(gpr: &mut GPR, offset: f32) -> Result<StepReport, String> {
@@ -308,7 +323,7 @@ mod tests {
             (1..101).into_iter().map(|v| v as f32).collect::<Vec<f32>>(),
         )
         .unwrap();
-        super::abslog(&mut data);
+        super::abslog(&mut data).unwrap();
         let new_minval = *data
             .iter()
             .min_by(|a, b| a.partial_cmp(b).unwrap())
@@ -321,5 +336,26 @@ mod tests {
         assert!(new_minval < 1.);
         assert!(new_maxval < 2.1);
         assert!(new_maxval > 1.9);
+    }
+
+    #[test]
+    fn abslog_takes_its_offset_from_the_whole_array() {
+        // #512: the offset came from every `len / 10`-th value, ten values
+        // in all. Here those ten are all 1000 while everything else is 1.
+        let mut data = ndarray::Array2::<f32>::from_elem((1000, 1000), 1.);
+        for (i, value) in data.iter_mut().enumerate() {
+            if i % 100_000 == 0 {
+                *value = 1000.;
+            }
+        }
+        super::abslog(&mut data).unwrap();
+        assert_eq!(data[[0, 1]], 2f32.log10());
+    }
+
+    #[test]
+    fn abslog_of_nothing_finite_is_an_error() {
+        let mut data = ndarray::Array2::<f32>::from_elem((4, 4), f32::NAN);
+        let message = super::abslog(&mut data).unwrap_err();
+        assert!(message.contains("finite"), "{message}");
     }
 }

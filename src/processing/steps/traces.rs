@@ -210,10 +210,13 @@ pub(crate) fn run_make_equidistant(gpr: &mut GPR, step: Option<f32>) -> Result<S
         }
     };
 
-    // As many as `Resampler::new` makes: one per step from the start of
-    // the track to past its end. Counted in floating point so a tiny step
-    // cannot overflow the count.
-    let new_width = (max_distance / step).ceil() + 1.;
+    // One trace every `step` from the start of the track to its end,
+    // never past it: a target beyond the last trace would be extrapolated.
+    // Counted in floating point so a tiny step cannot overflow the count;
+    // the slack keeps an end that is a whole number of steps away, which
+    // rounding may put a hair short.
+    let min_distance = distances.iter().cloned().fold(f32::INFINITY, f32::min);
+    let new_width = ((max_distance - min_distance) / step + 1e-4).floor() + 1.;
     let limit = MAX_TRACE_FACTOR * gpr.width();
     if new_width > limit as f32 {
         return Err(format!(
@@ -225,7 +228,15 @@ pub(crate) fn run_make_equidistant(gpr: &mut GPR, step: Option<f32>) -> Result<S
         ));
     }
 
-    if (max_distance / step).round() as usize == gpr.width() {
+    // Every step along the track, not only the trace count, has to match:
+    // traces bunched in one part and spread out in another can add up to
+    // the same count (#511).
+    let tolerance = 0.01 * step;
+    let already_equidistant = distances
+        .windows(2)
+        .into_iter()
+        .all(|pair| ((pair[1] - pair[0]) - step).abs() <= tolerance);
+    if already_equidistant {
         return Ok(StepReport::new(
             "equidistant_traces",
             "Traces were already equidistant.",
@@ -237,7 +248,9 @@ pub(crate) fn run_make_equidistant(gpr: &mut GPR, step: Option<f32>) -> Result<S
     if gpr.topo_data.is_some() {
         return Err("equidistant_traces cannot run after correct_topography; run it before".into());
     }
-    let resampler = tools::Resampler::<f32>::new(distances, step);
+    let targets =
+        Array1::from_iter((0..new_width as usize).map(|k| min_distance + k as f32 * step));
+    let resampler = tools::Resampler::<f32>::new_with_target(distances, targets);
     let resample = |values: Vec<f64>| -> Vec<f64> {
         resampler
             .resample_convert::<f64>(&Array1::from_vec(values).view())
@@ -359,6 +372,57 @@ pub(crate) fn run_remove_empty_traces(gpr: &mut GPR, strength: f32) -> Result<St
 mod tests {
     use crate::gpr::test_fixtures::*;
 
+    /// A straight line east whose `i`-th trace is `positions[i]` m along.
+    fn along(positions: &[f64]) -> crate::gpr::GPR {
+        let mut gpr = make_dummy_gpr(positions.len(), 16, Some(1.));
+        let first = gpr.location.cor_points[0].clone();
+        for (point, position) in gpr.location.cor_points.iter_mut().zip(positions) {
+            point.easting = first.easting + position;
+            point.northing = first.northing;
+            point.altitude = first.altitude;
+        }
+        gpr
+    }
+
+    #[test]
+    fn uneven_traces_with_the_right_count_are_still_resampled() {
+        // #511: 50 steps of 0.2 m, then 49 of 1.8 m, add up to 98.2 m,
+        // which a step of 0.982 m divides into exactly 100 traces.
+        let positions: Vec<f64> = (0..100)
+            .map(|i| {
+                if i <= 50 {
+                    0.2 * i as f64
+                } else {
+                    10. + 1.8 * (i - 50) as f64
+                }
+            })
+            .collect();
+        let mut gpr = along(&positions);
+
+        let report = super::run_make_equidistant(&mut gpr, Some(0.982)).unwrap();
+        assert!(!report.event().contains("already"), "{}", report.event());
+        let distances = gpr.location.distances();
+        for pair in distances.windows(2) {
+            let spacing = pair[1] - pair[0];
+            assert!((spacing - 0.982).abs() < 1e-3, "{spacing}");
+        }
+        // Not past the end of the track.
+        assert!(distances[distances.len() - 1] <= 98.2 + 1e-3);
+    }
+
+    #[test]
+    fn equidistant_traces_are_left_alone() {
+        let positions: Vec<f64> = (0..20).map(|i| 0.5 * i as f64).collect();
+        let mut gpr = along(&positions);
+        gpr.data.mapv_inplace(|_| 0.);
+        gpr.data[[3, 7]] = 1.;
+
+        let report = super::run_make_equidistant(&mut gpr, Some(0.5)).unwrap();
+        assert_eq!(report.event(), "Traces were already equidistant.");
+        assert_eq!(gpr.width(), 20);
+        assert_eq!(gpr.data[[3, 7]], 1.);
+    }
+
     #[test]
     fn test_equidistant_traces() {
         let width = 128;
@@ -389,7 +453,9 @@ mod tests {
         // the track covers 127 m (the 10 stacked traces contribute nothing,
         // then 117 unit steps plus the 10 m jump out of the cluster), and
         // 118 traces are classified as moving, giving a step of
-        // 127/118 ~= 1.076 m and 120 positions on the resampled grid.
+        // 127/118 ~= 1.076 m and 119 positions on the resampled grid, the
+        // last at the end of the track. Until #511 it was 120, the last
+        // one step past the end and extrapolated.
         //
         // This previously read `width - (n_stationary - 1)` == 119, which
         // held only because `distances`/`velocities` both returned squared
@@ -399,7 +465,7 @@ mod tests {
         // cancellation is why the fixture could not detect the missing
         // `sqrt` -- see
         // `test_distances_and_velocities_are_lengths_not_squared_lengths`.
-        assert_eq!(gpr.width(), 120);
+        assert_eq!(gpr.width(), 119);
     }
 
     #[test]

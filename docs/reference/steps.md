@@ -260,7 +260,7 @@ Store a topographically corrected copy of the data in the file. Rarely needed: t
 
 The viewer's topographic correction, `ridal render --topo`, `ridal process --render-topo` and figures all draw the corrected view from `data` and the file's elevation and depth axes, so they do not need this step. It is for tools outside Ridal that should read a corrected array directly. The copy is taller than `data`, since it spans the whole elevation range, so the step more than doubles the size of the file.
 
-In the output, the corrected data are the variable `data_topocorr`, on the `y2` dimension, with its own `elevation_topocorr` axis. Note that the copying means any step run after this will not be reflected in `data_topocorr`. This is thus recommended to run last.
+In the output, the corrected data are the variable `data_topocorr`, on the `y2` dimension, with its own `elevation_topocorr` axis. Note that the copying means any step run after this would not be reflected in `data_topocorr`, so it must be the last step, and a list with it anywhere else is refused.
 ```
 
 ```{step} correct_antenna_separation(method=slant, direct_velocity=0.2997)

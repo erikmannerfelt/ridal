@@ -7663,6 +7663,21 @@ async fn a_processing_profile_is_versioned_and_shared_by_its_radargrams() {
     .await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
 
+    // `correct_topography` anywhere but last is refused (#513).
+    let misordered = put(
+        &app,
+        "/api/v1/processing/profiles/svalbard-100mhz",
+        &profile(&["correct_topography", "dewow"]),
+        Some(&erik),
+    )
+    .await;
+    assert_eq!(misordered.status, StatusCode::BAD_REQUEST);
+    assert!(
+        misordered.text.contains("must be the last step"),
+        "{}",
+        misordered.text
+    );
+
     // Changing the steps is version 2; against a stale ETag it is refused.
     let changed = send(
         &app,

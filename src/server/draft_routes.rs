@@ -494,6 +494,8 @@ pub async fn create_draft(
         .map(|step| crate::processing::steps::parse_one(step).map(|parsed| parsed.canonical))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ApiError::bad_request("invalid_steps", e))?;
+    crate::processing::steps::check_step_order(&steps)
+        .map_err(|e| ApiError::bad_request("invalid_steps", e))?;
     let velocity = body.medium_velocity.unwrap_or(0.168);
     if !(velocity.is_finite() && velocity > 0.) {
         return Err(ApiError::bad_request(

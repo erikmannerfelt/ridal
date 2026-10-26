@@ -364,39 +364,11 @@ pub fn return_time_to_depth(
     }
 }
 
-fn digitize<F: Float>(values: &[F], bins: &[F]) -> Vec<usize> {
-    let mut bins = bins.iter().collect::<Vec<&F>>();
-    bins.sort_by(|a, b| a.partial_cmp(b).unwrap());
-
-    let mut indices = Vec::<usize>::new();
-
-    for value in values {
-        // Initialize the upper bin index by the "out of bounds" value
-        let mut upper_bin = 0;
-
-        if value >= bins[bins.len() - 1] {
-            upper_bin = bins.len();
-        } else if value > bins[0] {
-            for bin in &bins {
-                if bin > &value {
-                    break;
-                }
-                upper_bin += 1;
-            }
-        }
-        indices.push(upper_bin);
-    }
-
-    indices
-}
-
+/// Linear interpolation from uneven `x_values` onto `target_x_values`, for
+/// any number of series that share them.
 pub struct Resampler<F: Float> {
     pub x_values: Array1<F>,
     pub target_x_values: Array1<F>,
-    pub digitized: Vec<usize>,
-    slope_indices: Vec<Vec<usize>>,
-    intercept_indices: Vec<Vec<usize>>,
-    _debug: bool,
 }
 
 fn equally_spaced_from_sparse<F: Float>(sparse: &Array1<F>, resolution: F) -> Array1<F> {
@@ -406,100 +378,23 @@ fn equally_spaced_from_sparse<F: Float>(sparse: &Array1<F>, resolution: F) -> Ar
 }
 
 impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Debug> Resampler<F> {
-    fn _new(x_values: Array1<F>, target_x_values: Array1<F>, debug: bool) -> Resampler<F> {
-        //let target_x_values = Array1::<F>::range(*x_values.min().unwrap(), x_values.max().unwrap().clone() + resolution, resolution);
-
-        let digitized = digitize(
-            x_values.as_slice().unwrap(),
-            target_x_values.as_slice().unwrap(),
-        );
-
-        let mut slope_indices = Vec::<Vec<usize>>::new();
-        let mut intercept_indices = slope_indices.clone();
-        for i in 0..target_x_values.len() {
-            let mut indices_between = Vec::<usize>::new();
-            let mut potential_outside_behind = Vec::<(usize, usize)>::new();
-            let mut potential_outside_ahead = Vec::<(usize, usize)>::new();
-            let mut indices_outside = Vec::<usize>::new();
-            for (j, k) in digitized.iter().enumerate() {
-                match k.cmp(&i) {
-                    std::cmp::Ordering::Less => {
-                        potential_outside_behind.push((i - k, j));
-                    }
-                    std::cmp::Ordering::Greater => {
-                        potential_outside_ahead.push((*k - i, j));
-                    }
-                    std::cmp::Ordering::Equal => {
-                        indices_between.push(j);
-                    }
-                };
-            }
-
-            if indices_between.len() < 2 {
-                potential_outside_behind.sort_by_key(|a| a.0);
-                potential_outside_ahead.sort_by_key(|a| a.0);
-
-                if let Some(point_behind) = potential_outside_behind.first() {
-                    for index in potential_outside_behind
-                        .iter()
-                        .filter_map(|(distance, index)| {
-                            (distance == &point_behind.0).then_some(index)
-                        })
-                    {
-                        indices_outside.push(*index);
-                    }
-                }
-                if let Some(point_ahead) = potential_outside_ahead.first() {
-                    for index in potential_outside_ahead
-                        .iter()
-                        .filter_map(|(distance, index)| {
-                            (distance == &point_ahead.0).then_some(index)
-                        })
-                    {
-                        indices_outside.push(*index);
-                    }
-                }
-            };
-            let mut all_indices = indices_outside.clone();
-            all_indices.append(indices_between.clone().as_mut());
-            let indices_for_intercept = match indices_between.is_empty() {
-                true => all_indices.clone(),
-                false => indices_between.clone(),
-            };
-            let indices_for_slope = match indices_between.len() < 2 {
-                true => all_indices.clone(),
-                false => indices_between,
-            };
-
-            intercept_indices.push(indices_for_intercept);
-            slope_indices.push(indices_for_slope);
-        }
-
+    pub fn new(x_values: Array1<F>, resolution: F) -> Self {
+        let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
         Resampler {
             x_values,
             target_x_values,
-            digitized,
-            slope_indices,
-            intercept_indices,
-            _debug: debug,
         }
-    }
-
-    pub fn new(x_values: Array1<F>, resolution: F) -> Self {
-        let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
-        Resampler::_new(x_values, target_x_values, false)
     }
 
     /// Resample onto `target_x_values` exactly, rather than onto a grid
     /// derived from the values' own range.
     pub fn new_with_target(x_values: Array1<F>, target_x_values: Array1<F>) -> Self {
-        Resampler::_new(x_values, target_x_values, false)
+        Resampler {
+            x_values,
+            target_x_values,
+        }
     }
 
-    fn _new_debug(x_values: Array1<F>, resolution: F) -> Self {
-        let target_x_values = equally_spaced_from_sparse::<F>(&x_values, resolution);
-        Self::_new(x_values, target_x_values, true)
-    }
     fn _resample<F2: Float + std::fmt::Display + std::iter::Sum + Send + std::fmt::Debug>(
         &self,
         x_values: &Array1<F2>,
@@ -522,40 +417,6 @@ impl<F: Float + std::fmt::Display + std::iter::Sum + Send + Sync + std::fmt::Deb
     pub fn resample(&self, y_values: &ArrayView1<F>) -> Array1<F> {
         self._resample(&self.x_values, &self.target_x_values, y_values)
     }
-
-    /*
-    pub fn resample_along_axis(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
-        let nd_axis = match axis {
-            Axis2D::Row => ndarray::Axis(0),
-            Axis2D::Col => ndarray::Axis(1),
-        };
-        let slice = ndarray::Slice::new(0, Some(self.target_x_values.len() as isize), 1);
-
-        let length = match axis {
-            Axis2D::Row => data.shape()[0],
-            Axis2D::Col => data.shape()[1],
-        };
-
-        let mut buffer = Array1::<F>::zeros(length);
-
-        let mut data2 = data.clone();
-
-        let axis_values = match axis {
-            Axis2D::Row => data2.columns_mut(),
-            Axis2D::Col => data2.rows_mut(),
-        };
-
-        for mut arr in axis_values {
-            let resampled = self.resample(&arr.view());
-
-            let mut slice = buffer.slice_axis_mut(ndarray::Axis(0), slice);
-            slice.assign(&resampled);
-            arr.assign(&buffer);
-        }
-        data2.slice_axis_inplace(nd_axis, slice);
-        data2
-    }
-    */
 
     pub fn resample_along_axis_par(&self, data: &Array2<F>, axis: Axis2D) -> Array2<F> {
         let length = match axis {
@@ -600,10 +461,6 @@ impl std::convert::From<Resampler<f32>> for Resampler<f64> {
         Resampler {
             x_values,
             target_x_values,
-            digitized: resampler.digitized.clone(),
-            slope_indices: resampler.slope_indices.clone(),
-            intercept_indices: resampler.intercept_indices.clone(),
-            _debug: resampler._debug,
         }
     }
 }
@@ -916,16 +773,6 @@ mod tests {
     }
 
     #[test]
-    fn test_digitize() {
-        let bins = [0., 1., 2., 3.];
-        let values = [-0.5, 1., 0.5, 0.8, 0.9, 2.3, 3.4];
-
-        let expected = [0, 2, 1, 1, 1, 3, 4];
-
-        assert_eq!(super::digitize(&values, &bins), expected);
-    }
-
-    #[test]
     fn test_resample() {
         let x_values = Array1::from_vec(vec![0., 0.01, 0.5, 0.99, 1.99, 2.05, 2.05, 5.05]);
         let y_values = Array1::from_vec(vec![1., 1., 2., 3., 4., 4., 4., 5.]);
@@ -938,7 +785,7 @@ mod tests {
 
         let resolution = 1.;
 
-        let mut resampler = super::Resampler::<f32>::_new_debug(x_values, resolution);
+        let resampler = super::Resampler::<f32>::new(x_values, resolution);
         println!("{:?}", resampler.target_x_values);
 
         let new_ys = resampler.resample(&y_values.view());
@@ -958,7 +805,6 @@ mod tests {
                 < &5.5
         );
 
-        resampler._debug = false;
         let y_matrix_manyrows =
             ndarray::Array2::from_shape_fn((50, y_values.len()), |(_, j)| y_values[j]);
         let resampled_colwise =
