@@ -126,6 +126,10 @@ pub fn build_processed_gpr_with_progress(
     on_step: &mut dyn FnMut(usize, usize, &str),
 ) -> Result<(GPR, PathBuf), Box<dyn std::error::Error>> {
     let options = &params.options;
+    // Before reading anything. Covers lists that did not come through
+    // `resolve_steps`, such as a radargram's pre-steps followed by its
+    // profile's.
+    steps::check_step_order(&options.steps)?;
     let expanded = input::expand_input_paths(&params.filepaths)?;
     if expanded.is_empty() {
         return Err("No input files were provided.".into());
