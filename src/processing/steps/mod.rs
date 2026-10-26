@@ -607,7 +607,11 @@ pub enum Step {
     /// `legacy` is the conversion before 0.7, which used the full separation
     /// where the geometry needs half and, after a zero correction, no
     /// separation at all. It exists to regenerate data processed with it,
-    /// and picks made on its grid, exactly.
+    /// and picks made on its grid, exactly. Its grid is a little coarser
+    /// than `v * dt / 2`, but the output keeps the recorded sample interval
+    /// (time window, sampling frequency), so `twtt`, `depth`
+    /// and `bandpass_mhz` read that interval and are off by the difference,
+    /// about 2 % (#508). The grid's real spacing is in the processing log.
     ///
     /// `direct_velocity` is the velocity of the wave that time zero was
     /// picked on. The default is the speed of light in air, because the air

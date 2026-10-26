@@ -25,7 +25,8 @@ a coordinate CSV, either beside the recording as `<stem>.coords.csv` or with
 `--cor` (see {ref}`coordinate-csv`).
 
 Ridal reads but does not yet write these formats (see
-{doc}`../background/scope`).
+{doc}`../background/scope`). Multi-channel GSSI files are refused for now;
+a single-channel file whose last trace was cut short is read without it.
 
 ### What is read from the header
 

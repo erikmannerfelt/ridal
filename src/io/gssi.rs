@@ -99,6 +99,18 @@ fn gssi_antenna_mhz(antname: &str) -> Option<f32> {
     }
 }
 
+/// Channels are interleaved trace by trace, so reading a multi-channel file
+/// as one would make every other trace come from a different antenna.
+fn refuse_multichannel(nchan: u16) -> Result<(), Box<dyn Error>> {
+    if nchan > 1 {
+        return Err(format!(
+            "Multi-channel DZT files are not supported yet (this one has {nchan} channels)"
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub fn load_gssi_dzt(
     filepath: &Path,
     medium_velocity: f32,
@@ -106,8 +118,13 @@ pub fn load_gssi_dzt(
     override_antenna_separation: Option<f32>,
 ) -> Result<gpr::GPRMeta, Box<dyn Error>> {
     let bytes = std::fs::read(filepath)?;
-    let (data, nsamp, bits, sps, _spm, position, range, nchan, antenna) = read_gssi_header(&bytes)?;
-    let time_window = range - position;
+    let (data, nsamp, bits, sps, _spm, _position, range, nchan, antenna) =
+        read_gssi_header(&bytes)?;
+    refuse_multichannel(nchan)?;
+    // `range` is the whole recorded window in ns. `position` only says where
+    // time zero sits inside it, which the zero_corr step finds from the
+    // data, so it must not shorten the window (#506).
+    let time_window = range;
     let frequency = 1000. * (nsamp as f32) / time_window;
     let antenna_mhz = match override_antenna_mhz {
         Some(v) => v,
@@ -159,6 +176,7 @@ pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn E
     let bytes = std::fs::read(filepath)?;
     let (data, nsamp, bits, _sps, _spm, _position, _range, nchan, _antenna) =
         read_gssi_header(&bytes)?;
+    refuse_multichannel(nchan)?;
     let data_offset = gssi_data_offset(&bytes, bits, data, nchan);
     if data_offset >= bytes.len() {
         return Err(format!("File too short: no data found in {:?}", filepath).into());
@@ -195,7 +213,10 @@ pub fn load_dzt(filepath: &Path, height: usize) -> Result<Array2<f32>, Box<dyn E
         other => return Err(format!("Unsupported GSSI sample width: {other} bits").into()),
     }
 
+    // A recording cut short (a full disk, a power loss) can end inside a
+    // trace. Drop that partial trace rather than refusing the whole file.
     let width = data.len() / height;
+    data.truncate(width * height);
     Ok(Array2::from_shape_vec((width, height), data)?.reversed_axes())
 }
 
@@ -319,6 +340,10 @@ mod tests {
         assert_eq!(meta.antenna_mhz, 200.);
         assert_eq!(meta.antenna, "5106");
         assert_eq!(meta.antenna_separation, 1.5);
+        // The header has position = -60 and range = 600: the window is the
+        // range alone, not range - position (#506).
+        assert_eq!(meta.time_window, 600.);
+        assert_eq!(meta.frequency, 1000. * 4. / 600.);
 
         let data = load_dzt(&dzt_path, 4).unwrap();
         assert_eq!(data.shape(), &[4, 2]);
@@ -326,6 +351,34 @@ mod tests {
         assert!(data[[0, 1]] > 0.0);
         assert!(data[[0, 0]] < 1.0);
         assert!(data[[0, 1]] < 1.0);
+    }
+
+    #[test]
+    fn load_dzt_drops_a_partial_trailing_trace() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dzt_path = temp_dir.path().join("track.DZT");
+        let mut bytes = make_gssi_dzt(2);
+        bytes.extend_from_slice(&[0u8; 2 * 3]);
+        std::fs::write(&dzt_path, bytes).unwrap();
+
+        let data = load_dzt(&dzt_path, 4).unwrap();
+        assert_eq!(data.shape(), &[4, 2]);
+    }
+
+    #[test]
+    fn multichannel_dzt_is_refused() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dzt_path = temp_dir.path().join("track.DZT");
+        let mut bytes = make_gssi_dzt(2);
+        bytes[52..54].copy_from_slice(&2u16.to_le_bytes());
+        std::fs::write(&dzt_path, bytes).unwrap();
+
+        for err in [
+            load_gssi_dzt(&dzt_path, 0.1, Some(200.), None).unwrap_err(),
+            load_dzt(&dzt_path, 4).unwrap_err(),
+        ] {
+            assert!(err.to_string().contains("Multi-channel"), "{err}");
+        }
     }
 
     #[test]
